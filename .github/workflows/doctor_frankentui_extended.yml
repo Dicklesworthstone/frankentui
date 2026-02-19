@@ -1,0 +1,271 @@
+# doctor_franktentui Extended Verification (nightly lane)
+# bd-36je8.4.4: nightly extended doctor verification lane
+#
+# Goals:
+# - Keep PR fast lane efficient (CI.yml owns PR gate).
+# - Run deeper soak + variant coverage on a schedule / main pushes.
+# - Retain richer artifacts longer for intermittent failure triage.
+
+name: doctor_franktentui Extended Verification
+
+on:
+  schedule:
+    # Daily at 06:23 UTC (chosen to avoid top-of-hour runner contention).
+    - cron: '23 6 * * *'
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'crates/doctor_franktentui/**'
+      - 'scripts/doctor_franktentui_*'
+      - '.github/workflows/doctor_franktentui_extended.yml'
+
+concurrency:
+  group: doctor-franktentui-extended
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  DOCTOR_FTUI_ARTIFACT_ROOT: /tmp/doctor_franktentui_ci_extended
+  DOCTOR_FRANKTENTUI_VHS_SMOKE_TIMEOUT_S: 30
+
+jobs:
+  doctor-franktentui-extended:
+    name: doctor_franktentui Extended Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies (jq, rg, ffmpeg)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq ripgrep ffmpeg
+
+      - name: Install ttyd (required by VHS)
+        run: |
+          set -euo pipefail
+          if command -v ttyd >/dev/null 2>&1; then
+            ttyd --version || ttyd -v || true
+            exit 0
+          fi
+
+          if sudo apt-get install -y ttyd; then
+            ttyd --version || ttyd -v || true
+            exit 0
+          fi
+
+          echo "ttyd not available via apt; downloading pinned binary" >&2
+          TTYD_VERSION="1.7.7"
+          curl -fsSL -o /tmp/ttyd.x86_64 "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
+          sudo install -m 0755 /tmp/ttyd.x86_64 /usr/local/bin/ttyd
+          ttyd --version || ttyd -v || true
+
+      - name: Install VHS (pinned)
+        run: |
+          set -euo pipefail
+          VHS_VERSION="0.10.0"
+          curl -fsSL -o /tmp/vhs.tar.gz "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf /tmp/vhs.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/vhs /usr/local/bin/vhs
+          vhs --version
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-doctor-franktentui-extended-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run doctor_franktentui no-fake realism gate
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          python3 ./scripts/doctor_franktentui_no_fake_gate.py \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/no_fake_gate.log"
+
+      - name: Run doctor_franktentui unit + integration tests
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          cargo test -p doctor_franktentui --all-targets -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/unit_integration.log"
+
+      - name: Run doctor_franktentui happy-path E2E
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_happy_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/happy" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/happy_e2e.log"
+
+      - name: Run doctor_franktentui failure-path E2E
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_failure_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/failure" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/failure_e2e.log"
+
+      - name: Build doctor_franktentui replay/triage summary
+        if: always()
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_replay_triage.py \
+            --run-root "${DOCTOR_FTUI_ARTIFACT_ROOT}/failure" \
+            --output-json "${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/replay_triage_report.json" \
+            --max-signals 8 \
+            --max-timeline 120 \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/replay_triage.log"
+
+      - name: Run doctor_franktentui determinism soak (extended)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_determinism_soak.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/determinism" 5 \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/determinism_soak.log"
+
+      - name: Run doctor_franktentui coverage gate
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_coverage.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/coverage_gate.log"
+          cp crates/doctor_franktentui/coverage/thresholds.toml "${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/thresholds.toml"
+          cp crates/doctor_franktentui/coverage/e2e_jsonl_schema.json "${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/e2e_jsonl_schema.json"
+
+      - name: Run doctor_franktentui happy-path E2E (conservative mode)
+        run: |
+          set -euo pipefail
+          DOCTOR_FRANKTENTUI_CONSERVATIVE=1 \
+            ./scripts/doctor_franktentui_happy_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/happy_conservative" \
+              2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/happy_conservative_e2e.log"
+
+      - name: Write artifact map
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}"
+          artifact_map_txt="${DOCTOR_FTUI_ARTIFACT_ROOT}/artifact_map.txt"
+          artifact_map_json="${DOCTOR_FTUI_ARTIFACT_ROOT}/artifact_map.json"
+          {
+            echo "doctor_franktentui extended artifact map"
+            echo "generated_at_utc=$(date -u +%Y%m%dT%H%M%SZ)"
+            echo "git_rev=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+            echo "artifact_root=${DOCTOR_FTUI_ARTIFACT_ROOT}"
+            echo "unit_integration_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/unit_integration.log"
+            echo "no_fake_gate_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/no_fake_gate.log"
+            echo "happy_e2e_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/happy_e2e.log"
+            echo "happy_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy/meta/summary.json"
+            echo "happy_events_jsonl=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy/meta/events.jsonl"
+            echo "happy_events_validation_report=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy/meta/events_validation_report.json"
+            echo "happy_artifact_manifest=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy/meta/artifact_manifest.json"
+            echo "failure_e2e_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/failure_e2e.log"
+            echo "failure_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/summary.json"
+            echo "failure_events_jsonl=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/events.jsonl"
+            echo "failure_events_validation_report=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/events_validation_report.json"
+            echo "failure_case_results=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/case_results.json"
+            echo "replay_triage_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/replay_triage.log"
+            echo "replay_triage_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/replay_triage_report.json"
+            echo "determinism_soak_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/determinism_soak.log"
+            echo "determinism_run_index=${DOCTOR_FTUI_ARTIFACT_ROOT}/determinism/meta/run_index.tsv"
+            echo "determinism_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/determinism/meta/determinism_report.json"
+            echo "determinism_report_txt=${DOCTOR_FTUI_ARTIFACT_ROOT}/determinism/meta/determinism_report.txt"
+            echo "coverage_gate_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/coverage_gate.log"
+            echo "coverage_thresholds_toml=${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/thresholds.toml"
+            echo "telemetry_schema_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/e2e_jsonl_schema.json"
+            echo "coverage_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/coverage_gate_report.json"
+            echo "coverage_report_txt=${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/coverage_gate_report.txt"
+            echo "happy_conservative_e2e_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/happy_conservative_e2e.log"
+            echo "happy_conservative_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy_conservative/meta/summary.json"
+            echo "happy_conservative_events_jsonl=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy_conservative/meta/events.jsonl"
+            echo "happy_conservative_events_validation_report=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy_conservative/meta/events_validation_report.json"
+            echo "happy_conservative_artifact_manifest=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy_conservative/meta/artifact_manifest.json"
+            echo "artifact_map_json=${artifact_map_json}"
+          } > "${artifact_map_txt}"
+
+          python3 - "${artifact_map_txt}" "${artifact_map_json}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+txt_path = Path(sys.argv[1])
+json_path = Path(sys.argv[2])
+
+raw_lines = txt_path.read_text(encoding="utf-8").splitlines()
+raw_kv: dict[str, str] = {}
+for line in raw_lines:
+    if "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    raw_kv[key.strip()] = value.strip()
+
+
+def looks_like_path(value: str) -> bool:
+    if value.startswith(("/", "./")):
+        return True
+    return any(value.endswith(suffix) for suffix in (".log", ".txt", ".json", ".tsv", ".toml"))
+
+
+artifacts: dict[str, str] = {}
+metadata: dict[str, str] = {}
+for key, value in sorted(raw_kv.items()):
+    if key in {"git_rev", "generated_at_utc"}:
+        metadata[key] = value
+    elif looks_like_path(value):
+        artifacts[key] = value
+    else:
+        metadata[key] = value
+
+exists: dict[str, bool] = {}
+sizes_bytes: dict[str, int | None] = {}
+for key, value in artifacts.items():
+    path = Path(value)
+    exists[key] = path.exists()
+    if path.exists() and path.is_file():
+        sizes_bytes[key] = int(path.stat().st_size)
+    else:
+        sizes_bytes[key] = None
+
+payload = {
+    "schema_version": "1.0.0",
+    "metadata": metadata,
+    "artifacts": artifacts,
+    "exists": exists,
+    "sizes_bytes": sizes_bytes,
+}
+json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+
+          {
+            echo "## doctor_franktentui extended artifact map"
+            echo ""
+            echo '```'
+            cat "${artifact_map_txt}"
+            echo '```'
+            echo ""
+            echo "artifact_map_json=${artifact_map_json}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload doctor_franktentui extended verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doctor-franktentui-extended-verification
+          path: /tmp/doctor_franktentui_ci_extended/
+          retention-days: 30
+          if-no-files-found: error
