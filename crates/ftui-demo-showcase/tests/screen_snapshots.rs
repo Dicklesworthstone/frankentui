@@ -75,6 +75,8 @@ fn terminal_caps_env() -> ftui_demo_showcase::screens::terminal_capabilities::En
         false,
         false,
         false,
+        false,
+        false,
     )
 }
 

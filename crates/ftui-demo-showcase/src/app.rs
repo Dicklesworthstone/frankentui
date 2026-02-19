@@ -346,7 +346,8 @@ const DRAG_THRESHOLD: u16 = 2;
 /// chain: palette → overlay → status → chrome → screen.
 ///
 /// Invariants:
-/// - Click activation uses MouseUp (prevents accidental drags).
+/// - Click activation prefers MouseUp, with MouseDown fallback for terminals
+///   that omit release events.
 /// - Hover state only updates when the target HitId actually changes.
 /// - Drag lifecycle is deterministic (no timing-based heuristics).
 /// - All events are logged via emit_mouse_jsonl when logging is enabled.
@@ -356,6 +357,9 @@ struct MouseDispatcher {
     hover_hit: Option<HitId>,
     /// Current drag state machine phase.
     drag: DragPhase,
+    /// Suppress the next matching MouseUp when we already activated a click on
+    /// MouseDown (press-only terminal fallback).
+    suppress_next_up_button: Option<MouseButton>,
 }
 
 impl Default for MouseDispatcher {
@@ -363,6 +367,7 @@ impl Default for MouseDispatcher {
         Self {
             hover_hit: None,
             drag: DragPhase::Idle,
+            suppress_next_up_button: None,
         }
     }
 }
@@ -393,6 +398,22 @@ impl MouseDispatcher {
         match self.drag {
             DragPhase::PendingDrag { hit_id, .. } | DragPhase::Dragging { hit_id, .. } => hit_id,
             DragPhase::Idle => None,
+        }
+    }
+
+    /// Arm press-only terminal compatibility: suppress the next matching
+    /// button release to avoid double-activation when both down and up arrive.
+    fn arm_press_only_click_fallback(&mut self, button: MouseButton) {
+        self.suppress_next_up_button = Some(button);
+    }
+
+    /// Consume a release that should be ignored after down-activation.
+    fn consume_suppressed_up(&mut self, button: MouseButton) -> bool {
+        if self.suppress_next_up_button == Some(button) {
+            self.suppress_next_up_button = None;
+            true
+        } else {
+            false
         }
     }
 }
@@ -4220,7 +4241,8 @@ impl AppModel {
     ///   4. Tab bar / category tabs
     ///   5. Screen pane content
     ///
-    /// Click activation uses MouseUp to prevent accidental drags.
+    /// Click activation prefers MouseUp, but falls back to MouseDown on
+    /// terminals that emit press-only mouse reports.
     /// Hover state is coalesced — only updated when the target changes.
     fn dispatch_mouse(&mut self, mouse: &MouseEvent) -> MouseDispatchResult {
         let current = self.current_screen;
@@ -4257,7 +4279,7 @@ impl AppModel {
         let dashboard_splitter_active =
             current == ScreenId::Dashboard && self.screens.dashboard.is_splitter_drag_active();
         // Dashboard registers pane hit regions as "links" to other screens.
-        // Treat these as click targets (MouseUp activation + drag-threshold),
+        // Treat these as click targets.
         // but do NOT treat them as chrome for hover-move consumption; the
         // Dashboard screen uses move events to drive its own hover highlight.
         let pane_link_hit = matches!(
@@ -4269,45 +4291,27 @@ impl AppModel {
 
         // Handle drag state machine transitions.
         match mouse.kind {
-            MouseEventKind::Down(_button) => {
-                // Only capture chrome/overlay Down events; pane/screen events
-                // must flow through to the active screen.
-                //
-                // UPDATE: We deliberately DO NOT capture drag state for chrome/overlay
-                // elements here. Tracking `PendingDrag` causes clicks to be dropped if
-                // the mouse moves > 2 cells (jitter/flakiness). By falling through, we
-                // treat chrome interactions as stateless "click on release", which is
-                // more reliable given that we don't support dragging these elements anyway.
-                //
-                // CRITICAL: We MUST consume the event here to prevent it from falling
-                // through to the screen (e.g. clicking a tab shouldn't click the
-                // canvas below it).
-                if chrome_hit {
-                    emit_mouse_jsonl(mouse, hit_id, "down_chrome_consumed", None, current);
-                    return MouseDispatchResult::Consumed;
-                }
+            MouseEventKind::Down(button) => {
+                // Chrome targets and Dashboard pane-links should remain clickable
+                // even when the terminal only reports press events (observed on
+                // some Ghostty configurations). Activate on Down and suppress the
+                // matching Up if it arrives.
+                if chrome_hit || pane_link_hit {
+                    if button != MouseButton::Left {
+                        emit_mouse_jsonl(
+                            mouse,
+                            hit_id,
+                            "down_non_left_click_target",
+                            None,
+                            current,
+                        );
+                        return MouseDispatchResult::Consumed;
+                    }
 
-                // Dashboard tile "pane links" should activate on MouseUp, but we
-                // still track drag threshold to avoid accidental navigation.
-                //
-                // UPDATE: We deliberately DO NOT capture drag state for pane links
-                // here. Tracking `PendingDrag` causes clicks to be dropped if the
-                // mouse moves > 2 cells (jitter/flakiness). By falling through, we
-                // treat tile interactions as stateless "click on release", which is
-                // more reliable for this specific UI element.
-                /*
-                if pane_link_hit {
-                    self.mouse_dispatcher.drag = DragPhase::PendingDrag {
-                        button,
-                        start_x: mouse.x,
-                        start_y: mouse.y,
-                        hit_id,
-                    };
-                    emit_mouse_jsonl(mouse, hit_id, "down_pane_link", None, current);
-                    // Allow the Dashboard screen to also update focus/hover.
-                    return MouseDispatchResult::NotConsumed;
+                    self.mouse_dispatcher.arm_press_only_click_fallback(button);
+                    emit_mouse_jsonl(mouse, hit_id, "down_click_fallback", None, current);
+                    return self.dispatch_click(mouse, hit, current);
                 }
-                */
 
                 // Screen-level input: do not interfere. Also clear any stale
                 // chrome drag state.
@@ -4376,6 +4380,17 @@ impl AppModel {
                 // Not dragging — this may be a click activation (MouseUp) for
                 // chrome/overlay targets, or a screen-level Up event.
                 self.mouse_dispatcher.cancel_drag();
+
+                if self.mouse_dispatcher.consume_suppressed_up(button) {
+                    emit_mouse_jsonl(
+                        mouse,
+                        hit_id,
+                        "up_suppressed_after_down_click",
+                        None,
+                        current,
+                    );
+                    return MouseDispatchResult::Consumed;
+                }
 
                 // Dashboard splitter drags are tracked at screen level (not by
                 // the chrome drag state machine). While that gesture is active,
@@ -5675,14 +5690,19 @@ mod tests {
         let mut frame = Frame::new(120, 40, &mut pool);
         app.view(&mut frame);
 
-        // Full click: Down starts pending drag, Up activates.
+        // Down activates immediately (press-only terminal fallback).
         let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
         let handled_down = app.handle_mouse_tab_click(&down);
-        assert!(handled_down, "Mouse down should be consumed");
+        assert!(handled_down, "Mouse down should be consumed and activate");
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
 
+        // Up should be consumed but suppressed (no double-activation).
         let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 1, 0);
         let handled_up = app.handle_mouse_tab_click(&up);
-        assert!(handled_up, "Mouse up should activate tab click");
+        assert!(
+            handled_up,
+            "Mouse up should be consumed after down activation"
+        );
         assert_eq!(app.current_screen, ScreenId::GuidedTour);
     }
 
@@ -5707,7 +5727,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn dispatch_mouse_down_starts_pending_drag() {
+    fn dispatch_mouse_down_on_tab_activates_click_fallback() {
         let mut app = AppModel::new();
         app.terminal_width = 120;
         app.terminal_height = 40;
@@ -5719,15 +5739,12 @@ mod tests {
         let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
         let result = app.dispatch_mouse(&down);
         assert_eq!(result, MouseDispatchResult::Consumed);
-        assert!(matches!(
-            app.mouse_dispatcher.drag,
-            DragPhase::PendingDrag {
-                button: MouseButton::Left,
-                start_x: 1,
-                start_y: 0,
-                ..
-            }
-        ));
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
+        assert!(matches!(app.mouse_dispatcher.drag, DragPhase::Idle));
+        assert_eq!(
+            app.mouse_dispatcher.suppress_next_up_button,
+            Some(MouseButton::Left)
+        );
     }
 
     #[test]
@@ -5804,7 +5821,9 @@ mod tests {
         assert_eq!(app.dispatch_mouse(&drag), MouseDispatchResult::NotConsumed);
         assert!(matches!(app.mouse_dispatcher.drag, DragPhase::Idle));
 
-        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), drag_x, y);
+        // Keep release on splitter coordinates so this unit test validates
+        // pure dispatcher forwarding, independent of screen-level splitter state.
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), x, y);
         assert_eq!(app.dispatch_mouse(&up), MouseDispatchResult::NotConsumed);
     }
 
@@ -5883,8 +5902,8 @@ mod tests {
         assert_eq!(app.current_screen, ScreenId::Dashboard);
 
         let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), x, y);
-        assert_eq!(app.dispatch_mouse(&down), MouseDispatchResult::NotConsumed);
-        assert_eq!(app.current_screen, ScreenId::Dashboard);
+        assert_eq!(app.dispatch_mouse(&down), MouseDispatchResult::Consumed);
+        assert_eq!(app.current_screen, ScreenId::DataViz);
 
         let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), x, y);
         assert_eq!(app.dispatch_mouse(&up), MouseDispatchResult::Consumed);
@@ -5917,18 +5936,19 @@ mod tests {
         let mut frame = Frame::new(120, 40, &mut pool);
         app.view(&mut frame);
 
-        // Down at tab area → pending drag
+        // Down at tab area activates immediately.
         let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
         assert_eq!(app.dispatch_mouse(&down), MouseDispatchResult::Consumed);
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
 
-        // Up at same position → click activation
+        // Up at same position should be suppressed to avoid double activation.
         let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 1, 0);
         assert_eq!(app.dispatch_mouse(&up), MouseDispatchResult::Consumed);
         assert_eq!(app.current_screen, ScreenId::GuidedTour);
     }
 
     #[test]
-    fn dispatch_drag_threshold_prevents_accidental_click() {
+    fn dispatch_drag_after_down_activation_does_not_double_activate() {
         let mut app = AppModel::new();
         app.terminal_width = 120;
         app.terminal_height = 40;
@@ -5936,32 +5956,19 @@ mod tests {
         let mut frame = Frame::new(120, 40, &mut pool);
         app.view(&mut frame);
 
-        let initial_screen = app.current_screen;
-
-        // Down at tab area
+        // Down at tab area activates immediately.
         let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
-        app.dispatch_mouse(&down);
+        assert_eq!(app.dispatch_mouse(&down), MouseDispatchResult::Consumed);
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
 
-        // Small drag (1 cell) — below threshold
-        let drag1 = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 2, 0);
-        app.dispatch_mouse(&drag1);
-        assert!(matches!(
-            app.mouse_dispatcher.drag,
-            DragPhase::PendingDrag { .. }
-        ));
+        // Drag events after activation are forwarded to the screen.
+        let drag = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 4, 0);
+        assert_eq!(app.dispatch_mouse(&drag), MouseDispatchResult::NotConsumed);
 
-        // Large drag (3+ cells) — exceeds threshold
-        let drag2 = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 4, 0);
-        app.dispatch_mouse(&drag2);
-        assert!(app.mouse_dispatcher.is_dragging());
-
-        // Up after drag — should NOT activate click, just end drag.
+        // Matching Up is consumed/suppressed (no second activation).
         let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 4, 0);
-        app.dispatch_mouse(&up);
-        assert_eq!(
-            app.current_screen, initial_screen,
-            "Drag end should not activate tab click"
-        );
+        assert_eq!(app.dispatch_mouse(&up), MouseDispatchResult::Consumed);
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
     }
 
     #[test]

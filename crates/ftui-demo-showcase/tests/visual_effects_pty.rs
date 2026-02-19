@@ -348,7 +348,7 @@ fn extract_vfx_frames(output: &[u8]) -> Result<Vec<VfxFrame>, String> {
 }
 
 fn run_vfx_harness(demo_bin: &str, case: VfxCase, seed: u64) -> Result<Vec<VfxFrame>, String> {
-    let output = run_vfx_harness_output(demo_bin, case, seed, false)?;
+    let output = run_vfx_harness_output(demo_bin, case, seed, false, &[])?;
     extract_vfx_frames(&output)
 }
 
@@ -357,6 +357,7 @@ fn run_vfx_harness_output(
     case: VfxCase,
     seed: u64,
     perf: bool,
+    extra_env: &[(&str, &str)],
 ) -> Result<Vec<u8>, String> {
     let label = if perf {
         format!("vfx_harness_perf_{}", case.effect)
@@ -370,6 +371,9 @@ fn run_vfx_harness_output(
         .with_env("FTUI_DEMO_DETERMINISTIC", "1")
         .with_env("E2E_SEED", seed.to_string())
         .logging(false);
+    let config = extra_env
+        .iter()
+        .fold(config, |cfg, (k, v)| cfg.with_env(*k, *v));
 
     let run_id = case.scenario_name(seed);
     let mut cmd = CommandBuilder::new(demo_bin);
@@ -755,7 +759,7 @@ fn pty_vfx_perf_jsonl_schema() -> Result<(), String> {
         ],
     );
 
-    let output = run_vfx_harness_output(&demo_bin, case, seed, true)?;
+    let output = run_vfx_harness_output(&demo_bin, case, seed, true, &[])?;
     let perf_frames = extract_vfx_perf_frames(&output)?;
     ensure_vfx_perf_summary(&output)?;
 
@@ -815,7 +819,7 @@ fn pty_vfx_perf_regression_guard() -> Result<(), String> {
     );
 
     for case in VFX_PERF_CASES {
-        let output = run_vfx_harness_output(&demo_bin, *case, seed, true)?;
+        let output = run_vfx_harness_output(&demo_bin, *case, seed, true, &[])?;
         let summary = extract_vfx_perf_summary(&output)?;
         let frames = extract_vfx_frames(&output)?;
         let budget = find_perf_budget(*case).ok_or_else(|| {
@@ -982,6 +986,70 @@ fn vfx_perf_budget_rejects_regression() {
         !perf_within_budget(summary, budget, VFX_PERF_CI_MULTIPLIER),
         "expected synthetic regression to violate budget"
     );
+}
+
+fn contains_seq(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+#[test]
+fn vfx_shape3d_smoke_runs() -> Result<(), String> {
+    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
+        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
+    })?;
+
+    let seed = logger().fixture().seed();
+    let case = VfxCase {
+        effect: "shape3d",
+        frames: VFX_FRAMES,
+        tick_ms: VFX_TICK_MS,
+        cols: VFX_COLS,
+        rows: VFX_ROWS,
+    };
+
+    logger().log_env();
+    let frames = run_vfx_harness(&demo_bin, case, seed)?;
+    validate_frame_suite(&frames, case)?;
+    Ok(())
+}
+
+#[test]
+fn vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences() -> Result<(), String> {
+    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
+        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
+    })?;
+
+    let seed = logger().fixture().seed();
+    let case = VfxCase {
+        effect: "shape3d",
+        frames: VFX_FRAMES,
+        tick_ms: VFX_TICK_MS,
+        cols: VFX_COLS,
+        rows: VFX_ROWS,
+    };
+
+    // Simulate a mixed environment: TERM_PROGRAM says "Ghostty" but WezTerm mux
+    // markers are present. In this scenario `caps.sync_output` may be true,
+    // but mux policy must suppress emitting DEC 2026 sequences.
+    let extra_env = &[
+        ("TERM_PROGRAM", "Ghostty"),
+        ("WEZTERM_PANE", "1"),
+        ("COLORTERM", "truecolor"),
+    ];
+    let output = run_vfx_harness_output(&demo_bin, case, seed, false, extra_env)?;
+
+    assert!(
+        !contains_seq(&output, b"\x1b[?2026h"),
+        "must not emit DEC ?2026h under mux policy"
+    );
+    assert!(
+        !contains_seq(&output, b"\x1b[?2026l"),
+        "must not emit DEC ?2026l under mux policy"
+    );
+    Ok(())
 }
 
 /// Update goldens:
