@@ -215,10 +215,9 @@ impl<'a> List<'a> {
         let max_pos = filtered.len().saturating_sub(1) as isize;
 
         let next_pos = if let Some(selected) = state.selected {
-            let current_pos = filtered
-                .iter()
-                .position(|&idx| idx == selected)
-                .unwrap_or(0);
+            // `filtered` is sorted by index (ascending), so we can use binary search
+            // for O(log N) lookup instead of O(N) linear scan.
+            let current_pos = filtered.binary_search(&selected).unwrap_or(0);
             (current_pos as isize + direction).clamp(0, max_pos) as usize
         } else if direction > 0 {
             0
@@ -304,22 +303,6 @@ impl<'a> List<'a> {
                 self.apply_filtered_selection_guard(state, &filtered, false);
                 #[cfg(feature = "tracing")]
                 state.log_selection_change("filter_clear");
-                true
-            }
-            KeyCode::Char(ch)
-                if !ch.is_control()
-                    && !key.ctrl()
-                    && !key.alt()
-                    && !key.super_key()
-                    && !key.shift() =>
-            {
-                state.filter_query.push(ch);
-                state.offset = 0;
-                state.scroll_into_view_requested = true;
-                let filtered = self.filtered_indices(state.filter_query());
-                self.apply_filtered_selection_guard(state, &filtered, true);
-                #[cfg(feature = "tracing")]
-                state.log_selection_change("filter_append");
                 true
             }
             KeyCode::Char(ch)

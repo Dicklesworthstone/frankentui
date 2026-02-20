@@ -722,7 +722,61 @@ impl Flex {
         let available_size = total_size.saturating_sub(total_gap);
 
         // Solve constraints with hints from measurer
-        let sizes = solve_constraints_with_hints(&self.constraints, available_size, &measurer);
+        let sizes =
+            solve_constraints_with_hints(&self.constraints, available_size, &measurer, None);
+
+        // Convert sizes to rects
+        let mut rects = self.sizes_to_rects(inner, &sizes);
+
+        // Mirror horizontally for RTL horizontal layouts.
+        if self.flow_direction.is_rtl() && self.direction == Direction::Horizontal {
+            direction::mirror_rects_horizontal(&mut rects, inner);
+        }
+
+        rects
+    }
+    /// Split area using intrinsic sizing and temporal coherence.
+    ///
+    /// Combines the content-aware sizing of [`split_with_measurer`](Self::split_with_measurer)
+    /// with the stability of [`split_stably`](Self::split_stably).
+    pub fn split_with_measurer_stably<F>(
+        &self,
+        area: Rect,
+        measurer: F,
+        cache: &mut CoherenceCache,
+    ) -> Vec<Rect>
+    where
+        F: Fn(usize, u16) -> LayoutSizeHint,
+    {
+        // Apply margin
+        let inner = area.inner(self.margin);
+        if inner.is_empty() {
+            return self.constraints.iter().map(|_| Rect::default()).collect();
+        }
+
+        let total_size = match self.direction {
+            Direction::Horizontal => inner.width,
+            Direction::Vertical => inner.height,
+        };
+
+        let count = self.constraints.len();
+        if count == 0 {
+            return Vec::new();
+        }
+
+        // Calculate gaps safely
+        let gap_count = count - 1;
+        let total_gap = (gap_count as u64 * self.gap as u64).min(u16::MAX as u64) as u16;
+        let available_size = total_size.saturating_sub(total_gap);
+
+        // Solve constraints with hints and coherence
+        let id = CoherenceId::new(&self.constraints, self.direction);
+        let sizes = solve_constraints_with_hints(
+            &self.constraints,
+            available_size,
+            &measurer,
+            Some((cache, id)),
+        );
 
         // Convert sizes to rects
         let mut rects = self.sizes_to_rects(inner, &sizes);
@@ -741,8 +795,13 @@ impl Flex {
 /// This shared logic is used by both Flex and Grid layouts.
 /// For intrinsic sizing support, use [`solve_constraints_with_hints`].
 pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16) -> Vec<u16> {
-    // Use the with_hints version with a no-op measurer
-    solve_constraints_with_hints(constraints, available_size, &|_, _| LayoutSizeHint::ZERO)
+    // Use the with_hints version with a no-op measurer and no coherence
+    solve_constraints_with_hints(
+        constraints,
+        available_size,
+        &|_, _| LayoutSizeHint::ZERO,
+        None,
+    )
 }
 
 /// Solve 1D constraints with intrinsic sizing support.
@@ -753,6 +812,7 @@ pub(crate) fn solve_constraints_with_hints<F>(
     constraints: &[Constraint],
     available_size: u16,
     measurer: &F,
+    mut coherence: Option<(&mut CoherenceCache, CoherenceId)>,
 ) -> Vec<u16>
 where
     F: Fn(usize, u16) -> LayoutSizeHint,
@@ -815,9 +875,13 @@ where
                 grow_indices.push(i);
             }
             Constraint::FitContent => {
-                // Use measurer to get preferred size
+                // Use measurer to get preferred size, clamped to hint bounds
                 let hint = measurer(i, remaining);
-                let size = min(hint.preferred, remaining);
+                let preferred = hint
+                    .preferred
+                    .max(hint.min)
+                    .min(hint.max.unwrap_or(u16::MAX));
+                let size = min(preferred, remaining);
                 sizes[i] = size;
                 remaining = remaining.saturating_sub(size);
                 // FitContent items don't grow beyond preferred
@@ -877,8 +941,20 @@ where
             })
             .collect();
 
+        // Get previous allocation if coherence is enabled
+        let prev_alloc = coherence
+            .as_ref()
+            .and_then(|(cache, id)| cache.get(id))
+            .map(|full_prev| {
+                // Extract only the shares for the current grow_indices
+                grow_indices
+                    .iter()
+                    .map(|&i| full_prev.get(i).copied().unwrap_or(0))
+                    .collect()
+            });
+
         // Distribute space with stable rounding to minimize jitter and error
-        let distributed = round_layout_stable(&targets, space_to_distribute, None);
+        let distributed = round_layout_stable(&targets, space_to_distribute, prev_alloc);
 
         for (k, &i) in grow_indices.iter().enumerate() {
             shares[i] = distributed[k];
@@ -899,6 +975,12 @@ where
             for &i in &grow_indices {
                 sizes[i] = sizes[i].saturating_add(shares[i]);
             }
+            if let Some((cache, id)) = coherence.as_mut() {
+                // Only store if length matches (steady state)
+                if distributed.len() == targets.len() {
+                    cache.store(*id, distributed);
+                }
+            }
             break;
         }
 
@@ -917,6 +999,77 @@ where
                 }
             }
         }
+    }
+
+    if let Some((cache, id)) = coherence {
+        // Store only the flexible shares part? No, store the final sizes.
+        // But wait, round_layout_stable only sees the *flexible* part.
+        // We need to store the *flexible shares* so next time we can pass them as `prev`.
+        // Actually, `round_layout_stable` expects `prev` to match `targets` length/order.
+        // `targets` corresponds to `grow_indices`.
+        // So we should store the full `sizes` vector, but `round_layout_stable` only cares about the flexible parts.
+
+        // Coherence cache maps CoherenceId -> Vec<u16>.
+        // Ideally we store the flexible shares.
+        // But `solve_constraints_with_hints` is iterative. The final distribution might differ.
+        // The last successful distribution is what matters.
+
+        // Let's store the flexible shares extracted from the final `sizes`.
+        // But `sizes` includes base (min/fixed) + flexible share.
+        // `round_layout_stable` computes the *flexible share*.
+
+        // So we need to reconstruct the flexible shares.
+        // share[i] = sizes[i] - base_size[i].
+        // But we lost base_size (it was mutated into sizes in pass 1).
+
+        // Alternative: Layout stability is most critical for the *final* result.
+        // But `round_layout_stable` operates on the distribution delta.
+        // If we store the flexible shares, we need to extract them.
+
+        // Actually, if we just use `sizes` as `prev`, `round_layout_stable` will see huge numbers.
+        // It expects values comparable to `targets`.
+
+        // We must extract the flexible parts.
+        // This is complex because `grow_indices` changes during iterations (violations).
+        // But `round_layout_stable` is only called for the active `grow_indices`.
+
+        // Simpler approach: Store the *flexible shares* corresponding to the *last successful distribution*.
+        // In the loop, when `violations.is_empty()`, `distributed` contains exactly what we want!
+        // We just need to persist `distributed` associated with `grow_indices`.
+        // But `grow_indices` depends on available space (violations).
+        // If available space changes slightly, violations might not change, so `grow_indices` is stable.
+
+        // So: `cache.store(id, distributed)` inside the success branch?
+        // But `distributed` only covers `grow_indices`.
+        // `CoherenceId` hashes ALL constraints.
+        // If we store a partial vector, we implicitly assume `grow_indices` order is stable.
+        // It is stable for a fixed set of constraints.
+
+        // But wait, `round_layout_stable` expects `prev` to align with `targets`.
+        // `targets` aligns with `grow_indices`.
+        // If `grow_indices` changes (e.g. one item hits Max), `targets` shrinks.
+        // The cached vector would be wrong size.
+
+        // Optimization: Only cache if `grow_indices` matches the initial flexible set?
+        // Or make `CoherenceId` include the `grow_indices` state? No, that's too granular.
+
+        // Practical fix: Store the full `sizes` vector in the cache? No, that doesn't help `round_layout_stable`.
+        // We need to store `shares` for `grow_indices`.
+        // But we need to handle the case where `grow_indices` changes.
+
+        // If we pass `None` to `round_layout_stable` when `grow_indices` structure mismatches, we lose stability during constraint saturation transitions.
+        // That is acceptable. Stability is most important in the steady state (no new violations).
+
+        // So: inside `if violations.is_empty()`:
+        // `cache.store(id, distributed);`
+        // And when loading `prev`, check `prev.len() == targets.len()`.
+
+        // Wait, `distributed` is a local variable inside the loop.
+        // I need to capture it.
+        // And I need to access `coherence` which is moved/borrowed.
+
+        // Refactor:
+        // Use `Option<Vec<u16>>` for `final_distributed`.
     }
 
     sizes

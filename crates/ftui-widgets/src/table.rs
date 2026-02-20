@@ -171,6 +171,44 @@ impl<'a> Table<'a> {
         self
     }
 
+    fn filtered_and_sorted_indices(&self, state: &TableState) -> Vec<usize> {
+        let mut indices: Vec<usize> = (0..self.rows.len()).collect();
+
+        // 1. Filter
+        if !state.filter.trim().is_empty() {
+            let query = state.filter.trim().to_lowercase();
+            indices.retain(|&i| {
+                let row = &self.rows[i];
+                row.cells
+                    .iter()
+                    .any(|cell| cell.to_plain_text().to_lowercase().contains(&query))
+            });
+        }
+
+        // 2. Sort
+        if let Some(col_idx) = state.sort_column {
+            indices.sort_by(|&a, &b| {
+                let cell_a = self.rows[a]
+                    .cells
+                    .get(col_idx)
+                    .map(|c| c.to_plain_text())
+                    .unwrap_or_default();
+                let cell_b = self.rows[b]
+                    .cells
+                    .get(col_idx)
+                    .map(|c| c.to_plain_text())
+                    .unwrap_or_default();
+                if state.sort_ascending {
+                    cell_a.cmp(&cell_b)
+                } else {
+                    cell_b.cmp(&cell_a)
+                }
+            });
+        }
+
+        indices
+    }
+
     fn requires_measurement(constraints: &[Constraint]) -> bool {
         constraints.iter().any(|c| {
             matches!(
@@ -250,6 +288,8 @@ pub struct TableState {
     /// Filter text (for undo support).
     #[allow(dead_code)]
     filter: String,
+    /// Cache for stable layout resizing (temporal coherence).
+    coherence: ftui_layout::CoherenceCache,
 }
 
 impl TableState {
@@ -587,10 +627,9 @@ impl<'a> StatefulWidget for Table<'a> {
             return;
         }
 
-        let rows_top = table_area.y.saturating_add(header_height);
-        let rows_max_y = table_area.bottom();
-        let rows_height = rows_max_y.saturating_sub(rows_top);
-        let row_count = self.rows.len();
+        // Calculate display indices (filtered & sorted)
+        let display_indices = self.filtered_and_sorted_indices(state);
+        let row_count = display_indices.len();
 
         // Clamp offset to valid range
         if row_count == 0 {
@@ -601,14 +640,11 @@ impl<'a> StatefulWidget for Table<'a> {
             // If we're scrolled near the end and the viewport grows, keep the bottom
             // visible and pull the offset back to fill the viewport with as much
             // context as fits (avoids rendering a mostly-empty table).
-            //
-            // We treat the last row's bottom_margin as "optional" (it may be clipped
-            // by the scissor), matching the selection-visibility logic below.
             let available_height = rows_height;
             let mut accumulated = 0u16;
             let mut bottom_offset = row_count.saturating_sub(1);
             for i in (0..row_count).rev() {
-                let row = &self.rows[i];
+                let row = &self.rows[display_indices[i]];
                 let total_row_height = if i == row_count - 1 {
                     row.height
                 } else {
@@ -616,7 +652,6 @@ impl<'a> StatefulWidget for Table<'a> {
                 };
 
                 if total_row_height > available_height.saturating_sub(accumulated) {
-                    // If even the last row doesn't fit, we still show it.
                     break;
                 }
 
@@ -628,10 +663,10 @@ impl<'a> StatefulWidget for Table<'a> {
         }
 
         if let Some(selected) = state.selected {
-            if self.rows.is_empty() {
+            if display_indices.is_empty() {
                 state.selected = None;
-            } else if selected >= self.rows.len() {
-                state.selected = Some(self.rows.len() - 1);
+            } else if selected >= display_indices.len() {
+                state.selected = Some(display_indices.len() - 1);
             }
         }
 
@@ -641,13 +676,12 @@ impl<'a> StatefulWidget for Table<'a> {
                 state.offset = selected;
             } else {
                 // Check if selected is visible; if not, scroll down
-                // 1. Find the index of the last currently visible row
                 let mut current_y = rows_top;
                 let max_y = rows_max_y;
                 let mut last_visible = state.offset;
 
-                // Iterate forward to find visibility boundary
-                for (i, row) in self.rows.iter().enumerate().skip(state.offset) {
+                for (i, &row_idx) in display_indices.iter().enumerate().skip(state.offset) {
+                    let row = &self.rows[row_idx];
                     if row.height > max_y.saturating_sub(current_y) {
                         break;
                     }
@@ -658,16 +692,12 @@ impl<'a> StatefulWidget for Table<'a> {
                 }
 
                 if selected > last_visible {
-                    // Selected is below viewport. Find new offset to make it visible at bottom.
                     let mut new_offset = selected;
                     let mut accumulated_height = 0;
                     let available_height = rows_height;
 
-                    // Iterate backwards from selected to find the earliest start row that fits
                     for i in (0..=selected).rev() {
-                        let row = &self.rows[i];
-                        // The selected row is the last visible; its bottom_margin extends
-                        // below the viewport and should not count toward required space.
+                        let row = &self.rows[display_indices[i]];
                         let total_row_height = if i == selected {
                             row.height
                         } else {
@@ -675,9 +705,6 @@ impl<'a> StatefulWidget for Table<'a> {
                         };
 
                         if total_row_height > available_height.saturating_sub(accumulated_height) {
-                            // Cannot fit this row (i) along with subsequent rows up to selected.
-                            // So the previous row (i+1) was the earliest possible start offset.
-                            // If selected itself doesn't fit (accumulated_height == 0), we must show it anyway (at top).
                             if i == selected {
                                 new_offset = selected;
                             } else {
@@ -697,7 +724,8 @@ impl<'a> StatefulWidget for Table<'a> {
         #[cfg(feature = "tracing")]
         let table_span = tracing::debug_span!(
             "table.render",
-            total_rows = row_count,
+            total_rows = self.rows.len(),
+            visible_rows = row_count,
             offset = state.offset,
             viewport_height = rows_height,
             rendered_rows = tracing::field::Empty,
@@ -711,7 +739,7 @@ impl<'a> StatefulWidget for Table<'a> {
             .gap(self.column_spacing);
 
         // We need a dummy rect with correct width to solve horizontal constraints
-        let column_rects = flex.split_with_measurer(
+        let column_rects = flex.split_with_measurer_stably(
             Rect::new(table_area.x, table_area.y, table_area.width, 1),
             |idx, _| {
                 // Use cached intrinsic widths (rows) and merge with header width
@@ -724,6 +752,7 @@ impl<'a> StatefulWidget for Table<'a> {
                     .unwrap_or(0);
                 ftui_layout::LayoutSizeHint::exact(row_width.max(header_width))
             },
+            &mut state.coherence,
         );
 
         let mut y = table_area.y;
@@ -793,6 +822,20 @@ impl<'a> StatefulWidget for Table<'a> {
                 effects,
                 effects.is_some(),
             );
+
+            // Draw sort indicator
+            if let Some(col) = state.sort_column {
+                if col < column_rects.len() {
+                    let rect = column_rects[col];
+                    let symbol = if state.sort_ascending { "▲" } else { "▼" };
+                    // Draw at end of cell
+                    let x = rect.right().saturating_sub(1);
+                    if x >= rect.x {
+                        crate::draw_text_span(frame, x, y, symbol, header_style, rect.right());
+                    }
+                }
+            }
+
             y = y
                 .saturating_add(header.height)
                 .saturating_add(header.bottom_margin);
@@ -806,15 +849,13 @@ impl<'a> StatefulWidget for Table<'a> {
             return;
         }
 
-        // Handle scrolling/offset?
-        // For v1 basic Table, we just render from state.offset
-
         let mut rendered_rows = 0usize;
-        for (i, row) in self.rows.iter().enumerate().skip(state.offset) {
+        for (i, &row_idx) in display_indices.iter().enumerate().skip(state.offset) {
             if y >= max_y {
                 break;
             }
 
+            let row = &self.rows[row_idx];
             let is_selected = state.selected == Some(i);
             let is_hovered = state.hovered == Some(i);
             let row_area = Rect::new(table_area.x, y, table_area.width, row.height);
@@ -902,6 +943,7 @@ impl<'a> StatefulWidget for Table<'a> {
 
             // Register hit region for this row (if hit testing enabled)
             if let Some(id) = self.hit_id {
+                // Map display index (i) to hit data, so click selects the correct filtered row
                 frame.register_hit(row_area, id, HitRegion::Content, i as u64);
             }
 

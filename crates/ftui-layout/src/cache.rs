@@ -579,7 +579,7 @@ impl CoherenceId {
 ///
 /// Entries are evicted on a least-recently-stored basis when the cache
 /// reaches capacity. The cache does not grow unboundedly.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CoherenceCache {
     entries: FxHashMap<CoherenceId, CoherenceEntry>,
     max_entries: usize,
