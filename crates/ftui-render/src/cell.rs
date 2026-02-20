@@ -31,47 +31,57 @@ use crate::char_width;
 /// # Layout
 ///
 /// ```text
-/// [30-24: width (7 bits)][23-0: pool slot (24 bits)]
+/// [30-24: width (7 bits)][23-16: generation (8 bits)][15-0: pool slot (16 bits)]
 /// ```
 ///
 /// # Capacity
 ///
-/// - Pool slots: 16,777,216 (24 bits = 16M entries)
-/// - Width range: 0-127 (7 bits, plenty for any display width)
+/// - Pool slots: 65,536 (16 bits = 64K entries)
+/// - Generation: 256 versions (8 bits) for stale access detection
+/// - Width range: 0-127 (7 bits)
 ///
 /// # Design Rationale
 ///
-/// - 24 bits for slot allows 16M unique graphemes (far exceeding practical usage)
-/// - 7 bits for width allows display widths 0-127 (most graphemes are 1-2)
-/// - Embedded width avoids pool lookup for width queries
-/// - Total 31 bits leaves bit 31 for `CellContent` type discrimination
+/// - 16 bits for slot (64K) is sufficient for any single frame's unique graphemes.
+/// - 8 bits for generation allows detecting access to reused slots (fixing the ABA problem).
+/// - 7 bits for width allows display widths 0-127.
+/// - Total 31 bits leaves bit 31 for `CellContent` type discrimination.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct GraphemeId(u32);
 
 impl GraphemeId {
-    /// Maximum slot index (24 bits).
-    pub const MAX_SLOT: u32 = 0x00FF_FFFF;
+    /// Maximum slot index (16 bits).
+    pub const MAX_SLOT: u32 = 0xFFFF;
 
     /// Maximum width (7 bits).
     pub const MAX_WIDTH: u8 = 127;
 
-    /// Create a new `GraphemeId` from slot index and display width.
+    /// Maximum generation (8 bits).
+    pub const MAX_GENERATION: u8 = 255;
+
+    /// Create a new `GraphemeId` from slot index, generation, and display width.
     ///
     /// # Panics
     ///
     /// Panics in debug mode if `slot > MAX_SLOT` or `width > MAX_WIDTH`.
     #[inline]
-    pub const fn new(slot: u32, width: u8) -> Self {
+    pub const fn new(slot: u32, generation: u8, width: u8) -> Self {
         debug_assert!(slot <= Self::MAX_SLOT, "slot overflow");
         debug_assert!(width <= Self::MAX_WIDTH, "width overflow");
-        Self((slot & Self::MAX_SLOT) | ((width as u32) << 24))
+        Self((slot & Self::MAX_SLOT) | ((generation as u32) << 16) | ((width as u32) << 24))
     }
 
-    /// Extract the pool slot index (0-16M).
+    /// Extract the pool slot index (0-64K).
     #[inline]
     pub const fn slot(self) -> usize {
         (self.0 & Self::MAX_SLOT) as usize
+    }
+
+    /// Extract the generation counter (0-255).
+    #[inline]
+    pub const fn generation(self) -> u8 {
+        ((self.0 >> 16) & 0xFF) as u8
     }
 
     /// Extract the display width (0-127).
@@ -97,6 +107,7 @@ impl core::fmt::Debug for GraphemeId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GraphemeId")
             .field("slot", &self.slot())
+            .field("gen", &self.generation())
             .field("width", &self.width())
             .finish()
     }
