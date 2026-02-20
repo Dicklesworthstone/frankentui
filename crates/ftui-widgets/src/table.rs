@@ -627,6 +627,11 @@ impl<'a> StatefulWidget for Table<'a> {
             return;
         }
 
+        // Viewport geometry for rows (below the header).
+        let rows_height = table_area.height.saturating_sub(header_height);
+        let rows_top = table_area.y.saturating_add(header_height);
+        let rows_max_y = table_area.bottom();
+
         // Calculate display indices (filtered & sorted)
         let display_indices = self.filtered_and_sorted_indices(state);
         let row_count = display_indices.len();
@@ -693,7 +698,7 @@ impl<'a> StatefulWidget for Table<'a> {
 
                 if selected > last_visible {
                     let mut new_offset = selected;
-                    let mut accumulated_height = 0;
+                    let mut accumulated_height: u16 = 0;
                     let available_height = rows_height;
 
                     for i in (0..=selected).rev() {
