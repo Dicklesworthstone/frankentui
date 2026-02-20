@@ -56,6 +56,7 @@ use ftui_widgets::virtualized::{RenderItem, VirtualizedList, VirtualizedListStat
 use std::cell::RefCell;
 use std::time::Duration;
 
+use super::layout_lab::LayoutLab;
 use super::{HelpEntry, Screen};
 use crate::theme;
 use crate::theme::{BadgeSpec, PriorityBadge, StatusBadge};
@@ -107,6 +108,7 @@ pub struct WidgetGallery {
     virtualized_state: RefCell<VirtualizedListState>,
     layout_tabs: Cell<Rect>,
     layout_virtualized: Cell<Rect>,
+    pane_workspace: LayoutLab,
 }
 
 impl Default for WidgetGallery {
@@ -182,6 +184,7 @@ impl WidgetGallery {
             virtualized_state: RefCell::new(virtualized_state),
             layout_tabs: Cell::new(Rect::default()),
             layout_virtualized: Cell::new(Rect::default()),
+            pane_workspace: LayoutLab::new(),
         }
     }
 }
@@ -197,9 +200,32 @@ impl Screen for WidgetGallery {
                     let rel = mouse.x.saturating_sub(tabs.x) as usize;
                     let idx = (rel * SECTION_COUNT) / tabs.width as usize;
                     if idx < SECTION_COUNT {
+                        if idx != 5 {
+                            self.pane_workspace.cancel_embedded_pane_workspace_drag();
+                            self.pane_workspace.clear_embedded_pane_workspace_bounds();
+                        }
                         self.current_section = idx;
                     }
                 }
+            }
+
+            if self.current_section == 5
+                && self
+                    .pane_workspace
+                    .pane_workspace_wants_mouse(mouse.x, mouse.y)
+            {
+                self.pane_workspace.update_embedded_pane_workspace_mouse(
+                    mouse.kind,
+                    mouse.x,
+                    mouse.y,
+                    mouse.modifiers,
+                );
+                return Cmd::None;
+            }
+
+            if self.current_section != 5 {
+                self.pane_workspace.cancel_embedded_pane_workspace_drag();
+                self.pane_workspace.clear_embedded_pane_workspace_bounds();
             }
 
             // Wire the virtualized list mouse semantics (including scrollbar drag/click)
@@ -247,6 +273,7 @@ impl Screen for WidgetGallery {
             ..
         }) = event
         {
+            let before_section = self.current_section;
             // Section-specific widget navigation
             if self.current_section == 7 {
                 // Advanced section: VirtualizedList navigation
@@ -281,6 +308,11 @@ impl Screen for WidgetGallery {
                     };
                 }
                 _ => {}
+            }
+
+            if before_section == 5 && self.current_section != 5 {
+                self.pane_workspace.cancel_embedded_pane_workspace_drag();
+                self.pane_workspace.clear_embedded_pane_workspace_bounds();
             }
         }
         Cmd::None
@@ -326,6 +358,10 @@ impl Screen for WidgetGallery {
             HelpEntry {
                 key: "Mouse",
                 action: "Click tab to switch",
+            },
+            HelpEntry {
+                key: "Layout tab",
+                action: "Drag pane studio (right rail)",
             },
         ]
     }
@@ -1306,23 +1342,61 @@ impl WidgetGallery {
     // Section F: Layout Widgets
     // -----------------------------------------------------------------------
     fn render_layout_widgets(&self, frame: &mut Frame, area: Rect) {
+        if area.width < 48 || area.height < 12 {
+            self.pane_workspace.clear_embedded_pane_workspace_bounds();
+            let rows = Flex::vertical()
+                .constraints([
+                    Constraint::Percentage(30.0),
+                    Constraint::Percentage(25.0),
+                    Constraint::Percentage(25.0),
+                    Constraint::Percentage(20.0),
+                ])
+                .split(area);
+            self.render_columns_demo(frame, rows[0]);
+            self.render_flex_demo(frame, rows[1]);
+            self.render_grid_demo(frame, rows[2]);
+            self.render_panel_demo(frame, rows[3]);
+            return;
+        }
+
+        let cols = Flex::horizontal()
+            .constraints([Constraint::Percentage(58.0), Constraint::Percentage(42.0)])
+            .gap(theme::spacing::SM)
+            .split(area);
+
         let rows = Flex::vertical()
             .constraints([
                 Constraint::Percentage(30.0),
-                Constraint::Percentage(25.0),
-                Constraint::Percentage(25.0),
-                Constraint::Percentage(20.0),
+                Constraint::Percentage(24.0),
+                Constraint::Percentage(24.0),
+                Constraint::Percentage(22.0),
             ])
-            .split(area);
+            .split(cols[0]);
 
-        // Columns demo
         self.render_columns_demo(frame, rows[0]);
-        // Flex demo
         self.render_flex_demo(frame, rows[1]);
-        // Grid layout demo
         self.render_grid_demo(frame, rows[2]);
-        // Panel/padding demo
         self.render_panel_demo(frame, rows[3]);
+
+        let right_rows = Flex::vertical()
+            .constraints([Constraint::Min(6), Constraint::Fixed(4)])
+            .gap(theme::spacing::XS)
+            .split(cols[1]);
+        self.pane_workspace
+            .render_embedded_pane_workspace(frame, right_rows[0]);
+
+        let hint_block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Pane Interaction")
+            .style(theme::content_border());
+        let hint_inner = hint_block.inner(right_rows[1]);
+        hint_block.render(right_rows[1], frame);
+        if !hint_inner.is_empty() {
+            Paragraph::new("Drag: dock/reflow | Right click: mode | Wheel: magnetism")
+                .style(theme::muted())
+                .render(hint_inner, frame);
+        }
     }
 
     fn render_columns_demo(&self, frame: &mut Frame, area: Rect) {
@@ -2164,6 +2238,53 @@ mod tests {
         assert_eq!(gallery.spinner_state.current_frame, 1);
         gallery.tick(2);
         assert_eq!(gallery.spinner_state.current_frame, 2);
+    }
+
+    #[test]
+    fn gallery_layout_section_embeds_pane_workspace() {
+        let mut gallery = WidgetGallery::new();
+        gallery.current_section = 5;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        gallery.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let pane = gallery.pane_workspace.embedded_pane_workspace_bounds();
+        assert!(
+            !pane.is_empty(),
+            "layout section should expose embedded pane workspace"
+        );
+    }
+
+    #[test]
+    fn gallery_leaving_layout_section_clears_pane_workspace_bounds() {
+        let mut gallery = WidgetGallery::new();
+        gallery.current_section = 5;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        gallery.view(&mut frame, Rect::new(0, 0, 120, 40));
+        assert!(
+            !gallery
+                .pane_workspace
+                .embedded_pane_workspace_bounds()
+                .is_empty()
+        );
+
+        let next_section = Event::Key(KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: Default::default(),
+            kind: KeyEventKind::Press,
+        });
+        gallery.update(&next_section);
+        assert_eq!(gallery.current_section, 6);
+        assert!(
+            gallery
+                .pane_workspace
+                .embedded_pane_workspace_bounds()
+                .is_empty(),
+            "pane workspace bounds should clear when leaving layout section"
+        );
     }
 
     #[test]

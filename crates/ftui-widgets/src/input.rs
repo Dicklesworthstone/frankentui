@@ -799,7 +799,13 @@ impl TextInput {
             let prev_width = self.prev_grapheme_width();
             let max_scroll_for_prev = cursor_visual.saturating_sub(prev_width);
 
-            scroll = candidate_scroll.min(max_scroll_for_prev);
+            // Only enforce wide-char visibility if the viewport is wide enough to show
+            // both the character and the cursor. Prioritize cursor visibility otherwise.
+            if viewport_width > prev_width {
+                scroll = candidate_scroll.min(max_scroll_for_prev);
+            } else {
+                scroll = candidate_scroll;
+            }
         }
 
         // Sanitize: ensure scroll aligns with grapheme boundaries

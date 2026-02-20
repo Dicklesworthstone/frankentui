@@ -44,6 +44,7 @@ use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::progress::{MiniBar, MiniBarColors};
 
+use super::layout_lab::LayoutLab;
 use super::{HelpEntry, Screen};
 use crate::app::ScreenId;
 use crate::chrome;
@@ -3307,6 +3308,8 @@ pub struct Dashboard {
     bottom_primary_bps: u16,
     bottom_secondary_bps: u16,
     active_splitter_drag: Option<DashboardSplitterDrag>,
+    pane_workspace: LayoutLab,
+    pane_workspace_visible: StdCell<bool>,
 }
 
 impl Default for Dashboard {
@@ -3364,6 +3367,8 @@ impl Dashboard {
             bottom_primary_bps: 2_500,
             bottom_secondary_bps: 5_350,
             active_splitter_drag: None,
+            pane_workspace: LayoutLab::new(),
+            pane_workspace_visible: StdCell::new(false),
         }
     }
 
@@ -5334,7 +5339,17 @@ impl Dashboard {
                 Constraint::Fixed(1),
             ])
             .split(inner);
-        self.layout_text_fx_primary.set(rows[1]);
+
+        let (fx_area, pane_area) = if rows[1].width >= 38 && rows[1].height >= 7 {
+            let cols = Flex::horizontal()
+                .constraints([Constraint::Percentage(58.0), Constraint::Percentage(42.0)])
+                .gap(theme::spacing::XS)
+                .split(rows[1]);
+            (cols[0], Some(cols[1]))
+        } else {
+            (rows[1], None)
+        };
+        self.layout_text_fx_primary.set(fx_area);
         self.layout_text_fx_secondary.set(if rows[2].is_empty() {
             Rect::default()
         } else {
@@ -5352,12 +5367,12 @@ impl Dashboard {
             .style(theme::muted())
             .render(rows[0], frame);
 
-        if !rows[1].is_empty() {
+        if !fx_area.is_empty() {
             let mut constraints = Vec::new();
             for _ in 0..effect_slots {
                 constraints.push(Constraint::Ratio(1, effect_slots as u32));
             }
-            let slots = Flex::vertical().constraints(constraints).split(rows[1]);
+            let slots = Flex::vertical().constraints(constraints).split(fx_area);
             for (idx, slot) in slots.iter().enumerate() {
                 if slot.is_empty() {
                     continue;
@@ -5395,11 +5410,25 @@ impl Dashboard {
             }
         }
 
+        if let Some(pane_area) = pane_area {
+            if !pane_area.is_empty() {
+                self.pane_workspace_visible.set(true);
+                self.pane_workspace
+                    .render_embedded_pane_workspace(frame, pane_area);
+            } else {
+                self.pane_workspace_visible.set(false);
+                self.pane_workspace.clear_embedded_pane_workspace_bounds();
+            }
+        } else {
+            self.pane_workspace_visible.set(false);
+            self.pane_workspace.clear_embedded_pane_workspace_bounds();
+        }
+
         if !rows[2].is_empty() {
             let hint = self
                 .scroll_hint_text(DashboardFocus::TextFx)
                 .unwrap_or(
-                    "e: next set · click body → Layout Lab · click hint row → DragDrop · drag bottom dividers to resize",
+                    "drag panes in right rail · right click: mode · wheel: magnetic field · left body click → Layout Lab · hint row → DragDrop",
                 );
             self.render_panel_hint(frame, rows[2], hint);
         }
@@ -5847,6 +5876,8 @@ impl Dashboard {
         self.layout_text_fx.set(Rect::default());
         self.layout_text_fx_primary.set(Rect::default());
         self.layout_text_fx_secondary.set(Rect::default());
+        self.pane_workspace_visible.set(false);
+        self.pane_workspace.clear_embedded_pane_workspace_bounds();
         self.layout_activity.set(Rect::default());
         self.layout_markdown.set(Rect::default());
         self.layout_bottom_row.set(Rect::default());
@@ -6005,6 +6036,23 @@ impl Screen for Dashboard {
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
         if let Event::Mouse(mouse) = event {
+            if !self.pane_workspace_visible.get() {
+                self.pane_workspace.cancel_embedded_pane_workspace_drag();
+                self.pane_workspace.clear_embedded_pane_workspace_bounds();
+            } else if self
+                .pane_workspace
+                .pane_workspace_wants_mouse(mouse.x, mouse.y)
+            {
+                self.pane_workspace.update_embedded_pane_workspace_mouse(
+                    mouse.kind,
+                    mouse.x,
+                    mouse.y,
+                    mouse.modifiers,
+                );
+                self.focus = DashboardFocus::TextFx;
+                self.hover = DashboardFocus::TextFx;
+                return Cmd::None;
+            }
             match mouse.kind {
                 MouseEventKind::Moved => {
                     if self.active_splitter_drag.is_some() {
@@ -6099,6 +6147,7 @@ impl Screen for Dashboard {
             // Defensive: any keyboard interaction cancels an in-flight splitter
             // drag so state cannot remain latched across mode/screen changes.
             self.active_splitter_drag = None;
+            self.pane_workspace.cancel_embedded_pane_workspace_drag();
             match code {
                 // Focus navigation
                 KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
@@ -6239,6 +6288,10 @@ impl Screen for Dashboard {
                 action: "Resize bottom panes (TextFX/Activity/Markdown)",
             },
             HelpEntry {
+                key: "TextFX right rail",
+                action: "Drag pane studio + dock targets",
+            },
+            HelpEntry {
                 key: "TextFX hint row",
                 action: "Open Drag & Drop lab",
             },
@@ -6333,6 +6386,57 @@ mod tests {
             text_fx.contains(secondary.x, secondary.y),
             "secondary link row should live inside text fx panel"
         );
+    }
+
+    #[test]
+    fn dashboard_text_fx_embeds_pane_workspace_when_room_allows() {
+        let mut state = Dashboard::new();
+        state.tick(1);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let text_fx = state.layout_text_fx.get();
+        let primary = state.layout_text_fx_primary.get();
+        let pane = state.pane_workspace.embedded_pane_workspace_bounds();
+        assert!(!text_fx.is_empty(), "text fx panel should be laid out");
+        assert!(!primary.is_empty(), "primary text fx area should be laid out");
+        assert!(
+            !pane.is_empty(),
+            "embedded pane workspace should be visible on large dashboard"
+        );
+        assert!(
+            text_fx.contains(pane.x, pane.y),
+            "embedded pane workspace should live inside text fx panel"
+        );
+        assert!(
+            !primary.contains(pane.x, pane.y),
+            "primary text fx link area should not overlap pane workspace"
+        );
+    }
+
+    #[test]
+    fn dashboard_text_fx_pane_workspace_mouse_routes_to_embed() {
+        let mut state = Dashboard::new();
+        state.tick(1);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let pane = state.pane_workspace.embedded_pane_workspace_bounds();
+        assert!(!pane.is_empty(), "embedded pane workspace should be visible");
+        let x = pane.x + pane.width / 2;
+        let y = pane.y + pane.height / 2;
+
+        state.update(&Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+        )));
+        assert_eq!(state.focus, DashboardFocus::TextFx);
+        assert!(!state.is_splitter_drag_active());
     }
 
     #[test]

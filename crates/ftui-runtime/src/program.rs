@@ -926,6 +926,7 @@ struct PaneTerminalActivePointer {
     sample_count: u32,
     previous_step_delta_x: i32,
     previous_step_delta_y: i32,
+    start_time: Instant,
 }
 
 /// Lifecycle phase observed while translating a terminal event.
@@ -1218,6 +1219,7 @@ impl PaneTerminalAdapter {
                         sample_count: 0,
                         previous_step_delta_x: 0,
                         previous_step_delta_y: 0,
+                        start_time: Instant::now(),
                     });
                 }
                 if let Some((cancel_event, cancel_transition)) = recovery {
@@ -1296,10 +1298,11 @@ impl PaneTerminalAdapter {
                 if dispatch.primary_transition.is_some() {
                     active.last_position = position;
                     self.active = Some(active);
+                    let duration = active.start_time.elapsed().as_millis() as u32;
                     dispatch.motion = Some(PaneMotionVector::from_delta(
                         active.cumulative_delta_x,
                         active.cumulative_delta_y,
-                        active.sample_count.saturating_mul(16),
+                        duration,
                         active.direction_changes,
                     ));
                 }
@@ -1357,10 +1360,11 @@ impl PaneTerminalAdapter {
                 if dispatch.primary_transition.is_some() {
                     active.last_position = position;
                     self.active = Some(active);
+                    let duration = active.start_time.elapsed().as_millis() as u32;
                     dispatch.motion = Some(PaneMotionVector::from_delta(
                         active.cumulative_delta_x,
                         active.cumulative_delta_y,
-                        active.sample_count.saturating_mul(16),
+                        duration,
                         active.direction_changes,
                     ));
                 }
@@ -1398,10 +1402,11 @@ impl PaneTerminalAdapter {
                     modifiers,
                 );
                 if dispatch.primary_transition.is_some() {
+                    let duration = active.start_time.elapsed().as_millis() as u32;
                     let motion = PaneMotionVector::from_delta(
                         active.cumulative_delta_x,
                         active.cumulative_delta_y,
-                        active.sample_count.saturating_mul(16),
+                        duration,
                         active.direction_changes,
                     );
                     let inertial_throw = PaneInertialThrow::from_motion(motion);

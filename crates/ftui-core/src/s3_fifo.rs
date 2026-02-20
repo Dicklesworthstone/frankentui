@@ -30,7 +30,7 @@ use ahash::AHashMap;
 use std::collections::VecDeque;
 use std::hash::Hash;
 
-/// A cache entry stored in the small or main queue.
+/// A cache entry stored in the slab.
 struct Entry<K, V> {
     key: K,
     value: V,
@@ -39,12 +39,16 @@ struct Entry<K, V> {
 
 /// S3-FIFO cache with scan-resistant eviction.
 pub struct S3Fifo<K, V> {
-    /// Index from key to location.
+    /// Index from key to location (and slab index).
     index: AHashMap<K, Location>,
-    /// Small FIFO queue (~10% of capacity).
-    small: VecDeque<Entry<K, V>>,
-    /// Main FIFO queue (~90% of capacity).
-    main: VecDeque<Entry<K, V>>,
+    /// Slab storage for entries.
+    entries: Vec<Option<Entry<K, V>>>,
+    /// Free slots in the slab.
+    free_indices: Vec<usize>,
+    /// Small FIFO queue (indices into slab) (~10% of capacity).
+    small: VecDeque<usize>,
+    /// Main FIFO queue (indices into slab) (~90% of capacity).
+    main: VecDeque<usize>,
     /// Ghost queue (keys only, same size as small).
     ghost: VecDeque<K>,
     /// Capacity of the small queue.
@@ -58,11 +62,19 @@ pub struct S3Fifo<K, V> {
     misses: u64,
 }
 
-/// Where an entry lives.
+/// Where an entry lives, including its index in the slab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Location {
-    Small,
-    Main,
+    Small(usize),
+    Main(usize),
+}
+
+impl Location {
+    fn idx(&self) -> usize {
+        match self {
+            Self::Small(i) | Self::Main(i) => *i,
+        }
+    }
 }
 
 /// Cache statistics.
@@ -98,6 +110,8 @@ where
 
         Self {
             index: AHashMap::with_capacity(capacity),
+            entries: Vec::with_capacity(capacity),
+            free_indices: Vec::new(),
             small: VecDeque::with_capacity(small_cap),
             main: VecDeque::with_capacity(main_cap),
             ghost: VecDeque::with_capacity(ghost_cap),
@@ -111,29 +125,15 @@ where
 
     /// Look up a value by key, incrementing the frequency counter on hit.
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        match self.index.get(key)? {
-            Location::Small => {
-                self.hits += 1;
-                // Find and increment freq in small queue
-                for entry in self.small.iter_mut() {
-                    if entry.key == *key {
-                        entry.freq = entry.freq.saturating_add(1).min(3);
-                        return Some(&entry.value);
-                    }
-                }
-                None
-            }
-            Location::Main => {
-                self.hits += 1;
-                // Find and increment freq in main queue
-                for entry in self.main.iter_mut() {
-                    if entry.key == *key {
-                        entry.freq = entry.freq.saturating_add(1).min(3);
-                        return Some(&entry.value);
-                    }
-                }
-                None
-            }
+        if let Some(loc) = self.index.get(key) {
+            self.hits += 1;
+            let idx = loc.idx();
+            // SAFETY: indices in `index` are guaranteed to be valid and occupied.
+            let entry = self.entries[idx].as_mut().unwrap();
+            entry.freq = entry.freq.saturating_add(1).min(3);
+            Some(&entry.value)
+        } else {
+            None
         }
     }
 
@@ -141,27 +141,12 @@ where
     /// entry with the same key was replaced.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         // If key already exists, update in place.
-        if let Some(&loc) = self.index.get(&key) {
-            match loc {
-                Location::Small => {
-                    for entry in self.small.iter_mut() {
-                        if entry.key == key {
-                            let old = std::mem::replace(&mut entry.value, value);
-                            entry.freq = entry.freq.saturating_add(1).min(3);
-                            return Some(old);
-                        }
-                    }
-                }
-                Location::Main => {
-                    for entry in self.main.iter_mut() {
-                        if entry.key == key {
-                            let old = std::mem::replace(&mut entry.value, value);
-                            entry.freq = entry.freq.saturating_add(1).min(3);
-                            return Some(old);
-                        }
-                    }
-                }
-            }
+        if let Some(loc) = self.index.get(&key) {
+            let idx = loc.idx();
+            let entry = self.entries[idx].as_mut().unwrap();
+            let old = std::mem::replace(&mut entry.value, value);
+            entry.freq = entry.freq.saturating_add(1).min(3);
+            return Some(old);
         }
 
         self.misses += 1;
@@ -172,21 +157,15 @@ where
         if in_ghost {
             // Admit directly to main.
             self.evict_main_if_full();
-            self.main.push_back(Entry {
-                key: key.clone(),
-                value,
-                freq: 0,
-            });
-            self.index.insert(key, Location::Main);
+            let idx = self.alloc_entry(key.clone(), value);
+            self.main.push_back(idx);
+            self.index.insert(key, Location::Main(idx));
         } else {
             // Insert into small queue.
             self.evict_small_if_full();
-            self.small.push_back(Entry {
-                key: key.clone(),
-                value,
-                freq: 0,
-            });
-            self.index.insert(key, Location::Small);
+            let idx = self.alloc_entry(key.clone(), value);
+            self.small.push_back(idx);
+            self.index.insert(key, Location::Small(idx));
         }
 
         None
@@ -195,29 +174,35 @@ where
     /// Remove a key from the cache.
     pub fn remove(&mut self, key: &K) -> Option<V> {
         let loc = self.index.remove(key)?;
+        let idx = loc.idx();
+
+        // Remove from the queue. This is O(N) for the queue, but necessary
+        // to maintain consistency. Usually cache removal is rare compared to
+        // get/insert.
         match loc {
-            Location::Small => {
-                if let Some(pos) = self.small.iter().position(|e| e.key == *key) {
-                    return Some(self.small.remove(pos).unwrap().value);
+            Location::Small(_) => {
+                if let Some(pos) = self.small.iter().position(|&i| i == idx) {
+                    self.small.remove(pos);
                 }
             }
-            Location::Main => {
-                if let Some(pos) = self.main.iter().position(|e| e.key == *key) {
-                    return Some(self.main.remove(pos).unwrap().value);
+            Location::Main(_) => {
+                if let Some(pos) = self.main.iter().position(|&i| i == idx) {
+                    self.main.remove(pos);
                 }
             }
         }
-        None
+
+        self.free_entry(idx)
     }
 
     /// Number of entries in the cache.
     pub fn len(&self) -> usize {
-        self.small.len() + self.main.len()
+        self.index.len()
     }
 
     /// Whether the cache is empty.
     pub fn is_empty(&self) -> bool {
-        self.small.is_empty() && self.main.is_empty()
+        self.index.is_empty()
     }
 
     /// Total capacity.
@@ -240,6 +225,8 @@ where
     /// Clear all entries and reset statistics.
     pub fn clear(&mut self) {
         self.index.clear();
+        self.entries.clear();
+        self.free_indices.clear();
         self.small.clear();
         self.main.clear();
         self.ghost.clear();
@@ -254,6 +241,31 @@ where
 
     // ── Internal helpers ──────────────────────────────────────────
 
+    /// Allocate a slot in the slab.
+    fn alloc_entry(&mut self, key: K, value: V) -> usize {
+        let entry = Some(Entry {
+            key,
+            value,
+            freq: 0,
+        });
+
+        if let Some(idx) = self.free_indices.pop() {
+            self.entries[idx] = entry;
+            idx
+        } else {
+            let idx = self.entries.len();
+            self.entries.push(entry);
+            idx
+        }
+    }
+
+    /// Free a slot in the slab and return the value.
+    fn free_entry(&mut self, idx: usize) -> Option<V> {
+        let entry = self.entries[idx].take()?;
+        self.free_indices.push(idx);
+        Some(entry.value)
+    }
+
     /// Remove a key from the ghost queue if present.
     fn remove_from_ghost(&mut self, key: &K) -> bool {
         if let Some(pos) = self.ghost.iter().position(|k| k == key) {
@@ -267,23 +279,32 @@ where
     /// Evict from the small queue if it's at capacity.
     fn evict_small_if_full(&mut self) {
         while self.small.len() >= self.small_cap {
-            if let Some(entry) = self.small.pop_front() {
-                self.index.remove(&entry.key);
-                if entry.freq > 0 {
-                    // Promote to main.
+            if let Some(idx) = self.small.pop_front() {
+                // Extract state we need while holding the entry borrow, then drop it
+                // before calling methods that borrow `self` mutably again.
+                let (promote_to_main, key) = {
+                    let entry = self.entries[idx].as_mut().unwrap();
+                    let key = entry.key.clone();
+                    if entry.freq > 0 {
+                        entry.freq = 0; // Reset freq on promotion.
+                        (true, key)
+                    } else {
+                        (false, key)
+                    }
+                };
+
+                if promote_to_main {
                     self.evict_main_if_full();
-                    self.index.insert(entry.key.clone(), Location::Main);
-                    self.main.push_back(Entry {
-                        key: entry.key,
-                        value: entry.value,
-                        freq: 0, // Reset freq on promotion
-                    });
+                    self.index.insert(key, Location::Main(idx));
+                    self.main.push_back(idx);
                 } else {
-                    // Evict to ghost (key only).
+                    self.index.remove(&key);
+                    self.free_entry(idx); // Value is dropped here.
+
                     if self.ghost.len() >= self.ghost_cap {
                         self.ghost.pop_front();
                     }
-                    self.ghost.push_back(entry.key);
+                    self.ghost.push_back(key);
                 }
             }
         }
@@ -292,14 +313,18 @@ where
     /// Evict from the main queue if it's at capacity.
     fn evict_main_if_full(&mut self) {
         while self.main.len() >= self.main_cap {
-            if let Some(mut entry) = self.main.pop_front() {
+            if let Some(idx) = self.main.pop_front() {
+                let entry = self.entries[idx].as_mut().unwrap();
+
                 if entry.freq > 0 {
                     // Give it another chance: decrement and re-insert.
                     entry.freq -= 1;
-                    self.main.push_back(entry);
+                    self.main.push_back(idx);
                 } else {
                     // Actually evict.
-                    self.index.remove(&entry.key);
+                    let key = entry.key.clone();
+                    self.index.remove(&key);
+                    self.free_entry(idx);
                 }
             }
         }

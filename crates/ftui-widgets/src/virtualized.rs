@@ -392,6 +392,20 @@ impl<T> Virtualized<T> {
     pub fn set_visible_count(&self, count: usize) {
         self.visible_count.set(count);
     }
+
+    /// Get reference to the item height strategy.
+    #[must_use]
+    pub fn item_height(&self) -> &ItemHeight {
+        &self.item_height
+    }
+
+    /// Get mutable reference to the item height strategy.
+    ///
+    /// Useful for updating variable height trackers (e.g. resizing Fenwick tree)
+    /// when items are added.
+    pub fn item_height_mut(&mut self) -> &mut ItemHeight {
+        &mut self.item_height
+    }
 }
 
 impl<T> Virtualized<T> {
@@ -1115,6 +1129,11 @@ impl crate::stateful::Stateful for VirtualizedListState {
 /// This widget efficiently renders large lists by only drawing items
 /// that are currently visible in the viewport, with optional overscan
 /// for smooth scrolling.
+///
+/// # Limitations
+///
+/// Currently, `VirtualizedList` only supports **fixed height** items.
+/// For variable height virtualization, use the [`Virtualized`] primitive directly.
 #[derive(Debug)]
 pub struct VirtualizedList<'a, T> {
     /// Items to render.

@@ -624,6 +624,10 @@ impl TerminalModel {
             if self.cursor_y + 1 < self.height {
                 self.cursor_y += 1;
             }
+            // Note: If we are at the bottom line, we wrap to the start of the *same* line.
+            // This model does not implement scrolling because it is intended to validate
+            // Frame-based rendering where absolute positioning (CUP) is used, and
+            // wrapping/scrolling behavior should not be triggered by the Presenter.
         }
     }
 

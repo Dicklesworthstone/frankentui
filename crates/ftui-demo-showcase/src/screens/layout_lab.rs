@@ -271,6 +271,50 @@ impl LayoutLab {
             len: self.pane_timeline.entries.len(),
         }
     }
+
+    /// Render just the interactive pane workspace panel for embedding in
+    /// other screens (for example, Dashboard/Widget Gallery).
+    pub fn render_embedded_pane_workspace(&self, frame: &mut Frame, area: Rect) {
+        self.render_pane_preview_panel(frame, area);
+    }
+
+    /// True if the embedded pane workspace should consume this mouse sample.
+    ///
+    /// This stays true during active drags so capture remains robust even when
+    /// the pointer briefly leaves the preview bounds.
+    pub fn pane_workspace_wants_mouse(&self, x: u16, y: u16) -> bool {
+        self.pane_preview.get().contains(x, y) || self.pane_active_gesture.is_some()
+    }
+
+    /// Route a mouse event into the pane workspace interaction model.
+    pub fn update_embedded_pane_workspace_mouse(
+        &mut self,
+        kind: MouseEventKind,
+        x: u16,
+        y: u16,
+        modifiers: Modifiers,
+    ) {
+        if self.pane_workspace_wants_mouse(x, y) {
+            self.handle_mouse(kind, x, y, modifiers);
+        }
+    }
+
+    /// Clear any in-flight pane drag to avoid latched gesture state when
+    /// embedding this component inside another screen.
+    pub fn cancel_embedded_pane_workspace_drag(&mut self) {
+        self.cancel_pane_gesture();
+    }
+
+    /// Clear cached pane workspace bounds when the embedding screen no longer
+    /// renders the pane studio panel.
+    pub fn clear_embedded_pane_workspace_bounds(&self) {
+        self.pane_preview.set(Rect::default());
+    }
+
+    /// Current embedded pane workspace bounds used for hit-testing.
+    pub fn embedded_pane_workspace_bounds(&self) -> Rect {
+        self.pane_preview.get()
+    }
 }
 
 impl LayoutLab {

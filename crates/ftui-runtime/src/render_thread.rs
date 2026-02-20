@@ -27,6 +27,7 @@
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
+use web_time::Instant;
 
 use crate::terminal_writer::{ScreenMode, TerminalWriter};
 use ftui_render::buffer::Buffer;
@@ -119,6 +120,10 @@ fn render_loop<W: Write + Send>(
     err_tx: mpsc::SyncSender<io::Error>,
 ) {
     let mut loop_count: u64 = 0;
+    // Reuse buffer to avoid allocation churn in the hot loop
+    let mut logs: Vec<Vec<u8>> = Vec::with_capacity(LOG_CHUNK_LIMIT * 4);
+    let mut last_render_time = Instant::now();
+
     loop {
         loop_count += 1;
         let first = match rx.recv() {
@@ -126,7 +131,7 @@ fn render_loop<W: Write + Send>(
             Err(_) => return,
         };
 
-        let mut logs: Vec<Vec<u8>> = Vec::new();
+        logs.clear();
         let mut latest_render: Option<PendingRender> = None;
         let mut shutdown = false;
 
@@ -162,35 +167,42 @@ fn render_loop<W: Write + Send>(
         // 3. If we have no logs but have a render, present it.
 
         if logs.is_empty() {
-            if let Some((buffer, cursor, cursor_visible)) = &latest_render
-                && let Err(e) = writer.present_ui(buffer, *cursor, *cursor_visible)
-            {
-                let _ = err_tx.try_send(e);
-                return;
+            if let Some((buffer, cursor, cursor_visible)) = &latest_render {
+                if let Err(e) = writer.present_ui(buffer, *cursor, *cursor_visible) {
+                    let _ = err_tx.try_send(e);
+                    return;
+                }
+                last_render_time = Instant::now();
             }
         } else {
-            let mut log_iter = logs.into_iter();
-            loop {
-                // Take a chunk of logs
-                let chunk: Vec<_> = log_iter.by_ref().take(LOG_CHUNK_LIMIT).collect();
-                if chunk.is_empty() {
-                    break;
-                }
+            let chunks_len = logs.chunks(LOG_CHUNK_LIMIT).len();
+            for (i, chunk) in logs.chunks(LOG_CHUNK_LIMIT).enumerate() {
+                let is_last_chunk = i == chunks_len - 1;
 
                 // Write chunk
                 for log_bytes in chunk {
-                    if let Err(e) = writer.write_log(&String::from_utf8_lossy(&log_bytes)) {
+                    if let Err(e) = writer.write_log(&String::from_utf8_lossy(log_bytes)) {
                         let _ = err_tx.try_send(e);
                         return;
                     }
                 }
 
-                // Interleaved render
-                if let Some((buffer, cursor, cursor_visible)) = &latest_render
-                    && let Err(e) = writer.present_ui(buffer, *cursor, *cursor_visible)
+                // Interleaved render (throttled)
+                // Only render if sufficient time has passed (e.g. 33ms for ~30fps) to avoid
+                // thrashing the terminal with Clear/Draw cycles when logs invalidate the UI state.
+                // Always render on the last chunk to ensure final consistency.
+                let now = Instant::now();
+                let should_render =
+                    is_last_chunk || now.duration_since(last_render_time).as_millis() >= 33;
+
+                if should_render
+                    && let Some((buffer, cursor, cursor_visible)) = &latest_render
                 {
-                    let _ = err_tx.try_send(e);
-                    return;
+                    if let Err(e) = writer.present_ui(buffer, *cursor, *cursor_visible) {
+                        let _ = err_tx.try_send(e);
+                        return;
+                    }
+                    last_render_time = now;
                 }
             }
         }
