@@ -18,6 +18,7 @@ use ftui_widgets::constraint_overlay::{ConstraintOverlay, ConstraintOverlayStyle
 use ftui_widgets::layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
 use ftui_widgets::paragraph::Paragraph;
 
+use super::layout_lab::LayoutLab;
 use super::{HelpEntry, Screen};
 use crate::theme;
 
@@ -86,6 +87,8 @@ pub struct LayoutInspector {
     layout_info: Cell<Rect>,
     layout_viz: Cell<Rect>,
     layout_tree: Cell<Rect>,
+    pane_workspace: LayoutLab,
+    pane_workspace_visible: Cell<bool>,
 }
 
 impl Default for LayoutInspector {
@@ -104,6 +107,8 @@ impl LayoutInspector {
             layout_info: Cell::new(Rect::default()),
             layout_viz: Cell::new(Rect::default()),
             layout_tree: Cell::new(Rect::default()),
+            pane_workspace: LayoutLab::new(),
+            pane_workspace_visible: Cell::new(false),
         }
     }
 
@@ -451,6 +456,7 @@ impl Screen for LayoutInspector {
             if key.kind != KeyEventKind::Press {
                 return Cmd::None;
             }
+            self.pane_workspace.cancel_embedded_pane_workspace_drag();
             match (key.code, key.modifiers) {
                 (KeyCode::Char('n'), Modifiers::NONE) => {
                     self.scenario_idx = (self.scenario_idx + 1) % SCENARIO_COUNT;
@@ -478,6 +484,18 @@ impl Screen for LayoutInspector {
         }
         if let Event::Mouse(mouse) = event {
             let (x, y) = (mouse.x, mouse.y);
+            if !self.pane_workspace_visible.get() {
+                self.pane_workspace.cancel_embedded_pane_workspace_drag();
+                self.pane_workspace.clear_embedded_pane_workspace_bounds();
+            } else if self.pane_workspace.pane_workspace_wants_mouse(x, y) {
+                self.pane_workspace.update_embedded_pane_workspace_mouse(
+                    mouse.kind,
+                    x,
+                    y,
+                    mouse.modifiers,
+                );
+                return Cmd::None;
+            }
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if self.layout_info.get().contains(x, y) {
@@ -515,11 +533,22 @@ impl Screen for LayoutInspector {
             .gap(theme::spacing::SM)
             .split(area);
         let info_area = cols[0];
-        let viz_area = cols[1];
+        let viz_host = cols[1];
+        let (viz_area, pane_area) = if viz_host.width >= 52 && viz_host.height >= 14 {
+            let split = Flex::horizontal()
+                .constraints([Constraint::Percentage(64.0), Constraint::Percentage(36.0)])
+                .gap(theme::spacing::SM)
+                .split(viz_host);
+            (split[0], Some(split[1]))
+        } else {
+            (viz_host, None)
+        };
         self.layout_info.set(info_area);
         self.layout_viz.set(viz_area);
 
         if viz_area.is_empty() {
+            self.pane_workspace_visible.set(false);
+            self.pane_workspace.clear_embedded_pane_workspace_bounds();
             return;
         }
 
@@ -597,6 +626,20 @@ impl Screen for LayoutInspector {
         } else {
             self.layout_tree.set(Rect::default());
         }
+
+        if let Some(pane_area) = pane_area {
+            if !pane_area.is_empty() {
+                self.pane_workspace_visible.set(true);
+                self.pane_workspace
+                    .render_embedded_pane_workspace(frame, pane_area);
+            } else {
+                self.pane_workspace_visible.set(false);
+                self.pane_workspace.clear_embedded_pane_workspace_bounds();
+            }
+        } else {
+            self.pane_workspace_visible.set(false);
+            self.pane_workspace.clear_embedded_pane_workspace_bounds();
+        }
     }
 
     fn keybindings(&self) -> Vec<HelpEntry> {
@@ -636,6 +679,10 @@ impl Screen for LayoutInspector {
             HelpEntry {
                 key: "Scroll",
                 action: "Cycle scenarios",
+            },
+            HelpEntry {
+                key: "Pane rail",
+                action: "Drag pane studio",
             },
         ]
     }
@@ -723,6 +770,12 @@ mod tests {
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(80, 24, &mut pool);
         screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+    }
+
+    fn render_wide_screen(screen: &LayoutInspector) {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 28, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 120, 28));
     }
 
     fn mouse_click(x: u16, y: u16) -> Event {
@@ -821,6 +874,36 @@ mod tests {
         let cy = tree.y + tree.height / 2;
         screen.update(&mouse_click(cx, cy));
         assert!(!screen.show_tree);
+    }
+
+    #[test]
+    fn layout_inspector_embeds_pane_workspace_when_wide() {
+        let screen = LayoutInspector::new();
+        render_wide_screen(&screen);
+        assert!(
+            !screen
+                .pane_workspace
+                .embedded_pane_workspace_bounds()
+                .is_empty(),
+            "wide layout should render embedded pane workspace"
+        );
+    }
+
+    #[test]
+    fn pane_workspace_click_does_not_cycle_step() {
+        let mut screen = LayoutInspector::new();
+        render_wide_screen(&screen);
+        let pane = screen.pane_workspace.embedded_pane_workspace_bounds();
+        assert!(!pane.is_empty(), "pane workspace should be visible");
+        let step_before = screen.step_idx;
+        screen.update(&mouse_click(
+            pane.x + pane.width / 2,
+            pane.y + pane.height / 2,
+        ));
+        assert_eq!(
+            screen.step_idx, step_before,
+            "pane workspace click should not trigger inspector step cycling"
+        );
     }
 
     #[test]

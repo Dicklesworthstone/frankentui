@@ -25,6 +25,7 @@ use ftui_widgets::list::{List, ListItem};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::table::{Row, Table};
 
+use super::layout_lab::LayoutLab;
 use super::{HelpEntry, Screen};
 use crate::theme;
 
@@ -51,6 +52,10 @@ pub struct IntrinsicSizingDemo {
     width_override: Option<u16>,
     /// Cached content area from last render for mouse hit-testing.
     last_content_area: Cell<Rect>,
+    /// Embedded pane studio for interactive layout manipulation.
+    pane_workspace: LayoutLab,
+    /// Whether the pane workspace rail is visible in the current layout.
+    pane_workspace_visible: Cell<bool>,
 }
 
 impl Default for IntrinsicSizingDemo {
@@ -68,6 +73,8 @@ impl IntrinsicSizingDemo {
             width: 80,
             width_override: None,
             last_content_area: Cell::new(Rect::default()),
+            pane_workspace: LayoutLab::new(),
+            pane_workspace_visible: Cell::new(false),
         }
     }
 
@@ -455,6 +462,7 @@ impl Screen for IntrinsicSizingDemo {
             ..
         }) = event
         {
+            self.pane_workspace.cancel_embedded_pane_workspace_drag();
             match (*code, *modifiers) {
                 // Scenario switching
                 (KeyCode::Char('1'), Modifiers::NONE) => self.scenario = 0,
@@ -500,6 +508,21 @@ impl Screen for IntrinsicSizingDemo {
 
         // Mouse: scroll to cycle scenarios
         if let Event::Mouse(mouse) = event {
+            if !self.pane_workspace_visible.get() {
+                self.pane_workspace.cancel_embedded_pane_workspace_drag();
+                self.pane_workspace.clear_embedded_pane_workspace_bounds();
+            } else if self
+                .pane_workspace
+                .pane_workspace_wants_mouse(mouse.x, mouse.y)
+            {
+                self.pane_workspace.update_embedded_pane_workspace_mouse(
+                    mouse.kind,
+                    mouse.x,
+                    mouse.y,
+                    mouse.modifiers,
+                );
+                return Cmd::None;
+            }
             let content = self.last_content_area.get();
             if !content.is_empty() && content.contains(mouse.x, mouse.y) {
                 match mouse.kind {
@@ -534,8 +557,6 @@ impl Screen for IntrinsicSizingDemo {
         self.render_header(frame, chunks[0]);
 
         let content = chunks[1];
-        self.last_content_area.set(content);
-
         // When a width override is active, clamp the content area so
         // layout breakpoints fire as if the terminal were narrower/wider.
         let eff = self.effective_width(content.width);
@@ -545,12 +566,53 @@ impl Screen for IntrinsicSizingDemo {
             content
         };
 
+        let (scenario_content, pane_area) = if content.width >= 72 && content.height >= 12 {
+            let cols = Flex::horizontal()
+                .constraints([Constraint::Percentage(62.0), Constraint::Percentage(38.0)])
+                .gap(theme::spacing::SM)
+                .split(content);
+            (cols[0], Some(cols[1]))
+        } else {
+            (content, None)
+        };
+        self.last_content_area.set(scenario_content);
+
         match self.scenario {
-            0 => self.render_adaptive_sidebar(frame, content),
-            1 => self.render_flexible_cards(frame, content),
-            2 => self.render_auto_table(frame, content),
-            3 => self.render_responsive_form(frame, content),
+            0 => self.render_adaptive_sidebar(frame, scenario_content),
+            1 => self.render_flexible_cards(frame, scenario_content),
+            2 => self.render_auto_table(frame, scenario_content),
+            3 => self.render_responsive_form(frame, scenario_content),
             _ => {}
+        }
+
+        if let Some(pane_area) = pane_area {
+            if !pane_area.is_empty() {
+                self.pane_workspace_visible.set(true);
+                let pane_rows = Flex::vertical()
+                    .constraints([Constraint::Min(6), Constraint::Fixed(3)])
+                    .gap(theme::spacing::XS)
+                    .split(pane_area);
+                self.pane_workspace
+                    .render_embedded_pane_workspace(frame, pane_rows[0]);
+                let hint = Block::new()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title("Pane Studio")
+                    .style(Style::new().fg(theme::fg::PRIMARY));
+                let hint_inner = hint.inner(pane_rows[1]);
+                hint.render(pane_rows[1], frame);
+                if !hint_inner.is_empty() {
+                    Paragraph::new("Drag panes | Right click mode | Wheel magnetism")
+                        .style(Style::new().fg(theme::fg::MUTED))
+                        .render(hint_inner, frame);
+                }
+            } else {
+                self.pane_workspace_visible.set(false);
+                self.pane_workspace.clear_embedded_pane_workspace_bounds();
+            }
+        } else {
+            self.pane_workspace_visible.set(false);
+            self.pane_workspace.clear_embedded_pane_workspace_bounds();
         }
     }
 
@@ -583,6 +645,10 @@ impl Screen for IntrinsicSizingDemo {
             HelpEntry {
                 key: "Click/Scroll",
                 action: "Cycle scenario",
+            },
+            HelpEntry {
+                key: "Pane rail",
+                action: "Drag pane studio",
             },
         ]
     }
@@ -848,6 +914,45 @@ mod tests {
             bindings.len() >= 3,
             "Expected at least 3 keybindings, got {}",
             bindings.len()
+        );
+    }
+
+    #[test]
+    fn pane_workspace_embeds_on_wide_layout() {
+        let mut screen = IntrinsicSizingDemo::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 30, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 120, 30));
+        assert!(
+            !screen
+                .pane_workspace
+                .embedded_pane_workspace_bounds()
+                .is_empty(),
+            "wide sizing screen should render pane workspace rail"
+        );
+    }
+
+    #[test]
+    fn pane_workspace_click_does_not_cycle_scenario() {
+        use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let mut screen = IntrinsicSizingDemo::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 30, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 120, 30));
+
+        let pane = screen.pane_workspace.embedded_pane_workspace_bounds();
+        assert!(!pane.is_empty(), "pane workspace should be visible");
+        let before = screen.scenario;
+        let click = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            pane.x + pane.width / 2,
+            pane.y + pane.height / 2,
+        ));
+        screen.update(&click);
+        assert_eq!(
+            screen.scenario, before,
+            "pane workspace click should not trigger scenario cycling"
         );
     }
 }
