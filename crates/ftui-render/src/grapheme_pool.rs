@@ -68,7 +68,7 @@ pub struct GraphemePool {
     /// Slot storage. `None` indicates a free slot.
     slots: Vec<Option<GraphemeSlot>>,
     /// Generation counters for each slot to detect stale accesses.
-    generations: Vec<u8>,
+    generations: Vec<u16>,
     /// Lookup table for deduplication.
     lookup: AHashMap<String, GraphemeId>,
     /// Free slot indices for reuse.
@@ -122,11 +122,11 @@ impl GraphemePool {
     /// # Parameters
     ///
     /// - `text`: The grapheme cluster string
-    /// - `width`: Display width (0-127)
+    /// - `width`: Display width (0-15)
     ///
     /// # Panics
     ///
-    /// Panics if width > 127 or if the pool exceeds capacity (64K slots).
+    /// Panics if width > 15 or if the pool exceeds capacity (64K slots).
     pub fn intern(&mut self, text: &str, width: u8) -> GraphemeId {
         assert!(width <= GraphemeId::MAX_WIDTH, "width overflow");
 
@@ -241,7 +241,11 @@ impl GraphemePool {
         }
 
         if let Some(Some(slot)) = self.slots.get_mut(slot_idx) {
-            slot.refcount = slot.refcount.saturating_sub(1);
+            if slot.refcount == 0 {
+                debug_assert!(false, "double-free of grapheme slot {slot_idx}");
+                return;
+            }
+            slot.refcount -= 1;
             if slot.refcount == 0 {
                 // Remove from lookup
                 self.lookup.remove(&slot.text);

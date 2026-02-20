@@ -54,11 +54,11 @@ impl GraphemeId {
     /// Maximum slot index (16 bits).
     pub const MAX_SLOT: u32 = 0xFFFF;
 
-    /// Maximum width (7 bits).
-    pub const MAX_WIDTH: u8 = 127;
+    /// Maximum width (4 bits).
+    pub const MAX_WIDTH: u8 = 15;
 
-    /// Maximum generation (8 bits).
-    pub const MAX_GENERATION: u8 = 255;
+    /// Maximum generation (11 bits).
+    pub const MAX_GENERATION: u16 = 2047;
 
     /// Create a new `GraphemeId` from slot index, generation, and display width.
     ///
@@ -66,10 +66,10 @@ impl GraphemeId {
     ///
     /// Panics in debug mode if `slot > MAX_SLOT` or `width > MAX_WIDTH`.
     #[inline]
-    pub const fn new(slot: u32, generation: u8, width: u8) -> Self {
+    pub const fn new(slot: u32, generation: u16, width: u8) -> Self {
         debug_assert!(slot <= Self::MAX_SLOT, "slot overflow");
         debug_assert!(width <= Self::MAX_WIDTH, "width overflow");
-        Self((slot & Self::MAX_SLOT) | ((generation as u32) << 16) | ((width as u32) << 24))
+        Self((slot & Self::MAX_SLOT) | ((generation as u32) << 16) | ((width as u32) << 27))
     }
 
     /// Extract the pool slot index (0-64K).
@@ -78,16 +78,16 @@ impl GraphemeId {
         (self.0 & Self::MAX_SLOT) as usize
     }
 
-    /// Extract the generation counter (0-255).
+    /// Extract the generation counter (0-2047).
     #[inline]
-    pub const fn generation(self) -> u8 {
-        ((self.0 >> 16) & 0xFF) as u8
+    pub const fn generation(self) -> u16 {
+        ((self.0 >> 16) & 0x7FF) as u16
     }
 
-    /// Extract the display width (0-127).
+    /// Extract the display width (0-15).
     #[inline]
     pub const fn width(self) -> usize {
-        ((self.0 >> 24) & 0x7F) as usize
+        ((self.0 >> 27) & 0x0F) as usize
     }
 
     /// Raw u32 value for storage in `CellContent`.
@@ -152,9 +152,18 @@ impl CellContent {
     ///
     /// For characters with display width > 1, subsequent cells should be
     /// filled with `CONTINUATION`.
+    ///
+    /// # Tab Handling
+    ///
+    /// The tab character `\t` is normalized to a space. This prevents cursor
+    /// desynchronization, as the `Presenter` cannot predict terminal tab stops.
     #[inline]
     pub const fn from_char(c: char) -> Self {
-        Self(c as u32)
+        if c == '\t' {
+            Self(' ' as u32)
+        } else {
+            Self(c as u32)
+        }
     }
 
     /// Create content from a grapheme ID (for multi-codepoint clusters).
@@ -229,7 +238,7 @@ impl CellContent {
         if self.is_empty() || self.is_continuation() {
             0
         } else if self.is_grapheme() {
-            ((self.0 >> 24) & 0x7F) as usize
+            ((self.0 >> 27) & 0x0F) as usize
         } else {
             // For direct chars, assume width 1 (fast path for ASCII)
             // Callers should use unicode-width for accurate measurement
@@ -245,7 +254,7 @@ impl CellContent {
         if self.is_empty() || self.is_continuation() {
             0
         } else if self.is_grapheme() {
-            ((self.0 >> 24) & 0x7F) as usize
+            ((self.0 >> 27) & 0x0F) as usize
         } else {
             let Some(c) = self.as_char() else {
                 return 1;
@@ -825,7 +834,11 @@ mod tests {
 
     #[test]
     fn grapheme_id_max_values() {
-        let id = GraphemeId::new(GraphemeId::MAX_SLOT, GraphemeId::MAX_GENERATION, GraphemeId::MAX_WIDTH);
+        let id = GraphemeId::new(
+            GraphemeId::MAX_SLOT,
+            GraphemeId::MAX_GENERATION,
+            GraphemeId::MAX_WIDTH,
+        );
         assert_eq!(id.slot(), 0xFFFF);
         assert_eq!(id.generation(), 255);
         assert_eq!(id.width(), 127);
