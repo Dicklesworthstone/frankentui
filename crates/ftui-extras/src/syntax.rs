@@ -1022,6 +1022,7 @@ pub fn bash_tokenizer() -> GenericTokenizer {
         line_comment: "#",
         block_comment_start: "",
         block_comment_end: "",
+        nested_comments: false,
     })
 }
 
@@ -1097,6 +1098,7 @@ pub fn kotlin_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: true,
     })
 }
 
@@ -1136,6 +1138,7 @@ pub fn powershell_tokenizer() -> GenericTokenizer {
         line_comment: "#",
         block_comment_start: "",
         block_comment_end: "",
+        nested_comments: false,
     })
 }
 
@@ -1217,6 +1220,7 @@ pub fn csharp_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
@@ -1271,6 +1275,7 @@ pub fn ruby_tokenizer() -> GenericTokenizer {
         line_comment: "#",
         block_comment_start: "",
         block_comment_end: "",
+        nested_comments: false,
     })
 }
 
@@ -1336,6 +1341,7 @@ pub fn java_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
