@@ -69,7 +69,7 @@ const DEFAULT_MAX_INPUT_LATENCY_MS: u64 = 50;
 const DEFAULT_DOMINANCE_THRESHOLD: u32 = 3;
 
 /// Default fairness threshold (Jain's index).
-const DEFAULT_FAIRNESS_THRESHOLD: f64 = 0.5;
+const DEFAULT_FAIRNESS_THRESHOLD: f64 = 0.8;
 
 /// Sliding window size for fairness calculation.
 const FAIRNESS_WINDOW_SIZE: usize = 16;

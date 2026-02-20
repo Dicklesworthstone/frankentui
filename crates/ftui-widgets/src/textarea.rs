@@ -942,7 +942,10 @@ impl TextArea {
 
         for (idx, slice) in slices.iter().enumerate() {
             let end_col = slice.start_col.saturating_add(slice.width);
-            if cursor_col <= end_col || idx == slices.len().saturating_sub(1) {
+            // If cursor is at the wrap boundary (equal to end_col), we prefer the start
+            // of the *next* slice (by skipping this one) unless this is the last slice.
+            let is_last = idx == slices.len().saturating_sub(1);
+            if cursor_col < end_col || (cursor_col == end_col && is_last) {
                 let col_in_slice = cursor_col.saturating_sub(slice.start_col);
                 return (idx, col_in_slice.min(slice.width));
             }

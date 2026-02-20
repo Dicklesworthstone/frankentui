@@ -1791,13 +1791,28 @@ impl<W: Write> TerminalWriter<W> {
         let operation_result = (|| -> io::Result<FrameEmitStats> {
             let emit_stats = {
                 let _span = debug_span!("ftui.render.emit").entered();
+                let presenter = self.presenter.as_mut().expect("presenter consumed");
+                // AltScreen always starts at (0,0) relative to terminal.
+                presenter.set_viewport_offset_y(0);
+
                 if decision.has_diff {
-                    let diff = std::mem::take(&mut self.diff_scratch);
-                    let result = self.emit_diff(buffer, &diff, None, 0);
-                    self.diff_scratch = diff;
-                    result?
+                    presenter.prepare_runs(&self.diff_scratch);
+                    presenter.emit_diff_runs(buffer, Some(&self.pool), Some(&self.links))?;
+
+                    EmitStats {
+                        diff_cells: self.diff_scratch.len(),
+                        diff_runs: self.diff_scratch.runs().len(),
+                    }
                 } else {
-                    self.emit_full_redraw(buffer, None, 0)?
+                    // Full redraw: populate diff with all cells and emit.
+                    self.diff_scratch.fill_full(buffer.width(), buffer.height());
+                    presenter.prepare_runs(&self.diff_scratch);
+                    presenter.emit_diff_runs(buffer, Some(&self.pool), Some(&self.links))?;
+
+                    EmitStats {
+                        diff_cells: (buffer.width() as usize) * (buffer.height() as usize),
+                        diff_runs: buffer.height() as usize,
+                    }
                 }
             };
 
@@ -1859,400 +1874,8 @@ impl<W: Write> TerminalWriter<W> {
         operation_result
     }
 
-    /// Emit a diff directly to the writer.
-    fn emit_diff(
-        &mut self,
-        buffer: &Buffer,
-        diff: &BufferDiff,
-        max_height: Option<u16>,
-        ui_y_start: u16,
-    ) -> io::Result<EmitStats> {
-        use ftui_render::cell::{Cell, CellAttrs, StyleFlags};
-
-        diff.runs_into(&mut self.runs_buf);
-        let diff_runs = self.runs_buf.len();
-        let diff_cells = diff.len();
-        let _span = debug_span!("ftui.render.emit_diff", run_count = self.runs_buf.len()).entered();
-
-        let mut current_style: Option<(
-            ftui_render::cell::PackedRgba,
-            ftui_render::cell::PackedRgba,
-            StyleFlags,
-        )> = None;
-        let mut current_link: Option<u32> = None;
-        let default_cell = Cell::default();
-
-        // Borrow writer via direct field access for borrow splitting (runs_buf, pool, links).
-        let writer = self
-            .presenter
-            .as_mut()
-            .expect("presenter consumed")
-            .counting_writer_mut();
-        let hyperlinks_enabled = self.capabilities.use_hyperlinks();
-
-        for run in &self.runs_buf {
-            if let Some(limit) = max_height
-                && run.y >= limit
-            {
-                continue;
-            }
-            // Move cursor to run start
-            write!(
-                writer,
-                "\x1b[{};{}H",
-                ui_y_start.saturating_add(run.y).saturating_add(1),
-                run.x0.saturating_add(1)
-            )?;
-
-            // Emit cells in the run
-            let mut cursor_x = run.x0;
-            for x in run.x0..=run.x1 {
-                let cell = buffer.get_unchecked(x, run.y);
-
-                // Skip continuation cells unless they are orphaned.
-                let is_orphan = cell.is_continuation() && cursor_x <= x;
-                if cell.is_continuation() && !is_orphan {
-                    continue;
-                }
-                let effective_cell = if is_orphan { &default_cell } else { cell };
-
-                // Check if style changed
-                let cell_style = (
-                    effective_cell.fg,
-                    effective_cell.bg,
-                    effective_cell.attrs.flags(),
-                );
-                if current_style != Some(cell_style) {
-                    // Reset and apply new style
-                    writer.write_all(b"\x1b[0m")?;
-
-                    // Apply attributes
-                    if !cell_style.2.is_empty() {
-                        Self::emit_style_flags(writer, cell_style.2)?;
-                    }
-
-                    // Apply colors
-                    if cell_style.0.a() > 0 {
-                        write!(
-                            writer,
-                            "\x1b[38;2;{};{};{}m",
-                            cell_style.0.r(),
-                            cell_style.0.g(),
-                            cell_style.0.b()
-                        )?;
-                    }
-                    if cell_style.1.a() > 0 {
-                        write!(
-                            writer,
-                            "\x1b[48;2;{};{};{}m",
-                            cell_style.1.r(),
-                            cell_style.1.g(),
-                            cell_style.1.b()
-                        )?;
-                    }
-
-                    current_style = Some(cell_style);
-                }
-
-                // Check if link changed
-                let raw_link_id = effective_cell.attrs.link_id();
-                let new_link = if raw_link_id == CellAttrs::LINK_ID_NONE {
-                    None
-                } else {
-                    Some(raw_link_id)
-                };
-
-                if !hyperlinks_enabled {
-                    if current_link.is_some() {
-                        writer.write_all(b"\x1b]8;;\x1b\\")?;
-                        current_link = None;
-                    }
-                } else if current_link != new_link {
-                    // Close current link
-                    if current_link.is_some() {
-                        writer.write_all(b"\x1b]8;;\x1b\\")?;
-                    }
-                    // Open new link if present and resolvable
-                    let actually_opened = if let Some(link_id) = new_link
-                        && let Some(url) = self.links.get(link_id)
-                        && is_safe_hyperlink_url(url)
-                    {
-                        write!(writer, "\x1b]8;;{}\x1b\\", url)?;
-                        true
-                    } else {
-                        false
-                    };
-                    current_link = if actually_opened { new_link } else { None };
-                }
-
-                let raw_width = effective_cell.content.width();
-                let is_zero_width_content = raw_width == 0
-                    && !effective_cell.is_empty()
-                    && !effective_cell.is_continuation();
-
-                // Emit content
-                if is_zero_width_content {
-                    writer.write_all(b"\xEF\xBF\xBD")?;
-                } else if let Some(grapheme_id) = effective_cell.content.grapheme_id() {
-                    // Use pool directly with writer (no clone needed)
-                    if let Some(text) = self.pool.get(grapheme_id) {
-                        let safe = sanitize(text);
-                        if !safe.is_empty() {
-                            writer.write_all(safe.as_bytes())?;
-                        }
-                    } else {
-                        // Fallback: emit placeholder cells to preserve width.
-                        for _ in 0..raw_width.max(1) {
-                            writer.write_all(b"?")?;
-                        }
-                    }
-                } else if let Some(ch) = effective_cell.content.as_char() {
-                    let safe_ch = if ch.is_control() { ' ' } else { ch };
-                    let mut buf = [0u8; 4];
-                    let encoded = safe_ch.encode_utf8(&mut buf);
-                    writer.write_all(encoded.as_bytes())?;
-                } else {
-                    writer.write_all(b" ")?;
-                }
-
-                let advance = if is_zero_width_content {
-                    1
-                } else {
-                    let w = raw_width;
-                    if w == 0 {
-                        1
-                    } else {
-                        w
-                    }
-                };
-                cursor_x = cursor_x.saturating_add(advance as u16);
-            }
-        }
-        Ok(EmitStats {
-            diff_cells,
-            diff_runs,
-        })
-    }
-
-    /// Emit a full redraw without computing a diff.
-    fn emit_full_redraw(
-        &mut self,
-        buffer: &Buffer,
-        max_height: Option<u16>,
-        ui_y_start: u16,
-    ) -> io::Result<EmitStats> {
-        use ftui_render::cell::{Cell, CellAttrs, StyleFlags};
-
-        let height = max_height.unwrap_or(buffer.height()).min(buffer.height());
-        let width = buffer.width();
-        let diff_cells = width as usize * height as usize;
-        let diff_runs = height as usize;
-
-        let _span = debug_span!("ftui.render.emit_full_redraw").entered();
-
-        let mut current_style: Option<(
-            ftui_render::cell::PackedRgba,
-            ftui_render::cell::PackedRgba,
-            StyleFlags,
-        )> = None;
-        let mut current_link: Option<u32> = None;
-        let default_cell = Cell::default();
-
-        // Borrow writer via direct field access for borrow splitting (pool, links).
-        let writer = self
-            .presenter
-            .as_mut()
-            .expect("presenter consumed")
-            .counting_writer_mut();
-        let hyperlinks_enabled = self.capabilities.use_hyperlinks();
-
-        for y in 0..height {
-            write!(
-                writer,
-                "\x1b[{};{}H",
-                ui_y_start.saturating_add(y).saturating_add(1),
-                1
-            )?;
-
-            let mut cursor_x = 0u16;
-            for x in 0..width {
-                let cell = buffer.get_unchecked(x, y);
-
-                // Skip continuation cells unless they are orphaned.
-                let is_orphan = cell.is_continuation() && cursor_x <= x;
-                if cell.is_continuation() && !is_orphan {
-                    continue;
-                }
-                let effective_cell = if is_orphan { &default_cell } else { cell };
-
-                // Check if style changed
-                let cell_style = (
-                    effective_cell.fg,
-                    effective_cell.bg,
-                    effective_cell.attrs.flags(),
-                );
-                if current_style != Some(cell_style) {
-                    // Reset and apply new style
-                    writer.write_all(b"\x1b[0m")?;
-
-                    // Apply attributes
-                    if !cell_style.2.is_empty() {
-                        Self::emit_style_flags(writer, cell_style.2)?;
-                    }
-
-                    // Apply colors
-                    if cell_style.0.a() > 0 {
-                        write!(
-                            writer,
-                            "\x1b[38;2;{};{};{}m",
-                            cell_style.0.r(),
-                            cell_style.0.g(),
-                            cell_style.0.b()
-                        )?;
-                    }
-                    if cell_style.1.a() > 0 {
-                        write!(
-                            writer,
-                            "\x1b[48;2;{};{};{}m",
-                            cell_style.1.r(),
-                            cell_style.1.g(),
-                            cell_style.1.b()
-                        )?;
-                    }
-
-                    current_style = Some(cell_style);
-                }
-
-                // Check if link changed
-                let raw_link_id = effective_cell.attrs.link_id();
-                let new_link = if raw_link_id == CellAttrs::LINK_ID_NONE {
-                    None
-                } else {
-                    Some(raw_link_id)
-                };
-
-                if !hyperlinks_enabled {
-                    if current_link.is_some() {
-                        writer.write_all(b"\x1b]8;;\x1b\\")?;
-                        current_link = None;
-                    }
-                } else if current_link != new_link {
-                    // Close current link
-                    if current_link.is_some() {
-                        writer.write_all(b"\x1b]8;;\x1b\\")?;
-                    }
-                    // Open new link if present and resolvable
-                    let actually_opened = if let Some(link_id) = new_link
-                        && let Some(url) = self.links.get(link_id)
-                        && is_safe_hyperlink_url(url)
-                    {
-                        write!(writer, "\x1b]8;;{}\x1b\\", url)?;
-                        true
-                    } else {
-                        false
-                    };
-                    current_link = if actually_opened { new_link } else { None };
-                }
-
-                let raw_width = effective_cell.content.width();
-                let is_zero_width_content = raw_width == 0
-                    && !effective_cell.is_empty()
-                    && !effective_cell.is_continuation();
-
-                // Emit content
-                if is_zero_width_content {
-                    writer.write_all(b"\xEF\xBF\xBD")?;
-                } else if let Some(ch) = effective_cell.content.as_char() {
-                    let safe_ch = if ch.is_control() { ' ' } else { ch };
-                    let mut buf = [0u8; 4];
-                    let encoded = safe_ch.encode_utf8(&mut buf);
-                    writer.write_all(encoded.as_bytes())?;
-                } else if let Some(gid) = effective_cell.content.grapheme_id() {
-                    // Use pool directly with writer (no clone needed)
-                    if let Some(text) = self.pool.get(gid) {
-                        let safe = sanitize(text);
-                        if !safe.is_empty() {
-                            writer.write_all(safe.as_bytes())?;
-                        } else {
-                            // Fallback: emit placeholder cells to preserve width.
-                            for _ in 0..raw_width.max(1) {
-                                writer.write_all(b"?")?;
-                            }
-                        }
-                    } else {
-                        // Fallback: emit placeholder cells to preserve width.
-                        for _ in 0..raw_width.max(1) {
-                            writer.write_all(b"?")?;
-                        }
-                    }
-                } else {
-                    writer.write_all(b" ")?;
-                }
-
-                let advance = if effective_cell.is_empty() || is_zero_width_content {
-                    1
-                } else {
-                    raw_width.max(1)
-                };
-                cursor_x = cursor_x.saturating_add(advance as u16);
-            }
-        }
-
-        // Reset style
-        writer.write_all(b"\x1b[0m")?;
-
-        // Close any open link
-        if current_link.is_some() {
-            writer.write_all(b"\x1b]8;;\x1b\\")?;
-        }
-
-        trace!("emit_full_redraw complete");
-        Ok(EmitStats {
-            diff_cells,
-            diff_runs,
-        })
-    }
-
-    /// Emit SGR flags.
-    fn emit_style_flags(
-        writer: &mut impl Write,
-        flags: ftui_render::cell::StyleFlags,
-    ) -> io::Result<()> {
-        use ftui_render::cell::StyleFlags;
-
-        let mut codes = Vec::with_capacity(8);
-
-        if flags.contains(StyleFlags::BOLD) {
-            codes.push("1");
-        }
-        if flags.contains(StyleFlags::DIM) {
-            codes.push("2");
-        }
-        if flags.contains(StyleFlags::ITALIC) {
-            codes.push("3");
-        }
-        if flags.contains(StyleFlags::UNDERLINE) {
-            codes.push("4");
-        }
-        if flags.contains(StyleFlags::BLINK) {
-            codes.push("5");
-        }
-        if flags.contains(StyleFlags::REVERSE) {
-            codes.push("7");
-        }
-        if flags.contains(StyleFlags::HIDDEN) {
-            codes.push("8");
-        }
-        if flags.contains(StyleFlags::STRIKETHROUGH) {
-            codes.push("9");
-        }
-
-        if !codes.is_empty() {
-            write!(writer, "\x1b[{}m", codes.join(";"))?;
-        }
-
-        Ok(())
-    }
+    // emit_diff, emit_full_redraw, and emit_style_flags have been removed
+    // in favor of delegating to the Presenter for all emission paths.
 
     /// Create a full-screen diff (marks all cells as changed).
     #[allow(dead_code)] // API for future diff strategy integration
@@ -5731,5 +5354,52 @@ mod tests {
             !contains_bytes(&output, ALTSCREEN_ENTER),
             "mux (overlay) strategy must never emit altscreen enter"
         );
+    }
+
+    #[test]
+    fn test_altscreen_wide_char_rendering() {
+        use ftui_render::cell::Cell;
+        let mut output = Vec::new();
+        let mut writer = TerminalWriter::new(
+            &mut output,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(10, 5);
+
+        let mut buf = Buffer::new(10, 1);
+        // Wide char at x=0 (width 2)
+        buf.set_raw(0, 0, Cell::from_char('中'));
+        // x=1 is implicitly CONTINUATION from Buffer::new init (or empty)
+        // Wait, set_raw only sets one cell.
+        // But Presenter logic depends on Buffer content.
+        // For the test, we want to simulate the state where we have a wide char.
+        // The proper way is to use `set` which handles continuations, or manually set them.
+        buf.set(0, 0, Cell::from_char('中')); // This sets x=0 to '中', x=1 to CONTINUATION
+
+        // Force a diff by having a different previous buffer
+        let prev = Buffer::new(10, 1);
+        writer.prev_buffer = Some(prev);
+
+        writer.present_ui(&buf, None, true).unwrap();
+
+        let output_str = String::from_utf8_lossy(&output);
+
+        // Should contain '中'
+        assert!(output_str.contains('中'));
+
+        // Should NOT contain a space immediately after '中' (if it was treated as orphan)
+        // Since '中' is e4 b8 ad (3 bytes).
+        let bytes = output_str.as_bytes();
+        let pos = bytes.windows(3).position(|w| w == "中".as_bytes());
+        assert!(pos.is_some());
+
+        // Check byte after '中'
+        let after = pos.unwrap() + 3;
+        if after < bytes.len() {
+            // It might be ANSI sequence or nothing. It should NOT be space (0x20).
+            assert_ne!(bytes[after], 0x20, "Wide char continuation clobbered with space");
+        }
     }
 }

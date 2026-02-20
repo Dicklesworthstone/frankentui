@@ -101,6 +101,14 @@ mod tests {
     }
 
     #[test]
+    fn runner_core_new_clamps_zero_dimensions() {
+        let mut core = RunnerCore::new(0, 0);
+        core.init();
+        assert!(core.is_running());
+        assert_eq!(core.frame_idx(), 1);
+    }
+
+    #[test]
     fn runner_core_step_no_events() {
         let mut core = RunnerCore::new(80, 24);
         core.init();
@@ -123,11 +131,158 @@ mod tests {
         assert!(result.rendered);
     }
 
+    fn push_key(core: &mut RunnerCore, code: &str, mods: u8) -> bool {
+        let payload = format!(
+            r#"{{"kind":"key","phase":"down","code":"{code}","mods":{mods},"repeat":false}}"#
+        );
+        core.push_encoded_input(&payload)
+    }
+
+    fn push_key_with_key(core: &mut RunnerCore, key: &str, code: &str, mods: u8) -> bool {
+        let payload = format!(
+            r#"{{"kind":"key","phase":"down","key":"{key}","code":"{code}","mods":{mods},"repeat":false}}"#
+        );
+        core.push_encoded_input(&payload)
+    }
+
+    fn push_mouse_move(core: &mut RunnerCore, button: i32, x: i32, y: i32) -> bool {
+        let payload = format!(
+            r#"{{"kind":"mouse","phase":"move","button":{button},"x":{x},"y":{y},"mods":0}}"#
+        );
+        core.push_encoded_input(&payload)
+    }
+
+    #[test]
+    fn runner_core_files_screen_render_loop_does_not_panic() {
+        let mut core = RunnerCore::new(120, 40);
+        core.init();
+
+        // Global shortcut: Digit9 -> FileBrowser.
+        assert!(push_key(&mut core, "Digit9", 0));
+        let step = core.step();
+        assert!(step.rendered);
+        core.prepare_flat_patches();
+        assert!(!core.flat_spans().is_empty());
+
+        // Exercise a few deterministic frame-loop iterations on Files.
+        for _ in 0..8 {
+            core.advance_time_ms(16.0);
+            let _ = core.step();
+            core.prepare_flat_patches();
+            let _ = core.patch_hash();
+            let _ = core.patch_stats();
+        }
+    }
+
+    #[test]
+    fn runner_core_shift_l_screen_cycle_and_patch_flatten_is_stable() {
+        let mut core = RunnerCore::new(120, 40);
+        core.init();
+
+        // Shift+L is app-level "next screen"; cycle broadly to cover many screens.
+        for _ in 0..64 {
+            assert!(
+                push_key_with_key(&mut core, "L", "KeyL", 1),
+                "Shift+L event should be accepted",
+            );
+            let _ = core.step();
+            core.prepare_flat_patches();
+            core.advance_time_ms(16.0);
+            let _ = core.step();
+            core.prepare_flat_patches();
+        }
+    }
+
+    #[test]
+    fn runner_core_files_shortcut_with_resize_and_input_churn_is_stable() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+
+        // Global shortcut: Digit9 -> FileBrowser.
+        assert!(push_key(&mut core, "Digit9", 0));
+        let first = core.step();
+        assert!(first.running);
+
+        for i in 0..96u16 {
+            assert!(push_mouse_move(
+                &mut core,
+                if i % 3 == 0 { -1 } else { 0 },
+                i as i32 % 5 - 1,
+                i as i32 % 4 - 1,
+            ));
+
+            if i % 8 == 0 {
+                assert!(push_key(&mut core, "PageDown", 0));
+            }
+            if i % 11 == 0 {
+                assert!(push_key(&mut core, "PageUp", 0));
+            }
+
+            if i % 7 == 0 {
+                core.resize(0, 0);
+            } else {
+                core.resize(24 + (i % 32), 6 + (i % 12));
+            }
+            core.advance_time_ms(16.0);
+
+            let result = core.step();
+            assert!(result.running);
+            core.prepare_flat_patches();
+            let _ = core.patch_hash();
+            let _ = core.patch_stats();
+            let _ = core.take_logs();
+        }
+    }
+
+    #[test]
+    fn runner_core_tiny_geometry_screen_cycle_with_resize_churn_is_stable() {
+        let mut core = RunnerCore::new(1, 1);
+        core.init();
+
+        for i in 0..180u16 {
+            // Shift+L = next screen. This traverses Files, Sizing, and every other screen.
+            if i % 2 == 0 {
+                assert!(push_key_with_key(&mut core, "L", "KeyL", 1));
+            }
+
+            assert!(push_mouse_move(
+                &mut core,
+                if i % 4 == 0 { -1 } else { 0 },
+                i as i32 % 3,
+                i as i32 % 2,
+            ));
+
+            match i % 5 {
+                0 => core.resize(0, 0),
+                1 => core.resize(1, 1),
+                2 => core.resize(2, 1),
+                3 => core.resize(2, 2),
+                _ => core.resize(3, 2),
+            }
+
+            core.advance_time_ms(16.0);
+            let result = core.step();
+            assert!(result.running);
+            core.prepare_flat_patches();
+            let _ = core.patch_hash();
+            let _ = core.patch_stats();
+        }
+    }
+
     #[test]
     fn runner_core_resize() {
         let mut core = RunnerCore::new(80, 24);
         core.init();
         core.resize(120, 40);
+        let result = core.step();
+        assert!(result.rendered);
+    }
+
+    #[test]
+    fn runner_core_resize_clamps_zero_dimensions() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        core.resize(0, 0);
         let result = core.step();
         assert!(result.rendered);
     }

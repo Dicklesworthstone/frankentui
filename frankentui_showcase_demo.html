@@ -226,7 +226,7 @@ const URL_ZOOM        = parseFloat(params.get("zoom")) || 0;
 const LOG_JSONL       = params.get("jsonl") === "1";
 const LOG_PERF        = false;  // Per-frame timing in console
 // Bump when deploying to bypass Cloudflare/browser caches for JS/WASM artifacts.
-const ASSET_VERSION = "2026-02-19.1";
+const ASSET_VERSION = "2026-02-19.2";
 
 // ── DOM refs ───────────────────────────────────────────────────────────
 const canvas         = document.getElementById("terminal-canvas");
@@ -448,9 +448,24 @@ if (userZoom !== 1.0 && typeof term.setZoom === "function") {
 
 // Fit to actual container size and get real cols/rows.
 const container = document.getElementById("container");
+function sanitizeTerminalCells(value, fallback) {
+  const fallbackRaw = Number.isFinite(fallback) ? Math.trunc(fallback) : 1;
+  const safeFallback = Math.max(1, Math.min(0xffff, fallbackRaw));
+  if (!Number.isFinite(value)) return safeFallback;
+  const cells = Math.trunc(value);
+  if (cells <= 0) return safeFallback;
+  return Math.min(0xffff, cells);
+}
+function normalizeTerminalGeometry(rawCols, rawRows, fallbackCols, fallbackRows) {
+  return {
+    cols: sanitizeTerminalCells(rawCols, fallbackCols),
+    rows: sanitizeTerminalCells(rawRows, fallbackRows),
+  };
+}
 const geo = term.fitToContainer(container.clientWidth, container.clientHeight, dpr);
-let currentCols = geo.cols;
-let currentRows = geo.rows;
+const initialGeometry = normalizeTerminalGeometry(geo.cols, geo.rows, 80, 24);
+let currentCols = initialGeometry.cols;
+let currentRows = initialGeometry.rows;
 let lastGeometrySignature = "";
 
 const runner = new ShowcaseRunner(currentCols, currentRows);
@@ -964,8 +979,9 @@ function applyQueuedGeometrySync(trigger = "frame_tick") {
   const prevCols = currentCols;
   const prevRows = currentRows;
   const geo = term.fitToContainer(widthCss, heightCss, newDpr);
-  currentCols = geo.cols;
-  currentRows = geo.rows;
+  const normalizedGeometry = normalizeTerminalGeometry(geo.cols, geo.rows, prevCols, prevRows);
+  currentCols = normalizedGeometry.cols;
+  currentRows = normalizedGeometry.rows;
 
   const nextSignature = geometrySignature(currentCols, currentRows, newDpr, userZoom);
   const signatureChanged = nextSignature !== lastGeometrySignature;
@@ -986,6 +1002,8 @@ function applyQueuedGeometrySync(trigger = "frame_tick") {
       size_changed: sizeChanged,
       prev_cols: prevCols,
       prev_rows: prevRows,
+      raw_cols: geo.cols,
+      raw_rows: geo.rows,
       cols: currentCols,
       rows: currentRows,
       dpr: newDpr,
@@ -1252,6 +1270,12 @@ function domKeyToInput(e, phase) {
 }
 
 function domMouseToInput(e, phase) {
+  const normalizedButton = (() => {
+    const raw = Number.isFinite(e.button) ? Math.trunc(e.button) : 0;
+    if (phase === "move" && raw < 0) return 0;
+    if (raw < 0 || raw > 2) return 0;
+    return raw;
+  })();
   const rect = canvas.getBoundingClientRect();
   const cols = Math.max(1, currentCols | 0);
   const rows = Math.max(1, currentRows | 0);
@@ -1264,7 +1288,7 @@ function domMouseToInput(e, phase) {
   return {
     kind: "mouse",
     phase,
-    button: e.button,
+    button: normalizedButton,
     x: Math.max(0, Math.min(x, maxX)),
     y: Math.max(0, Math.min(y, maxY)),
     mods: (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0),

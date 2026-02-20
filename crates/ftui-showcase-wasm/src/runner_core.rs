@@ -108,6 +108,16 @@ impl PaneDispatchSummary {
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 impl RunnerCore {
+    #[inline]
+    fn clamp_dimension(value: u16) -> u16 {
+        if value < 1 { 1 } else { value }
+    }
+
+    #[inline]
+    fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
+        (Self::clamp_dimension(cols), Self::clamp_dimension(rows))
+    }
+
     fn pane_adapter_with_fallback(
         config: PanePointerCaptureConfig,
     ) -> (PanePointerCaptureAdapter, Option<String>) {
@@ -142,6 +152,7 @@ impl RunnerCore {
 
     /// Create a new runner with the given initial terminal dimensions.
     pub fn new(cols: u16, rows: u16) -> Self {
+        let (cols, rows) = Self::clamp_size(cols, rows);
         let model = AppModel::default();
         let layout_tree = default_pane_layout_tree();
         let (pane_adapter, pane_adapter_log) =
@@ -225,6 +236,7 @@ impl RunnerCore {
 
     /// Resize the terminal. Pushes a `Resize` event processed on the next step.
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        let (cols, rows) = Self::clamp_size(cols, rows);
         self.inner.resize(cols, rows);
         self.preview_state = PanePreviewState::default();
     }

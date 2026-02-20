@@ -858,7 +858,7 @@ impl ShowcaseRunner {
 
     /// Resize the terminal (pushes Resize event, processed on next step).
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.inner.resize(cols, rows);
+        self.inner.resize(cols.max(1), rows.max(1));
     }
 
     /// Process pending events and render if dirty.

@@ -46,6 +46,25 @@ use crate::{WebBackend, WebBackendError, WebOutputs};
 
 /// Run grapheme-pool GC every N rendered frames in host-driven WASM mode.
 const POOL_GC_INTERVAL_FRAMES: u64 = 256;
+/// Minimum supported terminal dimension.
+const MIN_TERMINAL_DIMENSION: u16 = 1;
+
+#[inline]
+fn clamp_terminal_dimension(value: u16) -> u16 {
+    if value < MIN_TERMINAL_DIMENSION {
+        MIN_TERMINAL_DIMENSION
+    } else {
+        value
+    }
+}
+
+#[inline]
+fn clamp_terminal_size(width: u16, height: u16) -> (u16, u16) {
+    (
+        clamp_terminal_dimension(width),
+        clamp_terminal_dimension(height),
+    )
+}
 
 /// Result of a single [`StepProgram::step`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +121,7 @@ impl<M: Model> StepProgram<M> {
     /// Create a new step program with the given model and initial terminal size.
     #[must_use]
     pub fn new(model: M, width: u16, height: u16) -> Self {
+        let (width, height) = clamp_terminal_size(width, height);
         Self {
             model,
             backend: WebBackend::new(width, height),
@@ -122,7 +142,9 @@ impl<M: Model> StepProgram<M> {
     /// Create a step program with an existing [`WebBackend`].
     #[must_use]
     pub fn with_backend(model: M, mut backend: WebBackend) -> Self {
-        let (width, height) = backend.events_mut().size().unwrap_or((80, 24));
+        let (raw_width, raw_height) = backend.events_mut().size().unwrap_or((80, 24));
+        let (width, height) = clamp_terminal_size(raw_width, raw_height);
+        backend.events_mut().set_size(width, height);
         Self {
             model,
             backend,
@@ -230,9 +252,14 @@ impl<M: Model> StepProgram<M> {
     pub fn push_event(&mut self, event: Event) {
         // Keep backend size in sync immediately so host-side reads stay current.
         // The model and render baseline update when the event is processed in `step()`.
-        if let Event::Resize { width, height } = &event {
-            self.backend.events_mut().set_size(*width, *height);
-        }
+        let event = match event {
+            Event::Resize { width, height } => {
+                let (width, height) = clamp_terminal_size(width, height);
+                self.backend.events_mut().set_size(width, height);
+                Event::Resize { width, height }
+            }
+            other => other,
+        };
         self.backend.events_mut().push_event(event);
     }
 
@@ -612,6 +639,19 @@ mod tests {
     }
 
     #[test]
+    fn new_clamps_zero_dimensions_to_minimum() {
+        let prog = StepProgram::new(new_counter(0), 0, 0);
+        assert_eq!(prog.size(), (1, 1));
+    }
+
+    #[test]
+    fn with_backend_clamps_zero_dimensions_to_minimum() {
+        let backend = WebBackend::new(0, 0);
+        let prog = StepProgram::with_backend(new_counter(0), backend);
+        assert_eq!(prog.size(), (1, 1));
+    }
+
+    #[test]
     fn init_initializes_model_and_renders_first_frame() {
         let mut prog = StepProgram::new(new_counter(0), 80, 24);
         prog.init().unwrap();
@@ -721,6 +761,21 @@ mod tests {
         prog.step().unwrap();
 
         assert_eq!(prog.size(), (120, 40));
+    }
+
+    #[test]
+    fn resize_clamps_zero_dimensions_to_minimum() {
+        let mut prog = StepProgram::new(new_counter(0), 80, 24);
+        prog.init().unwrap();
+
+        prog.resize(0, 0);
+        prog.step().unwrap();
+
+        assert_eq!(prog.size(), (1, 1));
+        let outputs = prog.outputs();
+        let buf = outputs.last_buffer.as_ref().expect("resize should render");
+        assert_eq!(buf.width(), 1);
+        assert_eq!(buf.height(), 1);
     }
 
     #[test]
