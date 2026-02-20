@@ -817,31 +817,35 @@ mod tests {
 
     #[test]
     fn grapheme_id_encoding_roundtrip() {
-        let id = GraphemeId::new(12345, 2);
+        let id = GraphemeId::new(12345, 42, 2);
         assert_eq!(id.slot(), 12345);
+        assert_eq!(id.generation(), 42);
         assert_eq!(id.width(), 2);
     }
 
     #[test]
     fn grapheme_id_max_values() {
-        let id = GraphemeId::new(GraphemeId::MAX_SLOT, GraphemeId::MAX_WIDTH);
-        assert_eq!(id.slot(), 0x00FF_FFFF);
+        let id = GraphemeId::new(GraphemeId::MAX_SLOT, GraphemeId::MAX_GENERATION, GraphemeId::MAX_WIDTH);
+        assert_eq!(id.slot(), 0xFFFF);
+        assert_eq!(id.generation(), 255);
         assert_eq!(id.width(), 127);
     }
 
     #[test]
     fn grapheme_id_zero_values() {
-        let id = GraphemeId::new(0, 0);
+        let id = GraphemeId::new(0, 0, 0);
         assert_eq!(id.slot(), 0);
+        assert_eq!(id.generation(), 0);
         assert_eq!(id.width(), 0);
     }
 
     #[test]
     fn grapheme_id_raw_roundtrip() {
-        let id = GraphemeId::new(999, 5);
+        let id = GraphemeId::new(999, 128, 5);
         let raw = id.raw();
         let restored = GraphemeId::from_raw(raw);
         assert_eq!(restored.slot(), 999);
+        assert_eq!(restored.generation(), 128);
         assert_eq!(restored.width(), 5);
     }
 
@@ -893,7 +897,7 @@ mod tests {
 
     #[test]
     fn cell_content_from_grapheme() {
-        let id = GraphemeId::new(42, 2);
+        let id = GraphemeId::new(42, 0, 2);
         let c = CellContent::from_grapheme(id);
 
         assert!(c.is_grapheme());
@@ -939,7 +943,7 @@ mod tests {
 
     #[test]
     fn cell_content_width_for_grapheme() {
-        let id = GraphemeId::new(7, 3);
+        let id = GraphemeId::new(7, 0, 3);
         let c = CellContent::from_grapheme(id);
         assert_eq!(c.width(), 3);
     }
@@ -957,7 +961,7 @@ mod tests {
         assert_eq!(char_content.raw() & 0x8000_0000, 0);
 
         // Graphemes should have bit 31 = 1
-        let grapheme_content = CellContent::from_grapheme(GraphemeId::new(1, 1));
+        let grapheme_content = CellContent::from_grapheme(GraphemeId::new(1, 0, 1));
         assert_ne!(grapheme_content.raw() & 0x8000_0000, 0);
     }
 
@@ -1611,7 +1615,7 @@ mod tests {
 
     #[test]
     fn cell_content_grapheme_with_zero_width() {
-        let id = GraphemeId::new(42, 0);
+        let id = GraphemeId::new(42, 0, 0);
         let c = CellContent::from_grapheme(id);
         assert_eq!(c.width_hint(), 0);
         assert_eq!(c.width(), 0);
@@ -1620,7 +1624,7 @@ mod tests {
 
     #[test]
     fn cell_content_grapheme_with_max_width() {
-        let id = GraphemeId::new(1, GraphemeId::MAX_WIDTH);
+        let id = GraphemeId::new(1, 0, GraphemeId::MAX_WIDTH);
         let c = CellContent::from_grapheme(id);
         assert_eq!(c.width_hint(), 127);
         assert_eq!(c.width(), 127);
@@ -1645,10 +1649,11 @@ mod tests {
 
     #[test]
     fn cell_content_grapheme_id_strips_high_bit() {
-        let id = GraphemeId::new(0x00FF_FFFF, 127);
+        let id = GraphemeId::new(0xFFFF, 255, 127);
         let c = CellContent::from_grapheme(id);
         let extracted = c.grapheme_id().unwrap();
         assert_eq!(extracted.slot(), id.slot());
+        assert_eq!(extracted.generation(), id.generation());
         assert_eq!(extracted.width(), id.width());
     }
 
@@ -1656,7 +1661,7 @@ mod tests {
 
     #[test]
     fn grapheme_id_slot_one_width_one() {
-        let id = GraphemeId::new(1, 1);
+        let id = GraphemeId::new(1, 0, 1);
         assert_eq!(id.slot(), 1);
         assert_eq!(id.width(), 1);
     }
@@ -1664,21 +1669,24 @@ mod tests {
     #[test]
     fn grapheme_id_hash_eq_consistency() {
         use std::collections::HashSet;
-        let a = GraphemeId::new(42, 2);
-        let b = GraphemeId::new(42, 2);
-        let c = GraphemeId::new(42, 3);
+        let a = GraphemeId::new(42, 0, 2);
+        let b = GraphemeId::new(42, 0, 2);
+        let c = GraphemeId::new(42, 0, 3);
+        let d = GraphemeId::new(42, 1, 2);
         assert_eq!(a, b);
         assert_ne!(a, c);
+        assert_ne!(a, d);
         let mut set = HashSet::new();
         set.insert(a);
         assert!(set.contains(&b));
         assert!(!set.contains(&c));
+        assert!(!set.contains(&d));
     }
 
     #[test]
     fn grapheme_id_adjacent_slots_differ() {
-        let a = GraphemeId::new(0, 1);
-        let b = GraphemeId::new(1, 1);
+        let a = GraphemeId::new(0, 0, 1);
+        let b = GraphemeId::new(1, 0, 1);
         assert_ne!(a, b);
         assert_ne!(a.slot(), b.slot());
         assert_eq!(a.width(), b.width());

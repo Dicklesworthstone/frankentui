@@ -67,6 +67,8 @@ struct GraphemeSlot {
 pub struct GraphemePool {
     /// Slot storage. `None` indicates a free slot.
     slots: Vec<Option<GraphemeSlot>>,
+    /// Generation counters for each slot to detect stale accesses.
+    generations: Vec<u8>,
     /// Lookup table for deduplication.
     lookup: AHashMap<String, GraphemeId>,
     /// Free slot indices for reuse.
@@ -78,6 +80,7 @@ impl GraphemePool {
     pub fn new() -> Self {
         Self {
             slots: Vec::new(),
+            generations: Vec::new(),
             lookup: AHashMap::new(),
             free_list: Vec::new(),
         }
@@ -87,6 +90,7 @@ impl GraphemePool {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: Vec::with_capacity(capacity),
+            generations: Vec::with_capacity(capacity),
             lookup: AHashMap::with_capacity(capacity),
             free_list: Vec::new(),
         }
@@ -122,12 +126,18 @@ impl GraphemePool {
     ///
     /// # Panics
     ///
-    /// Panics if width > 127 or if the pool exceeds capacity (16M slots).
+    /// Panics if width > 127 or if the pool exceeds capacity (64K slots).
     pub fn intern(&mut self, text: &str, width: u8) -> GraphemeId {
         assert!(width <= GraphemeId::MAX_WIDTH, "width overflow");
 
         // Check if already interned
         if let Some(&id) = self.lookup.get(text) {
+            // Verify generation matches current slot generation
+            debug_assert_eq!(
+                id.generation(),
+                self.generations[id.slot()],
+                "intern lookup returned stale ID"
+            );
             debug_assert_eq!(
                 id.width() as u8,
                 width,
@@ -142,7 +152,20 @@ impl GraphemePool {
 
         // Allocate a new slot
         let slot_idx = self.alloc_slot();
-        let id = GraphemeId::new(slot_idx, width);
+        let generation;
+
+        if (slot_idx as usize) < self.generations.len() {
+            // Reuse: increment generation to invalidate old IDs
+            self.generations[slot_idx as usize] =
+                self.generations[slot_idx as usize].wrapping_add(1);
+            generation = self.generations[slot_idx as usize];
+        } else {
+            // New slot
+            generation = 0;
+            self.generations.push(0);
+        }
+
+        let id = GraphemeId::new(slot_idx, generation, width);
 
         // Store the grapheme
         let slot = GraphemeSlot {
@@ -164,11 +187,21 @@ impl GraphemePool {
 
     /// Get the string for a grapheme ID.
     ///
-    /// Returns `None` if the ID is invalid or has been freed.
+    /// Returns `None` if the ID is invalid, freed, or from a different generation.
     #[must_use]
     pub fn get(&self, id: GraphemeId) -> Option<&str> {
+        let slot_idx = id.slot();
+        // Check bounds and generation
+        if let Some(&gen) = self.generations.get(slot_idx) {
+            if gen != id.generation() {
+                return None;
+            }
+        } else {
+            return None;
+        }
+
         self.slots
-            .get(id.slot())
+            .get(slot_idx)
             .and_then(|slot| slot.as_ref())
             .map(|slot| slot.text.as_str())
     }
@@ -177,7 +210,17 @@ impl GraphemePool {
     ///
     /// Call this when a cell containing this grapheme is copied.
     pub fn retain(&mut self, id: GraphemeId) {
-        if let Some(Some(slot)) = self.slots.get_mut(id.slot()) {
+        let slot_idx = id.slot();
+        // Check generation to avoid modifying wrong slot
+        if let Some(&gen) = self.generations.get(slot_idx) {
+            if gen != id.generation() {
+                return;
+            }
+        } else {
+            return;
+        }
+
+        if let Some(Some(slot)) = self.slots.get_mut(slot_idx) {
             slot.refcount = slot.refcount.saturating_add(1);
         }
     }
@@ -188,6 +231,15 @@ impl GraphemePool {
     /// When the reference count reaches zero, the slot is freed for reuse.
     pub fn release(&mut self, id: GraphemeId) {
         let slot_idx = id.slot();
+        // Check generation
+        if let Some(&gen) = self.generations.get(slot_idx) {
+            if gen != id.generation() {
+                return;
+            }
+        } else {
+            return;
+        }
+
         if let Some(Some(slot)) = self.slots.get_mut(slot_idx) {
             slot.refcount = slot.refcount.saturating_sub(1);
             if slot.refcount == 0 {
@@ -205,8 +257,17 @@ impl GraphemePool {
     ///
     /// Returns 0 if the ID is invalid or freed.
     pub fn refcount(&self, id: GraphemeId) -> u32 {
+        let slot_idx = id.slot();
+        if let Some(&gen) = self.generations.get(slot_idx) {
+            if gen != id.generation() {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+
         self.slots
-            .get(id.slot())
+            .get(slot_idx)
             .and_then(|slot| slot.as_ref())
             .map(|slot| slot.refcount)
             .unwrap_or(0)
@@ -215,6 +276,7 @@ impl GraphemePool {
     /// Clear all entries from the pool.
     pub fn clear(&mut self) {
         self.slots.clear();
+        self.generations.clear();
         self.lookup.clear();
         self.free_list.clear();
     }
@@ -404,22 +466,38 @@ mod tests {
     #[test]
     fn invalid_id_returns_none() {
         let pool = GraphemePool::new();
-        let fake_id = GraphemeId::new(999, 1);
+        let fake_id = GraphemeId::new(999, 0, 1);
         assert_eq!(pool.get(fake_id), None);
     }
 
     #[test]
     fn release_invalid_id_is_safe() {
         let mut pool = GraphemePool::new();
-        let fake_id = GraphemeId::new(999, 1);
+        let fake_id = GraphemeId::new(999, 0, 1);
         pool.release(fake_id); // Should not panic
     }
 
     #[test]
     fn retain_invalid_id_is_safe() {
         let mut pool = GraphemePool::new();
-        let fake_id = GraphemeId::new(999, 1);
+        let fake_id = GraphemeId::new(999, 0, 1);
         pool.retain(fake_id); // Should not panic
+    }
+
+    #[test]
+    fn stale_generation_returns_none() {
+        let mut pool = GraphemePool::new();
+        let id1 = pool.intern("A", 1);
+        pool.release(id1);
+
+        // Reallocate slot with new generation
+        let id2 = pool.intern("B", 1);
+        assert_eq!(id1.slot(), id2.slot());
+        assert_ne!(id1.generation(), id2.generation());
+
+        // Old ID should be invalid
+        assert_eq!(pool.get(id1), None);
+        assert_eq!(pool.get(id2), Some("B"));
     }
 
     #[test]
@@ -936,8 +1014,8 @@ mod tests {
     #[test]
     fn refcount_of_invalid_id_is_zero() {
         let pool = GraphemePool::new();
-        assert_eq!(pool.refcount(GraphemeId::new(0, 1)), 0);
-        assert_eq!(pool.refcount(GraphemeId::new(999, 1)), 0);
+        assert_eq!(pool.refcount(GraphemeId::new(0, 0, 1)), 0);
+        assert_eq!(pool.refcount(GraphemeId::new(999, 0, 1)), 0);
     }
 
     #[test]
