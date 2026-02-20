@@ -19,12 +19,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_
 
 [dependencies]
 ahash = "0.8"
-bitflags = "2.10.0"
+bitflags = "2.11.0"
 memchr = "2.7.6"
 smallvec = "1.15.1"
 unicode-segmentation = "1.12.0"
 web-time = "1.1.0"
-bumpalo = "3.19.1"
+bumpalo = "3.20.2"
 ftui-core = { path = "../ftui-core", version = "0.2.1" }
 tracing = { version = "0.1.41", optional = true }
 # Note: ftui-render is the core kernel and should not depend on ftui-style.

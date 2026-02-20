@@ -206,3 +206,47 @@ UBS_MAX_DIR_SIZE_MB=0 ubs --diff --only=rust,toml
 - Updated snapshots after screen list changes and new Kanban screen.
 
 Initial log created. Updates will be appended per dependency.
+
+---
+
+## 2026-02-19 Update (Tokio Removal + Dependency Refresh)
+
+### Summary
+
+| Metric | Count |
+|--------|-------|
+| **Updated** | 7 |
+| **Tokio removed** | Yes |
+| **Failed** | 0 |
+
+### Tokio Removal
+
+**opentelemetry_sdk:** Removed `rt-tokio` feature. Telemetry OTLP export switched from gRPC/tonic to HTTP-only transport. Removed `tonic` dependency and `Protocol::Grpc` variant from `telemetry.rs`.
+
+**Demo strings:** `"tokio-rt"` -> `"asupersync-rt"` in data.rs, `tokio` -> `asupersync` in SAMPLE_TOML string.
+
+### Updated Dependencies
+
+| Crate | From | To | Breaking? | Migration |
+|-------|------|----|-----------|-----------|
+| reqwest | 0.12.15 | 0.13 | Feature rename | `rustls-tls` -> `rustls` |
+| rand | 0.9.2 | 0.10 | API changes | `Rng` -> `RngExt`, `from_os_rng()` -> `make_rng()`, removed `small_rng` feature |
+| getrandom | 0.3.4 | 0.4 | No | Version bump only |
+| criterion | 0.5.1 | 0.8.2 | No | Version bump (aligned with rest of workspace) |
+| bitflags | 2.10.0 | 2.11.0 | No | Minor bump |
+| bumpalo | 3.19.1 | 3.20.2 | No | Minor bump |
+| clap | 4.5.32 | 4.5.60 | No | Patch bump |
+
+### Files Modified
+
+- `crates/ftui-runtime/Cargo.toml` — removed rt-tokio, tonic, grpc-tonic
+- `crates/ftui-runtime/src/telemetry.rs` — removed gRPC code path, HTTP-only
+- `crates/ftui-extras/Cargo.toml` — rand 0.10, removed small_rng feature
+- `crates/ftui-extras/src/visual_fx/effects/doom_melt/mod.rs` — rand 0.10 API migration
+- `crates/ftui-core/Cargo.toml` — bitflags, criterion
+- `crates/ftui-render/Cargo.toml` — bitflags, bumpalo
+- `crates/ftui-widgets/Cargo.toml` — bitflags
+- `crates/ftui-showcase-wasm/Cargo.toml` — getrandom
+- `crates/doctor_frankentui/Cargo.toml` — reqwest, clap
+- `crates/ftui-demo-showcase/src/data.rs` — tokio-rt string
+- `crates/ftui-demo-showcase/src/screens/file_browser.rs` — SAMPLE_TOML string

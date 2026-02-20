@@ -18,7 +18,7 @@ tracing = ["dep:tracing", "ftui-render/tracing"]
 
 [dependencies]
 ahash = "0.8"
-bitflags = "2.10.0"
+bitflags = "2.11.0"
 ftui-core = { path = "../ftui-core", version = "0.2.1" }
 ftui-layout = { path = "../ftui-layout", version = "0.2.1" }
 ftui-render = { path = "../ftui-render", version = "0.2.1" }
