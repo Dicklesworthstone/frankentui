@@ -445,6 +445,35 @@ impl GenericTokenizer {
         Self { config }
     }
 
+    /// Scan a block comment with nesting support.
+    fn scan_nested_block_comment(&self, text: &str, initial_depth: u8) -> (usize, u8) {
+        let start_pat = self.config.block_comment_start;
+        let end_pat = self.config.block_comment_end;
+        if start_pat.is_empty() || end_pat.is_empty() {
+            return (0, initial_depth);
+        }
+
+        let mut depth = initial_depth;
+        let mut pos = 0;
+        let bytes = text.as_bytes();
+
+        while pos < bytes.len() {
+            if text[pos..].starts_with(start_pat) {
+                depth = depth.saturating_add(1);
+                pos += start_pat.len();
+            } else if text[pos..].starts_with(end_pat) {
+                depth -= 1;
+                pos += end_pat.len();
+                if depth == 0 {
+                    return (pos, 0);
+                }
+            } else {
+                pos += 1;
+            }
+        }
+        (pos, depth)
+    }
+
     /// Scan a word (identifier or keyword) starting at `pos`.
     fn scan_word(&self, bytes: &[u8], pos: usize) -> (TokenKind, usize) {
         let start = pos;
@@ -521,22 +550,48 @@ impl GenericTokenizer {
     }
 
     /// Continue scanning a block comment.
-    fn continue_block_comment(&self, line: &str) -> (Vec<Token>, LineState) {
-        let end_pat = self.config.block_comment_end;
-        if let Some(end_pos) = line.find(end_pat) {
-            let comment_end = end_pos + end_pat.len();
-            let mut tokens = vec![Token::new(TokenKind::CommentBlock, 0..comment_end)];
-            // Tokenize the rest of the line normally.
-            let rest = &line[comment_end..];
-            let (rest_tokens, rest_state) = self.tokenize_normal(rest, comment_end);
-            tokens.extend(rest_tokens);
-            (tokens, rest_state)
+    fn continue_block_comment(&self, line: &str, state_in: LineState) -> (Vec<Token>, LineState) {
+        let initial_depth = match state_in {
+            LineState::InComment(CommentKind::Nested(d)) => d,
+            LineState::InComment(CommentKind::Block) => {
+                if self.config.nested_comments {
+                    1
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        };
+
+        if self.config.nested_comments && initial_depth > 0 {
+            let (len, final_depth) = self.scan_nested_block_comment(line, initial_depth);
+            if final_depth == 0 {
+                let mut tokens = vec![Token::new(TokenKind::CommentBlock, 0..len)];
+                let rest = &line[len..];
+                let (rest_tokens, rest_state) = self.tokenize_normal(rest, len);
+                tokens.extend(rest_tokens);
+                (tokens, rest_state)
+            } else {
+                (
+                    vec![Token::new(TokenKind::CommentBlock, 0..line.len())],
+                    LineState::InComment(CommentKind::Nested(final_depth)),
+                )
+            }
         } else {
-            // Whole line is still inside the block comment.
-            (
-                vec![Token::new(TokenKind::CommentBlock, 0..line.len())],
-                LineState::InComment(CommentKind::Block),
-            )
+            let end_pat = self.config.block_comment_end;
+            if let Some(end_pos) = line.find(end_pat) {
+                let comment_end = end_pos + end_pat.len();
+                let mut tokens = vec![Token::new(TokenKind::CommentBlock, 0..comment_end)];
+                let rest = &line[comment_end..];
+                let (rest_tokens, rest_state) = self.tokenize_normal(rest, comment_end);
+                tokens.extend(rest_tokens);
+                (tokens, rest_state)
+            } else {
+                (
+                    vec![Token::new(TokenKind::CommentBlock, 0..line.len())],
+                    LineState::InComment(CommentKind::Block),
+                )
+            }
         }
     }
 
@@ -608,21 +663,41 @@ impl GenericTokenizer {
                 && line[pos..].starts_with(self.config.block_comment_start)
             {
                 let start = pos;
-                let after_open = pos + self.config.block_comment_start.len();
-                let rest = &line[after_open..];
-                if let Some(end_pos) = rest.find(self.config.block_comment_end) {
-                    let comment_end = after_open + end_pos + self.config.block_comment_end.len();
-                    tokens.push(Token::new(
-                        TokenKind::CommentBlock,
-                        base_offset + start..base_offset + comment_end,
-                    ));
-                    pos = comment_end;
+                if self.config.nested_comments {
+                    let (len, final_depth) = self.scan_nested_block_comment(&line[pos..], 0);
+                    let comment_end = pos + len;
+                    if final_depth == 0 {
+                        // Closed on same line
+                        tokens.push(Token::new(
+                            TokenKind::CommentBlock,
+                            base_offset + start..base_offset + comment_end,
+                        ));
+                        pos = comment_end;
+                    } else {
+                        // Open at EOL
+                        tokens.push(Token::new(
+                            TokenKind::CommentBlock,
+                            base_offset + start..base_offset + bytes.len(),
+                        ));
+                        return (tokens, LineState::InComment(CommentKind::Nested(final_depth)));
+                    }
                 } else {
-                    tokens.push(Token::new(
-                        TokenKind::CommentBlock,
-                        base_offset + start..base_offset + bytes.len(),
-                    ));
-                    return (tokens, LineState::InComment(CommentKind::Block));
+                    let after_open = pos + self.config.block_comment_start.len();
+                    let rest = &line[after_open..];
+                    if let Some(end_pos) = rest.find(self.config.block_comment_end) {
+                        let comment_end = after_open + end_pos + self.config.block_comment_end.len();
+                        tokens.push(Token::new(
+                            TokenKind::CommentBlock,
+                            base_offset + start..base_offset + comment_end,
+                        ));
+                        pos = comment_end;
+                    } else {
+                        tokens.push(Token::new(
+                            TokenKind::CommentBlock,
+                            base_offset + start..base_offset + bytes.len(),
+                        ));
+                        return (tokens, LineState::InComment(CommentKind::Block));
+                    }
                 }
                 continue;
             }
@@ -744,7 +819,7 @@ impl Tokenizer for GenericTokenizer {
     fn tokenize_line(&self, line: &str, state: LineState) -> (Vec<Token>, LineState) {
         match state {
             LineState::InComment(CommentKind::Block | CommentKind::Nested(_)) => {
-                self.continue_block_comment(line)
+                self.continue_block_comment(line, state)
             }
             LineState::InString(kind) => self.continue_string(line, kind),
             _ => self.tokenize_normal(line, 0),
@@ -1725,6 +1800,7 @@ pub fn haskell_tokenizer() -> GenericTokenizer {
         line_comment: "--",
         block_comment_start: "{-",
         block_comment_end: "-}",
+        nested_comments: true,
     })
 }
 
@@ -1774,6 +1850,7 @@ pub fn zig_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
@@ -1826,6 +1903,7 @@ pub fn mermaid_tokenizer() -> GenericTokenizer {
         line_comment: "%%",
         block_comment_start: "%%{",
         block_comment_end: "}%%",
+        nested_comments: false,
     })
 }
 
@@ -1906,6 +1984,7 @@ pub fn typescript_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
@@ -1953,6 +2032,7 @@ pub fn go_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
@@ -2033,6 +2113,7 @@ pub fn sql_tokenizer() -> GenericTokenizer {
         line_comment: "--",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
@@ -2047,6 +2128,7 @@ pub fn yaml_tokenizer() -> GenericTokenizer {
         line_comment: "#",
         block_comment_start: "",
         block_comment_end: "",
+        nested_comments: false,
     })
 }
 

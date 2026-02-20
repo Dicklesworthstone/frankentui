@@ -1206,7 +1206,7 @@ impl CodeExplorer {
             .border_type(BorderType::Double)
             .title("sqlite3.c")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Code,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -1426,7 +1426,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("Telemetry Deck")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Telemetry,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -1575,7 +1575,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("File Info")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Info,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -1597,7 +1597,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("Context")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Context,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -1628,7 +1628,7 @@ impl CodeExplorer {
                 .border_type(BorderType::Rounded)
                 .title("Match Radar")
                 .title_alignment(Alignment::Center)
-                .style(theme::panel_border_style(
+                .border_style(theme::panel_border_style(
                     self.focus == FocusPanel::Radar,
                     theme::screen_accent::CODE_EXPLORER,
                 ));
@@ -1644,7 +1644,7 @@ impl CodeExplorer {
                 .border_type(BorderType::Rounded)
                 .title("FrankenTUI Spotlight")
                 .title_alignment(Alignment::Center)
-                .style(theme::panel_border_style(
+                .border_style(theme::panel_border_style(
                     self.focus == FocusPanel::Spotlight,
                     theme::screen_accent::CODE_EXPLORER,
                 ));
@@ -1666,7 +1666,7 @@ impl CodeExplorer {
                 .border_type(BorderType::Rounded)
                 .title("Radar + Spotlight")
                 .title_alignment(Alignment::Center)
-                .style(theme::panel_border_style(
+                .border_style(theme::panel_border_style(
                     self.focus == FocusPanel::Radar || self.focus == FocusPanel::Spotlight,
                     theme::screen_accent::CODE_EXPLORER,
                 ));
@@ -1688,7 +1688,7 @@ impl CodeExplorer {
                 .border_type(BorderType::Rounded)
                 .title("Hotspots + Radar + Spotlight")
                 .title_alignment(Alignment::Center)
-                .style(theme::panel_border_style(
+                .border_style(theme::panel_border_style(
                     matches!(
                         self.focus,
                         FocusPanel::Hotspots | FocusPanel::Radar | FocusPanel::Spotlight
@@ -1739,7 +1739,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("SQL Studio")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Info,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -1769,7 +1769,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("Result Preview")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Context,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -1786,7 +1786,7 @@ impl CodeExplorer {
                 .border_type(BorderType::Rounded)
                 .title("Schema")
                 .title_alignment(Alignment::Center)
-                .style(theme::panel_border_style(
+                .border_style(theme::panel_border_style(
                     self.focus == FocusPanel::Hotspots,
                     theme::screen_accent::CODE_EXPLORER,
                 ));
@@ -1802,7 +1802,7 @@ impl CodeExplorer {
                 .border_type(BorderType::Rounded)
                 .title("Index Map")
                 .title_alignment(Alignment::Center)
-                .style(theme::panel_border_style(
+                .border_style(theme::panel_border_style(
                     self.focus == FocusPanel::Radar,
                     theme::screen_accent::CODE_EXPLORER,
                 ));
@@ -1818,7 +1818,7 @@ impl CodeExplorer {
                 .border_type(BorderType::Rounded)
                 .title("Index Map")
                 .title_alignment(Alignment::Center)
-                .style(theme::panel_border_style(
+                .border_style(theme::panel_border_style(
                     self.focus == FocusPanel::Radar,
                     theme::screen_accent::CODE_EXPLORER,
                 ));
@@ -1846,7 +1846,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("Query Plan Graph")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Info,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -1883,7 +1883,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("IO + Cache Telemetry")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Context,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -1911,7 +1911,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("Hot Path")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Hotspots,
                 theme::screen_accent::CODE_EXPLORER,
             ));
@@ -2017,7 +2017,7 @@ impl CodeExplorer {
             .border_type(BorderType::Rounded)
             .title("Hotspots")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Hotspots,
                 theme::screen_accent::CODE_EXPLORER,
             ));

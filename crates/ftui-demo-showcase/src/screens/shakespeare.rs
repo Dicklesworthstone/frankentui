@@ -951,7 +951,7 @@ impl Shakespeare {
             .border_type(BorderType::Heavy)
             .title("Complete Works of William Shakespeare")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Text,
                 theme::screen_accent::SHAKESPEARE,
             ));
@@ -1181,7 +1181,7 @@ impl Shakespeare {
             .border_type(BorderType::Rounded)
             .title("Navigator")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Toc,
                 theme::screen_accent::SHAKESPEARE,
             ));
@@ -1243,7 +1243,7 @@ impl Shakespeare {
             .border_type(BorderType::Rounded)
             .title("Match Navigator")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Navigator,
                 theme::screen_accent::SHAKESPEARE,
             ));
@@ -1355,7 +1355,7 @@ impl Shakespeare {
             .border_type(BorderType::Rounded)
             .title("Spotlight Stage")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Navigator,
                 theme::screen_accent::SHAKESPEARE,
             ));
@@ -1460,7 +1460,7 @@ impl Shakespeare {
             .border_type(BorderType::Rounded)
             .title("Stagecraft Console")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Insights,
                 theme::screen_accent::SHAKESPEARE,
             ));
@@ -1527,7 +1527,7 @@ impl Shakespeare {
             .border_type(BorderType::Rounded)
             .title("Concordance Engine")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Navigator,
                 theme::screen_accent::SHAKESPEARE,
             ));
@@ -1604,7 +1604,7 @@ impl Shakespeare {
             .border_type(BorderType::Rounded)
             .title("Search Insights")
             .title_alignment(Alignment::Center)
-            .style(theme::panel_border_style(
+            .border_style(theme::panel_border_style(
                 self.focus == FocusPanel::Insights,
                 theme::screen_accent::SHAKESPEARE,
             ));
