@@ -450,7 +450,7 @@ fn complete_fragment(text: &str) -> String {
 /// assert!(text.height() > 0);
 /// ```
 #[must_use]
-pub fn render_streaming(fragment: &str, theme: &MarkdownTheme) -> Text {
+pub fn render_streaming(fragment: &str, theme: &MarkdownTheme) -> Text<'static> {
     let completed = complete_fragment(fragment);
     let renderer = MarkdownRenderer::new(theme.clone());
     renderer.render(&completed)
@@ -474,12 +474,12 @@ pub fn render_streaming(fragment: &str, theme: &MarkdownTheme) -> Text {
 /// let plain = auto_render("just some text", &theme);
 /// ```
 #[must_use]
-pub fn auto_render(text: &str, theme: &MarkdownTheme) -> Text {
+pub fn auto_render(text: &str, theme: &MarkdownTheme) -> Text<'static> {
     if is_likely_markdown(text).is_likely() {
         let renderer = MarkdownRenderer::new(theme.clone());
         renderer.render(text)
     } else {
-        Text::raw(text)
+        Text::raw(text.to_owned())
     }
 }
 
@@ -499,11 +499,11 @@ pub fn auto_render(text: &str, theme: &MarkdownTheme) -> Text {
 /// assert!(text.height() > 0);
 /// ```
 #[must_use]
-pub fn auto_render_streaming(fragment: &str, theme: &MarkdownTheme) -> Text {
+pub fn auto_render_streaming(fragment: &str, theme: &MarkdownTheme) -> Text<'static> {
     if is_likely_markdown(fragment).is_likely() {
         render_streaming(fragment, theme)
     } else {
-        Text::raw(fragment)
+        Text::raw(fragment.to_owned())
     }
 }
 
@@ -977,7 +977,7 @@ impl MarkdownRenderer {
     /// Parses the input as GitHub-Flavored Markdown with all extensions enabled:
     /// tables, strikethrough, task lists, math, footnotes, and admonitions.
     #[must_use]
-    pub fn render(&self, markdown: &str) -> Text {
+    pub fn render(&self, markdown: &str) -> Text<'static> {
         let options = Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TABLES
             | Options::ENABLE_HEADING_ATTRIBUTES
@@ -1019,7 +1019,7 @@ impl MarkdownRenderer {
     /// assert!(text.height() > 0);
     /// ```
     #[must_use]
-    pub fn render_streaming(&self, fragment: &str) -> Text {
+    pub fn render_streaming(&self, fragment: &str) -> Text<'static> {
         let completed = complete_fragment(fragment);
         self.render(&completed)
     }
@@ -1029,11 +1029,11 @@ impl MarkdownRenderer {
     /// Returns rendered markdown if the text looks like markdown (2+ indicators),
     /// otherwise returns the text as plain [`Text`].
     #[must_use]
-    pub fn auto_render(&self, text: &str) -> Text {
+    pub fn auto_render(&self, text: &str) -> Text<'static> {
         if is_likely_markdown(text).is_likely() {
             self.render(text)
         } else {
-            Text::raw(text)
+            Text::raw(text.to_owned())
         }
     }
 
@@ -1041,11 +1041,11 @@ impl MarkdownRenderer {
     ///
     /// Combines auto-detection with streaming fragment handling.
     #[must_use]
-    pub fn auto_render_streaming(&self, fragment: &str) -> Text {
+    pub fn auto_render_streaming(&self, fragment: &str) -> Text<'static> {
         if is_likely_markdown(fragment).is_likely() {
             self.render_streaming(fragment)
         } else {
-            Text::raw(fragment)
+            Text::raw(fragment.to_owned())
         }
     }
 }
@@ -1167,7 +1167,7 @@ struct RenderState<'t> {
     table_effect_phase: Option<f32>,
     #[cfg(feature = "syntax")]
     syntax_highlighter: Option<&'t SyntaxHighlighter>,
-    lines: Vec<Line>,
+    lines: Vec<Line<'static>>,
     current_spans: Vec<Span<'static>>,
     style_stack: Vec<StyleContext>,
     list_stack: Vec<ListState>,
@@ -1188,11 +1188,11 @@ struct RenderState<'t> {
     /// Deferred so task markers can replace the bullet.
     pending_list_prefix: bool,
     /// Footnote definitions collected during parsing.
-    footnotes: Vec<(String, Vec<Line>)>,
+    footnotes: Vec<(String, Vec<Line<'static>>)>,
     /// Current footnote being collected.
     current_footnote: Option<String>,
     /// Lines being collected for the current footnote definition.
-    current_footnote_lines: Vec<Line>,
+    current_footnote_lines: Vec<Line<'static>>,
     /// Table state (if currently parsing a table).
     table_state: Option<TableState>,
 }
@@ -1945,7 +1945,7 @@ impl<'t> RenderState<'t> {
         mid: char,
         right: char,
         style: Style,
-    ) -> Line {
+    ) -> Line<'static> {
         let mut line = String::new();
         line.push(left);
         for (idx, width) in widths.iter().enumerate() {
@@ -1958,7 +1958,7 @@ impl<'t> RenderState<'t> {
         Line::styled(line, style)
     }
 
-    fn table_row_line(&self, row: &TableRow, context: &TableRowContext<'_>) -> Line {
+    fn table_row_line(&self, row: &TableRow, context: &TableRowContext<'_>) -> Line<'static> {
         let mut spans = Vec::new();
         spans.push(Span::styled("│", context.border_style));
 
@@ -2197,9 +2197,7 @@ impl<'t> RenderState<'t> {
                     spans.push(Span::styled("  ", style));
                     for span in line.spans() {
                         let merged = span.style.map(|s| s.merge(&style)).unwrap_or(style);
-                        let mut out_span = span.clone();
-                        out_span.style = Some(merged);
-                        spans.push(out_span);
+                        spans.push(Span::styled(span.content.to_string(), merged));
                     }
                     self.lines.push(Line::from_spans(spans));
                 }
@@ -2313,7 +2311,7 @@ impl<'t> RenderState<'t> {
         }
     }
 
-    fn finish(mut self) -> Text {
+    fn finish(mut self) -> Text<'static> {
         self.flush_line();
         if self.lines.is_empty() {
             return Text::new();
@@ -2323,7 +2321,7 @@ impl<'t> RenderState<'t> {
 }
 
 #[cfg(feature = "diagram")]
-fn mermaid_buffer_to_lines(buf: &Buffer) -> Vec<Line> {
+fn mermaid_buffer_to_lines(buf: &Buffer) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(buf.height() as usize);
     for y in 0..buf.height() {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -2391,7 +2389,7 @@ fn mermaid_style_from_cell(cell: &Cell) -> Style {
 /// This is a convenience function for quick rendering without customization.
 /// For custom themes or settings, use [`MarkdownRenderer`] directly.
 #[must_use]
-pub fn render_markdown(markdown: &str) -> Text {
+pub fn render_markdown(markdown: &str) -> Text<'static> {
     MarkdownRenderer::default().render(markdown)
 }
 

@@ -1162,7 +1162,7 @@ impl Widget for TextArea {
         let cursor = self.editor.cursor();
 
         // Initialize scroll_top from state, handling sentinel
-        let (anchor_line, anchor_vrow) = if self.scroll_anchor.get().0 == usize::MAX {
+        let (anchor_line, _anchor_vrow) = if self.scroll_anchor.get().0 == usize::MAX {
             (0, 0)
         } else {
             self.scroll_anchor.get()
@@ -1285,14 +1285,7 @@ impl Widget for TextArea {
                         };
                         let num_str =
                             format!("{:>width$} ", line_idx + 1, width = (gutter_w - 2) as usize);
-                        draw_text_span(
-                            frame,
-                            area.x,
-                            current_y,
-                            &num_str,
-                            style,
-                            text_area_x,
-                        );
+                        draw_text_span(frame, area.x, current_y, &num_str, style, text_area_x);
                     }
 
                     // Cursor line highlight
@@ -1341,12 +1334,8 @@ impl Widget for TextArea {
                     }
 
                     // Set cursor position if focused
-                    if self.focused
-                        && line_idx == cursor.line
-                        && slice_idx == cursor_wrap_idx
-                    {
-                        let cursor_screen_x =
-                            text_area_x.saturating_add(cursor_col_in_wrap as u16);
+                    if self.focused && line_idx == cursor.line && slice_idx == cursor_wrap_idx {
+                        let cursor_screen_x = text_area_x.saturating_add(cursor_col_in_wrap as u16);
                         if cursor_screen_x < area.right() {
                             frame.set_cursor(Some((cursor_screen_x, current_y)));
                         }
