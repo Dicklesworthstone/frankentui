@@ -1378,6 +1378,7 @@ pub fn c_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
@@ -1443,6 +1444,7 @@ pub fn swift_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: true,
     })
 }
 
@@ -1487,6 +1489,7 @@ pub fn php_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
@@ -1505,6 +1508,7 @@ pub fn html_tokenizer() -> GenericTokenizer {
         line_comment: "",
         block_comment_start: "<!--",
         block_comment_end: "-->",
+        nested_comments: false,
     })
 }
 
@@ -1540,6 +1544,7 @@ pub fn css_tokenizer() -> GenericTokenizer {
         line_comment: "",
         block_comment_start: "/*",
         block_comment_end: "*/",
+        nested_comments: false,
     })
 }
 
@@ -1573,6 +1578,7 @@ pub fn fish_tokenizer() -> GenericTokenizer {
         line_comment: "#",
         block_comment_start: "",
         block_comment_end: "",
+        nested_comments: false,
     })
 }
 
@@ -1592,6 +1598,7 @@ pub fn lua_tokenizer() -> GenericTokenizer {
         line_comment: "--",
         block_comment_start: "--[[",
         block_comment_end: "]]",
+        nested_comments: false,
     })
 }
 
@@ -1618,6 +1625,7 @@ pub fn r_tokenizer() -> GenericTokenizer {
         line_comment: "#",
         block_comment_start: "",
         block_comment_end: "",
+        nested_comments: false,
     })
 }
 
@@ -1676,6 +1684,7 @@ pub fn elixir_tokenizer() -> GenericTokenizer {
         line_comment: "#",
         block_comment_start: "",
         block_comment_end: "",
+        nested_comments: false,
     })
 }
 
