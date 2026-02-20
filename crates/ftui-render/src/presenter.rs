@@ -582,11 +582,34 @@ impl<W: Write> Presenter<W> {
                 let end = span.x1 as usize;
                 debug_assert!(start <= end);
                 debug_assert!(end < row.len());
-
                 let mut idx = start;
-                for cell in &row[start..=end] {
+                while idx <= end {
+                    let cell = &row[idx];
                     self.emit_cell(idx as u16, cell, pool, links)?;
-                    idx += 1;
+
+                    // Repair invalid wide-glyph tails. If a wide head is present but
+                    // one or more tail cells are not marked CONTINUATION, emit those
+                    // underlying cells explicitly so terminal state stays aligned to
+                    // the logical buffer content.
+                    let width = cell.content.width();
+                    let mut advance = 1usize;
+                    if width > 1 {
+                        for off in 1..width {
+                            let tx = idx + off;
+                            if tx >= row.len() {
+                                break;
+                            }
+                            if row[tx].is_continuation() {
+                                advance = advance.max(off + 1);
+                                continue;
+                            }
+                            self.move_cursor_optimal(tx as u16, span.y)?;
+                            self.emit_cell(tx as u16, &row[tx], pool, links)?;
+                            advance = advance.max(off + 1);
+                        }
+                    }
+
+                    idx = idx.saturating_add(advance);
                 }
             }
         }
@@ -632,26 +655,30 @@ impl<W: Write> Presenter<W> {
 
         // Continuation cells are the tail cells of wide glyphs. Emitting the
         // head glyph already advanced the terminal cursor by the full width, so
-        // we normally skip emitting these cells.
+        // we normally skip these cells.
         //
-        // If we ever start emitting at a continuation cell (e.g. a run begins
-        // mid-wide-character), we must still advance the terminal cursor by one
-        // cell to keep subsequent emissions aligned. We write a space to clear
-        // any potential garbage (orphan cleanup) rather than just skipping with CUF.
+        // If a run starts on a continuation cell, advance one terminal column
+        // without writing content. Writing a space here can clobber valid
+        // trailing glyph state under racey/invalid buffers, so prefer cursor
+        // movement only.
         if cell.is_continuation() {
             match self.cursor_x {
                 // Cursor already advanced past this cell by a previously-emitted wide head.
                 Some(cx) if cx > x => return Ok(()),
-                // Cursor is positioned at (or before) this continuation cell:
-                // Treat as orphan and overwrite with space to ensure clean state.
                 Some(cx) => {
-                    self.writer.write_all(b" ")?;
-                    self.cursor_x = Some(cx.saturating_add(1));
+                    // Cursor behind the continuation cell (rare): resync first.
+                    if cx < x
+                        && let Some(y) = self.cursor_y
+                    {
+                        self.move_cursor_optimal(x, y)?;
+                    }
+                    ansi::cuf(&mut self.writer, 1)?;
+                    self.cursor_x = Some(x.saturating_add(1));
                     return Ok(());
                 }
                 // Defensive: move_cursor_optimal should always set cursor_x before emit_cell is called.
                 None => {
-                    self.writer.write_all(b" ")?;
+                    ansi::cuf(&mut self.writer, 1)?;
                     self.cursor_x = Some(x.saturating_add(1));
                     return Ok(());
                 }
@@ -1010,10 +1037,12 @@ impl<W: Write> Presenter<W> {
                     let cha = cost_model::cha_cost(x);
                     let cup = cost_model::cup_cost(y, x);
 
-                    if cub <= cha && cub <= cup {
-                        ansi::cub(&mut self.writer, dx)?;
-                    } else if cha <= cup {
+                    // Prefer CHA on ties to keep deterministic absolute-column
+                    // movement behavior across terminals.
+                    if cha <= cub && cha <= cup {
                         ansi::cha(&mut self.writer, x)?;
+                    } else if cub <= cup {
+                        ansi::cub(&mut self.writer, dx)?;
                     } else {
                         ansi::cup(&mut self.writer, y, x)?;
                     }
@@ -2071,7 +2100,7 @@ mod tests {
 
     #[test]
     fn link_at_buffer_boundaries() {
-        let mut presenter = test_presenter();
+        let mut presenter = test_presenter_with_hyperlinks();
         let mut buffer = Buffer::new(5, 1);
         let mut links = LinkRegistry::new();
 
@@ -2141,7 +2170,7 @@ mod tests {
 
     #[test]
     fn link_transitions_linked_unlinked_linked() {
-        let mut presenter = test_presenter();
+        let mut presenter = test_presenter_with_hyperlinks();
         let mut buffer = Buffer::new(5, 1);
         let mut links = LinkRegistry::new();
 

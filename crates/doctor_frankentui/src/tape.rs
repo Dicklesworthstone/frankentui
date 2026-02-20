@@ -42,7 +42,14 @@ pub fn build_capture_tape(spec: &TapeSpec<'_>) -> String {
             tape_escape(&format!("cd {project_dir_literal}"))
         ),
         "Enter".to_string(),
-        format!("Type \"{}\"", tape_escape(spec.server_command)),
+        "Type \"export PS1=''\"".to_string(),
+        "Enter".to_string(),
+        "Type \"clear\"".to_string(),
+        "Enter".to_string(),
+        format!(
+            "Type \"{}\"",
+            tape_escape(&format!("exec {}", spec.server_command))
+        ),
         "Enter".to_string(),
         "Show".to_string(),
         String::new(),
@@ -69,16 +76,14 @@ pub fn build_capture_tape(spec: &TapeSpec<'_>) -> String {
     }
 
     lines.push(format!("Sleep {}", duration_literal(spec.tail_sleep)));
+    // Hide teardown to avoid recording shell prompt/command artifacts in output frames.
+    lines.push("Hide".to_string());
     // Robust shutdown tail:
     // - first Ctrl+C handles normal SIGINT shutdown
     // - second Ctrl+C handles apps with confirmation-on-interrupt
-    // - explicit shell exit closes fallback prompt when app already exited
     lines.push("Ctrl+C".to_string());
     lines.push("Sleep 500ms".to_string());
     lines.push("Ctrl+C".to_string());
-    lines.push("Sleep 500ms".to_string());
-    lines.push("Type \"exit\"".to_string());
-    lines.push("Enter".to_string());
     lines.push("Sleep 500ms".to_string());
     lines.push(String::new());
 
@@ -112,10 +117,15 @@ mod tests {
         let tape = build_capture_tape(&spec);
         assert!(tape.contains("Require \"/tmp/bin\""));
         assert!(tape.contains("Set Theme \"GruvboxDark\""));
+        assert!(tape.contains("Type \"export PS1=''\""));
+        assert!(tape.contains("Type \"clear\""));
+        assert!(tape.contains("Type \"exec echo run\""));
         assert!(tape.contains("Type \"#\""));
         assert!(tape.contains("Sleep 2s"));
+        assert_eq!(tape.matches("\nHide\n").count(), 2);
+        assert!(tape.contains("\nHide\nCtrl+C\n"));
         assert_eq!(tape.matches("Ctrl+C").count(), 2);
-        assert!(tape.contains("Type \"exit\""));
+        assert!(!tape.contains("Type \"exit\""));
     }
 
     #[test]

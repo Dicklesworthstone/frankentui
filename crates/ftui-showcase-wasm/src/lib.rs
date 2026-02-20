@@ -92,6 +92,40 @@ mod tests {
             .collect()
     }
 
+    fn find_splitter_hit_for_size(
+        core: &mut RunnerCore,
+        cols: u16,
+        rows: u16,
+        pointer_id: u32,
+    ) -> Option<(i32, i32)> {
+        let modifiers = PaneModifierSnapshot::default();
+        for y in 0..i32::from(rows.max(1)) {
+            for x in 0..i32::from(cols.max(1)) {
+                let down = core.pane_pointer_down_at(
+                    pointer_id,
+                    PanePointerButton::Primary,
+                    x,
+                    y,
+                    modifiers,
+                );
+                if down.accepted() {
+                    let cancel = core.pane_pointer_cancel(Some(pointer_id));
+                    assert!(
+                        cancel.accepted(),
+                        "probe cancel must clear active pointer after accepted probe down"
+                    );
+                    assert_eq!(
+                        core.pane_active_pointer_id(),
+                        None,
+                        "probe cancel must clear active pointer"
+                    );
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn runner_core_creates_and_inits() {
         let mut core = RunnerCore::new(80, 24);
@@ -319,6 +353,157 @@ mod tests {
     }
 
     #[test]
+    fn runner_core_mixed_screen_and_interrupt_churn_is_stable() {
+        let mut core = RunnerCore::new(120, 40);
+        core.init();
+
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next_u32 = || {
+            // Deterministic xorshift64* PRNG for reproducible stress traces.
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state = state.wrapping_mul(0x2545_f491_4f6c_dd1d);
+            (state >> 16) as u32
+        };
+
+        let screen_codes = [
+            "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8",
+            "Digit9", "Digit0",
+        ];
+
+        let mut pointer_id_seed = 800u32;
+        for i in 0..420u16 {
+            match next_u32() % 15 {
+                0 => {
+                    let _ = push_key_with_key(&mut core, "L", "KeyL", 1);
+                }
+                1 => {
+                    let code = screen_codes[(next_u32() as usize) % screen_codes.len()];
+                    let _ = push_key(&mut core, code, 0);
+                }
+                2 => {
+                    let _ = push_key(
+                        &mut core,
+                        if next_u32() & 1 == 0 {
+                            "PageDown"
+                        } else {
+                            "PageUp"
+                        },
+                        0,
+                    );
+                }
+                3 => {
+                    let x = (next_u32() % 220) as i32 - 40;
+                    let y = (next_u32() % 120) as i32 - 30;
+                    let _ = push_mouse_move(&mut core, -1, x, y);
+                }
+                4 => match next_u32() % 7 {
+                    0 => core.resize(0, 0),
+                    1 => core.resize(1, 1),
+                    2 => core.resize(80, 24),
+                    3 => core.resize(120, 40),
+                    4 => core.resize(150, 45),
+                    5 => core.resize(90, 28),
+                    _ => core.resize(64, 20),
+                },
+                5 => {
+                    pointer_id_seed = pointer_id_seed.saturating_add(1);
+                    let x = (next_u32() % 160) as i32;
+                    let y = (next_u32() % 70) as i32;
+                    let down = core.pane_pointer_down_at(
+                        pointer_id_seed,
+                        PanePointerButton::Primary,
+                        x,
+                        y,
+                        PaneModifierSnapshot::default(),
+                    );
+                    if matches!(
+                        down.capture_command,
+                        Some(PanePointerCaptureCommand::Acquire { .. })
+                    ) && next_u32() & 1 == 0
+                    {
+                        let _ = core.pane_capture_acquired(pointer_id_seed);
+                    }
+                }
+                6 => {
+                    let pid = core.pane_active_pointer_id().unwrap_or(pointer_id_seed);
+                    let _ = core.pane_pointer_move_at(
+                        pid,
+                        (next_u32() % 160) as i32,
+                        (next_u32() % 70) as i32,
+                        PaneModifierSnapshot::default(),
+                    );
+                }
+                7 => {
+                    let pid = core.pane_active_pointer_id().unwrap_or(pointer_id_seed);
+                    let _ = core.pane_pointer_up_at(
+                        pid,
+                        PanePointerButton::Primary,
+                        (next_u32() % 160) as i32,
+                        (next_u32() % 70) as i32,
+                        PaneModifierSnapshot::default(),
+                    );
+                }
+                8 => {
+                    let _ = core.pane_pointer_cancel(if next_u32() & 1 == 0 {
+                        None
+                    } else {
+                        Some(pointer_id_seed)
+                    });
+                }
+                9 => {
+                    let _ = core.pane_pointer_leave(pointer_id_seed);
+                }
+                10 => {
+                    let _ = core.pane_blur();
+                }
+                11 => {
+                    let _ = core.pane_visibility_hidden();
+                }
+                12 => {
+                    let _ = core.pane_lost_pointer_capture(pointer_id_seed);
+                }
+                13 => {
+                    let _ = core.pane_undo();
+                    let _ = core.pane_redo();
+                }
+                _ => {
+                    let _ = apply_any_intelligence_mode(&mut core);
+                }
+            }
+
+            if i % 23 == 0 {
+                let _ = core.push_encoded_input(
+                    r#"{"kind":"mouse","phase":"move","x":-11,"y":-7,"mods":0}"#,
+                );
+            }
+
+            core.advance_time_ms(8.0 + f64::from((next_u32() % 24) as u16));
+            let result = core.step();
+            assert!(
+                result.running,
+                "runner exited unexpectedly at iteration {i}"
+            );
+
+            core.prepare_flat_patches();
+            let _ = core.patch_hash();
+            let _ = core.patch_stats();
+            let _ = core.take_logs();
+            let _ = core.pane_preview_state();
+            let _ = core.pane_timeline_status();
+            let _ = core.pane_layout_hash();
+            let _ = core.pane_selected_ids();
+            let _ = core.pane_primary_id();
+        }
+
+        // End-state cleanup must be safe even if no pointer is active.
+        let _ = core.pane_blur();
+        let _ = core.pane_visibility_hidden();
+        assert_eq!(core.pane_active_pointer_id(), None);
+    }
+
+    #[test]
     fn runner_core_resize() {
         let mut core = RunnerCore::new(80, 24);
         core.init();
@@ -484,6 +669,83 @@ mod tests {
         );
         assert!(matches!(up.outcome, PaneDispatchOutcome::SemanticForwarded));
         assert_eq!(core.pane_active_pointer_id(), None);
+    }
+
+    #[test]
+    fn runner_core_pane_pointer_down_at_remains_hittable_after_resize_churn() {
+        let mut core = RunnerCore::new(120, 40);
+        core.init();
+
+        let sizes = [
+            (120u16, 40u16),
+            (96u16, 30u16),
+            (80u16, 24u16),
+            (72u16, 22u16),
+            (64u16, 20u16),
+            (56u16, 18u16),
+            (48u16, 16u16),
+        ];
+        let mut pointer_id = 400u32;
+
+        for (cols, rows) in sizes.into_iter().cycle().take(16) {
+            core.resize(cols, rows);
+            let stepped = core.step();
+            assert!(stepped.running);
+
+            let probe_hit = find_splitter_hit_for_size(&mut core, cols, rows, pointer_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected at least one splitter hit target after resize for {cols}x{rows}"
+                    )
+                });
+            pointer_id = pointer_id.saturating_add(1);
+
+            let down = core.pane_pointer_down_at(
+                pointer_id,
+                PanePointerButton::Primary,
+                probe_hit.0,
+                probe_hit.1,
+                PaneModifierSnapshot::default(),
+            );
+            assert!(
+                down.accepted(),
+                "pane pointer down should remain hittable at {}x{} for probe {:?}",
+                cols,
+                rows,
+                probe_hit
+            );
+            if matches!(
+                down.capture_command,
+                Some(PanePointerCaptureCommand::Acquire { .. })
+            ) {
+                let acquired = core.pane_capture_acquired(pointer_id);
+                assert!(
+                    acquired.accepted(),
+                    "capture ack should succeed for accepted pointer down at {cols}x{rows}"
+                );
+            }
+
+            let up = core.pane_pointer_up_at(
+                pointer_id,
+                PanePointerButton::Primary,
+                probe_hit.0,
+                probe_hit.1,
+                PaneModifierSnapshot::default(),
+            );
+            assert!(
+                up.accepted(),
+                "pane pointer up should succeed at {}x{} for probe {:?}",
+                cols,
+                rows,
+                probe_hit
+            );
+            assert_eq!(
+                core.pane_active_pointer_id(),
+                None,
+                "active pointer must clear after pointer-up at {cols}x{rows}"
+            );
+            pointer_id = pointer_id.saturating_add(1);
+        }
     }
 
     #[test]

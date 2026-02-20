@@ -798,14 +798,18 @@ impl TextInput {
     }
 
     fn cursor_visual_pos(&self) -> usize {
-        if self.value.is_empty() {
-            return 0;
+        let mut pos = 0;
+        if !self.value.is_empty() {
+            pos += self.value
+                .graphemes(true)
+                .take(self.cursor)
+                .map(|g| self.grapheme_width(g))
+                .sum::<usize>();
         }
-        self.value
-            .graphemes(true)
-            .take(self.cursor)
-            .map(|g| self.grapheme_width(g))
-            .sum()
+        if let Some(ime) = &self.ime_composition {
+            pos += ime.graphemes(true).map(|g| self.grapheme_width(g)).sum::<usize>();
+        }
+        pos
     }
 
     fn effective_scroll(&self, viewport_width: usize) -> usize {
@@ -895,7 +899,7 @@ impl Widget for TextInput {
         }
 
         let graphemes: Vec<&str> = self.value.graphemes(true).collect();
-        let show_placeholder = self.value.is_empty() && !self.placeholder.is_empty();
+        let show_placeholder = self.value.is_empty() && self.ime_composition.is_none() && !self.placeholder.is_empty();
 
         let viewport_width = area.width as usize;
         let cursor_visual_pos = self.cursor_visual_pos();
@@ -958,7 +962,34 @@ impl Widget for TextInput {
                 visual_x += w;
             }
         } else {
+            let mut display_spans: Vec<(&str, Style, bool)> = Vec::new();
             for (gi, g) in graphemes.iter().enumerate() {
+                if gi == self.cursor {
+                    if let Some(ime) = &self.ime_composition {
+                        for ig in ime.graphemes(true) {
+                            display_spans.push((ig, self.style, true));
+                        }
+                    }
+                }
+                
+                let cell_style = if !deg.apply_styling() {
+                    Style::default()
+                } else if self.is_in_selection(gi) {
+                    self.selection_style
+                } else {
+                    self.style
+                };
+                display_spans.push((g, cell_style, false));
+            }
+            if self.cursor == graphemes.len() {
+                if let Some(ime) = &self.ime_composition {
+                    for ig in ime.graphemes(true) {
+                        display_spans.push((ig, self.style, true));
+                    }
+                }
+            }
+
+            for (g, cell_style, is_ime) in display_spans {
                 let w = self.grapheme_width(g);
                 if w == 0 {
                     continue;
@@ -988,14 +1019,6 @@ impl Widget for TextInput {
                     break;
                 }
 
-                let cell_style = if !deg.apply_styling() {
-                    Style::default()
-                } else if self.is_in_selection(gi) {
-                    self.selection_style
-                } else {
-                    self.style
-                };
-
                 let mut cell = if let Some(mask) = self.mask_char {
                     Cell::from_char(mask)
                 } else if g.chars().count() > 1 || w > 1 {
@@ -1005,6 +1028,12 @@ impl Widget for TextInput {
                     Cell::from_char(g.chars().next().unwrap_or(' '))
                 };
                 crate::apply_style(&mut cell, cell_style);
+
+                if is_ime && deg.apply_styling() {
+                    use ftui_render::cell::StyleFlags;
+                    let current_flags = cell.attrs.flags();
+                    cell.attrs = cell.attrs.with_flags(current_flags | StyleFlags::UNDERLINED);
+                }
 
                 frame
                     .buffer

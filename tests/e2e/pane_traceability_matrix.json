@@ -94,13 +94,7 @@
       ]
     }
   },
-  "evidence_overrides": {
-    "bd-a46q1.9": {
-      "unit": "implemented",
-      "e2e": "implemented",
-      "logging": "implemented"
-    }
-  },
+  "evidence_overrides": {},
   "rows": [
     {
       "bead_id": "bd-114kn",

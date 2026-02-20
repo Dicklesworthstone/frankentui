@@ -21,13 +21,12 @@ serde_json = "1.0.145"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3.85"
 wasm-bindgen = "0.2.108"
-getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
+getrandom_04 = { package = "getrandom", version = "0.4.1", features = ["wasm_js"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
 
 [package.metadata.wasm-pack.profile.release]
-# -Oz: maximum size optimization
-# --all-features: enable all wasm features (bulk-memory, etc.)
-# --converge: re-run optimization passes until output stabilizes
-wasm-opt = ["-Oz", "--all-features", "--converge"]
+# Keep size optimization but avoid long-running converge passes.
+wasm-opt = ["-Oz"]

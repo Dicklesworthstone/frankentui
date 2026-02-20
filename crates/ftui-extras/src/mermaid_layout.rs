@@ -447,6 +447,7 @@ fn barycenter_sweep_forward(
     r: usize,
     cluster_map: &[Option<usize>],
     pos_buf: &mut Vec<usize>,
+    scratch: &mut MermaidCrossingScratch,
 ) {
     if r == 0 || r >= rank_order.len() {
         return;
@@ -462,12 +463,22 @@ fn barycenter_sweep_forward(
         })
         .collect();
 
-    let cluster_bary = cluster_barycenters(&scored, cluster_map);
+    update_cluster_barycenters(
+        &scored,
+        cluster_map,
+        &mut scratch.cluster_sums,
+        &mut scratch.cluster_bary,
+    );
 
     let mut sorted = scored;
     sorted.sort_by(|a, b| {
-        cluster_sort_key(a.0, a.1, cluster_map, &cluster_bary)
-            .partial_cmp(&cluster_sort_key(b.0, b.1, cluster_map, &cluster_bary))
+        cluster_sort_key(a.0, a.1, cluster_map, &scratch.cluster_bary)
+            .partial_cmp(&cluster_sort_key(
+                b.0,
+                b.1,
+                cluster_map,
+                &scratch.cluster_bary,
+            ))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| graph.node_ids[a.0].cmp(&graph.node_ids[b.0]))
     });
@@ -482,6 +493,7 @@ fn barycenter_sweep_backward(
     r: usize,
     cluster_map: &[Option<usize>],
     pos_buf: &mut Vec<usize>,
+    scratch: &mut MermaidCrossingScratch,
 ) {
     if r + 1 >= rank_order.len() {
         return;
@@ -497,12 +509,22 @@ fn barycenter_sweep_backward(
         })
         .collect();
 
-    let cluster_bary = cluster_barycenters(&scored, cluster_map);
+    update_cluster_barycenters(
+        &scored,
+        cluster_map,
+        &mut scratch.cluster_sums,
+        &mut scratch.cluster_bary,
+    );
 
     let mut sorted = scored;
     sorted.sort_by(|a, b| {
-        cluster_sort_key(a.0, a.1, cluster_map, &cluster_bary)
-            .partial_cmp(&cluster_sort_key(b.0, b.1, cluster_map, &cluster_bary))
+        cluster_sort_key(a.0, a.1, cluster_map, &scratch.cluster_bary)
+            .partial_cmp(&cluster_sort_key(
+                b.0,
+                b.1,
+                cluster_map,
+                &scratch.cluster_bary,
+            ))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| graph.node_ids[a.0].cmp(&graph.node_ids[b.0]))
     });
@@ -511,29 +533,30 @@ fn barycenter_sweep_backward(
 }
 
 /// Compute barycenter for each cluster from its members' barycenters.
-fn cluster_barycenters(
+fn update_cluster_barycenters(
     scored: &[(usize, f64)],
     cluster_map: &[Option<usize>],
-) -> std::collections::HashMap<usize, f64> {
-    let mut sums: std::collections::HashMap<usize, (f64, usize)> = std::collections::HashMap::new();
+    scratch_sums: &mut std::collections::HashMap<usize, (f64, usize)>,
+    out_barycenters: &mut std::collections::HashMap<usize, f64>,
+) {
+    scratch_sums.clear();
+    out_barycenters.clear();
     for &(v, bc) in scored {
         if let Some(Some(ci)) = cluster_map.get(v) {
-            let entry = sums.entry(*ci).or_insert((0.0, 0));
+            let entry = scratch_sums.entry(*ci).or_insert((0.0, 0));
             if bc < f64::MAX {
                 entry.0 += bc;
                 entry.1 += 1;
             }
         }
     }
-    sums.into_iter()
-        .map(|(ci, (sum, count))| {
-            if count > 0 {
-                (ci, sum / count as f64)
-            } else {
-                (ci, f64::MAX)
-            }
-        })
-        .collect()
+    for (ci, (sum, count)) in scratch_sums.drain() {
+        if count > 0 {
+            out_barycenters.insert(ci, sum / count as f64);
+        } else {
+            out_barycenters.insert(ci, f64::MAX);
+        }
+    }
 }
 
 /// Composite sort key: (cluster_barycenter, cluster_tag, node_barycenter).
@@ -564,6 +587,8 @@ struct MermaidCrossingScratch {
     in_b: Vec<bool>,
     edges: Vec<(usize, usize)>,
     fenwick_tree: Vec<usize>,
+    cluster_sums: std::collections::HashMap<usize, (f64, usize)>,
+    cluster_bary: std::collections::HashMap<usize, f64>,
 }
 
 impl MermaidCrossingScratch {
@@ -573,6 +598,8 @@ impl MermaidCrossingScratch {
             in_b: vec![false; n],
             edges: Vec::new(),
             fenwick_tree: Vec::new(),
+            cluster_sums: std::collections::HashMap::new(),
+            cluster_bary: std::collections::HashMap::new(),
         }
     }
 }
@@ -827,12 +854,26 @@ fn minimize_crossings(
 
         // Forward sweep.
         for r in 1..rank_order.len() {
-            barycenter_sweep_forward(rank_order, graph, r, cluster_map, &mut pos_buf);
+            barycenter_sweep_forward(
+                rank_order,
+                graph,
+                r,
+                cluster_map,
+                &mut pos_buf,
+                &mut crossing_scratch,
+            );
         }
 
         // Backward sweep.
         for r in (0..rank_order.len().saturating_sub(1)).rev() {
-            barycenter_sweep_backward(rank_order, graph, r, cluster_map, &mut pos_buf);
+            barycenter_sweep_backward(
+                rank_order,
+                graph,
+                r,
+                cluster_map,
+                &mut pos_buf,
+                &mut crossing_scratch,
+            );
         }
 
         let crossings = total_crossings_with_limit_reuse(

@@ -195,7 +195,7 @@ impl<'a> List<'a> {
         }
 
         if let Some(selected) = state.selected {
-            if !filtered.contains(&selected) {
+            if filtered.binary_search(&selected).is_err() {
                 state.selected = filtered.first().copied();
             }
         } else if force_select_first {
@@ -774,7 +774,7 @@ impl<'a> StatefulWidget for List<'a> {
                     if state.scroll_into_view_requested {
                         if let Some(selected) = state.selected
                             && let Some(selected_pos) =
-                                filtered_indices.iter().position(|&idx| idx == selected)
+                                filtered_indices.binary_search(&selected).ok()
                         {
                             if selected_pos >= state.offset + list_height {
                                 state.offset = selected_pos - list_height + 1;
