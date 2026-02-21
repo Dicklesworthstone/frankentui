@@ -501,31 +501,44 @@ impl GenericTokenizer {
     /// Scan a number starting at `pos`.
     fn scan_number(&self, bytes: &[u8], pos: usize) -> usize {
         let mut end = pos;
-        // Hex prefix
-        if end + 1 < bytes.len() && bytes[end] == b'0' && (bytes[end + 1] | 0x20) == b'x' {
+        // Hex, binary, or octal prefix
+        if end + 1 < bytes.len() && bytes[end] == b'0' && matches!(bytes[end + 1] | 0x20, b'x' | b'b' | b'o') {
             end += 2;
             while end < bytes.len() && (bytes[end].is_ascii_hexdigit() || bytes[end] == b'_') {
                 end += 1;
             }
-            return end;
-        }
-        // Decimal (with optional dot and exponent)
-        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'_') {
-            end += 1;
-        }
-        if end < bytes.len()
-            && bytes[end] == b'.'
-            && end + 1 < bytes.len()
-            && bytes[end + 1].is_ascii_digit()
-        {
-            end += 1;
+        } else {
+            // Decimal (with optional dot and exponent)
             while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'_') {
                 end += 1;
+            }
+            if end < bytes.len()
+                && bytes[end] == b'.'
+                && end + 1 < bytes.len()
+                && bytes[end + 1].is_ascii_digit()
+            {
+                end += 1;
+                while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'_') {
+                    end += 1;
+                }
+            }
+            // Exponent (e.g. 1e10, 1e-5)
+            if end < bytes.len() && (bytes[end] | 0x20) == b'e' {
+                let mut exp_end = end + 1;
+                if exp_end < bytes.len() && (bytes[exp_end] == b'+' || bytes[exp_end] == b'-') {
+                    exp_end += 1;
+                }
+                if exp_end < bytes.len() && bytes[exp_end].is_ascii_digit() {
+                    end = exp_end;
+                    while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'_') {
+                        end += 1;
+                    }
+                }
             }
         }
         // Type suffix (e.g., u32, f64)
         if end < bytes.len() && bytes[end].is_ascii_alphabetic() {
-            while end < bytes.len() && bytes[end].is_ascii_alphanumeric() {
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
                 end += 1;
             }
         }
@@ -2605,7 +2618,7 @@ impl SyntaxHighlighter {
         let mut lines = Vec::new();
         let mut state = LineState::Normal;
 
-        for source_line in code.split('\n') {
+        for source_line in code.lines() {
             let (tokens, next_state) = tokenizer.tokenize_line(source_line, state);
             state = next_state;
 
@@ -2625,7 +2638,7 @@ impl SyntaxHighlighter {
             .or_else(|| self.registry.by_name(lang))
             .unwrap_or_else(|| self.registry.for_extension("txt").expect("PlainTokenizer"));
 
-        let source_lines: Vec<&str> = code.split('\n').collect();
+        let source_lines: Vec<&str> = code.lines().collect();
         let total = source_lines.len() + start_line;
         let gutter_width = total.to_string().len();
 
@@ -2910,27 +2923,41 @@ impl Tokenizer for TomlTokenizer {
                     pos = len;
                 }
                 b'[' => {
-                    // Table header or array of tables
-                    let start = pos;
-                    if pos + 1 < len && bytes[pos + 1] == b'[' {
-                        // Array of tables [[...]]
-                        pos += 2;
-                        while pos + 1 < len && !(bytes[pos] == b']' && bytes[pos + 1] == b']') {
-                            pos += 1;
-                        }
-                        if pos + 1 < len {
-                            pos += 2; // skip ]]
-                        }
-                    } else {
-                        pos += 1;
-                        while pos < len && bytes[pos] != b']' {
-                            pos += 1;
-                        }
-                        if pos < len {
-                            pos += 1; // skip ]
+                    let mut is_heading = true;
+                    for i in 0..pos {
+                        if bytes[i] != b' ' && bytes[i] != b'\t' {
+                            is_heading = false;
+                            break;
                         }
                     }
-                    tokens.push(Token::new(TokenKind::Heading, start..pos));
+
+                    if is_heading {
+                        // Table header or array of tables
+                        let start = pos;
+                        if pos + 1 < len && bytes[pos + 1] == b'[' {
+                            // Array of tables [[...]]
+                            pos += 2;
+                            while pos + 1 < len && !(bytes[pos] == b']' && bytes[pos + 1] == b']') {
+                                pos += 1;
+                            }
+                            if pos + 1 < len {
+                                pos += 2; // skip ]]
+                            }
+                        } else {
+                            pos += 1;
+                            while pos < len && bytes[pos] != b']' {
+                                pos += 1;
+                            }
+                            if pos < len {
+                                pos += 1; // skip ]
+                            }
+                        }
+                        tokens.push(Token::new(TokenKind::Heading, start..pos));
+                    } else {
+                        // Array start
+                        tokens.push(Token::new(TokenKind::Delimiter, pos..pos + 1));
+                        pos += 1;
+                    }
                 }
                 b'"' => {
                     let start = pos;
@@ -3022,7 +3049,7 @@ impl Tokenizer for TomlTokenizer {
                     tokens.push(Token::new(TokenKind::Punctuation, pos..pos + 1));
                     pos += 1;
                 }
-                b'{' | b'}' => {
+                b'{' | b'}' | b']' => {
                     tokens.push(Token::new(TokenKind::Delimiter, pos..pos + 1));
                     pos += 1;
                 }
@@ -3166,10 +3193,36 @@ impl Tokenizer for MarkdownTokenizer {
                     // Emphasis marker
                     let start = pos;
                     let marker = b;
+                    let mut marker_count = 0;
                     while pos < len && bytes[pos] == marker {
                         pos += 1;
+                        marker_count += 1;
                     }
-                    tokens.push(Token::new(TokenKind::Emphasis, start..pos));
+                    // Find closing markers
+                    let mut found = false;
+                    let mut i = pos;
+                    while i < len {
+                        if bytes[i] == marker {
+                            let mut close_count = 0;
+                            while i < len && bytes[i] == marker {
+                                i += 1;
+                                close_count += 1;
+                            }
+                            if close_count == marker_count {
+                                found = true;
+                                pos = i;
+                                break;
+                            }
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    if !found {
+                        // Not closed, just treat markers as text
+                        tokens.push(Token::new(TokenKind::Text, start..pos));
+                    } else {
+                        tokens.push(Token::new(TokenKind::Emphasis, start..pos));
+                    }
                 }
                 b'[' => {
                     // Possible link: [text](url) or [text][ref]
