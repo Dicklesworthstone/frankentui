@@ -205,8 +205,8 @@ impl ScrollbarState {
                             let (thumb_offset, _) = self.calc_thumb_geometry(track_len);
                             // Store where we grabbed the thumb (relative to thumb top)
                             self.drag_anchor = Some(track_pos.saturating_sub(thumb_offset));
-                            // No scroll on initial grab, just setup
-                            return MouseResult::Ignored;
+                            // Prevent event bubbling by returning Scrolled
+                            return MouseResult::Scrolled;
                         }
                         SCROLLBAR_PART_TRACK => {
                             let track_len = ((data >> 28) & 0x0FFF_FFFF) as usize;

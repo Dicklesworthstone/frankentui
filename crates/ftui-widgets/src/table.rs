@@ -312,14 +312,11 @@ pub struct TableState {
     /// When set, this state can be persisted via the [`Stateful`] trait.
     persistence_id: Option<String>,
     /// Current sort column (for undo support).
-    #[allow(dead_code)]
-    sort_column: Option<usize>,
+    pub sort_column: Option<usize>,
     /// Sort ascending (for undo support).
-    #[allow(dead_code)]
-    sort_ascending: bool,
+    pub sort_ascending: bool,
     /// Filter text (for undo support).
-    #[allow(dead_code)]
-    filter: String,
+    pub filter: String,
     /// Cache for stable layout resizing (temporal coherence).
     coherence: ftui_layout::CoherenceCache,
 }
