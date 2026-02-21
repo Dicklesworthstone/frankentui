@@ -1342,6 +1342,56 @@ impl Screen for AdvancedTextEditor {
             return Cmd::None;
         }
 
+        // Handle focus switching with Tab / Shift+Tab while search panel is visible.
+        if self.search_visible
+            && let Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            }) = event
+        {
+            match *code {
+                KeyCode::Tab if modifiers.contains(Modifiers::SHIFT) => {
+                    let old_focus = self.focus;
+                    self.focus = self.focus.prev();
+                    self.update_focus_states();
+
+                    let entry = DiagnosticEntry::new(DiagnosticEventKind::FocusChanged)
+                        .with_focus(self.focus.as_str())
+                        .with_context(format!("from {} via Shift+Tab", old_focus.as_str()));
+                    self.log_event(entry);
+
+                    return Cmd::None;
+                }
+                KeyCode::Tab => {
+                    let old_focus = self.focus;
+                    self.focus = self.focus.next();
+                    self.update_focus_states();
+
+                    let entry = DiagnosticEntry::new(DiagnosticEventKind::FocusChanged)
+                        .with_focus(self.focus.as_str())
+                        .with_context(format!("from {} via Tab", old_focus.as_str()));
+                    self.log_event(entry);
+
+                    return Cmd::None;
+                }
+                KeyCode::BackTab => {
+                    let old_focus = self.focus;
+                    self.focus = self.focus.prev();
+                    self.update_focus_states();
+
+                    let entry = DiagnosticEntry::new(DiagnosticEventKind::FocusChanged)
+                        .with_focus(self.focus.as_str())
+                        .with_context(format!("from {} via BackTab", old_focus.as_str()));
+                    self.log_event(entry);
+
+                    return Cmd::None;
+                }
+                _ => {}
+            }
+        }
+
         // Global shortcuts
         if let Event::Key(KeyEvent {
             code,
@@ -1417,14 +1467,14 @@ impl Screen for AdvancedTextEditor {
                             .with_focus("editor")
                             .with_panel_visible(false);
                         self.log_event(entry);
-                    } else if self.focus != Focus::View {
-                        self.focus = Focus::View;
+                    } else {
+                        self.focus = Focus::Editor;
                         self.update_focus_states();
                         self.editor.clear_selection();
 
-                        // Log selection cleared / view mode
-                        let entry = DiagnosticEntry::new(DiagnosticEventKind::FocusChanged)
-                            .with_focus("view");
+                        // Log selection clear while preserving editor focus.
+                        let entry = DiagnosticEntry::new(DiagnosticEventKind::SelectionCleared)
+                            .with_focus("editor");
                         self.log_event(entry);
                     }
                     self.update_status();
@@ -1648,7 +1698,7 @@ impl Screen for AdvancedTextEditor {
                 action: "Replace current",
             },
             HelpEntry {
-                key: "Ctrl+Left/Right",
+                key: "Ctrl+Left/Right, Tab/Shift+Tab",
                 action: "Cycle focus (search open)",
             },
             HelpEntry {

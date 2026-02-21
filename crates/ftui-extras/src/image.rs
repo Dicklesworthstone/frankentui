@@ -271,7 +271,7 @@ pub fn encode_iterm2_png(png_bytes: &[u8], options: &Iterm2Options) -> String {
         args.push(format!("name={encoded_name}"));
     }
 
-    let header = format!("\x1b]1337;File={};", args.join(";"));
+    let header = format!("\x1b]1337;File={}:", args.join(";"));
     let payload = STANDARD.encode(png_bytes);
     format!("{header}{payload}\x07")
 }

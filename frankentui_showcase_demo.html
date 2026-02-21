@@ -163,21 +163,26 @@
 	  @supports (height: 100dvh) {
 	    #container { height: 100dvh; }
 	  }
-	  /* Touch zoom controls — only visible on coarse-pointer (touch) devices */
+	  /* Touch controls — only visible on coarse-pointer (touch) devices */
 	  #touch-zoom {
 	    display: none;
 	    position: fixed; top: 8px; right: 8px;
-	    z-index: 15; gap: 6px;
+	    z-index: 15;
 	  }
 	  #touch-zoom button {
-	    width: 40px; height: 40px;
+	    width: 34px; height: 34px;
 	    border: 1px solid #444; border-radius: 6px;
 	    background: rgba(30,30,30,0.85);
-	    color: #ccc; font: 18px/1 "Pragmasevka NF", monospace;
+	    color: #ccc; font: 12px/1 "Pragmasevka NF", monospace;
 	    cursor: pointer;
 	    -webkit-tap-highlight-color: transparent;
 	  }
 	  #touch-zoom button:active { background: rgba(80,80,80,0.85); }
+	  #touch-zoom button[data-active="true"] {
+	    border-color: #4a9;
+	    background: rgba(28, 82, 58, 0.9);
+	    color: #dff7eb;
+	  }
 	  @media (pointer: coarse) {
 	    #touch-zoom { display: flex; }
 	  }
@@ -202,9 +207,7 @@
 <div id="pane-selection-halo" aria-hidden="true"></div>
 <div id="pane-dock-hint" aria-hidden="true"></div>
 <div id="touch-zoom">
-  <button id="zoom-out">&minus;</button>
-  <button id="zoom-reset">1:1</button>
-  <button id="zoom-in">+</button>
+  <button id="mobile-kb-toggle" aria-pressed="false" title="Toggle keyboard mode">KB</button>
 </div>
 <div id="loading-overlay">
   <div id="loading-label">Loading WASM...</div>
@@ -226,7 +229,7 @@ const URL_ZOOM        = parseFloat(params.get("zoom")) || 0;
 const LOG_JSONL       = params.get("jsonl") === "1";
 const LOG_PERF        = false;  // Per-frame timing in console
 // Bump when deploying to bypass Cloudflare/browser caches for JS/WASM artifacts.
-const ASSET_VERSION = "2026-02-20.2";
+const ASSET_VERSION = "2026-02-20.4";
 
 // ── DOM refs ───────────────────────────────────────────────────────────
 const canvas         = document.getElementById("terminal-canvas");
@@ -242,6 +245,7 @@ const paneGhostAlt2  = document.getElementById("pane-ghost-alt-2");
 const paneSelectionHalo = document.getElementById("pane-selection-halo");
 const paneGhostAlts  = [paneGhostAlt1, paneGhostAlt2];
 const paneDockHint   = document.getElementById("pane-dock-hint");
+const mobileKbToggle = document.getElementById("mobile-kb-toggle");
 const PANE_WORKSPACE_KEY = "ftui-pane-workspace-v1";
 let paneWorkspaceToken = "";
 const paneActivePointers = new Set();
@@ -758,6 +762,12 @@ function paneModsFromDomEvent(e) {
   return (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 }
 
+function paneButtonFromDomEvent(e) {
+  const raw = Number.isFinite(e?.button) ? Math.trunc(e.button) : 0;
+  if (raw < 0 || raw > 2) return 0;
+  return raw;
+}
+
 function panePointerIdFromEvent(e) {
   if (!e) return 1;
   return clampPointerId(e.pointerId);
@@ -809,7 +819,13 @@ function paneDispatchPointerDown(e) {
   if (typeof runner.panePointerDownAt !== "function") return null;
   const point = domMouseToInput(e, "down");
   const pointerId = panePointerIdFromEvent(e);
-  const dispatch = runner.panePointerDownAt(pointerId, e.button, point.x, point.y, paneModsFromDomEvent(e));
+  const dispatch = runner.panePointerDownAt(
+    pointerId,
+    paneButtonFromDomEvent(e),
+    point.x,
+    point.y,
+    paneModsFromDomEvent(e),
+  );
   return applyPaneCaptureCommand(dispatch);
 }
 
@@ -825,7 +841,13 @@ function paneDispatchPointerUp(e) {
   if (typeof runner.panePointerUpAt !== "function") return null;
   const point = domMouseToInput(e, "up");
   const pointerId = panePointerIdFromEvent(e);
-  const dispatch = runner.panePointerUpAt(pointerId, e.button, point.x, point.y, paneModsFromDomEvent(e));
+  const dispatch = runner.panePointerUpAt(
+    pointerId,
+    paneButtonFromDomEvent(e),
+    point.x,
+    point.y,
+    paneModsFromDomEvent(e),
+  );
   return applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
 }
 
@@ -1110,6 +1132,103 @@ function shouldUseMobileKeyboardProxy() {
   return Boolean(keyboardProxy) && isCoarsePointerDevice();
 }
 
+let mobileInputMode = "touch";
+
+function updateMobileInputToggleUi() {
+  if (!mobileKbToggle) return;
+  const keyboardMode = mobileInputMode === "keyboard";
+  mobileKbToggle.dataset.active = keyboardMode ? "true" : "false";
+  mobileKbToggle.setAttribute("aria-pressed", keyboardMode ? "true" : "false");
+  mobileKbToggle.title = keyboardMode
+    ? "Keyboard mode enabled (tap to switch to touch mode)"
+    : "Touch mode enabled (tap to switch to keyboard mode)";
+}
+
+function setMobileInputMode(mode, { focusTarget = true } = {}) {
+  const normalized = mode === "keyboard" ? "keyboard" : "touch";
+  if (!shouldUseMobileKeyboardProxy() && normalized === "keyboard") {
+    mobileInputMode = "touch";
+  } else {
+    mobileInputMode = normalized;
+  }
+  updateMobileInputToggleUi();
+  if (!focusTarget) return;
+  if (mobileInputMode === "keyboard") {
+    focusKeyboardProxyInput();
+  } else {
+    if (keyboardProxy && document.activeElement === keyboardProxy) {
+      keyboardProxy.blur();
+    }
+    focusCanvasInput();
+  }
+}
+
+function useMobileKeyboardForPointer(pointerType) {
+  return pointerType !== "mouse" && mobileInputMode === "keyboard" && shouldUseMobileKeyboardProxy();
+}
+
+const LONG_PRESS_KEYBOARD_MS = 420;
+const LONG_PRESS_MOVE_PX = 14;
+let pendingKeyboardLongPress = null;
+
+function cancelKeyboardLongPressTracker() {
+  if (!pendingKeyboardLongPress) return false;
+  const { timerId, triggered } = pendingKeyboardLongPress;
+  clearTimeout(timerId);
+  pendingKeyboardLongPress = null;
+  return triggered;
+}
+
+function startKeyboardLongPressTracker(pointerId, clientX, clientY) {
+  if (!shouldUseMobileKeyboardProxy() || mobileInputMode !== "touch") return;
+  cancelKeyboardLongPressTracker();
+
+  const tracker = {
+    pointerId,
+    startX: clientX,
+    startY: clientY,
+    triggered: false,
+    timerId: 0,
+  };
+
+  tracker.timerId = window.setTimeout(() => {
+    if (!pendingKeyboardLongPress || pendingKeyboardLongPress !== tracker) return;
+    if (!shouldUseMobileKeyboardProxy() || mobileInputMode !== "touch") return;
+
+    tracker.triggered = true;
+    setMobileInputMode("keyboard", { focusTarget: true });
+
+    if (
+      Number.isFinite(tracker.pointerId) &&
+      typeof runner.panePointerCancel === "function"
+    ) {
+      try {
+        const dispatch = runner.panePointerCancel(tracker.pointerId);
+        applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
+      } catch (_) {}
+    }
+    paneActivePointers.delete(tracker.pointerId);
+    paneTouchPointers.delete(tracker.pointerId);
+    touchGestureSuppressedByPane = false;
+    touchState = TOUCH_IDLE;
+    touchScrollAccX = 0;
+    touchScrollAccY = 0;
+    pinchStartDist = 0;
+    syncPaneOverlayFromRunner();
+  }, LONG_PRESS_KEYBOARD_MS);
+
+  pendingKeyboardLongPress = tracker;
+}
+
+function updateKeyboardLongPressTracker(clientX, clientY) {
+  if (!pendingKeyboardLongPress || pendingKeyboardLongPress.triggered) return;
+  const dx = clientX - pendingKeyboardLongPress.startX;
+  const dy = clientY - pendingKeyboardLongPress.startY;
+  if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_PX) {
+    cancelKeyboardLongPressTracker();
+  }
+}
+
 function focusCanvasInput() {
   try {
     canvas.focus({ preventScroll: true });
@@ -1143,6 +1262,9 @@ function focusTerminalInputTarget(preferMobileKeyboard) {
   if (preferMobileKeyboard && shouldUseMobileKeyboardProxy()) {
     focusKeyboardProxyInput();
     return;
+  }
+  if (keyboardProxy && document.activeElement === keyboardProxy) {
+    keyboardProxy.blur();
   }
   focusCanvasInput();
 }
@@ -1468,22 +1590,31 @@ let dragButton = 0;
 if ("PointerEvent" in window) {
 	  canvas.addEventListener("pointerdown", (e) => {
 	    e.preventDefault();
-	    focusTerminalInputTarget(e.pointerType !== "mouse");
+	    const preferKeyboard = useMobileKeyboardForPointer(e.pointerType);
+	    focusTerminalInputTarget(preferKeyboard);
 	    const pointerId = panePointerIdFromEvent(e);
 	    mouseButtonsDown = e.pointerType === "mouse" ? e.buttons : mouseButtonsDown;
 	    dragButton = e.pointerType === "mouse" ? e.button : dragButton;
 	    const dispatch = paneDispatchPointerDown(e);
-	    if (!dispatch || dispatch.accepted !== false) {
+	    const paneAccepted = !dispatch || dispatch.accepted !== false;
+	    if (!paneAccepted && e.pointerType !== "mouse" && !preferKeyboard) {
+	      // Smart keyboard mode should never steal pane drags/resizes; only allow
+	      // long-press keyboard activation when the pane layer rejects the pointer.
+	      startKeyboardLongPressTracker(pointerId, e.clientX, e.clientY);
+	    } else {
+	      cancelKeyboardLongPressTracker();
+	    }
+	    if (paneAccepted) {
 	      paneActivePointers.add(pointerId);
 	    }
 	    if (e.pointerType !== "mouse") {
-	      if (!dispatch || dispatch.accepted !== false) {
+	      if (paneAccepted) {
 	        paneTouchPointers.add(pointerId);
 	      } else {
 	        paneTouchPointers.delete(pointerId);
 	      }
 	    }
-	    if (e.pointerType !== "mouse" && (!dispatch || dispatch.accepted !== false)) {
+	    if (e.pointerType !== "mouse" && paneAccepted) {
 	      // A touch pointer that was accepted by the pane layer must suppress the
 	      // touch-to-wheel gesture layer (ordering differs across browsers).
 	      touchGestureSuppressedByPane = true;
@@ -1498,10 +1629,11 @@ if ("PointerEvent" in window) {
 	    }
 	  });
 
-  canvas.addEventListener("pointerup", (e) => {
-    e.preventDefault();
-    const pointerId = panePointerIdFromEvent(e);
-    paneActivePointers.delete(pointerId);
+	  canvas.addEventListener("pointerup", (e) => {
+	    cancelKeyboardLongPressTracker();
+	    e.preventDefault();
+	    const pointerId = panePointerIdFromEvent(e);
+	    paneActivePointers.delete(pointerId);
     paneTouchPointers.delete(pointerId);
     if (e.pointerType === "mouse") {
       mouseButtonsDown = e.buttons;
@@ -1514,9 +1646,9 @@ if ("PointerEvent" in window) {
     }
   });
 
-  canvas.addEventListener("pointermove", (e) => {
-    const pointerId = panePointerIdFromEvent(e);
-    if (e.pointerType === "mouse") {
+	  canvas.addEventListener("pointermove", (e) => {
+	    const pointerId = panePointerIdFromEvent(e);
+	    if (e.pointerType === "mouse") {
       mouseButtonsDown = e.buttons;
       if (mouseButtonsDown) {
         const ev = domMouseToInput(e, "drag");
@@ -1534,19 +1666,21 @@ if ("PointerEvent" in window) {
         safeTermInput(domMouseToInput(e, "move"));
       }
       return;
-    }
+	    }
 
-    if (paneActivePointers.has(pointerId)) {
-      e.preventDefault();
-      paneDispatchPointerMove(e);
-      syncPaneOverlayFromRunner();
-    }
-  }, { passive: false });
+	    updateKeyboardLongPressTracker(e.clientX, e.clientY);
+	    if (paneActivePointers.has(pointerId)) {
+	      e.preventDefault();
+	      paneDispatchPointerMove(e);
+	      syncPaneOverlayFromRunner();
+	    }
+	  }, { passive: false });
 
-  canvas.addEventListener("pointercancel", (e) => {
-    const pointerId = panePointerIdFromEvent(e);
-    const hadMouseButtonsDown = e.pointerType === "mouse" && mouseButtonsDown !== 0;
-    paneActivePointers.delete(pointerId);
+	  canvas.addEventListener("pointercancel", (e) => {
+	    cancelKeyboardLongPressTracker();
+	    const pointerId = panePointerIdFromEvent(e);
+	    const hadMouseButtonsDown = e.pointerType === "mouse" && mouseButtonsDown !== 0;
+	    paneActivePointers.delete(pointerId);
     paneTouchPointers.delete(pointerId);
     paneDispatchPointerCancel(e);
     syncPaneOverlayFromRunner();
@@ -1556,25 +1690,28 @@ if ("PointerEvent" in window) {
     }
   });
 
-  canvas.addEventListener("pointerleave", (e) => {
-    const pointerId = panePointerIdFromEvent(e);
-    if (!paneActivePointers.has(pointerId)) return;
-    paneDispatchPointerLeave(e);
-    syncPaneOverlayFromRunner();
-  });
+	  canvas.addEventListener("pointerleave", (e) => {
+	    cancelKeyboardLongPressTracker();
+	    const pointerId = panePointerIdFromEvent(e);
+	    if (!paneActivePointers.has(pointerId)) return;
+	    paneDispatchPointerLeave(e);
+	    syncPaneOverlayFromRunner();
+	  });
 
-  canvas.addEventListener("lostpointercapture", (e) => {
-    const pointerId = panePointerIdFromEvent(e);
-    paneActivePointers.delete(pointerId);
-    paneTouchPointers.delete(pointerId);
+	  canvas.addEventListener("lostpointercapture", (e) => {
+	    cancelKeyboardLongPressTracker();
+	    const pointerId = panePointerIdFromEvent(e);
+	    paneActivePointers.delete(pointerId);
+	    paneTouchPointers.delete(pointerId);
     paneDispatchLostPointerCapture(e);
     syncPaneOverlayFromRunner();
   });
 
-  window.addEventListener("pointerup", (e) => {
-    const pointerId = panePointerIdFromEvent(e);
-    const wasPaneActive = paneActivePointers.has(pointerId);
-    const hadMouseButtonsDown = e.pointerType === "mouse" && mouseButtonsDown !== 0;
+	  window.addEventListener("pointerup", (e) => {
+	    cancelKeyboardLongPressTracker();
+	    const pointerId = panePointerIdFromEvent(e);
+	    const wasPaneActive = paneActivePointers.has(pointerId);
+	    const hadMouseButtonsDown = e.pointerType === "mouse" && mouseButtonsDown !== 0;
     if (wasPaneActive) {
       paneDispatchPointerUp(e);
       persistPaneWorkspace();
@@ -1587,8 +1724,8 @@ if ("PointerEvent" in window) {
         safeTermInput(domMouseToInput(e, "up"));
       }
       mouseButtonsDown = 0;
-    }
-  });
+	    }
+	  });
 } else {
   canvas.addEventListener("mousedown", (e) => {
     e.preventDefault();
@@ -1720,11 +1857,23 @@ if (keyboardProxy) {
     keyboardProxyExpectedInputEcho = null;
     keyboardProxySuppressNextInput = false;
     resetKeyboardProxyValue();
+    if (mobileInputMode === "keyboard" && isCoarsePointerDevice()) {
+      setMobileInputMode("touch", { focusTarget: false });
+    }
     queueMicrotask(syncTerminalFocusFromDom);
   });
   keyboardProxy.addEventListener("beforeinput", handleKeyboardProxyBeforeInput, { capture: true });
   keyboardProxy.addEventListener("input", handleKeyboardProxyInput, { capture: true });
 }
+
+if (mobileKbToggle) {
+  mobileKbToggle.addEventListener("click", (e) => {
+    e.preventDefault();
+    const nextMode = mobileInputMode === "keyboard" ? "touch" : "keyboard";
+    setMobileInputMode(nextMode, { focusTarget: true });
+  });
+}
+setMobileInputMode("touch", { focusTarget: false });
 
 window.addEventListener("blur", () => {
   safeTermInput({ kind: "focus", focused: false });
@@ -1777,23 +1926,6 @@ if (keyboardProxy) {
   keyboardProxy.addEventListener("compositionend", handleCompositionEnd);
 }
 
-// ── Touch zoom buttons ──────────────────────────────────────────────────
-document.getElementById("zoom-in").addEventListener("click", () => {
-  userZoom = Math.min(3.0, userZoom * 1.15);
-  applyZoom();
-  focusTerminalInputTarget(shouldUseMobileKeyboardProxy());
-});
-document.getElementById("zoom-out").addEventListener("click", () => {
-  userZoom = Math.max(0.3, userZoom / 1.15);
-  applyZoom();
-  focusTerminalInputTarget(shouldUseMobileKeyboardProxy());
-});
-document.getElementById("zoom-reset").addEventListener("click", () => {
-  userZoom = 1.0;
-  applyZoom();
-  focusTerminalInputTarget(shouldUseMobileKeyboardProxy());
-});
-
 // ── Orientation change + visual viewport scroll pinning ──────────────
 let orientationTimer = 0;
 window.addEventListener("orientationchange", () => {
@@ -1827,6 +1959,7 @@ const TAP_MAX_TIME = 300;  // ms
 const MAX_TOUCH_WHEEL_STEPS_PER_MOVE = 16;
 
 function resetTransientPointerAndTouchState() {
+  cancelKeyboardLongPressTracker();
   mouseButtonsDown = 0;
   dragButton = 0;
   paneActivePointers.clear();
@@ -1881,7 +2014,14 @@ function pinchDistance(t0, t1) {
 
 canvas.addEventListener("touchstart", (e) => {
   e.preventDefault();
-  focusTerminalInputTarget(true);
+  focusTerminalInputTarget(useMobileKeyboardForPointer("touch"));
+  if (!("PointerEvent" in window) && e.touches.length === 1) {
+    const t0 = e.touches[0];
+    const pointerId = clampPointerId(Number(t0.identifier ?? 0) + 1);
+    startKeyboardLongPressTracker(pointerId, t0.clientX, t0.clientY);
+  } else if (!("PointerEvent" in window)) {
+    cancelKeyboardLongPressTracker();
+  }
   if ("PointerEvent" in window && paneTouchPointers.size > 0) {
     touchGestureSuppressedByPane = true;
     touchState = TOUCH_IDLE;
@@ -1909,6 +2049,9 @@ canvas.addEventListener("touchstart", (e) => {
 canvas.addEventListener("touchmove", (e) => {
   e.preventDefault();
   const touches = e.touches;
+  if (!("PointerEvent" in window) && touches.length === 1) {
+    updateKeyboardLongPressTracker(touches[0].clientX, touches[0].clientY);
+  }
   if ("PointerEvent" in window && paneTouchPointers.size > 0) {
     touchGestureSuppressedByPane = true;
     touchState = TOUCH_IDLE;
@@ -1999,6 +2142,15 @@ canvas.addEventListener("touchmove", (e) => {
 
 canvas.addEventListener("touchend", (e) => {
   e.preventDefault();
+  const keyboardLongPressTriggered = cancelKeyboardLongPressTracker();
+  if (keyboardLongPressTriggered) {
+    touchGestureSuppressedByPane = false;
+    touchState = TOUCH_IDLE;
+    touchScrollAccX = 0;
+    touchScrollAccY = 0;
+    pinchStartDist = 0;
+    return;
+  }
   if (touchGestureSuppressedByPane) {
     if (e.touches.length === 0) {
       touchGestureSuppressedByPane = false;
@@ -2054,6 +2206,7 @@ canvas.addEventListener("touchend", (e) => {
 
 canvas.addEventListener("touchcancel", (e) => {
   e.preventDefault();
+  cancelKeyboardLongPressTracker();
   touchGestureSuppressedByPane = false;
   touchState = TOUCH_IDLE;
   touchScrollAccX = 0;

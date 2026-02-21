@@ -16,7 +16,6 @@
 //! ```
 
 use ftui_core::geometry::Rect;
-use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, CellContent, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -578,14 +577,12 @@ impl BarChart<'_> {
                     }
                 }
                 BarMode::Stacked => {
-                    let mut left_col = 0_u16;
+                    let mut cumulative = 0.0_f64;
                     for (si, &val) in group.values.iter().enumerate() {
-                        let bar_len_f = (val / max_val) * chart_width;
-                        let bar_len = if bar_len_f.is_nan() {
-                            0
-                        } else {
-                            bar_len_f.round() as u16
-                        };
+                        let prev_cols = (cumulative / max_val * chart_width).round() as u16;
+                        cumulative += val;
+                        let curr_cols = (cumulative / max_val * chart_width).round() as u16;
+                        let bar_len = curr_cols.saturating_sub(prev_cols);
                         let color = self.get_color(si);
 
                         for dy in 0..self.bar_width {
@@ -597,7 +594,7 @@ impl BarChart<'_> {
                                 let x = area
                                     .x
                                     .saturating_add(label_width)
-                                    .saturating_add(left_col)
+                                    .saturating_add(prev_cols)
                                     .saturating_add(dx);
                                 if x < area.right() {
                                     let mut cell = Cell::from_char('█');
@@ -606,7 +603,6 @@ impl BarChart<'_> {
                                 }
                             }
                         }
-                        left_col += bar_len;
                     }
                     y_cursor += self.bar_width;
                 }
@@ -924,6 +920,9 @@ impl Widget for LineChart<'_> {
             for (i, label) in self.x_labels.iter().enumerate() {
                 let x = if n == 1 {
                     chart_area.x
+                } else if i == n - 1 {
+                    let label_w = display_width(label) as u16;
+                    chart_area.right().saturating_sub(label_w).max(chart_area.x)
                 } else {
                     chart_area.x.saturating_add(
                         (i as u32 * chart_area.width.saturating_sub(1) as u32
@@ -1009,6 +1008,7 @@ impl Widget for LineChart<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::buffer::Buffer;
     use ftui_render::frame::Frame;
     use ftui_render::grapheme_pool::GraphemePool;
 

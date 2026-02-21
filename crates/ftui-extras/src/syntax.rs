@@ -458,10 +458,10 @@ impl GenericTokenizer {
         let bytes = text.as_bytes();
 
         while pos < bytes.len() {
-            if text[pos..].starts_with(start_pat) {
+            if bytes[pos..].starts_with(start_pat.as_bytes()) {
                 depth = depth.saturating_add(1);
                 pos += start_pat.len();
-            } else if text[pos..].starts_with(end_pat) {
+            } else if bytes[pos..].starts_with(end_pat.as_bytes()) {
                 depth -= 1;
                 pos += end_pat.len();
                 if depth == 0 {

@@ -12,10 +12,11 @@
 //! - Fire simulation
 
 use std::cell::{Cell, OnceCell, Ref, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::f64::consts::TAU;
 use std::fmt::Write as _;
+use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use web_time::Instant;
@@ -30,8 +31,7 @@ use ftui_extras::text_effects::{
     StyledText, TextEffect, TransitionState,
 };
 use ftui_extras::visual_fx::{
-    DoomMeltFx, FxQuality, MetaballsCanvasAdapter, PlasmaCanvasAdapter, PlasmaPalette,
-    QuakeConsoleFx, ThemeInputs,
+    FxQuality, MetaballsCanvasAdapter, PlasmaCanvasAdapter, PlasmaPalette, ThemeInputs,
 };
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
@@ -43,6 +43,7 @@ use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
+use serde_json::Value;
 
 use super::{HelpEntry, Screen};
 use crate::theme;
@@ -125,14 +126,12 @@ pub struct VisualEffectsScreen {
     spiral: SpiralState,
     /// Spin lattice state.
     spin_lattice: SpinLatticeState,
+    /// Three.js-style model renderer state (lazy init).
+    three_model: RefCell<Option<ThreeJsModelState>>,
     /// Doom E1M1 braille automap state (lazy init).
     doom_e1m1: RefCell<Option<DoomE1M1State>>,
-    /// Doom Melt (Fire) effect state.
-    doom_melt: RefCell<Option<DoomMeltFx>>,
     /// Quake E1M1 braille rasterizer state (lazy init).
     quake_e1m1: RefCell<Option<QuakeE1M1State>>,
-    /// Quake Console effect state.
-    quake_console: RefCell<Option<QuakeConsoleFx>>,
     // FPS tracking
     /// Frame times for FPS calculation (microseconds).
     frame_times: VecDeque<u64>,
@@ -150,8 +149,6 @@ pub struct VisualEffectsScreen {
     transition: TransitionState,
     /// Cached painter buffer (grow-only) for canvas rendering.
     painter: RefCell<Painter>,
-    /// Cached cell buffer (grow-only) for cell-based effects (Doom/Quake).
-    cell_buffer: RefCell<Vec<PackedRgba>>,
     /// Last render quality (used to throttle updates).
     last_quality: Cell<FxQuality>,
     /// Last effect that panicked during render (handled on next tick).
@@ -210,6 +207,7 @@ enum EffectType {
     WaveInterference,
     Spiral,
     SpinLattice,
+    ThreeJsModel,
     DoomE1M1,
     QuakeE1M1,
 }
@@ -232,6 +230,7 @@ impl EffectType {
         Self::WaveInterference,
         Self::Spiral,
         Self::SpinLattice,
+        Self::ThreeJsModel,
         Self::DoomE1M1,
         Self::QuakeE1M1,
     ];
@@ -254,6 +253,9 @@ impl EffectType {
             "wave" | "wave-interference" | "wave_interference" => Some(Self::WaveInterference),
             "spiral" | "galaxy" => Some(Self::Spiral),
             "spin-lattice" | "spin_lattice" => Some(Self::SpinLattice),
+            "threejs" | "threejs-model" | "three-model" | "model" | "model-3d" => {
+                Some(Self::ThreeJsModel)
+            }
             "doom" | "doom-e1m1" => Some(Self::DoomE1M1),
             "quake" | "quake-e1m1" | "e1m1" => Some(Self::QuakeE1M1),
             _ => None,
@@ -278,6 +280,7 @@ impl EffectType {
             Self::WaveInterference => "wave-interference",
             Self::Spiral => "spiral",
             Self::SpinLattice => "spin-lattice",
+            Self::ThreeJsModel => "threejs-model",
             Self::DoomE1M1 => "doom-e1m1",
             Self::QuakeE1M1 => "quake-e1m1",
         }
@@ -311,6 +314,7 @@ impl EffectType {
             Self::WaveInterference => "≈ Wave Interference",
             Self::Spiral => "✦ Spiral Galaxy",
             Self::SpinLattice => "◈ Spin Lattice",
+            Self::ThreeJsModel => "◭ Three.js Model",
             Self::DoomE1M1 => "⛦ Doom E1M1",
             Self::QuakeE1M1 => "⛧ Quake E1M1",
         }
@@ -334,6 +338,7 @@ impl EffectType {
             Self::WaveInterference => "Multiple wave sources creating interference patterns",
             Self::Spiral => "Logarithmic spiral galaxy with rotating star field",
             Self::SpinLattice => "Landau-Lifshitz spin dynamics on a magnetic lattice",
+            Self::ThreeJsModel => "Terminal rasterizer for Three.js mesh JSON (OpenTUI-style)",
             Self::DoomE1M1 => "First-person raycasted braille renderer (Freedoom E1M1)",
             Self::QuakeE1M1 => "First-person braille rasterizer of Quake's Slipgate Complex",
         }
@@ -3347,6 +3352,551 @@ impl QuakeE1M1State {
 }
 
 // =============================================================================
+// Three.js Model Viewer - terminal 3D mesh renderer
+// =============================================================================
+
+#[derive(Debug, Clone)]
+struct ThreeJsModelMesh {
+    name: String,
+    vertices: Vec<[f32; 3]>,
+    indices: Vec<[u32; 3]>,
+    edges: Vec<(u32, u32)>,
+    center: [f32; 3],
+    inv_radius: f32,
+}
+
+impl ThreeJsModelMesh {
+    fn fallback_cube() -> Self {
+        let vertices = vec![
+            [-1.0, -1.0, -1.0],
+            [1.0, -1.0, -1.0],
+            [1.0, 1.0, -1.0],
+            [-1.0, 1.0, -1.0],
+            [-1.0, -1.0, 1.0],
+            [1.0, -1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [-1.0, 1.0, 1.0],
+        ];
+        let indices = vec![
+            [0, 1, 2],
+            [0, 2, 3],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [1, 2, 6],
+            [1, 6, 5],
+            [0, 3, 7],
+            [0, 7, 4],
+        ];
+        Self::finalize("Built-in Cube".to_string(), vertices, indices).expect("valid cube mesh")
+    }
+
+    fn from_json(raw: &str) -> Option<Self> {
+        let value: Value = serde_json::from_str(raw).ok()?;
+        Self::from_value(&value)
+    }
+
+    fn from_value(value: &Value) -> Option<Self> {
+        let mut roots = Vec::with_capacity(4);
+        roots.push(value);
+        if let Some(data) = value.get("data") {
+            roots.push(data);
+        }
+        if let Some(geometries) = value.get("geometries").and_then(Value::as_array)
+            && let Some(first) = geometries.first()
+        {
+            roots.push(first);
+            if let Some(data) = first.get("data") {
+                roots.push(data);
+            }
+        }
+
+        let mut position_stream = None;
+        for root in &roots {
+            if let Some(stream) = extract_position_stream(root) {
+                position_stream = Some(stream);
+                break;
+            }
+        }
+        let (positions, item_size) = position_stream?;
+        if item_size < 3 {
+            return None;
+        }
+
+        let mut vertices = Vec::with_capacity(positions.len() / item_size.max(1));
+        for chunk in positions.chunks(item_size) {
+            if chunk.len() >= 3 {
+                vertices.push([chunk[0], chunk[1], chunk[2]]);
+            }
+        }
+        if vertices.len() < 3 {
+            return None;
+        }
+
+        let mut indices_flat = None;
+        for root in &roots {
+            if let Some(stream) = extract_index_stream(root) {
+                indices_flat = Some(stream);
+                break;
+            }
+        }
+
+        let mut indices = Vec::new();
+        if let Some(flat) = indices_flat {
+            for tri in flat.chunks(3) {
+                if tri.len() == 3 {
+                    indices.push([tri[0], tri[1], tri[2]]);
+                }
+            }
+        }
+        if indices.is_empty() {
+            for i in (0..vertices.len()).step_by(3) {
+                if i + 2 < vertices.len() {
+                    indices.push([i as u32, (i + 1) as u32, (i + 2) as u32]);
+                }
+            }
+        }
+
+        let name = value
+            .get("name")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                value
+                    .get("metadata")
+                    .and_then(|meta| meta.get("generator"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("Three.js Mesh")
+            .to_string();
+
+        Self::finalize(name, vertices, indices)
+    }
+
+    fn finalize(name: String, vertices: Vec<[f32; 3]>, indices: Vec<[u32; 3]>) -> Option<Self> {
+        if vertices.len() < 3 || indices.is_empty() {
+            return None;
+        }
+
+        let max_index = vertices.len() as u32;
+        let mut filtered = Vec::with_capacity(indices.len());
+        for [a, b, c] in indices {
+            if a < max_index && b < max_index && c < max_index && a != b && b != c && a != c {
+                filtered.push([a, b, c]);
+            }
+        }
+        if filtered.is_empty() {
+            return None;
+        }
+
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for v in &vertices {
+            min[0] = min[0].min(v[0]);
+            min[1] = min[1].min(v[1]);
+            min[2] = min[2].min(v[2]);
+            max[0] = max[0].max(v[0]);
+            max[1] = max[1].max(v[1]);
+            max[2] = max[2].max(v[2]);
+        }
+
+        let center = [
+            (min[0] + max[0]) * 0.5,
+            (min[1] + max[1]) * 0.5,
+            (min[2] + max[2]) * 0.5,
+        ];
+        let mut radius = 0.0f32;
+        for v in &vertices {
+            let dx = v[0] - center[0];
+            let dy = v[1] - center[1];
+            let dz = v[2] - center[2];
+            radius = radius.max((dx * dx + dy * dy + dz * dz).sqrt());
+        }
+        let inv_radius = if radius > 1.0e-6 { 1.0 / radius } else { 1.0 };
+
+        let mut edge_set = HashSet::with_capacity(filtered.len() * 2);
+        for [a, b, c] in &filtered {
+            for (u, v) in [(*a, *b), (*b, *c), (*c, *a)] {
+                let edge = if u < v { (u, v) } else { (v, u) };
+                edge_set.insert(edge);
+            }
+        }
+        let mut edges = edge_set.into_iter().collect::<Vec<_>>();
+        edges.sort_unstable();
+
+        Some(Self {
+            name,
+            vertices,
+            indices: filtered,
+            edges,
+            center,
+            inv_radius,
+        })
+    }
+}
+
+fn parse_f32_array(value: &Value) -> Option<Vec<f32>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        out.push(item.as_f64()? as f32);
+    }
+    Some(out)
+}
+
+fn parse_u32_array(value: &Value) -> Option<Vec<u32>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let value = item.as_u64()?;
+        if value > u32::MAX as u64 {
+            return None;
+        }
+        out.push(value as u32);
+    }
+    Some(out)
+}
+
+fn parse_stream_with_item_size(value: &Value) -> Option<(Vec<f32>, usize)> {
+    if let Some(array) = parse_f32_array(value) {
+        return Some((array, 3));
+    }
+    let obj = value.as_object()?;
+    let array = parse_f32_array(obj.get("array")?)?;
+    let item_size = obj
+        .get("itemSize")
+        .and_then(Value::as_u64)
+        .map_or(3, |v| v as usize);
+    Some((array, item_size.max(1)))
+}
+
+fn parse_index_stream(value: &Value) -> Option<Vec<u32>> {
+    if let Some(array) = parse_u32_array(value) {
+        return Some(array);
+    }
+    let obj = value.as_object()?;
+    parse_u32_array(obj.get("array")?)
+}
+
+fn value_at_path<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = root;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
+}
+
+fn extract_position_stream(root: &Value) -> Option<(Vec<f32>, usize)> {
+    root.get("positions")
+        .and_then(parse_stream_with_item_size)
+        .or_else(|| root.get("vertices").and_then(parse_stream_with_item_size))
+        .or_else(|| {
+            value_at_path(root, &["attributes", "position"]).and_then(parse_stream_with_item_size)
+        })
+        .or_else(|| {
+            value_at_path(root, &["data", "attributes", "position"])
+                .and_then(parse_stream_with_item_size)
+        })
+        .or_else(|| root.get("position").and_then(parse_stream_with_item_size))
+}
+
+fn extract_index_stream(root: &Value) -> Option<Vec<u32>> {
+    root.get("indices")
+        .and_then(parse_index_stream)
+        .or_else(|| root.get("index").and_then(parse_index_stream))
+        .or_else(|| value_at_path(root, &["data", "index"]).and_then(parse_index_stream))
+}
+
+fn load_threejs_model_from_env() -> Option<ThreeJsModelMesh> {
+    for key in ["FTUI_DEMO_VFX_MODEL_JSON", "FTUI_VFX_MODEL_JSON"] {
+        if let Ok(raw) = env::var(key)
+            && let Some(model) = ThreeJsModelMesh::from_json(&raw)
+        {
+            return Some(model);
+        }
+    }
+
+    for key in ["FTUI_DEMO_VFX_MODEL_PATH", "FTUI_VFX_MODEL_PATH"] {
+        if let Ok(path) = env::var(key)
+            && let Ok(raw) = fs::read_to_string(path)
+            && let Some(model) = ThreeJsModelMesh::from_json(&raw)
+        {
+            return Some(model);
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ThreeJsProjectedVertex {
+    sx: f32,
+    sy: f32,
+    z: f32,
+    wx: f32,
+    wy: f32,
+    wz: f32,
+}
+
+#[derive(Debug, Clone)]
+struct ThreeJsModelState {
+    mesh: ThreeJsModelMesh,
+    rot_x: f32,
+    rot_y: f32,
+    rot_z: f32,
+    depth_buffer: Vec<f32>,
+}
+
+impl Default for ThreeJsModelState {
+    fn default() -> Self {
+        let mesh = load_threejs_model_from_env().unwrap_or_else(ThreeJsModelMesh::fallback_cube);
+        Self {
+            mesh,
+            rot_x: 0.35,
+            rot_y: 0.0,
+            rot_z: 0.12,
+            depth_buffer: Vec::new(),
+        }
+    }
+}
+
+impl ThreeJsModelState {
+    fn update(&mut self) {
+        self.rot_y += 0.028;
+        self.rot_x += 0.004;
+        self.rot_z += 0.002;
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::too_many_lines)]
+    fn render(
+        &mut self,
+        painter: &mut Painter,
+        width: u16,
+        height: u16,
+        quality: FxQuality,
+        time: f64,
+    ) {
+        if matches!(quality, FxQuality::Off) || width < 4 || height < 4 {
+            return;
+        }
+        let len = width as usize * height as usize;
+        if self.depth_buffer.len() < len {
+            self.depth_buffer.resize(len, f32::INFINITY);
+        } else {
+            self.depth_buffer[..len].fill(f32::INFINITY);
+        }
+
+        let (sin_x, cos_x) = self.rot_x.sin_cos();
+        let (sin_y, cos_y) = self.rot_y.sin_cos();
+        let (sin_z, cos_z) = self.rot_z.sin_cos();
+
+        let mut projected = Vec::with_capacity(self.mesh.vertices.len());
+        let half_w = width as f32 * 0.5;
+        let half_h = height as f32 * 0.5;
+
+        for v in &self.mesh.vertices {
+            let nx = (v[0] - self.mesh.center[0]) * self.mesh.inv_radius;
+            let ny = (v[1] - self.mesh.center[1]) * self.mesh.inv_radius;
+            let nz = (v[2] - self.mesh.center[2]) * self.mesh.inv_radius;
+
+            let x1 = nx * cos_y + nz * sin_y;
+            let z1 = -nx * sin_y + nz * cos_y;
+            let y2 = ny * cos_x - z1 * sin_x;
+            let z2 = ny * sin_x + z1 * cos_x;
+            let x3 = x1 * cos_z - y2 * sin_z;
+            let y3 = x1 * sin_z + y2 * cos_z;
+
+            let z = z2 + 3.2;
+            let inv_z = 1.0 / z.max(0.2);
+            let sx = half_w + x3 * inv_z * half_w * 1.25;
+            let sy = half_h + y3 * inv_z * half_h * 1.1;
+
+            projected.push(ThreeJsProjectedVertex {
+                sx,
+                sy,
+                z,
+                wx: x3,
+                wy: y3,
+                wz: z2,
+            });
+        }
+
+        let max_triangles = match quality {
+            FxQuality::Full => 1800usize,
+            FxQuality::Reduced => 1100usize,
+            FxQuality::Minimal => 520usize,
+            FxQuality::Off => 0usize,
+        };
+        let base_tri_step = match quality {
+            FxQuality::Full => 1usize,
+            FxQuality::Reduced => 2usize,
+            FxQuality::Minimal => 4usize,
+            FxQuality::Off => return,
+        };
+        let tri_count = self.mesh.indices.len().max(1);
+        let adaptive_step = tri_count.div_ceil(max_triangles.max(1));
+        let tri_step = base_tri_step.max(adaptive_step.max(1));
+
+        let light = {
+            let lx = 0.35f32;
+            let ly = -0.45f32;
+            let lz = -1.0f32;
+            let norm = (lx * lx + ly * ly + lz * lz).sqrt();
+            [lx / norm, ly / norm, lz / norm]
+        };
+
+        for (tri_idx, tri) in self.mesh.indices.iter().enumerate().step_by(tri_step) {
+            let [ia, ib, ic] = *tri;
+            let a = projected[ia as usize];
+            let b = projected[ib as usize];
+            let c = projected[ic as usize];
+            if a.z <= 0.2 || b.z <= 0.2 || c.z <= 0.2 {
+                continue;
+            }
+
+            // Back-face culling in projected space (clockwise winding only).
+            let cross = (b.sx - a.sx) * (c.sy - a.sy) - (b.sy - a.sy) * (c.sx - a.sx);
+            if cross >= 0.0 {
+                continue;
+            }
+
+            let ux = b.wx - a.wx;
+            let uy = b.wy - a.wy;
+            let uz = b.wz - a.wz;
+            let vx = c.wx - a.wx;
+            let vy = c.wy - a.wy;
+            let vz = c.wz - a.wz;
+            let nx = uy * vz - uz * vy;
+            let ny = uz * vx - ux * vz;
+            let nz = ux * vy - uy * vx;
+            let norm = (nx * nx + ny * ny + nz * nz).sqrt();
+            if norm <= 1.0e-5 {
+                continue;
+            }
+            let lambert =
+                ((nx / norm) * light[0] + (ny / norm) * light[1] + (nz / norm) * light[2]).abs();
+            let shade = (0.22 + 0.78 * lambert).clamp(0.0, 1.0);
+            let depth = ((a.z + b.z + c.z) / 3.0).clamp(0.2, 8.0);
+            let depth_fade = (1.15 - depth / 8.0).clamp(0.25, 1.0);
+
+            let hue = ((tri_idx as f64 / tri_count as f64) + time * 0.08) % 1.0;
+            let (r, g, bcol) = hsv_to_rgb(hue * 360.0, 0.6, (shade * depth_fade) as f64);
+            let face_color = PackedRgba::rgb(r, g, bcol);
+            Self::rasterize_triangle(
+                painter,
+                &mut self.depth_buffer[..len],
+                width as usize,
+                height as usize,
+                (a.sx, a.sy, a.z),
+                (b.sx, b.sy, b.z),
+                (c.sx, c.sy, c.z),
+                face_color,
+            );
+        }
+
+        let max_edges = match quality {
+            FxQuality::Full => 2600usize,
+            FxQuality::Reduced => 1500usize,
+            FxQuality::Minimal => 700usize,
+            FxQuality::Off => 0usize,
+        };
+        let base_edge_step = match quality {
+            FxQuality::Full => 1usize,
+            FxQuality::Reduced => 2usize,
+            FxQuality::Minimal => 4usize,
+            FxQuality::Off => return,
+        };
+        let edge_count = self.mesh.edges.len().max(1);
+        let adaptive_edge_step = edge_count.div_ceil(max_edges.max(1));
+        let edge_step = base_edge_step.max(adaptive_edge_step.max(1));
+
+        for (edge_idx, (ia, ib)) in self.mesh.edges.iter().enumerate().step_by(edge_step) {
+            let a = projected[*ia as usize];
+            let b = projected[*ib as usize];
+            if a.z <= 0.2 || b.z <= 0.2 {
+                continue;
+            }
+            let avg_depth = ((a.z + b.z) * 0.5).clamp(0.2, 8.0);
+            let depth_fade = (1.25 - avg_depth / 8.0).clamp(0.3, 1.0);
+            let hue = ((edge_idx as f64 / edge_count as f64) + time * 0.08 + 0.07) % 1.0;
+            let (r, g, bcol) = hsv_to_rgb(hue * 360.0, 0.35, (0.55 * depth_fade) as f64);
+            painter.line_colored(
+                a.sx as i32,
+                a.sy as i32,
+                b.sx as i32,
+                b.sy as i32,
+                Some(PackedRgba::rgb(r, g, bcol)),
+            );
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::too_many_arguments)]
+    fn rasterize_triangle(
+        painter: &mut Painter,
+        depth_buffer: &mut [f32],
+        width: usize,
+        height: usize,
+        a: (f32, f32, f32),
+        b: (f32, f32, f32),
+        c: (f32, f32, f32),
+        color: PackedRgba,
+    ) {
+        let min_x = a.0.min(b.0).min(c.0).floor().max(0.0) as i32;
+        let max_x = a.0.max(b.0).max(c.0).ceil().min((width - 1) as f32) as i32;
+        let min_y = a.1.min(b.1).min(c.1).floor().max(0.0) as i32;
+        let max_y = a.1.max(b.1).max(c.1).ceil().min((height - 1) as f32) as i32;
+
+        if min_x > max_x || min_y > max_y {
+            return;
+        }
+
+        let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+        if area.abs() <= 1.0e-5 {
+            return;
+        }
+
+        for yi in min_y..=max_y {
+            let y = yi as f32 + 0.5;
+            for xi in min_x..=max_x {
+                let x = xi as f32 + 0.5;
+
+                let w0 = (b.0 - x) * (c.1 - y) - (b.1 - y) * (c.0 - x);
+                let w1 = (c.0 - x) * (a.1 - y) - (c.1 - y) * (a.0 - x);
+                let w2 = (a.0 - x) * (b.1 - y) - (a.1 - y) * (b.0 - x);
+                let inside = if area > 0.0 {
+                    w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
+                } else {
+                    w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0
+                };
+                if !inside {
+                    continue;
+                }
+
+                let alpha = w0 / area;
+                let beta = w1 / area;
+                let gamma = w2 / area;
+                let z = alpha * a.2 + beta * b.2 + gamma * c.2;
+
+                let x_u = xi as usize;
+                let y_u = yi as usize;
+                let idx = y_u * width + x_u;
+                if z < depth_buffer[idx] {
+                    depth_buffer[idx] = z;
+                    painter.point_colored_in_bounds(x_u, y_u, color);
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Helper functions
 // =============================================================================
 
@@ -3445,10 +3995,9 @@ impl Default for VisualEffectsScreen {
             wave_interference: WaveInterferenceState::default(),
             spiral: SpiralState::default(),
             spin_lattice: SpinLatticeState::default(),
+            three_model: RefCell::new(None),
             doom_e1m1: RefCell::new(None),
-            doom_melt: RefCell::new(None),
             quake_e1m1: RefCell::new(None),
-            quake_console: RefCell::new(None),
             // FPS tracking
             frame_times: VecDeque::with_capacity(60),
             last_frame: None,
@@ -3459,7 +4008,6 @@ impl Default for VisualEffectsScreen {
             // Transition overlay
             transition: TransitionState::new(),
             painter: RefCell::new(Painter::new(0, 0, Mode::Braille)),
-            cell_buffer: RefCell::new(Vec::new()),
             last_quality: Cell::new(FxQuality::Full),
             effect_panic: Cell::new(None),
             // Text effects demo (bd-2b82)
@@ -3578,30 +4126,17 @@ impl VisualEffectsScreen {
         f(guard.as_mut().expect("quake state should be initialized"))
     }
 
-    fn with_doom_melt_mut<F, R>(&self, f: F) -> R
+    fn with_three_model_mut<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut DoomMeltFx) -> R,
+        F: FnOnce(&mut ThreeJsModelState) -> R,
     {
-        let mut guard = self.doom_melt.borrow_mut();
+        let mut guard = self.three_model.borrow_mut();
         if guard.is_none() {
-            *guard = Some(DoomMeltFx::new());
+            *guard = Some(ThreeJsModelState::default());
         }
         f(guard
             .as_mut()
-            .expect("doom melt state should be initialized"))
-    }
-
-    fn with_quake_console_mut<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut QuakeConsoleFx) -> R,
-    {
-        let mut guard = self.quake_console.borrow_mut();
-        if guard.is_none() {
-            *guard = Some(QuakeConsoleFx::new());
-        }
-        f(guard
-            .as_mut()
-            .expect("quake console state should be initialized"))
+            .expect("three.js model state should be initialized"))
     }
 
     fn is_fps_effect(&self) -> bool {
@@ -4453,16 +4988,18 @@ impl Screen for VisualEffectsScreen {
                             self.spin_lattice.render(&mut painter, pw, ph, quality)
                         }
                         EffectType::DoomE1M1 => {
-                            self.with_doom_melt_mut(|fx| {
-                                fx.render_painter(&mut painter);
+                            self.with_doom_mut(|doom| {
+                                doom.render(&mut painter, pw, ph, quality, self.time, self.frame);
                             });
                         }
                         EffectType::QuakeE1M1 => {
-                            self.with_quake_console_mut(|fx| {
-                                fx.set_progress(1.0);
-                                fx.render_painter(&mut painter, &theme_inputs);
+                            self.with_quake_mut(|quake| {
+                                quake.render(&mut painter, pw, ph, quality, self.time, self.frame);
                             });
                         }
+                        EffectType::ThreeJsModel => self.with_three_model_mut(|model| {
+                            model.render(&mut painter, pw, ph, quality, self.time);
+                        }),
                         // Canvas adapters for metaballs and plasma (bd-l8x9.5.3)
                         EffectType::Metaballs => {
                             self.with_metaballs_adapter_mut(|adapter| {
@@ -4502,60 +5039,6 @@ impl Screen for VisualEffectsScreen {
                     )
                     .style(Style::new().fg(PackedRgba::rgb(255, 220, 220)))
                     .render(crash_area, frame);
-                }
-            }
-        }
-
-        // Render high-fidelity BackdropFx for Doom/Quake (replacing legacy 3D canvas)
-        if matches!(self.effect, EffectType::DoomE1M1 | EffectType::QuakeE1M1) {
-            let width = canvas_area.width;
-            let height = canvas_area.height;
-            let len = width as usize * height as usize;
-            let mut buf = self.cell_buffer.borrow_mut();
-            if buf.len() < len {
-                buf.resize(len, PackedRgba::TRANSPARENT);
-            }
-
-            let theme_inputs = current_fx_theme();
-            let ctx = ftui_extras::visual_fx::FxContext {
-                width,
-                height,
-                frame: self.frame,
-                time_seconds: self.time * 0.1,
-                quality: FxQuality::Full,
-                theme: &theme_inputs,
-            };
-
-            match self.effect {
-                EffectType::DoomE1M1 => {
-                    self.with_doom_melt_mut(|fx| {
-                        use ftui_extras::visual_fx::BackdropFx;
-                        fx.resize(width, height);
-                        fx.render(ctx, &mut buf[..len]);
-                    });
-                }
-                EffectType::QuakeE1M1 => {
-                    self.with_quake_console_mut(|fx| {
-                        use ftui_extras::visual_fx::BackdropFx;
-                        // Animate drop or keep static? Full console is best for background.
-                        fx.set_progress(1.0);
-                        fx.resize(width, height);
-                        fx.render(ctx, &mut buf[..len]);
-                    });
-                }
-                _ => unreachable!(),
-            }
-
-            // Blit directly to frame buffers (Backdrop behavior)
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = y as usize * width as usize + x as usize;
-                    let color = buf[idx];
-                    if let Some(cell) = frame.buffer.get_mut(canvas_area.x + x, canvas_area.y + y) {
-                        cell.bg = color;
-                        // Clear content to ensure backdrop is visible
-                        cell.content = ftui_render::cell::CellContent::EMPTY;
-                    }
                 }
             }
         }
@@ -4785,6 +5268,11 @@ impl Screen for VisualEffectsScreen {
                 }
                 if spin_update_this_frame && spin_width > 0 && spin_height > 0 {
                     self.spin_lattice.update();
+                }
+            }
+            EffectType::ThreeJsModel => {
+                if update_this_frame {
+                    self.with_three_model_mut(ThreeJsModelState::update);
                 }
             }
             EffectType::DoomE1M1 => {
