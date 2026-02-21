@@ -536,9 +536,7 @@ impl TextInput {
             return;
         }
 
-        let gc = self.grapheme_count();
-        let delta = gc.saturating_sub(current_count);
-        self.cursor = (old_cursor + delta).min(gc);
+        self.cursor = self.value.grapheme_indices(true).take_while(|(i, _)| *i < byte_offset + to_insert.len()).count();
     }
 
     fn insert_char(&mut self, c: char) {
@@ -563,12 +561,8 @@ impl TextInput {
             return;
         }
 
-        // Only advance cursor if we added a new grapheme.
-        // If we inserted a combining char that merged with the previous one,
-        // the count stays the same, and the cursor should stay after that merged grapheme (same index).
-        if new_count > old_count {
-            self.cursor += 1;
-        }
+        let char_len = c.len_utf8();
+        self.cursor = self.value.grapheme_indices(true).take_while(|(i, _)| *i < byte_offset + char_len).count();
     }
 
     fn delete_char_back(&mut self) {
@@ -577,6 +571,10 @@ impl TextInput {
             let byte_end = self.grapheme_byte_offset(self.cursor);
             self.value.drain(byte_start..byte_end);
             self.cursor -= 1;
+            let gc = self.grapheme_count();
+            if self.cursor > gc {
+                self.cursor = gc;
+            }
         }
     }
 
@@ -586,6 +584,10 @@ impl TextInput {
             let byte_start = self.grapheme_byte_offset(self.cursor);
             let byte_end = self.grapheme_byte_offset(self.cursor + 1);
             self.value.drain(byte_start..byte_end);
+            let gc = self.grapheme_count();
+            if self.cursor > gc {
+                self.cursor = gc;
+            }
         }
     }
 
@@ -619,6 +621,10 @@ impl TextInput {
             let byte_end = self.grapheme_byte_offset(old_cursor);
             self.value.drain(byte_start..byte_end);
             self.cursor = new_cursor;
+            let gc = self.grapheme_count();
+            if self.cursor > gc {
+                self.cursor = gc;
+            }
         }
     }
 
@@ -634,6 +640,10 @@ impl TextInput {
             let byte_start = self.grapheme_byte_offset(old_cursor);
             let byte_end = self.grapheme_byte_offset(new_cursor);
             self.value.drain(byte_start..byte_end);
+            let gc = self.grapheme_count();
+            if self.cursor > gc {
+                self.cursor = gc;
+            }
         }
     }
 
@@ -653,6 +663,10 @@ impl TextInput {
             let byte_end = self.grapheme_byte_offset(end);
             self.value.drain(byte_start..byte_end);
             self.cursor = start;
+            let gc = self.grapheme_count();
+            if self.cursor > gc {
+                self.cursor = gc;
+            }
         }
     }
 
@@ -1178,6 +1192,10 @@ impl TextInputUndoExt for TextInput {
             self.cursor -= deleted_count;
         } else if self.cursor > start {
             self.cursor = start;
+        }
+        let gc = self.grapheme_count();
+        if self.cursor > gc {
+            self.cursor = gc;
         }
     }
 }

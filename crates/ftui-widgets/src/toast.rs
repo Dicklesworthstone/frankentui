@@ -1051,13 +1051,10 @@ impl Toast {
 
     /// Check if the toast should be visible.
     ///
-    /// A toast is visible if it's not dismissed, not expired, and not in
-    /// the Hidden animation phase.
+    /// A toast is visible if it's not in the Hidden animation phase.
     #[inline]
     pub fn is_visible(&self) -> bool {
-        !self.state.dismissed
-            && !self.is_expired()
-            && self.state.animation.phase != ToastAnimationPhase::Hidden
+        self.state.animation.phase != ToastAnimationPhase::Hidden
     }
 
     /// Check if the toast is currently animating.
@@ -1558,7 +1555,7 @@ mod tests {
 
     #[test]
     fn test_toast_dismiss() {
-        let mut toast = Toast::new("Dismissable");
+        let mut toast = Toast::new("Dismissable").no_animation();
         assert!(toast.is_visible());
         toast.dismiss();
         assert!(!toast.is_visible());
@@ -1727,7 +1724,7 @@ mod tests {
 
     #[test]
     fn test_toast_not_visible_when_dismissed() {
-        let mut toast = Toast::new("Test");
+        let mut toast = Toast::new("Test").no_animation();
         toast.dismiss();
         let area = Rect::new(0, 0, 20, 5);
         let mut pool = GraphemePool::new();

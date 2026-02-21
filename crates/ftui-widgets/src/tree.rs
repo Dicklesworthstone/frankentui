@@ -878,36 +878,17 @@ impl Tree {
     /// root is row 0; otherwise children of the root are the top-level rows.
     /// Only expanded nodes' children are visited.
     pub fn node_at_visible_index_mut(&mut self, target: usize) -> Option<&mut TreeNode> {
-        let path = self.find_string_path_at_visible_index(target)?;
+        let path = self.find_path_indices_at_visible_index(target)?;
         
         let mut current = &mut self.root;
-        let mut path_slice = path.as_slice();
-
-        if self.show_root {
-            if path_slice.is_empty() || current.label != path_slice[0] {
-                return None;
-            }
-            path_slice = &path_slice[1..];
-        }
-
-        for segment in path_slice {
-            let mut found = false;
+        for &idx in &path {
             current.materialize_lazy_children();
-            for child in &mut current.children {
-                if child.label == *segment {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                return None;
-            }
-            current = current.children.iter_mut().find(|c| c.label == *segment).unwrap();
+            current = current.children.get_mut(idx)?;
         }
         Some(current)
     }
 
-    fn find_string_path_at_visible_index(&self, target: usize) -> Option<Vec<String>> {
+    fn find_path_indices_at_visible_index(&self, target: usize) -> Option<Vec<usize>> {
         let filtered_root = self.search_query.as_deref().and_then(|query| {
             let query = query.trim();
             if query.is_empty() {
@@ -922,12 +903,14 @@ impl Tree {
         let mut path = Vec::new();
         
         if self.show_root {
-            Self::walk_visible_string_path(root, target, &mut counter, &mut path)
+            Self::walk_visible_index_path(root, target, &mut counter, &mut path)
         } else if root.expanded {
-            for child in &root.children {
-                if let Some(p) = Self::walk_visible_string_path(child, target, &mut counter, &mut path) {
+            for (idx, child) in root.children.iter().enumerate() {
+                path.push(idx);
+                if let Some(p) = Self::walk_visible_index_path(child, target, &mut counter, &mut path) {
                     return Some(p);
                 }
+                path.pop();
             }
             None
         } else {
@@ -935,25 +918,25 @@ impl Tree {
         }
     }
 
-    fn walk_visible_string_path(
+    fn walk_visible_index_path(
         node: &TreeNode,
         target: usize,
         counter: &mut usize,
-        current_path: &mut Vec<String>,
-    ) -> Option<Vec<String>> {
-        current_path.push(node.label.clone());
+        current_path: &mut Vec<usize>,
+    ) -> Option<Vec<usize>> {
         if *counter == target {
             return Some(current_path.clone());
         }
         *counter += 1;
         if node.expanded {
-            for child in &node.children {
-                if let Some(found) = Self::walk_visible_string_path(child, target, counter, current_path) {
+            for (idx, child) in node.children.iter().enumerate() {
+                current_path.push(idx);
+                if let Some(found) = Self::walk_visible_index_path(child, target, counter, current_path) {
                     return Some(found);
                 }
+                current_path.pop();
             }
         }
-        current_path.pop();
         None
     }
 }

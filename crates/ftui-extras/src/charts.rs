@@ -530,8 +530,20 @@ impl BarChart<'_> {
     }
 
     fn render_horizontal(&self, area: Rect, frame: &mut Frame, max_val: f64) {
-        // Reserve 2 columns at left for labels.
-        let label_width = 2_u16;
+        // Reserve columns at left for labels based on longest label.
+        let label_width = self
+            .groups
+            .iter()
+            .map(|g| {
+                g.label
+                    .graphemes(true)
+                    .map(|g| grapheme_width(g) as u16)
+                    .sum::<u16>()
+            })
+            .max()
+            .unwrap_or(0)
+            .min(area.width / 3) // Cap labels to 1/3 of area width
+            .saturating_add(1); // 1 col gap between label and bars
         let chart_width = area.width.saturating_sub(label_width) as f64;
         if chart_width <= 0.0 {
             return;
@@ -551,10 +563,10 @@ impl BarChart<'_> {
                             y_cursor += self.bar_gap;
                         }
                         let bar_len_f = (val / max_val) * chart_width;
-                        let bar_len = if bar_len_f.is_nan() {
+                        let bar_len = if bar_len_f.is_nan() || val == 0.0 {
                             0
                         } else {
-                            bar_len_f.round() as u16
+                            (bar_len_f.round() as u16).max(1) // min 1 char for non-zero
                         };
                         let color = self.get_color(si);
 
@@ -608,8 +620,8 @@ impl BarChart<'_> {
                 }
             }
 
-            // Group label at left edge.
-            if let Some(grapheme) = group.label.graphemes(true).next() {
+            // Group label at left edge — render full label text.
+            {
                 let ly = match self.mode {
                     BarMode::Grouped => y_cursor.saturating_sub(
                         (group.values.len() as u16) * self.bar_width
@@ -618,20 +630,28 @@ impl BarChart<'_> {
                     BarMode::Stacked => y_cursor.saturating_sub(self.bar_width),
                 };
                 if ly < area.bottom() {
-                    let width = grapheme_width(grapheme);
-                    let content = if width > 1 || grapheme.chars().count() > 1 {
-                        let id = frame.intern_with_width(grapheme, width as u8);
-                        CellContent::from_grapheme(id)
-                    } else if let Some(c) = grapheme.chars().next() {
-                        CellContent::from_char(c)
-                    } else {
-                        CellContent::EMPTY
-                    };
-
-                    if !content.is_empty() {
-                        let mut cell = Cell::new(content);
-                        style_cell(&mut cell, self.style);
-                        frame.buffer.set_fast(area.x, ly, cell);
+                    let mut x_off = 0_u16;
+                    for grapheme in group.label.graphemes(true) {
+                        let gw = grapheme_width(grapheme) as u16;
+                        if x_off + gw >= label_width {
+                            break;
+                        }
+                        let content = if gw > 1 || grapheme.chars().count() > 1 {
+                            let id = frame.intern_with_width(grapheme, gw as u8);
+                            CellContent::from_grapheme(id)
+                        } else if let Some(c) = grapheme.chars().next() {
+                            CellContent::from_char(c)
+                        } else {
+                            CellContent::EMPTY
+                        };
+                        if !content.is_empty() {
+                            let mut cell = Cell::new(content);
+                            style_cell(&mut cell, self.style);
+                            frame
+                                .buffer
+                                .set_fast(area.x.saturating_add(x_off), ly, cell);
+                        }
+                        x_off += gw;
                     }
                 }
             }

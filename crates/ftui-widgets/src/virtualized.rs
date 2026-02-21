@@ -1247,7 +1247,8 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
         let fixed_h = self.fixed_height.max(1);
         // Use div_ceil to include partially visible items and avoid 0 count for large items
         let items_per_viewport = area.height.div_ceil(fixed_h) as usize;
-        let needs_scrollbar = self.show_scrollbar && total_items > items_per_viewport;
+        let fully_visible_items = (area.height / fixed_h) as usize;
+        let needs_scrollbar = self.show_scrollbar && total_items > fully_visible_items;
         let content_width = if needs_scrollbar {
             area.width.saturating_sub(1)
         } else {
@@ -1266,17 +1267,22 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
             };
         }
 
-        // Ensure visible range includes selected item
+        // Ensure visible range includes selected item (it must be fully visible if possible)
         if let Some(selected) = state.selected {
-            if selected >= state.scroll_offset + items_per_viewport {
-                state.scroll_offset = selected.saturating_sub(items_per_viewport.saturating_sub(1));
+            let vis_count = fully_visible_items.max(1);
+            if selected >= state.scroll_offset + vis_count {
+                state.scroll_offset = selected.saturating_sub(vis_count.saturating_sub(1));
             } else if selected < state.scroll_offset {
                 state.scroll_offset = selected;
             }
         }
 
         // Clamp scroll offset
-        let max_offset = total_items.saturating_sub(items_per_viewport);
+        let max_offset = if fully_visible_items > 0 {
+            total_items.saturating_sub(fully_visible_items)
+        } else {
+            total_items.saturating_sub(1)
+        };
         state.scroll_offset = state.scroll_offset.min(max_offset);
 
         // Update visible count
