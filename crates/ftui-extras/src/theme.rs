@@ -6,8 +6,8 @@
 //! color tokens that resolve against the current theme at runtime.
 
 use std::cell::Cell;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::sync::{Mutex, MutexGuard};
 
 // Thread-local flag to track if current thread holds THEME_TEST_LOCK.
@@ -36,29 +36,165 @@ pub enum ThemeId {
     Doom,
     /// Quake (1996) gothic/medieval theme.
     Quake,
+    /// Classic Monokai.
+    Monokai,
+    /// Solarized dark.
+    SolarizedDark,
+    /// Solarized light.
+    SolarizedLight,
+    /// Gruvbox dark.
+    GruvboxDark,
+    /// Gruvbox light.
+    GruvboxLight,
+    /// Atom One Dark.
+    OneDark,
+    /// Tokyo Night.
+    TokyoNight,
+    /// Catppuccin Mocha.
+    CatppuccinMocha,
+    /// Rosé Pine.
+    RosePine,
+    /// Night Owl.
+    NightOwl,
+    /// Dracula.
+    Dracula,
+    /// Material Ocean.
+    MaterialOcean,
+    /// Ayu Dark.
+    AyuDark,
+    /// Ayu Light.
+    AyuLight,
+    /// Kanagawa Wave.
+    KanagawaWave,
+    /// Everforest Dark.
+    EverforestDark,
+    /// Everforest Light.
+    EverforestLight,
+    /// GitHub Dark.
+    GitHubDark,
+    /// GitHub Light.
+    GitHubLight,
+    /// Synthwave '84.
+    Synthwave84,
+    /// Palenight.
+    Palenight,
+    /// Horizon Dark.
+    HorizonDark,
+    /// Nord.
+    Nord,
+    /// One Light.
+    OneLight,
+    /// Catppuccin Latte.
+    CatppuccinLatte,
+    /// Catppuccin Frappe.
+    CatppuccinFrappe,
+    /// Catppuccin Macchiato.
+    CatppuccinMacchiato,
+    /// Kanagawa Lotus.
+    KanagawaLotus,
+    /// Nightfox.
+    Nightfox,
+    /// Dayfox.
+    Dayfox,
+    /// Oceanic Next.
+    OceanicNext,
+    /// Cobalt2.
+    Cobalt2,
+    /// PaperColor Dark.
+    PaperColorDark,
+    /// PaperColor Light.
+    PaperColorLight,
     /// High contrast accessibility theme.
     HighContrast,
 }
 
 impl ThemeId {
-    pub const ALL: [ThemeId; 7] = [
+    pub const ALL: [ThemeId; 41] = [
         ThemeId::CyberpunkAurora,
         ThemeId::Darcula,
         ThemeId::LumenLight,
         ThemeId::NordicFrost,
         ThemeId::Doom,
         ThemeId::Quake,
+        ThemeId::Monokai,
+        ThemeId::SolarizedDark,
+        ThemeId::SolarizedLight,
+        ThemeId::GruvboxDark,
+        ThemeId::GruvboxLight,
+        ThemeId::OneDark,
+        ThemeId::TokyoNight,
+        ThemeId::CatppuccinMocha,
+        ThemeId::RosePine,
+        ThemeId::NightOwl,
+        ThemeId::Dracula,
+        ThemeId::MaterialOcean,
+        ThemeId::AyuDark,
+        ThemeId::AyuLight,
+        ThemeId::KanagawaWave,
+        ThemeId::EverforestDark,
+        ThemeId::EverforestLight,
+        ThemeId::GitHubDark,
+        ThemeId::GitHubLight,
+        ThemeId::Synthwave84,
+        ThemeId::Palenight,
+        ThemeId::HorizonDark,
+        ThemeId::Nord,
+        ThemeId::OneLight,
+        ThemeId::CatppuccinLatte,
+        ThemeId::CatppuccinFrappe,
+        ThemeId::CatppuccinMacchiato,
+        ThemeId::KanagawaLotus,
+        ThemeId::Nightfox,
+        ThemeId::Dayfox,
+        ThemeId::OceanicNext,
+        ThemeId::Cobalt2,
+        ThemeId::PaperColorDark,
+        ThemeId::PaperColorLight,
         ThemeId::HighContrast,
     ];
 
     /// Themes suitable for normal use (excludes accessibility-only themes).
-    pub const STANDARD: [ThemeId; 6] = [
+    pub const STANDARD: [ThemeId; 40] = [
         ThemeId::CyberpunkAurora,
         ThemeId::Darcula,
         ThemeId::LumenLight,
         ThemeId::NordicFrost,
         ThemeId::Doom,
         ThemeId::Quake,
+        ThemeId::Monokai,
+        ThemeId::SolarizedDark,
+        ThemeId::SolarizedLight,
+        ThemeId::GruvboxDark,
+        ThemeId::GruvboxLight,
+        ThemeId::OneDark,
+        ThemeId::TokyoNight,
+        ThemeId::CatppuccinMocha,
+        ThemeId::RosePine,
+        ThemeId::NightOwl,
+        ThemeId::Dracula,
+        ThemeId::MaterialOcean,
+        ThemeId::AyuDark,
+        ThemeId::AyuLight,
+        ThemeId::KanagawaWave,
+        ThemeId::EverforestDark,
+        ThemeId::EverforestLight,
+        ThemeId::GitHubDark,
+        ThemeId::GitHubLight,
+        ThemeId::Synthwave84,
+        ThemeId::Palenight,
+        ThemeId::HorizonDark,
+        ThemeId::Nord,
+        ThemeId::OneLight,
+        ThemeId::CatppuccinLatte,
+        ThemeId::CatppuccinFrappe,
+        ThemeId::CatppuccinMacchiato,
+        ThemeId::KanagawaLotus,
+        ThemeId::Nightfox,
+        ThemeId::Dayfox,
+        ThemeId::OceanicNext,
+        ThemeId::Cobalt2,
+        ThemeId::PaperColorDark,
+        ThemeId::PaperColorLight,
     ];
 
     pub const fn index(self) -> usize {
@@ -69,7 +205,41 @@ impl ThemeId {
             ThemeId::NordicFrost => 3,
             ThemeId::Doom => 4,
             ThemeId::Quake => 5,
-            ThemeId::HighContrast => 6,
+            ThemeId::Monokai => 6,
+            ThemeId::SolarizedDark => 7,
+            ThemeId::SolarizedLight => 8,
+            ThemeId::GruvboxDark => 9,
+            ThemeId::GruvboxLight => 10,
+            ThemeId::OneDark => 11,
+            ThemeId::TokyoNight => 12,
+            ThemeId::CatppuccinMocha => 13,
+            ThemeId::RosePine => 14,
+            ThemeId::NightOwl => 15,
+            ThemeId::Dracula => 16,
+            ThemeId::MaterialOcean => 17,
+            ThemeId::AyuDark => 18,
+            ThemeId::AyuLight => 19,
+            ThemeId::KanagawaWave => 20,
+            ThemeId::EverforestDark => 21,
+            ThemeId::EverforestLight => 22,
+            ThemeId::GitHubDark => 23,
+            ThemeId::GitHubLight => 24,
+            ThemeId::Synthwave84 => 25,
+            ThemeId::Palenight => 26,
+            ThemeId::HorizonDark => 27,
+            ThemeId::Nord => 28,
+            ThemeId::OneLight => 29,
+            ThemeId::CatppuccinLatte => 30,
+            ThemeId::CatppuccinFrappe => 31,
+            ThemeId::CatppuccinMacchiato => 32,
+            ThemeId::KanagawaLotus => 33,
+            ThemeId::Nightfox => 34,
+            ThemeId::Dayfox => 35,
+            ThemeId::OceanicNext => 36,
+            ThemeId::Cobalt2 => 37,
+            ThemeId::PaperColorDark => 38,
+            ThemeId::PaperColorLight => 39,
+            ThemeId::HighContrast => 40,
         }
     }
 
@@ -81,6 +251,40 @@ impl ThemeId {
             ThemeId::NordicFrost => "Nordic Frost",
             ThemeId::Doom => "Doom",
             ThemeId::Quake => "Quake",
+            ThemeId::Monokai => "Monokai",
+            ThemeId::SolarizedDark => "Solarized Dark",
+            ThemeId::SolarizedLight => "Solarized Light",
+            ThemeId::GruvboxDark => "Gruvbox Dark",
+            ThemeId::GruvboxLight => "Gruvbox Light",
+            ThemeId::OneDark => "One Dark",
+            ThemeId::TokyoNight => "Tokyo Night",
+            ThemeId::CatppuccinMocha => "Catppuccin Mocha",
+            ThemeId::RosePine => "Rose Pine",
+            ThemeId::NightOwl => "Night Owl",
+            ThemeId::Dracula => "Dracula",
+            ThemeId::MaterialOcean => "Material Ocean",
+            ThemeId::AyuDark => "Ayu Dark",
+            ThemeId::AyuLight => "Ayu Light",
+            ThemeId::KanagawaWave => "Kanagawa Wave",
+            ThemeId::EverforestDark => "Everforest Dark",
+            ThemeId::EverforestLight => "Everforest Light",
+            ThemeId::GitHubDark => "GitHub Dark",
+            ThemeId::GitHubLight => "GitHub Light",
+            ThemeId::Synthwave84 => "Synthwave '84",
+            ThemeId::Palenight => "Palenight",
+            ThemeId::HorizonDark => "Horizon Dark",
+            ThemeId::Nord => "Nord",
+            ThemeId::OneLight => "One Light",
+            ThemeId::CatppuccinLatte => "Catppuccin Latte",
+            ThemeId::CatppuccinFrappe => "Catppuccin Frappe",
+            ThemeId::CatppuccinMacchiato => "Catppuccin Macchiato",
+            ThemeId::KanagawaLotus => "Kanagawa Lotus",
+            ThemeId::Nightfox => "Nightfox",
+            ThemeId::Dayfox => "Dayfox",
+            ThemeId::OceanicNext => "Oceanic Next",
+            ThemeId::Cobalt2 => "Cobalt2",
+            ThemeId::PaperColorDark => "PaperColor Dark",
+            ThemeId::PaperColorLight => "PaperColor Light",
             ThemeId::HighContrast => "High Contrast",
         }
     }
@@ -93,13 +297,8 @@ impl ThemeId {
     /// Get the next theme in the standard rotation (skipping accessibility-only themes).
     pub const fn next_non_accessibility(self) -> Self {
         let current_standard_idx = match self {
-            ThemeId::CyberpunkAurora => 0,
-            ThemeId::Darcula => 1,
-            ThemeId::LumenLight => 2,
-            ThemeId::NordicFrost => 3,
-            ThemeId::Doom => 4,
-            ThemeId::Quake => 5,
-            ThemeId::HighContrast => 0, // HighContrast -> CyberpunkAurora
+            ThemeId::HighContrast => 0,
+            _ => self.index(),
         };
         let next_idx = (current_standard_idx + 1) % Self::STANDARD.len();
         Self::STANDARD[next_idx]
@@ -140,7 +339,7 @@ pub struct ThemePalette {
     pub syntax_punctuation: PackedRgba,
 }
 
-const THEMES: [ThemePalette; 7] = [
+const THEMES: [ThemePalette; 41] = [
     ThemePalette {
         bg_deep: PackedRgba::rgb(10, 14, 20),
         bg_base: PackedRgba::rgb(26, 31, 41),
@@ -153,27 +352,27 @@ const THEMES: [ThemePalette; 7] = [
         fg_disabled: PackedRgba::rgb(61, 79, 95),
         accent_primary: PackedRgba::rgb(0, 170, 255),
         accent_secondary: PackedRgba::rgb(255, 0, 255),
-        accent_success: PackedRgba::rgb(110, 255, 200),
+        accent_success: PackedRgba::rgb(57, 255, 180),
         accent_warning: PackedRgba::rgb(255, 229, 102),
-        accent_error: PackedRgba::rgb(255, 60, 110),
+        accent_error: PackedRgba::rgb(255, 51, 102),
         accent_info: PackedRgba::rgb(0, 255, 255),
         accent_link: PackedRgba::rgb(102, 204, 255),
         accent_slots: [
             PackedRgba::rgb(0, 170, 255),
             PackedRgba::rgb(255, 0, 255),
-            PackedRgba::rgb(110, 255, 200),
+            PackedRgba::rgb(57, 255, 180),
             PackedRgba::rgb(255, 229, 102),
-            PackedRgba::rgb(255, 60, 110),
+            PackedRgba::rgb(255, 51, 102),
             PackedRgba::rgb(0, 255, 255),
             PackedRgba::rgb(102, 204, 255),
-            PackedRgba::rgb(255, 130, 175),
+            PackedRgba::rgb(255, 107, 157),
             PackedRgba::rgb(107, 255, 205),
             PackedRgba::rgb(255, 239, 153),
             PackedRgba::rgb(102, 255, 255),
             PackedRgba::rgb(255, 102, 255),
         ],
         syntax_keyword: PackedRgba::rgb(255, 102, 255),
-        syntax_string: PackedRgba::rgb(110, 255, 200),
+        syntax_string: PackedRgba::rgb(57, 255, 180),
         syntax_number: PackedRgba::rgb(255, 229, 102),
         syntax_comment: PackedRgba::rgb(61, 79, 95),
         syntax_function: PackedRgba::rgb(0, 170, 255),
@@ -383,6 +582,1400 @@ const THEMES: [ThemePalette; 7] = [
         syntax_operator: PackedRgba::rgb(210, 180, 140),
         syntax_punctuation: PackedRgba::rgb(195, 176, 145),
     },
+    // Monokai
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(30, 31, 28),
+        bg_base: PackedRgba::rgb(39, 40, 34),
+        bg_surface: PackedRgba::rgb(45, 46, 39),
+        bg_overlay: PackedRgba::rgb(58, 59, 52),
+        bg_highlight: PackedRgba::rgb(73, 74, 67),
+        fg_primary: PackedRgba::rgb(248, 248, 242),
+        fg_secondary: PackedRgba::rgb(214, 214, 204),
+        fg_muted: PackedRgba::rgb(117, 113, 94),
+        fg_disabled: PackedRgba::rgb(90, 87, 72),
+        accent_primary: PackedRgba::rgb(102, 217, 239),
+        accent_secondary: PackedRgba::rgb(174, 129, 255),
+        accent_success: PackedRgba::rgb(166, 226, 46),
+        accent_warning: PackedRgba::rgb(230, 219, 116),
+        accent_error: PackedRgba::rgb(249, 38, 114),
+        accent_info: PackedRgba::rgb(253, 151, 31),
+        accent_link: PackedRgba::rgb(102, 217, 239),
+        accent_slots: [
+            PackedRgba::rgb(102, 217, 239),
+            PackedRgba::rgb(174, 129, 255),
+            PackedRgba::rgb(166, 226, 46),
+            PackedRgba::rgb(230, 219, 116),
+            PackedRgba::rgb(249, 38, 114),
+            PackedRgba::rgb(253, 151, 31),
+            PackedRgba::rgb(120, 220, 232),
+            PackedRgba::rgb(255, 102, 153),
+            PackedRgba::rgb(191, 255, 96),
+            PackedRgba::rgb(255, 216, 102),
+            PackedRgba::rgb(187, 154, 247),
+            PackedRgba::rgb(255, 176, 84),
+        ],
+        syntax_keyword: PackedRgba::rgb(249, 38, 114),
+        syntax_string: PackedRgba::rgb(230, 219, 116),
+        syntax_number: PackedRgba::rgb(174, 129, 255),
+        syntax_comment: PackedRgba::rgb(117, 113, 94),
+        syntax_function: PackedRgba::rgb(166, 226, 46),
+        syntax_type: PackedRgba::rgb(102, 217, 239),
+        syntax_operator: PackedRgba::rgb(248, 248, 242),
+        syntax_punctuation: PackedRgba::rgb(117, 113, 94),
+    },
+    // Solarized Dark
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(0, 43, 54),
+        bg_base: PackedRgba::rgb(7, 54, 66),
+        bg_surface: PackedRgba::rgb(11, 59, 73),
+        bg_overlay: PackedRgba::rgb(20, 75, 91),
+        bg_highlight: PackedRgba::rgb(31, 95, 117),
+        fg_primary: PackedRgba::rgb(147, 161, 161),
+        fg_secondary: PackedRgba::rgb(203, 214, 208),
+        fg_muted: PackedRgba::rgb(101, 123, 131),
+        fg_disabled: PackedRgba::rgb(88, 110, 117),
+        accent_primary: PackedRgba::rgb(38, 139, 210),
+        accent_secondary: PackedRgba::rgb(108, 113, 196),
+        accent_success: PackedRgba::rgb(133, 153, 0),
+        accent_warning: PackedRgba::rgb(181, 137, 0),
+        accent_error: PackedRgba::rgb(220, 50, 47),
+        accent_info: PackedRgba::rgb(42, 161, 152),
+        accent_link: PackedRgba::rgb(38, 139, 210),
+        accent_slots: [
+            PackedRgba::rgb(38, 139, 210),
+            PackedRgba::rgb(108, 113, 196),
+            PackedRgba::rgb(133, 153, 0),
+            PackedRgba::rgb(181, 137, 0),
+            PackedRgba::rgb(220, 50, 47),
+            PackedRgba::rgb(42, 161, 152),
+            PackedRgba::rgb(203, 75, 22),
+            PackedRgba::rgb(211, 54, 130),
+            PackedRgba::rgb(147, 161, 161),
+            PackedRgba::rgb(238, 232, 213),
+            PackedRgba::rgb(147, 161, 161),
+            PackedRgba::rgb(42, 161, 152),
+        ],
+        syntax_keyword: PackedRgba::rgb(108, 113, 196),
+        syntax_string: PackedRgba::rgb(42, 161, 152),
+        syntax_number: PackedRgba::rgb(211, 54, 130),
+        syntax_comment: PackedRgba::rgb(88, 110, 117),
+        syntax_function: PackedRgba::rgb(38, 139, 210),
+        syntax_type: PackedRgba::rgb(181, 137, 0),
+        syntax_operator: PackedRgba::rgb(147, 161, 161),
+        syntax_punctuation: PackedRgba::rgb(101, 123, 131),
+    },
+    // Solarized Light
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(253, 246, 227),
+        bg_base: PackedRgba::rgb(245, 239, 219),
+        bg_surface: PackedRgba::rgb(238, 232, 213),
+        bg_overlay: PackedRgba::rgb(227, 220, 201),
+        bg_highlight: PackedRgba::rgb(216, 207, 184),
+        fg_primary: PackedRgba::rgb(88, 110, 117),
+        fg_secondary: PackedRgba::rgb(101, 123, 131),
+        fg_muted: PackedRgba::rgb(147, 161, 161),
+        fg_disabled: PackedRgba::rgb(168, 180, 181),
+        accent_primary: PackedRgba::rgb(38, 139, 210),
+        accent_secondary: PackedRgba::rgb(108, 113, 196),
+        accent_success: PackedRgba::rgb(133, 153, 0),
+        accent_warning: PackedRgba::rgb(181, 137, 0),
+        accent_error: PackedRgba::rgb(220, 50, 47),
+        accent_info: PackedRgba::rgb(42, 161, 152),
+        accent_link: PackedRgba::rgb(38, 139, 210),
+        accent_slots: [
+            PackedRgba::rgb(38, 139, 210),
+            PackedRgba::rgb(108, 113, 196),
+            PackedRgba::rgb(133, 153, 0),
+            PackedRgba::rgb(181, 137, 0),
+            PackedRgba::rgb(220, 50, 47),
+            PackedRgba::rgb(42, 161, 152),
+            PackedRgba::rgb(203, 75, 22),
+            PackedRgba::rgb(211, 54, 130),
+            PackedRgba::rgb(101, 123, 131),
+            PackedRgba::rgb(147, 161, 161),
+            PackedRgba::rgb(88, 110, 117),
+            PackedRgba::rgb(42, 161, 152),
+        ],
+        syntax_keyword: PackedRgba::rgb(108, 113, 196),
+        syntax_string: PackedRgba::rgb(42, 161, 152),
+        syntax_number: PackedRgba::rgb(211, 54, 130),
+        syntax_comment: PackedRgba::rgb(147, 161, 161),
+        syntax_function: PackedRgba::rgb(38, 139, 210),
+        syntax_type: PackedRgba::rgb(181, 137, 0),
+        syntax_operator: PackedRgba::rgb(88, 110, 117),
+        syntax_punctuation: PackedRgba::rgb(101, 123, 131),
+    },
+    // Gruvbox Dark
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(29, 32, 33),
+        bg_base: PackedRgba::rgb(40, 40, 40),
+        bg_surface: PackedRgba::rgb(50, 48, 47),
+        bg_overlay: PackedRgba::rgb(60, 56, 54),
+        bg_highlight: PackedRgba::rgb(80, 73, 69),
+        fg_primary: PackedRgba::rgb(235, 219, 178),
+        fg_secondary: PackedRgba::rgb(213, 196, 161),
+        fg_muted: PackedRgba::rgb(168, 153, 132),
+        fg_disabled: PackedRgba::rgb(124, 111, 100),
+        accent_primary: PackedRgba::rgb(131, 165, 152),
+        accent_secondary: PackedRgba::rgb(211, 134, 155),
+        accent_success: PackedRgba::rgb(184, 187, 38),
+        accent_warning: PackedRgba::rgb(250, 189, 47),
+        accent_error: PackedRgba::rgb(251, 73, 52),
+        accent_info: PackedRgba::rgb(142, 192, 124),
+        accent_link: PackedRgba::rgb(69, 133, 136),
+        accent_slots: [
+            PackedRgba::rgb(131, 165, 152),
+            PackedRgba::rgb(211, 134, 155),
+            PackedRgba::rgb(184, 187, 38),
+            PackedRgba::rgb(250, 189, 47),
+            PackedRgba::rgb(251, 73, 52),
+            PackedRgba::rgb(142, 192, 124),
+            PackedRgba::rgb(254, 128, 25),
+            PackedRgba::rgb(177, 98, 134),
+            PackedRgba::rgb(104, 157, 106),
+            PackedRgba::rgb(215, 153, 33),
+            PackedRgba::rgb(69, 133, 136),
+            PackedRgba::rgb(146, 131, 116),
+        ],
+        syntax_keyword: PackedRgba::rgb(251, 73, 52),
+        syntax_string: PackedRgba::rgb(184, 187, 38),
+        syntax_number: PackedRgba::rgb(211, 134, 155),
+        syntax_comment: PackedRgba::rgb(146, 131, 116),
+        syntax_function: PackedRgba::rgb(250, 189, 47),
+        syntax_type: PackedRgba::rgb(142, 192, 124),
+        syntax_operator: PackedRgba::rgb(235, 219, 178),
+        syntax_punctuation: PackedRgba::rgb(168, 153, 132),
+    },
+    // Gruvbox Light
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(249, 245, 215),
+        bg_base: PackedRgba::rgb(251, 241, 199),
+        bg_surface: PackedRgba::rgb(242, 229, 188),
+        bg_overlay: PackedRgba::rgb(235, 219, 178),
+        bg_highlight: PackedRgba::rgb(213, 196, 161),
+        fg_primary: PackedRgba::rgb(60, 56, 54),
+        fg_secondary: PackedRgba::rgb(80, 73, 69),
+        fg_muted: PackedRgba::rgb(124, 111, 100),
+        fg_disabled: PackedRgba::rgb(168, 153, 132),
+        accent_primary: PackedRgba::rgb(7, 102, 120),
+        accent_secondary: PackedRgba::rgb(143, 63, 113),
+        accent_success: PackedRgba::rgb(121, 116, 14),
+        accent_warning: PackedRgba::rgb(181, 118, 20),
+        accent_error: PackedRgba::rgb(204, 36, 29),
+        accent_info: PackedRgba::rgb(66, 123, 88),
+        accent_link: PackedRgba::rgb(7, 102, 120),
+        accent_slots: [
+            PackedRgba::rgb(7, 102, 120),
+            PackedRgba::rgb(143, 63, 113),
+            PackedRgba::rgb(121, 116, 14),
+            PackedRgba::rgb(181, 118, 20),
+            PackedRgba::rgb(204, 36, 29),
+            PackedRgba::rgb(66, 123, 88),
+            PackedRgba::rgb(175, 58, 3),
+            PackedRgba::rgb(121, 36, 86),
+            PackedRgba::rgb(152, 151, 26),
+            PackedRgba::rgb(214, 93, 14),
+            PackedRgba::rgb(62, 104, 98),
+            PackedRgba::rgb(104, 157, 106),
+        ],
+        syntax_keyword: PackedRgba::rgb(204, 36, 29),
+        syntax_string: PackedRgba::rgb(121, 116, 14),
+        syntax_number: PackedRgba::rgb(143, 63, 113),
+        syntax_comment: PackedRgba::rgb(146, 131, 116),
+        syntax_function: PackedRgba::rgb(7, 102, 120),
+        syntax_type: PackedRgba::rgb(181, 118, 20),
+        syntax_operator: PackedRgba::rgb(60, 56, 54),
+        syntax_punctuation: PackedRgba::rgb(124, 111, 100),
+    },
+    // One Dark
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(30, 33, 39),
+        bg_base: PackedRgba::rgb(40, 44, 52),
+        bg_surface: PackedRgba::rgb(47, 52, 63),
+        bg_overlay: PackedRgba::rgb(58, 64, 75),
+        bg_highlight: PackedRgba::rgb(75, 82, 99),
+        fg_primary: PackedRgba::rgb(171, 178, 191),
+        fg_secondary: PackedRgba::rgb(200, 204, 212),
+        fg_muted: PackedRgba::rgb(127, 132, 142),
+        fg_disabled: PackedRgba::rgb(92, 99, 112),
+        accent_primary: PackedRgba::rgb(97, 175, 239),
+        accent_secondary: PackedRgba::rgb(198, 120, 221),
+        accent_success: PackedRgba::rgb(152, 195, 121),
+        accent_warning: PackedRgba::rgb(229, 192, 123),
+        accent_error: PackedRgba::rgb(224, 108, 117),
+        accent_info: PackedRgba::rgb(86, 182, 194),
+        accent_link: PackedRgba::rgb(97, 175, 239),
+        accent_slots: [
+            PackedRgba::rgb(97, 175, 239),
+            PackedRgba::rgb(198, 120, 221),
+            PackedRgba::rgb(152, 195, 121),
+            PackedRgba::rgb(229, 192, 123),
+            PackedRgba::rgb(224, 108, 117),
+            PackedRgba::rgb(86, 182, 194),
+            PackedRgba::rgb(209, 154, 102),
+            PackedRgba::rgb(190, 140, 255),
+            PackedRgba::rgb(130, 170, 255),
+            PackedRgba::rgb(114, 156, 31),
+            PackedRgba::rgb(56, 169, 255),
+            PackedRgba::rgb(255, 164, 96),
+        ],
+        syntax_keyword: PackedRgba::rgb(198, 120, 221),
+        syntax_string: PackedRgba::rgb(152, 195, 121),
+        syntax_number: PackedRgba::rgb(209, 154, 102),
+        syntax_comment: PackedRgba::rgb(92, 99, 112),
+        syntax_function: PackedRgba::rgb(97, 175, 239),
+        syntax_type: PackedRgba::rgb(229, 192, 123),
+        syntax_operator: PackedRgba::rgb(171, 178, 191),
+        syntax_punctuation: PackedRgba::rgb(127, 132, 142),
+    },
+    // Tokyo Night
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(22, 22, 30),
+        bg_base: PackedRgba::rgb(26, 27, 38),
+        bg_surface: PackedRgba::rgb(36, 40, 59),
+        bg_overlay: PackedRgba::rgb(47, 53, 73),
+        bg_highlight: PackedRgba::rgb(59, 66, 97),
+        fg_primary: PackedRgba::rgb(192, 202, 245),
+        fg_secondary: PackedRgba::rgb(169, 177, 214),
+        fg_muted: PackedRgba::rgb(115, 122, 162),
+        fg_disabled: PackedRgba::rgb(86, 95, 137),
+        accent_primary: PackedRgba::rgb(122, 162, 247),
+        accent_secondary: PackedRgba::rgb(187, 154, 247),
+        accent_success: PackedRgba::rgb(158, 206, 106),
+        accent_warning: PackedRgba::rgb(224, 175, 104),
+        accent_error: PackedRgba::rgb(247, 118, 142),
+        accent_info: PackedRgba::rgb(125, 207, 255),
+        accent_link: PackedRgba::rgb(122, 162, 247),
+        accent_slots: [
+            PackedRgba::rgb(122, 162, 247),
+            PackedRgba::rgb(187, 154, 247),
+            PackedRgba::rgb(158, 206, 106),
+            PackedRgba::rgb(224, 175, 104),
+            PackedRgba::rgb(247, 118, 142),
+            PackedRgba::rgb(125, 207, 255),
+            PackedRgba::rgb(255, 158, 100),
+            PackedRgba::rgb(42, 195, 222),
+            PackedRgba::rgb(187, 196, 255),
+            PackedRgba::rgb(192, 132, 252),
+            PackedRgba::rgb(137, 220, 235),
+            PackedRgba::rgb(158, 206, 106),
+        ],
+        syntax_keyword: PackedRgba::rgb(187, 154, 247),
+        syntax_string: PackedRgba::rgb(158, 206, 106),
+        syntax_number: PackedRgba::rgb(255, 158, 100),
+        syntax_comment: PackedRgba::rgb(86, 95, 137),
+        syntax_function: PackedRgba::rgb(122, 162, 247),
+        syntax_type: PackedRgba::rgb(42, 195, 222),
+        syntax_operator: PackedRgba::rgb(192, 202, 245),
+        syntax_punctuation: PackedRgba::rgb(115, 122, 162),
+    },
+    // Catppuccin Mocha
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(17, 17, 27),
+        bg_base: PackedRgba::rgb(30, 30, 46),
+        bg_surface: PackedRgba::rgb(49, 50, 68),
+        bg_overlay: PackedRgba::rgb(69, 71, 90),
+        bg_highlight: PackedRgba::rgb(88, 91, 112),
+        fg_primary: PackedRgba::rgb(205, 214, 244),
+        fg_secondary: PackedRgba::rgb(186, 194, 222),
+        fg_muted: PackedRgba::rgb(127, 132, 156),
+        fg_disabled: PackedRgba::rgb(108, 112, 134),
+        accent_primary: PackedRgba::rgb(137, 180, 250),
+        accent_secondary: PackedRgba::rgb(203, 166, 247),
+        accent_success: PackedRgba::rgb(166, 227, 161),
+        accent_warning: PackedRgba::rgb(249, 226, 175),
+        accent_error: PackedRgba::rgb(243, 139, 168),
+        accent_info: PackedRgba::rgb(137, 220, 235),
+        accent_link: PackedRgba::rgb(116, 199, 236),
+        accent_slots: [
+            PackedRgba::rgb(137, 180, 250),
+            PackedRgba::rgb(203, 166, 247),
+            PackedRgba::rgb(166, 227, 161),
+            PackedRgba::rgb(249, 226, 175),
+            PackedRgba::rgb(243, 139, 168),
+            PackedRgba::rgb(137, 220, 235),
+            PackedRgba::rgb(250, 179, 135),
+            PackedRgba::rgb(148, 226, 213),
+            PackedRgba::rgb(116, 199, 236),
+            PackedRgba::rgb(245, 194, 231),
+            PackedRgba::rgb(205, 214, 244),
+            PackedRgba::rgb(181, 232, 224),
+        ],
+        syntax_keyword: PackedRgba::rgb(203, 166, 247),
+        syntax_string: PackedRgba::rgb(166, 227, 161),
+        syntax_number: PackedRgba::rgb(250, 179, 135),
+        syntax_comment: PackedRgba::rgb(108, 112, 134),
+        syntax_function: PackedRgba::rgb(137, 180, 250),
+        syntax_type: PackedRgba::rgb(148, 226, 213),
+        syntax_operator: PackedRgba::rgb(205, 214, 244),
+        syntax_punctuation: PackedRgba::rgb(127, 132, 156),
+    },
+    // Rose Pine
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(25, 23, 36),
+        bg_base: PackedRgba::rgb(31, 29, 46),
+        bg_surface: PackedRgba::rgb(38, 35, 58),
+        bg_overlay: PackedRgba::rgb(49, 47, 68),
+        bg_highlight: PackedRgba::rgb(64, 61, 82),
+        fg_primary: PackedRgba::rgb(224, 222, 244),
+        fg_secondary: PackedRgba::rgb(144, 140, 170),
+        fg_muted: PackedRgba::rgb(110, 106, 134),
+        fg_disabled: PackedRgba::rgb(82, 79, 103),
+        accent_primary: PackedRgba::rgb(156, 207, 216),
+        accent_secondary: PackedRgba::rgb(196, 167, 231),
+        accent_success: PackedRgba::rgb(49, 116, 143),
+        accent_warning: PackedRgba::rgb(246, 193, 119),
+        accent_error: PackedRgba::rgb(235, 111, 146),
+        accent_info: PackedRgba::rgb(156, 207, 216),
+        accent_link: PackedRgba::rgb(196, 167, 231),
+        accent_slots: [
+            PackedRgba::rgb(156, 207, 216),
+            PackedRgba::rgb(196, 167, 231),
+            PackedRgba::rgb(49, 116, 143),
+            PackedRgba::rgb(246, 193, 119),
+            PackedRgba::rgb(235, 111, 146),
+            PackedRgba::rgb(156, 207, 216),
+            PackedRgba::rgb(235, 188, 186),
+            PackedRgba::rgb(86, 82, 110),
+            PackedRgba::rgb(224, 222, 244),
+            PackedRgba::rgb(49, 116, 143),
+            PackedRgba::rgb(196, 167, 231),
+            PackedRgba::rgb(246, 193, 119),
+        ],
+        syntax_keyword: PackedRgba::rgb(196, 167, 231),
+        syntax_string: PackedRgba::rgb(156, 207, 216),
+        syntax_number: PackedRgba::rgb(246, 193, 119),
+        syntax_comment: PackedRgba::rgb(82, 79, 103),
+        syntax_function: PackedRgba::rgb(235, 188, 186),
+        syntax_type: PackedRgba::rgb(49, 116, 143),
+        syntax_operator: PackedRgba::rgb(224, 222, 244),
+        syntax_punctuation: PackedRgba::rgb(110, 106, 134),
+    },
+    // Night Owl
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(1, 22, 39),
+        bg_base: PackedRgba::rgb(1, 22, 39),
+        bg_surface: PackedRgba::rgb(11, 34, 57),
+        bg_overlay: PackedRgba::rgb(18, 48, 79),
+        bg_highlight: PackedRgba::rgb(29, 59, 83),
+        fg_primary: PackedRgba::rgb(214, 222, 235),
+        fg_secondary: PackedRgba::rgb(167, 173, 186),
+        fg_muted: PackedRgba::rgb(99, 119, 119),
+        fg_disabled: PackedRgba::rgb(75, 100, 121),
+        accent_primary: PackedRgba::rgb(130, 170, 255),
+        accent_secondary: PackedRgba::rgb(199, 146, 234),
+        accent_success: PackedRgba::rgb(173, 219, 103),
+        accent_warning: PackedRgba::rgb(236, 196, 141),
+        accent_error: PackedRgba::rgb(255, 88, 116),
+        accent_info: PackedRgba::rgb(127, 219, 202),
+        accent_link: PackedRgba::rgb(130, 170, 255),
+        accent_slots: [
+            PackedRgba::rgb(130, 170, 255),
+            PackedRgba::rgb(199, 146, 234),
+            PackedRgba::rgb(173, 219, 103),
+            PackedRgba::rgb(236, 196, 141),
+            PackedRgba::rgb(255, 88, 116),
+            PackedRgba::rgb(127, 219, 202),
+            PackedRgba::rgb(247, 140, 108),
+            PackedRgba::rgb(130, 170, 255),
+            PackedRgba::rgb(193, 132, 252),
+            PackedRgba::rgb(99, 187, 227),
+            PackedRgba::rgb(173, 219, 103),
+            PackedRgba::rgb(255, 203, 107),
+        ],
+        syntax_keyword: PackedRgba::rgb(199, 146, 234),
+        syntax_string: PackedRgba::rgb(236, 196, 141),
+        syntax_number: PackedRgba::rgb(247, 140, 108),
+        syntax_comment: PackedRgba::rgb(99, 119, 119),
+        syntax_function: PackedRgba::rgb(130, 170, 255),
+        syntax_type: PackedRgba::rgb(127, 219, 202),
+        syntax_operator: PackedRgba::rgb(214, 222, 235),
+        syntax_punctuation: PackedRgba::rgb(99, 119, 119),
+    },
+    // Dracula
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(18, 18, 26),
+        bg_base: PackedRgba::rgb(40, 42, 54),
+        bg_surface: PackedRgba::rgb(48, 51, 67),
+        bg_overlay: PackedRgba::rgb(68, 71, 90),
+        bg_highlight: PackedRgba::rgb(98, 114, 164),
+        fg_primary: PackedRgba::rgb(248, 248, 242),
+        fg_secondary: PackedRgba::rgb(224, 224, 222),
+        fg_muted: PackedRgba::rgb(160, 164, 188),
+        fg_disabled: PackedRgba::rgb(98, 114, 164),
+        accent_primary: PackedRgba::rgb(139, 233, 253),
+        accent_secondary: PackedRgba::rgb(189, 147, 249),
+        accent_success: PackedRgba::rgb(80, 250, 123),
+        accent_warning: PackedRgba::rgb(241, 250, 140),
+        accent_error: PackedRgba::rgb(255, 85, 85),
+        accent_info: PackedRgba::rgb(255, 184, 108),
+        accent_link: PackedRgba::rgb(139, 233, 253),
+        accent_slots: [
+            PackedRgba::rgb(139, 233, 253),
+            PackedRgba::rgb(189, 147, 249),
+            PackedRgba::rgb(80, 250, 123),
+            PackedRgba::rgb(241, 250, 140),
+            PackedRgba::rgb(255, 85, 85),
+            PackedRgba::rgb(255, 184, 108),
+            PackedRgba::rgb(255, 121, 198),
+            PackedRgba::rgb(98, 114, 164),
+            PackedRgba::rgb(189, 147, 249),
+            PackedRgba::rgb(139, 233, 253),
+            PackedRgba::rgb(80, 250, 123),
+            PackedRgba::rgb(255, 121, 198),
+        ],
+        syntax_keyword: PackedRgba::rgb(255, 121, 198),
+        syntax_string: PackedRgba::rgb(241, 250, 140),
+        syntax_number: PackedRgba::rgb(189, 147, 249),
+        syntax_comment: PackedRgba::rgb(98, 114, 164),
+        syntax_function: PackedRgba::rgb(80, 250, 123),
+        syntax_type: PackedRgba::rgb(139, 233, 253),
+        syntax_operator: PackedRgba::rgb(248, 248, 242),
+        syntax_punctuation: PackedRgba::rgb(160, 164, 188),
+    },
+    // Material Ocean
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(13, 20, 33),
+        bg_base: PackedRgba::rgb(26, 32, 44),
+        bg_surface: PackedRgba::rgb(37, 44, 58),
+        bg_overlay: PackedRgba::rgb(53, 62, 79),
+        bg_highlight: PackedRgba::rgb(84, 109, 128),
+        fg_primary: PackedRgba::rgb(238, 255, 255),
+        fg_secondary: PackedRgba::rgb(181, 204, 219),
+        fg_muted: PackedRgba::rgb(137, 151, 170),
+        fg_disabled: PackedRgba::rgb(84, 109, 128),
+        accent_primary: PackedRgba::rgb(130, 170, 255),
+        accent_secondary: PackedRgba::rgb(199, 146, 234),
+        accent_success: PackedRgba::rgb(195, 232, 141),
+        accent_warning: PackedRgba::rgb(255, 203, 107),
+        accent_error: PackedRgba::rgb(240, 113, 120),
+        accent_info: PackedRgba::rgb(137, 221, 255),
+        accent_link: PackedRgba::rgb(130, 170, 255),
+        accent_slots: [
+            PackedRgba::rgb(130, 170, 255),
+            PackedRgba::rgb(199, 146, 234),
+            PackedRgba::rgb(195, 232, 141),
+            PackedRgba::rgb(255, 203, 107),
+            PackedRgba::rgb(240, 113, 120),
+            PackedRgba::rgb(137, 221, 255),
+            PackedRgba::rgb(247, 140, 108),
+            PackedRgba::rgb(149, 117, 205),
+            PackedRgba::rgb(176, 190, 197),
+            PackedRgba::rgb(128, 222, 234),
+            PackedRgba::rgb(255, 171, 145),
+            PackedRgba::rgb(174, 213, 129),
+        ],
+        syntax_keyword: PackedRgba::rgb(199, 146, 234),
+        syntax_string: PackedRgba::rgb(195, 232, 141),
+        syntax_number: PackedRgba::rgb(247, 140, 108),
+        syntax_comment: PackedRgba::rgb(84, 109, 128),
+        syntax_function: PackedRgba::rgb(130, 170, 255),
+        syntax_type: PackedRgba::rgb(137, 221, 255),
+        syntax_operator: PackedRgba::rgb(238, 255, 255),
+        syntax_punctuation: PackedRgba::rgb(137, 151, 170),
+    },
+    // Ayu Dark
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(12, 15, 20),
+        bg_base: PackedRgba::rgb(15, 18, 25),
+        bg_surface: PackedRgba::rgb(21, 26, 36),
+        bg_overlay: PackedRgba::rgb(31, 39, 54),
+        bg_highlight: PackedRgba::rgb(54, 66, 90),
+        fg_primary: PackedRgba::rgb(230, 225, 221),
+        fg_secondary: PackedRgba::rgb(201, 198, 195),
+        fg_muted: PackedRgba::rgb(130, 144, 173),
+        fg_disabled: PackedRgba::rgb(92, 103, 129),
+        accent_primary: PackedRgba::rgb(57, 184, 255),
+        accent_secondary: PackedRgba::rgb(255, 141, 102),
+        accent_success: PackedRgba::rgb(186, 228, 127),
+        accent_warning: PackedRgba::rgb(255, 204, 102),
+        accent_error: PackedRgba::rgb(255, 102, 102),
+        accent_info: PackedRgba::rgb(149, 230, 203),
+        accent_link: PackedRgba::rgb(57, 184, 255),
+        accent_slots: [
+            PackedRgba::rgb(57, 184, 255),
+            PackedRgba::rgb(255, 141, 102),
+            PackedRgba::rgb(186, 228, 127),
+            PackedRgba::rgb(255, 204, 102),
+            PackedRgba::rgb(255, 102, 102),
+            PackedRgba::rgb(149, 230, 203),
+            PackedRgba::rgb(207, 160, 255),
+            PackedRgba::rgb(255, 173, 122),
+            PackedRgba::rgb(120, 200, 255),
+            PackedRgba::rgb(166, 241, 194),
+            PackedRgba::rgb(255, 220, 120),
+            PackedRgba::rgb(255, 130, 130),
+        ],
+        syntax_keyword: PackedRgba::rgb(255, 204, 102),
+        syntax_string: PackedRgba::rgb(186, 228, 127),
+        syntax_number: PackedRgba::rgb(255, 141, 102),
+        syntax_comment: PackedRgba::rgb(92, 103, 129),
+        syntax_function: PackedRgba::rgb(57, 184, 255),
+        syntax_type: PackedRgba::rgb(149, 230, 203),
+        syntax_operator: PackedRgba::rgb(230, 225, 221),
+        syntax_punctuation: PackedRgba::rgb(130, 144, 173),
+    },
+    // Ayu Light
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(250, 248, 245),
+        bg_base: PackedRgba::rgb(245, 243, 240),
+        bg_surface: PackedRgba::rgb(238, 235, 229),
+        bg_overlay: PackedRgba::rgb(227, 223, 214),
+        bg_highlight: PackedRgba::rgb(212, 206, 194),
+        fg_primary: PackedRgba::rgb(92, 88, 82),
+        fg_secondary: PackedRgba::rgb(110, 105, 98),
+        fg_muted: PackedRgba::rgb(143, 136, 127),
+        fg_disabled: PackedRgba::rgb(176, 169, 159),
+        accent_primary: PackedRgba::rgb(0, 102, 204),
+        accent_secondary: PackedRgba::rgb(175, 82, 222),
+        accent_success: PackedRgba::rgb(64, 153, 68),
+        accent_warning: PackedRgba::rgb(182, 128, 0),
+        accent_error: PackedRgba::rgb(198, 40, 40),
+        accent_info: PackedRgba::rgb(0, 139, 139),
+        accent_link: PackedRgba::rgb(0, 102, 204),
+        accent_slots: [
+            PackedRgba::rgb(0, 102, 204),
+            PackedRgba::rgb(175, 82, 222),
+            PackedRgba::rgb(64, 153, 68),
+            PackedRgba::rgb(182, 128, 0),
+            PackedRgba::rgb(198, 40, 40),
+            PackedRgba::rgb(0, 139, 139),
+            PackedRgba::rgb(110, 74, 221),
+            PackedRgba::rgb(0, 120, 212),
+            PackedRgba::rgb(34, 139, 34),
+            PackedRgba::rgb(205, 133, 0),
+            PackedRgba::rgb(220, 20, 60),
+            PackedRgba::rgb(32, 178, 170),
+        ],
+        syntax_keyword: PackedRgba::rgb(175, 82, 222),
+        syntax_string: PackedRgba::rgb(64, 153, 68),
+        syntax_number: PackedRgba::rgb(182, 128, 0),
+        syntax_comment: PackedRgba::rgb(176, 169, 159),
+        syntax_function: PackedRgba::rgb(0, 102, 204),
+        syntax_type: PackedRgba::rgb(0, 139, 139),
+        syntax_operator: PackedRgba::rgb(92, 88, 82),
+        syntax_punctuation: PackedRgba::rgb(143, 136, 127),
+    },
+    // Kanagawa Wave
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(22, 27, 34),
+        bg_base: PackedRgba::rgb(31, 36, 48),
+        bg_surface: PackedRgba::rgb(42, 50, 66),
+        bg_overlay: PackedRgba::rgb(57, 68, 88),
+        bg_highlight: PackedRgba::rgb(84, 97, 122),
+        fg_primary: PackedRgba::rgb(220, 215, 186),
+        fg_secondary: PackedRgba::rgb(199, 192, 147),
+        fg_muted: PackedRgba::rgb(140, 138, 120),
+        fg_disabled: PackedRgba::rgb(99, 105, 113),
+        accent_primary: PackedRgba::rgb(125, 172, 216),
+        accent_secondary: PackedRgba::rgb(149, 127, 184),
+        accent_success: PackedRgba::rgb(118, 145, 84),
+        accent_warning: PackedRgba::rgb(223, 188, 110),
+        accent_error: PackedRgba::rgb(196, 99, 102),
+        accent_info: PackedRgba::rgb(106, 147, 181),
+        accent_link: PackedRgba::rgb(125, 172, 216),
+        accent_slots: [
+            PackedRgba::rgb(125, 172, 216),
+            PackedRgba::rgb(149, 127, 184),
+            PackedRgba::rgb(118, 145, 84),
+            PackedRgba::rgb(223, 188, 110),
+            PackedRgba::rgb(196, 99, 102),
+            PackedRgba::rgb(106, 147, 181),
+            PackedRgba::rgb(180, 142, 173),
+            PackedRgba::rgb(194, 166, 120),
+            PackedRgba::rgb(147, 183, 196),
+            PackedRgba::rgb(121, 135, 128),
+            PackedRgba::rgb(255, 160, 102),
+            PackedRgba::rgb(165, 123, 214),
+        ],
+        syntax_keyword: PackedRgba::rgb(149, 127, 184),
+        syntax_string: PackedRgba::rgb(118, 145, 84),
+        syntax_number: PackedRgba::rgb(255, 160, 102),
+        syntax_comment: PackedRgba::rgb(99, 105, 113),
+        syntax_function: PackedRgba::rgb(125, 172, 216),
+        syntax_type: PackedRgba::rgb(106, 147, 181),
+        syntax_operator: PackedRgba::rgb(220, 215, 186),
+        syntax_punctuation: PackedRgba::rgb(140, 138, 120),
+    },
+    // Everforest Dark
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(35, 44, 40),
+        bg_base: PackedRgba::rgb(45, 53, 47),
+        bg_surface: PackedRgba::rgb(56, 64, 56),
+        bg_overlay: PackedRgba::rgb(72, 80, 70),
+        bg_highlight: PackedRgba::rgb(95, 104, 90),
+        fg_primary: PackedRgba::rgb(211, 198, 170),
+        fg_secondary: PackedRgba::rgb(188, 176, 150),
+        fg_muted: PackedRgba::rgb(150, 138, 114),
+        fg_disabled: PackedRgba::rgb(112, 102, 86),
+        accent_primary: PackedRgba::rgb(125, 170, 117),
+        accent_secondary: PackedRgba::rgb(166, 123, 91),
+        accent_success: PackedRgba::rgb(167, 192, 128),
+        accent_warning: PackedRgba::rgb(219, 188, 127),
+        accent_error: PackedRgba::rgb(230, 126, 128),
+        accent_info: PackedRgba::rgb(127, 187, 179),
+        accent_link: PackedRgba::rgb(122, 166, 218),
+        accent_slots: [
+            PackedRgba::rgb(125, 170, 117),
+            PackedRgba::rgb(166, 123, 91),
+            PackedRgba::rgb(167, 192, 128),
+            PackedRgba::rgb(219, 188, 127),
+            PackedRgba::rgb(230, 126, 128),
+            PackedRgba::rgb(127, 187, 179),
+            PackedRgba::rgb(122, 166, 218),
+            PackedRgba::rgb(214, 153, 82),
+            PackedRgba::rgb(159, 201, 124),
+            PackedRgba::rgb(143, 181, 167),
+            PackedRgba::rgb(198, 141, 122),
+            PackedRgba::rgb(120, 132, 108),
+        ],
+        syntax_keyword: PackedRgba::rgb(166, 123, 91),
+        syntax_string: PackedRgba::rgb(167, 192, 128),
+        syntax_number: PackedRgba::rgb(214, 153, 82),
+        syntax_comment: PackedRgba::rgb(112, 102, 86),
+        syntax_function: PackedRgba::rgb(122, 166, 218),
+        syntax_type: PackedRgba::rgb(127, 187, 179),
+        syntax_operator: PackedRgba::rgb(211, 198, 170),
+        syntax_punctuation: PackedRgba::rgb(150, 138, 114),
+    },
+    // Everforest Light
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(255, 248, 232),
+        bg_base: PackedRgba::rgb(248, 240, 221),
+        bg_surface: PackedRgba::rgb(242, 232, 204),
+        bg_overlay: PackedRgba::rgb(230, 220, 189),
+        bg_highlight: PackedRgba::rgb(214, 203, 167),
+        fg_primary: PackedRgba::rgb(92, 106, 81),
+        fg_secondary: PackedRgba::rgb(103, 117, 92),
+        fg_muted: PackedRgba::rgb(138, 146, 122),
+        fg_disabled: PackedRgba::rgb(171, 176, 151),
+        accent_primary: PackedRgba::rgb(63, 118, 80),
+        accent_secondary: PackedRgba::rgb(141, 115, 99),
+        accent_success: PackedRgba::rgb(95, 141, 78),
+        accent_warning: PackedRgba::rgb(163, 126, 61),
+        accent_error: PackedRgba::rgb(189, 80, 78),
+        accent_info: PackedRgba::rgb(53, 140, 164),
+        accent_link: PackedRgba::rgb(58, 122, 153),
+        accent_slots: [
+            PackedRgba::rgb(63, 118, 80),
+            PackedRgba::rgb(141, 115, 99),
+            PackedRgba::rgb(95, 141, 78),
+            PackedRgba::rgb(163, 126, 61),
+            PackedRgba::rgb(189, 80, 78),
+            PackedRgba::rgb(53, 140, 164),
+            PackedRgba::rgb(58, 122, 153),
+            PackedRgba::rgb(120, 138, 94),
+            PackedRgba::rgb(135, 120, 84),
+            PackedRgba::rgb(176, 98, 82),
+            PackedRgba::rgb(80, 156, 175),
+            PackedRgba::rgb(146, 152, 119),
+        ],
+        syntax_keyword: PackedRgba::rgb(141, 115, 99),
+        syntax_string: PackedRgba::rgb(95, 141, 78),
+        syntax_number: PackedRgba::rgb(163, 126, 61),
+        syntax_comment: PackedRgba::rgb(171, 176, 151),
+        syntax_function: PackedRgba::rgb(58, 122, 153),
+        syntax_type: PackedRgba::rgb(53, 140, 164),
+        syntax_operator: PackedRgba::rgb(92, 106, 81),
+        syntax_punctuation: PackedRgba::rgb(138, 146, 122),
+    },
+    // GitHub Dark
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(13, 17, 23),
+        bg_base: PackedRgba::rgb(22, 27, 34),
+        bg_surface: PackedRgba::rgb(33, 38, 45),
+        bg_overlay: PackedRgba::rgb(48, 54, 61),
+        bg_highlight: PackedRgba::rgb(75, 83, 95),
+        fg_primary: PackedRgba::rgb(230, 237, 243),
+        fg_secondary: PackedRgba::rgb(198, 208, 220),
+        fg_muted: PackedRgba::rgb(139, 148, 158),
+        fg_disabled: PackedRgba::rgb(95, 103, 112),
+        accent_primary: PackedRgba::rgb(47, 129, 247),
+        accent_secondary: PackedRgba::rgb(163, 113, 247),
+        accent_success: PackedRgba::rgb(63, 185, 80),
+        accent_warning: PackedRgba::rgb(210, 153, 34),
+        accent_error: PackedRgba::rgb(248, 81, 73),
+        accent_info: PackedRgba::rgb(121, 192, 255),
+        accent_link: PackedRgba::rgb(47, 129, 247),
+        accent_slots: [
+            PackedRgba::rgb(47, 129, 247),
+            PackedRgba::rgb(163, 113, 247),
+            PackedRgba::rgb(63, 185, 80),
+            PackedRgba::rgb(210, 153, 34),
+            PackedRgba::rgb(248, 81, 73),
+            PackedRgba::rgb(121, 192, 255),
+            PackedRgba::rgb(255, 123, 114),
+            PackedRgba::rgb(121, 192, 255),
+            PackedRgba::rgb(140, 149, 159),
+            PackedRgba::rgb(86, 211, 100),
+            PackedRgba::rgb(213, 173, 79),
+            PackedRgba::rgb(188, 140, 255),
+        ],
+        syntax_keyword: PackedRgba::rgb(210, 153, 34),
+        syntax_string: PackedRgba::rgb(121, 192, 255),
+        syntax_number: PackedRgba::rgb(121, 192, 255),
+        syntax_comment: PackedRgba::rgb(95, 103, 112),
+        syntax_function: PackedRgba::rgb(210, 153, 34),
+        syntax_type: PackedRgba::rgb(163, 113, 247),
+        syntax_operator: PackedRgba::rgb(230, 237, 243),
+        syntax_punctuation: PackedRgba::rgb(139, 148, 158),
+    },
+    // GitHub Light
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(255, 255, 255),
+        bg_base: PackedRgba::rgb(246, 248, 250),
+        bg_surface: PackedRgba::rgb(234, 238, 242),
+        bg_overlay: PackedRgba::rgb(220, 224, 229),
+        bg_highlight: PackedRgba::rgb(204, 210, 217),
+        fg_primary: PackedRgba::rgb(31, 35, 40),
+        fg_secondary: PackedRgba::rgb(65, 72, 81),
+        fg_muted: PackedRgba::rgb(87, 96, 106),
+        fg_disabled: PackedRgba::rgb(110, 119, 129),
+        accent_primary: PackedRgba::rgb(9, 105, 218),
+        accent_secondary: PackedRgba::rgb(130, 80, 223),
+        accent_success: PackedRgba::rgb(26, 127, 55),
+        accent_warning: PackedRgba::rgb(154, 103, 0),
+        accent_error: PackedRgba::rgb(207, 34, 46),
+        accent_info: PackedRgba::rgb(9, 105, 218),
+        accent_link: PackedRgba::rgb(9, 105, 218),
+        accent_slots: [
+            PackedRgba::rgb(9, 105, 218),
+            PackedRgba::rgb(130, 80, 223),
+            PackedRgba::rgb(26, 127, 55),
+            PackedRgba::rgb(154, 103, 0),
+            PackedRgba::rgb(207, 34, 46),
+            PackedRgba::rgb(9, 105, 218),
+            PackedRgba::rgb(166, 42, 120),
+            PackedRgba::rgb(3, 102, 214),
+            PackedRgba::rgb(15, 123, 108),
+            PackedRgba::rgb(191, 135, 0),
+            PackedRgba::rgb(87, 96, 106),
+            PackedRgba::rgb(98, 57, 186),
+        ],
+        syntax_keyword: PackedRgba::rgb(130, 80, 223),
+        syntax_string: PackedRgba::rgb(26, 127, 55),
+        syntax_number: PackedRgba::rgb(9, 105, 218),
+        syntax_comment: PackedRgba::rgb(110, 119, 129),
+        syntax_function: PackedRgba::rgb(154, 103, 0),
+        syntax_type: PackedRgba::rgb(9, 105, 218),
+        syntax_operator: PackedRgba::rgb(31, 35, 40),
+        syntax_punctuation: PackedRgba::rgb(87, 96, 106),
+    },
+    // Synthwave '84
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(25, 20, 54),
+        bg_base: PackedRgba::rgb(36, 31, 76),
+        bg_surface: PackedRgba::rgb(47, 42, 92),
+        bg_overlay: PackedRgba::rgb(67, 58, 116),
+        bg_highlight: PackedRgba::rgb(96, 84, 152),
+        fg_primary: PackedRgba::rgb(241, 245, 255),
+        fg_secondary: PackedRgba::rgb(212, 214, 255),
+        fg_muted: PackedRgba::rgb(157, 159, 207),
+        fg_disabled: PackedRgba::rgb(116, 119, 164),
+        accent_primary: PackedRgba::rgb(255, 124, 247),
+        accent_secondary: PackedRgba::rgb(110, 255, 253),
+        accent_success: PackedRgba::rgb(114, 255, 163),
+        accent_warning: PackedRgba::rgb(255, 230, 109),
+        accent_error: PackedRgba::rgb(255, 85, 122),
+        accent_info: PackedRgba::rgb(123, 194, 255),
+        accent_link: PackedRgba::rgb(110, 255, 253),
+        accent_slots: [
+            PackedRgba::rgb(255, 124, 247),
+            PackedRgba::rgb(110, 255, 253),
+            PackedRgba::rgb(114, 255, 163),
+            PackedRgba::rgb(255, 230, 109),
+            PackedRgba::rgb(255, 85, 122),
+            PackedRgba::rgb(123, 194, 255),
+            PackedRgba::rgb(255, 161, 79),
+            PackedRgba::rgb(255, 99, 188),
+            PackedRgba::rgb(144, 107, 255),
+            PackedRgba::rgb(96, 255, 202),
+            PackedRgba::rgb(255, 247, 153),
+            PackedRgba::rgb(165, 214, 255),
+        ],
+        syntax_keyword: PackedRgba::rgb(255, 124, 247),
+        syntax_string: PackedRgba::rgb(110, 255, 253),
+        syntax_number: PackedRgba::rgb(255, 161, 79),
+        syntax_comment: PackedRgba::rgb(116, 119, 164),
+        syntax_function: PackedRgba::rgb(123, 194, 255),
+        syntax_type: PackedRgba::rgb(114, 255, 163),
+        syntax_operator: PackedRgba::rgb(241, 245, 255),
+        syntax_punctuation: PackedRgba::rgb(157, 159, 207),
+    },
+    // Palenight
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(24, 27, 38),
+        bg_base: PackedRgba::rgb(41, 45, 62),
+        bg_surface: PackedRgba::rgb(50, 56, 75),
+        bg_overlay: PackedRgba::rgb(67, 77, 103),
+        bg_highlight: PackedRgba::rgb(93, 107, 145),
+        fg_primary: PackedRgba::rgb(166, 172, 205),
+        fg_secondary: PackedRgba::rgb(149, 157, 203),
+        fg_muted: PackedRgba::rgb(103, 112, 148),
+        fg_disabled: PackedRgba::rgb(80, 87, 115),
+        accent_primary: PackedRgba::rgb(130, 170, 255),
+        accent_secondary: PackedRgba::rgb(199, 146, 234),
+        accent_success: PackedRgba::rgb(195, 232, 141),
+        accent_warning: PackedRgba::rgb(255, 203, 107),
+        accent_error: PackedRgba::rgb(255, 83, 112),
+        accent_info: PackedRgba::rgb(137, 221, 255),
+        accent_link: PackedRgba::rgb(130, 170, 255),
+        accent_slots: [
+            PackedRgba::rgb(130, 170, 255),
+            PackedRgba::rgb(199, 146, 234),
+            PackedRgba::rgb(195, 232, 141),
+            PackedRgba::rgb(255, 203, 107),
+            PackedRgba::rgb(255, 83, 112),
+            PackedRgba::rgb(137, 221, 255),
+            PackedRgba::rgb(247, 140, 108),
+            PackedRgba::rgb(130, 170, 255),
+            PackedRgba::rgb(193, 132, 252),
+            PackedRgba::rgb(99, 187, 227),
+            PackedRgba::rgb(173, 219, 103),
+            PackedRgba::rgb(255, 203, 107),
+        ],
+        syntax_keyword: PackedRgba::rgb(199, 146, 234),
+        syntax_string: PackedRgba::rgb(195, 232, 141),
+        syntax_number: PackedRgba::rgb(247, 140, 108),
+        syntax_comment: PackedRgba::rgb(80, 87, 115),
+        syntax_function: PackedRgba::rgb(130, 170, 255),
+        syntax_type: PackedRgba::rgb(137, 221, 255),
+        syntax_operator: PackedRgba::rgb(166, 172, 205),
+        syntax_punctuation: PackedRgba::rgb(103, 112, 148),
+    },
+    // Horizon Dark
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(28, 30, 39),
+        bg_base: PackedRgba::rgb(36, 39, 50),
+        bg_surface: PackedRgba::rgb(45, 49, 63),
+        bg_overlay: PackedRgba::rgb(62, 67, 84),
+        bg_highlight: PackedRgba::rgb(84, 90, 111),
+        fg_primary: PackedRgba::rgb(220, 223, 228),
+        fg_secondary: PackedRgba::rgb(191, 195, 203),
+        fg_muted: PackedRgba::rgb(145, 150, 163),
+        fg_disabled: PackedRgba::rgb(103, 109, 125),
+        accent_primary: PackedRgba::rgb(224, 122, 95),
+        accent_secondary: PackedRgba::rgb(178, 148, 187),
+        accent_success: PackedRgba::rgb(166, 218, 149),
+        accent_warning: PackedRgba::rgb(242, 200, 121),
+        accent_error: PackedRgba::rgb(234, 84, 85),
+        accent_info: PackedRgba::rgb(89, 154, 218),
+        accent_link: PackedRgba::rgb(89, 154, 218),
+        accent_slots: [
+            PackedRgba::rgb(224, 122, 95),
+            PackedRgba::rgb(178, 148, 187),
+            PackedRgba::rgb(166, 218, 149),
+            PackedRgba::rgb(242, 200, 121),
+            PackedRgba::rgb(234, 84, 85),
+            PackedRgba::rgb(89, 154, 218),
+            PackedRgba::rgb(248, 150, 30),
+            PackedRgba::rgb(188, 190, 196),
+            PackedRgba::rgb(103, 170, 222),
+            PackedRgba::rgb(150, 194, 140),
+            PackedRgba::rgb(220, 130, 100),
+            PackedRgba::rgb(206, 162, 209),
+        ],
+        syntax_keyword: PackedRgba::rgb(178, 148, 187),
+        syntax_string: PackedRgba::rgb(166, 218, 149),
+        syntax_number: PackedRgba::rgb(248, 150, 30),
+        syntax_comment: PackedRgba::rgb(103, 109, 125),
+        syntax_function: PackedRgba::rgb(89, 154, 218),
+        syntax_type: PackedRgba::rgb(224, 122, 95),
+        syntax_operator: PackedRgba::rgb(220, 223, 228),
+        syntax_punctuation: PackedRgba::rgb(145, 150, 163),
+    },
+    // Nord
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(35, 41, 52),
+        bg_base: PackedRgba::rgb(46, 52, 64),
+        bg_surface: PackedRgba::rgb(59, 66, 82),
+        bg_overlay: PackedRgba::rgb(76, 86, 106),
+        bg_highlight: PackedRgba::rgb(94, 129, 172),
+        fg_primary: PackedRgba::rgb(236, 239, 244),
+        fg_secondary: PackedRgba::rgb(229, 233, 240),
+        fg_muted: PackedRgba::rgb(179, 188, 203),
+        fg_disabled: PackedRgba::rgb(136, 152, 176),
+        accent_primary: PackedRgba::rgb(129, 161, 193),
+        accent_secondary: PackedRgba::rgb(180, 142, 173),
+        accent_success: PackedRgba::rgb(163, 190, 140),
+        accent_warning: PackedRgba::rgb(235, 203, 139),
+        accent_error: PackedRgba::rgb(191, 97, 106),
+        accent_info: PackedRgba::rgb(143, 188, 187),
+        accent_link: PackedRgba::rgb(136, 192, 208),
+        accent_slots: [
+            PackedRgba::rgb(129, 161, 193),
+            PackedRgba::rgb(180, 142, 173),
+            PackedRgba::rgb(163, 190, 140),
+            PackedRgba::rgb(235, 203, 139),
+            PackedRgba::rgb(191, 97, 106),
+            PackedRgba::rgb(143, 188, 187),
+            PackedRgba::rgb(136, 192, 208),
+            PackedRgba::rgb(94, 129, 172),
+            PackedRgba::rgb(208, 135, 112),
+            PackedRgba::rgb(216, 222, 233),
+            PackedRgba::rgb(163, 179, 194),
+            PackedRgba::rgb(191, 97, 106),
+        ],
+        syntax_keyword: PackedRgba::rgb(180, 142, 173),
+        syntax_string: PackedRgba::rgb(163, 190, 140),
+        syntax_number: PackedRgba::rgb(208, 135, 112),
+        syntax_comment: PackedRgba::rgb(136, 152, 176),
+        syntax_function: PackedRgba::rgb(129, 161, 193),
+        syntax_type: PackedRgba::rgb(143, 188, 187),
+        syntax_operator: PackedRgba::rgb(236, 239, 244),
+        syntax_punctuation: PackedRgba::rgb(179, 188, 203),
+    },
+    // One Light
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(250, 250, 250),
+        bg_base: PackedRgba::rgb(245, 246, 247),
+        bg_surface: PackedRgba::rgb(234, 236, 239),
+        bg_overlay: PackedRgba::rgb(222, 226, 232),
+        bg_highlight: PackedRgba::rgb(206, 213, 223),
+        fg_primary: PackedRgba::rgb(56, 58, 66),
+        fg_secondary: PackedRgba::rgb(80, 84, 93),
+        fg_muted: PackedRgba::rgb(120, 126, 138),
+        fg_disabled: PackedRgba::rgb(155, 162, 174),
+        accent_primary: PackedRgba::rgb(64, 120, 242),
+        accent_secondary: PackedRgba::rgb(160, 82, 223),
+        accent_success: PackedRgba::rgb(80, 161, 79),
+        accent_warning: PackedRgba::rgb(196, 135, 15),
+        accent_error: PackedRgba::rgb(228, 86, 73),
+        accent_info: PackedRgba::rgb(1, 132, 188),
+        accent_link: PackedRgba::rgb(64, 120, 242),
+        accent_slots: [
+            PackedRgba::rgb(64, 120, 242),
+            PackedRgba::rgb(160, 82, 223),
+            PackedRgba::rgb(80, 161, 79),
+            PackedRgba::rgb(196, 135, 15),
+            PackedRgba::rgb(228, 86, 73),
+            PackedRgba::rgb(1, 132, 188),
+            PackedRgba::rgb(225, 111, 61),
+            PackedRgba::rgb(191, 64, 191),
+            PackedRgba::rgb(3, 102, 214),
+            PackedRgba::rgb(28, 126, 214),
+            PackedRgba::rgb(138, 106, 38),
+            PackedRgba::rgb(20, 139, 148),
+        ],
+        syntax_keyword: PackedRgba::rgb(160, 82, 223),
+        syntax_string: PackedRgba::rgb(80, 161, 79),
+        syntax_number: PackedRgba::rgb(225, 111, 61),
+        syntax_comment: PackedRgba::rgb(155, 162, 174),
+        syntax_function: PackedRgba::rgb(64, 120, 242),
+        syntax_type: PackedRgba::rgb(1, 132, 188),
+        syntax_operator: PackedRgba::rgb(56, 58, 66),
+        syntax_punctuation: PackedRgba::rgb(120, 126, 138),
+    },
+    // Catppuccin Latte
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(245, 242, 232),
+        bg_base: PackedRgba::rgb(239, 241, 245),
+        bg_surface: PackedRgba::rgb(230, 233, 239),
+        bg_overlay: PackedRgba::rgb(220, 224, 232),
+        bg_highlight: PackedRgba::rgb(204, 208, 218),
+        fg_primary: PackedRgba::rgb(76, 79, 105),
+        fg_secondary: PackedRgba::rgb(92, 95, 119),
+        fg_muted: PackedRgba::rgb(140, 143, 161),
+        fg_disabled: PackedRgba::rgb(172, 176, 190),
+        accent_primary: PackedRgba::rgb(30, 102, 245),
+        accent_secondary: PackedRgba::rgb(136, 57, 239),
+        accent_success: PackedRgba::rgb(64, 160, 43),
+        accent_warning: PackedRgba::rgb(223, 142, 29),
+        accent_error: PackedRgba::rgb(210, 15, 57),
+        accent_info: PackedRgba::rgb(4, 165, 229),
+        accent_link: PackedRgba::rgb(30, 102, 245),
+        accent_slots: [
+            PackedRgba::rgb(30, 102, 245),
+            PackedRgba::rgb(136, 57, 239),
+            PackedRgba::rgb(64, 160, 43),
+            PackedRgba::rgb(223, 142, 29),
+            PackedRgba::rgb(210, 15, 57),
+            PackedRgba::rgb(4, 165, 229),
+            PackedRgba::rgb(254, 100, 11),
+            PackedRgba::rgb(234, 118, 203),
+            PackedRgba::rgb(32, 159, 181),
+            PackedRgba::rgb(114, 135, 253),
+            PackedRgba::rgb(64, 160, 43),
+            PackedRgba::rgb(136, 57, 239),
+        ],
+        syntax_keyword: PackedRgba::rgb(136, 57, 239),
+        syntax_string: PackedRgba::rgb(64, 160, 43),
+        syntax_number: PackedRgba::rgb(254, 100, 11),
+        syntax_comment: PackedRgba::rgb(172, 176, 190),
+        syntax_function: PackedRgba::rgb(30, 102, 245),
+        syntax_type: PackedRgba::rgb(32, 159, 181),
+        syntax_operator: PackedRgba::rgb(76, 79, 105),
+        syntax_punctuation: PackedRgba::rgb(140, 143, 161),
+    },
+    // Catppuccin Frappe
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(35, 38, 52),
+        bg_base: PackedRgba::rgb(48, 52, 70),
+        bg_surface: PackedRgba::rgb(65, 69, 89),
+        bg_overlay: PackedRgba::rgb(81, 87, 109),
+        bg_highlight: PackedRgba::rgb(98, 104, 128),
+        fg_primary: PackedRgba::rgb(198, 208, 245),
+        fg_secondary: PackedRgba::rgb(181, 191, 226),
+        fg_muted: PackedRgba::rgb(148, 156, 187),
+        fg_disabled: PackedRgba::rgb(115, 121, 148),
+        accent_primary: PackedRgba::rgb(140, 170, 238),
+        accent_secondary: PackedRgba::rgb(202, 158, 230),
+        accent_success: PackedRgba::rgb(166, 209, 137),
+        accent_warning: PackedRgba::rgb(229, 200, 144),
+        accent_error: PackedRgba::rgb(231, 130, 132),
+        accent_info: PackedRgba::rgb(153, 209, 219),
+        accent_link: PackedRgba::rgb(140, 170, 238),
+        accent_slots: [
+            PackedRgba::rgb(140, 170, 238),
+            PackedRgba::rgb(202, 158, 230),
+            PackedRgba::rgb(166, 209, 137),
+            PackedRgba::rgb(229, 200, 144),
+            PackedRgba::rgb(231, 130, 132),
+            PackedRgba::rgb(153, 209, 219),
+            PackedRgba::rgb(239, 159, 118),
+            PackedRgba::rgb(244, 184, 228),
+            PackedRgba::rgb(129, 200, 190),
+            PackedRgba::rgb(186, 187, 241),
+            PackedRgba::rgb(166, 209, 137),
+            PackedRgba::rgb(202, 158, 230),
+        ],
+        syntax_keyword: PackedRgba::rgb(202, 158, 230),
+        syntax_string: PackedRgba::rgb(166, 209, 137),
+        syntax_number: PackedRgba::rgb(239, 159, 118),
+        syntax_comment: PackedRgba::rgb(115, 121, 148),
+        syntax_function: PackedRgba::rgb(140, 170, 238),
+        syntax_type: PackedRgba::rgb(153, 209, 219),
+        syntax_operator: PackedRgba::rgb(198, 208, 245),
+        syntax_punctuation: PackedRgba::rgb(148, 156, 187),
+    },
+    // Catppuccin Macchiato
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(24, 26, 38),
+        bg_base: PackedRgba::rgb(36, 39, 58),
+        bg_surface: PackedRgba::rgb(54, 58, 79),
+        bg_overlay: PackedRgba::rgb(73, 77, 100),
+        bg_highlight: PackedRgba::rgb(91, 96, 120),
+        fg_primary: PackedRgba::rgb(202, 211, 245),
+        fg_secondary: PackedRgba::rgb(184, 192, 224),
+        fg_muted: PackedRgba::rgb(147, 154, 183),
+        fg_disabled: PackedRgba::rgb(110, 115, 141),
+        accent_primary: PackedRgba::rgb(138, 173, 244),
+        accent_secondary: PackedRgba::rgb(198, 160, 246),
+        accent_success: PackedRgba::rgb(166, 218, 149),
+        accent_warning: PackedRgba::rgb(238, 212, 159),
+        accent_error: PackedRgba::rgb(237, 135, 150),
+        accent_info: PackedRgba::rgb(145, 215, 227),
+        accent_link: PackedRgba::rgb(138, 173, 244),
+        accent_slots: [
+            PackedRgba::rgb(138, 173, 244),
+            PackedRgba::rgb(198, 160, 246),
+            PackedRgba::rgb(166, 218, 149),
+            PackedRgba::rgb(238, 212, 159),
+            PackedRgba::rgb(237, 135, 150),
+            PackedRgba::rgb(145, 215, 227),
+            PackedRgba::rgb(245, 169, 127),
+            PackedRgba::rgb(245, 189, 230),
+            PackedRgba::rgb(125, 196, 228),
+            PackedRgba::rgb(183, 189, 248),
+            PackedRgba::rgb(166, 218, 149),
+            PackedRgba::rgb(198, 160, 246),
+        ],
+        syntax_keyword: PackedRgba::rgb(198, 160, 246),
+        syntax_string: PackedRgba::rgb(166, 218, 149),
+        syntax_number: PackedRgba::rgb(245, 169, 127),
+        syntax_comment: PackedRgba::rgb(110, 115, 141),
+        syntax_function: PackedRgba::rgb(138, 173, 244),
+        syntax_type: PackedRgba::rgb(145, 215, 227),
+        syntax_operator: PackedRgba::rgb(202, 211, 245),
+        syntax_punctuation: PackedRgba::rgb(147, 154, 183),
+    },
+    // Kanagawa Lotus
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(248, 242, 229),
+        bg_base: PackedRgba::rgb(241, 234, 215),
+        bg_surface: PackedRgba::rgb(232, 224, 201),
+        bg_overlay: PackedRgba::rgb(221, 211, 184),
+        bg_highlight: PackedRgba::rgb(202, 191, 162),
+        fg_primary: PackedRgba::rgb(84, 73, 58),
+        fg_secondary: PackedRgba::rgb(110, 99, 83),
+        fg_muted: PackedRgba::rgb(138, 125, 107),
+        fg_disabled: PackedRgba::rgb(168, 155, 136),
+        accent_primary: PackedRgba::rgb(77, 127, 168),
+        accent_secondary: PackedRgba::rgb(126, 94, 167),
+        accent_success: PackedRgba::rgb(93, 139, 77),
+        accent_warning: PackedRgba::rgb(174, 129, 61),
+        accent_error: PackedRgba::rgb(173, 77, 91),
+        accent_info: PackedRgba::rgb(84, 140, 128),
+        accent_link: PackedRgba::rgb(77, 127, 168),
+        accent_slots: [
+            PackedRgba::rgb(77, 127, 168),
+            PackedRgba::rgb(126, 94, 167),
+            PackedRgba::rgb(93, 139, 77),
+            PackedRgba::rgb(174, 129, 61),
+            PackedRgba::rgb(173, 77, 91),
+            PackedRgba::rgb(84, 140, 128),
+            PackedRgba::rgb(191, 109, 60),
+            PackedRgba::rgb(129, 116, 94),
+            PackedRgba::rgb(103, 127, 90),
+            PackedRgba::rgb(160, 118, 71),
+            PackedRgba::rgb(63, 126, 150),
+            PackedRgba::rgb(126, 94, 167),
+        ],
+        syntax_keyword: PackedRgba::rgb(126, 94, 167),
+        syntax_string: PackedRgba::rgb(93, 139, 77),
+        syntax_number: PackedRgba::rgb(191, 109, 60),
+        syntax_comment: PackedRgba::rgb(168, 155, 136),
+        syntax_function: PackedRgba::rgb(77, 127, 168),
+        syntax_type: PackedRgba::rgb(84, 140, 128),
+        syntax_operator: PackedRgba::rgb(84, 73, 58),
+        syntax_punctuation: PackedRgba::rgb(138, 125, 107),
+    },
+    // Nightfox
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(16, 20, 29),
+        bg_base: PackedRgba::rgb(25, 32, 45),
+        bg_surface: PackedRgba::rgb(33, 42, 58),
+        bg_overlay: PackedRgba::rgb(47, 58, 78),
+        bg_highlight: PackedRgba::rgb(72, 89, 119),
+        fg_primary: PackedRgba::rgb(205, 214, 244),
+        fg_secondary: PackedRgba::rgb(176, 184, 212),
+        fg_muted: PackedRgba::rgb(131, 139, 167),
+        fg_disabled: PackedRgba::rgb(95, 104, 129),
+        accent_primary: PackedRgba::rgb(130, 170, 255),
+        accent_secondary: PackedRgba::rgb(192, 132, 252),
+        accent_success: PackedRgba::rgb(162, 217, 175),
+        accent_warning: PackedRgba::rgb(245, 169, 127),
+        accent_error: PackedRgba::rgb(240, 143, 104),
+        accent_info: PackedRgba::rgb(134, 216, 255),
+        accent_link: PackedRgba::rgb(130, 170, 255),
+        accent_slots: [
+            PackedRgba::rgb(130, 170, 255),
+            PackedRgba::rgb(192, 132, 252),
+            PackedRgba::rgb(162, 217, 175),
+            PackedRgba::rgb(245, 169, 127),
+            PackedRgba::rgb(240, 143, 104),
+            PackedRgba::rgb(134, 216, 255),
+            PackedRgba::rgb(225, 146, 94),
+            PackedRgba::rgb(122, 162, 247),
+            PackedRgba::rgb(150, 205, 251),
+            PackedRgba::rgb(197, 160, 246),
+            PackedRgba::rgb(160, 216, 239),
+            PackedRgba::rgb(245, 169, 127),
+        ],
+        syntax_keyword: PackedRgba::rgb(192, 132, 252),
+        syntax_string: PackedRgba::rgb(162, 217, 175),
+        syntax_number: PackedRgba::rgb(225, 146, 94),
+        syntax_comment: PackedRgba::rgb(95, 104, 129),
+        syntax_function: PackedRgba::rgb(130, 170, 255),
+        syntax_type: PackedRgba::rgb(134, 216, 255),
+        syntax_operator: PackedRgba::rgb(205, 214, 244),
+        syntax_punctuation: PackedRgba::rgb(131, 139, 167),
+    },
+    // Dayfox
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(252, 252, 252),
+        bg_base: PackedRgba::rgb(248, 249, 251),
+        bg_surface: PackedRgba::rgb(237, 239, 244),
+        bg_overlay: PackedRgba::rgb(225, 228, 236),
+        bg_highlight: PackedRgba::rgb(208, 214, 225),
+        fg_primary: PackedRgba::rgb(56, 67, 90),
+        fg_secondary: PackedRgba::rgb(78, 92, 118),
+        fg_muted: PackedRgba::rgb(111, 122, 147),
+        fg_disabled: PackedRgba::rgb(146, 154, 173),
+        accent_primary: PackedRgba::rgb(40, 108, 184),
+        accent_secondary: PackedRgba::rgb(151, 94, 242),
+        accent_success: PackedRgba::rgb(57, 145, 119),
+        accent_warning: PackedRgba::rgb(200, 118, 42),
+        accent_error: PackedRgba::rgb(188, 72, 75),
+        accent_info: PackedRgba::rgb(49, 134, 190),
+        accent_link: PackedRgba::rgb(40, 108, 184),
+        accent_slots: [
+            PackedRgba::rgb(40, 108, 184),
+            PackedRgba::rgb(151, 94, 242),
+            PackedRgba::rgb(57, 145, 119),
+            PackedRgba::rgb(200, 118, 42),
+            PackedRgba::rgb(188, 72, 75),
+            PackedRgba::rgb(49, 134, 190),
+            PackedRgba::rgb(160, 105, 39),
+            PackedRgba::rgb(110, 112, 230),
+            PackedRgba::rgb(34, 146, 187),
+            PackedRgba::rgb(177, 86, 145),
+            PackedRgba::rgb(80, 116, 163),
+            PackedRgba::rgb(57, 145, 119),
+        ],
+        syntax_keyword: PackedRgba::rgb(151, 94, 242),
+        syntax_string: PackedRgba::rgb(57, 145, 119),
+        syntax_number: PackedRgba::rgb(160, 105, 39),
+        syntax_comment: PackedRgba::rgb(146, 154, 173),
+        syntax_function: PackedRgba::rgb(40, 108, 184),
+        syntax_type: PackedRgba::rgb(49, 134, 190),
+        syntax_operator: PackedRgba::rgb(56, 67, 90),
+        syntax_punctuation: PackedRgba::rgb(111, 122, 147),
+    },
+    // Oceanic Next
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(25, 38, 49),
+        bg_base: PackedRgba::rgb(32, 46, 58),
+        bg_surface: PackedRgba::rgb(48, 67, 82),
+        bg_overlay: PackedRgba::rgb(63, 86, 103),
+        bg_highlight: PackedRgba::rgb(79, 104, 121),
+        fg_primary: PackedRgba::rgb(204, 222, 235),
+        fg_secondary: PackedRgba::rgb(165, 183, 199),
+        fg_muted: PackedRgba::rgb(126, 145, 161),
+        fg_disabled: PackedRgba::rgb(91, 110, 126),
+        accent_primary: PackedRgba::rgb(102, 217, 239),
+        accent_secondary: PackedRgba::rgb(197, 149, 197),
+        accent_success: PackedRgba::rgb(153, 199, 148),
+        accent_warning: PackedRgba::rgb(250, 200, 99),
+        accent_error: PackedRgba::rgb(236, 95, 102),
+        accent_info: PackedRgba::rgb(91, 196, 191),
+        accent_link: PackedRgba::rgb(102, 217, 239),
+        accent_slots: [
+            PackedRgba::rgb(102, 217, 239),
+            PackedRgba::rgb(197, 149, 197),
+            PackedRgba::rgb(153, 199, 148),
+            PackedRgba::rgb(250, 200, 99),
+            PackedRgba::rgb(236, 95, 102),
+            PackedRgba::rgb(91, 196, 191),
+            PackedRgba::rgb(249, 145, 87),
+            PackedRgba::rgb(102, 178, 255),
+            PackedRgba::rgb(173, 219, 103),
+            PackedRgba::rgb(255, 203, 107),
+            PackedRgba::rgb(199, 146, 234),
+            PackedRgba::rgb(127, 219, 202),
+        ],
+        syntax_keyword: PackedRgba::rgb(197, 149, 197),
+        syntax_string: PackedRgba::rgb(153, 199, 148),
+        syntax_number: PackedRgba::rgb(249, 145, 87),
+        syntax_comment: PackedRgba::rgb(91, 110, 126),
+        syntax_function: PackedRgba::rgb(102, 217, 239),
+        syntax_type: PackedRgba::rgb(91, 196, 191),
+        syntax_operator: PackedRgba::rgb(204, 222, 235),
+        syntax_punctuation: PackedRgba::rgb(126, 145, 161),
+    },
+    // Cobalt2
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(0, 29, 69),
+        bg_base: PackedRgba::rgb(16, 42, 86),
+        bg_surface: PackedRgba::rgb(24, 55, 109),
+        bg_overlay: PackedRgba::rgb(40, 73, 132),
+        bg_highlight: PackedRgba::rgb(58, 95, 160),
+        fg_primary: PackedRgba::rgb(255, 255, 255),
+        fg_secondary: PackedRgba::rgb(220, 234, 255),
+        fg_muted: PackedRgba::rgb(169, 198, 235),
+        fg_disabled: PackedRgba::rgb(117, 152, 201),
+        accent_primary: PackedRgba::rgb(255, 157, 0),
+        accent_secondary: PackedRgba::rgb(255, 98, 140),
+        accent_success: PackedRgba::rgb(61, 219, 134),
+        accent_warning: PackedRgba::rgb(255, 214, 102),
+        accent_error: PackedRgba::rgb(255, 98, 140),
+        accent_info: PackedRgba::rgb(64, 204, 255),
+        accent_link: PackedRgba::rgb(64, 204, 255),
+        accent_slots: [
+            PackedRgba::rgb(255, 157, 0),
+            PackedRgba::rgb(255, 98, 140),
+            PackedRgba::rgb(61, 219, 134),
+            PackedRgba::rgb(255, 214, 102),
+            PackedRgba::rgb(255, 98, 140),
+            PackedRgba::rgb(64, 204, 255),
+            PackedRgba::rgb(192, 132, 252),
+            PackedRgba::rgb(123, 194, 255),
+            PackedRgba::rgb(255, 176, 84),
+            PackedRgba::rgb(114, 255, 163),
+            PackedRgba::rgb(110, 255, 253),
+            PackedRgba::rgb(255, 124, 247),
+        ],
+        syntax_keyword: PackedRgba::rgb(255, 157, 0),
+        syntax_string: PackedRgba::rgb(61, 219, 134),
+        syntax_number: PackedRgba::rgb(255, 214, 102),
+        syntax_comment: PackedRgba::rgb(117, 152, 201),
+        syntax_function: PackedRgba::rgb(64, 204, 255),
+        syntax_type: PackedRgba::rgb(255, 98, 140),
+        syntax_operator: PackedRgba::rgb(255, 255, 255),
+        syntax_punctuation: PackedRgba::rgb(169, 198, 235),
+    },
+    // PaperColor Dark
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(25, 25, 25),
+        bg_base: PackedRgba::rgb(30, 30, 30),
+        bg_surface: PackedRgba::rgb(38, 38, 38),
+        bg_overlay: PackedRgba::rgb(51, 51, 51),
+        bg_highlight: PackedRgba::rgb(68, 68, 68),
+        fg_primary: PackedRgba::rgb(208, 208, 208),
+        fg_secondary: PackedRgba::rgb(188, 188, 188),
+        fg_muted: PackedRgba::rgb(148, 148, 148),
+        fg_disabled: PackedRgba::rgb(108, 108, 108),
+        accent_primary: PackedRgba::rgb(95, 175, 215),
+        accent_secondary: PackedRgba::rgb(175, 95, 175),
+        accent_success: PackedRgba::rgb(95, 175, 95),
+        accent_warning: PackedRgba::rgb(215, 175, 95),
+        accent_error: PackedRgba::rgb(215, 95, 95),
+        accent_info: PackedRgba::rgb(95, 175, 215),
+        accent_link: PackedRgba::rgb(95, 175, 215),
+        accent_slots: [
+            PackedRgba::rgb(95, 175, 215),
+            PackedRgba::rgb(175, 95, 175),
+            PackedRgba::rgb(95, 175, 95),
+            PackedRgba::rgb(215, 175, 95),
+            PackedRgba::rgb(215, 95, 95),
+            PackedRgba::rgb(95, 175, 215),
+            PackedRgba::rgb(95, 135, 175),
+            PackedRgba::rgb(175, 135, 95),
+            PackedRgba::rgb(135, 175, 95),
+            PackedRgba::rgb(175, 95, 135),
+            PackedRgba::rgb(95, 175, 175),
+            PackedRgba::rgb(215, 135, 95),
+        ],
+        syntax_keyword: PackedRgba::rgb(175, 95, 175),
+        syntax_string: PackedRgba::rgb(95, 175, 95),
+        syntax_number: PackedRgba::rgb(215, 175, 95),
+        syntax_comment: PackedRgba::rgb(108, 108, 108),
+        syntax_function: PackedRgba::rgb(95, 175, 215),
+        syntax_type: PackedRgba::rgb(95, 175, 175),
+        syntax_operator: PackedRgba::rgb(208, 208, 208),
+        syntax_punctuation: PackedRgba::rgb(148, 148, 148),
+    },
+    // PaperColor Light
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(255, 255, 255),
+        bg_base: PackedRgba::rgb(248, 248, 248),
+        bg_surface: PackedRgba::rgb(238, 238, 238),
+        bg_overlay: PackedRgba::rgb(226, 226, 226),
+        bg_highlight: PackedRgba::rgb(210, 210, 210),
+        fg_primary: PackedRgba::rgb(68, 68, 68),
+        fg_secondary: PackedRgba::rgb(88, 88, 88),
+        fg_muted: PackedRgba::rgb(118, 118, 118),
+        fg_disabled: PackedRgba::rgb(148, 148, 148),
+        accent_primary: PackedRgba::rgb(0, 95, 175),
+        accent_secondary: PackedRgba::rgb(135, 0, 135),
+        accent_success: PackedRgba::rgb(0, 135, 0),
+        accent_warning: PackedRgba::rgb(175, 95, 0),
+        accent_error: PackedRgba::rgb(175, 0, 0),
+        accent_info: PackedRgba::rgb(0, 135, 175),
+        accent_link: PackedRgba::rgb(0, 95, 175),
+        accent_slots: [
+            PackedRgba::rgb(0, 95, 175),
+            PackedRgba::rgb(135, 0, 135),
+            PackedRgba::rgb(0, 135, 0),
+            PackedRgba::rgb(175, 95, 0),
+            PackedRgba::rgb(175, 0, 0),
+            PackedRgba::rgb(0, 135, 175),
+            PackedRgba::rgb(95, 95, 175),
+            PackedRgba::rgb(175, 95, 95),
+            PackedRgba::rgb(95, 135, 0),
+            PackedRgba::rgb(135, 95, 0),
+            PackedRgba::rgb(0, 135, 135),
+            PackedRgba::rgb(95, 0, 135),
+        ],
+        syntax_keyword: PackedRgba::rgb(135, 0, 135),
+        syntax_string: PackedRgba::rgb(0, 135, 0),
+        syntax_number: PackedRgba::rgb(175, 95, 0),
+        syntax_comment: PackedRgba::rgb(148, 148, 148),
+        syntax_function: PackedRgba::rgb(0, 95, 175),
+        syntax_type: PackedRgba::rgb(0, 135, 175),
+        syntax_operator: PackedRgba::rgb(68, 68, 68),
+        syntax_punctuation: PackedRgba::rgb(118, 118, 118),
+    },
     // High Contrast accessibility theme (WCAG AAA compliant)
     ThemePalette {
         bg_deep: PackedRgba::rgb(0, 0, 0),
@@ -427,6 +2020,7 @@ const THEMES: [ThemePalette; 7] = [
 ];
 
 static CURRENT_THEME: AtomicUsize = AtomicUsize::new(0);
+static HARMONIZED_THEMES: OnceLock<[ThemePalette; ThemeId::ALL.len()]> = OnceLock::new();
 
 /// Internal: set theme without acquiring the lock.
 /// Used by `ScopedThemeLock::new()` which already holds the lock.
@@ -470,7 +2064,7 @@ pub fn cycle_theme() -> ThemeId {
 
 /// Return the palette for a theme.
 pub fn palette(theme: ThemeId) -> &'static ThemePalette {
-    &THEMES[theme.index()]
+    &harmonized_palettes()[theme.index()]
 }
 
 /// Return the current palette.
@@ -481,6 +2075,12 @@ pub fn current_palette() -> &'static ThemePalette {
 /// Return the total number of themes.
 pub const fn theme_count() -> usize {
     ThemeId::ALL.len()
+}
+
+fn harmonized_palettes() -> &'static [ThemePalette; ThemeId::ALL.len()] {
+    HARMONIZED_THEMES.get_or_init(|| {
+        ThemeId::ALL.map(|theme| harmonize_theme_palette(theme, THEMES[theme.index()]))
+    })
 }
 
 /// Mutex for serializing theme access in tests.
@@ -726,6 +2326,232 @@ pub fn accent_gradient(t: f64) -> PackedRgba {
     PackedRgba::rgb(r, g, b_val)
 }
 
+fn color_distance(a: PackedRgba, b: PackedRgba) -> u16 {
+    let dr = i16::from(a.r()) - i16::from(b.r());
+    let dg = i16::from(a.g()) - i16::from(b.g());
+    let db = i16::from(a.b()) - i16::from(b.b());
+    dr.unsigned_abs() + dg.unsigned_abs() + db.unsigned_abs()
+}
+
+fn ensure_min_contrast(
+    fg: PackedRgba,
+    bg: PackedRgba,
+    light: PackedRgba,
+    dark: PackedRgba,
+    min_ratio: f64,
+) -> PackedRgba {
+    let current = contrast::contrast_ratio(fg, bg);
+    if current >= min_ratio {
+        return fg;
+    }
+
+    let target = if contrast::relative_luminance(bg) < 0.5 {
+        light
+    } else {
+        dark
+    };
+
+    let mut best = fg;
+    let mut best_ratio = current;
+    for step in 1..=16 {
+        let t = step as f32 / 16.0;
+        let candidate = blend_colors(target, fg, t);
+        let ratio = contrast::contrast_ratio(candidate, bg);
+        if ratio > best_ratio {
+            best = candidate;
+            best_ratio = ratio;
+        }
+        if ratio >= min_ratio {
+            return candidate;
+        }
+    }
+    best
+}
+
+fn harmonize_theme_palette(theme: ThemeId, base: ThemePalette) -> ThemePalette {
+    if theme == ThemeId::HighContrast {
+        return base;
+    }
+
+    let mut p = base;
+    let is_light = contrast::relative_luminance(p.bg_base) >= 0.45;
+    let dark_fallback = PackedRgba::rgb(10, 12, 18);
+    let light_fallback = PackedRgba::rgb(244, 247, 252);
+
+    // Keep a coherent 5-step background ladder around bg_base.
+    p.bg_deep = if is_light {
+        blend_colors(PackedRgba::WHITE, p.bg_base, 0.22)
+    } else {
+        blend_colors(PackedRgba::BLACK, p.bg_base, 0.24)
+    };
+    p.bg_surface = if is_light {
+        blend_colors(PackedRgba::BLACK, p.bg_base, 0.06)
+    } else {
+        blend_colors(PackedRgba::WHITE, p.bg_base, 0.08)
+    };
+    p.bg_overlay = if is_light {
+        blend_colors(PackedRgba::BLACK, p.bg_base, 0.12)
+    } else {
+        blend_colors(PackedRgba::WHITE, p.bg_base, 0.16)
+    };
+    p.bg_highlight = if is_light {
+        blend_colors(PackedRgba::BLACK, p.bg_base, 0.22)
+    } else {
+        blend_colors(PackedRgba::WHITE, p.bg_base, 0.28)
+    };
+
+    // Harmonized text hierarchy.
+    p.fg_primary = ensure_min_contrast(p.fg_primary, p.bg_base, light_fallback, dark_fallback, 5.6);
+    p.fg_secondary = ensure_min_contrast(
+        blend_colors(p.bg_base, p.fg_primary, 0.22),
+        p.bg_base,
+        light_fallback,
+        dark_fallback,
+        4.6,
+    );
+    p.fg_muted = ensure_min_contrast(
+        blend_colors(p.bg_base, p.fg_primary, 0.42),
+        p.bg_base,
+        light_fallback,
+        dark_fallback,
+        3.1,
+    );
+    p.fg_disabled = ensure_min_contrast(
+        blend_colors(p.bg_base, p.fg_primary, 0.58),
+        p.bg_base,
+        light_fallback,
+        dark_fallback,
+        2.2,
+    );
+
+    // Harmonize semantic accents while preserving each theme's identity.
+    p.accent_primary = ensure_min_contrast(
+        p.accent_primary,
+        p.bg_base,
+        light_fallback,
+        dark_fallback,
+        3.2,
+    );
+    p.accent_secondary = ensure_min_contrast(
+        p.accent_secondary,
+        p.bg_base,
+        light_fallback,
+        dark_fallback,
+        3.2,
+    );
+    p.accent_success = ensure_min_contrast(
+        p.accent_success,
+        p.bg_base,
+        light_fallback,
+        dark_fallback,
+        3.2,
+    );
+    p.accent_warning = ensure_min_contrast(
+        p.accent_warning,
+        p.bg_base,
+        light_fallback,
+        dark_fallback,
+        3.2,
+    );
+    p.accent_error = ensure_min_contrast(
+        p.accent_error,
+        p.bg_base,
+        light_fallback,
+        dark_fallback,
+        3.2,
+    );
+    p.accent_info =
+        ensure_min_contrast(p.accent_info, p.bg_base, light_fallback, dark_fallback, 3.2);
+    p.accent_link =
+        ensure_min_contrast(p.accent_link, p.bg_base, light_fallback, dark_fallback, 3.2);
+
+    if color_distance(p.accent_primary, p.accent_secondary) < 30 {
+        p.accent_secondary = ensure_min_contrast(
+            blend_colors(p.accent_error, p.accent_secondary, 0.35),
+            p.bg_base,
+            light_fallback,
+            dark_fallback,
+            3.2,
+        );
+    }
+    if color_distance(p.accent_success, p.accent_warning) < 30 {
+        p.accent_warning = ensure_min_contrast(
+            blend_colors(p.accent_error, p.accent_warning, 0.40),
+            p.bg_base,
+            light_fallback,
+            dark_fallback,
+            3.2,
+        );
+    }
+    if color_distance(p.accent_link, p.accent_primary) < 24 {
+        p.accent_link = ensure_min_contrast(
+            blend_colors(p.accent_info, p.accent_primary, 0.55),
+            p.bg_base,
+            light_fallback,
+            dark_fallback,
+            3.2,
+        );
+    }
+
+    // Shared, semantically ordered accent slots across all themes.
+    p.accent_slots = [
+        p.accent_primary,
+        p.accent_secondary,
+        p.accent_success,
+        p.accent_warning,
+        p.accent_error,
+        p.accent_info,
+        p.accent_link,
+        ensure_min_contrast(
+            blend_colors(p.accent_secondary, p.accent_primary, 0.50),
+            p.bg_base,
+            light_fallback,
+            dark_fallback,
+            3.0,
+        ),
+        ensure_min_contrast(
+            blend_colors(p.accent_success, p.accent_info, 0.50),
+            p.bg_base,
+            light_fallback,
+            dark_fallback,
+            3.0,
+        ),
+        ensure_min_contrast(
+            blend_colors(p.accent_warning, p.accent_error, 0.45),
+            p.bg_base,
+            light_fallback,
+            dark_fallback,
+            3.0,
+        ),
+        ensure_min_contrast(
+            blend_colors(p.accent_primary, p.accent_warning, 0.45),
+            p.bg_base,
+            light_fallback,
+            dark_fallback,
+            3.0,
+        ),
+        ensure_min_contrast(
+            blend_colors(p.accent_secondary, p.accent_success, 0.45),
+            p.bg_base,
+            light_fallback,
+            dark_fallback,
+            3.0,
+        ),
+    ];
+
+    // Unified syntax semantics for consistency across themes.
+    p.syntax_keyword = p.accent_secondary;
+    p.syntax_string = p.accent_success;
+    p.syntax_number = p.accent_warning;
+    p.syntax_comment = p.fg_disabled;
+    p.syntax_function = p.accent_primary;
+    p.syntax_type = p.accent_info;
+    p.syntax_operator = p.fg_secondary;
+    p.syntax_punctuation = p.fg_muted;
+
+    p
+}
+
 fn ensure_contrast(
     fg: PackedRgba,
     bg: PackedRgba,
@@ -846,7 +2672,7 @@ pub mod accent {
 
 /// Status colors (open / in-progress / blocked / closed).
 pub mod status {
-    use super::{ColorToken, PackedRgba, semantic_text, semantic_tint};
+    use super::{semantic_text, semantic_tint, ColorToken, PackedRgba};
 
     pub const OPEN: ColorToken = ColorToken::StatusOpen;
     pub const IN_PROGRESS: ColorToken = ColorToken::StatusInProgress;
@@ -888,7 +2714,7 @@ pub mod status {
 
 /// Priority colors (P0-P4).
 pub mod priority {
-    use super::{ColorToken, PackedRgba, semantic_text, semantic_tint};
+    use super::{semantic_text, semantic_tint, ColorToken, PackedRgba};
 
     pub const P0: ColorToken = ColorToken::PriorityP0;
     pub const P1: ColorToken = ColorToken::PriorityP1;
@@ -939,7 +2765,7 @@ pub mod priority {
 
 /// Issue type colors (bug / feature / task / epic).
 pub mod issue_type {
-    use super::{ColorToken, PackedRgba, semantic_text, semantic_tint};
+    use super::{semantic_text, semantic_tint, ColorToken, PackedRgba};
 
     pub const BUG: ColorToken = ColorToken::IssueBug;
     pub const FEATURE: ColorToken = ColorToken::IssueFeature;
@@ -981,7 +2807,7 @@ pub mod issue_type {
 
 /// Intent colors (success / warning / info / error).
 pub mod intent {
-    use super::{ColorToken, PackedRgba, accent, semantic_text, semantic_tint};
+    use super::{accent, semantic_text, semantic_tint, ColorToken, PackedRgba};
 
     pub const SUCCESS: ColorToken = accent::SUCCESS;
     pub const WARNING: ColorToken = accent::WARNING;
@@ -1023,7 +2849,7 @@ pub mod intent {
 
 /// Alpha-aware overlay colors.
 pub mod alpha {
-    use super::{AlphaColor, accent, bg};
+    use super::{accent, bg, AlphaColor};
 
     pub const SURFACE: AlphaColor = AlphaColor::new(bg::SURFACE, 220);
     pub const OVERLAY: AlphaColor = AlphaColor::new(bg::OVERLAY, 210);
@@ -1351,8 +3177,11 @@ mod tests {
         // CyberpunkAurora -> Darcula
         set_theme(ThemeId::CyberpunkAurora);
         assert_eq!(cycle_theme(), ThemeId::Darcula);
-        // NordicFrost -> HighContrast
+        // NordicFrost -> Doom
         set_theme(ThemeId::NordicFrost);
+        assert_eq!(cycle_theme(), ThemeId::Doom);
+        // PaperColorLight -> HighContrast
+        set_theme(ThemeId::PaperColorLight);
         assert_eq!(cycle_theme(), ThemeId::HighContrast);
         // HighContrast -> CyberpunkAurora (wraps)
         assert_eq!(cycle_theme(), ThemeId::CyberpunkAurora);
@@ -1583,8 +3412,9 @@ mod tests {
 
     #[test]
     fn theme_id_from_index_wraps() {
-        assert_eq!(ThemeId::from_index(5), ThemeId::CyberpunkAurora);
-        assert_eq!(ThemeId::from_index(7), ThemeId::LumenLight);
+        let n = ThemeId::ALL.len();
+        assert_eq!(ThemeId::from_index(n), ThemeId::CyberpunkAurora);
+        assert_eq!(ThemeId::from_index(n + 2), ThemeId::LumenLight);
     }
 
     #[test]
@@ -1608,27 +3438,30 @@ mod tests {
             t = t.next();
             visited.push(t);
         }
-        // After 5 steps, should wrap back to start
+        // After a full cycle, should wrap back to start.
         assert_eq!(*visited.last().unwrap(), ThemeId::CyberpunkAurora);
-        // Should have visited all 5 unique themes
-        let unique: std::collections::HashSet<_> = visited[..5].iter().collect();
-        assert_eq!(unique.len(), 5);
+        // Should have visited all unique themes exactly once before wrapping.
+        let unique: std::collections::HashSet<_> = visited[..ThemeId::ALL.len()].iter().collect();
+        assert_eq!(unique.len(), ThemeId::ALL.len());
     }
 
     #[test]
     fn theme_id_next_non_accessibility_skips_high_contrast() {
-        // High contrast should jump to CyberpunkAurora
+        // High contrast hops into the standard rotation.
         assert_eq!(
             ThemeId::HighContrast.next_non_accessibility(),
             ThemeId::Darcula
         );
-        // Standard themes cycle through STANDARD array
+        // Standard themes cycle through STANDARD array.
         assert_eq!(
             ThemeId::CyberpunkAurora.next_non_accessibility(),
             ThemeId::Darcula
         );
+        assert_eq!(ThemeId::NordicFrost.next_non_accessibility(), ThemeId::Doom);
+        assert_eq!(ThemeId::NightOwl.next_non_accessibility(), ThemeId::Dracula);
+        assert_eq!(ThemeId::HorizonDark.next_non_accessibility(), ThemeId::Nord);
         assert_eq!(
-            ThemeId::NordicFrost.next_non_accessibility(),
+            ThemeId::PaperColorLight.next_non_accessibility(),
             ThemeId::CyberpunkAurora
         );
     }
@@ -1636,7 +3469,7 @@ mod tests {
     #[test]
     fn theme_count_matches_all() {
         assert_eq!(theme_count(), ThemeId::ALL.len());
-        assert_eq!(theme_count(), 5);
+        assert!(theme_count() >= 10);
     }
 
     #[test]
@@ -1767,16 +3600,62 @@ mod tests {
         }
     }
 
-    // ── Edge-case: ThemeId ───────────────────────────────────────────
-
     #[test]
-    fn theme_id_all_has_five_elements() {
-        assert_eq!(ThemeId::ALL.len(), 5);
+    fn harmonized_slots_follow_semantic_order() {
+        for theme in ThemeId::STANDARD {
+            let pal = palette(theme);
+            assert_eq!(pal.accent_slots[0], pal.accent_primary);
+            assert_eq!(pal.accent_slots[1], pal.accent_secondary);
+            assert_eq!(pal.accent_slots[2], pal.accent_success);
+            assert_eq!(pal.accent_slots[3], pal.accent_warning);
+            assert_eq!(pal.accent_slots[4], pal.accent_error);
+            assert_eq!(pal.accent_slots[5], pal.accent_info);
+            assert_eq!(pal.accent_slots[6], pal.accent_link);
+        }
     }
 
     #[test]
-    fn theme_id_standard_has_four_elements_no_high_contrast() {
-        assert_eq!(ThemeId::STANDARD.len(), 4);
+    fn harmonized_syntax_semantics_are_consistent() {
+        for theme in ThemeId::STANDARD {
+            let pal = palette(theme);
+            assert_eq!(pal.syntax_keyword, pal.accent_secondary);
+            assert_eq!(pal.syntax_string, pal.accent_success);
+            assert_eq!(pal.syntax_number, pal.accent_warning);
+            assert_eq!(pal.syntax_function, pal.accent_primary);
+            assert_eq!(pal.syntax_type, pal.accent_info);
+            assert_eq!(pal.syntax_operator, pal.fg_secondary);
+            assert_eq!(pal.syntax_punctuation, pal.fg_muted);
+        }
+    }
+
+    #[test]
+    fn harmonized_text_hierarchy_has_ordered_contrast() {
+        for theme in ThemeId::ALL {
+            if theme == ThemeId::HighContrast {
+                continue;
+            }
+            let pal = palette(theme);
+            let c_primary = contrast::contrast_ratio(pal.fg_primary, pal.bg_base);
+            let c_secondary = contrast::contrast_ratio(pal.fg_secondary, pal.bg_base);
+            let c_muted = contrast::contrast_ratio(pal.fg_muted, pal.bg_base);
+            assert!(
+                c_primary >= c_secondary,
+                "primary < secondary for {theme:?}"
+            );
+            assert!(c_secondary >= c_muted, "secondary < muted for {theme:?}");
+        }
+    }
+
+    // ── Edge-case: ThemeId ───────────────────────────────────────────
+
+    #[test]
+    fn theme_id_all_has_expected_elements() {
+        assert_eq!(ThemeId::ALL.len(), 41);
+    }
+
+    #[test]
+    fn theme_id_standard_has_expected_elements_no_high_contrast() {
+        assert_eq!(ThemeId::STANDARD.len(), 40);
         for &theme in &ThemeId::STANDARD {
             assert_ne!(theme, ThemeId::HighContrast);
         }
@@ -1784,12 +3663,13 @@ mod tests {
 
     #[test]
     fn theme_id_from_index_large_wraps() {
+        let n = ThemeId::ALL.len();
         assert_eq!(
             ThemeId::from_index(usize::MAX),
-            ThemeId::ALL[usize::MAX % 5]
+            ThemeId::ALL[usize::MAX % n]
         );
-        assert_eq!(ThemeId::from_index(10), ThemeId::CyberpunkAurora);
-        assert_eq!(ThemeId::from_index(11), ThemeId::Darcula);
+        assert_eq!(ThemeId::from_index(n), ThemeId::CyberpunkAurora);
+        assert_eq!(ThemeId::from_index(n + 1), ThemeId::Darcula);
     }
 
     #[test]
@@ -1801,8 +3681,9 @@ mod tests {
             visited.push(t);
         }
         assert_eq!(*visited.last().unwrap(), ThemeId::CyberpunkAurora);
-        let unique: std::collections::HashSet<_> = visited[..4].iter().collect();
-        assert_eq!(unique.len(), 4);
+        let unique: std::collections::HashSet<_> =
+            visited[..ThemeId::STANDARD.len()].iter().collect();
+        assert_eq!(unique.len(), ThemeId::STANDARD.len());
     }
 
     #[test]
@@ -1839,7 +3720,14 @@ mod tests {
         assert_eq!(ThemeId::Darcula.index(), 1);
         assert_eq!(ThemeId::LumenLight.index(), 2);
         assert_eq!(ThemeId::NordicFrost.index(), 3);
-        assert_eq!(ThemeId::HighContrast.index(), 4);
+        assert_eq!(ThemeId::Doom.index(), 4);
+        assert_eq!(ThemeId::Quake.index(), 5);
+        assert_eq!(ThemeId::NightOwl.index(), 15);
+        assert_eq!(ThemeId::Dracula.index(), 16);
+        assert_eq!(ThemeId::HorizonDark.index(), 27);
+        assert_eq!(ThemeId::Nord.index(), 28);
+        assert_eq!(ThemeId::PaperColorLight.index(), 39);
+        assert_eq!(ThemeId::HighContrast.index(), ThemeId::ALL.len() - 1);
     }
 
     // ── Edge-case: ColorToken ────────────────────────────────────────
