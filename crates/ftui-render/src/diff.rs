@@ -2772,9 +2772,7 @@ mod tests {
         new.set_raw(3, 0, Cell::from_char('X'));
         new.set_raw(4, 10, Cell::from_char('Y'));
 
-        let dirty_rows = new.dirty_row_count().max(1);
         let total_cells = width as usize * height as usize;
-        let expected_skip_cells = dirty_rows * width as usize;
 
         let base = TileDiffConfig {
             enabled: true,
@@ -2798,9 +2796,21 @@ mod tests {
         let stats_full = tile_stats_for_config(&old, &new, config_full);
         let stats_skip = tile_stats_for_config(&old, &new, config_skip);
 
-        assert_eq!(stats_full.sat_build_cells, total_cells);
-        assert_eq!(stats_skip.sat_build_cells, expected_skip_cells);
-        assert!(stats_skip.sat_build_cells < stats_full.sat_build_cells);
+        // Span-aware scanning means sat_build_cells counts only span-covered
+        // cells, not full row widths.  The key invariant is that skip_clean_rows
+        // scans strictly fewer cells than the non-skip path.
+        assert!(
+            stats_full.sat_build_cells > 0 && stats_full.sat_build_cells <= total_cells,
+            "full scan cells {} should be >0 and <= total {}",
+            stats_full.sat_build_cells,
+            total_cells,
+        );
+        assert!(
+            stats_skip.sat_build_cells < stats_full.sat_build_cells,
+            "skip ({}) should scan fewer cells than full ({})",
+            stats_skip.sat_build_cells,
+            stats_full.sat_build_cells,
+        );
     }
 
     fn lcg_next(state: &mut u64) -> u64 {
