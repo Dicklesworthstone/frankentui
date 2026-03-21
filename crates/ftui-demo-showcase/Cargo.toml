@@ -61,7 +61,7 @@ image = ["ftui-extras/image"]
 logging = ["ftui-extras/logging"]
 # Mermaid/diagram screens (mermaid_showcase, mermaid_mega_showcase).
 screen-mermaid = ["ftui-extras/markdown-diagram"]
-default = ["caps-probe", "native-backend", "clipboard", "image", "logging", "screen-mermaid"]
+default = ["caps-probe", "native-backend", "crossterm-compat", "clipboard", "image", "logging", "screen-mermaid"]
 # Enable test-support to expose test infrastructure (locks, guards) to integration tests
 test-support = []
 

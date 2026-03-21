@@ -176,24 +176,32 @@ fn main() -> ExitCode {
 
 /// Run a program using the best available backend.
 ///
-/// When the `native-backend` feature is enabled, uses the ftui-tty native
-/// Unix backend (no Crossterm). Otherwise falls back to the crossterm-based
-/// event source.
+/// On Unix, prefer the `ftui-tty` native backend when available.
+/// On non-Unix hosts, route through the legacy crossterm path until a real
+/// Windows-native backend exists; the current `ftui-tty` non-Unix branch is
+/// headless and reports a 0x0 terminal, which the runtime clamps to 1x1.
 fn run_program<M: ftui_runtime::Model>(model: M, config: ProgramConfig) -> std::io::Result<()>
 where
     M::Message: Send + 'static,
 {
-    #[cfg(feature = "native-backend")]
+    #[cfg(all(unix, feature = "native-backend"))]
     {
         let mut program = Program::with_native_backend(model, config)?;
-        program.run()
+        return program.run();
     }
-    #[cfg(not(feature = "native-backend"))]
+
+    #[cfg(any(all(unix, feature = "crossterm-compat"), all(not(unix), feature = "crossterm-compat")))]
+    {
+        let mut program = Program::with_config(model, config)?;
+        return program.run();
+    }
+
+    #[allow(unreachable_code)]
     {
         let _ = (model, config);
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "enable `native-backend` feature (crossterm fallback removed)",
+            "enable `native-backend` on Unix or `crossterm-compat` on this host",
         ))
     }
 }
