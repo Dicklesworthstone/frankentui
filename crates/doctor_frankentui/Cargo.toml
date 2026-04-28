@@ -21,7 +21,7 @@ wait-timeout = "0.2.1"
 pathdiff = "0.2.3"
 v_htmlescape = "0.15.8"
 which = "8.0.0"
-fastapi-output = { version = "0.2.0", default-features = false }
+fastapi-output = { version = "0.3.0", default-features = false }
 sqlmodel-console = "0.2.0"
 sha2 = "0.10.9"
 regex-lite = "0.1.6"
