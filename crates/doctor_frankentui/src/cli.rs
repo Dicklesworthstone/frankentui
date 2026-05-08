@@ -273,6 +273,8 @@ mod tests {
                 run_root,
                 run_name: Some("missing_source".to_string()),
                 allow_non_opentui: false,
+                watch: false,
+                incremental_from: None,
             }),
         })
         .expect_err("missing source should fail");

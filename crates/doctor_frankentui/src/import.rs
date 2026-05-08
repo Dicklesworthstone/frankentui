@@ -20,6 +20,17 @@ const DEFAULT_IMPORT_RUN_ROOT: &str = "/tmp/doctor_frankentui/import";
 const SNAPSHOT_DIR_NAME: &str = "snapshot";
 const GIT_CLONE_STAGING_DIR_NAME: &str = "_source_clone";
 const INTAKE_META_FILENAME: &str = "intake_meta.json";
+const INCREMENTAL_WATCH_FILENAME: &str = "incremental_watch.json";
+const WATCH_SCHEMA_VERSION: &str = "doctor-incremental-watch-v1";
+const WATCH_PIPELINE_STAGES: [&str; 7] = [
+    "ingest",
+    "ir_lower",
+    "plan",
+    "translate",
+    "emit",
+    "optimize",
+    "write_generated",
+];
 const LOCKFILE_NAMES: [&str; 6] = [
     "package-lock.json",
     "pnpm-lock.yaml",
@@ -87,6 +98,14 @@ pub struct ImportArgs {
     /// Allow snapshots that do not look like OpenTUI/React projects.
     #[arg(long)]
     pub allow_non_opentui: bool,
+
+    /// Emit an incremental watch manifest for one deterministic watch tick.
+    #[arg(long)]
+    pub watch: bool,
+
+    /// Previous import run directory, snapshot directory, or intake_meta.json.
+    #[arg(long = "incremental-from")]
+    pub incremental_from: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -239,6 +258,70 @@ impl IntakeMetadata {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SnapshotFileFingerprint {
+    path: String,
+    sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct WatchFileChange {
+    path: String,
+    change_kind: String,
+    previous_sha256: Option<String>,
+    current_sha256: Option<String>,
+    invalidated_stages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct WatchChangeCounts {
+    added: usize,
+    modified: usize,
+    removed: usize,
+    unchanged: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct WatchCacheStats {
+    total_stage_count: usize,
+    invalidated_stage_count: usize,
+    cache_hit_stage_count: usize,
+    cache_hit_ratio: f64,
+    changed_file_count: usize,
+    unchanged_file_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct WatchProgressEvent {
+    event: String,
+    recomputation_scope: Vec<String>,
+    cache_hit_stages: Vec<String>,
+    changed_file_count: usize,
+    cache_hit_stage_count: usize,
+    total_stage_count: usize,
+    cache_hit_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct IncrementalWatchManifest {
+    schema_version: String,
+    mode: String,
+    run_name: String,
+    source_hash: String,
+    previous_snapshot_dir: Option<String>,
+    current_snapshot_dir: String,
+    baseline_full_recompute: bool,
+    pipeline_stages: Vec<String>,
+    changed_files: Vec<WatchFileChange>,
+    change_counts: WatchChangeCounts,
+    invalidated_stages: Vec<String>,
+    cache_hit_stages: Vec<String>,
+    cache_stats: WatchCacheStats,
+    progress_events: Vec<WatchProgressEvent>,
+    determinism_hash: String,
+}
+
 pub fn run_import(args: ImportArgs) -> Result<()> {
     let integration = OutputIntegration::detect();
     let ui = output_for(&integration);
@@ -279,7 +362,17 @@ pub fn run_import(args: ImportArgs) -> Result<()> {
         ui.info(&format!("run_dir={}", run_dir.display()));
     }
 
-    let outcome = perform_intake(&args, source_kind, &run_dir, &snapshot_dir, &mut metadata);
+    let mut watch_manifest = None;
+    let outcome = perform_intake(&args, source_kind, &run_dir, &snapshot_dir, &mut metadata)
+        .and_then(|()| {
+            if args.watch {
+                let manifest =
+                    build_incremental_watch_manifest(&args, &run_dir, &snapshot_dir, &metadata)?;
+                write_incremental_watch_manifest(&run_dir, &manifest)?;
+                watch_manifest = Some(manifest);
+            }
+            Ok(())
+        });
     metadata.finished_at = Some(now_utc_iso());
 
     let result = match outcome {
@@ -288,6 +381,22 @@ pub fn run_import(args: ImportArgs) -> Result<()> {
             if !integration.should_emit_json() {
                 ui.success("intake snapshot created");
                 ui.success(&format!("snapshot={}", snapshot_dir.display()));
+                if let Some(manifest) = &watch_manifest {
+                    ui.success(&format!(
+                        "incremental_watch={}",
+                        run_dir.join(INCREMENTAL_WATCH_FILENAME).display()
+                    ));
+                    ui.info(&format!(
+                        "recomputation_scope={}",
+                        manifest.invalidated_stages.join(",")
+                    ));
+                    ui.info(&format!(
+                        "cache_hits={}/{} changed_files={}",
+                        manifest.cache_stats.cache_hit_stage_count,
+                        manifest.cache_stats.total_stage_count,
+                        manifest.cache_stats.changed_file_count
+                    ));
+                }
             }
             Ok(())
         }
@@ -318,6 +427,15 @@ pub fn run_import(args: ImportArgs) -> Result<()> {
                 "resolved_commit": metadata.resolved_commit,
                 "source_hash": metadata.source_hash,
                 "lockfile_count": metadata.lockfiles.len(),
+                "watch_manifest": watch_manifest.as_ref().map(|manifest| {
+                    json!({
+                        "path": run_dir.join(INCREMENTAL_WATCH_FILENAME).display().to_string(),
+                        "recomputation_scope": &manifest.invalidated_stages,
+                        "cache_hit_stages": &manifest.cache_hit_stages,
+                        "cache_stats": &manifest.cache_stats,
+                        "determinism_hash": &manifest.determinism_hash,
+                    })
+                }),
                 "error_class": metadata.error_class,
                 "error_message": metadata.error_message,
                 "integration": integration,
@@ -557,6 +675,355 @@ fn write_intake_metadata(run_dir: &Path, metadata: &IntakeMetadata) -> Result<()
     let path = run_dir.join(INTAKE_META_FILENAME);
     let content = serde_json::to_string_pretty(metadata)?;
     write_string(&path, &content)
+}
+
+fn build_incremental_watch_manifest(
+    args: &ImportArgs,
+    _run_dir: &Path,
+    snapshot_dir: &Path,
+    metadata: &IntakeMetadata,
+) -> std::result::Result<IncrementalWatchManifest, IntakeFailure> {
+    let current_files = collect_snapshot_file_fingerprints(snapshot_dir)?;
+    let previous_snapshot_dir = match args.incremental_from.as_ref() {
+        Some(path) => Some(resolve_previous_snapshot_dir(path)?),
+        None => None,
+    };
+    let previous_files = match previous_snapshot_dir.as_ref() {
+        Some(path) => collect_snapshot_file_fingerprints(path)?,
+        None => BTreeMap::new(),
+    };
+
+    let baseline_full_recompute = previous_snapshot_dir.is_none();
+    let (changed_files, change_counts) = if baseline_full_recompute {
+        (
+            Vec::new(),
+            WatchChangeCounts {
+                added: current_files.len(),
+                modified: 0,
+                removed: 0,
+                unchanged: 0,
+            },
+        )
+    } else {
+        diff_snapshot_fingerprints(&previous_files, &current_files)
+    };
+
+    let mut invalidated = BTreeSet::new();
+    if baseline_full_recompute {
+        invalidated.extend(
+            WATCH_PIPELINE_STAGES
+                .iter()
+                .map(|stage| (*stage).to_string()),
+        );
+    } else {
+        for change in &changed_files {
+            invalidated.extend(change.invalidated_stages.iter().cloned());
+        }
+    }
+
+    let invalidated_stages = WATCH_PIPELINE_STAGES
+        .iter()
+        .filter(|stage| invalidated.contains(**stage))
+        .map(|stage| (*stage).to_string())
+        .collect::<Vec<_>>();
+    let cache_hit_stages = WATCH_PIPELINE_STAGES
+        .iter()
+        .filter(|stage| !invalidated.contains(**stage))
+        .map(|stage| (*stage).to_string())
+        .collect::<Vec<_>>();
+    let cache_hit_ratio = cache_hit_stages.len() as f64 / WATCH_PIPELINE_STAGES.len() as f64;
+    let cache_stats = WatchCacheStats {
+        total_stage_count: WATCH_PIPELINE_STAGES.len(),
+        invalidated_stage_count: invalidated_stages.len(),
+        cache_hit_stage_count: cache_hit_stages.len(),
+        cache_hit_ratio,
+        changed_file_count: changed_files.len(),
+        unchanged_file_count: change_counts.unchanged,
+    };
+    let progress_events = vec![WatchProgressEvent {
+        event: "watch_recomputation_scope".to_string(),
+        recomputation_scope: invalidated_stages.clone(),
+        cache_hit_stages: cache_hit_stages.clone(),
+        changed_file_count: changed_files.len(),
+        cache_hit_stage_count: cache_hit_stages.len(),
+        total_stage_count: WATCH_PIPELINE_STAGES.len(),
+        cache_hit_ratio,
+    }];
+    let determinism_hash = watch_determinism_hash(
+        metadata.source_hash.as_deref().unwrap_or_default(),
+        &changed_files,
+        &invalidated_stages,
+        &cache_hit_stages,
+    )?;
+
+    Ok(IncrementalWatchManifest {
+        schema_version: WATCH_SCHEMA_VERSION.to_string(),
+        mode: "watch_once".to_string(),
+        run_name: metadata.run_name.clone(),
+        source_hash: metadata.source_hash.clone().unwrap_or_default(),
+        previous_snapshot_dir: previous_snapshot_dir.map(|path| path.display().to_string()),
+        current_snapshot_dir: snapshot_dir.display().to_string(),
+        baseline_full_recompute,
+        pipeline_stages: WATCH_PIPELINE_STAGES
+            .iter()
+            .map(|stage| (*stage).to_string())
+            .collect(),
+        changed_files,
+        change_counts,
+        invalidated_stages,
+        cache_hit_stages,
+        cache_stats,
+        progress_events,
+        determinism_hash,
+    })
+}
+
+fn write_incremental_watch_manifest(
+    run_dir: &Path,
+    manifest: &IncrementalWatchManifest,
+) -> std::result::Result<(), IntakeFailure> {
+    let content = serde_json::to_string_pretty(manifest).map_err(|error| {
+        IntakeFailure::new(
+            IntakeErrorClass::Unknown,
+            format!("unable to serialize incremental watch manifest: {error}"),
+        )
+    })?;
+    write_string(
+        &run_dir.join(INCREMENTAL_WATCH_FILENAME),
+        &format!("{content}\n"),
+    )
+    .map_err(|error| {
+        IntakeFailure::new(
+            IntakeErrorClass::Unknown,
+            format!("unable to write incremental watch manifest: {error}"),
+        )
+    })
+}
+
+fn resolve_previous_snapshot_dir(path: &Path) -> std::result::Result<PathBuf, IntakeFailure> {
+    if path.is_file() {
+        return previous_snapshot_from_intake_meta(path);
+    }
+
+    let intake_meta = path.join(INTAKE_META_FILENAME);
+    if intake_meta.is_file() {
+        return previous_snapshot_from_intake_meta(&intake_meta);
+    }
+
+    let nested_snapshot = path.join(SNAPSHOT_DIR_NAME);
+    if nested_snapshot.is_dir() {
+        return Ok(nested_snapshot);
+    }
+
+    if path.is_dir() {
+        return Ok(path.to_path_buf());
+    }
+
+    Err(IntakeFailure::new(
+        IntakeErrorClass::MissingFiles,
+        format!(
+            "incremental baseline does not exist or is not readable: {}",
+            path.display()
+        ),
+    ))
+}
+
+fn previous_snapshot_from_intake_meta(path: &Path) -> std::result::Result<PathBuf, IntakeFailure> {
+    let content = fs::read_to_string(path).map_err(|error| {
+        IntakeFailure::new(
+            IntakeErrorClass::MissingFiles,
+            format!(
+                "unable to read previous intake metadata {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    let metadata: IntakeMetadata = serde_json::from_str(&content).map_err(|error| {
+        IntakeFailure::new(
+            IntakeErrorClass::IncompatibleRepo,
+            format!("previous intake metadata is invalid JSON: {error}"),
+        )
+    })?;
+    let snapshot = PathBuf::from(metadata.snapshot_dir);
+    if snapshot.is_dir() {
+        Ok(snapshot)
+    } else {
+        Err(IntakeFailure::new(
+            IntakeErrorClass::MissingFiles,
+            format!(
+                "previous intake metadata points at missing snapshot: {}",
+                snapshot.display()
+            ),
+        ))
+    }
+}
+
+fn collect_snapshot_file_fingerprints(
+    snapshot_dir: &Path,
+) -> std::result::Result<BTreeMap<String, SnapshotFileFingerprint>, IntakeFailure> {
+    let mut fingerprints = BTreeMap::new();
+    for file in collect_files(snapshot_dir)? {
+        let relative_path = file.strip_prefix(snapshot_dir).map_err(|error| {
+            IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!("unable to compute snapshot relative path: {error}"),
+            )
+        })?;
+        let path = relative_path.display().to_string();
+        let sha256 = sha256_file(&file)?;
+        let size_bytes = fs::metadata(&file).map_err(|error| {
+            IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!(
+                    "unable to inspect file metadata for {}: {error}",
+                    file.display()
+                ),
+            )
+        })?;
+        fingerprints.insert(
+            path.clone(),
+            SnapshotFileFingerprint {
+                path,
+                sha256,
+                size_bytes: size_bytes.len(),
+            },
+        );
+    }
+    Ok(fingerprints)
+}
+
+fn diff_snapshot_fingerprints(
+    previous: &BTreeMap<String, SnapshotFileFingerprint>,
+    current: &BTreeMap<String, SnapshotFileFingerprint>,
+) -> (Vec<WatchFileChange>, WatchChangeCounts) {
+    let mut changes = Vec::new();
+    let mut counts = WatchChangeCounts {
+        added: 0,
+        modified: 0,
+        removed: 0,
+        unchanged: 0,
+    };
+
+    for (path, current_file) in current {
+        match previous.get(path) {
+            None => {
+                counts.added += 1;
+                changes.push(watch_file_change(
+                    path,
+                    "added",
+                    None,
+                    Some(current_file.sha256.clone()),
+                ));
+            }
+            Some(previous_file) if previous_file.sha256 != current_file.sha256 => {
+                counts.modified += 1;
+                changes.push(watch_file_change(
+                    path,
+                    "modified",
+                    Some(previous_file.sha256.clone()),
+                    Some(current_file.sha256.clone()),
+                ));
+            }
+            Some(_) => counts.unchanged += 1,
+        }
+    }
+
+    for (path, previous_file) in previous {
+        if !current.contains_key(path) {
+            counts.removed += 1;
+            changes.push(watch_file_change(
+                path,
+                "removed",
+                Some(previous_file.sha256.clone()),
+                None,
+            ));
+        }
+    }
+
+    changes.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.change_kind.cmp(&b.change_kind))
+    });
+    (changes, counts)
+}
+
+fn watch_file_change(
+    path: &str,
+    change_kind: &str,
+    previous_sha256: Option<String>,
+    current_sha256: Option<String>,
+) -> WatchFileChange {
+    WatchFileChange {
+        path: path.to_string(),
+        change_kind: change_kind.to_string(),
+        previous_sha256,
+        current_sha256,
+        invalidated_stages: invalidated_stages_for_path(path)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+fn invalidated_stages_for_path(path: &str) -> Vec<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    let filename = Path::new(path)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
+
+    if filename == "package.json"
+        || filename == "tsconfig.json"
+        || filename == "tsconfig.base.json"
+        || LOCKFILE_NAMES.contains(&filename)
+        || lower.ends_with(".config.ts")
+        || lower.ends_with(".config.js")
+        || lower.ends_with(".config.mjs")
+    {
+        return WATCH_PIPELINE_STAGES.to_vec();
+    }
+
+    if is_js_ts_source_file(Path::new(path))
+        || matches!(
+            Path::new(path).extension().and_then(OsStr::to_str),
+            Some("css" | "scss" | "sass" | "less")
+        )
+    {
+        return WATCH_PIPELINE_STAGES.to_vec();
+    }
+
+    if matches!(
+        Path::new(path).extension().and_then(OsStr::to_str),
+        Some("md" | "mdx" | "txt")
+    ) {
+        return vec!["ingest"];
+    }
+
+    vec!["ingest", "ir_lower"]
+}
+
+fn watch_determinism_hash(
+    source_hash: &str,
+    changed_files: &[WatchFileChange],
+    invalidated_stages: &[String],
+    cache_hit_stages: &[String],
+) -> std::result::Result<String, IntakeFailure> {
+    let payload = json!({
+        "source_hash": source_hash,
+        "changed_files": changed_files,
+        "invalidated_stages": invalidated_stages,
+        "cache_hit_stages": cache_hit_stages,
+    });
+    let bytes = serde_json::to_vec(&payload).map_err(|error| {
+        IntakeFailure::new(
+            IntakeErrorClass::Unknown,
+            format!("unable to serialize watch determinism payload: {error}"),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn validate_snapshot_shape(snapshot_dir: &Path) -> std::result::Result<(), IntakeFailure> {
@@ -1563,8 +2030,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        GIT_CLONE_STAGING_DIR_NAME, ImportArgs, IntakeErrorClass, classify_git_stderr,
-        detect_source_kind, parse_package_manager_field, run_import,
+        GIT_CLONE_STAGING_DIR_NAME, ImportArgs, IntakeErrorClass, WATCH_PIPELINE_STAGES,
+        WATCH_SCHEMA_VERSION, classify_git_stderr, detect_source_kind, parse_package_manager_field,
+        run_import,
     };
 
     fn run_git(repo: &Path, args: &[&str]) {
@@ -1616,6 +2084,18 @@ mod tests {
         let second = git_stdout(root, &["rev-parse", "HEAD"]);
 
         (first, second)
+    }
+
+    fn create_minimal_watch_source(root: &Path) {
+        fs::create_dir_all(root.join("src")).expect("create source src");
+        fs::write(root.join("package.json"), r#"{"name":"watch-fixture"}"#)
+            .expect("write package json");
+        fs::write(
+            root.join("src/app.tsx"),
+            "export function App() { return <box>one</box>; }\n",
+        )
+        .expect("write app source");
+        fs::write(root.join("README.md"), "initial notes\n").expect("write readme");
     }
 
     #[test]
@@ -1682,6 +2162,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("pinned".to_string()),
             allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
         };
 
         run_import(args).expect("import should succeed");
@@ -1735,6 +2217,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("local_dirty".to_string()),
             allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
         };
 
         run_import(args).expect("import should preserve local working tree state");
@@ -1781,6 +2265,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("escape".to_string()),
             allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
         };
 
         let error = run_import(args).expect_err("symlink escape should fail import");
@@ -1816,6 +2302,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("git_url_success".to_string()),
             allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
         };
 
         run_import(args).expect("git url import should succeed");
@@ -1845,6 +2333,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("git_url_failure".to_string()),
             allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
         };
 
         let error = run_import(args).expect_err("git url import should fail for bad pinned commit");
@@ -1872,6 +2362,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("missing".to_string()),
             allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
         };
 
         let error = run_import(args).expect_err("missing source should fail");
@@ -1904,6 +2396,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("existing".to_string()),
             allow_non_opentui: true,
+            watch: false,
+            incremental_from: None,
         };
 
         let error = run_import(args).expect_err("existing run dir should fail");
@@ -1926,6 +2420,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("../escape".to_string()),
             allow_non_opentui: true,
+            watch: false,
+            incremental_from: None,
         };
 
         let error = run_import(args).expect_err("unsafe run name should fail");
@@ -1954,6 +2450,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("copy".to_string()),
             allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
         };
 
         // Use allow_non_opentui false to exercise package.json validation path.
@@ -2022,6 +2520,8 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("toolchain".to_string()),
             allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
         };
 
         run_import(args).expect("import should succeed");
@@ -2093,6 +2593,125 @@ mod tests {
         assert!(
             runtime_markers.contains(&"import.meta.env"),
             "missing runtime marker: {runtime_markers:?}"
+        );
+    }
+
+    #[test]
+    fn run_import_watch_mode_scopes_doc_change_to_ingest_and_reports_cache_hits() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("source");
+        create_minimal_watch_source(&source);
+        let run_root = temp.path().join("runs");
+
+        run_import(ImportArgs {
+            source: source.display().to_string(),
+            pinned_commit: None,
+            run_root: run_root.clone(),
+            run_name: Some("baseline".to_string()),
+            allow_non_opentui: false,
+            watch: false,
+            incremental_from: None,
+        })
+        .expect("baseline import should succeed");
+
+        fs::write(source.join("README.md"), "changed operator notes\n").expect("change readme");
+
+        run_import(ImportArgs {
+            source: source.display().to_string(),
+            pinned_commit: None,
+            run_root: run_root.clone(),
+            run_name: Some("watch_docs".to_string()),
+            allow_non_opentui: false,
+            watch: true,
+            incremental_from: Some(run_root.join("baseline")),
+        })
+        .expect("watch import should succeed");
+
+        let manifest_path = run_root.join("watch_docs/incremental_watch.json");
+        let manifest_text = fs::read_to_string(&manifest_path).expect("read watch manifest");
+        let manifest: Value = serde_json::from_str(&manifest_text).expect("parse watch manifest");
+
+        assert_eq!(
+            manifest["schema_version"],
+            Value::String(WATCH_SCHEMA_VERSION.to_string())
+        );
+        assert_eq!(manifest["baseline_full_recompute"], Value::Bool(false));
+        assert_eq!(manifest["change_counts"]["modified"].as_u64(), Some(1));
+        assert_eq!(
+            manifest["invalidated_stages"],
+            Value::Array(vec![Value::String("ingest".to_string())])
+        );
+        assert_eq!(manifest["cache_stats"]["cache_hit_stage_count"], 6);
+
+        let cache_hit_stages = manifest["cache_hit_stages"]
+            .as_array()
+            .expect("cache hit stages")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            cache_hit_stages.contains(&"translate"),
+            "downstream translation should be a cache hit for docs-only changes: {cache_hit_stages:?}"
+        );
+
+        let changed_files = manifest["changed_files"]
+            .as_array()
+            .expect("changed files array");
+        assert_eq!(changed_files.len(), 1);
+        assert_eq!(
+            changed_files[0]["path"],
+            Value::String("README.md".to_string())
+        );
+        assert_eq!(
+            changed_files[0]["invalidated_stages"],
+            Value::Array(vec![Value::String("ingest".to_string())])
+        );
+
+        let progress_events = manifest["progress_events"]
+            .as_array()
+            .expect("progress events");
+        assert_eq!(
+            progress_events[0]["event"],
+            Value::String("watch_recomputation_scope".to_string())
+        );
+        assert_eq!(progress_events[0]["cache_hit_stage_count"], 6);
+    }
+
+    #[test]
+    fn run_import_watch_mode_without_previous_baselines_full_recompute() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("source");
+        create_minimal_watch_source(&source);
+        let run_root = temp.path().join("runs");
+
+        run_import(ImportArgs {
+            source: source.display().to_string(),
+            pinned_commit: None,
+            run_root: run_root.clone(),
+            run_name: Some("watch_baseline".to_string()),
+            allow_non_opentui: false,
+            watch: true,
+            incremental_from: None,
+        })
+        .expect("watch baseline should succeed");
+
+        let manifest_path = run_root.join("watch_baseline/incremental_watch.json");
+        let manifest_text = fs::read_to_string(&manifest_path).expect("read watch manifest");
+        let manifest: Value = serde_json::from_str(&manifest_text).expect("parse watch manifest");
+
+        assert_eq!(manifest["baseline_full_recompute"], Value::Bool(true));
+        assert_eq!(manifest["cache_stats"]["cache_hit_stage_count"], 0);
+        assert_eq!(
+            manifest["invalidated_stages"]
+                .as_array()
+                .expect("invalidated stages")
+                .len(),
+            WATCH_PIPELINE_STAGES.len()
+        );
+        assert!(
+            manifest["determinism_hash"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64)
         );
     }
 }
