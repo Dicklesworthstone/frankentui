@@ -22,6 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BASELINE_FILE="${PROJECT_ROOT}/tests/baseline.json"
+SLO_FILE="${PROJECT_ROOT}/slo.yaml"
 RESULTS_DIR="${PROJECT_ROOT}/target/regression-gate"
 REPORT_FILE="${RESULTS_DIR}/regression_report.jsonl"
 RUN_ID="$(date +%Y%m%dT%H%M%S)-$$"
@@ -100,6 +101,34 @@ format_ns() {
     fi
 }
 
+load_slo_threshold_pct() {
+    [[ -f "$SLO_FILE" ]] || return 0
+    awk -F: '
+        /^[[:space:]]*#/ || NF < 2 { next }
+        $1 ~ /^[[:space:]]*regression_threshold[[:space:]]*$/ {
+            value = $2
+            sub(/[[:space:]]*#.*/, "", value)
+            gsub(/[[:space:]]/, "", value)
+            if (value ~ /^[0-9]+([.][0-9]+)?$/) {
+                printf "%.0f\n", value * 100
+                exit
+            }
+        }
+    ' "$SLO_FILE"
+}
+
+slo_metric_declared() {
+    local metric="$1"
+    [[ -n "$metric" ]] || return 1
+    [[ -f "$SLO_FILE" ]] || return 1
+    awk -v metric="$metric" '
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*metrics:[[:space:]]*$/ { in_metrics = 1; next }
+        in_metrics && $0 ~ "^[[:space:]]+" metric ":[[:space:]]*$" { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    ' "$SLO_FILE"
+}
+
 # Parse criterion text output for a benchmark name.
 # Returns: "<mean_ns> <ci_low_ns> <ci_high_ns>" or "-1 -1 -1" if not found.
 parse_criterion_stats() {
@@ -167,6 +196,9 @@ collect_bench_targets() {
     jq -r '
         to_entries[]
         | select(.key | startswith("_") | not)
+        | select((.value.crate // "") != "")
+        | select((.value.bench_file // "") != "")
+        | select((.value.criterion_name // "") != "")
         | "\(.value.crate):\(.value.bench_file)"
     ' "$BASELINE_FILE" | sort -u
 }
@@ -220,6 +252,13 @@ check_regression() {
         return 1
     fi
 
+    local slo_threshold_pct
+    slo_threshold_pct="$(load_slo_threshold_pct)"
+    local slo_threshold_json="null"
+    if [[ -n "$slo_threshold_pct" ]]; then
+        slo_threshold_json="$slo_threshold_pct"
+    fi
+
     local passed=0
     local failed=0
     local skipped=0
@@ -229,7 +268,7 @@ check_regression() {
     # Initialize JSONL report.
     if [[ "$JSON_OUTPUT" == "true" ]]; then
         : > "$REPORT_FILE"
-        echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"start\",\"baseline_file\":\"$(json_escape "$BASELINE_FILE")\"}" >> "$REPORT_FILE"
+        echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"start\",\"baseline_file\":\"$(json_escape "$BASELINE_FILE")\",\"slo_file\":\"$(json_escape "$SLO_FILE")\",\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
     fi
 
     # Table header.
@@ -248,12 +287,51 @@ check_regression() {
     while IFS= read -r key; do
         ((total++))
 
-        local criterion_name bench_file p99_ns threshold_pct description
-        criterion_name=$(jq -r ".\"$key\".criterion_name" "$BASELINE_FILE")
-        bench_file=$(jq -r ".\"$key\".bench_file" "$BASELINE_FILE")
-        p99_ns=$(jq -r ".\"$key\".p99_ns" "$BASELINE_FILE")
-        threshold_pct=$(jq -r ".\"$key\".threshold_pct" "$BASELINE_FILE")
-        description=$(jq -r ".\"$key\".description" "$BASELINE_FILE")
+        local criterion_name bench_file p99_ns threshold_pct description slo_metric
+        criterion_name=$(jq -r --arg key "$key" '.[$key].criterion_name // ""' "$BASELINE_FILE")
+        bench_file=$(jq -r --arg key "$key" '.[$key].bench_file // ""' "$BASELINE_FILE")
+        p99_ns=$(jq -r --arg key "$key" '.[$key].p99_ns // 0' "$BASELINE_FILE")
+        threshold_pct=$(jq -r --arg key "$key" '.[$key].threshold_pct // 0' "$BASELINE_FILE")
+        description=$(jq -r --arg key "$key" '.[$key].description // ""' "$BASELINE_FILE")
+        slo_metric=$(jq -r --arg key "$key" '.[$key].slo_metric // ""' "$BASELINE_FILE")
+
+        if [[ -z "$criterion_name" || -z "$bench_file" ]]; then
+            local category
+            category=$(jq -r --arg key "$key" '.[$key].category // "baseline-only"' "$BASELINE_FILE")
+            printf "%-25s %-40s %12s %12s %8s %8s ${YELLOW}%10s${NC}\n" \
+                "$key" "$category" "N/A" "$(format_ns "$p99_ns")" "-" "-" "SKIP"
+            ((skipped++))
+            if [[ "$JSON_OUTPUT" == "true" ]]; then
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":null,\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"skip\",\"reason\":\"non_criterion_baseline\"}" >> "$REPORT_FILE"
+            fi
+            continue
+        fi
+
+        if [[ -z "$slo_metric" ]]; then
+            printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${threshold_pct}%" "SLO_CFG"
+            ((failed++))
+            if [[ "$JSON_OUTPUT" == "true" ]]; then
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"status\":\"fail\",\"reason\":\"missing_slo_metric\"}" >> "$REPORT_FILE"
+            fi
+            continue
+        fi
+
+        if ! slo_metric_declared "$slo_metric"; then
+            printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${threshold_pct}%" "SLO_CFG"
+            ((failed++))
+            if [[ "$JSON_OUTPUT" == "true" ]]; then
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"fail\",\"reason\":\"slo_metric_not_found\"}" >> "$REPORT_FILE"
+            fi
+            continue
+        fi
+
+        local effective_threshold_pct
+        effective_threshold_pct="$threshold_pct"
+        if [[ -n "$slo_threshold_pct" && "$slo_threshold_pct" -lt "$effective_threshold_pct" ]]; then
+            effective_threshold_pct="$slo_threshold_pct"
+        fi
 
         # Find the result file.
         local result_file="${RESULTS_DIR}/${bench_file}.txt"
@@ -264,10 +342,10 @@ check_regression() {
                 result_file="$alt_file"
             else
                 printf "%-25s %-40s %12s %12s %8s %8s ${YELLOW}%10s${NC}\n" \
-                    "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${threshold_pct}%" "SKIP"
+                    "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${effective_threshold_pct}%" "SKIP"
                 ((skipped++))
                 if [[ "$JSON_OUTPUT" == "true" ]]; then
-                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"status\":\"skip\",\"reason\":\"no_results\"}" >> "$REPORT_FILE"
+                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"skip\",\"reason\":\"no_results\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
                 fi
                 continue
             fi
@@ -279,17 +357,17 @@ check_regression() {
 
         if [[ "$mean_ns" == "-1" ]]; then
             printf "%-25s %-40s %12s %12s %8s %8s ${YELLOW}%10s${NC}\n" \
-                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${threshold_pct}%" "SKIP"
+                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${effective_threshold_pct}%" "SKIP"
             ((skipped++))
             if [[ "$JSON_OUTPUT" == "true" ]]; then
-                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"status\":\"skip\",\"reason\":\"parse_failed\"}" >> "$REPORT_FILE"
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"skip\",\"reason\":\"parse_failed\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
             fi
             continue
         fi
 
         # Compute percentage delta from p99 baseline.
         local max_allowed_ns delta_pct status status_color
-        max_allowed_ns=$(echo "$p99_ns * (100 + $threshold_pct) / 100" | bc)
+        max_allowed_ns=$(echo "$p99_ns * (100 + $effective_threshold_pct) / 100" | bc)
 
         if [[ "$p99_ns" -gt 0 ]]; then
             delta_pct=$(echo "scale=1; ($mean_ns - $p99_ns) * 100 / $p99_ns" | bc)
@@ -315,15 +393,15 @@ check_regression() {
         printf "%-25s %-40s %12s %12s %8s %8s ${status_color}%10s${NC}\n" \
             "$key" "$criterion_name" \
             "$(format_ns "$mean_ns")" "$(format_ns "$p99_ns")" \
-            "${delta_pct}%" "${threshold_pct}%" "$status"
+            "${delta_pct}%" "${effective_threshold_pct}%" "$status"
 
         if [[ "$JSON_OUTPUT" == "true" ]]; then
-            echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"status\":\"$(echo "$status" | tr '[:upper:]' '[:lower:]')\",\"observed_ns\":$mean_ns,\"ci_low_ns\":$ci_low_ns,\"ci_high_ns\":$ci_high_ns,\"p99_baseline_ns\":$p99_ns,\"max_allowed_ns\":$max_allowed_ns,\"delta_pct\":$delta_pct,\"threshold_pct\":$threshold_pct,\"description\":\"$(json_escape "$description")\"}" >> "$REPORT_FILE"
+            echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"$(echo "$status" | tr '[:upper:]' '[:lower:]')\",\"observed_ns\":$mean_ns,\"ci_low_ns\":$ci_low_ns,\"ci_high_ns\":$ci_high_ns,\"p99_baseline_ns\":$p99_ns,\"max_allowed_ns\":$max_allowed_ns,\"delta_pct\":$delta_pct,\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json,\"description\":\"$(json_escape "$description")\"}" >> "$REPORT_FILE"
         fi
 
         # Log WARN for regression (per bead spec).
         if [[ "$status" == "REGRESS" ]]; then
-            log "  ${RED}WARN:${NC} Regression detected in ${key}: observed $(format_ns "$mean_ns") exceeds p99 $(format_ns "$p99_ns") + ${threshold_pct}% tolerance"
+            log "  ${RED}WARN:${NC} Regression detected in ${key}: observed $(format_ns "$mean_ns") exceeds p99 $(format_ns "$p99_ns") + ${effective_threshold_pct}% tolerance (SLO metric: ${slo_metric})"
         fi
     done <<< "$keys"
 
@@ -337,7 +415,7 @@ check_regression() {
     log "  Skipped:    $skipped"
 
     if [[ "$JSON_OUTPUT" == "true" ]]; then
-        echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"summary\",\"total\":$total,\"passed\":$passed,\"failed\":$failed,\"warned\":$warned,\"skipped\":$skipped}" >> "$REPORT_FILE"
+        echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"summary\",\"total\":$total,\"passed\":$passed,\"failed\":$failed,\"warned\":$warned,\"skipped\":$skipped,\"slo_file\":\"$(json_escape "$SLO_FILE")\",\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
         log ""
         log "Report: $REPORT_FILE"
     fi
@@ -373,8 +451,9 @@ update_baseline() {
 
     while IFS= read -r key; do
         local criterion_name bench_file
-        criterion_name=$(jq -r ".\"$key\".criterion_name" "$BASELINE_FILE")
-        bench_file=$(jq -r ".\"$key\".bench_file" "$BASELINE_FILE")
+        criterion_name=$(jq -r --arg key "$key" '.[$key].criterion_name // ""' "$BASELINE_FILE")
+        bench_file=$(jq -r --arg key "$key" '.[$key].bench_file // ""' "$BASELINE_FILE")
+        [[ -n "$criterion_name" && -n "$bench_file" ]] || continue
 
         local result_file="${RESULTS_DIR}/${bench_file}.txt"
         if [[ ! -f "$result_file" ]]; then

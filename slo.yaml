@@ -117,6 +117,32 @@ metrics:
     safe_mode_trigger: false
 
   # ===========================================================================
+  # Data Plane: Widget Rendering
+  # ===========================================================================
+
+  widget_render_p99_us:
+    metric_type: latency
+    max_value: 500.0
+    max_ratio: 1.25
+    safe_mode_trigger: false
+
+  # ===========================================================================
+  # Data Plane: Buffer Allocation and Cell Comparison
+  # ===========================================================================
+
+  buffer_alloc_p99_us:
+    metric_type: latency
+    max_value: 120.0
+    max_ratio: 1.25
+    safe_mode_trigger: false
+
+  cell_compare_p99_us:
+    metric_type: latency
+    max_value: 1.0
+    max_ratio: 1.50
+    safe_mode_trigger: false
+
+  # ===========================================================================
   # Data Plane: Memory
   # ===========================================================================
 
@@ -144,6 +170,34 @@ metrics:
   malformed_ansi_rate:
     metric_type: error_rate
     max_value: 0.01
+    safe_mode_trigger: false
+
+  # ===========================================================================
+  # Runtime: User-Visible Lifecycle Latency
+  # ===========================================================================
+
+  runtime_shutdown_p99_us:
+    metric_type: latency
+    max_value: 6000.0
+    max_ratio: 1.20
+    safe_mode_trigger: true
+
+  runtime_first_frame_p99_us:
+    metric_type: latency
+    max_value: 12000.0
+    max_ratio: 1.20
+    safe_mode_trigger: true
+
+  runtime_command_roundtrip_p99_us:
+    metric_type: latency
+    max_value: 650.0
+    max_ratio: 1.20
+    safe_mode_trigger: false
+
+  runtime_effect_queue_drain_p99_us:
+    metric_type: latency
+    max_value: 2500.0
+    max_ratio: 1.20
     safe_mode_trigger: false
 
   # ===========================================================================
