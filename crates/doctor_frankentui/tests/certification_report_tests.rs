@@ -4,8 +4,8 @@ use doctor_frankentui::accessibility_diff::{
 };
 use doctor_frankentui::certification_report::{
     CERTIFICATION_REPORT_SCHEMA_VERSION, CertificationClauseStatus, CertificationPolicyProfile,
-    CertificationReportInput, CertificationStageStatus, generate_certification_report,
-    verify_certification_report_checksum,
+    CertificationRemediationAction, CertificationReportInput, CertificationStageStatus,
+    generate_certification_report, verify_certification_report_checksum,
 };
 use doctor_frankentui::performance_diff::{
     PerformanceDiffConfig, PerformanceMetricKind, PerformanceRun, PerformanceSample,
@@ -261,6 +261,8 @@ fn passing_inputs_generate_accept_report_with_matrix_and_intervals() {
             .any(|interval| interval.source_id == "overall" && interval.mean >= 0.90)
     );
     assert!(report.next_steps.is_empty());
+    assert!(report.remediation_plan.actions.is_empty());
+    assert!(report.remediation_plan.issue_exports.is_empty());
 }
 
 #[test]
@@ -311,6 +313,43 @@ fn semantic_violation_rejects_and_emits_actionable_next_steps() {
             .iter()
             .any(|step| { step.target == "ST-001" && step.action.contains("fix") })
     );
+
+    let plan = &report.remediation_plan;
+    assert_eq!(plan.generated_for_verdict, VerdictOutcome::Reject);
+    assert_eq!(plan.migration_id, input.migration_id);
+    assert_ranked(&plan.actions);
+
+    let semantic_action = plan
+        .actions
+        .iter()
+        .find(|action| {
+            action.target == "ST-001"
+                && action
+                    .failed_clause_ids
+                    .iter()
+                    .any(|clause_id| clause_id == "ST-001")
+        })
+        .expect("semantic failure should produce remediation action");
+    assert_eq!(semantic_action.rank, 1);
+    assert!(semantic_action.expected_confidence_impact > 0.0);
+    assert!(semantic_action.expected_value_score > 0.0);
+    assert!(!semantic_action.artifact_refs.is_empty());
+    assert!(
+        semantic_action
+            .evidence_messages
+            .iter()
+            .any(|message| message.contains("state.count"))
+    );
+
+    let export = plan
+        .issue_exports
+        .iter()
+        .find(|export| export.action_id == semantic_action.action_id)
+        .expect("remediation action should have issue export");
+    assert_eq!(export.issue_type, "task");
+    assert!(export.labels.iter().any(|label| label == "remediation"));
+    assert!(export.description.contains("Failed clauses: ST-001"));
+    assert!(export.description.contains("Artifact refs:"));
 }
 
 #[test]
@@ -384,4 +423,38 @@ fn invalid_proof_or_compliance_forces_non_passing_certification() {
         step.domain == doctor_frankentui::certification_report::CertificationDomain::Compliance
             && step.reason.contains("Blocked")
     }));
+    assert_ranked(&compliance_report.remediation_plan.actions);
+    assert!(
+        compliance_report
+            .remediation_plan
+            .issue_exports
+            .iter()
+            .any(|export| {
+                export
+                    .labels
+                    .iter()
+                    .any(|label| label == "certification-compliance")
+                    && export.description.contains("component.tsx")
+            })
+    );
+}
+
+fn assert_ranked(actions: &[CertificationRemediationAction]) {
+    for (index, action) in actions.iter().enumerate() {
+        assert_eq!(
+            action.rank,
+            u32::try_from(index + 1).expect("test action count should fit u32")
+        );
+    }
+    for pair in actions.windows(2) {
+        let [left, right] = pair else {
+            continue;
+        };
+        assert!(
+            left.expected_value_score > right.expected_value_score
+                || (left.expected_value_score == right.expected_value_score
+                    && left.effort <= right.effort),
+            "actions should be ranked by expected value, then effort: {left:?} vs {right:?}"
+        );
+    }
 }

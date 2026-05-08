@@ -22,7 +22,10 @@ use crate::semantic_diff::{SemanticDiffReport, SemanticDiffVerdict};
 use crate::visual_diff::{VisualDiffReport, VisualDiffVerdict};
 
 pub const CERTIFICATION_REPORT_SCHEMA_VERSION: &str =
-    "doctor_frankentui.migration_certification_report.v1";
+    "doctor_frankentui.migration_certification_report.v2";
+
+pub const CERTIFICATION_REMEDIATION_PLAN_SCHEMA_VERSION: &str =
+    "doctor_frankentui.certification_remediation_plan.v1";
 
 #[derive(Debug, Error)]
 pub enum CertificationReportError {
@@ -110,6 +113,7 @@ pub struct MigrationCertificationReport {
     pub clause_matrix: Vec<CertificationClauseRow>,
     pub confidence_intervals: Vec<CertificationConfidenceInterval>,
     pub next_steps: Vec<CertificationNextStep>,
+    pub remediation_plan: CertificationRemediationPlan,
     pub report_checksum: String,
 }
 
@@ -185,6 +189,66 @@ pub struct CertificationNextStep {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CertificationRemediationPlan {
+    pub schema_version: String,
+    pub migration_id: String,
+    pub generated_for_verdict: VerdictOutcome,
+    pub actions: Vec<CertificationRemediationAction>,
+    pub issue_exports: Vec<CertificationIssueExport>,
+}
+
+impl CertificationRemediationPlan {
+    #[must_use]
+    pub fn empty(migration_id: &str, verdict: VerdictOutcome) -> Self {
+        Self {
+            schema_version: CERTIFICATION_REMEDIATION_PLAN_SCHEMA_VERSION.to_string(),
+            migration_id: migration_id.to_string(),
+            generated_for_verdict: verdict,
+            actions: Vec::new(),
+            issue_exports: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificationRemediationEffort {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CertificationRemediationAction {
+    pub rank: u32,
+    pub action_id: String,
+    pub domain: CertificationDomain,
+    pub target: String,
+    pub title: String,
+    pub action: String,
+    pub effort: CertificationRemediationEffort,
+    pub expected_confidence_impact: f64,
+    pub expected_value_score: f64,
+    pub failed_clause_ids: Vec<String>,
+    pub artifact_refs: Vec<String>,
+    pub evidence_messages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CertificationIssueExport {
+    pub export_id: String,
+    pub action_id: String,
+    pub title: String,
+    pub issue_type: String,
+    pub priority: u8,
+    pub labels: Vec<String>,
+    pub description: String,
+}
+
 #[derive(Debug)]
 struct ClauseRowBuilder {
     domains: BTreeSet<CertificationDomain>,
@@ -249,6 +313,13 @@ pub fn generate_certification_report(
     });
 
     let final_verdict = final_verdict(&stage_results, &clause_matrix, policy);
+    let remediation_plan = remediation_plan(
+        input,
+        final_verdict,
+        &stage_results,
+        &clause_matrix,
+        &next_steps,
+    );
     let mut report = MigrationCertificationReport {
         schema_version: CERTIFICATION_REPORT_SCHEMA_VERSION.to_string(),
         report_id: report_id(input, policy),
@@ -262,6 +333,7 @@ pub fn generate_certification_report(
         clause_matrix,
         confidence_intervals,
         next_steps,
+        remediation_plan,
         report_checksum: String::new(),
     };
     report.report_checksum = compute_certification_report_checksum(&report)?;
@@ -994,6 +1066,221 @@ fn next_steps(
     steps
 }
 
+fn remediation_plan(
+    input: &CertificationReportInput,
+    final_verdict: VerdictOutcome,
+    stage_results: &[CertificationStageResult],
+    clause_matrix: &[CertificationClauseRow],
+    next_steps: &[CertificationNextStep],
+) -> CertificationRemediationPlan {
+    let mut plan = CertificationRemediationPlan::empty(&input.migration_id, final_verdict);
+    if final_verdict == VerdictOutcome::Accept {
+        return plan;
+    }
+
+    let mut actions = Vec::new();
+    for row in clause_matrix {
+        if row.status == CertificationClauseStatus::Passed {
+            continue;
+        }
+        actions.push(remediation_action_from_clause(
+            row,
+            stage_results,
+            next_steps,
+        ));
+    }
+
+    for stage in stage_results {
+        if stage.status == CertificationStageStatus::Pass
+            || actions.iter().any(|action| action.domain == stage.domain)
+        {
+            continue;
+        }
+        actions.push(remediation_action_from_stage(
+            stage,
+            clause_matrix,
+            next_steps,
+        ));
+    }
+
+    actions.sort_by(|left, right| {
+        right
+            .expected_value_score
+            .partial_cmp(&left.expected_value_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.effort.cmp(&right.effort))
+            .then_with(|| left.domain.cmp(&right.domain))
+            .then_with(|| left.target.cmp(&right.target))
+            .then_with(|| left.action.cmp(&right.action))
+    });
+
+    for (index, action) in actions.iter_mut().enumerate() {
+        action.rank = u32::try_from(index + 1).unwrap_or(u32::MAX);
+    }
+
+    let issue_exports = actions
+        .iter()
+        .map(remediation_issue_export)
+        .collect::<Vec<_>>();
+    plan.actions = actions;
+    plan.issue_exports = issue_exports;
+    plan
+}
+
+fn remediation_action_from_clause(
+    row: &CertificationClauseRow,
+    stage_results: &[CertificationStageResult],
+    next_steps: &[CertificationNextStep],
+) -> CertificationRemediationAction {
+    let domain = row
+        .domains
+        .first()
+        .copied()
+        .unwrap_or(CertificationDomain::Semantic);
+    let step = next_steps
+        .iter()
+        .find(|step| step.domain == domain && step.target == row.clause_id)
+        .or_else(|| next_steps.iter().find(|step| step.domain == domain));
+    let stage = stage_results.iter().find(|stage| stage.domain == domain);
+    let effort = effort_for_clause(row);
+    let expected_confidence_impact = confidence_impact_for_clause(row, domain);
+    let expected_value_score = expected_value_score(expected_confidence_impact, effort);
+    let action = step
+        .map(|step| step.action.clone())
+        .unwrap_or_else(|| clause_action(row));
+    let mut evidence_messages = row.messages.iter().cloned().collect::<BTreeSet<_>>();
+    if let Some(step) = step {
+        evidence_messages.insert(step.reason.clone());
+    }
+    if let Some(stage) = stage {
+        evidence_messages.extend(stage.messages.iter().cloned());
+    }
+
+    CertificationRemediationAction {
+        rank: 0,
+        action_id: action_id(domain, &row.clause_id),
+        domain,
+        target: row.clause_id.clone(),
+        title: format!(
+            "Remediate {} certification target {}",
+            domain_label(domain),
+            row.clause_id
+        ),
+        action,
+        effort,
+        expected_confidence_impact,
+        expected_value_score,
+        failed_clause_ids: vec![row.clause_id.clone()],
+        artifact_refs: artifact_refs_for_clause(row, stage),
+        evidence_messages: evidence_messages.into_iter().collect(),
+    }
+}
+
+fn remediation_action_from_stage(
+    stage: &CertificationStageResult,
+    clause_matrix: &[CertificationClauseRow],
+    next_steps: &[CertificationNextStep],
+) -> CertificationRemediationAction {
+    let related_rows = clause_matrix
+        .iter()
+        .filter(|row| row.status != CertificationClauseStatus::Passed)
+        .filter(|row| row.domains.contains(&stage.domain))
+        .collect::<Vec<_>>();
+    let target = if related_rows.is_empty() {
+        format!("stage:{}", domain_label(stage.domain))
+    } else {
+        related_rows
+            .iter()
+            .map(|row| row.clause_id.as_str())
+            .collect::<Vec<_>>()
+            .join("+")
+    };
+    let step = next_steps
+        .iter()
+        .find(|step| step.domain == stage.domain && step.target == stage.observed_verdict)
+        .or_else(|| next_steps.iter().find(|step| step.domain == stage.domain));
+    let effort = effort_for_stage(stage);
+    let expected_confidence_impact = confidence_impact_for_stage(stage);
+    let expected_value_score = expected_value_score(expected_confidence_impact, effort);
+    let mut failed_clause_ids = related_rows
+        .iter()
+        .map(|row| row.clause_id.clone())
+        .collect::<BTreeSet<_>>();
+    if failed_clause_ids.is_empty() {
+        failed_clause_ids.insert(target.clone());
+    }
+    let mut artifact_refs = stage.evidence_refs.iter().cloned().collect::<BTreeSet<_>>();
+    for row in &related_rows {
+        artifact_refs.extend(row.evidence_refs.iter().cloned());
+    }
+    let mut evidence_messages = stage.messages.iter().cloned().collect::<BTreeSet<_>>();
+    for row in &related_rows {
+        evidence_messages.extend(row.messages.iter().cloned());
+    }
+    if let Some(step) = step {
+        evidence_messages.insert(step.reason.clone());
+    }
+
+    CertificationRemediationAction {
+        rank: 0,
+        action_id: action_id(stage.domain, &target),
+        domain: stage.domain,
+        target,
+        title: format!(
+            "Remediate {} certification stage",
+            domain_label(stage.domain)
+        ),
+        action: step
+            .map(|step| step.action.clone())
+            .unwrap_or_else(|| stage_action(stage)),
+        effort,
+        expected_confidence_impact,
+        expected_value_score,
+        failed_clause_ids: failed_clause_ids.into_iter().collect(),
+        artifact_refs: artifact_refs.into_iter().collect(),
+        evidence_messages: evidence_messages.into_iter().collect(),
+    }
+}
+
+fn artifact_refs_for_clause(
+    row: &CertificationClauseRow,
+    stage: Option<&CertificationStageResult>,
+) -> Vec<String> {
+    let mut refs = row.evidence_refs.iter().cloned().collect::<BTreeSet<_>>();
+    if let Some(stage) = stage {
+        refs.extend(stage.evidence_refs.iter().cloned());
+    }
+    refs.into_iter().collect()
+}
+
+fn remediation_issue_export(action: &CertificationRemediationAction) -> CertificationIssueExport {
+    let clauses = display_list(&action.failed_clause_ids);
+    let artifacts = display_list(&action.artifact_refs);
+    let evidence = display_list(&action.evidence_messages);
+    CertificationIssueExport {
+        export_id: format!("issue:{}", action.action_id),
+        action_id: action.action_id.clone(),
+        title: action.title.clone(),
+        issue_type: "task".to_string(),
+        priority: issue_priority(action),
+        labels: vec![
+            "opentui-import".to_string(),
+            "remediation".to_string(),
+            format!("certification-{}", domain_label(action.domain)),
+        ],
+        description: format!(
+            "Action: {}\n\nFailed clauses: {}\nArtifact refs: {}\nExpected confidence impact: {:.3}\nExpected value score: {:.3}\nEffort: {}\nEvidence: {}",
+            action.action,
+            clauses,
+            artifacts,
+            action.expected_confidence_impact,
+            action.expected_value_score,
+            effort_label(action.effort),
+            evidence
+        ),
+    }
+}
+
 fn final_verdict(
     stages: &[CertificationStageResult],
     clause_matrix: &[CertificationClauseRow],
@@ -1182,6 +1469,171 @@ fn clause_action(row: &CertificationClauseRow) -> String {
         CertificationClauseStatus::MissingEvidence => {
             "add the missing witness, obligation, or evidence record".to_string()
         }
+    }
+}
+
+fn effort_for_clause(row: &CertificationClauseRow) -> CertificationRemediationEffort {
+    match (row.status, row.risk_level) {
+        (
+            CertificationClauseStatus::Failed,
+            TransformationRiskLevel::Critical | TransformationRiskLevel::High,
+        ) => CertificationRemediationEffort::High,
+        (CertificationClauseStatus::Failed, _) => CertificationRemediationEffort::Medium,
+        (
+            CertificationClauseStatus::MissingEvidence,
+            TransformationRiskLevel::Critical | TransformationRiskLevel::High,
+        ) => CertificationRemediationEffort::Medium,
+        (CertificationClauseStatus::MissingEvidence, _) => CertificationRemediationEffort::Low,
+        (
+            CertificationClauseStatus::Warning,
+            TransformationRiskLevel::Critical | TransformationRiskLevel::High,
+        ) => CertificationRemediationEffort::Medium,
+        (CertificationClauseStatus::Warning, _) => CertificationRemediationEffort::Low,
+        (CertificationClauseStatus::Passed, _) => CertificationRemediationEffort::Low,
+    }
+}
+
+fn effort_for_stage(stage: &CertificationStageResult) -> CertificationRemediationEffort {
+    match (stage.status, stage.risk_level) {
+        (
+            CertificationStageStatus::Fail,
+            TransformationRiskLevel::Critical | TransformationRiskLevel::High,
+        ) => CertificationRemediationEffort::High,
+        (CertificationStageStatus::Fail, _) => CertificationRemediationEffort::Medium,
+        (
+            CertificationStageStatus::Warning,
+            TransformationRiskLevel::Critical | TransformationRiskLevel::High,
+        ) => CertificationRemediationEffort::Medium,
+        (CertificationStageStatus::Warning, _) => CertificationRemediationEffort::Low,
+        (CertificationStageStatus::Pass, _) => CertificationRemediationEffort::Low,
+    }
+}
+
+fn confidence_impact_for_clause(row: &CertificationClauseRow, domain: CertificationDomain) -> f64 {
+    let status_score = match row.status {
+        CertificationClauseStatus::Failed => 0.18,
+        CertificationClauseStatus::MissingEvidence => 0.14,
+        CertificationClauseStatus::Warning => 0.06,
+        CertificationClauseStatus::Passed => 0.0,
+    };
+    rounded_score(
+        status_score + risk_confidence_bonus(row.risk_level) + domain_confidence_bonus(domain),
+    )
+}
+
+fn confidence_impact_for_stage(stage: &CertificationStageResult) -> f64 {
+    let status_score = match stage.status {
+        CertificationStageStatus::Fail => 0.16,
+        CertificationStageStatus::Warning => 0.06,
+        CertificationStageStatus::Pass => 0.0,
+    };
+    rounded_score(
+        status_score
+            + risk_confidence_bonus(stage.risk_level)
+            + domain_confidence_bonus(stage.domain),
+    )
+}
+
+fn risk_confidence_bonus(risk_level: TransformationRiskLevel) -> f64 {
+    match risk_level {
+        TransformationRiskLevel::Low => 0.02,
+        TransformationRiskLevel::Medium => 0.04,
+        TransformationRiskLevel::High => 0.08,
+        TransformationRiskLevel::Critical => 0.12,
+    }
+}
+
+fn domain_confidence_bonus(domain: CertificationDomain) -> f64 {
+    match domain {
+        CertificationDomain::Semantic
+        | CertificationDomain::SemanticProof
+        | CertificationDomain::Confidence
+        | CertificationDomain::Compliance => 0.08,
+        CertificationDomain::Visual
+        | CertificationDomain::Performance
+        | CertificationDomain::Accessibility => 0.05,
+    }
+}
+
+fn expected_value_score(confidence_impact: f64, effort: CertificationRemediationEffort) -> f64 {
+    rounded_score(confidence_impact / effort_cost(effort))
+}
+
+fn effort_cost(effort: CertificationRemediationEffort) -> f64 {
+    match effort {
+        CertificationRemediationEffort::Low => 1.0,
+        CertificationRemediationEffort::Medium => 2.0,
+        CertificationRemediationEffort::High => 3.0,
+    }
+}
+
+fn issue_priority(action: &CertificationRemediationAction) -> u8 {
+    if action.expected_confidence_impact >= 0.30
+        || action.effort == CertificationRemediationEffort::High
+    {
+        1
+    } else if action.expected_confidence_impact >= 0.18 {
+        2
+    } else {
+        3
+    }
+}
+
+fn rounded_score(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
+fn action_id(domain: CertificationDomain, target: &str) -> String {
+    format!("remediate-{}-{}", domain_label(domain), slug(target))
+}
+
+fn domain_label(domain: CertificationDomain) -> &'static str {
+    match domain {
+        CertificationDomain::Semantic => "semantic",
+        CertificationDomain::SemanticProof => "semantic-proof",
+        CertificationDomain::Visual => "visual",
+        CertificationDomain::Performance => "performance",
+        CertificationDomain::Accessibility => "accessibility",
+        CertificationDomain::Confidence => "confidence",
+        CertificationDomain::Compliance => "compliance",
+    }
+}
+
+fn effort_label(effort: CertificationRemediationEffort) -> &'static str {
+    match effort {
+        CertificationRemediationEffort::Low => "low",
+        CertificationRemediationEffort::Medium => "medium",
+        CertificationRemediationEffort::High => "high",
+    }
+}
+
+fn display_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "n/a".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn slug(value: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_separator = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator && !out.is_empty() {
+            out.push('-');
+            last_was_separator = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "target".to_string()
+    } else {
+        out
     }
 }
 
