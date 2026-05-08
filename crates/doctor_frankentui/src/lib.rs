@@ -150,6 +150,7 @@ pub mod adversarial_fixtures;
 pub mod backend_capability;
 pub mod baseline_capture;
 pub mod benchmark_harness;
+pub mod benchmark_regression_gate;
 pub mod capability_gap;
 pub mod capture;
 pub mod cegis_synthesis;
