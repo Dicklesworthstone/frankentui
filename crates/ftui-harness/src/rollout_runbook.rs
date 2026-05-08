@@ -19,6 +19,7 @@
 //! - **`RolloutPolicy`**: How the transition is managed (`Off`, `Shadow`, `Enabled`).
 //! - **`RolloutScorecard`**: Combines shadow-run + benchmark evidence into a Go/NoGo verdict.
 //! - **`RolloutEvidenceBundle`**: Self-contained JSON artifact for release decisions.
+//! - **`MigrationReadinessRubric`**: Alpha/beta/GA gate policy for OpenTUI migrations.
 //!
 //! # Anti-goals
 //!
@@ -31,9 +32,10 @@
 //! 1. **Baseline**: Run with default config (`RolloutPolicy::Off`, `RuntimeLane::Structured`).
 //! 2. **Shadow**: Set `FTUI_ROLLOUT_POLICY=shadow` to gather comparison evidence.
 //! 3. **Evaluate**: Feed shadow results into `RolloutScorecard` → check verdict.
-//! 4. **Enable**: If Go, set `FTUI_ROLLOUT_POLICY=enabled` + `FTUI_RUNTIME_LANE=asupersync`.
-//! 5. **Monitor**: Watch queue telemetry (`effects_queue_dropped`, `effects_queue_high_water`).
-//! 6. **Rollback**: If problems, set `FTUI_ROLLOUT_POLICY=off` + `FTUI_RUNTIME_LANE=structured`.
+//! 4. **Stage gate**: Evaluate certification, corpus coverage, reliability, deterministic artifacts, blockers, and operator authority with `MigrationReadinessRubric`.
+//! 5. **Enable**: If Go and the target stage gate advances, set `FTUI_ROLLOUT_POLICY=enabled` + `FTUI_RUNTIME_LANE=asupersync`.
+//! 6. **Monitor**: Watch queue telemetry (`effects_queue_dropped`, `effects_queue_high_water`).
+//! 7. **Rollback or hold**: If problems, set `FTUI_ROLLOUT_POLICY=off` + `FTUI_RUNTIME_LANE=structured`; any active emergency hold blocks stage advancement.
 //!
 //! # Environment variables
 //!
@@ -47,6 +49,7 @@
 //! - `scripts/perf_regression_gate.sh` — CI performance gate
 //! - `tests/baseline.json` — Performance baselines (render + runtime)
 //! - `RolloutEvidenceBundle::to_json()` — Machine-readable release decision artifact
+//! - `MigrationReadinessDecision::to_json()` — Stage gate decision artifact
 
 #[cfg(test)]
 mod tests {
@@ -278,6 +281,49 @@ mod tests {
         assert!(
             json.contains("\"runtime\""),
             "evidence must include runtime info"
+        );
+    }
+
+    // =================================================================
+    // Step 8: Evaluate OpenTUI migration readiness stage
+    // =================================================================
+
+    /// Verify the alpha/beta/GA readiness rubric is executable.
+    ///
+    /// Operators must attach deterministic artifact evidence before advancing
+    /// a migration stage. Emergency holds override otherwise passing metrics.
+    #[test]
+    fn runbook_step8_migration_readiness_rubric() {
+        use crate::rollout_scorecard::{
+            EmergencyHold, EmergencyHoldReason, MigrationReadinessEvidence,
+            MigrationReadinessRubric, MigrationReadinessVerdict, MigrationRolloutStage,
+            OperatorAuthority,
+        };
+
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let beta_ready = MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+            .certification_pass_ratio(0.98)
+            .corpus_coverage_ratio(0.70)
+            .reliability_pass_ratio(0.99)
+            .deterministic_artifact_count(5)
+            .benchmark_gate_passed(true);
+
+        let decision = rubric.evaluate(MigrationRolloutStage::Beta, &beta_ready);
+        assert_eq!(decision.verdict, MigrationReadinessVerdict::Advance);
+        assert_eq!(
+            decision.to_json(),
+            "{\"stage\":\"beta\",\"verdict\":\"advance\",\"reasons\":[]}"
+        );
+
+        let held = beta_ready.emergency_hold(EmergencyHold::new(
+            EmergencyHoldReason::OperatorOverride,
+            OperatorAuthority::OnCall,
+        ));
+        let decision = rubric.evaluate(MigrationRolloutStage::Beta, &held);
+        assert_eq!(decision.verdict, MigrationReadinessVerdict::EmergencyHold);
+        assert!(
+            decision.reasons.contains(&"operator-override"),
+            "operator emergency hold must block advancement"
         );
     }
 

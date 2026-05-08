@@ -39,6 +39,15 @@ use crate::benchmark_gate::GateResult;
 use crate::shadow_run::{ShadowRunResult, ShadowVerdict};
 use ftui_runtime::effect_system::QueueTelemetry;
 
+#[must_use]
+fn normalized_ratio(ratio: f64) -> f64 {
+    if ratio.is_finite() {
+        ratio.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -126,6 +135,439 @@ impl RolloutVerdict {
 impl std::fmt::Display for RolloutVerdict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.label())
+    }
+}
+
+// ============================================================================
+// Migration readiness rubric (bd-3bxhj.9.1)
+// ============================================================================
+
+/// Rollout stage controlled by the OpenTUI migration readiness rubric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MigrationRolloutStage {
+    /// Internal trials against narrow fixtures.
+    Alpha,
+    /// Limited production-adjacent migrations with operator supervision.
+    Beta,
+    /// General availability for the declared support matrix.
+    Ga,
+}
+
+impl MigrationRolloutStage {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Alpha => "alpha",
+            Self::Beta => "beta",
+            Self::Ga => "ga",
+        }
+    }
+
+    /// Ordered stages from least to most permissive.
+    pub const ALL: &'static [Self] = &[Self::Alpha, Self::Beta, Self::Ga];
+}
+
+/// Operator authority required to advance or hold a rollout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OperatorAuthority {
+    /// Automated CI or scheduled release gate evaluator.
+    Automation,
+    /// On-call operator may hold or roll back a rollout.
+    OnCall,
+    /// Release owner may advance alpha/beta when evidence passes.
+    ReleaseOwner,
+    /// Maintainer quorum may approve GA.
+    MaintainerQuorum,
+}
+
+impl OperatorAuthority {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Automation => "automation",
+            Self::OnCall => "on-call",
+            Self::ReleaseOwner => "release-owner",
+            Self::MaintainerQuorum => "maintainer-quorum",
+        }
+    }
+}
+
+/// Emergency hold reason. Any active hold blocks stage advancement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmergencyHoldReason {
+    /// Certification or shadow-run evidence detected semantic drift.
+    CertificationRegression,
+    /// Deterministic replay, hashes, or stage evidence diverged.
+    DeterminismDivergence,
+    /// Security, provenance, or sandbox policy was breached.
+    SecurityIncident,
+    /// Runtime reliability or SLO checks breached policy.
+    ReliabilityBreach,
+    /// Required deterministic artifacts are missing or unverifiable.
+    MissingEvidence,
+    /// Human operator explicitly held rollout.
+    OperatorOverride,
+}
+
+impl EmergencyHoldReason {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CertificationRegression => "certification-regression",
+            Self::DeterminismDivergence => "determinism-divergence",
+            Self::SecurityIncident => "security-incident",
+            Self::ReliabilityBreach => "reliability-breach",
+            Self::MissingEvidence => "missing-evidence",
+            Self::OperatorOverride => "operator-override",
+        }
+    }
+}
+
+/// Active emergency hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmergencyHold {
+    /// Why the rollout is held.
+    pub reason: EmergencyHoldReason,
+    /// Authority that placed the hold.
+    pub authority: OperatorAuthority,
+}
+
+impl EmergencyHold {
+    /// Construct an emergency hold.
+    #[must_use]
+    pub const fn new(reason: EmergencyHoldReason, authority: OperatorAuthority) -> Self {
+        Self { reason, authority }
+    }
+}
+
+/// Quantitative evidence snapshot used to evaluate rollout readiness.
+#[derive(Debug, Clone)]
+pub struct MigrationReadinessEvidence {
+    /// Fraction of certification cases passing with accepted verdicts.
+    pub certification_pass_ratio: f64,
+    /// Fraction of declared corpus families covered by deterministic evidence.
+    pub corpus_coverage_ratio: f64,
+    /// Fraction of operational reliability checks passing.
+    pub reliability_pass_ratio: f64,
+    /// Count of deterministic artifact classes present and hash-verifiable.
+    pub deterministic_artifact_count: usize,
+    /// Whether the benchmark regression gate passed.
+    pub benchmark_gate_passed: bool,
+    /// Number of release-blocking unresolved defects.
+    pub open_blocker_count: usize,
+    /// Authority currently requesting the transition.
+    pub operator_authority: OperatorAuthority,
+    /// Optional active emergency hold.
+    pub emergency_hold: Option<EmergencyHold>,
+}
+
+impl MigrationReadinessEvidence {
+    /// Construct an empty evidence snapshot.
+    #[must_use]
+    pub const fn new(operator_authority: OperatorAuthority) -> Self {
+        Self {
+            certification_pass_ratio: 0.0,
+            corpus_coverage_ratio: 0.0,
+            reliability_pass_ratio: 0.0,
+            deterministic_artifact_count: 0,
+            benchmark_gate_passed: false,
+            open_blocker_count: 0,
+            operator_authority,
+            emergency_hold: None,
+        }
+    }
+
+    /// Set certification pass ratio.
+    #[must_use]
+    pub fn certification_pass_ratio(mut self, ratio: f64) -> Self {
+        self.certification_pass_ratio = normalized_ratio(ratio);
+        self
+    }
+
+    /// Set corpus coverage ratio.
+    #[must_use]
+    pub fn corpus_coverage_ratio(mut self, ratio: f64) -> Self {
+        self.corpus_coverage_ratio = normalized_ratio(ratio);
+        self
+    }
+
+    /// Set operational reliability pass ratio.
+    #[must_use]
+    pub fn reliability_pass_ratio(mut self, ratio: f64) -> Self {
+        self.reliability_pass_ratio = normalized_ratio(ratio);
+        self
+    }
+
+    /// Set deterministic artifact count.
+    #[must_use]
+    pub const fn deterministic_artifact_count(mut self, count: usize) -> Self {
+        self.deterministic_artifact_count = count;
+        self
+    }
+
+    /// Set benchmark gate result.
+    #[must_use]
+    pub const fn benchmark_gate_passed(mut self, passed: bool) -> Self {
+        self.benchmark_gate_passed = passed;
+        self
+    }
+
+    /// Set unresolved release blocker count.
+    #[must_use]
+    pub const fn open_blocker_count(mut self, count: usize) -> Self {
+        self.open_blocker_count = count;
+        self
+    }
+
+    /// Attach an emergency hold.
+    #[must_use]
+    pub const fn emergency_hold(mut self, hold: EmergencyHold) -> Self {
+        self.emergency_hold = Some(hold);
+        self
+    }
+}
+
+/// Quantitative gate for one rollout stage.
+#[derive(Debug, Clone)]
+pub struct MigrationStageGate {
+    /// Target stage.
+    pub stage: MigrationRolloutStage,
+    /// Minimum certification pass ratio.
+    pub min_certification_pass_ratio: f64,
+    /// Minimum deterministic corpus coverage.
+    pub min_corpus_coverage_ratio: f64,
+    /// Minimum operational reliability pass ratio.
+    pub min_reliability_pass_ratio: f64,
+    /// Minimum deterministic artifact classes required.
+    pub min_deterministic_artifacts: usize,
+    /// Whether benchmark gate evidence is required.
+    pub require_benchmark_gate: bool,
+    /// Maximum unresolved release blockers.
+    pub max_open_blockers: usize,
+    /// Minimum authority required to approve this stage.
+    pub required_authority: OperatorAuthority,
+}
+
+impl MigrationStageGate {
+    /// Construct a stage gate.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn new(
+        stage: MigrationRolloutStage,
+        min_certification_pass_ratio: f64,
+        min_corpus_coverage_ratio: f64,
+        min_reliability_pass_ratio: f64,
+        min_deterministic_artifacts: usize,
+        require_benchmark_gate: bool,
+        max_open_blockers: usize,
+        required_authority: OperatorAuthority,
+    ) -> Self {
+        Self {
+            stage,
+            min_certification_pass_ratio,
+            min_corpus_coverage_ratio,
+            min_reliability_pass_ratio,
+            min_deterministic_artifacts,
+            require_benchmark_gate,
+            max_open_blockers,
+            required_authority,
+        }
+    }
+}
+
+/// Stage evaluation verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationReadinessVerdict {
+    /// All quantitative gates and authority checks pass.
+    Advance,
+    /// Evidence is insufficient but no emergency hold is active.
+    Hold,
+    /// Active emergency hold blocks advancement.
+    EmergencyHold,
+}
+
+impl MigrationReadinessVerdict {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Advance => "advance",
+            Self::Hold => "hold",
+            Self::EmergencyHold => "emergency-hold",
+        }
+    }
+}
+
+/// Result of evaluating one target stage.
+#[derive(Debug, Clone)]
+pub struct MigrationReadinessDecision {
+    /// Evaluated target stage.
+    pub stage: MigrationRolloutStage,
+    /// Stage verdict.
+    pub verdict: MigrationReadinessVerdict,
+    /// Machine-readable reasons explaining holds.
+    pub reasons: Vec<&'static str>,
+}
+
+impl MigrationReadinessDecision {
+    /// Whether the stage may advance.
+    #[must_use]
+    pub fn may_advance(&self) -> bool {
+        self.verdict == MigrationReadinessVerdict::Advance
+    }
+
+    /// Serialize the decision for release gate artifacts.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let reasons = self
+            .reasons
+            .iter()
+            .map(|reason| format!("\"{reason}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            concat!(
+                "{{",
+                "\"stage\":\"{stage}\",",
+                "\"verdict\":\"{verdict}\",",
+                "\"reasons\":[{reasons}]",
+                "}}"
+            ),
+            stage = self.stage.label(),
+            verdict = self.verdict.label(),
+            reasons = reasons,
+        )
+    }
+}
+
+/// Default OpenTUI migration readiness rubric.
+#[derive(Debug, Clone)]
+pub struct MigrationReadinessRubric {
+    gates: Vec<MigrationStageGate>,
+}
+
+impl MigrationReadinessRubric {
+    /// Construct a rubric from gates.
+    #[must_use]
+    pub fn new(gates: Vec<MigrationStageGate>) -> Self {
+        Self { gates }
+    }
+
+    /// Default policy for OpenTUI import rollout stages.
+    #[must_use]
+    pub fn opentui_default() -> Self {
+        Self::new(vec![
+            MigrationStageGate::new(
+                MigrationRolloutStage::Alpha,
+                0.90,
+                0.25,
+                0.95,
+                3,
+                true,
+                2,
+                OperatorAuthority::ReleaseOwner,
+            ),
+            MigrationStageGate::new(
+                MigrationRolloutStage::Beta,
+                0.97,
+                0.60,
+                0.98,
+                5,
+                true,
+                0,
+                OperatorAuthority::ReleaseOwner,
+            ),
+            MigrationStageGate::new(
+                MigrationRolloutStage::Ga,
+                1.00,
+                0.90,
+                0.995,
+                7,
+                true,
+                0,
+                OperatorAuthority::MaintainerQuorum,
+            ),
+        ])
+    }
+
+    /// Return the configured gate for a stage.
+    #[must_use]
+    pub fn gate(&self, stage: MigrationRolloutStage) -> Option<&MigrationStageGate> {
+        self.gates.iter().find(|gate| gate.stage == stage)
+    }
+
+    /// Evaluate one target stage against the supplied evidence snapshot.
+    #[must_use]
+    pub fn evaluate(
+        &self,
+        stage: MigrationRolloutStage,
+        evidence: &MigrationReadinessEvidence,
+    ) -> MigrationReadinessDecision {
+        let Some(gate) = self.gate(stage) else {
+            return MigrationReadinessDecision {
+                stage,
+                verdict: MigrationReadinessVerdict::Hold,
+                reasons: vec!["stage-gate-missing"],
+            };
+        };
+
+        if let Some(hold) = evidence.emergency_hold {
+            return MigrationReadinessDecision {
+                stage,
+                verdict: MigrationReadinessVerdict::EmergencyHold,
+                reasons: vec![hold.reason.label()],
+            };
+        }
+
+        let mut reasons = Vec::new();
+        if evidence.certification_pass_ratio < gate.min_certification_pass_ratio {
+            reasons.push("certification-threshold");
+        }
+        if evidence.corpus_coverage_ratio < gate.min_corpus_coverage_ratio {
+            reasons.push("corpus-coverage-threshold");
+        }
+        if evidence.reliability_pass_ratio < gate.min_reliability_pass_ratio {
+            reasons.push("operational-reliability-threshold");
+        }
+        if evidence.deterministic_artifact_count < gate.min_deterministic_artifacts {
+            reasons.push("deterministic-artifact-threshold");
+        }
+        if gate.require_benchmark_gate && !evidence.benchmark_gate_passed {
+            reasons.push("benchmark-gate");
+        }
+        if evidence.open_blocker_count > gate.max_open_blockers {
+            reasons.push("release-blockers");
+        }
+        if evidence.operator_authority < gate.required_authority {
+            reasons.push("operator-authority");
+        }
+
+        let verdict = if reasons.is_empty() {
+            MigrationReadinessVerdict::Advance
+        } else {
+            MigrationReadinessVerdict::Hold
+        };
+        MigrationReadinessDecision {
+            stage,
+            verdict,
+            reasons,
+        }
+    }
+
+    /// Highest stage that may advance for this evidence snapshot.
+    #[must_use]
+    pub fn recommended_stage(
+        &self,
+        evidence: &MigrationReadinessEvidence,
+    ) -> Option<MigrationRolloutStage> {
+        MigrationRolloutStage::ALL
+            .iter()
+            .rev()
+            .copied()
+            .find(|stage| self.evaluate(*stage, evidence).may_advance())
     }
 }
 
@@ -541,6 +983,140 @@ mod tests {
         assert_eq!(RolloutVerdict::NoGo.label(), "NO-GO");
         assert_eq!(RolloutVerdict::Inconclusive.label(), "INCONCLUSIVE");
         assert_eq!(format!("{}", RolloutVerdict::Go), "GO");
+    }
+
+    #[test]
+    fn readiness_rubric_allows_alpha_at_thresholds() {
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let evidence = MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+            .certification_pass_ratio(0.90)
+            .corpus_coverage_ratio(0.25)
+            .reliability_pass_ratio(0.95)
+            .deterministic_artifact_count(3)
+            .benchmark_gate_passed(true)
+            .open_blocker_count(2);
+
+        let decision = rubric.evaluate(MigrationRolloutStage::Alpha, &evidence);
+        assert_eq!(decision.verdict, MigrationReadinessVerdict::Advance);
+        assert!(
+            decision.reasons.is_empty(),
+            "passing evidence must not carry hold reasons"
+        );
+    }
+
+    #[test]
+    fn readiness_rubric_blocks_beta_without_artifacts_and_benchmark() {
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let evidence = MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+            .certification_pass_ratio(0.99)
+            .corpus_coverage_ratio(0.80)
+            .reliability_pass_ratio(0.99)
+            .deterministic_artifact_count(4)
+            .benchmark_gate_passed(false);
+
+        let decision = rubric.evaluate(MigrationRolloutStage::Beta, &evidence);
+        assert_eq!(decision.verdict, MigrationReadinessVerdict::Hold);
+        assert!(
+            decision
+                .reasons
+                .contains(&"deterministic-artifact-threshold")
+        );
+        assert!(decision.reasons.contains(&"benchmark-gate"));
+    }
+
+    #[test]
+    fn readiness_rubric_requires_maintainer_quorum_for_ga() {
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let release_owner_evidence =
+            MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+                .certification_pass_ratio(1.0)
+                .corpus_coverage_ratio(0.95)
+                .reliability_pass_ratio(0.999)
+                .deterministic_artifact_count(7)
+                .benchmark_gate_passed(true);
+
+        let decision = rubric.evaluate(MigrationRolloutStage::Ga, &release_owner_evidence);
+        assert_eq!(decision.verdict, MigrationReadinessVerdict::Hold);
+        assert_eq!(decision.reasons, vec!["operator-authority"]);
+
+        let quorum_evidence = MigrationReadinessEvidence {
+            operator_authority: OperatorAuthority::MaintainerQuorum,
+            ..release_owner_evidence
+        };
+        assert!(
+            rubric
+                .evaluate(MigrationRolloutStage::Ga, &quorum_evidence)
+                .may_advance()
+        );
+    }
+
+    #[test]
+    fn readiness_rubric_emergency_hold_overrides_clean_evidence() {
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let evidence = MigrationReadinessEvidence::new(OperatorAuthority::MaintainerQuorum)
+            .certification_pass_ratio(1.0)
+            .corpus_coverage_ratio(1.0)
+            .reliability_pass_ratio(1.0)
+            .deterministic_artifact_count(8)
+            .benchmark_gate_passed(true)
+            .emergency_hold(EmergencyHold::new(
+                EmergencyHoldReason::DeterminismDivergence,
+                OperatorAuthority::OnCall,
+            ));
+
+        let decision = rubric.evaluate(MigrationRolloutStage::Ga, &evidence);
+        assert_eq!(decision.verdict, MigrationReadinessVerdict::EmergencyHold);
+        assert_eq!(decision.reasons, vec!["determinism-divergence"]);
+    }
+
+    #[test]
+    fn readiness_rubric_recommends_highest_passing_stage() {
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let beta_ready = MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+            .certification_pass_ratio(0.98)
+            .corpus_coverage_ratio(0.75)
+            .reliability_pass_ratio(0.99)
+            .deterministic_artifact_count(5)
+            .benchmark_gate_passed(true);
+
+        assert_eq!(
+            rubric.recommended_stage(&beta_ready),
+            Some(MigrationRolloutStage::Beta)
+        );
+    }
+
+    #[test]
+    fn readiness_decision_json_is_machine_readable() {
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let evidence = MigrationReadinessEvidence::new(OperatorAuthority::Automation);
+        let json = rubric
+            .evaluate(MigrationRolloutStage::Alpha, &evidence)
+            .to_json();
+
+        assert!(json.contains("\"stage\":\"alpha\""));
+        assert!(json.contains("\"verdict\":\"hold\""));
+        assert!(json.contains("\"operator-authority\""));
+    }
+
+    #[test]
+    fn readiness_rubric_rejects_non_finite_ratios() {
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let evidence = MigrationReadinessEvidence::new(OperatorAuthority::MaintainerQuorum)
+            .certification_pass_ratio(f64::NAN)
+            .corpus_coverage_ratio(f64::INFINITY)
+            .reliability_pass_ratio(f64::NEG_INFINITY)
+            .deterministic_artifact_count(8)
+            .benchmark_gate_passed(true);
+
+        let decision = rubric.evaluate(MigrationRolloutStage::Ga, &evidence);
+        assert_eq!(decision.verdict, MigrationReadinessVerdict::Hold);
+        assert!(decision.reasons.contains(&"certification-threshold"));
+        assert!(decision.reasons.contains(&"corpus-coverage-threshold"));
+        assert!(
+            decision
+                .reasons
+                .contains(&"operational-reliability-threshold")
+        );
     }
 
     #[test]
