@@ -38,6 +38,12 @@ use crate::effect_canonical::{
 use crate::migration_ir::IrNodeId;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Version tag for the abstract interpretation domains and Galois contracts.
+///
+/// Increment this when any domain, abstraction map, concretization map, or
+/// conservative fallback rule changes in a way that affects proof meaning.
+pub const ABSTRACT_INTERPRETATION_DOMAIN_VERSION: &str = "abstract-interpretation-domains-v1";
+
 // ─── Verification status ────────────────────────────────────────────────────
 
 /// Outcome of verifying a safety property.
@@ -127,6 +133,8 @@ pub struct Counterexample {
 /// Complete result of analyzing a set of safety properties.
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
+    /// Version of the abstract domains used for this analysis.
+    pub domain_version: &'static str,
     /// Per-property verification status.
     pub verdicts: BTreeMap<String, PropertyVerdict>,
     /// All proof obligations generated during analysis.
@@ -135,6 +143,58 @@ pub struct AnalysisResult {
     pub counterexamples: Vec<Counterexample>,
     /// Whether all properties passed conservatively.
     pub all_safe: bool,
+}
+
+/// Versioned description of one abstract domain and its Galois connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbstractDomainDescriptor {
+    /// Shared version tag for this domain contract.
+    pub version: &'static str,
+    /// Stable domain identifier.
+    pub domain_id: &'static str,
+    /// Lattice and ordering used by the abstract domain.
+    pub lattice: &'static str,
+    /// Abstraction map from concrete executions into this domain.
+    pub abstraction: &'static str,
+    /// Concretization map back to an over-approximated concrete set.
+    pub concretization: &'static str,
+    /// Soundness condition required by the analyzer.
+    pub soundness_contract: &'static str,
+    /// Required behavior when the analyzer cannot prove the property.
+    pub conservative_fallback: &'static str,
+}
+
+/// Return the versioned abstract-domain contracts used by this module.
+pub fn abstract_domain_descriptors() -> &'static [AbstractDomainDescriptor] {
+    &[
+        AbstractDomainDescriptor {
+            version: ABSTRACT_INTERPRETATION_DOMAIN_VERSION,
+            domain_id: "effect-state-powerset",
+            lattice: "powerset(IrNodeId) for may_read, may_write, and executed; order is subset; join is union",
+            abstraction: "alpha maps concrete effect executions to their read, write, and executed id sets",
+            concretization: "gamma returns all concrete executions whose read, write, and executed sets are subsets of the abstract sets",
+            soundness_contract: "for every concrete execution set S, S is a subset of gamma(alpha(S))",
+            conservative_fallback: "Unknown is treated as unsafe and never contributes to all_safe",
+        },
+        AbstractDomainDescriptor {
+            version: ABSTRACT_INTERPRETATION_DOMAIN_VERSION,
+            domain_id: "ordering-constraint-graph",
+            lattice: "directed graph over IrNodeId ordering constraints; order is edge subset; join is edge union",
+            abstraction: "alpha maps concrete happens-before constraints to graph edges",
+            concretization: "gamma returns all concrete effect schedules compatible with the abstract edge set",
+            soundness_contract: "for schedule set S, S is a subset of gamma(alpha(S)); cycle freedom in the abstract graph implies cycle freedom for all represented schedules",
+            conservative_fallback: "cycle detection failure or iteration exhaustion must return Unknown or Refuted, never Proven",
+        },
+        AbstractDomainDescriptor {
+            version: ABSTRACT_INTERPRETATION_DOMAIN_VERSION,
+            domain_id: "safety-property-verdict",
+            lattice: "Proven, Refuted, Unknown with conservative safety order Proven only",
+            abstraction: "alpha maps checker outcomes and diagnostics to one property verdict",
+            concretization: "gamma maps Proven to all safe executions, Refuted to witnessed violations, and Unknown to untrusted executions",
+            soundness_contract: "for verdict set S, S is a subset of gamma(alpha(S)); only Proven may be considered safe by downstream gates",
+            conservative_fallback: "Unknown and Refuted both force all_safe=false",
+        },
+    ]
 }
 
 /// Verdict for a single property.
@@ -269,6 +329,7 @@ pub fn analyze_safety(
     let all_safe = verdicts.values().all(|v| v.status.is_conservatively_safe());
 
     AnalysisResult {
+        domain_version: ABSTRACT_INTERPRETATION_DOMAIN_VERSION,
         verdicts,
         obligations,
         counterexamples,
@@ -1135,6 +1196,58 @@ mod tests {
             &config,
         );
         assert!(!result.all_safe);
+    }
+
+    #[test]
+    fn analysis_result_exposes_domain_version() {
+        let model = make_model(vec![make_effect("dom", EffectKind::Dom, true)]);
+        let config = AnalysisConfig::default();
+        let result = analyze_all_safety(&model, &config);
+        assert_eq!(
+            result.domain_version,
+            ABSTRACT_INTERPRETATION_DOMAIN_VERSION
+        );
+    }
+
+    #[test]
+    fn domain_descriptors_document_versioned_galois_contracts() {
+        let descriptors = abstract_domain_descriptors();
+        assert!(descriptors.len() >= 3);
+
+        let mut domain_ids = BTreeSet::new();
+        for descriptor in descriptors {
+            assert_eq!(descriptor.version, ABSTRACT_INTERPRETATION_DOMAIN_VERSION);
+            assert!(!descriptor.domain_id.is_empty());
+            assert!(
+                domain_ids.insert(descriptor.domain_id),
+                "domain descriptor ids must be unique"
+            );
+            assert!(descriptor.abstraction.contains("alpha"));
+            assert!(descriptor.concretization.contains("gamma"));
+            assert!(descriptor.soundness_contract.contains("gamma(alpha(S))"));
+            assert!(descriptor.conservative_fallback.contains("Unknown"));
+        }
+    }
+
+    #[test]
+    fn unknown_fixpoint_state_is_conservative_failure() {
+        let model = make_model(vec![make_effect("cache", EffectKind::Storage, true)]);
+        let config = AnalysisConfig {
+            max_iterations: 0,
+            ..AnalysisConfig::default()
+        };
+
+        let result = analyze_safety(&model, &[SafetyProperty::IdempotencePreservation], &config);
+        assert!(!result.all_safe, "Unknown must not silently pass");
+        let verdict = result
+            .verdicts
+            .get("idempotence_preservation")
+            .expect("idempotence verdict should be present");
+        assert!(matches!(
+            verdict.status,
+            VerificationStatus::Unknown { ref reason }
+                if reason.contains("Fixpoint iteration limit")
+        ));
     }
 
     #[test]
