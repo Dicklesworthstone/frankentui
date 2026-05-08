@@ -145,6 +145,7 @@
 //!   paths suitable for local triage and CI uploads.
 
 pub mod abstract_interpretation;
+pub mod accessibility_diff;
 pub mod adversarial_fixtures;
 pub mod backend_capability;
 pub mod capability_gap;
