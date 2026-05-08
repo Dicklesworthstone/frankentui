@@ -6,6 +6,9 @@ use std::process::{Command, Output};
 use serde_json::Value;
 use tempfile::tempdir;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 fn doctor_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_doctor_frankentui"))
 }
@@ -111,6 +114,21 @@ fn link_or_copy_command(source: &Path, target: &Path) {
             result.as_ref().unwrap_err()
         );
     }
+}
+
+#[cfg(unix)]
+fn write_executable_script(path: &Path, body: &str) {
+    let result = (|| -> std::io::Result<()> {
+        fs::write(path, body)?;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)
+    })();
+    assert!(
+        result.is_ok(),
+        "failed to install executable script {}: {result:?}",
+        path.display()
+    );
 }
 
 fn run_doctor_command_with_path(
@@ -558,6 +576,76 @@ fn doctor_full_json_mode_missing_capture_driver_emits_machine_readable_stderr_pa
         "unexpected error payload: {payload}"
     );
     assert_eq!(payload["integration"]["sqlmodel_mode"], "json");
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_full_allow_degraded_ttyd_eof_succeeds_without_docker() {
+    let temp = tempdir().expect("tempdir");
+    let project_dir = temp.path().join("project");
+    let run_root = temp.path().join("doctor_ttyd_eof_no_docker");
+    let tool_dir = temp.path().join("tools");
+
+    fs::create_dir_all(&project_dir).expect("project dir");
+    fs::create_dir_all(&run_root).expect("run root");
+    let path_env = build_path_with_selected_commands(&tool_dir, &["bash"]);
+    write_executable_script(
+        &tool_dir.join("vhs"),
+        "#!/bin/sh\nprintf 'could not open ttyd: EOF\\n' >&2\nexit 124\n",
+    );
+
+    let output = run_doctor_command_with_path(
+        &[
+            "doctor",
+            "--full",
+            "--allow-degraded",
+            "--project-dir",
+            project_dir.to_str().expect("project dir str"),
+            "--run-root",
+            run_root.to_str().expect("run root str"),
+            "--app-command",
+            "echo demo",
+        ],
+        &path_env,
+        &[("SQLMODEL_JSON", "1")],
+    );
+
+    assert!(
+        output.status.success(),
+        "allow-degraded doctor should pass via app smoke fallback without docker: {}",
+        stderr_text(&output)
+    );
+
+    let payload = parse_stdout_json(&output);
+    assert_eq!(payload["command"], "doctor");
+    assert_eq!(payload["status"], "degraded");
+    assert_eq!(payload["capture_stack_health"], "unhealthy");
+    assert_eq!(payload["allow_degraded"], true);
+    assert_eq!(
+        payload["capture_smoke"]["failure_signature"],
+        "vhs_ttyd_handshake_failed"
+    );
+    assert_eq!(
+        payload["capture_smoke"]["capture_error_reason"],
+        "vhs could not open ttyd (EOF)"
+    );
+    assert_eq!(payload["capture_smoke"]["vhs_exit_code"], 124);
+    assert_eq!(payload["capture_smoke"]["host_vhs_exit_code"], 124);
+    assert_eq!(payload["capture_smoke"]["vhs_driver_used"], "host");
+    assert!(
+        payload["capture_smoke_detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("diagnosis=vhs_ttyd_handshake_failed"),
+        "expected ttyd EOF diagnosis in capture detail: {payload}"
+    );
+    assert!(
+        payload["app_smoke_summary"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("doctor_app_smoke/summary.json"),
+        "expected app smoke fallback summary path: {payload}"
+    );
 }
 
 #[test]

@@ -213,7 +213,7 @@ fn check_command(name: &str, ui: &CliOutput) -> Result<()> {
     }
 }
 
-fn check_capture_driver_dependencies(ui: &CliOutput) -> Result<()> {
+fn check_capture_driver_dependencies(ui: &CliOutput, allow_degraded: bool) -> Result<()> {
     let has_vhs = command_exists("vhs");
     let has_docker = command_exists("docker");
     let has_ttyd = command_exists("ttyd");
@@ -227,6 +227,13 @@ fn check_capture_driver_dependencies(ui: &CliOutput) -> Result<()> {
     if has_docker {
         ui.success("command available: docker");
     } else if !has_vhs {
+        if allow_degraded {
+            ui.warning(
+                "command missing: vhs or docker (--allow-degraded will use app launch smoke if capture fails)",
+            );
+            return Ok(());
+        }
+
         ui.error("command missing: docker");
         return Err(DoctorError::MissingCommand {
             command: "vhs or docker".to_string(),
@@ -241,6 +248,13 @@ fn check_capture_driver_dependencies(ui: &CliOutput) -> Result<()> {
     if has_docker {
         ui.warning(
             "command missing: ttyd (host VHS path unavailable, but Docker VHS remains available)",
+        );
+        return Ok(());
+    }
+
+    if allow_degraded {
+        ui.warning(
+            "command missing: ttyd (host VHS path may fail; --allow-degraded will use app launch smoke if capture fails)",
         );
         return Ok(());
     }
@@ -823,7 +837,7 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
     ));
 
     if args.full {
-        check_capture_driver_dependencies(&ui)?;
+        check_capture_driver_dependencies(&ui, args.allow_degraded)?;
     }
 
     if command_exists("ffmpeg") {
