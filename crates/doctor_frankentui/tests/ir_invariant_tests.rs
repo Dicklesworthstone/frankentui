@@ -32,6 +32,7 @@ use doctor_frankentui::tsx_parser::{
 use doctor_frankentui::{composition_semantics, state_effects, style_semantics};
 
 use proptest::prelude::*;
+use sha2::{Digest, Sha256};
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -346,6 +347,25 @@ fn stable_ingestion_normalization_hash(ir: &MigrationIr) -> String {
     stable.metadata.created_at = "stable-ingestion-fixture-time".to_string();
     stable.metadata.integrity_hash = None;
     migration_ir::compute_integrity_hash(&stable)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn stable_json_hash(value: &serde_json::Value) -> String {
+    let json = serde_json::to_string(value).expect("serialize hash payload");
+    sha256_hex(json.as_bytes())
+}
+
+fn stable_final_ir_json(ir: &MigrationIr) -> String {
+    let mut stable = ir.clone();
+    stable.metadata.created_at = "stable-ingestion-fixture-time".to_string();
+    stable.metadata.integrity_hash = None;
+    stable.metadata.integrity_hash = Some(migration_ir::compute_integrity_hash(&stable));
+    serde_json::to_string_pretty(&stable).expect("serialize final IR")
 }
 
 fn project_from_fixture(fixture: IngestionFixture) -> ProjectParse {
@@ -1090,6 +1110,7 @@ fn run_ingestion_e2e_trace(source_root: &Path, run_id: &str) -> (String, serde_j
         );
 
         let normalization_hash = stable_ingestion_normalization_hash(&lowered.ir);
+        let mut stage_hashes = BTreeMap::new();
 
         for (stage_index, parser_stage) in INGESTION_E2E_STAGES.iter().copied().enumerate() {
             let counts = match parser_stage {
@@ -1131,6 +1152,13 @@ fn run_ingestion_e2e_trace(source_root: &Path, run_id: &str) -> (String, serde_j
                 }),
                 _ => unreachable!("unknown ingestion stage"),
             };
+            let stage_hash = stable_json_hash(&serde_json::json!({
+                "fixture_id": fixture.id,
+                "parser_stage": parser_stage,
+                "counts": counts.clone(),
+                "normalization_hash": normalization_hash,
+            }));
+            stage_hashes.insert(parser_stage.to_string(), stage_hash.clone());
 
             rows.push(serde_json::json!({
                 "schema_version": INGESTION_E2E_SCHEMA_VERSION,
@@ -1142,6 +1170,7 @@ fn run_ingestion_e2e_trace(source_root: &Path, run_id: &str) -> (String, serde_j
                 "stage_index": stage_index,
                 "status": "ok",
                 "normalization_hash": normalization_hash,
+                "stage_hash": stage_hash,
                 "counts": counts,
                 "diagnostics": [],
                 "reproduction_command": reproduction_command,
@@ -1154,6 +1183,7 @@ fn run_ingestion_e2e_trace(source_root: &Path, run_id: &str) -> (String, serde_j
             "path": fixture.path,
             "normalization_hash": normalization_hash,
             "stages": INGESTION_E2E_STAGES,
+            "stage_hashes": stage_hashes,
             "reproduction_command": reproduction_command,
         }));
     }
@@ -1197,7 +1227,10 @@ fn run_ingestion_e2e_trace(source_root: &Path, run_id: &str) -> (String, serde_j
     (trace, manifest)
 }
 
-fn assert_ingestion_manifest_complete(manifest: &serde_json::Value) {
+fn assert_ingestion_manifest_complete_for_script(
+    manifest: &serde_json::Value,
+    expected_script_name: &str,
+) {
     assert_eq!(
         manifest["schema_version"],
         "doctor-ingestion-e2e-manifest-v1"
@@ -1237,8 +1270,128 @@ fn assert_ingestion_manifest_complete(manifest: &serde_json::Value) {
         assert!(
             fixture["reproduction_command"]
                 .as_str()
-                .is_some_and(|command| command.contains("doctor_frankentui_ingestion_e2e.sh"))
+                .is_some_and(|command| command.contains(expected_script_name))
         );
+    }
+}
+
+fn assert_ingestion_manifest_complete(manifest: &serde_json::Value) {
+    assert_ingestion_manifest_complete_for_script(manifest, "doctor_frankentui_ingestion_e2e.sh");
+}
+
+fn run_ir_determinism_e2e_trace(
+    source_root: &Path,
+    run_id: &str,
+) -> (String, serde_json::Value, BTreeMap<String, String>) {
+    let (trace, mut manifest) = run_ingestion_e2e_trace(source_root, run_id);
+    let reproduction_command = format!(
+        "DOCTOR_FRANKENTUI_IR_E2E_RUN_ID={run_id} \
+         ./scripts/doctor_frankentui_ir_determinism_e2e.sh <run-root>"
+    );
+    let mut trace_rows = Vec::new();
+    for line in trace.lines() {
+        let mut row: serde_json::Value = serde_json::from_str(line).expect("parse trace row");
+        let row_object = row.as_object_mut().expect("trace row object");
+        row_object.insert(
+            "schema_version".to_string(),
+            serde_json::json!("doctor-ir-determinism-e2e-v1"),
+        );
+        row_object.insert(
+            "reproduction_command".to_string(),
+            serde_json::json!(reproduction_command.clone()),
+        );
+        trace_rows.push(row);
+    }
+    let trace = format!(
+        "{}\n",
+        trace_rows
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize IR trace row"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    for fixture in manifest["fixtures"]
+        .as_array_mut()
+        .expect("manifest fixtures array")
+    {
+        fixture
+            .as_object_mut()
+            .expect("fixture manifest object")
+            .insert(
+                "reproduction_command".to_string(),
+                serde_json::json!(reproduction_command.clone()),
+            );
+    }
+
+    let mut final_ir_artifacts = BTreeMap::new();
+    let mut final_ir_hashes = BTreeMap::new();
+    let mut final_ir_json_hashes = BTreeMap::new();
+
+    for fixture in ingestion_fixture_matrix() {
+        let project = project_from_fixture(fixture);
+        let lowered = lowering::lower_project(&test_config(), &project);
+        let final_ir_json = stable_final_ir_json(&lowered.ir);
+        let final_ir_value: serde_json::Value =
+            serde_json::from_str(&final_ir_json).expect("parse stable final IR JSON");
+        let final_ir_hash = final_ir_value["metadata"]["integrity_hash"]
+            .as_str()
+            .expect("final IR integrity hash")
+            .to_string();
+        let artifact_name = format!("{}.json", fixture.id);
+
+        final_ir_json_hashes.insert(artifact_name.clone(), sha256_hex(final_ir_json.as_bytes()));
+        final_ir_hashes.insert(fixture.id.to_string(), final_ir_hash);
+        final_ir_artifacts.insert(artifact_name, format!("{final_ir_json}\n"));
+    }
+
+    manifest.as_object_mut().expect("manifest object").insert(
+        "final_ir".to_string(),
+        serde_json::json!({
+            "artifact_dirs": {
+                "run_a": "meta/final_ir_a",
+                "run_b": "meta/final_ir_b",
+            },
+            "integrity_hashes": final_ir_hashes,
+            "json_hashes": final_ir_json_hashes,
+        }),
+    );
+
+    (trace, manifest, final_ir_artifacts)
+}
+
+fn assert_ir_determinism_manifest_complete(manifest: &serde_json::Value) {
+    assert_ingestion_manifest_complete_for_script(
+        manifest,
+        "doctor_frankentui_ir_determinism_e2e.sh",
+    );
+
+    let final_ir = &manifest["final_ir"];
+    assert!(final_ir.as_object().is_some(), "final_ir manifest object");
+    let integrity_hashes = final_ir["integrity_hashes"]
+        .as_object()
+        .expect("final IR integrity hashes");
+    let json_hashes = final_ir["json_hashes"]
+        .as_object()
+        .expect("final IR JSON hashes");
+    assert_eq!(integrity_hashes.len(), 4);
+    assert_eq!(json_hashes.len(), 4);
+    for hash in integrity_hashes.values().chain(json_hashes.values()) {
+        assert_eq!(hash.as_str().expect("hash string").len(), 64);
+    }
+
+    for fixture in manifest["fixtures"].as_array().expect("fixtures array") {
+        let stage_hashes = fixture["stage_hashes"]
+            .as_object()
+            .expect("stage hashes object");
+        assert_eq!(stage_hashes.len(), INGESTION_E2E_STAGES.len());
+        for parser_stage in INGESTION_E2E_STAGES {
+            let hash = stage_hashes
+                .get(parser_stage)
+                .and_then(serde_json::Value::as_str)
+                .expect("stage hash");
+            assert_eq!(hash.len(), 64);
+        }
     }
 }
 
@@ -1261,6 +1414,39 @@ fn write_ingestion_e2e_outputs(
     fs::write(meta_dir.join("ingestion_trace_a.jsonl"), trace_a).expect("write trace A");
     fs::write(meta_dir.join("ingestion_trace_b.jsonl"), trace_b).expect("write trace B");
     fs::write(meta_dir.join("events.jsonl"), trace_a).expect("write event stream");
+}
+
+fn write_ir_determinism_e2e_outputs(
+    run_root: &Path,
+    trace_a: &str,
+    trace_b: &str,
+    manifest: &serde_json::Value,
+    final_ir_a: &BTreeMap<String, String>,
+    final_ir_b: &BTreeMap<String, String>,
+) {
+    let meta_dir = run_root.join("meta");
+    let final_ir_a_dir = meta_dir.join("final_ir_a");
+    let final_ir_b_dir = meta_dir.join("final_ir_b");
+    fs::create_dir_all(&final_ir_a_dir).expect("create final IR A directory");
+    fs::create_dir_all(&final_ir_b_dir).expect("create final IR B directory");
+
+    let manifest_json =
+        serde_json::to_string_pretty(manifest).expect("serialize IR determinism manifest");
+    fs::write(
+        meta_dir.join("ir_manifest.json"),
+        format!("{manifest_json}\n"),
+    )
+    .expect("write IR determinism manifest");
+    fs::write(meta_dir.join("ir_trace_a.jsonl"), trace_a).expect("write IR trace A");
+    fs::write(meta_dir.join("ir_trace_b.jsonl"), trace_b).expect("write IR trace B");
+    fs::write(meta_dir.join("events.jsonl"), trace_a).expect("write IR event stream");
+
+    for (name, content) in final_ir_a {
+        fs::write(final_ir_a_dir.join(name), content).expect("write final IR A artifact");
+    }
+    for (name, content) in final_ir_b {
+        fs::write(final_ir_b_dir.join(name), content).expect("write final IR B artifact");
+    }
 }
 
 #[test]
@@ -1289,6 +1475,47 @@ fn ingestion_e2e_trace_export_is_deterministic_and_manifest_complete() {
     );
     assert_ingestion_manifest_complete(&manifest_a);
     write_ingestion_e2e_outputs(&run_root, &trace_a, &trace_b, &manifest_a);
+}
+
+#[test]
+fn ir_determinism_e2e_export_validates_stage_and_final_hashes() {
+    let run_id =
+        env::var("DOCTOR_FRANKENTUI_IR_E2E_RUN_ID").unwrap_or_else(|_| "ir-e2e-seed-0".to_string());
+    let run_root = env::var_os("DOCTOR_FRANKENTUI_IR_E2E_RUN_ROOT")
+        .map(Into::into)
+        .unwrap_or_else(|| {
+            env::temp_dir().join(format!(
+                "doctor_frankentui_ir_determinism_e2e_{}",
+                std::process::id()
+            ))
+        });
+
+    let (trace_a, manifest_a, final_ir_a) =
+        run_ir_determinism_e2e_trace(&run_root.join("source_a"), &run_id);
+    let (trace_b, manifest_b, final_ir_b) =
+        run_ir_determinism_e2e_trace(&run_root.join("source_b"), &run_id);
+
+    assert_eq!(
+        trace_a, trace_b,
+        "same seed/context must produce byte-identical stage JSONL traces"
+    );
+    assert_eq!(
+        manifest_a, manifest_b,
+        "same seed/context must produce byte-identical IR manifest content"
+    );
+    assert_eq!(
+        final_ir_a, final_ir_b,
+        "same seed/context must produce byte-identical final IR artifacts"
+    );
+    assert_ir_determinism_manifest_complete(&manifest_a);
+    write_ir_determinism_e2e_outputs(
+        &run_root,
+        &trace_a,
+        &trace_b,
+        &manifest_a,
+        &final_ir_a,
+        &final_ir_b,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
