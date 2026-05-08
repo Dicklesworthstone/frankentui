@@ -10,6 +10,9 @@
 //! - IR explainer integration
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
+use std::fs;
+use std::path::Path;
 
 use doctor_frankentui::effect_canonical;
 use doctor_frankentui::ir_explainer;
@@ -21,9 +24,10 @@ use doctor_frankentui::migration_ir::{
     EventKind, EventTransition, IrBuilder, IrNodeId, IrValidationError, MigrationIr, Provenance,
     StateScope, StateVariable, ViewNode, ViewNodeKind,
 };
+use doctor_frankentui::module_graph;
 use doctor_frankentui::tsx_parser::{
     ComponentDecl, ComponentKind, EventHandler, FileParse, HookCall, JsxElement, JsxProp,
-    ProjectParse, parse_file,
+    ProjectParse, parse_file, parse_project,
 };
 use doctor_frankentui::{composition_semantics, state_effects, style_semantics};
 
@@ -268,6 +272,94 @@ fn build_rich_ir() -> MigrationIr {
     });
 
     builder.build()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IngestionFixture {
+    id: &'static str,
+    kind: &'static str,
+    path: &'static str,
+    source: &'static str,
+}
+
+fn ingestion_fixture_matrix() -> [IngestionFixture; 4] {
+    [
+        IngestionFixture {
+            id: "happy-counter",
+            kind: "happy",
+            path: "fixtures/happy-counter.tsx",
+            source: r#"
+type ButtonProps = { label: string; onPress?: () => void };
+
+export function App() {
+    const [count, setCount] = useState(0);
+    useEffect(() => {
+        fetch('/api/count').then(r => r.json());
+    }, [count]);
+    return <Button label={`Count ${count}`} onPress={() => setCount(count + 1)} />;
+}
+
+export function Button(props: ButtonProps) {
+    return <button className="primary">{props.label}</button>;
+}
+"#,
+        },
+        IngestionFixture {
+            id: "edge-conditional-style",
+            kind: "edge",
+            path: "fixtures/edge-conditional-style.tsx",
+            source: r#"
+export const Panel = ({ items = [], enabled }) => {
+    const labels = useMemo(() => items.map(item => item.label), [items]);
+    return <>
+        {enabled && <section style={{ display: 'flex', color: '#fff' }}>{labels.map(label => <span key={label}>{label}</span>)}</section>}
+    </>;
+};
+"#,
+        },
+        IngestionFixture {
+            id: "malformed-empty",
+            kind: "malformed",
+            path: "fixtures/malformed-empty.tsx",
+            source: "export function Broken(",
+        },
+        IngestionFixture {
+            id: "adversarial-effects",
+            kind: "adversarial",
+            path: "fixtures/adversarial-effects.tsx",
+            source: r#"
+export function Risky() {
+    useEffect(() => {
+        window.addEventListener('keydown', () => {});
+        localStorage.setItem('mode', process.env.NODE_ENV ?? 'dev');
+        return () => document.removeEventListener('keydown', () => {});
+    }, []);
+    return <div sx={{ color: 'red' }} />;
+}
+"#,
+        },
+    ]
+}
+
+fn stable_ingestion_normalization_hash(ir: &MigrationIr) -> String {
+    let mut stable = ir.clone();
+    stable.metadata.created_at = "stable-ingestion-fixture-time".to_string();
+    stable.metadata.integrity_hash = None;
+    migration_ir::compute_integrity_hash(&stable)
+}
+
+fn project_from_fixture(fixture: IngestionFixture) -> ProjectParse {
+    let parsed = parse_file(fixture.source, fixture.path);
+    ProjectParse {
+        component_count: parsed.components.len(),
+        hook_usage_count: parsed.hooks.len(),
+        type_count: parsed.types.len(),
+        diagnostics: Vec::new(),
+        files: BTreeMap::from([(fixture.path.to_string(), parsed)]),
+        file_contents: BTreeMap::from([(fixture.path.to_string(), fixture.source.to_string())]),
+        symbol_table: BTreeMap::new(),
+        external_imports: BTreeSet::new(),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -800,110 +892,39 @@ fn lowered_ir_json_roundtrip() {
 
 #[test]
 fn ingestion_fixture_matrix_has_golden_json_and_stage_logs() {
-    fn stable_normalization_hash(ir: &MigrationIr) -> String {
-        let mut stable = ir.clone();
-        stable.metadata.created_at = "stable-ingestion-fixture-time".to_string();
-        stable.metadata.integrity_hash = None;
-        migration_ir::compute_integrity_hash(&stable)
-    }
-
-    let fixtures = [
-        (
-            "happy-counter",
-            "happy",
-            "fixtures/happy-counter.tsx",
-            r#"
-type ButtonProps = { label: string; onPress?: () => void };
-
-export function App() {
-    const [count, setCount] = useState(0);
-    useEffect(() => {
-        fetch('/api/count').then(r => r.json());
-    }, [count]);
-    return <Button label={`Count ${count}`} onPress={() => setCount(count + 1)} />;
-}
-
-export function Button(props: ButtonProps) {
-    return <button className="primary">{props.label}</button>;
-}
-"#,
-        ),
-        (
-            "edge-conditional-style",
-            "edge",
-            "fixtures/edge-conditional-style.tsx",
-            r#"
-export const Panel = ({ items = [], enabled }) => {
-    const labels = useMemo(() => items.map(item => item.label), [items]);
-    return <>
-        {enabled && <section style={{ display: 'flex', color: '#fff' }}>{labels.map(label => <span key={label}>{label}</span>)}</section>}
-    </>;
-};
-"#,
-        ),
-        (
-            "malformed-empty",
-            "malformed",
-            "fixtures/malformed-empty.tsx",
-            "export function Broken(",
-        ),
-        (
-            "adversarial-effects",
-            "adversarial",
-            "fixtures/adversarial-effects.tsx",
-            r#"
-export function Risky() {
-    useEffect(() => {
-        window.addEventListener('keydown', () => {});
-        localStorage.setItem('mode', process.env.NODE_ENV ?? 'dev');
-        return () => document.removeEventListener('keydown', () => {});
-    }, []);
-    return <div sx={{ color: 'red' }} />;
-}
-"#,
-        ),
-    ];
-
     let mut snapshot_rows = Vec::new();
     let mut stage_logs = Vec::new();
 
-    for (fixture_id, fixture_kind, file_path, source) in fixtures {
-        let parsed = parse_file(source, file_path);
-        let component_count = parsed.components.len();
-        let hook_usage_count = parsed.hooks.len();
-        let type_count = parsed.types.len();
-        let diagnostic_count = parsed.diagnostics.len();
-        let project = ProjectParse {
-            files: BTreeMap::from([(file_path.to_string(), parsed)]),
-            file_contents: BTreeMap::from([(file_path.to_string(), source.to_string())]),
-            symbol_table: BTreeMap::new(),
-            component_count,
-            hook_usage_count,
-            type_count,
-            diagnostics: Vec::new(),
-            external_imports: BTreeSet::new(),
-        };
+    for fixture in ingestion_fixture_matrix() {
+        let project = project_from_fixture(fixture);
+        let diagnostic_count = project
+            .files
+            .get(fixture.path)
+            .expect("fixture parse")
+            .diagnostics
+            .len();
 
         let composition = composition_semantics::extract_composition_semantics(&project);
         let state_model =
             state_effects::build_project_state_model(&project.files, &project.file_contents);
         let styles = style_semantics::extract_style_semantics(&project);
         let lowered = lowering::lower_project(&test_config(), &project);
-        let normalization_hash = stable_normalization_hash(&lowered.ir);
+        let normalization_hash = stable_ingestion_normalization_hash(&lowered.ir);
 
         let lowered_again = lowering::lower_project(&test_config(), &project);
         assert_eq!(
             normalization_hash,
-            stable_normalization_hash(&lowered_again.ir),
-            "normalization hash must be deterministic for fixture {fixture_id}"
+            stable_ingestion_normalization_hash(&lowered_again.ir),
+            "normalization hash must be deterministic for fixture {}",
+            fixture.id
         );
 
         let snapshot_row = serde_json::json!({
-            "fixture_id": fixture_id,
-            "kind": fixture_kind,
+            "fixture_id": fixture.id,
+            "kind": fixture.kind,
             "parse": {
-                "components": component_count,
-                "hooks": hook_usage_count,
+                "components": project.component_count,
+                "hooks": project.hook_usage_count,
                 "diagnostics": diagnostic_count,
             },
             "composition": {
@@ -934,8 +955,8 @@ export function Risky() {
 
         for parser_stage in ["parse", "composition", "state_effects", "style", "lowering"] {
             stage_logs.push(serde_json::json!({
-                "fixture_id": fixture_id,
-                "fixture_kind": fixture_kind,
+                "fixture_id": fixture.id,
+                "fixture_kind": fixture.kind,
                 "parser_stage": parser_stage,
                 "normalization_hash": normalization_hash,
             }));
@@ -1001,6 +1022,273 @@ export function Risky() {
             64
         );
     }
+}
+
+const INGESTION_E2E_SCHEMA_VERSION: &str = "doctor-ingestion-e2e-v1";
+const INGESTION_E2E_STAGES: [&str; 6] = [
+    "module_graph",
+    "parse",
+    "composition",
+    "state_effects",
+    "style",
+    "lowering",
+];
+
+fn write_ingestion_fixture_project(source_root: &Path) {
+    for fixture in ingestion_fixture_matrix() {
+        let path = source_root.join(fixture.path);
+        let parent = path.parent().expect("fixture path must have parent");
+        fs::create_dir_all(parent).expect("create fixture directory");
+        fs::write(&path, fixture.source).expect("write fixture");
+    }
+}
+
+fn run_ingestion_e2e_trace(source_root: &Path, run_id: &str) -> (String, serde_json::Value) {
+    write_ingestion_fixture_project(source_root);
+
+    let fixtures = ingestion_fixture_matrix();
+    let fixture_paths = fixtures
+        .iter()
+        .map(|fixture| fixture.path.to_string())
+        .collect::<Vec<_>>();
+    let graph = module_graph::build_module_graph(source_root);
+    let parsed_project = parse_project(source_root, &fixture_paths);
+
+    assert_eq!(
+        parsed_project.files.len(),
+        fixtures.len(),
+        "project parser must ingest every curated fixture"
+    );
+
+    let reproduction_command = format!(
+        "DOCTOR_FRANKENTUI_INGESTION_E2E_RUN_ID={run_id} \
+         ./scripts/doctor_frankentui_ingestion_e2e.sh <run-root>"
+    );
+    let mut rows = Vec::new();
+    let mut fixture_manifest = Vec::new();
+
+    for fixture in fixtures {
+        let module_id = module_graph::ModuleId(fixture.path.to_string());
+        assert!(
+            graph.modules.contains_key(&module_id),
+            "module graph must include fixture {}",
+            fixture.path
+        );
+
+        let project = project_from_fixture(fixture);
+        let parsed = project.files.get(fixture.path).expect("fixture parse");
+        let composition = composition_semantics::extract_composition_semantics(&project);
+        let state_model =
+            state_effects::build_project_state_model(&project.files, &project.file_contents);
+        let styles = style_semantics::extract_style_semantics(&project);
+        let lowered = lowering::lower_project(&test_config(), &project);
+        let validation_errors = migration_ir::validate_ir(&lowered.ir);
+        assert!(
+            validation_errors.is_empty(),
+            "lowered IR must validate for {}: {validation_errors:?}",
+            fixture.id
+        );
+
+        let normalization_hash = stable_ingestion_normalization_hash(&lowered.ir);
+
+        for (stage_index, parser_stage) in INGESTION_E2E_STAGES.iter().copied().enumerate() {
+            let counts = match parser_stage {
+                "module_graph" => serde_json::json!({
+                    "modules": graph.modules.len(),
+                    "edges": graph.edges.len(),
+                    "entrypoints": graph.entrypoints.len(),
+                    "module_present": true,
+                }),
+                "parse" => serde_json::json!({
+                    "components": project.component_count,
+                    "hooks": project.hook_usage_count,
+                    "types": project.type_count,
+                    "diagnostics": parsed.diagnostics.len(),
+                }),
+                "composition" => serde_json::json!({
+                    "roots": composition.component_tree.roots.len(),
+                    "nodes": composition.component_tree.nodes.len(),
+                    "warnings": composition.warnings.len(),
+                }),
+                "state_effects" => serde_json::json!({
+                    "components": state_model.components.len(),
+                    "effects": state_model.stats.total_effects,
+                    "required_capabilities": state_model.required_capabilities.len(),
+                    "optional_capabilities": state_model.optional_capabilities.len(),
+                    "risk_flags": state_model.risk_flags.len(),
+                }),
+                "style" => serde_json::json!({
+                    "bindings": styles.style_bindings.len(),
+                    "sources": styles.style_sources_used.len(),
+                    "warnings": styles.warnings.len(),
+                }),
+                "lowering" => serde_json::json!({
+                    "nodes": lowered.ir.view_tree.nodes.len(),
+                    "state_vars": lowered.ir.state_graph.variables.len(),
+                    "events": lowered.ir.event_catalog.events.len(),
+                    "effects": lowered.ir.effect_registry.effects.len(),
+                    "validation_errors": validation_errors.len(),
+                }),
+                _ => unreachable!("unknown ingestion stage"),
+            };
+
+            rows.push(serde_json::json!({
+                "schema_version": INGESTION_E2E_SCHEMA_VERSION,
+                "run_id": run_id,
+                "fixture_id": fixture.id,
+                "fixture_kind": fixture.kind,
+                "fixture_path": fixture.path,
+                "parser_stage": parser_stage,
+                "stage_index": stage_index,
+                "status": "ok",
+                "normalization_hash": normalization_hash,
+                "counts": counts,
+                "diagnostics": [],
+                "reproduction_command": reproduction_command,
+            }));
+        }
+
+        fixture_manifest.push(serde_json::json!({
+            "fixture_id": fixture.id,
+            "kind": fixture.kind,
+            "path": fixture.path,
+            "normalization_hash": normalization_hash,
+            "stages": INGESTION_E2E_STAGES,
+            "reproduction_command": reproduction_command,
+        }));
+    }
+
+    let trace = format!(
+        "{}\n",
+        rows.iter()
+            .map(|row| serde_json::to_string(row).expect("serialize trace row"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let manifest = serde_json::json!({
+        "schema_version": "doctor-ingestion-e2e-manifest-v1",
+        "run_id": run_id,
+        "required_fixture_kinds": ["happy", "edge", "malformed", "adversarial"],
+        "required_stages": INGESTION_E2E_STAGES,
+        "fixture_count": fixture_manifest.len(),
+        "trace_line_count": rows.len(),
+        "graph": {
+            "modules": graph.modules.len(),
+            "edges": graph.edges.len(),
+            "entrypoints": graph.entrypoints.len(),
+            "external_specifiers": graph.stats.external_specifiers.len(),
+        },
+        "project_parse": {
+            "files": parsed_project.files.len(),
+            "components": parsed_project.component_count,
+            "hooks": parsed_project.hook_usage_count,
+            "types": parsed_project.type_count,
+            "diagnostics": parsed_project.diagnostics.len(),
+        },
+        "artifacts": {
+            "manifest": "meta/ingestion_manifest.json",
+            "trace_a": "meta/ingestion_trace_a.jsonl",
+            "trace_b": "meta/ingestion_trace_b.jsonl",
+            "events": "meta/events.jsonl",
+        },
+        "fixtures": fixture_manifest,
+    });
+
+    (trace, manifest)
+}
+
+fn assert_ingestion_manifest_complete(manifest: &serde_json::Value) {
+    assert_eq!(
+        manifest["schema_version"],
+        "doctor-ingestion-e2e-manifest-v1"
+    );
+    assert_eq!(manifest["fixture_count"].as_u64(), Some(4));
+    assert_eq!(manifest["trace_line_count"].as_u64(), Some(24));
+
+    let fixtures = manifest["fixtures"].as_array().expect("fixtures array");
+    let fixture_kinds = fixtures
+        .iter()
+        .map(|fixture| fixture["kind"].as_str().expect("fixture kind"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        fixture_kinds,
+        BTreeSet::from(["adversarial", "edge", "happy", "malformed"])
+    );
+
+    for fixture in fixtures {
+        let stages = fixture["stages"].as_array().expect("fixture stages");
+        assert_eq!(stages.len(), INGESTION_E2E_STAGES.len());
+        for parser_stage in INGESTION_E2E_STAGES {
+            assert!(
+                stages
+                    .iter()
+                    .any(|stage| stage.as_str() == Some(parser_stage)),
+                "fixture {} missing stage {parser_stage}",
+                fixture["fixture_id"]
+            );
+        }
+        assert_eq!(
+            fixture["normalization_hash"]
+                .as_str()
+                .expect("normalization hash")
+                .len(),
+            64
+        );
+        assert!(
+            fixture["reproduction_command"]
+                .as_str()
+                .is_some_and(|command| command.contains("doctor_frankentui_ingestion_e2e.sh"))
+        );
+    }
+}
+
+fn write_ingestion_e2e_outputs(
+    run_root: &Path,
+    trace_a: &str,
+    trace_b: &str,
+    manifest: &serde_json::Value,
+) {
+    let meta_dir = run_root.join("meta");
+    fs::create_dir_all(&meta_dir).expect("create ingestion e2e meta directory");
+
+    let manifest_json =
+        serde_json::to_string_pretty(manifest).expect("serialize ingestion manifest");
+    fs::write(
+        meta_dir.join("ingestion_manifest.json"),
+        format!("{manifest_json}\n"),
+    )
+    .expect("write ingestion manifest");
+    fs::write(meta_dir.join("ingestion_trace_a.jsonl"), trace_a).expect("write trace A");
+    fs::write(meta_dir.join("ingestion_trace_b.jsonl"), trace_b).expect("write trace B");
+    fs::write(meta_dir.join("events.jsonl"), trace_a).expect("write event stream");
+}
+
+#[test]
+fn ingestion_e2e_trace_export_is_deterministic_and_manifest_complete() {
+    let run_id = env::var("DOCTOR_FRANKENTUI_INGESTION_E2E_RUN_ID")
+        .unwrap_or_else(|_| "ingestion-e2e-seed-0".to_string());
+    let run_root = env::var_os("DOCTOR_FRANKENTUI_INGESTION_E2E_RUN_ROOT")
+        .map(Into::into)
+        .unwrap_or_else(|| {
+            env::temp_dir().join(format!(
+                "doctor_frankentui_ingestion_e2e_{}",
+                std::process::id()
+            ))
+        });
+
+    let (trace_a, manifest_a) = run_ingestion_e2e_trace(&run_root.join("source_a"), &run_id);
+    let (trace_b, manifest_b) = run_ingestion_e2e_trace(&run_root.join("source_b"), &run_id);
+
+    assert_eq!(
+        trace_a, trace_b,
+        "same seed/context must produce byte-identical JSONL traces"
+    );
+    assert_eq!(
+        manifest_a, manifest_b,
+        "same seed/context must produce byte-identical manifest content"
+    );
+    assert_ingestion_manifest_complete(&manifest_a);
+    write_ingestion_e2e_outputs(&run_root, &trace_a, &trace_b, &manifest_a);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
