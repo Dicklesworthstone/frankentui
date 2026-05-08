@@ -273,6 +273,7 @@ mod tests {
                 run_root,
                 run_name: Some("missing_source".to_string()),
                 allow_non_opentui: false,
+                dry_run: false,
                 watch: false,
                 incremental_from: None,
             }),

@@ -20,6 +20,8 @@ const DEFAULT_IMPORT_RUN_ROOT: &str = "/tmp/doctor_frankentui/import";
 const SNAPSHOT_DIR_NAME: &str = "snapshot";
 const GIT_CLONE_STAGING_DIR_NAME: &str = "_source_clone";
 const INTAKE_META_FILENAME: &str = "intake_meta.json";
+const MIGRATION_FORECAST_FILENAME: &str = "migration_forecast.json";
+const FORECAST_SCHEMA_VERSION: &str = "doctor-migration-forecast-v1";
 const INCREMENTAL_WATCH_FILENAME: &str = "incremental_watch.json";
 const WATCH_SCHEMA_VERSION: &str = "doctor-incremental-watch-v1";
 const WATCH_PIPELINE_STAGES: [&str; 7] = [
@@ -98,6 +100,10 @@ pub struct ImportArgs {
     /// Allow snapshots that do not look like OpenTUI/React projects.
     #[arg(long)]
     pub allow_non_opentui: bool,
+
+    /// Emit a deterministic preflight forecast without generating code.
+    #[arg(long)]
+    pub dry_run: bool,
 
     /// Emit an incremental watch manifest for one deterministic watch tick.
     #[arg(long)]
@@ -322,6 +328,63 @@ struct IncrementalWatchManifest {
     determinism_hash: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ForecastConfidenceBand {
+    lower_percent: u8,
+    expected_percent: u8,
+    upper_percent: u8,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ForecastRiskModule {
+    path: String,
+    difficulty_score: u8,
+    confidence_impact_percent: u8,
+    risk_factors: Vec<String>,
+    evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ForecastLikelyGap {
+    gap: String,
+    severity: String,
+    evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ForecastOperatorAction {
+    priority: String,
+    action: String,
+    reason: String,
+    evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ForecastTraceability {
+    intake_metadata_path: String,
+    snapshot_dir: String,
+    source_hash: String,
+    evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct MigrationForecastReport {
+    schema_version: String,
+    mode: String,
+    run_name: String,
+    generated_code: bool,
+    source_hash: String,
+    difficulty_score: u8,
+    difficulty_label: String,
+    confidence: ForecastConfidenceBand,
+    top_risk_modules: Vec<ForecastRiskModule>,
+    likely_gaps: Vec<ForecastLikelyGap>,
+    operator_actions: Vec<ForecastOperatorAction>,
+    traceability: ForecastTraceability,
+    determinism_hash: String,
+}
+
 pub fn run_import(args: ImportArgs) -> Result<()> {
     let integration = OutputIntegration::detect();
     let ui = output_for(&integration);
@@ -363,8 +426,14 @@ pub fn run_import(args: ImportArgs) -> Result<()> {
     }
 
     let mut watch_manifest = None;
+    let mut forecast_report = None;
     let outcome = perform_intake(&args, source_kind, &run_dir, &snapshot_dir, &mut metadata)
         .and_then(|()| {
+            if args.dry_run {
+                let forecast = build_migration_forecast_report(&run_dir, &snapshot_dir, &metadata)?;
+                write_migration_forecast_report(&run_dir, &forecast)?;
+                forecast_report = Some(forecast);
+            }
             if args.watch {
                 let manifest =
                     build_incremental_watch_manifest(&args, &run_dir, &snapshot_dir, &metadata)?;
@@ -397,6 +466,27 @@ pub fn run_import(args: ImportArgs) -> Result<()> {
                         manifest.cache_stats.changed_file_count
                     ));
                 }
+                if let Some(forecast) = &forecast_report {
+                    ui.success(&format!(
+                        "dry_run_forecast={}",
+                        run_dir.join(MIGRATION_FORECAST_FILENAME).display()
+                    ));
+                    ui.info(&format!(
+                        "projected_difficulty={} ({})",
+                        forecast.difficulty_score, forecast.difficulty_label
+                    ));
+                    ui.info(&format!(
+                        "confidence={}%-{}% expected={}%",
+                        forecast.confidence.lower_percent,
+                        forecast.confidence.upper_percent,
+                        forecast.confidence.expected_percent
+                    ));
+                    ui.info(&format!(
+                        "top_risk_modules={} likely_gaps={}",
+                        forecast.top_risk_modules.len(),
+                        forecast.likely_gaps.len()
+                    ));
+                }
             }
             Ok(())
         }
@@ -427,6 +517,17 @@ pub fn run_import(args: ImportArgs) -> Result<()> {
                 "resolved_commit": metadata.resolved_commit,
                 "source_hash": metadata.source_hash,
                 "lockfile_count": metadata.lockfiles.len(),
+                "dry_run_forecast": forecast_report.as_ref().map(|forecast| {
+                    json!({
+                        "path": run_dir.join(MIGRATION_FORECAST_FILENAME).display().to_string(),
+                        "difficulty_score": forecast.difficulty_score,
+                        "difficulty_label": &forecast.difficulty_label,
+                        "confidence": &forecast.confidence,
+                        "top_risk_modules": &forecast.top_risk_modules,
+                        "likely_gaps": &forecast.likely_gaps,
+                        "determinism_hash": &forecast.determinism_hash,
+                    })
+                }),
                 "watch_manifest": watch_manifest.as_ref().map(|manifest| {
                     json!({
                         "path": run_dir.join(INCREMENTAL_WATCH_FILENAME).display().to_string(),
@@ -675,6 +776,441 @@ fn write_intake_metadata(run_dir: &Path, metadata: &IntakeMetadata) -> Result<()
     let path = run_dir.join(INTAKE_META_FILENAME);
     let content = serde_json::to_string_pretty(metadata)?;
     write_string(&path, &content)
+}
+
+fn build_migration_forecast_report(
+    run_dir: &Path,
+    snapshot_dir: &Path,
+    metadata: &IntakeMetadata,
+) -> std::result::Result<MigrationForecastReport, IntakeFailure> {
+    let top_risk_modules = collect_forecast_risk_modules(snapshot_dir)?;
+    let likely_gaps = forecast_likely_gaps(metadata, &top_risk_modules);
+    let difficulty_score = forecast_difficulty_score(metadata, &top_risk_modules, &likely_gaps);
+    let difficulty_label = forecast_difficulty_label(difficulty_score).to_string();
+    let confidence = forecast_confidence_band(difficulty_score, likely_gaps.len());
+    let operator_actions = forecast_operator_actions(&likely_gaps, &top_risk_modules);
+    let traceability = ForecastTraceability {
+        intake_metadata_path: run_dir.join(INTAKE_META_FILENAME).display().to_string(),
+        snapshot_dir: metadata.snapshot_dir.clone(),
+        source_hash: metadata.source_hash.clone().unwrap_or_default(),
+        evidence_refs: forecast_evidence_refs(metadata, &top_risk_modules),
+    };
+    let determinism_payload = json!({
+        "schema_version": FORECAST_SCHEMA_VERSION,
+        "source_hash": metadata.source_hash.as_deref().unwrap_or_default(),
+        "difficulty_score": difficulty_score,
+        "difficulty_label": &difficulty_label,
+        "confidence": &confidence,
+        "top_risk_modules": &top_risk_modules,
+        "likely_gaps": &likely_gaps,
+        "operator_actions": &operator_actions,
+        "lockfiles": &metadata.lockfiles,
+        "toolchain": &metadata.toolchain,
+    });
+    let determinism_hash = forecast_determinism_hash(&determinism_payload)?;
+
+    Ok(MigrationForecastReport {
+        schema_version: FORECAST_SCHEMA_VERSION.to_string(),
+        mode: "dry_run_preflight".to_string(),
+        run_name: metadata.run_name.clone(),
+        generated_code: false,
+        source_hash: metadata.source_hash.clone().unwrap_or_default(),
+        difficulty_score,
+        difficulty_label,
+        confidence,
+        top_risk_modules,
+        likely_gaps,
+        operator_actions,
+        traceability,
+        determinism_hash,
+    })
+}
+
+fn write_migration_forecast_report(
+    run_dir: &Path,
+    forecast: &MigrationForecastReport,
+) -> std::result::Result<(), IntakeFailure> {
+    let content = serde_json::to_string_pretty(forecast).map_err(|error| {
+        IntakeFailure::new(
+            IntakeErrorClass::Unknown,
+            format!("unable to serialize migration forecast: {error}"),
+        )
+    })?;
+    write_string(
+        &run_dir.join(MIGRATION_FORECAST_FILENAME),
+        &format!("{content}\n"),
+    )
+    .map_err(|error| {
+        IntakeFailure::new(
+            IntakeErrorClass::Unknown,
+            format!("unable to write migration forecast: {error}"),
+        )
+    })
+}
+
+fn collect_forecast_risk_modules(
+    snapshot_dir: &Path,
+) -> std::result::Result<Vec<ForecastRiskModule>, IntakeFailure> {
+    let mut modules = Vec::new();
+    for file in collect_files(snapshot_dir)? {
+        if !is_js_ts_source_file(&file) {
+            continue;
+        }
+
+        let relative_path = file.strip_prefix(snapshot_dir).map_err(|error| {
+            IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!("unable to compute forecast module relative path: {error}"),
+            )
+        })?;
+        let path = relative_path.display().to_string();
+        let content_bytes = fs::read(&file).map_err(|error| {
+            IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!("unable to read forecast module {}: {error}", file.display()),
+            )
+        })?;
+        let content = String::from_utf8_lossy(&content_bytes);
+        let lower_content = content.to_ascii_lowercase();
+        let mut score = 0_usize;
+        let mut risk_factors = BTreeSet::new();
+
+        if matches!(
+            file.extension().and_then(OsStr::to_str),
+            Some("tsx" | "jsx")
+        ) {
+            add_forecast_risk(&mut score, &mut risk_factors, "jsx_render_surface", 8);
+        }
+        if content.contains("useEffect(") || content.contains("useLayoutEffect(") {
+            add_forecast_risk(&mut score, &mut risk_factors, "react_lifecycle_effects", 18);
+        }
+        if content.contains("useState(") || content.contains("useReducer(") {
+            add_forecast_risk(&mut score, &mut risk_factors, "stateful_react_model", 8);
+        }
+        if content.contains("React.lazy")
+            || content.contains("import(")
+            || content.contains("import (")
+        {
+            add_forecast_risk(&mut score, &mut risk_factors, "dynamic_import_boundary", 16);
+        }
+        if lower_content.contains("window.")
+            || lower_content.contains("document.")
+            || lower_content.contains("localstorage")
+            || lower_content.contains("sessionstorage")
+            || lower_content.contains("canvas")
+            || lower_content.contains("requestanimationframe")
+        {
+            add_forecast_risk(&mut score, &mut risk_factors, "browser_host_api_bridge", 18);
+        }
+        if content.contains("setInterval(") || content.contains("setTimeout(") {
+            add_forecast_risk(&mut score, &mut risk_factors, "timer_side_effects", 8);
+        }
+        if content.contains("createContext(") || content.contains("useContext(") {
+            add_forecast_risk(&mut score, &mut risk_factors, "context_state_boundary", 8);
+        }
+
+        let line_count = content.lines().count();
+        if line_count > 500 {
+            add_forecast_risk(&mut score, &mut risk_factors, "very_large_module", 24);
+        } else if line_count > 200 {
+            add_forecast_risk(&mut score, &mut risk_factors, "large_module", 12);
+        }
+        if content.len() > 32 * 1024 {
+            add_forecast_risk(&mut score, &mut risk_factors, "large_source_bytes", 16);
+        } else if content.len() > 8 * 1024 {
+            add_forecast_risk(&mut score, &mut risk_factors, "medium_source_bytes", 8);
+        }
+
+        if score == 0 {
+            continue;
+        }
+
+        let difficulty_score = usize_to_u8_clamped(score);
+        modules.push(ForecastRiskModule {
+            path: path.clone(),
+            difficulty_score,
+            confidence_impact_percent: usize_to_u8_clamped(score / 2),
+            risk_factors: risk_factors.into_iter().collect(),
+            evidence_refs: vec![format!("snapshot:{path}")],
+        });
+    }
+
+    modules.sort_by(|left, right| {
+        right
+            .difficulty_score
+            .cmp(&left.difficulty_score)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    modules.truncate(8);
+    Ok(modules)
+}
+
+fn add_forecast_risk(
+    score: &mut usize,
+    risk_factors: &mut BTreeSet<String>,
+    factor: &str,
+    weight: usize,
+) {
+    *score += weight;
+    risk_factors.insert(factor.to_string());
+}
+
+fn forecast_likely_gaps(
+    metadata: &IntakeMetadata,
+    top_risk_modules: &[ForecastRiskModule],
+) -> Vec<ForecastLikelyGap> {
+    let mut gaps = Vec::new();
+
+    if metadata.toolchain.dynamic_import_detected {
+        gaps.push(ForecastLikelyGap {
+            gap: "dynamic import and lazy-loading boundary translation".to_string(),
+            severity: "high".to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/dynamic_import_detected".to_string()],
+        });
+    }
+    if !metadata.toolchain.runtime_env_markers.is_empty() {
+        gaps.push(ForecastLikelyGap {
+            gap: "runtime environment variable policy mapping".to_string(),
+            severity: "medium".to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/runtime_env_markers".to_string()],
+        });
+    }
+    if !metadata.toolchain.tsconfig_path_aliases.is_empty() {
+        gaps.push(ForecastLikelyGap {
+            gap: "TypeScript path alias resolution".to_string(),
+            severity: "medium".to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/tsconfig_path_aliases".to_string()],
+        });
+    }
+    if !metadata.toolchain.workspace_markers.is_empty() {
+        gaps.push(ForecastLikelyGap {
+            gap: "workspace package boundary discovery".to_string(),
+            severity: "medium".to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/workspace_markers".to_string()],
+        });
+    }
+    if let Some(bundler) = &metadata.toolchain.bundler {
+        gaps.push(ForecastLikelyGap {
+            gap: format!("{bundler} config and runtime assumption mapping"),
+            severity: "medium".to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/bundler".to_string()],
+        });
+    }
+    if metadata.toolchain.package_manager.is_none() {
+        gaps.push(ForecastLikelyGap {
+            gap: "package manager selection before migration replay".to_string(),
+            severity: "low".to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/package_manager".to_string()],
+        });
+    }
+
+    if risk_modules_contain_factor(top_risk_modules, "browser_host_api_bridge") {
+        gaps.push(ForecastLikelyGap {
+            gap: "browser host API side-effect bridge".to_string(),
+            severity: "high".to_string(),
+            evidence_refs: top_risk_evidence_refs(top_risk_modules, "browser_host_api_bridge"),
+        });
+    }
+    if risk_modules_contain_factor(top_risk_modules, "react_lifecycle_effects") {
+        gaps.push(ForecastLikelyGap {
+            gap: "React lifecycle effects to deterministic command mapping".to_string(),
+            severity: "high".to_string(),
+            evidence_refs: top_risk_evidence_refs(top_risk_modules, "react_lifecycle_effects"),
+        });
+    }
+
+    gaps
+}
+
+fn risk_modules_contain_factor(modules: &[ForecastRiskModule], factor: &str) -> bool {
+    modules.iter().any(|module| {
+        module
+            .risk_factors
+            .iter()
+            .any(|candidate| candidate == factor)
+    })
+}
+
+fn top_risk_evidence_refs(modules: &[ForecastRiskModule], factor: &str) -> Vec<String> {
+    modules
+        .iter()
+        .filter(|module| {
+            module
+                .risk_factors
+                .iter()
+                .any(|candidate| candidate == factor)
+        })
+        .flat_map(|module| module.evidence_refs.iter().cloned())
+        .collect()
+}
+
+fn forecast_difficulty_score(
+    metadata: &IntakeMetadata,
+    top_risk_modules: &[ForecastRiskModule],
+    likely_gaps: &[ForecastLikelyGap],
+) -> u8 {
+    let mut score = 12_usize;
+    score += metadata.lockfiles.len().min(3) * 3;
+    score += metadata.toolchain.workspace_markers.len().min(5) * 4;
+    score += metadata.toolchain.tsconfig_path_aliases.len().min(6) * 3;
+    score += metadata.toolchain.runtime_env_markers.len().min(5) * 4;
+
+    if metadata.toolchain.dynamic_import_detected {
+        score += 14;
+    }
+    if metadata.toolchain.bundler.is_some() {
+        score += 6;
+    }
+    if metadata.toolchain.package_manager.is_none() {
+        score += 5;
+    }
+
+    let module_risk_total = top_risk_modules
+        .iter()
+        .take(3)
+        .map(|module| usize::from(module.difficulty_score))
+        .sum::<usize>();
+    if !top_risk_modules.is_empty() {
+        score += module_risk_total / top_risk_modules.len().min(3);
+    }
+
+    for gap in likely_gaps {
+        score += match gap.severity.as_str() {
+            "high" => 10,
+            "medium" => 6,
+            _ => 3,
+        };
+    }
+
+    usize_to_u8_clamped(score)
+}
+
+fn forecast_difficulty_label(score: u8) -> &'static str {
+    match score {
+        0..=29 => "low",
+        30..=54 => "moderate",
+        55..=79 => "high",
+        _ => "severe",
+    }
+}
+
+fn forecast_confidence_band(difficulty_score: u8, gap_count: usize) -> ForecastConfidenceBand {
+    let penalty = usize::from(difficulty_score) / 2 + gap_count.min(6) * 2;
+    let expected = usize_to_u8_clamped(92_usize.saturating_sub(penalty).max(25));
+    let lower = expected.saturating_sub(12).max(10);
+    let upper = usize_to_u8_clamped((usize::from(expected) + 8).min(98));
+    let label = match expected {
+        78..=100 => "high",
+        58..=77 => "medium",
+        _ => "low",
+    };
+
+    ForecastConfidenceBand {
+        lower_percent: lower,
+        expected_percent: expected,
+        upper_percent: upper,
+        label: label.to_string(),
+    }
+}
+
+fn forecast_operator_actions(
+    likely_gaps: &[ForecastLikelyGap],
+    top_risk_modules: &[ForecastRiskModule],
+) -> Vec<ForecastOperatorAction> {
+    let mut actions = Vec::new();
+
+    if let Some(module) = top_risk_modules.first() {
+        actions.push(ForecastOperatorAction {
+            priority: "P0".to_string(),
+            action: "review top-risk modules before translation".to_string(),
+            reason: format!(
+                "{} scored {} due to {}",
+                module.path,
+                module.difficulty_score,
+                module.risk_factors.join(",")
+            ),
+            evidence_refs: module.evidence_refs.clone(),
+        });
+    } else {
+        actions.push(ForecastOperatorAction {
+            priority: "P2".to_string(),
+            action: "proceed with standard translation profile".to_string(),
+            reason: "no high-risk source modules were detected in the preflight scan".to_string(),
+            evidence_refs: vec!["intake_meta.json#/source_hash".to_string()],
+        });
+    }
+
+    if likely_gaps
+        .iter()
+        .any(|gap| gap.gap.contains("dynamic import"))
+    {
+        actions.push(ForecastOperatorAction {
+            priority: "P0".to_string(),
+            action: "map lazy-loading boundaries into explicit route or command plans".to_string(),
+            reason: "dynamic imports can hide runtime-only modules from static translation"
+                .to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/dynamic_import_detected".to_string()],
+        });
+    }
+    if likely_gaps.iter().any(|gap| gap.gap.contains("path alias")) {
+        actions.push(ForecastOperatorAction {
+            priority: "P1".to_string(),
+            action: "resolve TypeScript aliases before code emission".to_string(),
+            reason: "unresolved aliases reduce planner confidence and provenance quality"
+                .to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/tsconfig_path_aliases".to_string()],
+        });
+    }
+    if likely_gaps
+        .iter()
+        .any(|gap| gap.gap.contains("environment variable"))
+    {
+        actions.push(ForecastOperatorAction {
+            priority: "P1".to_string(),
+            action: "declare runtime environment policy for generated FrankenTUI commands"
+                .to_string(),
+            reason: "environment lookups require explicit deterministic fallback behavior"
+                .to_string(),
+            evidence_refs: vec!["intake_meta.json#/toolchain/runtime_env_markers".to_string()],
+        });
+    }
+
+    actions
+}
+
+fn forecast_evidence_refs(
+    metadata: &IntakeMetadata,
+    top_risk_modules: &[ForecastRiskModule],
+) -> Vec<String> {
+    let mut refs = BTreeSet::from([
+        "intake_meta.json#/source_hash".to_string(),
+        "intake_meta.json#/toolchain".to_string(),
+    ]);
+    if !metadata.lockfiles.is_empty() {
+        refs.insert("intake_meta.json#/lockfiles".to_string());
+    }
+    for module in top_risk_modules {
+        refs.extend(module.evidence_refs.iter().cloned());
+    }
+    refs.into_iter().collect()
+}
+
+fn forecast_determinism_hash(
+    payload: &serde_json::Value,
+) -> std::result::Result<String, IntakeFailure> {
+    let bytes = serde_json::to_vec(&payload).map_err(|error| {
+        IntakeFailure::new(
+            IntakeErrorClass::Unknown,
+            format!("unable to serialize forecast determinism payload: {error}"),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn usize_to_u8_clamped(value: usize) -> u8 {
+    u8::try_from(value.min(100)).unwrap_or(100)
 }
 
 fn build_incremental_watch_manifest(
@@ -2030,9 +2566,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        GIT_CLONE_STAGING_DIR_NAME, ImportArgs, IntakeErrorClass, WATCH_PIPELINE_STAGES,
-        WATCH_SCHEMA_VERSION, classify_git_stderr, detect_source_kind, parse_package_manager_field,
-        run_import,
+        FORECAST_SCHEMA_VERSION, GIT_CLONE_STAGING_DIR_NAME, ImportArgs, IntakeErrorClass,
+        WATCH_PIPELINE_STAGES, WATCH_SCHEMA_VERSION, classify_git_stderr, detect_source_kind,
+        parse_package_manager_field, run_import,
     };
 
     fn run_git(repo: &Path, args: &[&str]) {
@@ -2096,6 +2632,51 @@ mod tests {
         )
         .expect("write app source");
         fs::write(root.join("README.md"), "initial notes\n").expect("write readme");
+    }
+
+    fn create_forecast_source(root: &Path) {
+        fs::create_dir_all(root.join("src")).expect("create forecast src");
+        fs::write(
+            root.join("package.json"),
+            r#"{
+  "name": "forecast-fixture",
+  "packageManager": "pnpm@9.1.0",
+  "workspaces": ["packages/*"],
+  "scripts": {"dev": "vite"},
+  "dependencies": {"@opentui/react": "0.1.0"},
+  "devDependencies": {"vite": "^5.4.0", "typescript": "^5.7.0"}
+}"#,
+        )
+        .expect("write package json");
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").expect("write lockfile");
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"jsx":"react-jsx","paths":{"@/*":["src/*"]}}}"#,
+        )
+        .expect("write tsconfig");
+        fs::write(
+            root.join("src/App.tsx"),
+            r#"import React, { useEffect, useState } from 'react';
+
+const LazyPanel = React.lazy(() => import('./LazyPanel'));
+
+export function App() {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    window.localStorage.setItem('count', String(count));
+    const timer = setInterval(() => setCount((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [count]);
+  return <LazyPanel endpoint={import.meta.env.VITE_API_URL} />;
+}
+"#,
+        )
+        .expect("write app");
+        fs::write(
+            root.join("src/LazyPanel.tsx"),
+            "export function LazyPanel() { return <box>loaded</box>; }\n",
+        )
+        .expect("write lazy panel");
     }
 
     #[test]
@@ -2162,6 +2743,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("pinned".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2217,6 +2799,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("local_dirty".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2265,6 +2848,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("escape".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2302,6 +2886,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("git_url_success".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2333,6 +2918,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("git_url_failure".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2362,6 +2948,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("missing".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2396,6 +2983,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("existing".to_string()),
             allow_non_opentui: true,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2420,6 +3008,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("../escape".to_string()),
             allow_non_opentui: true,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2450,6 +3039,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("copy".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2520,6 +3110,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("toolchain".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         };
@@ -2597,6 +3188,143 @@ mod tests {
     }
 
     #[test]
+    fn run_import_dry_run_writes_stable_traceable_forecast() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("source");
+        create_forecast_source(&source);
+        let run_root = temp.path().join("runs");
+
+        run_import(ImportArgs {
+            source: source.display().to_string(),
+            pinned_commit: None,
+            run_root: run_root.clone(),
+            run_name: Some("forecast_a".to_string()),
+            allow_non_opentui: false,
+            dry_run: true,
+            watch: false,
+            incremental_from: None,
+        })
+        .expect("first dry-run import should succeed");
+
+        run_import(ImportArgs {
+            source: source.display().to_string(),
+            pinned_commit: None,
+            run_root: run_root.clone(),
+            run_name: Some("forecast_b".to_string()),
+            allow_non_opentui: false,
+            dry_run: true,
+            watch: false,
+            incremental_from: None,
+        })
+        .expect("second dry-run import should succeed");
+
+        let forecast_a_text =
+            fs::read_to_string(run_root.join("forecast_a/migration_forecast.json"))
+                .expect("read first forecast");
+        let forecast_b_text =
+            fs::read_to_string(run_root.join("forecast_b/migration_forecast.json"))
+                .expect("read second forecast");
+        let forecast_a: Value =
+            serde_json::from_str(&forecast_a_text).expect("parse first forecast");
+        let forecast_b: Value =
+            serde_json::from_str(&forecast_b_text).expect("parse second forecast");
+
+        assert_eq!(
+            forecast_a["schema_version"],
+            Value::String(FORECAST_SCHEMA_VERSION.to_string())
+        );
+        assert_eq!(
+            forecast_a["mode"],
+            Value::String("dry_run_preflight".to_string())
+        );
+        assert_eq!(forecast_a["generated_code"], Value::Bool(false));
+        assert!(
+            forecast_a["difficulty_score"]
+                .as_u64()
+                .is_some_and(|score| score > 0)
+        );
+
+        let confidence = &forecast_a["confidence"];
+        let lower = confidence["lower_percent"]
+            .as_u64()
+            .expect("lower confidence");
+        let expected = confidence["expected_percent"]
+            .as_u64()
+            .expect("expected confidence");
+        let upper = confidence["upper_percent"]
+            .as_u64()
+            .expect("upper confidence");
+        assert!(
+            lower <= expected && expected <= upper,
+            "confidence band should contain expected value: {confidence:?}"
+        );
+
+        let top_risk_modules = forecast_a["top_risk_modules"]
+            .as_array()
+            .expect("risk modules array");
+        assert_eq!(
+            top_risk_modules[0]["path"],
+            Value::String("src/App.tsx".to_string())
+        );
+        let risk_factors = top_risk_modules[0]["risk_factors"]
+            .as_array()
+            .expect("risk factors")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            risk_factors.contains(&"dynamic_import_boundary"),
+            "dynamic import risk should be reported: {risk_factors:?}"
+        );
+        assert!(
+            risk_factors.contains(&"react_lifecycle_effects"),
+            "lifecycle risk should be reported: {risk_factors:?}"
+        );
+
+        let likely_gaps = forecast_a["likely_gaps"].as_array().expect("likely gaps");
+        assert!(
+            likely_gaps.iter().any(|gap| gap["gap"]
+                .as_str()
+                .is_some_and(|text| text.contains("dynamic import"))),
+            "dynamic import gap should be forecast: {likely_gaps:?}"
+        );
+        assert!(
+            likely_gaps.iter().any(|gap| gap["gap"]
+                .as_str()
+                .is_some_and(|text| text.contains("path alias"))),
+            "path alias gap should be forecast: {likely_gaps:?}"
+        );
+
+        let intake_meta_text = fs::read_to_string(run_root.join("forecast_a/intake_meta.json"))
+            .expect("read intake metadata");
+        let intake_meta: Value =
+            serde_json::from_str(&intake_meta_text).expect("parse intake metadata");
+        assert_eq!(
+            forecast_a["traceability"]["source_hash"],
+            intake_meta["source_hash"]
+        );
+        let evidence_refs = forecast_a["traceability"]["evidence_refs"]
+            .as_array()
+            .expect("trace evidence")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            evidence_refs.contains(&"intake_meta.json#/toolchain"),
+            "forecast should link back to intake evidence: {evidence_refs:?}"
+        );
+        assert!(
+            forecast_a["determinism_hash"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64)
+        );
+        assert_eq!(
+            forecast_a["determinism_hash"], forecast_b["determinism_hash"],
+            "same source should replay to the same forecast hash"
+        );
+    }
+
+    #[test]
     fn run_import_watch_mode_scopes_doc_change_to_ingest_and_reports_cache_hits() {
         let temp = tempdir().expect("tempdir");
         let source = temp.path().join("source");
@@ -2609,6 +3337,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("baseline".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: false,
             incremental_from: None,
         })
@@ -2622,6 +3351,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("watch_docs".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: true,
             incremental_from: Some(run_root.join("baseline")),
         })
@@ -2690,6 +3420,7 @@ mod tests {
             run_root: run_root.clone(),
             run_name: Some("watch_baseline".to_string()),
             allow_non_opentui: false,
+            dry_run: false,
             watch: true,
             incremental_from: None,
         })
