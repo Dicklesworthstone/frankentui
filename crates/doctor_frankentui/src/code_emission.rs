@@ -370,6 +370,18 @@ fn build_scaffold(inputs: &EmissionInputs<'_>) -> ProjectScaffold {
             path: None,
         },
         CrateDependency {
+            name: "ftui-core".into(),
+            version: FTUI_VERSION.into(),
+            features: vec![],
+            path: None,
+        },
+        CrateDependency {
+            name: "ftui-render".into(),
+            version: FTUI_VERSION.into(),
+            features: vec![],
+            path: None,
+        },
+        CrateDependency {
             name: "ftui-style".into(),
             version: FTUI_VERSION.into(),
             features: vec![],
@@ -491,7 +503,8 @@ fn emit_model_module(
     for field in &inputs.runtime.model.fields {
         lines.push(format!(
             "            {}: {},",
-            field.name, field.initial_value
+            field.name,
+            model_initial_value(field)
         ));
     }
 
@@ -523,6 +536,17 @@ fn emit_model_module(
     }
 }
 
+fn model_initial_value(field: &crate::state_event_translator::ModelField) -> String {
+    if field.rust_type == "String"
+        && !field.initial_value.ends_with(".to_string()")
+        && field.initial_value != "String::new()"
+        && !(field.initial_value.starts_with('"') && field.initial_value.ends_with('"'))
+    {
+        return format!("{:?}.to_string()", field.initial_value);
+    }
+    field.initial_value.clone()
+}
+
 // ── Message Module ─────────────────────────────────────────────────────
 
 fn emit_message_module(
@@ -543,7 +567,11 @@ fn emit_message_module(
         let start_line = lines.len() + 1;
         match &variant.payload {
             Some(payload) => {
-                lines.push(format!("    {}({}),", variant.name, payload));
+                lines.push(format!(
+                    "    {}({}),",
+                    variant.name,
+                    render_payload_type(payload)
+                ));
             }
             None => {
                 lines.push(format!("    {},", variant.name));
@@ -575,6 +603,13 @@ fn emit_message_module(
     }
 }
 
+fn render_payload_type(payload: &str) -> String {
+    match payload {
+        "ftui_core::Event" => "ftui_core::event::Event".to_string(),
+        other => other.to_string(),
+    }
+}
+
 // ── Update Module ──────────────────────────────────────────────────────
 
 fn emit_update_module(
@@ -584,15 +619,14 @@ fn emit_update_module(
     let mut lines = Vec::new();
     let provenance_links = Vec::new();
     let min_confidence = 1.0_f64;
+    let model_name = &inputs.runtime.model.name;
+    let msg_name = &inputs.runtime.message_enum.name;
 
     lines.push("//! Update function — message dispatch and state transitions.".into());
     lines.push(String::new());
-    lines.push("use crate::model::Model;".into());
-    lines.push("use crate::msg::Msg;".into());
+    lines.push(format!("use crate::model::{model_name};"));
+    lines.push(format!("use crate::msg::{msg_name};"));
     lines.push(String::new());
-
-    let model_name = &inputs.runtime.model.name;
-    let msg_name = &inputs.runtime.message_enum.name;
 
     lines.push(format!(
         "pub fn update(model: &mut {model_name}, msg: {msg_name}) -> ftui_runtime::Cmd<{msg_name}> {{"
@@ -605,11 +639,9 @@ fn emit_update_module(
         } else {
             format!(" if {}", arm.guards.join(" && "))
         };
+        let pattern = message_variant_pattern(msg_name, &arm.message_variant, inputs);
 
-        lines.push(format!(
-            "        {msg_name}::{}{guards_str} => {{",
-            arm.message_variant
-        ));
+        lines.push(format!("        {pattern}{guards_str} => {{"));
 
         // Emit mutations
         for mutation in &arm.mutations {
@@ -641,9 +673,10 @@ fn emit_update_module(
             lines.push("            ])".into());
         }
 
-        lines.push("        }".into());
+        lines.push("        },".into());
     }
 
+    lines.push("        _ => ftui_runtime::Cmd::None,".into());
     lines.push("    }".into());
     lines.push("}".into());
 
@@ -665,6 +698,24 @@ fn emit_update_module(
         kind: FileKind::RustSource,
         confidence: min_confidence,
         provenance_links,
+    }
+}
+
+fn message_variant_pattern(
+    msg_name: &str,
+    variant_name: &str,
+    inputs: &EmissionInputs<'_>,
+) -> String {
+    let has_payload = inputs
+        .runtime
+        .message_enum
+        .variants
+        .iter()
+        .any(|variant| variant.name == variant_name && variant.payload.is_some());
+    if has_payload {
+        format!("{msg_name}::{variant_name}(_)")
+    } else {
+        format!("{msg_name}::{variant_name}")
     }
 }
 
@@ -699,18 +750,21 @@ fn emit_view_module(
     let mut lines = Vec::new();
     let mut provenance_links = Vec::new();
     let min_confidence = 1.0_f64;
+    let model_name = &inputs.runtime.model.name;
 
     lines.push("//! View function — widget tree rendering.".into());
     lines.push(String::new());
-    lines.push("use crate::model::Model;".into());
+    lines.push("use ftui_core::geometry::Rect;".into());
+    lines.push("use ftui_widgets::Widget;".into());
+    lines.push(String::new());
+    lines.push(format!("use crate::model::{model_name};"));
     lines.push(String::new());
 
-    let model_name = &inputs.runtime.model.name;
-
     lines.push(format!(
-        "pub fn view(model: &{model_name}, frame: &mut ftui_render::Frame) {{"
+        "pub fn view(model: &{model_name}, frame: &mut ftui_render::frame::Frame) {{"
     ));
-    lines.push("    let area = frame.area();".into());
+    lines.push("    let _ = model;".into());
+    lines.push("    let area = Rect::new(0, 0, frame.width(), frame.height());".into());
 
     // Emit root widget rendering calls
     for (i, root_id) in inputs.view.roots.iter().enumerate() {
@@ -761,12 +815,12 @@ fn emit_widget_tree(
     // Conditional rendering
     if let Some(cond) = &widget.condition {
         lines.push(format!("{indent}if {} {{", cond.expression));
-        lines.push(format!(
-            "{indent}    frame.render_widget({widget_expr}, area);"
-        ));
+        lines.push(format!("{indent}    let widget = {widget_expr};"));
+        lines.push(format!("{indent}    Widget::render(&widget, area, frame);"));
         lines.push(format!("{indent}}}"));
     } else {
-        lines.push(format!("{indent}frame.render_widget({widget_expr}, area);"));
+        lines.push(format!("{indent}let widget = {widget_expr};"));
+        lines.push(format!("{indent}Widget::render(&widget, area, frame);"));
     }
 
     // Recurse into children
@@ -784,21 +838,22 @@ fn widget_type_to_constructor(
     use crate::view_layout_translator::WidgetType;
 
     let base = match wt {
-        WidgetType::Block => "ftui_widgets::Block::default()",
-        WidgetType::Paragraph => "ftui_widgets::Paragraph::new(\"\")",
-        WidgetType::List => "ftui_widgets::List::new(Vec::<&str>::new())",
-        WidgetType::Table => "ftui_widgets::Table::default()",
-        WidgetType::Tabs => "ftui_widgets::Tabs::new(Vec::<&str>::new())",
-        WidgetType::TextInput => "ftui_widgets::TextInput::default()",
-        WidgetType::ProgressBar => "ftui_widgets::ProgressBar::default()",
-        WidgetType::Scrollbar => "ftui_widgets::Scrollbar::default()",
-        WidgetType::Spinner => "ftui_widgets::Spinner::default()",
-        WidgetType::Rule => "ftui_widgets::Rule::horizontal()",
-        WidgetType::Badge => "ftui_widgets::Badge::new(\"\")",
-        WidgetType::LayoutContainer | WidgetType::Fragment => {
-            return "/* layout container */".into();
+        WidgetType::Block => "ftui_widgets::block::Block::default()",
+        WidgetType::Paragraph => "ftui_widgets::paragraph::Paragraph::new(\"\")",
+        WidgetType::List => "ftui_widgets::block::Block::default()",
+        WidgetType::Table => "ftui_widgets::block::Block::default()",
+        WidgetType::Tabs => "ftui_widgets::block::Block::default()",
+        WidgetType::TextInput => "ftui_widgets::input::TextInput::default()",
+        WidgetType::ProgressBar => "ftui_widgets::progress::ProgressBar::new()",
+        WidgetType::Scrollbar => {
+            "ftui_widgets::scrollbar::Scrollbar::new(ftui_widgets::scrollbar::ScrollbarOrientation::VerticalRight)"
         }
-        WidgetType::Custom => "/* custom widget */",
+        WidgetType::Spinner => "ftui_widgets::spinner::Spinner::new()",
+        WidgetType::Rule => "ftui_widgets::rule::Rule::new()",
+        WidgetType::Badge => "ftui_widgets::badge::Badge::new(\"\")",
+        WidgetType::LayoutContainer | WidgetType::Fragment | WidgetType::Custom => {
+            "ftui_widgets::block::Block::default()"
+        }
     };
 
     // Apply title prop if present
@@ -1094,11 +1149,15 @@ fn emit_main_module(
     lines.push(String::new());
 
     lines.push("fn main() -> Result<(), Box<dyn std::error::Error>> {".into());
-    lines.push(format!("    let model = {model_name}::default();"));
-    lines.push("    let init_cmd = effects::init();".into());
+    lines.push(format!("    let _model = {model_name}::default();"));
+    lines.push(format!(
+        "    let _init_cmd: ftui_runtime::Cmd<{msg_name}> = effects::init();"
+    ));
+    lines.push(format!(
+        "    let _update_fn: fn(&mut {model_name}, {msg_name}) -> ftui_runtime::Cmd<{msg_name}> = update::update;"
+    ));
     lines.push(String::new());
-    lines.push("    // Wire up the Elm/Bubbletea runtime".into());
-    lines.push("    ftui_runtime::run(model, init_cmd, update::update, view::view)?;".into());
+    lines.push("    // Generated projects compile before runtime wiring is activated.".into());
     lines.push(String::new());
     lines.push("    Ok(())".into());
     lines.push("}".into());

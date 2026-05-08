@@ -4,6 +4,9 @@
 //! and optimization pass correctness.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 use doctor_frankentui::code_emission::{
     EmissionInputs, EmissionPlan, EmittedFile, FileKind, ProjectScaffold, emit_project,
@@ -11,7 +14,11 @@ use doctor_frankentui::code_emission::{
 use doctor_frankentui::codegen_optimize::{
     OptimizeConfig, PassKind, optimize, optimize_with_config,
 };
-use doctor_frankentui::effect_translator::{EffectOrchestrationPlan, EffectTranslationStats};
+use doctor_frankentui::effect_canonical::canonicalize_effects;
+use doctor_frankentui::effect_translator::{
+    EffectOrchestrationPlan, EffectTranslationStats, translate_effects,
+};
+use doctor_frankentui::lowering::{self, LoweringConfig};
 use doctor_frankentui::mapping_atlas::{
     MappingCategory, atlas_stats, build_atlas, by_category, by_policy, by_risk, lookup,
 };
@@ -22,7 +29,9 @@ use doctor_frankentui::semantic_contract::{
 use doctor_frankentui::state_event_translator::*;
 use doctor_frankentui::style_translator::*;
 use doctor_frankentui::translation_planner::*;
+use doctor_frankentui::tsx_parser::{ProjectParse, parse_file};
 use doctor_frankentui::view_layout_translator::*;
+use sha2::{Digest, Sha256};
 
 // ── Shared test helpers ────────────────────────────────────────────────
 
@@ -435,6 +444,488 @@ fn make_plan_with_files(files: Vec<(&str, &str, FileKind)>) -> EmissionPlan {
         },
         diagnostics: vec![],
         stats: Default::default(),
+    }
+}
+
+// ── Translation E2E helpers ───────────────────────────────────────────
+
+const TRANSLATION_E2E_SCHEMA_VERSION: &str = "doctor-translation-e2e-v1";
+const TRANSLATION_E2E_STAGES: &[&str] = &[
+    "ingest",
+    "ir_lower",
+    "plan",
+    "translate",
+    "emit",
+    "optimize",
+    "write_generated",
+];
+
+#[derive(Debug, Clone, Copy)]
+struct TranslationE2eFixture {
+    id: &'static str,
+    source_project: &'static str,
+    source_path: &'static str,
+    source: &'static str,
+}
+
+fn translation_e2e_fixtures() -> Vec<TranslationE2eFixture> {
+    vec![
+        TranslationE2eFixture {
+            id: "counter",
+            source_project: "counter-app",
+            source_path: "fixtures/counter.tsx",
+            source: r#"
+export function Counter() {
+    const [count, setCount] = useState(0);
+    return <div><button onClick={() => setCount(count + 1)}>Inc</button><span>{count}</span></div>;
+}
+"#,
+        },
+        TranslationE2eFixture {
+            id: "status-panel",
+            source_project: "status-panel-app",
+            source_path: "fixtures/status-panel.tsx",
+            source: r#"
+export function StatusPanel() {
+    const ready = true;
+    return <section><h1>Status</h1><p>{ready ? 'Ready' : 'Waiting'}</p></section>;
+}
+"#,
+        },
+        TranslationE2eFixture {
+            id: "search-box",
+            source_project: "search-box-app",
+            source_path: "fixtures/search-box.tsx",
+            source: r#"
+export function SearchBox() {
+    const [query, setQuery] = useState('');
+    return <div><input value={query} onChange={(event) => setQuery(event.target.value)} /><p>{query}</p></div>;
+}
+"#,
+        },
+    ]
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn stable_json_hash<T: serde::Serialize>(value: &T) -> String {
+    let json = serde_json::to_string(value).expect("serialize hash payload");
+    sha256_hex(json.as_bytes())
+}
+
+fn safe_join(root: &Path, relative: &str) -> PathBuf {
+    let path = Path::new(relative);
+    assert!(
+        path.is_relative(),
+        "generated path must be relative: {relative}"
+    );
+    for component in path.components() {
+        assert!(
+            matches!(component, Component::Normal(_)),
+            "generated path contains unsafe component: {relative}"
+        );
+    }
+    root.join(path)
+}
+
+fn project_from_translation_fixture(fixture: TranslationE2eFixture) -> ProjectParse {
+    let parsed = parse_file(fixture.source, fixture.source_path);
+    ProjectParse {
+        component_count: parsed.components.len(),
+        hook_usage_count: parsed.hooks.len(),
+        type_count: parsed.types.len(),
+        diagnostics: Vec::new(),
+        files: BTreeMap::from([(fixture.source_path.to_string(), parsed)]),
+        file_contents: BTreeMap::from([(
+            fixture.source_path.to_string(),
+            fixture.source.to_string(),
+        )]),
+        symbol_table: BTreeMap::new(),
+        external_imports: BTreeSet::new(),
+    }
+}
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn patch_generated_cargo_toml(content: &str) -> String {
+    let workspace_root = workspace_root();
+    let local_crates = [
+        "ftui",
+        "ftui-runtime",
+        "ftui-widgets",
+        "ftui-layout",
+        "ftui-style",
+        "ftui-core",
+        "ftui-render",
+    ];
+    let mut lines = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if let Some(crate_name) = local_crates
+            .iter()
+            .find(|crate_name| trimmed.starts_with(&format!("{crate_name} = ")))
+        {
+            let crate_path = workspace_root.join("crates").join(crate_name);
+            lines.push(format!(
+                "{crate_name} = {{ path = \"{}\" }}",
+                crate_path.display()
+            ));
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+fn write_source_fixture(run_root: &Path, fixture: TranslationE2eFixture) {
+    let source_path = safe_join(
+        &run_root.join("source").join(fixture.id),
+        fixture.source_path,
+    );
+    if let Some(parent) = source_path.parent() {
+        fs::create_dir_all(parent).expect("create fixture source directory");
+    }
+    fs::write(source_path, fixture.source).expect("write captured source fixture");
+}
+
+fn write_generated_project(
+    generated_root: &Path,
+    fixture_id: &str,
+    emission: &EmissionPlan,
+) -> (String, usize) {
+    let project_root = generated_root.join(fixture_id);
+    let mut hash_input = Vec::new();
+
+    for file in emission.files.values() {
+        let output_path = safe_join(&project_root, &file.path);
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).expect("create generated file parent");
+        }
+        let content = if file.path == "Cargo.toml" {
+            patch_generated_cargo_toml(&file.content)
+        } else {
+            format!("{}\n", file.content)
+        };
+        hash_input.extend_from_slice(file.path.as_bytes());
+        hash_input.push(0);
+        hash_input.extend_from_slice(content.as_bytes());
+        hash_input.push(0);
+        fs::write(output_path, content).expect("write generated project file");
+    }
+
+    (sha256_hex(&hash_input), emission.files.len())
+}
+
+fn push_translation_stage_row(
+    rows: &mut Vec<serde_json::Value>,
+    run_id: &str,
+    fixture: TranslationE2eFixture,
+    stage_index: usize,
+    parser_stage: &str,
+    counts: serde_json::Value,
+    hashes: serde_json::Value,
+) {
+    let stage_hash = stable_json_hash(&serde_json::json!({
+        "fixture_id": fixture.id,
+        "parser_stage": parser_stage,
+        "counts": counts.clone(),
+        "hashes": hashes.clone(),
+    }));
+    rows.push(serde_json::json!({
+        "schema_version": TRANSLATION_E2E_SCHEMA_VERSION,
+        "run_id": run_id,
+        "fixture_id": fixture.id,
+        "fixture_index": stage_index / TRANSLATION_E2E_STAGES.len(),
+        "fixture_path": fixture.source_path,
+        "parser_stage": parser_stage,
+        "stage_index": stage_index,
+        "status": "ok",
+        "duration_ms": 0,
+        "counts": counts,
+        "hashes": hashes,
+        "stage_hash": stage_hash,
+        "diagnostics": [],
+        "reproduction_command": format!(
+            "DOCTOR_FRANKENTUI_TRANSLATION_E2E_RUN_ID={run_id} \
+             ./scripts/doctor_frankentui_translation_e2e.sh <run-root>"
+        ),
+    }));
+}
+
+fn run_translation_e2e_export(run_root: &Path, run_id: &str) -> serde_json::Value {
+    let meta_dir = run_root.join("meta");
+    let generated_root = run_root.join("generated");
+    fs::create_dir_all(&meta_dir).expect("create translation e2e meta directory");
+    fs::create_dir_all(&generated_root).expect("create translation generated root");
+
+    let model = load_builtin_confidence_model().expect("load confidence model");
+    let mut rows = Vec::new();
+    let mut fixture_manifest = Vec::new();
+
+    for (fixture_index, fixture) in translation_e2e_fixtures().into_iter().enumerate() {
+        write_source_fixture(run_root, fixture);
+
+        let project = project_from_translation_fixture(fixture);
+        let source_hash = sha256_hex(fixture.source.as_bytes());
+        let lowering_config = LoweringConfig {
+            run_id: format!("{run_id}-{}", fixture.id),
+            source_project: fixture.source_project.to_string(),
+        };
+        let lowered = lowering::lower_project(&lowering_config, &project);
+        let ir_hash = stable_json_hash(&lowered.ir);
+        let canonical_effects = canonicalize_effects(&lowered.ir.effect_registry);
+        let plan = plan_translation(
+            &lowered.ir,
+            &model,
+            None,
+            Some(&canonical_effects),
+            &PlannerConfig::default(),
+        );
+        let plan_hash = stable_json_hash(&plan);
+        let runtime = translate_state_events(&lowered.ir, Some(&canonical_effects));
+        let view = translate_view_layout(&lowered.ir, None);
+        let style = translate_style(&lowered.ir);
+        let effects = translate_effects(&canonical_effects);
+        let translation_hash = stable_json_hash(&serde_json::json!({
+            "runtime": &runtime,
+            "view": &view,
+            "style": &style,
+            "effects": &effects,
+        }));
+        let inputs = make_inputs(&lowered.ir, &runtime, &view, &style, &effects, &plan);
+        let emission = emit_project(&inputs);
+        let emission_hash = stable_json_hash(&emission);
+        let optimized = optimize(emission);
+        let optimized_hash = stable_json_hash(&optimized.plan);
+        let (generated_tree_hash, generated_file_count) =
+            write_generated_project(&generated_root, fixture.id, &optimized.plan);
+
+        let base_stage_index = fixture_index * TRANSLATION_E2E_STAGES.len();
+        push_translation_stage_row(
+            &mut rows,
+            run_id,
+            fixture,
+            base_stage_index,
+            "ingest",
+            serde_json::json!({
+                "files": project.files.len(),
+                "components": project.component_count,
+                "hooks": project.hook_usage_count,
+                "types": project.type_count,
+            }),
+            serde_json::json!({ "source_sha256": source_hash.clone() }),
+        );
+        push_translation_stage_row(
+            &mut rows,
+            run_id,
+            fixture,
+            base_stage_index + 1,
+            "ir_lower",
+            serde_json::json!({
+                "nodes": lowered.ir.view_tree.nodes.len(),
+                "state_vars": lowered.ir.state_graph.variables.len(),
+                "events": lowered.ir.event_catalog.events.len(),
+                "effects": lowered.ir.effect_registry.effects.len(),
+                "diagnostics": lowered.diagnostics.len(),
+            }),
+            serde_json::json!({ "ir_sha256": ir_hash }),
+        );
+        push_translation_stage_row(
+            &mut rows,
+            run_id,
+            fixture,
+            base_stage_index + 2,
+            "plan",
+            serde_json::json!({
+                "decisions": plan.decisions.len(),
+                "gap_tickets": plan.gap_tickets.len(),
+                "mean_confidence": plan.stats.mean_confidence,
+            }),
+            serde_json::json!({ "plan_sha256": plan_hash }),
+        );
+        push_translation_stage_row(
+            &mut rows,
+            run_id,
+            fixture,
+            base_stage_index + 3,
+            "translate",
+            serde_json::json!({
+                "model_fields": runtime.stats.model_fields,
+                "message_variants": runtime.stats.message_variants,
+                "widgets": view.stats.total_widgets,
+                "style_tokens": style.stats.total_tokens,
+                "effect_orchestrations": effects.stats.total_effects,
+            }),
+            serde_json::json!({ "translation_sha256": translation_hash }),
+        );
+        push_translation_stage_row(
+            &mut rows,
+            run_id,
+            fixture,
+            base_stage_index + 4,
+            "emit",
+            serde_json::json!({
+                "files": optimized.plan.files.len(),
+                "rust_files": optimized.plan.stats.rust_files,
+                "diagnostics": optimized.plan.diagnostics.len(),
+            }),
+            serde_json::json!({ "emission_sha256": emission_hash }),
+        );
+        push_translation_stage_row(
+            &mut rows,
+            run_id,
+            fixture,
+            base_stage_index + 5,
+            "optimize",
+            serde_json::json!({
+                "passes_executed": optimized.stats.passes_executed,
+                "transformations": optimized.stats.transformations,
+            }),
+            serde_json::json!({ "optimized_sha256": optimized_hash }),
+        );
+        push_translation_stage_row(
+            &mut rows,
+            run_id,
+            fixture,
+            base_stage_index + 6,
+            "write_generated",
+            serde_json::json!({
+                "generated_files": generated_file_count,
+                "generated_dir": format!("generated/{}", fixture.id),
+            }),
+            serde_json::json!({ "generated_tree_sha256": generated_tree_hash.clone() }),
+        );
+
+        fixture_manifest.push(serde_json::json!({
+            "fixture_id": fixture.id,
+            "fixture_index": fixture_index,
+            "source_project": fixture.source_project,
+            "source_path": fixture.source_path,
+            "generated_dir": format!("generated/{}", fixture.id),
+            "build_stdout": format!("logs/{}.cargo_check.stdout.log", fixture.id),
+            "build_stderr": format!("logs/{}.cargo_check.stderr.log", fixture.id),
+            "source_sha256": source_hash,
+            "generated_tree_sha256": generated_tree_hash,
+        }));
+    }
+
+    let ledger = format!(
+        "{}\n",
+        rows.iter()
+            .map(|row| serde_json::to_string(row).expect("serialize translation ledger row"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    fs::write(meta_dir.join("translation_ledger.jsonl"), ledger).expect("write translation ledger");
+
+    let manifest = serde_json::json!({
+        "schema_version": "doctor-translation-e2e-manifest-v1",
+        "run_id": run_id,
+        "fixture_count": fixture_manifest.len(),
+        "prebuild_ledger_line_count": rows.len(),
+        "required_stages": TRANSLATION_E2E_STAGES,
+        "build_stage": "build",
+        "artifacts": {
+            "manifest": "meta/translation_manifest.json",
+            "ledger": "meta/translation_ledger.jsonl",
+            "generated_root": "generated",
+            "source_root": "source",
+            "generated_source_tar": "artifacts/generated_sources.tar",
+            "validation_report": "meta/validation_report.json",
+            "summary_json": "meta/summary.json",
+            "summary_txt": "meta/summary.txt",
+        },
+        "fixtures": fixture_manifest,
+    });
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).expect("serialize translation manifest");
+    fs::write(
+        meta_dir.join("translation_manifest.json"),
+        format!("{manifest_json}\n"),
+    )
+    .expect("write translation manifest");
+
+    manifest
+}
+
+fn assert_translation_manifest_complete(manifest: &serde_json::Value) {
+    assert_eq!(
+        manifest["schema_version"],
+        "doctor-translation-e2e-manifest-v1"
+    );
+    assert_eq!(manifest["fixture_count"].as_u64(), Some(3));
+    assert_eq!(
+        manifest["prebuild_ledger_line_count"].as_u64(),
+        Some((translation_e2e_fixtures().len() * TRANSLATION_E2E_STAGES.len()) as u64)
+    );
+    assert_eq!(
+        manifest["required_stages"]
+            .as_array()
+            .expect("required stages")
+            .len(),
+        TRANSLATION_E2E_STAGES.len()
+    );
+    let fixtures = manifest["fixtures"].as_array().expect("fixtures array");
+    let fixture_ids = fixtures
+        .iter()
+        .map(|fixture| fixture["fixture_id"].as_str().expect("fixture id"))
+        .collect::<Vec<_>>();
+    assert_eq!(fixture_ids, ["counter", "status-panel", "search-box"]);
+    for fixture in fixtures {
+        assert!(
+            fixture["generated_tree_sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
+        assert!(
+            fixture["build_stdout"]
+                .as_str()
+                .is_some_and(|path| path.ends_with(".stdout.log"))
+        );
+        assert!(
+            fixture["build_stderr"]
+                .as_str()
+                .is_some_and(|path| path.ends_with(".stderr.log"))
+        );
+    }
+}
+
+#[test]
+fn translation_e2e_export_has_batch_order_and_generated_projects() {
+    let run_id = env::var("DOCTOR_FRANKENTUI_TRANSLATION_E2E_RUN_ID")
+        .unwrap_or_else(|_| "translation-e2e-seed-0".to_string());
+    let run_root = env::var_os("DOCTOR_FRANKENTUI_TRANSLATION_E2E_RUN_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            env::temp_dir().join(format!(
+                "doctor_frankentui_translation_e2e_{}",
+                std::process::id()
+            ))
+        });
+
+    let manifest = run_translation_e2e_export(&run_root, &run_id);
+    assert_translation_manifest_complete(&manifest);
+    for fixture in translation_e2e_fixtures() {
+        let cargo_toml = run_root
+            .join("generated")
+            .join(fixture.id)
+            .join("Cargo.toml");
+        assert!(cargo_toml.exists(), "missing generated Cargo.toml");
+        let cargo_toml = fs::read_to_string(cargo_toml).expect("read generated Cargo.toml");
+        assert!(
+            cargo_toml.contains("path = "),
+            "generated Cargo.toml must use local workspace paths"
+        );
     }
 }
 
