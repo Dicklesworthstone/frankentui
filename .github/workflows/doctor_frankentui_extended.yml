@@ -123,6 +123,12 @@ jobs:
           ./scripts/doctor_frankentui_failure_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/failure" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/failure_e2e.log"
 
+      - name: Run doctor_frankentui gap-closure E2E
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_gap_closure_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/gap_closure" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/gap_closure_e2e.log"
+
       - name: Build doctor_frankentui replay/triage summary
         if: always()
         run: |
@@ -185,6 +191,12 @@ jobs:
             echo "failure_events_jsonl=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/events.jsonl"
             echo "failure_events_validation_report=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/events_validation_report.json"
             echo "failure_case_results=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/case_results.json"
+            echo "gap_closure_e2e_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/gap_closure_e2e.log"
+            echo "gap_closure_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/gap_closure/meta/summary.json"
+            echo "gap_closure_events_jsonl=${DOCTOR_FTUI_ARTIFACT_ROOT}/gap_closure/meta/events.jsonl"
+            echo "gap_closure_events_validation_report=${DOCTOR_FTUI_ARTIFACT_ROOT}/gap_closure/meta/events_validation_report.json"
+            echo "gap_closure_ledger_jsonl=${DOCTOR_FTUI_ARTIFACT_ROOT}/gap_closure/meta/gap_closure_ledger.jsonl"
+            echo "gap_closure_artifact_manifest=${DOCTOR_FTUI_ARTIFACT_ROOT}/gap_closure/meta/artifact_manifest.json"
             echo "replay_triage_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/replay_triage.log"
             echo "replay_triage_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/replay_triage_report.json"
             echo "determinism_soak_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/determinism_soak.log"
@@ -211,57 +223,55 @@ jobs:
           } > "${artifact_map_txt}"
 
           python3 - "${artifact_map_txt}" "${artifact_map_json}" <<'PY'
-import json
-import sys
-from pathlib import Path
+          import json
+          import sys
+          from pathlib import Path
 
-txt_path = Path(sys.argv[1])
-json_path = Path(sys.argv[2])
+          txt_path = Path(sys.argv[1])
+          json_path = Path(sys.argv[2])
 
-raw_lines = txt_path.read_text(encoding="utf-8").splitlines()
-raw_kv: dict[str, str] = {}
-for line in raw_lines:
-    if "=" not in line:
-        continue
-    key, value = line.split("=", 1)
-    raw_kv[key.strip()] = value.strip()
+          raw_lines = txt_path.read_text(encoding="utf-8").splitlines()
+          raw_kv: dict[str, str] = {}
+          for line in raw_lines:
+              if "=" not in line:
+                  continue
+              key, value = line.split("=", 1)
+              raw_kv[key.strip()] = value.strip()
 
+          def looks_like_path(value: str) -> bool:
+              if value.startswith(("/", "./")):
+                  return True
+              return any(value.endswith(suffix) for suffix in (".log", ".txt", ".json", ".tsv", ".toml"))
 
-def looks_like_path(value: str) -> bool:
-    if value.startswith(("/", "./")):
-        return True
-    return any(value.endswith(suffix) for suffix in (".log", ".txt", ".json", ".tsv", ".toml"))
+          artifacts: dict[str, str] = {}
+          metadata: dict[str, str] = {}
+          for key, value in sorted(raw_kv.items()):
+              if key in {"git_rev", "generated_at_utc"}:
+                  metadata[key] = value
+              elif looks_like_path(value):
+                  artifacts[key] = value
+              else:
+                  metadata[key] = value
 
+          exists: dict[str, bool] = {}
+          sizes_bytes: dict[str, int | None] = {}
+          for key, value in artifacts.items():
+              path = Path(value)
+              exists[key] = path.exists()
+              if path.exists() and path.is_file():
+                  sizes_bytes[key] = int(path.stat().st_size)
+              else:
+                  sizes_bytes[key] = None
 
-artifacts: dict[str, str] = {}
-metadata: dict[str, str] = {}
-for key, value in sorted(raw_kv.items()):
-    if key in {"git_rev", "generated_at_utc"}:
-        metadata[key] = value
-    elif looks_like_path(value):
-        artifacts[key] = value
-    else:
-        metadata[key] = value
-
-exists: dict[str, bool] = {}
-sizes_bytes: dict[str, int | None] = {}
-for key, value in artifacts.items():
-    path = Path(value)
-    exists[key] = path.exists()
-    if path.exists() and path.is_file():
-        sizes_bytes[key] = int(path.stat().st_size)
-    else:
-        sizes_bytes[key] = None
-
-payload = {
-    "schema_version": "1.0.0",
-    "metadata": metadata,
-    "artifacts": artifacts,
-    "exists": exists,
-    "sizes_bytes": sizes_bytes,
-}
-json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-PY
+          payload = {
+              "schema_version": "1.0.0",
+              "metadata": metadata,
+              "artifacts": artifacts,
+              "exists": exists,
+              "sizes_bytes": sizes_bytes,
+          }
+          json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          PY
 
           {
             echo "## doctor_frankentui extended artifact map"
