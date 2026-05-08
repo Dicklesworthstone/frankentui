@@ -2,19 +2,22 @@ use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use doctor_frankentui::accessibility_diff::{
-    AccessibilityAction, AccessibilityActionKind, AccessibilityDiffConfig,
-    AccessibilityDiffVerdict, AccessibilityNode, AccessibilityRole, AccessibilityRun,
-    AssistiveAnnouncement, FocusTransition, compare_accessibility_runs,
+    ACCESSIBILITY_DIFF_VALIDATOR_ID, AccessibilityAction, AccessibilityActionKind,
+    AccessibilityDiffConfig, AccessibilityDiffVerdict, AccessibilityNode, AccessibilityRole,
+    AccessibilityRun, AssistiveAnnouncement, FocusTransition, compare_accessibility_runs,
 };
 use doctor_frankentui::performance_diff::{
-    PerformanceDiffConfig, PerformanceDiffVerdict, PerformanceMetricKind, PerformanceRun,
-    PerformanceSample, PerformanceWorkloadTrace, compare_performance_runs,
+    PERFORMANCE_DIFF_VALIDATOR_ID, PerformanceDiffConfig, PerformanceDiffVerdict,
+    PerformanceMetricKind, PerformanceRun, PerformanceSample, PerformanceWorkloadTrace,
+    compare_performance_runs,
 };
 use doctor_frankentui::semantic_diff::{
-    SemanticDiffVerdict, SemanticObservation, SemanticObservationKind, SemanticRun, compare_runs,
+    SEMANTIC_DIFF_VALIDATOR_ID, SemanticDiffVerdict, SemanticObservation, SemanticObservationKind,
+    SemanticRun, compare_runs,
 };
 use doctor_frankentui::visual_diff::{
-    TerminalFrame, TerminalOutputRun, VisualDiffConfig, VisualDiffVerdict, compare_terminal_runs,
+    TerminalCell, TerminalFrame, TerminalOutputRun, TerminalStyle, VISUAL_DIFF_VALIDATOR_ID,
+    VisualDiffConfig, VisualDiffMode, VisualDiffVerdict, compare_terminal_runs,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -33,6 +36,56 @@ struct FuzzOutcome {
     original_trace_len: usize,
     minimized_trace_len: usize,
     replay_key: String,
+}
+
+#[derive(Debug, Clone)]
+struct ComparatorEvidence {
+    comparator_id: String,
+    fixture_id: String,
+    threshold_class: String,
+    verdict_reason: String,
+    verdict_rank: u8,
+}
+
+impl ComparatorEvidence {
+    fn assert_structured_log_fields(&self) {
+        let log = serde_json::json!({
+            "comparator_id": self.comparator_id,
+            "fixture_id": self.fixture_id,
+            "threshold_class": self.threshold_class,
+            "verdict_reason": self.verdict_reason,
+            "verdict_rank": self.verdict_rank,
+        });
+
+        assert!(
+            log["comparator_id"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "structured comparator log must carry comparator_id"
+        );
+        assert!(
+            log["fixture_id"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "structured comparator log must carry fixture_id"
+        );
+        assert!(
+            log["threshold_class"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "structured comparator log must carry threshold_class"
+        );
+        assert!(
+            log["verdict_reason"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "structured comparator log must carry verdict_reason"
+        );
+        assert!(
+            log["verdict_rank"].as_u64().is_some(),
+            "structured comparator log must carry machine-sortable verdict rank"
+        );
+    }
 }
 
 fn assert_panic_free<T>(case_id: &str, f: impl FnOnce() -> T) -> T {
@@ -100,6 +153,277 @@ fn semantic_event_storm(seed: u64) -> FuzzOutcome {
             replay_key: counterexample.replay_command.clone(),
         }
     })
+}
+
+fn semantic_fixture_pair(
+    fixture_id: &str,
+    mutated_observations: u32,
+) -> (SemanticRun, SemanticRun) {
+    let mut source = Vec::new();
+    let mut translated = Vec::new();
+
+    for sequence in 0..4 {
+        let observation = SemanticObservation::new(
+            sequence,
+            u64::from(sequence) * 10,
+            SemanticObservationKind::StateTransition,
+            format!("state.{sequence}"),
+            format!("value.{sequence}"),
+        )
+        .with_contract_clause_ids(vec!["ST-001".to_string()]);
+        let mut translated_observation = observation.clone();
+        if sequence < mutated_observations {
+            translated_observation.value = format!("mutated.{sequence}");
+        }
+        source.push(observation);
+        translated.push(translated_observation);
+    }
+
+    (
+        SemanticRun::new(format!("{fixture_id}:source"), source).with_replay_command(format!(
+            "doctor_frankentui semantic-fixture {fixture_id} source"
+        )),
+        SemanticRun::new(format!("{fixture_id}:translated"), translated).with_replay_command(
+            format!("doctor_frankentui semantic-fixture {fixture_id} translated"),
+        ),
+    )
+}
+
+fn semantic_evidence(fixture_id: &str, mutated_observations: u32) -> ComparatorEvidence {
+    let (source, translated) = semantic_fixture_pair(fixture_id, mutated_observations);
+    let report = compare_runs(&source, &translated);
+    let threshold_class = report
+        .violated_clause_ids
+        .first()
+        .or_else(|| report.covered_clause_ids.first())
+        .cloned()
+        .unwrap_or_else(|| "ST-001".to_string());
+    let verdict_reason = report.differences.first().map_or_else(
+        || "semantic observations are equivalent".to_string(),
+        |diff| diff.message.clone(),
+    );
+
+    ComparatorEvidence {
+        comparator_id: report.validator_id,
+        fixture_id: report.source_run_id,
+        threshold_class,
+        verdict_reason,
+        verdict_rank: semantic_verdict_rank(report.verdict),
+    }
+}
+
+fn semantic_verdict_rank(verdict: SemanticDiffVerdict) -> u8 {
+    match verdict {
+        SemanticDiffVerdict::Equivalent => 0,
+        SemanticDiffVerdict::AcceptableImprovement => 1,
+        SemanticDiffVerdict::Violation => 2,
+    }
+}
+
+fn decorative_style(fg: &str) -> TerminalStyle {
+    TerminalStyle {
+        fg: Some(fg.to_string()),
+        bg: None,
+        attrs: Vec::new(),
+    }
+}
+
+fn decorative_frame(frame_index: u32, fg: &str) -> TerminalFrame {
+    TerminalFrame::new(
+        frame_index,
+        1,
+        1,
+        vec![
+            TerminalCell::new("x")
+                .with_style(decorative_style(fg))
+                .with_semantic_class("decorative_color"),
+        ],
+    )
+}
+
+fn visual_tolerance_config() -> VisualDiffConfig {
+    VisualDiffConfig {
+        mode: VisualDiffMode::Tolerance,
+        strict_classes: vec!["command_output".to_string()],
+        perceptual_classes: vec!["decorative_color".to_string()],
+        max_perceptual_delta: 0.01,
+    }
+}
+
+fn visual_evidence(fixture_id: &str, translated_color: &str) -> ComparatorEvidence {
+    let source_run = TerminalOutputRun::new(
+        format!("{fixture_id}:source"),
+        vec![decorative_frame(0, "#000000")],
+    )
+    .with_replay_command(format!(
+        "doctor_frankentui visual-fixture {fixture_id} source"
+    ));
+    let translated_run = TerminalOutputRun::new(
+        format!("{fixture_id}:translated"),
+        vec![decorative_frame(0, translated_color)],
+    )
+    .with_replay_command(format!(
+        "doctor_frankentui visual-fixture {fixture_id} translated"
+    ));
+    let report = compare_terminal_runs(&source_run, &translated_run, &visual_tolerance_config());
+    let threshold_class = report.differences.first().map_or_else(
+        || "decorative_color<=0.01".to_string(),
+        |diff| format!("{}>{}", diff.semantic_class, 0.01),
+    );
+    let verdict_reason = report.differences.first().map_or_else(
+        || "decorative color delta stayed within tolerance".to_string(),
+        |diff| diff.message.clone(),
+    );
+
+    ComparatorEvidence {
+        comparator_id: report.validator_id,
+        fixture_id: report.source_run_id,
+        threshold_class,
+        verdict_reason,
+        verdict_rank: visual_verdict_rank(report.verdict),
+    }
+}
+
+fn visual_verdict_rank(verdict: VisualDiffVerdict) -> u8 {
+    match verdict {
+        VisualDiffVerdict::Equivalent => 0,
+        VisualDiffVerdict::WithinTolerance => 1,
+        VisualDiffVerdict::Violation => 2,
+    }
+}
+
+fn performance_fixture_run(fixture_id: &str, side: &str, latency_p99_ms: f64) -> PerformanceRun {
+    let workload = PerformanceWorkloadTrace::new(
+        "latency-workload",
+        fixture_id,
+        0x5EED,
+        format!("{fixture_id}:trace"),
+        128,
+    )
+    .with_controlled_inputs(vec![
+        "viewport=80x24".to_string(),
+        "events=stable".to_string(),
+    ]);
+    let samples = (0..5)
+        .map(|sample_index| {
+            PerformanceSample::new(
+                fixture_id,
+                PerformanceMetricKind::LatencyP99Ms,
+                sample_index,
+                latency_p99_ms,
+                0x5EED,
+                "latency-workload",
+            )
+            .with_artifact_id(format!("{fixture_id}:{side}:{sample_index}"))
+        })
+        .collect();
+
+    PerformanceRun::new(format!("{fixture_id}:{side}"), vec![workload], samples)
+        .with_replay_command(format!(
+            "doctor_frankentui perf-fixture {fixture_id} {side}"
+        ))
+}
+
+fn performance_evidence(fixture_id: &str, translated_latency_p99_ms: f64) -> ComparatorEvidence {
+    let source = performance_fixture_run(fixture_id, "source", 100.0);
+    let translated = performance_fixture_run(fixture_id, "translated", translated_latency_p99_ms);
+    let report = compare_performance_runs(&source, &translated, &PerformanceDiffConfig::default());
+    let threshold_class = report.comparisons.first().map_or_else(
+        || "PD-002".to_string(),
+        |comparison| {
+            format!(
+                "{}:{:.2}",
+                comparison.policy_id, comparison.threshold.max_relative_regression
+            )
+        },
+    );
+    let verdict_reason = report.differences.first().map_or_else(
+        || {
+            report.comparisons.first().map_or_else(
+                || "no comparable performance samples".to_string(),
+                |comparison| comparison.message.clone(),
+            )
+        },
+        |diff| diff.message.clone(),
+    );
+
+    ComparatorEvidence {
+        comparator_id: report.validator_id,
+        fixture_id: report.source_run_id,
+        threshold_class,
+        verdict_reason,
+        verdict_rank: performance_verdict_rank(report.verdict),
+    }
+}
+
+fn performance_verdict_rank(verdict: PerformanceDiffVerdict) -> u8 {
+    match verdict {
+        PerformanceDiffVerdict::Improvement => 0,
+        PerformanceDiffVerdict::Equivalent => 1,
+        PerformanceDiffVerdict::RegressionWithinPolicy => 2,
+        PerformanceDiffVerdict::NeedsMoreEvidence => 3,
+        PerformanceDiffVerdict::PolicyRegression => 4,
+    }
+}
+
+fn accessible_button(name: &str, contrast_ratio: f32) -> AccessibilityNode {
+    AccessibilityNode::new("submit", AccessibilityRole::Button)
+        .with_name(name)
+        .with_focus_order(1)
+        .with_contrast_ratio(contrast_ratio)
+        .with_action(AccessibilityAction::new(
+            "activate-submit",
+            AccessibilityActionKind::Activate,
+            name,
+        ))
+        .with_source_ref("fixture.tsx:10")
+}
+
+fn accessibility_evidence(fixture_id: &str, translated_contrast_ratio: f32) -> ComparatorEvidence {
+    let source = AccessibilityRun::new(
+        format!("{fixture_id}:source"),
+        vec![accessible_button("Submit", 4.8)],
+    )
+    .with_focus_transitions(vec![FocusTransition::new("submit", "submit", "Tab")])
+    .with_replay_command(format!(
+        "doctor_frankentui a11y-fixture {fixture_id} source"
+    ));
+    let translated = AccessibilityRun::new(
+        format!("{fixture_id}:translated"),
+        vec![accessible_button("Submit", translated_contrast_ratio)],
+    )
+    .with_focus_transitions(vec![FocusTransition::new("submit", "submit", "Tab")])
+    .with_replay_command(format!(
+        "doctor_frankentui a11y-fixture {fixture_id} translated"
+    ));
+    let report =
+        compare_accessibility_runs(&source, &translated, &AccessibilityDiffConfig::default());
+    let threshold_class = report
+        .violated_policy_ids
+        .first()
+        .or_else(|| report.covered_policy_ids.first())
+        .cloned()
+        .unwrap_or_else(|| "AD-004".to_string());
+    let verdict_reason = report.violations.first().map_or_else(
+        || "accessibility policies are satisfied".to_string(),
+        |violation| violation.message.clone(),
+    );
+
+    ComparatorEvidence {
+        comparator_id: report.validator_id,
+        fixture_id: report.source_run_id,
+        threshold_class,
+        verdict_reason,
+        verdict_rank: accessibility_verdict_rank(report.verdict),
+    }
+}
+
+fn accessibility_verdict_rank(verdict: AccessibilityDiffVerdict) -> u8 {
+    match verdict {
+        AccessibilityDiffVerdict::Equivalent => 0,
+        AccessibilityDiffVerdict::Improved => 0,
+        AccessibilityDiffVerdict::Violation => 1,
+    }
 }
 
 fn visual_resize_thrash(seed: u64) -> FuzzOutcome {
@@ -433,4 +757,65 @@ fn comparator_failures_are_reproducible_and_minimized() {
 fn malformed_artifacts_do_not_panic_any_comparator() {
     let outcomes = run_adversarial_corpus();
     assert_eq!(outcomes.len(), 4);
+}
+
+#[test]
+fn synthetic_fixture_matrix_covers_positive_negative_and_tolerance_boundaries() {
+    let evidence = vec![
+        semantic_evidence("semantic-false-positive-guard", 0),
+        semantic_evidence("semantic-true-positive-violation", 1),
+        visual_evidence("visual-tolerance-boundary-pass", "#010101"),
+        visual_evidence("visual-tolerance-boundary-fail", "#050505"),
+        performance_evidence("performance-false-positive-guard", 100.0),
+        performance_evidence("performance-threshold-policy-fail", 120.0),
+        accessibility_evidence("accessibility-false-positive-guard", 4.8),
+        accessibility_evidence("accessibility-threshold-policy-fail", 3.1),
+    ];
+
+    for record in &evidence {
+        record.assert_structured_log_fields();
+    }
+
+    assert_eq!(evidence[0].comparator_id, SEMANTIC_DIFF_VALIDATOR_ID);
+    assert_eq!(evidence[0].verdict_rank, 0);
+    assert_eq!(evidence[1].verdict_rank, 2);
+    assert_eq!(evidence[2].comparator_id, VISUAL_DIFF_VALIDATOR_ID);
+    assert_eq!(evidence[2].verdict_rank, 1);
+    assert_eq!(evidence[3].verdict_rank, 2);
+    assert_eq!(evidence[4].comparator_id, PERFORMANCE_DIFF_VALIDATOR_ID);
+    assert_eq!(evidence[4].verdict_rank, 1);
+    assert_eq!(evidence[5].verdict_rank, 4);
+    assert_eq!(evidence[6].comparator_id, ACCESSIBILITY_DIFF_VALIDATOR_ID);
+    assert_eq!(evidence[6].verdict_rank, 0);
+    assert_eq!(evidence[7].verdict_rank, 1);
+}
+
+#[test]
+fn comparator_scores_are_deterministic_and_monotone_across_boundaries() {
+    let semantic_scores = [0, 1, 2, 3]
+        .into_iter()
+        .map(|mutations| semantic_evidence("semantic-monotone", mutations).verdict_rank)
+        .collect::<Vec<_>>();
+    assert!(
+        semantic_scores.windows(2).all(|pair| pair[0] <= pair[1]),
+        "semantic verdict severity should not decrease as mutations increase: {semantic_scores:?}"
+    );
+
+    let performance_scores = [100.0, 108.0, 120.0]
+        .into_iter()
+        .map(|latency| performance_evidence("performance-monotone", latency).verdict_rank)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        performance_scores,
+        vec![1, 2, 4],
+        "performance scorer should classify equal, within-policy regression, then policy regression"
+    );
+
+    let replay_a = performance_evidence("performance-deterministic", 120.0);
+    let replay_b = performance_evidence("performance-deterministic", 120.0);
+    assert_eq!(replay_a.comparator_id, replay_b.comparator_id);
+    assert_eq!(replay_a.fixture_id, replay_b.fixture_id);
+    assert_eq!(replay_a.threshold_class, replay_b.threshold_class);
+    assert_eq!(replay_a.verdict_reason, replay_b.verdict_reason);
+    assert_eq!(replay_a.verdict_rank, replay_b.verdict_rank);
 }
