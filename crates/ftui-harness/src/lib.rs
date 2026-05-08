@@ -105,9 +105,11 @@ pub use time_travel_inspector::TimeTravelInspector;
 pub use benchmark_gate::{BenchmarkGate, GateResult, Measurement, MetricVerdict, Threshold};
 pub use rollout_scorecard::{
     EmergencyHold, EmergencyHoldReason, MigrationReadinessDecision, MigrationReadinessEvidence,
-    MigrationReadinessRubric, MigrationReadinessVerdict, MigrationRolloutStage, MigrationStageGate,
-    OperatorAuthority, RolloutEvidenceBundle, RolloutScorecard, RolloutScorecardConfig,
-    RolloutSummary, RolloutVerdict,
+    MigrationReadinessRubric, MigrationReadinessVerdict, MigrationReleaseGateArtifact,
+    MigrationReleaseGateDecision, MigrationReleaseGateEvaluator, MigrationReleaseGateEvidence,
+    MigrationReleaseGateMode, MigrationReleaseGatePolicy, MigrationReleaseGateVerdict,
+    MigrationRolloutStage, MigrationStageGate, OperatorAuthority, RolloutEvidenceBundle,
+    RolloutScorecard, RolloutScorecardConfig, RolloutSummary, RolloutVerdict,
 };
 pub use shadow_run::{ShadowRun, ShadowRunConfig, ShadowRunResult, ShadowVerdict};
 

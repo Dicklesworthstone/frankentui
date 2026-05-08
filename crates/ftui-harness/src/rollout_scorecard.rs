@@ -48,6 +48,36 @@ fn normalized_ratio(ratio: f64) -> f64 {
     }
 }
 
+#[must_use]
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[must_use]
+fn json_string_array(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| json_string(value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -572,6 +602,556 @@ impl MigrationReadinessRubric {
 }
 
 // ============================================================================
+// Migration release gate evaluator (bd-3bxhj.9.2)
+// ============================================================================
+
+/// Release gate operating mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationReleaseGateMode {
+    /// Evaluate and emit decision evidence without blocking release.
+    DryRun,
+    /// Evaluate and block release when any required clause fails.
+    Enforce,
+}
+
+impl MigrationReleaseGateMode {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::DryRun => "dry-run",
+            Self::Enforce => "enforce",
+        }
+    }
+}
+
+/// Release gate verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationReleaseGateVerdict {
+    /// Every release gate clause passed.
+    Pass,
+    /// At least one release gate clause failed.
+    Fail,
+}
+
+impl MigrationReleaseGateVerdict {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+/// Immutable artifact evidence referenced by release gate inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationReleaseGateArtifact {
+    /// Stable artifact identifier used by release evidence.
+    pub artifact_id: String,
+    /// Artifact class, for example `certification`, `determinism`, or `performance`.
+    pub kind: String,
+    /// Content digest. Must be a `sha256:` digest to count as immutable.
+    pub digest: String,
+    /// Artifact location or content-addressed URI.
+    pub uri: String,
+}
+
+impl MigrationReleaseGateArtifact {
+    /// Construct release gate artifact evidence.
+    #[must_use]
+    pub fn new(artifact_id: &str, kind: &str, digest: &str, uri: &str) -> Self {
+        Self {
+            artifact_id: artifact_id.to_string(),
+            kind: kind.to_string(),
+            digest: digest.to_string(),
+            uri: uri.to_string(),
+        }
+    }
+
+    /// Whether this artifact is content-addressed enough for gate traceability.
+    #[must_use]
+    pub fn is_immutable(&self) -> bool {
+        let Some(hex_digest) = self.digest.strip_prefix("sha256:") else {
+            return false;
+        };
+        !self.artifact_id.is_empty()
+            && !self.kind.is_empty()
+            && !self.uri.is_empty()
+            && hex_digest.len() == 64
+            && hex_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
+}
+
+/// Evidence snapshot consumed by the migration release gate evaluator.
+#[derive(Debug, Clone)]
+pub struct MigrationReleaseGateEvidence {
+    /// Migration service version under evaluation.
+    pub migration_version: String,
+    /// Readiness evidence for the target rollout stage.
+    pub readiness: MigrationReadinessEvidence,
+    /// Fraction of deterministic/certification comparison metrics that passed.
+    pub determinism_pass_ratio: f64,
+    /// Whether the performance budget gate passed.
+    pub performance_budget_passed: bool,
+    /// Count of unresolved critical migration capability gaps.
+    pub unresolved_critical_gap_count: usize,
+    /// Immutable artifacts proving each input clause.
+    pub artifacts: Vec<MigrationReleaseGateArtifact>,
+}
+
+impl MigrationReleaseGateEvidence {
+    /// Construct release gate evidence for a migration version.
+    #[must_use]
+    pub fn new(migration_version: &str, readiness: MigrationReadinessEvidence) -> Self {
+        Self {
+            migration_version: migration_version.to_string(),
+            readiness,
+            determinism_pass_ratio: 0.0,
+            performance_budget_passed: false,
+            unresolved_critical_gap_count: 0,
+            artifacts: Vec::new(),
+        }
+    }
+
+    /// Set deterministic comparison pass ratio.
+    #[must_use]
+    pub fn determinism_pass_ratio(mut self, ratio: f64) -> Self {
+        self.determinism_pass_ratio = normalized_ratio(ratio);
+        self
+    }
+
+    /// Set performance budget gate result.
+    #[must_use]
+    pub const fn performance_budget_passed(mut self, passed: bool) -> Self {
+        self.performance_budget_passed = passed;
+        self
+    }
+
+    /// Set unresolved critical capability gap count.
+    #[must_use]
+    pub const fn unresolved_critical_gap_count(mut self, count: usize) -> Self {
+        self.unresolved_critical_gap_count = count;
+        self
+    }
+
+    /// Attach immutable artifact evidence.
+    #[must_use]
+    pub fn artifact(mut self, artifact: MigrationReleaseGateArtifact) -> Self {
+        self.artifacts.push(artifact);
+        self
+    }
+}
+
+/// Release gate policy for one target stage.
+#[derive(Debug, Clone)]
+pub struct MigrationReleaseGatePolicy {
+    /// Gate operating mode.
+    pub mode: MigrationReleaseGateMode,
+    /// Target rollout stage.
+    pub target_stage: MigrationRolloutStage,
+    /// Minimum certification pass ratio.
+    pub min_certification_pass_ratio: f64,
+    /// Minimum deterministic comparison pass ratio.
+    pub min_determinism_pass_ratio: f64,
+    /// Whether the performance budget gate is release-blocking.
+    pub require_performance_budget_pass: bool,
+    /// Maximum unresolved critical capability gaps.
+    pub max_unresolved_critical_gaps: usize,
+    /// Minimum number of immutable artifacts required.
+    pub min_traceable_artifacts: usize,
+    /// Artifact kinds that must be present.
+    pub required_artifact_kinds: Vec<&'static str>,
+}
+
+impl MigrationReleaseGatePolicy {
+    /// Default release gate policy for a target stage.
+    #[must_use]
+    pub fn for_stage(target_stage: MigrationRolloutStage, mode: MigrationReleaseGateMode) -> Self {
+        let (
+            min_certification_pass_ratio,
+            min_determinism_pass_ratio,
+            max_unresolved_critical_gaps,
+            min_traceable_artifacts,
+        ) = match target_stage {
+            MigrationRolloutStage::Alpha => (0.90, 0.99, 2, 5),
+            MigrationRolloutStage::Beta => (0.97, 1.00, 0, 6),
+            MigrationRolloutStage::Ga => (1.00, 1.00, 0, 8),
+        };
+        Self {
+            mode,
+            target_stage,
+            min_certification_pass_ratio,
+            min_determinism_pass_ratio,
+            require_performance_budget_pass: true,
+            max_unresolved_critical_gaps,
+            min_traceable_artifacts,
+            required_artifact_kinds: vec![
+                "certification",
+                "critical-gaps",
+                "determinism",
+                "performance",
+                "readiness",
+            ],
+        }
+    }
+
+    /// Switch the same policy thresholds to a different mode.
+    #[must_use]
+    pub const fn mode(mut self, mode: MigrationReleaseGateMode) -> Self {
+        self.mode = mode;
+        self
+    }
+}
+
+/// Clause-level release gate result.
+#[derive(Debug, Clone)]
+pub struct MigrationReleaseGateClauseResult {
+    /// Machine-readable clause name.
+    pub clause: &'static str,
+    /// Whether the clause passed.
+    pub passed: bool,
+    /// Human-readable reason with threshold context.
+    pub reason: String,
+    /// Artifact ids that support this clause.
+    pub artifact_ids: Vec<String>,
+}
+
+impl MigrationReleaseGateClauseResult {
+    #[must_use]
+    fn pass(clause: &'static str, reason: String, artifact_ids: Vec<String>) -> Self {
+        Self {
+            clause,
+            passed: true,
+            reason,
+            artifact_ids,
+        }
+    }
+
+    #[must_use]
+    fn fail(clause: &'static str, reason: String, artifact_ids: Vec<String>) -> Self {
+        Self {
+            clause,
+            passed: false,
+            reason,
+            artifact_ids,
+        }
+    }
+
+    #[must_use]
+    fn to_json(&self) -> String {
+        format!(
+            concat!(
+                "{{",
+                "\"clause\":{clause},",
+                "\"passed\":{passed},",
+                "\"reason\":{reason},",
+                "\"artifact_ids\":[{artifact_ids}]",
+                "}}"
+            ),
+            clause = json_string(self.clause),
+            passed = self.passed,
+            reason = json_string(&self.reason),
+            artifact_ids = json_string_array(&self.artifact_ids),
+        )
+    }
+}
+
+/// Release gate decision for one migration service version.
+#[derive(Debug, Clone)]
+pub struct MigrationReleaseGateDecision {
+    /// Migration service version evaluated.
+    pub migration_version: String,
+    /// Gate operating mode.
+    pub mode: MigrationReleaseGateMode,
+    /// Target rollout stage.
+    pub target_stage: MigrationRolloutStage,
+    /// Overall pass/fail verdict.
+    pub verdict: MigrationReleaseGateVerdict,
+    /// Clause-level evidence and reasoning.
+    pub clauses: Vec<MigrationReleaseGateClauseResult>,
+}
+
+impl MigrationReleaseGateDecision {
+    /// Whether every release gate clause passed.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.verdict == MigrationReleaseGateVerdict::Pass
+    }
+
+    /// Whether this decision blocks release.
+    #[must_use]
+    pub fn blocks_release(&self) -> bool {
+        self.mode == MigrationReleaseGateMode::Enforce && !self.passed()
+    }
+
+    /// Failed clause names.
+    #[must_use]
+    pub fn failed_clauses(&self) -> Vec<&'static str> {
+        self.clauses
+            .iter()
+            .filter(|clause| !clause.passed)
+            .map(|clause| clause.clause)
+            .collect()
+    }
+
+    /// Serialize the release gate decision for CI and operator artifacts.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let clauses = self
+            .clauses
+            .iter()
+            .map(MigrationReleaseGateClauseResult::to_json)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            concat!(
+                "{{",
+                "\"schema_version\":\"1.0.0\",",
+                "\"migration_version\":{version},",
+                "\"mode\":\"{mode}\",",
+                "\"target_stage\":\"{stage}\",",
+                "\"verdict\":\"{verdict}\",",
+                "\"blocks_release\":{blocks_release},",
+                "\"clauses\":[{clauses}]",
+                "}}"
+            ),
+            version = json_string(&self.migration_version),
+            mode = self.mode.label(),
+            stage = self.target_stage.label(),
+            verdict = self.verdict.label(),
+            blocks_release = self.blocks_release(),
+            clauses = clauses,
+        )
+    }
+}
+
+/// Evaluates migration release eligibility from readiness, determinism,
+/// performance, blocker, and artifact evidence.
+#[derive(Debug, Clone)]
+pub struct MigrationReleaseGateEvaluator {
+    policy: MigrationReleaseGatePolicy,
+    readiness_rubric: MigrationReadinessRubric,
+}
+
+impl MigrationReleaseGateEvaluator {
+    /// Construct an evaluator using the default readiness rubric.
+    #[must_use]
+    pub fn new(policy: MigrationReleaseGatePolicy) -> Self {
+        Self {
+            policy,
+            readiness_rubric: MigrationReadinessRubric::opentui_default(),
+        }
+    }
+
+    /// Override the readiness rubric.
+    #[must_use]
+    pub fn with_readiness_rubric(mut self, rubric: MigrationReadinessRubric) -> Self {
+        self.readiness_rubric = rubric;
+        self
+    }
+
+    /// Evaluate release eligibility.
+    #[must_use]
+    pub fn evaluate(
+        &self,
+        evidence: &MigrationReleaseGateEvidence,
+    ) -> MigrationReleaseGateDecision {
+        let mut clauses = Vec::new();
+        let readiness_decision = self
+            .readiness_rubric
+            .evaluate(self.policy.target_stage, &evidence.readiness);
+        let readiness_artifact_ids = artifact_ids_for_kind(evidence, "readiness");
+        if readiness_decision.may_advance() {
+            clauses.push(MigrationReleaseGateClauseResult::pass(
+                "readiness",
+                format!(
+                    "target stage {} readiness advanced",
+                    self.policy.target_stage.label()
+                ),
+                readiness_artifact_ids,
+            ));
+        } else {
+            clauses.push(MigrationReleaseGateClauseResult::fail(
+                "readiness",
+                format!("readiness held: {}", readiness_decision.reasons.join(",")),
+                readiness_artifact_ids,
+            ));
+        }
+
+        clauses.push(compare_ratio_clause(
+            "certification",
+            evidence.readiness.certification_pass_ratio,
+            self.policy.min_certification_pass_ratio,
+            artifact_ids_for_kind(evidence, "certification"),
+        ));
+        clauses.push(compare_ratio_clause(
+            "determinism",
+            evidence.determinism_pass_ratio,
+            self.policy.min_determinism_pass_ratio,
+            artifact_ids_for_kind(evidence, "determinism"),
+        ));
+
+        let performance_ids = artifact_ids_for_kind(evidence, "performance");
+        if !self.policy.require_performance_budget_pass || evidence.performance_budget_passed {
+            clauses.push(MigrationReleaseGateClauseResult::pass(
+                "performance-budget",
+                "performance budget gate passed".to_string(),
+                performance_ids,
+            ));
+        } else {
+            clauses.push(MigrationReleaseGateClauseResult::fail(
+                "performance-budget",
+                "performance budget gate failed".to_string(),
+                performance_ids,
+            ));
+        }
+
+        let critical_gap_ids = artifact_ids_for_kind(evidence, "critical-gaps");
+        if evidence.unresolved_critical_gap_count <= self.policy.max_unresolved_critical_gaps {
+            clauses.push(MigrationReleaseGateClauseResult::pass(
+                "critical-gaps",
+                format!(
+                    "{} critical gaps <= {} allowed",
+                    evidence.unresolved_critical_gap_count,
+                    self.policy.max_unresolved_critical_gaps
+                ),
+                critical_gap_ids,
+            ));
+        } else {
+            clauses.push(MigrationReleaseGateClauseResult::fail(
+                "critical-gaps",
+                format!(
+                    "{} critical gaps > {} allowed",
+                    evidence.unresolved_critical_gap_count,
+                    self.policy.max_unresolved_critical_gaps
+                ),
+                critical_gap_ids,
+            ));
+        }
+
+        clauses.push(self.evaluate_artifact_traceability(evidence));
+
+        let verdict = if clauses.iter().all(|clause| clause.passed) {
+            MigrationReleaseGateVerdict::Pass
+        } else {
+            MigrationReleaseGateVerdict::Fail
+        };
+        MigrationReleaseGateDecision {
+            migration_version: evidence.migration_version.clone(),
+            mode: self.policy.mode,
+            target_stage: self.policy.target_stage,
+            verdict,
+            clauses,
+        }
+    }
+
+    #[must_use]
+    fn evaluate_artifact_traceability(
+        &self,
+        evidence: &MigrationReleaseGateEvidence,
+    ) -> MigrationReleaseGateClauseResult {
+        let traceable_ids = evidence
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.is_immutable())
+            .map(|artifact| artifact.artifact_id.clone())
+            .collect::<Vec<_>>();
+        let invalid_ids = evidence
+            .artifacts
+            .iter()
+            .filter(|artifact| !artifact.is_immutable())
+            .map(|artifact| artifact.artifact_id.clone())
+            .collect::<Vec<_>>();
+        let missing_kinds = self
+            .policy
+            .required_artifact_kinds
+            .iter()
+            .copied()
+            .filter(|kind| {
+                !evidence
+                    .artifacts
+                    .iter()
+                    .any(|artifact| artifact.kind == *kind && artifact.is_immutable())
+            })
+            .collect::<Vec<_>>();
+
+        if traceable_ids.len() >= self.policy.min_traceable_artifacts
+            && invalid_ids.is_empty()
+            && missing_kinds.is_empty()
+        {
+            return MigrationReleaseGateClauseResult::pass(
+                "artifact-traceability",
+                format!(
+                    "{} immutable artifacts cover required input kinds",
+                    traceable_ids.len()
+                ),
+                traceable_ids,
+            );
+        }
+
+        let mut reasons = Vec::new();
+        if traceable_ids.len() < self.policy.min_traceable_artifacts {
+            reasons.push(format!(
+                "{} immutable artifacts < {} required",
+                traceable_ids.len(),
+                self.policy.min_traceable_artifacts
+            ));
+        }
+        if !invalid_ids.is_empty() {
+            reasons.push(format!(
+                "invalid immutable references: {}",
+                invalid_ids.join(",")
+            ));
+        }
+        if !missing_kinds.is_empty() {
+            reasons.push(format!(
+                "missing artifact kinds: {}",
+                missing_kinds.join(",")
+            ));
+        }
+        MigrationReleaseGateClauseResult::fail(
+            "artifact-traceability",
+            reasons.join("; "),
+            traceable_ids,
+        )
+    }
+}
+
+#[must_use]
+fn artifact_ids_for_kind(evidence: &MigrationReleaseGateEvidence, kind: &str) -> Vec<String> {
+    evidence
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == kind && artifact.is_immutable())
+        .map(|artifact| artifact.artifact_id.clone())
+        .collect()
+}
+
+#[must_use]
+fn compare_ratio_clause(
+    clause: &'static str,
+    actual: f64,
+    required: f64,
+    artifact_ids: Vec<String>,
+) -> MigrationReleaseGateClauseResult {
+    if actual >= required {
+        MigrationReleaseGateClauseResult::pass(
+            clause,
+            format!("{actual:.6} >= {required:.6} required"),
+            artifact_ids,
+        )
+    } else {
+        MigrationReleaseGateClauseResult::fail(
+            clause,
+            format!("{actual:.6} < {required:.6} required"),
+            artifact_ids,
+        )
+    }
+}
+
+// ============================================================================
 // Scorecard
 // ============================================================================
 
@@ -923,6 +1503,38 @@ mod tests {
         }
     }
 
+    fn release_gate_artifact(kind: &str) -> MigrationReleaseGateArtifact {
+        let artifact_id = format!("{kind}-artifact");
+        let uri = format!("artifacts/{kind}.json");
+        MigrationReleaseGateArtifact::new(
+            &artifact_id,
+            kind,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            &uri,
+        )
+    }
+
+    fn beta_release_gate_evidence() -> MigrationReleaseGateEvidence {
+        let readiness = MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+            .certification_pass_ratio(0.98)
+            .corpus_coverage_ratio(0.70)
+            .reliability_pass_ratio(0.99)
+            .deterministic_artifact_count(5)
+            .benchmark_gate_passed(true)
+            .open_blocker_count(0);
+
+        MigrationReleaseGateEvidence::new("migration-service-2026.05.08", readiness)
+            .determinism_pass_ratio(1.0)
+            .performance_budget_passed(true)
+            .unresolved_critical_gap_count(0)
+            .artifact(release_gate_artifact("certification"))
+            .artifact(release_gate_artifact("critical-gaps"))
+            .artifact(release_gate_artifact("determinism"))
+            .artifact(release_gate_artifact("performance"))
+            .artifact(release_gate_artifact("readiness"))
+            .artifact(release_gate_artifact("corpus"))
+    }
+
     #[test]
     fn scorecard_go_with_matching_shadows() {
         let config = RolloutScorecardConfig::default().min_shadow_scenarios(2);
@@ -1117,6 +1729,158 @@ mod tests {
                 .reasons
                 .contains(&"operational-reliability-threshold")
         );
+    }
+
+    #[test]
+    fn release_gate_enforce_passes_with_traceable_artifacts() {
+        let policy = MigrationReleaseGatePolicy::for_stage(
+            MigrationRolloutStage::Beta,
+            MigrationReleaseGateMode::Enforce,
+        );
+        let evaluator = MigrationReleaseGateEvaluator::new(policy);
+        let decision = evaluator.evaluate(&beta_release_gate_evidence());
+
+        assert_eq!(decision.verdict, MigrationReleaseGateVerdict::Pass);
+        assert!(decision.passed());
+        assert!(!decision.blocks_release());
+        assert!(decision.failed_clauses().is_empty());
+        assert_eq!(
+            decision
+                .clauses
+                .iter()
+                .map(|clause| clause.clause)
+                .collect::<Vec<_>>(),
+            vec![
+                "readiness",
+                "certification",
+                "determinism",
+                "performance-budget",
+                "critical-gaps",
+                "artifact-traceability",
+            ]
+        );
+        let critical_gap_artifacts = vec!["critical-gaps-artifact".to_string()];
+        assert!(decision.clauses.iter().any(|clause| {
+            clause.clause == "critical-gaps" && clause.artifact_ids == critical_gap_artifacts
+        }));
+    }
+
+    #[test]
+    fn release_gate_enforce_fails_with_clause_reasons() {
+        let readiness = MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+            .certification_pass_ratio(0.96)
+            .corpus_coverage_ratio(0.70)
+            .reliability_pass_ratio(0.99)
+            .deterministic_artifact_count(5)
+            .benchmark_gate_passed(true);
+        let evidence = MigrationReleaseGateEvidence::new("migration-service-bad", readiness)
+            .determinism_pass_ratio(0.95)
+            .performance_budget_passed(false)
+            .unresolved_critical_gap_count(2)
+            .artifact(release_gate_artifact("certification"))
+            .artifact(release_gate_artifact("critical-gaps"))
+            .artifact(release_gate_artifact("determinism"))
+            .artifact(release_gate_artifact("performance"))
+            .artifact(release_gate_artifact("readiness"))
+            .artifact(release_gate_artifact("corpus"));
+        let policy = MigrationReleaseGatePolicy::for_stage(
+            MigrationRolloutStage::Beta,
+            MigrationReleaseGateMode::Enforce,
+        );
+        let decision = MigrationReleaseGateEvaluator::new(policy).evaluate(&evidence);
+
+        assert_eq!(decision.verdict, MigrationReleaseGateVerdict::Fail);
+        assert!(decision.blocks_release());
+        let failed = decision.failed_clauses();
+        assert!(failed.contains(&"readiness"));
+        assert!(failed.contains(&"certification"));
+        assert!(failed.contains(&"determinism"));
+        assert!(failed.contains(&"performance-budget"));
+        assert!(failed.contains(&"critical-gaps"));
+        assert!(
+            decision
+                .clauses
+                .iter()
+                .any(|clause| clause.reason.contains("0.960000 < 0.970000"))
+        );
+    }
+
+    #[test]
+    fn release_gate_dry_run_failure_does_not_block_release() {
+        let mut evidence = beta_release_gate_evidence();
+        evidence.performance_budget_passed = false;
+        let policy = MigrationReleaseGatePolicy::for_stage(
+            MigrationRolloutStage::Beta,
+            MigrationReleaseGateMode::DryRun,
+        );
+        let decision = MigrationReleaseGateEvaluator::new(policy).evaluate(&evidence);
+
+        assert_eq!(decision.verdict, MigrationReleaseGateVerdict::Fail);
+        assert!(!decision.blocks_release());
+        assert!(decision.failed_clauses().contains(&"performance-budget"));
+    }
+
+    #[test]
+    fn release_gate_rejects_mutable_artifact_evidence() {
+        let readiness = MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+            .certification_pass_ratio(0.98)
+            .corpus_coverage_ratio(0.70)
+            .reliability_pass_ratio(0.99)
+            .deterministic_artifact_count(5)
+            .benchmark_gate_passed(true);
+        let mutable_performance = MigrationReleaseGateArtifact::new(
+            "performance-artifact",
+            "performance",
+            "latest",
+            "artifacts/performance.json",
+        );
+        let evidence = MigrationReleaseGateEvidence::new("migration-service-mutable", readiness)
+            .determinism_pass_ratio(1.0)
+            .performance_budget_passed(true)
+            .artifact(release_gate_artifact("certification"))
+            .artifact(release_gate_artifact("critical-gaps"))
+            .artifact(release_gate_artifact("determinism"))
+            .artifact(mutable_performance)
+            .artifact(release_gate_artifact("readiness"))
+            .artifact(release_gate_artifact("corpus"));
+        let policy = MigrationReleaseGatePolicy::for_stage(
+            MigrationRolloutStage::Beta,
+            MigrationReleaseGateMode::Enforce,
+        );
+        let decision = MigrationReleaseGateEvaluator::new(policy).evaluate(&evidence);
+
+        assert_eq!(decision.verdict, MigrationReleaseGateVerdict::Fail);
+        assert!(decision.blocks_release());
+        assert!(decision.clauses.iter().any(|clause| {
+            clause.clause == "artifact-traceability"
+                && !clause.passed
+                && clause.reason.contains("invalid immutable references")
+                && clause
+                    .reason
+                    .contains("missing artifact kinds: performance")
+        }));
+    }
+
+    #[test]
+    fn release_gate_json_is_machine_readable() -> serde_json::Result<()> {
+        let policy = MigrationReleaseGatePolicy::for_stage(
+            MigrationRolloutStage::Beta,
+            MigrationReleaseGateMode::Enforce,
+        );
+        let mut evidence = beta_release_gate_evidence();
+        evidence.migration_version = "migration-service-\"beta\"".to_string();
+        let decision = MigrationReleaseGateEvaluator::new(policy).evaluate(&evidence);
+        let json = decision.to_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json)?;
+
+        assert_eq!(parsed["schema_version"], "1.0.0");
+        assert_eq!(parsed["migration_version"], "migration-service-\"beta\"");
+        assert_eq!(parsed["mode"], "enforce");
+        assert_eq!(parsed["target_stage"], "beta");
+        assert_eq!(parsed["verdict"], "pass");
+        assert_eq!(parsed["blocks_release"], false);
+        assert_eq!(parsed["clauses"].as_array().map(Vec::len), Some(6));
+        Ok(())
     }
 
     #[test]
