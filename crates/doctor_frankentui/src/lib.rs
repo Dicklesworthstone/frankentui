@@ -196,6 +196,7 @@ pub mod translation_planner;
 pub mod tsx_parser;
 pub mod util;
 pub mod view_layout_translator;
+pub mod visual_diff;
 
 pub use cli::run_from_env;
 pub use error::{DoctorError, Result};
