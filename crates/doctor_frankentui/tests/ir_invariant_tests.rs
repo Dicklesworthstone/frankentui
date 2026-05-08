@@ -23,8 +23,9 @@ use doctor_frankentui::migration_ir::{
 };
 use doctor_frankentui::tsx_parser::{
     ComponentDecl, ComponentKind, EventHandler, FileParse, HookCall, JsxElement, JsxProp,
-    ProjectParse,
+    ProjectParse, parse_file,
 };
+use doctor_frankentui::{composition_semantics, state_effects, style_semantics};
 
 use proptest::prelude::*;
 
@@ -795,6 +796,211 @@ fn lowered_ir_json_roundtrip() {
         errors.is_empty(),
         "Roundtripped IR must validate: {errors:?}"
     );
+}
+
+#[test]
+fn ingestion_fixture_matrix_has_golden_json_and_stage_logs() {
+    fn stable_normalization_hash(ir: &MigrationIr) -> String {
+        let mut stable = ir.clone();
+        stable.metadata.created_at = "stable-ingestion-fixture-time".to_string();
+        stable.metadata.integrity_hash = None;
+        migration_ir::compute_integrity_hash(&stable)
+    }
+
+    let fixtures = [
+        (
+            "happy-counter",
+            "happy",
+            "fixtures/happy-counter.tsx",
+            r#"
+type ButtonProps = { label: string; onPress?: () => void };
+
+export function App() {
+    const [count, setCount] = useState(0);
+    useEffect(() => {
+        fetch('/api/count').then(r => r.json());
+    }, [count]);
+    return <Button label={`Count ${count}`} onPress={() => setCount(count + 1)} />;
+}
+
+export function Button(props: ButtonProps) {
+    return <button className="primary">{props.label}</button>;
+}
+"#,
+        ),
+        (
+            "edge-conditional-style",
+            "edge",
+            "fixtures/edge-conditional-style.tsx",
+            r#"
+export const Panel = ({ items = [], enabled }) => {
+    const labels = useMemo(() => items.map(item => item.label), [items]);
+    return <>
+        {enabled && <section style={{ display: 'flex', color: '#fff' }}>{labels.map(label => <span key={label}>{label}</span>)}</section>}
+    </>;
+};
+"#,
+        ),
+        (
+            "malformed-empty",
+            "malformed",
+            "fixtures/malformed-empty.tsx",
+            "export function Broken(",
+        ),
+        (
+            "adversarial-effects",
+            "adversarial",
+            "fixtures/adversarial-effects.tsx",
+            r#"
+export function Risky() {
+    useEffect(() => {
+        window.addEventListener('keydown', () => {});
+        localStorage.setItem('mode', process.env.NODE_ENV ?? 'dev');
+        return () => document.removeEventListener('keydown', () => {});
+    }, []);
+    return <div sx={{ color: 'red' }} />;
+}
+"#,
+        ),
+    ];
+
+    let mut snapshot_rows = Vec::new();
+    let mut stage_logs = Vec::new();
+
+    for (fixture_id, fixture_kind, file_path, source) in fixtures {
+        let parsed = parse_file(source, file_path);
+        let component_count = parsed.components.len();
+        let hook_usage_count = parsed.hooks.len();
+        let type_count = parsed.types.len();
+        let diagnostic_count = parsed.diagnostics.len();
+        let project = ProjectParse {
+            files: BTreeMap::from([(file_path.to_string(), parsed)]),
+            file_contents: BTreeMap::from([(file_path.to_string(), source.to_string())]),
+            symbol_table: BTreeMap::new(),
+            component_count,
+            hook_usage_count,
+            type_count,
+            diagnostics: Vec::new(),
+            external_imports: BTreeSet::new(),
+        };
+
+        let composition = composition_semantics::extract_composition_semantics(&project);
+        let state_model =
+            state_effects::build_project_state_model(&project.files, &project.file_contents);
+        let styles = style_semantics::extract_style_semantics(&project);
+        let lowered = lowering::lower_project(&test_config(), &project);
+        let normalization_hash = stable_normalization_hash(&lowered.ir);
+
+        let lowered_again = lowering::lower_project(&test_config(), &project);
+        assert_eq!(
+            normalization_hash,
+            stable_normalization_hash(&lowered_again.ir),
+            "normalization hash must be deterministic for fixture {fixture_id}"
+        );
+
+        let snapshot_row = serde_json::json!({
+            "fixture_id": fixture_id,
+            "kind": fixture_kind,
+            "parse": {
+                "components": component_count,
+                "hooks": hook_usage_count,
+                "diagnostics": diagnostic_count,
+            },
+            "composition": {
+                "roots": composition.component_tree.roots.len(),
+                "nodes": composition.component_tree.nodes.len(),
+                "warnings": composition.warnings.len(),
+            },
+            "state_effects": {
+                "components": state_model.components.len(),
+                "effects": state_model.stats.total_effects,
+                "required_capabilities": state_model.required_capabilities.len(),
+                "optional_capabilities": state_model.optional_capabilities.len(),
+                "risk_flags": state_model.risk_flags.len(),
+            },
+            "style": {
+                "bindings": styles.style_bindings.len(),
+                "sources": styles.style_sources_used.len(),
+                "warnings": styles.warnings.len(),
+            },
+            "lowering": {
+                "nodes": lowered.ir.view_tree.nodes.len(),
+                "state_vars": lowered.ir.state_graph.variables.len(),
+                "effects": lowered.ir.effect_registry.effects.len(),
+                "normalization_hash": normalization_hash,
+            },
+        });
+        snapshot_rows.push(snapshot_row);
+
+        for parser_stage in ["parse", "composition", "state_effects", "style", "lowering"] {
+            stage_logs.push(serde_json::json!({
+                "fixture_id": fixture_id,
+                "fixture_kind": fixture_kind,
+                "parser_stage": parser_stage,
+                "normalization_hash": normalization_hash,
+            }));
+        }
+    }
+
+    let golden = serde_json::json!({
+        "version": "opentui-ingestion-fixture-matrix-v1",
+        "fixtures": snapshot_rows,
+    });
+    let golden_json = serde_json::to_string_pretty(&golden).expect("serialize golden snapshot");
+    let reparsed: serde_json::Value =
+        serde_json::from_str(&golden_json).expect("parse golden snapshot");
+    let golden_json_again =
+        serde_json::to_string_pretty(&reparsed).expect("serialize reparsed snapshot");
+    assert_eq!(
+        golden_json, golden_json_again,
+        "golden JSON snapshot must be stable after roundtrip"
+    );
+
+    assert_eq!(
+        golden["fixtures"].as_array().expect("fixtures array").len(),
+        4
+    );
+    assert!(
+        golden["fixtures"]
+            .as_array()
+            .expect("fixtures array")
+            .iter()
+            .any(|row| row["kind"] == "malformed"
+                && row["parse"]["components"].as_u64() == Some(0)),
+        "fixture matrix must include a malformed non-panicking parser case"
+    );
+    assert!(
+        golden["fixtures"]
+            .as_array()
+            .expect("fixtures array")
+            .iter()
+            .any(|row| row["kind"] == "adversarial"
+                && row["state_effects"]["risk_flags"]
+                    .as_u64()
+                    .is_some_and(|value| value > 0)),
+        "fixture matrix must include an adversarial capability/risk case"
+    );
+
+    assert_eq!(stage_logs.len(), 20);
+    for row in &stage_logs {
+        assert!(
+            row["fixture_id"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(
+            row["parser_stage"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert_eq!(
+            row["normalization_hash"]
+                .as_str()
+                .expect("normalization hash")
+                .len(),
+            64
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
