@@ -151,6 +151,7 @@ pub mod backend_capability;
 pub mod capability_gap;
 pub mod capture;
 pub mod cegis_synthesis;
+pub mod certification_report;
 pub mod cli;
 pub mod code_emission;
 pub mod codegen_optimize;
