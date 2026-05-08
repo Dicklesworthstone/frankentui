@@ -12,9 +12,15 @@ VALIDATION_REPORT_JSON="${META_DIR}/validation_report.json"
 EVENTS_JSONL="${META_DIR}/events.jsonl"
 STDOUT_LOG="${LOG_DIR}/cargo_test.stdout.log"
 STDERR_LOG="${LOG_DIR}/cargo_test.stderr.log"
+SECURITY_AUDIT_JSONL="${META_DIR}/security_audit.jsonl"
+SECURITY_REPORT_JSON="${META_DIR}/adversarial_security_report.json"
+SECURITY_STDOUT_LOG="${LOG_DIR}/security_audit.stdout.log"
+SECURITY_STDERR_LOG="${LOG_DIR}/security_audit.stderr.log"
 RUN_ID="${DOCTOR_FRANKENTUI_INGESTION_E2E_RUN_ID:-ingestion-e2e-seed-${E2E_SEED:-0}}"
-CARGO_BIN="${CARGO:-cargo}"
-REPRODUCTION_COMMAND="DOCTOR_FRANKENTUI_INGESTION_E2E_RUN_ID=${RUN_ID} ${BASH_SOURCE[0]} ${RUN_ROOT}"
+CARGO_CMD_TEXT="${CARGO_E2E_CMD:-${CARGO:-cargo}}"
+read -r -a CARGO_CMD <<<"${CARGO_CMD_TEXT}"
+CARGO_BIN="${CARGO_CMD[0]}"
+REPRODUCTION_COMMAND="DOCTOR_FRANKENTUI_INGESTION_E2E_RUN_ID=${RUN_ID} DOCTOR_FRANKENTUI_ADVERSARIAL_INGESTION_E2E_RUN_ID=${RUN_ID} ${BASH_SOURCE[0]} ${RUN_ROOT}"
 
 mkdir -p "${LOG_DIR}" "${META_DIR}"
 
@@ -30,6 +36,8 @@ require_command() {
 write_failure() {
   local parser_stage="$1"
   local reason="$2"
+  local stdout_log="${3:-${STDOUT_LOG}}"
+  local stderr_log="${4:-${STDERR_LOG}}"
   python3 - \
     "${SUMMARY_JSON}" \
     "${SUMMARY_TXT}" \
@@ -39,8 +47,8 @@ write_failure() {
     "${RUN_ID}" \
     "${parser_stage}" \
     "${reason}" \
-    "${STDOUT_LOG}" \
-    "${STDERR_LOG}" \
+    "${stdout_log}" \
+    "${stderr_log}" \
     "${REPRODUCTION_COMMAND}" <<'PY'
 from __future__ import annotations
 
@@ -138,7 +146,9 @@ validate_success_artifacts() {
     "${EVENTS_JSONL}" \
     "${RUN_ROOT}" \
     "${RUN_ID}" \
-    "${REPRODUCTION_COMMAND}" <<'PY'
+    "${REPRODUCTION_COMMAND}" \
+    "${SECURITY_AUDIT_JSONL}" \
+    "${SECURITY_REPORT_JSON}" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -154,6 +164,8 @@ events_jsonl = Path(sys.argv[4])
 run_root = Path(sys.argv[5])
 run_id = sys.argv[6]
 reproduction_command = sys.argv[7]
+security_audit_path = Path(sys.argv[8])
+security_report_path = Path(sys.argv[9])
 
 meta_dir = run_root / "meta"
 manifest_path = meta_dir / "ingestion_manifest.json"
@@ -168,36 +180,44 @@ required_stages = [
     "lowering",
 ]
 required_kinds = {"happy", "edge", "malformed", "adversarial"}
+required_security_fixtures = {
+    "path-traversal-env",
+    "sensitive-token-file",
+    "malicious-subprocess",
+    "blocked-network",
+    "oversized-payload",
+    "secret-leak-probe",
+}
 
 
 def fail(stage: str, message: str) -> None:
     raise SystemExit(f"{stage}: {message}")
 
 
-def read_json(path: Path) -> Any:
+def read_json(path: Path, stage: str = "manifest") -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        fail("manifest", f"missing {path}")
+        fail(stage, f"missing {path}")
     except json.JSONDecodeError as exc:
-        fail("manifest", f"invalid JSON in {path}: {exc}")
+        fail(stage, f"invalid JSON in {path}: {exc}")
 
 
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
+def read_jsonl(path: Path, stage: str = "trace") -> list[dict[str, Any]]:
     try:
         raw_lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
-        fail("trace", f"missing {path}")
+        fail(stage, f"missing {path}")
     rows: list[dict[str, Any]] = []
     for line_no, raw in enumerate(raw_lines, start=1):
         if not raw.strip():
-            fail("trace", f"blank line {line_no} in {path}")
+            fail(stage, f"blank line {line_no} in {path}")
         try:
             row = json.loads(raw)
         except json.JSONDecodeError as exc:
-            fail("trace", f"invalid JSONL line {line_no} in {path}: {exc}")
+            fail(stage, f"invalid JSONL line {line_no} in {path}: {exc}")
         if not isinstance(row, dict):
-            fail("trace", f"line {line_no} in {path} is not an object")
+            fail(stage, f"line {line_no} in {path} is not an object")
         rows.append(row)
     return rows
 
@@ -255,6 +275,71 @@ for fixture in fixtures:
 events_jsonl.write_text(trace_a_text, encoding="utf-8")
 trace_sha256 = hashlib.sha256(trace_a_text.encode("utf-8")).hexdigest()
 
+security_rows = read_jsonl(security_audit_path, "security_audit")
+if len(security_rows) != len(required_security_fixtures):
+    fail(
+        "security_audit",
+        f"expected {len(required_security_fixtures)} security rows, got {len(security_rows)}",
+    )
+security_fixture_ids = {row.get("fixture_id") for row in security_rows}
+if security_fixture_ids != required_security_fixtures:
+    fail(
+        "security_audit",
+        f"fixture ids mismatch: {sorted(str(item) for item in security_fixture_ids)}",
+    )
+
+for row in security_rows:
+    fixture_id = row.get("fixture_id")
+    if row.get("schema_version") != "doctor-adversarial-ingestion-security-e2e-v1":
+        fail("security_audit", f"{fixture_id}: schema_version mismatch")
+    if row.get("run_id") != run_id:
+        fail("security_audit", f"{fixture_id}: run_id mismatch")
+    if not isinstance(row.get("replay_id"), str) or not row["replay_id"]:
+        fail("security_audit", f"{fixture_id}: missing replay_id")
+    replay_command = row.get("replay_command")
+    if not isinstance(replay_command, str) or "sandbox_redaction_tests" not in replay_command:
+        fail("security_audit", f"{fixture_id}: missing replay_command")
+    if not isinstance(row.get("policy_decision"), str):
+        fail("security_audit", f"{fixture_id}: missing policy_decision")
+
+    if fixture_id == "secret-leak-probe":
+        if row.get("status") != "redacted":
+            fail("security_audit", "secret-leak-probe must be redacted")
+        if not isinstance(row.get("redaction_count"), int) or row["redaction_count"] <= 0:
+            fail("security_audit", "secret-leak-probe must record redactions")
+    else:
+        if row.get("status") != "blocked":
+            fail("security_audit", f"{fixture_id}: hostile fixture must be blocked")
+        if row.get("blocked") is not True:
+            fail("security_audit", f"{fixture_id}: blocked flag must be true")
+        exit_code = row.get("exit_code")
+        if not isinstance(exit_code, int) or not 50 <= exit_code <= 59:
+            fail("security_audit", f"{fixture_id}: exit_code must be in 50-59")
+        if not isinstance(row.get("violation_kind"), str):
+            fail("security_audit", f"{fixture_id}: missing violation_kind")
+
+security_report = read_json(security_report_path, "security_report")
+if security_report.get("schema_version") != "doctor-adversarial-ingestion-security-report-v1":
+    fail("security_report", "schema_version mismatch")
+if security_report.get("status") != "passed":
+    fail("security_report", "status must be passed")
+if security_report.get("run_id") != run_id:
+    fail("security_report", "run_id mismatch")
+if security_report.get("blocked_operations") != 5:
+    fail("security_report", "blocked_operations must be 5")
+if security_report.get("redacted_secret_probes") != 1:
+    fail("security_report", "redacted_secret_probes must be 1")
+replay_ids = security_report.get("replay_ids")
+if not isinstance(replay_ids, list) or len(replay_ids) != len(required_security_fixtures):
+    fail("security_report", "replay_ids must cover every adversarial fixture")
+
+security_text = security_audit_path.read_text(encoding="utf-8") + security_report_path.read_text(
+    encoding="utf-8"
+)
+for forbidden in ["ghp_", "AKIAIOSFODNN7EXAMPLE", "supersecret"]:
+    if forbidden in security_text:
+        fail("security_audit", f"unredacted secret marker leaked: {forbidden}")
+
 report = {
     "status": "passed",
     "run_id": run_id,
@@ -262,6 +347,10 @@ report = {
     "trace_line_count": len(rows),
     "fixture_count": len(fixtures),
     "required_stages": required_stages,
+    "security_audit_jsonl": str(security_audit_path),
+    "security_report": str(security_report_path),
+    "security_trace_line_count": len(security_rows),
+    "blocked_operations": security_report["blocked_operations"],
 }
 validation_report_json.write_text(
     json.dumps(report, indent=2, sort_keys=True) + "\n",
@@ -277,6 +366,10 @@ summary = {
     "trace_a": str(trace_a_path),
     "trace_b": str(trace_b_path),
     "validation_report": str(validation_report_json),
+    "security_audit_jsonl": str(security_audit_path),
+    "security_report": str(security_report_path),
+    "security_trace_line_count": len(security_rows),
+    "blocked_operations": security_report["blocked_operations"],
     "trace_sha256": trace_sha256,
     "reproduction_command": reproduction_command,
 }
@@ -294,6 +387,10 @@ summary_txt.write_text(
             f"events_jsonl={events_jsonl}",
             f"trace_a={trace_a_path}",
             f"trace_b={trace_b_path}",
+            f"security_audit_jsonl={security_audit_path}",
+            f"security_report={security_report_path}",
+            f"security_trace_line_count={len(security_rows)}",
+            f"blocked_operations={security_report['blocked_operations']}",
             f"validation_report={validation_report_json}",
             f"trace_sha256={trace_sha256}",
         ]
@@ -310,11 +407,13 @@ require_command "python3" "install Python 3"
 
 export DOCTOR_FRANKENTUI_INGESTION_E2E_RUN_ROOT="${RUN_ROOT}"
 export DOCTOR_FRANKENTUI_INGESTION_E2E_RUN_ID="${RUN_ID}"
+export DOCTOR_FRANKENTUI_ADVERSARIAL_INGESTION_E2E_RUN_ROOT="${RUN_ROOT}"
+export DOCTOR_FRANKENTUI_ADVERSARIAL_INGESTION_E2E_RUN_ID="${RUN_ID}"
 
 set +e
 (
   cd "${ROOT_DIR}"
-  "${CARGO_BIN}" test \
+  "${CARGO_CMD[@]}" test \
     -p doctor_frankentui \
     --test ir_invariant_tests \
     ingestion_e2e_trace_export_is_deterministic_and_manifest_complete \
@@ -326,6 +425,27 @@ set -e
 if [[ "${cargo_status}" -ne 0 ]]; then
   write_failure "cargo_test" "cargo test failed with exit ${cargo_status}"
   exit "${cargo_status}"
+fi
+
+set +e
+(
+  cd "${ROOT_DIR}"
+  "${CARGO_CMD[@]}" test \
+    -p doctor_frankentui \
+    --test sandbox_redaction_tests \
+    adversarial_ingestion_security_audit_export_is_fail_closed_and_redacted \
+    -- --nocapture
+) >"${SECURITY_STDOUT_LOG}" 2>"${SECURITY_STDERR_LOG}"
+security_status=$?
+set -e
+
+if [[ "${security_status}" -ne 0 ]]; then
+  write_failure \
+    "security_audit" \
+    "security audit test failed with exit ${security_status}" \
+    "${SECURITY_STDOUT_LOG}" \
+    "${SECURITY_STDERR_LOG}"
+  exit "${security_status}"
 fi
 
 set +e

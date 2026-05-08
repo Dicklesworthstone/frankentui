@@ -9,8 +9,12 @@
 use doctor_frankentui::redact::{
     ScanReport, builtin_patterns, redact_content, scan_content, unredact_content,
 };
-use doctor_frankentui::sandbox::{SandboxEnforcer, SandboxPolicy, SandboxProfile, ViolationKind};
-use std::path::Path;
+use doctor_frankentui::sandbox::{
+    SandboxEnforcer, SandboxPolicy, SandboxProfile, SandboxViolation, ViolationKind,
+};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::{env, fs};
 
 // ══════════════════════════════════════════════════════════════════════════
 // 1. Sandbox allow/deny matrix tests
@@ -718,4 +722,197 @@ fn no_false_positive_on_tsconfig() {
         findings.is_empty(),
         "tsconfig.json should not trigger: {findings:?}"
     );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 11. Adversarial ingestion E2E security artifact export
+// ══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn adversarial_ingestion_security_audit_export_is_fail_closed_and_redacted() {
+    let run_id = env::var("DOCTOR_FRANKENTUI_ADVERSARIAL_INGESTION_E2E_RUN_ID")
+        .unwrap_or_else(|_| "adversarial-ingestion-security-unit".to_string());
+    let run_root = env::var_os("DOCTOR_FRANKENTUI_ADVERSARIAL_INGESTION_E2E_RUN_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            env::temp_dir().join("doctor_frankentui/adversarial_ingestion_security_unit")
+        });
+    let meta_dir = run_root.join("meta");
+    fs::create_dir_all(&meta_dir).expect("create adversarial ingestion meta dir");
+
+    let security_audit_jsonl = meta_dir.join("security_audit.jsonl");
+    let security_report_json = meta_dir.join("adversarial_security_report.json");
+    let replay_command = format!(
+        "DOCTOR_FRANKENTUI_ADVERSARIAL_INGESTION_E2E_RUN_ID={run_id} \
+         cargo test -p doctor_frankentui --test sandbox_redaction_tests \
+         adversarial_ingestion_security_audit_export_is_fail_closed_and_redacted -- --nocapture"
+    );
+
+    let mut policy = SandboxProfile::Strict.to_policy();
+    policy.allow_read_path("/snapshot/**");
+    let mut enforcer = SandboxEnforcer::new(policy, &run_id);
+    let mut rows = Vec::new();
+
+    push_blocked_decision(
+        &mut rows,
+        &run_id,
+        BlockedDecisionCase {
+            fixture_id: "path-traversal-env",
+            fixture_kind: "path_traversal",
+            operation: "fs_read",
+            expected_exit_code: 50,
+        },
+        enforcer.check_read(Path::new("/snapshot/../.env")),
+        &replay_command,
+    );
+    push_blocked_decision(
+        &mut rows,
+        &run_id,
+        BlockedDecisionCase {
+            fixture_id: "sensitive-token-file",
+            fixture_kind: "secret_file",
+            operation: "fs_read",
+            expected_exit_code: 50,
+        },
+        enforcer.check_read(Path::new("/snapshot/config/token.json")),
+        &replay_command,
+    );
+    push_blocked_decision(
+        &mut rows,
+        &run_id,
+        BlockedDecisionCase {
+            fixture_id: "malicious-subprocess",
+            fixture_kind: "malicious_script",
+            operation: "subprocess",
+            expected_exit_code: 52,
+        },
+        enforcer.check_subprocess("node"),
+        &replay_command,
+    );
+    push_blocked_decision(
+        &mut rows,
+        &run_id,
+        BlockedDecisionCase {
+            fixture_id: "blocked-network",
+            fixture_kind: "network_exfiltration",
+            operation: "network",
+            expected_exit_code: 51,
+        },
+        enforcer.check_network("evil.example"),
+        &replay_command,
+    );
+    push_blocked_decision(
+        &mut rows,
+        &run_id,
+        BlockedDecisionCase {
+            fixture_id: "oversized-payload",
+            fixture_kind: "oversized_payload",
+            operation: "fs_read_bytes",
+            expected_exit_code: 50,
+        },
+        enforcer.record_bytes_read(256 * 1024 * 1024 + 1),
+        &replay_command,
+    );
+
+    let secret_probe = format!(
+        "GITHUB_TOKEN={SECRET_GITHUB}\nAWS_ACCESS_KEY_ID={SECRET_AWS}\nDATABASE_URL={SECRET_DB}"
+    );
+    let redacted = redact_content(
+        &secret_probe,
+        "fixtures/secret-leak.env",
+        &builtin_patterns(),
+        &run_id,
+    );
+    assert!(!redacted.content.contains(SECRET_GITHUB));
+    assert!(!redacted.content.contains(SECRET_AWS));
+    assert!(!redacted.content.contains("supersecret"));
+    rows.push(json!({
+        "schema_version": "doctor-adversarial-ingestion-security-e2e-v1",
+        "run_id": run_id,
+        "fixture_id": "secret-leak-probe",
+        "fixture_kind": "secret_leak",
+        "operation": "redaction",
+        "status": "redacted",
+        "policy_decision": "redact",
+        "blocked": false,
+        "exit_code": 0,
+        "redaction_count": redacted.records.len(),
+        "replay_id": "replay-secret-leak-probe",
+        "replay_command": replay_command,
+        "artifact_path": "fixtures/secret-leak.env",
+        "redacted_preview": redacted.content,
+    }));
+
+    let audit_text = rows
+        .iter()
+        .map(|row| serde_json::to_string(row).expect("serialize audit row"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&security_audit_jsonl, &audit_text).expect("write security audit jsonl");
+
+    let blocked_operations = rows
+        .iter()
+        .filter(|row| row.get("status").and_then(Value::as_str) == Some("blocked"))
+        .count();
+    let report = json!({
+        "schema_version": "doctor-adversarial-ingestion-security-report-v1",
+        "status": "passed",
+        "run_id": run_id,
+        "blocked_operations": blocked_operations,
+        "redacted_secret_probes": 1,
+        "security_audit_jsonl": security_audit_jsonl.to_string_lossy(),
+        "replay_ids": rows.iter().filter_map(|row| row.get("replay_id").and_then(Value::as_str)).collect::<Vec<_>>(),
+    });
+    let report_text =
+        serde_json::to_string_pretty(&report).expect("serialize security report") + "\n";
+    fs::write(&security_report_json, &report_text).expect("write security report");
+
+    let combined = format!("{audit_text}\n{report_text}");
+    assert!(!combined.contains(SECRET_GITHUB));
+    assert!(!combined.contains(SECRET_AWS));
+    assert!(!combined.contains("supersecret"));
+    assert_eq!(blocked_operations, 5);
+    assert_eq!(
+        enforcer
+            .audit_log()
+            .entries()
+            .iter()
+            .filter(|entry| entry.action == "deny")
+            .count(),
+        5
+    );
+}
+
+struct BlockedDecisionCase<'a> {
+    fixture_id: &'a str,
+    fixture_kind: &'a str,
+    operation: &'a str,
+    expected_exit_code: i32,
+}
+
+fn push_blocked_decision(
+    rows: &mut Vec<Value>,
+    run_id: &str,
+    case: BlockedDecisionCase<'_>,
+    decision: std::result::Result<(), Box<SandboxViolation>>,
+    replay_command: &str,
+) {
+    let violation = decision.expect_err("adversarial fixture must fail closed");
+    assert_eq!(violation.kind.exit_code(), case.expected_exit_code);
+    rows.push(json!({
+        "schema_version": "doctor-adversarial-ingestion-security-e2e-v1",
+        "run_id": run_id,
+        "fixture_id": case.fixture_id,
+        "fixture_kind": case.fixture_kind,
+        "operation": case.operation,
+        "status": "blocked",
+        "policy_decision": "deny",
+        "blocked": true,
+        "exit_code": violation.kind.exit_code(),
+        "violation_kind": format!("{:?}", violation.kind),
+        "violation_message": violation.message,
+        "replay_id": format!("replay-{}", case.fixture_id),
+        "replay_command": replay_command,
+    }));
 }
