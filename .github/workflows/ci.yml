@@ -1155,6 +1155,12 @@ jobs:
           ./scripts/doctor_frankentui_certification_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/certification" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/certification_e2e.log"
 
+      - name: Run doctor_frankentui proof-artifact E2E
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_proof_artifacts_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/proof_artifacts_e2e.log"
+
       - name: Build doctor_frankentui replay/triage summary
         if: always()
         run: |
@@ -1224,6 +1230,14 @@ jobs:
             echo "certification_cargo_gate_results=${DOCTOR_FTUI_ARTIFACT_ROOT}/certification/meta/cargo_gate_results.json"
             echo "certification_artifact_manifest=${DOCTOR_FTUI_ARTIFACT_ROOT}/certification/meta/artifact_manifest.json"
             echo "certification_replay_dir=${DOCTOR_FTUI_ARTIFACT_ROOT}/certification/replay"
+            echo "proof_artifacts_e2e_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/proof_artifacts_e2e.log"
+            echo "proof_artifacts_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts/meta/summary.json"
+            echo "proof_artifacts_events_jsonl=${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts/meta/events.jsonl"
+            echo "proof_artifacts_events_validation_report=${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts/meta/events_validation_report.json"
+            echo "proof_artifacts_ledger_jsonl=${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts/meta/proof_artifact_ledger.jsonl"
+            echo "proof_artifacts_verifier_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts/verifier/proof_verifier_summary.json"
+            echo "proof_artifacts_artifact_manifest=${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts/meta/artifact_manifest.json"
+            echo "proof_artifacts_replay_dir=${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts/replay"
             echo "replay_triage_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/replay_triage.log"
             echo "replay_triage_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/replay_triage_report.json"
             echo "determinism_soak_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/determinism_soak.log"
