@@ -176,6 +176,7 @@ pub mod ir_versioning;
 pub mod keyseq;
 pub mod lowering;
 pub mod mapping_atlas;
+pub mod metamorphic_oracle;
 pub mod migration_config;
 pub mod migration_ir;
 pub mod module_graph;
