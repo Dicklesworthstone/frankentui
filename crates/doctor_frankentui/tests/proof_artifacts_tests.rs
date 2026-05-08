@@ -6,7 +6,8 @@ use doctor_frankentui::proof_artifacts::{
     verify_semantic_proof_artifact,
 };
 use doctor_frankentui::semantic_diff::{
-    SemanticDiffVerdict, SemanticObservation, SemanticObservationKind, SemanticRun, compare_runs,
+    SemanticDiffReport, SemanticDiffVerdict, SemanticObservation, SemanticObservationKind,
+    SemanticRun, compare_runs,
 };
 
 fn observation(
@@ -63,6 +64,27 @@ fn equivalent_runs() -> (SemanticRun, SemanticRun) {
     .with_replay_command("doctor_frankentui replay --seed 11 --side translated");
 
     (source, translated)
+}
+
+fn equivalent_report_and_artifact() -> (
+    SemanticDiffReport,
+    doctor_frankentui::proof_artifacts::SemanticProofArtifact,
+) {
+    let (source, translated) = equivalent_runs();
+    let report = compare_runs(&source, &translated);
+    let artifact = build_semantic_proof_artifact(&source, &translated, &report)
+        .expect("equivalent semantic report should build proof artifact");
+    (report, artifact)
+}
+
+fn issue_codes(
+    validation: &doctor_frankentui::proof_artifacts::SemanticProofValidationReport,
+) -> BTreeSet<&str> {
+    validation
+        .issues
+        .iter()
+        .map(|issue| issue.code.as_str())
+        .collect()
 }
 
 #[test]
@@ -289,5 +311,147 @@ fn missing_or_invalid_obligations_force_non_passing_certification() {
             .issues
             .iter()
             .any(|issue| issue.code == "artifact_checksum_mismatch")
+    );
+}
+
+#[test]
+fn malformed_witnesses_report_all_integrity_failures() {
+    let (report, mut artifact) = equivalent_report_and_artifact();
+    let first_obligation = artifact
+        .obligations
+        .first_mut()
+        .expect("baseline artifact must have an obligation");
+    let obligation_id = first_obligation.obligation_id.clone();
+    let first_witness = first_obligation
+        .witnesses
+        .first_mut()
+        .expect("baseline obligation must have a witness");
+    let witness_id = first_witness.witness_id.clone();
+    let original_witness_hash = first_witness.evidence_checksum.clone();
+    assert!(original_witness_hash.starts_with("sha256:"));
+
+    first_witness.clause_id = "WRONG-CLAUSE".to_string();
+    first_witness.source_signature = None;
+    first_witness.translated_signature = None;
+    first_witness.evidence_checksum = "sha256:stale-witness".to_string();
+
+    let validation = verify_semantic_proof_artifact(&artifact, &report)
+        .expect("malformed witness artifact should produce validation report");
+    let codes = issue_codes(&validation);
+
+    assert!(!validation.machine_verifiable);
+    assert!(!validation.certification_passed);
+    assert!(validation.invalid_obligation_ids.contains(&obligation_id));
+    assert!(codes.contains("witness_clause_mismatch"));
+    assert!(codes.contains("missing_witness_signature"));
+    assert!(codes.contains("witness_evidence_checksum_mismatch"));
+    assert!(codes.contains("witness_checksum_mismatch"));
+    assert!(validation.issues.iter().any(|issue| {
+        issue.code == "witness_evidence_checksum_mismatch" && issue.target == witness_id
+    }));
+}
+
+#[test]
+fn contradictory_obligations_are_rejected_with_reason_classes() {
+    let (report, mut artifact) = equivalent_report_and_artifact();
+    let source_obligation = artifact
+        .obligations
+        .iter()
+        .find(|obligation| obligation.clause_id == "ST-001")
+        .expect("baseline ST-001 obligation should exist");
+    let mut contradictory = source_obligation.clone();
+    contradictory.obligation_id =
+        "semantic-proof-obligation:ST-001:contradictory-violated".to_string();
+    contradictory.verdict_clause = VerdictClause::Violated;
+    contradictory.status = ProofObligationStatus::Refuted;
+    artifact.obligations.push(contradictory.clone());
+
+    let validation = verify_semantic_proof_artifact(&artifact, &report)
+        .expect("contradictory obligation artifact should produce validation report");
+    let codes = issue_codes(&validation);
+
+    assert!(!validation.machine_verifiable);
+    assert!(!validation.certification_passed);
+    assert!(
+        validation
+            .invalid_obligation_ids
+            .contains(&contradictory.obligation_id)
+    );
+    assert!(codes.contains("obligation_status_mismatch"));
+    assert!(codes.contains("obligation_graph_checksum_mismatch"));
+    assert!(codes.contains("artifact_checksum_mismatch"));
+}
+
+#[test]
+fn checker_validation_reports_are_replay_deterministic() {
+    let (report, mut artifact) = equivalent_report_and_artifact();
+    let first_obligation = artifact
+        .obligations
+        .first_mut()
+        .expect("baseline artifact must have an obligation");
+    first_obligation.witness_checksum = "sha256:stale-obligation".to_string();
+    let first_witness = first_obligation
+        .witnesses
+        .first_mut()
+        .expect("baseline obligation must have a witness");
+    first_witness.evidence_checksum = "sha256:stale-witness".to_string();
+
+    let validation_a = verify_semantic_proof_artifact(&artifact, &report)
+        .expect("first validation should produce report");
+    let validation_b = verify_semantic_proof_artifact(&artifact, &report)
+        .expect("second validation should produce report");
+
+    assert_eq!(validation_a, validation_b);
+    assert_eq!(
+        serde_json::to_string(&validation_a).expect("validation report should serialize"),
+        serde_json::to_string(&validation_b).expect("validation report should serialize")
+    );
+    assert!(
+        validation_a
+            .issues
+            .iter()
+            .map(|issue| (&issue.code, &issue.target))
+            .eq(validation_b
+                .issues
+                .iter()
+                .map(|issue| (&issue.code, &issue.target)))
+    );
+}
+
+#[test]
+fn validation_issue_records_include_targets_and_hash_context() {
+    let (report, mut artifact) = equivalent_report_and_artifact();
+    let first_obligation = artifact
+        .obligations
+        .first_mut()
+        .expect("baseline artifact must have an obligation");
+    let obligation_id = first_obligation.obligation_id.clone();
+    let original_obligation_hash = first_obligation.witness_checksum.clone();
+    assert!(original_obligation_hash.starts_with("sha256:"));
+    let first_witness = first_obligation
+        .witnesses
+        .first_mut()
+        .expect("baseline obligation must have a witness");
+    let witness_id = first_witness.witness_id.clone();
+    let original_witness_hash = first_witness.evidence_checksum.clone();
+    assert!(original_witness_hash.starts_with("sha256:"));
+
+    first_obligation.witness_checksum = "sha256:wrong-obligation".to_string();
+    first_witness.evidence_checksum = "sha256:wrong-witness".to_string();
+
+    let validation = verify_semantic_proof_artifact(&artifact, &report)
+        .expect("hash-corrupted artifact should produce validation report");
+
+    assert!(validation.issues.iter().any(|issue| {
+        issue.code == "witness_checksum_mismatch" && issue.target == obligation_id
+    }));
+    assert!(validation.issues.iter().any(|issue| {
+        issue.code == "witness_evidence_checksum_mismatch" && issue.target == witness_id
+    }));
+    assert!(
+        validation
+            .issues
+            .iter()
+            .all(|issue| !issue.code.is_empty() && !issue.target.is_empty())
     );
 }
