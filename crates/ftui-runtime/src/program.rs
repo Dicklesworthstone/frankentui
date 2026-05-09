@@ -88,7 +88,8 @@ use ftui_layout::{
 };
 use ftui_render::arena::FrameArena;
 use ftui_render::budget::{
-    BudgetControllerConfig, BudgetDecision, DegradationLevel, FrameBudgetConfig, RenderBudget,
+    BudgetControllerConfig, BudgetDecision, BudgetDecisionReason, DegradationLevel,
+    FrameBudgetConfig, RenderBudget,
 };
 use ftui_render::buffer::Buffer;
 use ftui_render::diff_strategy::DiffStrategy;
@@ -2159,19 +2160,189 @@ pub struct ImmediateDrainStats {
     pub max_zero_timeout_polls_in_burst: u64,
 }
 
+/// User-visible runtime mode reported by the conservative load governor.
+///
+/// These modes mirror the `bd-8vstx` runtime contract:
+///
+/// - `Healthy`: admit all work normally; no explicit fallback is active.
+/// - `Stressed`: strict work is preserved while visible/coalescible or
+///   background work may be slowed before user-visible ambiguity appears.
+/// - `Degraded`: bounded fallback is active; strict interactive semantics
+///   still hold while background/best-effort work is deferred or dropped.
+/// - `Recovered`: a degraded interval has closed after the configured
+///   hysteresis window; the next steady interval returns to `Healthy`.
+/// - `Unsafe`: a strict semantic guarantee cannot be preserved, so optimistic
+///   degradation must stop and the caller must surface explicit failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeLoadMode {
+    /// No sustained pressure and no active fallback.
+    Healthy,
+    /// Elevated pressure while strict guarantees still hold.
+    Stressed,
+    /// Explicit bounded fallback is active.
+    Degraded,
+    /// Recovery interval has been observed and reported.
+    Recovered,
+    /// A strict semantic guarantee was violated.
+    Unsafe,
+}
+
+impl RuntimeLoadMode {
+    /// Stable string for evidence logs.
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Stressed => "stressed",
+            Self::Degraded => "degraded",
+            Self::Recovered => "recovered",
+            Self::Unsafe => "unsafe",
+        }
+    }
+}
+
+/// Pressure envelope inferred from measured runtime signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimePressureClass {
+    /// Within steady-state envelope.
+    SteadyState,
+    /// Early overload band; bounded coalescing/deferment may begin.
+    SoftOverload,
+    /// Degraded band; explicit fallback is active.
+    HardOverload,
+    /// Terminal strict-semantics failure.
+    Unsafe,
+}
+
+impl RuntimePressureClass {
+    /// Stable string for evidence logs.
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SteadyState => "steady_state",
+            Self::SoftOverload => "soft_overload",
+            Self::HardOverload => "hard_overload",
+            Self::Unsafe => "unsafe",
+        }
+    }
+}
+
+/// Work disposition allowed by the current runtime mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeWorkDisposition {
+    /// Admit all work normally.
+    AdmitAll,
+    /// Preserve strict work; coalesce visible work and slow background work.
+    CoalesceVisibleDeferBackground,
+    /// Preserve strict work; defer background work and drop best-effort work.
+    DeferBackgroundDropBestEffort,
+    /// Re-admit deferred work after the hysteresis window closed.
+    ReadmitAfterHysteresis,
+    /// Stop optimistic degradation because a strict guarantee failed.
+    FailFastStrictGuarantee,
+}
+
+impl RuntimeWorkDisposition {
+    /// Stable string for evidence logs.
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AdmitAll => "admit_all",
+            Self::CoalesceVisibleDeferBackground => "coalesce_visible_defer_background",
+            Self::DeferBackgroundDropBestEffort => "defer_background_drop_best_effort",
+            Self::ReadmitAfterHysteresis => "readmit_after_hysteresis",
+            Self::FailFastStrictGuarantee => "fail_fast_strict_guarantee",
+        }
+    }
+}
+
+/// Conservative policy for classifying runtime load.
+///
+/// The first runtime governor intentionally uses one primary control family:
+/// render-budget degradation and explicit coalescing/admission evidence. Queue
+/// watermarks are advisory inputs when a queue cap exists; when the queue is
+/// uncapped, frame-budget and coalescer signals drive fallback classification.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadGovernorPolicy {
+    /// Queue occupancy ratio that enters `stressed`.
+    pub stressed_queue_watermark: f64,
+    /// Queue occupancy ratio that enters `degraded`.
+    pub degraded_queue_watermark: f64,
+    /// Queue occupancy ratio required before closing a degraded interval.
+    pub recovery_queue_watermark: f64,
+    /// Consecutive steady intervals required before reporting recovery.
+    pub recovery_intervals: u8,
+    /// Frame-time ratio over budget that enters `stressed` when uncapped.
+    pub budget_overrun_soft_ratio: f64,
+}
+
+impl Default for LoadGovernorPolicy {
+    fn default() -> Self {
+        Self {
+            stressed_queue_watermark: 0.5,
+            degraded_queue_watermark: 0.8,
+            recovery_queue_watermark: 0.25,
+            recovery_intervals: 3,
+            budget_overrun_soft_ratio: 1.0,
+        }
+    }
+}
+
+impl LoadGovernorPolicy {
+    #[must_use]
+    fn normalized(self) -> Self {
+        let recovery = normalize_ratio(self.recovery_queue_watermark, 0.25);
+        let stressed = normalize_ratio(self.stressed_queue_watermark, 0.5).max(recovery);
+        let degraded = normalize_ratio(self.degraded_queue_watermark, 0.8).max(stressed);
+        Self {
+            recovery_queue_watermark: recovery,
+            stressed_queue_watermark: stressed,
+            degraded_queue_watermark: degraded,
+            recovery_intervals: self.recovery_intervals.max(1),
+            budget_overrun_soft_ratio: normalize_positive_ratio(
+                self.budget_overrun_soft_ratio,
+                1.0,
+            ),
+        }
+    }
+}
+
+#[inline]
+fn normalize_ratio(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        fallback
+    }
+}
+
+#[inline]
+fn normalize_positive_ratio(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
 /// Conservative runtime load-governor configuration.
 ///
-/// The first runtime governor uses a single primary control lever: adaptive
-/// render degradation driven by measured frame times. The controller combines
-/// hysteresis, cooldown, and e-process evidence gates inside `RenderBudget`,
-/// and the legacy threshold path remains available as the safe fallback by
-/// disabling this config.
+/// The first runtime governor keeps one primary control objective:
+/// responsiveness under render pressure. It drives adaptive render degradation
+/// through `RenderBudget`, classifies runtime mode with queue/coalescer inputs,
+/// and emits replayable evidence for the allowed work disposition. Disabling
+/// this config falls back to the legacy threshold path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadGovernorConfig {
     /// Whether the adaptive governor is active.
     pub enabled: bool,
     /// Controller used to decide degrade/upgrade transitions from frame timing.
     pub budget_controller: BudgetControllerConfig,
+    /// Runtime-mode and work-disposition classification policy.
+    pub policy: LoadGovernorPolicy,
 }
 
 impl Default for LoadGovernorConfig {
@@ -2179,6 +2350,7 @@ impl Default for LoadGovernorConfig {
         Self {
             enabled: true,
             budget_controller: BudgetControllerConfig::default(),
+            policy: LoadGovernorPolicy::default(),
         }
     }
 }
@@ -2196,6 +2368,7 @@ impl LoadGovernorConfig {
         Self {
             enabled: false,
             budget_controller: BudgetControllerConfig::default(),
+            policy: LoadGovernorPolicy::default(),
         }
     }
 
@@ -2211,6 +2384,301 @@ impl LoadGovernorConfig {
     pub fn with_budget_controller(mut self, config: BudgetControllerConfig) -> Self {
         self.budget_controller = config;
         self
+    }
+
+    /// Replace the runtime-mode classification policy.
+    #[must_use]
+    pub fn with_policy(mut self, policy: LoadGovernorPolicy) -> Self {
+        self.policy = policy.normalized();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoadGovernorObservation {
+    frame_time_us: f64,
+    budget_us: f64,
+    degradation: DegradationLevel,
+    queue: crate::effect_system::QueueTelemetry,
+    resize_coalescing_active: bool,
+    strict_semantics_violation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LoadGovernorSnapshot {
+    mode: RuntimeLoadMode,
+    mode_before: RuntimeLoadMode,
+    pressure_class: RuntimePressureClass,
+    disposition: RuntimeWorkDisposition,
+    reason_code: &'static str,
+    transition: bool,
+    strict_semantics_preserved: bool,
+    queue_in_flight: u64,
+    queue_max_depth: Option<usize>,
+    queue_dropped_delta: u64,
+    resize_coalescing_active: bool,
+    recovery_intervals_observed: u8,
+    recovery_intervals_required: u8,
+    deferred_work_total: u64,
+    coalesced_work_total: u64,
+    dropped_work_total: u64,
+}
+
+#[derive(Debug, Clone)]
+struct LoadGovernorState {
+    enabled: bool,
+    policy: LoadGovernorPolicy,
+    max_queue_depth: usize,
+    mode: RuntimeLoadMode,
+    recovery_intervals_observed: u8,
+    last_queue_dropped: u64,
+    queue_baseline_initialized: bool,
+    deferred_work_total: u64,
+    coalesced_work_total: u64,
+    dropped_work_total: u64,
+}
+
+impl LoadGovernorState {
+    fn new(config: LoadGovernorConfig, max_queue_depth: usize) -> Self {
+        Self {
+            enabled: config.enabled,
+            policy: config.policy.normalized(),
+            max_queue_depth,
+            mode: RuntimeLoadMode::Healthy,
+            recovery_intervals_observed: 0,
+            last_queue_dropped: 0,
+            queue_baseline_initialized: false,
+            deferred_work_total: 0,
+            coalesced_work_total: 0,
+            dropped_work_total: 0,
+        }
+    }
+
+    fn observe(&mut self, observation: LoadGovernorObservation) -> LoadGovernorSnapshot {
+        if !self.enabled {
+            return self.snapshot(
+                RuntimeLoadMode::Healthy,
+                RuntimeLoadMode::Healthy,
+                RuntimePressureClass::SteadyState,
+                RuntimeWorkDisposition::AdmitAll,
+                "governor_disabled",
+                false,
+                true,
+                observation,
+                0,
+            );
+        }
+
+        let dropped_delta = self.queue_dropped_delta(observation.queue.dropped);
+        let pressure = self.classify_pressure(observation, dropped_delta);
+        let mode_before = self.mode;
+        let reason_code = self.reason_code(observation, pressure, dropped_delta);
+
+        match pressure {
+            RuntimePressureClass::Unsafe => {
+                self.mode = RuntimeLoadMode::Unsafe;
+                self.recovery_intervals_observed = 0;
+            }
+            RuntimePressureClass::HardOverload => {
+                self.mode = RuntimeLoadMode::Degraded;
+                self.recovery_intervals_observed = 0;
+            }
+            RuntimePressureClass::SoftOverload => {
+                if self.mode != RuntimeLoadMode::Degraded {
+                    self.mode = RuntimeLoadMode::Stressed;
+                }
+                self.recovery_intervals_observed = 0;
+            }
+            RuntimePressureClass::SteadyState => self.observe_steady_interval(),
+        }
+
+        self.record_work_disposition(observation, dropped_delta);
+        let disposition = Self::disposition_for_mode(self.mode);
+        self.snapshot(
+            self.mode,
+            mode_before,
+            pressure,
+            disposition,
+            if self.mode == RuntimeLoadMode::Recovered {
+                "recovery_hysteresis_satisfied"
+            } else if mode_before == RuntimeLoadMode::Recovered
+                && self.mode == RuntimeLoadMode::Healthy
+            {
+                "recovered_interval_closed"
+            } else {
+                reason_code
+            },
+            mode_before != self.mode,
+            pressure != RuntimePressureClass::Unsafe,
+            observation,
+            dropped_delta,
+        )
+    }
+
+    fn queue_dropped_delta(&mut self, dropped_total: u64) -> u64 {
+        if !self.queue_baseline_initialized {
+            self.queue_baseline_initialized = true;
+            self.last_queue_dropped = dropped_total;
+            return 0;
+        }
+        let delta = dropped_total.saturating_sub(self.last_queue_dropped);
+        self.last_queue_dropped = dropped_total;
+        delta
+    }
+
+    fn classify_pressure(
+        &self,
+        observation: LoadGovernorObservation,
+        dropped_delta: u64,
+    ) -> RuntimePressureClass {
+        if observation.strict_semantics_violation {
+            return RuntimePressureClass::Unsafe;
+        }
+        if dropped_delta > 0
+            || self
+                .queue_ratio(observation.queue.in_flight)
+                .is_some_and(|ratio| ratio >= self.policy.degraded_queue_watermark)
+            || observation.degradation > DegradationLevel::Full
+        {
+            return RuntimePressureClass::HardOverload;
+        }
+        if self
+            .queue_ratio(observation.queue.in_flight)
+            .is_some_and(|ratio| ratio >= self.policy.stressed_queue_watermark)
+            || observation.resize_coalescing_active
+            || observation.frame_time_us
+                > observation.budget_us * self.policy.budget_overrun_soft_ratio
+        {
+            return RuntimePressureClass::SoftOverload;
+        }
+        RuntimePressureClass::SteadyState
+    }
+
+    fn observe_steady_interval(&mut self) {
+        match self.mode {
+            RuntimeLoadMode::Degraded => {
+                self.recovery_intervals_observed = self
+                    .recovery_intervals_observed
+                    .saturating_add(1)
+                    .min(self.policy.recovery_intervals);
+                if self.recovery_intervals_observed >= self.policy.recovery_intervals {
+                    self.mode = RuntimeLoadMode::Recovered;
+                }
+            }
+            RuntimeLoadMode::Recovered | RuntimeLoadMode::Stressed => {
+                self.mode = RuntimeLoadMode::Healthy;
+                self.recovery_intervals_observed = 0;
+            }
+            RuntimeLoadMode::Healthy => {
+                self.recovery_intervals_observed = 0;
+            }
+            RuntimeLoadMode::Unsafe => {}
+        }
+    }
+
+    fn record_work_disposition(
+        &mut self,
+        observation: LoadGovernorObservation,
+        dropped_delta: u64,
+    ) {
+        if dropped_delta > 0 {
+            self.dropped_work_total = self.dropped_work_total.saturating_add(dropped_delta);
+        }
+        match self.mode {
+            RuntimeLoadMode::Stressed => {
+                if observation.resize_coalescing_active {
+                    self.coalesced_work_total = self.coalesced_work_total.saturating_add(1);
+                }
+            }
+            RuntimeLoadMode::Degraded => {
+                self.deferred_work_total = self.deferred_work_total.saturating_add(1);
+                if observation.resize_coalescing_active {
+                    self.coalesced_work_total = self.coalesced_work_total.saturating_add(1);
+                }
+            }
+            RuntimeLoadMode::Healthy | RuntimeLoadMode::Recovered | RuntimeLoadMode::Unsafe => {}
+        }
+    }
+
+    fn reason_code(
+        &self,
+        observation: LoadGovernorObservation,
+        pressure: RuntimePressureClass,
+        dropped_delta: u64,
+    ) -> &'static str {
+        match pressure {
+            RuntimePressureClass::Unsafe => "strict_semantics_violation",
+            RuntimePressureClass::HardOverload if dropped_delta > 0 => "effect_queue_drop",
+            RuntimePressureClass::HardOverload
+                if self
+                    .queue_ratio(observation.queue.in_flight)
+                    .is_some_and(|ratio| ratio >= self.policy.degraded_queue_watermark) =>
+            {
+                "queue_degraded_watermark"
+            }
+            RuntimePressureClass::HardOverload => "budget_degradation_active",
+            RuntimePressureClass::SoftOverload
+                if self
+                    .queue_ratio(observation.queue.in_flight)
+                    .is_some_and(|ratio| ratio >= self.policy.stressed_queue_watermark) =>
+            {
+                "queue_stressed_watermark"
+            }
+            RuntimePressureClass::SoftOverload if observation.resize_coalescing_active => {
+                "resize_coalescing_active"
+            }
+            RuntimePressureClass::SoftOverload => "frame_budget_overrun",
+            RuntimePressureClass::SteadyState if self.mode == RuntimeLoadMode::Degraded => {
+                "recovery_hysteresis_pending"
+            }
+            RuntimePressureClass::SteadyState => "steady_state",
+        }
+    }
+
+    fn queue_ratio(&self, in_flight: u64) -> Option<f64> {
+        (self.max_queue_depth > 0).then(|| in_flight as f64 / self.max_queue_depth as f64)
+    }
+
+    const fn disposition_for_mode(mode: RuntimeLoadMode) -> RuntimeWorkDisposition {
+        match mode {
+            RuntimeLoadMode::Healthy => RuntimeWorkDisposition::AdmitAll,
+            RuntimeLoadMode::Stressed => RuntimeWorkDisposition::CoalesceVisibleDeferBackground,
+            RuntimeLoadMode::Degraded => RuntimeWorkDisposition::DeferBackgroundDropBestEffort,
+            RuntimeLoadMode::Recovered => RuntimeWorkDisposition::ReadmitAfterHysteresis,
+            RuntimeLoadMode::Unsafe => RuntimeWorkDisposition::FailFastStrictGuarantee,
+        }
+    }
+
+    fn snapshot(
+        &self,
+        mode: RuntimeLoadMode,
+        mode_before: RuntimeLoadMode,
+        pressure_class: RuntimePressureClass,
+        disposition: RuntimeWorkDisposition,
+        reason_code: &'static str,
+        transition: bool,
+        strict_semantics_preserved: bool,
+        observation: LoadGovernorObservation,
+        dropped_delta: u64,
+    ) -> LoadGovernorSnapshot {
+        LoadGovernorSnapshot {
+            mode,
+            mode_before,
+            pressure_class,
+            disposition,
+            reason_code,
+            transition,
+            strict_semantics_preserved,
+            queue_in_flight: observation.queue.in_flight,
+            queue_max_depth: (self.max_queue_depth > 0).then_some(self.max_queue_depth),
+            queue_dropped_delta: dropped_delta,
+            resize_coalescing_active: observation.resize_coalescing_active,
+            recovery_intervals_observed: self.recovery_intervals_observed,
+            recovery_intervals_required: self.policy.recovery_intervals,
+            deferred_work_total: self.deferred_work_total,
+            coalesced_work_total: self.coalesced_work_total,
+            dropped_work_total: self.dropped_work_total,
+        }
     }
 }
 
@@ -3534,6 +4002,8 @@ struct BudgetDecisionEvidence {
     frames_observed: u32,
     frames_since_change: u32,
     in_warmup: bool,
+    controller_reason: BudgetDecisionReason,
+    load_governor: LoadGovernorSnapshot,
     conformal: Option<ConformalEvidence>,
 }
 
@@ -3561,12 +4031,14 @@ impl BudgetDecisionEvidence {
         let fallback_level = Self::opt_u8(conformal.map(|c| c.fallback_level));
         let window_size = Self::opt_usize(conformal.map(|c| c.window_size));
         let reset_count = Self::opt_u64(conformal.map(|c| c.reset_count));
+        let queue_max_depth = Self::opt_usize(self.load_governor.queue_max_depth);
 
         format!(
-            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
+            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
             self.frame_idx,
             self.decision.as_str(),
             self.controller_decision.as_str(),
+            self.controller_reason.as_str(),
             self.degradation_before.as_str(),
             self.degradation_after.as_str(),
             self.frame_time_us,
@@ -3579,6 +4051,22 @@ impl BudgetDecisionEvidence {
             self.frames_observed,
             self.frames_since_change,
             self.in_warmup,
+            self.load_governor.mode.as_str(),
+            self.load_governor.mode_before.as_str(),
+            self.load_governor.pressure_class.as_str(),
+            self.load_governor.disposition.as_str(),
+            self.load_governor.reason_code,
+            self.load_governor.transition,
+            self.load_governor.strict_semantics_preserved,
+            self.load_governor.queue_in_flight,
+            queue_max_depth,
+            self.load_governor.queue_dropped_delta,
+            self.load_governor.resize_coalescing_active,
+            self.load_governor.recovery_intervals_observed,
+            self.load_governor.recovery_intervals_required,
+            self.load_governor.deferred_work_total,
+            self.load_governor.coalesced_work_total,
+            self.load_governor.dropped_work_total,
             bucket_key,
             n_b,
             alpha,
@@ -4136,6 +4624,8 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     immediate_drain_stats: ImmediateDrainStats,
     /// Frame budget configuration.
     budget: RenderBudget,
+    /// Runtime load-governor state for mode and fallback evidence.
+    load_governor: LoadGovernorState,
     /// Conformal predictor for frame-time risk gating.
     conformal_predictor: Option<ConformalPredictor>,
     /// Last observed frame time (microseconds), used as a baseline predictor.
@@ -4262,6 +4752,10 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
         writer.set_size(width, height);
 
         let budget = render_budget_from_program_config(&config);
+        let load_governor = LoadGovernorState::new(
+            config.load_governor.clone(),
+            effect_queue_config.max_queue_depth,
+        );
         let conformal_predictor = config.conformal_config.clone().map(ConformalPredictor::new);
         let locale_context = config.locale_context.clone();
         let locale_version = locale_context.version();
@@ -4318,6 +4812,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
+            load_governor,
             conformal_predictor,
             last_frame_time_us: None,
             last_update_us: None,
@@ -4398,6 +4893,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         writer.set_timing_enabled(frame_timing.is_some());
 
         let budget = render_budget_from_program_config(&config);
+        let load_governor = LoadGovernorState::new(
+            config.load_governor.clone(),
+            effect_queue_config.max_queue_depth,
+        );
         let conformal_predictor = config.conformal_config.clone().map(ConformalPredictor::new);
         let locale_context = config.locale_context.clone();
         let locale_version = locale_context.version();
@@ -4444,6 +4943,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
+            load_governor,
             conformal_predictor,
             last_frame_time_us: None,
             last_update_us: None,
@@ -5410,11 +5910,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // Early skip if budget says to skip this frame entirely
         if self.budget.exhausted() {
             self.budget.record_frame_time(Duration::ZERO);
+            let load_snapshot =
+                self.update_load_governor_snapshot(frame_idx, 0.0, conformal_prediction.as_ref());
             self.emit_budget_evidence(
                 frame_idx,
                 degradation_start,
                 0.0,
                 conformal_prediction.as_ref(),
+                &load_snapshot,
             );
             crate::debug_trace!(
                 "frame skipped: budget exhausted (degradation={})",
@@ -5576,11 +6079,17 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             predictor.observe(key, prediction.y_hat, frame_time_us);
         }
         self.last_frame_time_us = Some(frame_time_us);
+        let load_snapshot = self.update_load_governor_snapshot(
+            frame_idx,
+            frame_time_us,
+            conformal_prediction.as_ref(),
+        );
         self.emit_budget_evidence(
             frame_idx,
             degradation_start,
             frame_time_us,
             conformal_prediction.as_ref(),
+            &load_snapshot,
         );
 
         // Only clear dirty when the frame was actually presented.
@@ -5593,12 +6102,34 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         Ok(())
     }
 
+    fn update_load_governor_snapshot(
+        &mut self,
+        _frame_idx: u64,
+        frame_time_us: f64,
+        conformal_prediction: Option<&ConformalPrediction>,
+    ) -> LoadGovernorSnapshot {
+        let budget_us = conformal_prediction
+            .map(|prediction| prediction.budget_us)
+            .unwrap_or_else(|| self.budget.total().as_secs_f64() * 1_000_000.0);
+        let resize_stats = self.resize_coalescer.stats();
+        self.load_governor.observe(LoadGovernorObservation {
+            frame_time_us,
+            budget_us,
+            degradation: self.budget.degradation(),
+            queue: crate::effect_system::queue_telemetry(),
+            resize_coalescing_active: resize_stats.has_pending
+                || !matches!(resize_stats.regime, crate::resize_coalescer::Regime::Steady),
+            strict_semantics_violation: false,
+        })
+    }
+
     fn emit_budget_evidence(
         &self,
         frame_idx: u64,
         degradation_start: DegradationLevel,
         frame_time_us: f64,
         conformal_prediction: Option<&ConformalPrediction>,
+        load_snapshot: &LoadGovernorSnapshot,
     ) {
         let Some(telemetry) = self.budget.telemetry() else {
             set_budget_snapshot(None);
@@ -5630,6 +6161,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             frames_observed: telemetry.frames_observed,
             frames_since_change: telemetry.frames_since_change,
             in_warmup: telemetry.in_warmup,
+            controller_reason: telemetry.decision_reason,
+            load_governor: *load_snapshot,
             conformal,
         };
 
@@ -7711,6 +8244,263 @@ mod tests {
         assert!(!config.load_governor.enabled);
     }
 
+    fn governor_observation(
+        frame_time_ms: f64,
+        in_flight: u64,
+        dropped: u64,
+        degradation: DegradationLevel,
+        resize_coalescing_active: bool,
+        strict_semantics_violation: bool,
+    ) -> LoadGovernorObservation {
+        LoadGovernorObservation {
+            frame_time_us: frame_time_ms * 1_000.0,
+            budget_us: 16_000.0,
+            degradation,
+            queue: crate::effect_system::QueueTelemetry {
+                enqueued: in_flight.saturating_add(dropped),
+                processed: 0,
+                dropped,
+                high_water: in_flight,
+                in_flight,
+            },
+            resize_coalescing_active,
+            strict_semantics_violation,
+        }
+    }
+
+    fn test_load_governor(max_queue_depth: usize, recovery_intervals: u8) -> LoadGovernorState {
+        let policy = LoadGovernorPolicy {
+            recovery_intervals,
+            ..Default::default()
+        };
+        LoadGovernorState::new(
+            LoadGovernorConfig::enabled().with_policy(policy),
+            max_queue_depth,
+        )
+    }
+
+    #[test]
+    fn load_governor_policy_defaults_match_runtime_contract() {
+        let policy = LoadGovernorPolicy::default().normalized();
+
+        assert_eq!(policy.stressed_queue_watermark, 0.5);
+        assert_eq!(policy.degraded_queue_watermark, 0.8);
+        assert_eq!(policy.recovery_queue_watermark, 0.25);
+        assert_eq!(policy.recovery_intervals, 3);
+        assert_eq!(policy.budget_overrun_soft_ratio, 1.0);
+    }
+
+    #[test]
+    fn load_governor_classifies_queue_watermarks_and_recovery() {
+        let mut governor = test_load_governor(100, 2);
+
+        let steady = governor.observe(governor_observation(
+            8.0,
+            0,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(steady.mode, RuntimeLoadMode::Healthy);
+        assert_eq!(steady.pressure_class, RuntimePressureClass::SteadyState);
+        assert_eq!(steady.disposition, RuntimeWorkDisposition::AdmitAll);
+
+        let stressed = governor.observe(governor_observation(
+            8.0,
+            50,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(stressed.mode, RuntimeLoadMode::Stressed);
+        assert_eq!(stressed.pressure_class, RuntimePressureClass::SoftOverload);
+        assert_eq!(
+            stressed.disposition,
+            RuntimeWorkDisposition::CoalesceVisibleDeferBackground
+        );
+        assert_eq!(stressed.reason_code, "queue_stressed_watermark");
+
+        let degraded = governor.observe(governor_observation(
+            8.0,
+            80,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(degraded.mode, RuntimeLoadMode::Degraded);
+        assert_eq!(degraded.pressure_class, RuntimePressureClass::HardOverload);
+        assert_eq!(
+            degraded.disposition,
+            RuntimeWorkDisposition::DeferBackgroundDropBestEffort
+        );
+        assert_eq!(degraded.reason_code, "queue_degraded_watermark");
+
+        let recovery_pending = governor.observe(governor_observation(
+            8.0,
+            10,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(recovery_pending.mode, RuntimeLoadMode::Degraded);
+        assert_eq!(recovery_pending.reason_code, "recovery_hysteresis_pending");
+        assert_eq!(recovery_pending.recovery_intervals_observed, 1);
+
+        let recovered = governor.observe(governor_observation(
+            8.0,
+            10,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(recovered.mode, RuntimeLoadMode::Recovered);
+        assert_eq!(recovered.reason_code, "recovery_hysteresis_satisfied");
+        assert_eq!(
+            recovered.disposition,
+            RuntimeWorkDisposition::ReadmitAfterHysteresis
+        );
+
+        let healthy = governor.observe(governor_observation(
+            8.0,
+            10,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(healthy.mode, RuntimeLoadMode::Healthy);
+        assert_eq!(healthy.reason_code, "recovered_interval_closed");
+    }
+
+    #[test]
+    fn load_governor_uses_uncapped_budget_pressure_fallback() {
+        let mut governor = test_load_governor(0, 2);
+
+        let stressed = governor.observe(governor_observation(
+            20.0,
+            0,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(stressed.mode, RuntimeLoadMode::Stressed);
+        assert_eq!(stressed.reason_code, "frame_budget_overrun");
+        assert_eq!(stressed.queue_max_depth, None);
+
+        let degraded = governor.observe(governor_observation(
+            8.0,
+            0,
+            0,
+            DegradationLevel::SimpleBorders,
+            false,
+            false,
+        ));
+        assert_eq!(degraded.mode, RuntimeLoadMode::Degraded);
+        assert_eq!(degraded.reason_code, "budget_degradation_active");
+    }
+
+    #[test]
+    fn load_governor_strict_semantics_failure_is_terminal() {
+        let mut governor = test_load_governor(100, 2);
+
+        let unsafe_snapshot = governor.observe(governor_observation(
+            8.0,
+            0,
+            0,
+            DegradationLevel::Full,
+            false,
+            true,
+        ));
+
+        assert_eq!(unsafe_snapshot.mode, RuntimeLoadMode::Unsafe);
+        assert_eq!(unsafe_snapshot.pressure_class, RuntimePressureClass::Unsafe);
+        assert_eq!(
+            unsafe_snapshot.disposition,
+            RuntimeWorkDisposition::FailFastStrictGuarantee
+        );
+        assert!(!unsafe_snapshot.strict_semantics_preserved);
+        assert_eq!(unsafe_snapshot.reason_code, "strict_semantics_violation");
+    }
+
+    #[test]
+    fn load_governor_hysteresis_prevents_single_sample_recovery() {
+        let mut governor = test_load_governor(100, 3);
+
+        governor.observe(governor_observation(
+            8.0,
+            90,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+
+        for expected in 1..=2 {
+            let snapshot = governor.observe(governor_observation(
+                8.0,
+                0,
+                0,
+                DegradationLevel::Full,
+                false,
+                false,
+            ));
+            assert_eq!(snapshot.mode, RuntimeLoadMode::Degraded);
+            assert_eq!(snapshot.recovery_intervals_observed, expected);
+            assert_eq!(snapshot.reason_code, "recovery_hysteresis_pending");
+        }
+
+        let recovered = governor.observe(governor_observation(
+            8.0,
+            0,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(recovered.mode, RuntimeLoadMode::Recovered);
+    }
+
+    #[test]
+    fn load_governor_stress_e2e_evidence_shows_degraded_and_recovery() {
+        let mut governor = test_load_governor(50, 2);
+        let scenario = [
+            governor_observation(8.0, 0, 0, DegradationLevel::Full, false, false),
+            governor_observation(18.0, 25, 0, DegradationLevel::Full, true, false),
+            governor_observation(22.0, 45, 1, DegradationLevel::SimpleBorders, true, false),
+            governor_observation(8.0, 5, 1, DegradationLevel::Full, false, false),
+            governor_observation(8.0, 5, 1, DegradationLevel::Full, false, false),
+            governor_observation(8.0, 5, 1, DegradationLevel::Full, false, false),
+        ];
+
+        let mut modes = Vec::new();
+        for observation in scenario {
+            let snapshot = governor.observe(observation);
+            modes.push(snapshot.mode);
+            println!(
+                "{{\"test\":\"load_governor_stress_e2e\",\"mode\":\"{}\",\"pressure_class\":\"{}\",\"work_disposition\":\"{}\",\"reason\":\"{}\",\"transition\":{},\"deferred\":{},\"coalesced\":{},\"dropped\":{}}}",
+                snapshot.mode.as_str(),
+                snapshot.pressure_class.as_str(),
+                snapshot.disposition.as_str(),
+                snapshot.reason_code,
+                snapshot.transition,
+                snapshot.deferred_work_total,
+                snapshot.coalesced_work_total,
+                snapshot.dropped_work_total
+            );
+        }
+
+        assert!(modes.contains(&RuntimeLoadMode::Stressed));
+        assert!(modes.contains(&RuntimeLoadMode::Degraded));
+        assert!(modes.contains(&RuntimeLoadMode::Recovered));
+        assert_eq!(modes.last(), Some(&RuntimeLoadMode::Healthy));
+    }
+
     #[test]
     fn headless_program_default_load_governor_attaches_controller() {
         let program =
@@ -8230,6 +9020,25 @@ mod tests {
             frames_observed: 42,
             frames_since_change: 3,
             in_warmup: false,
+            controller_reason: BudgetDecisionReason::OverloadEvidencePassed,
+            load_governor: LoadGovernorSnapshot {
+                mode: RuntimeLoadMode::Degraded,
+                mode_before: RuntimeLoadMode::Stressed,
+                pressure_class: RuntimePressureClass::HardOverload,
+                disposition: RuntimeWorkDisposition::DeferBackgroundDropBestEffort,
+                reason_code: "budget_degradation_active",
+                transition: true,
+                strict_semantics_preserved: true,
+                queue_in_flight: 8,
+                queue_max_depth: Some(10),
+                queue_dropped_delta: 0,
+                resize_coalescing_active: false,
+                recovery_intervals_observed: 0,
+                recovery_intervals_required: 3,
+                deferred_work_total: 2,
+                coalesced_work_total: 1,
+                dropped_work_total: 0,
+            },
             conformal: Some(ConformalEvidence {
                 bucket_key: "inline:dirty:10".to_string(),
                 n_b: 32,
@@ -8248,12 +9057,23 @@ mod tests {
         assert!(jsonl.contains("\"event\":\"budget_decision\""));
         assert!(jsonl.contains("\"decision\":\"degrade\""));
         assert!(jsonl.contains("\"decision_controller\":\"stay\""));
+        assert!(jsonl.contains("\"decision_controller_reason\":\"overload_evidence_passed\""));
         assert!(jsonl.contains("\"degradation_before\":\"Full\""));
         assert!(jsonl.contains("\"degradation_after\":\"NoStyling\""));
         assert!(jsonl.contains("\"frame_time_us\":12345.678000"));
         assert!(jsonl.contains("\"budget_us\":16000.000000"));
         assert!(jsonl.contains("\"pid_output\":1.250000"));
         assert!(jsonl.contains("\"e_value\":2.000000"));
+        assert!(jsonl.contains("\"runtime_mode\":\"degraded\""));
+        assert!(jsonl.contains("\"runtime_mode_before\":\"stressed\""));
+        assert!(jsonl.contains("\"pressure_class\":\"hard_overload\""));
+        assert!(jsonl.contains("\"work_disposition\":\"defer_background_drop_best_effort\""));
+        assert!(jsonl.contains("\"governor_reason\":\"budget_degradation_active\""));
+        assert!(jsonl.contains("\"governor_transition\":true"));
+        assert!(jsonl.contains("\"strict_semantics_preserved\":true"));
+        assert!(jsonl.contains("\"queue_in_flight\":8"));
+        assert!(jsonl.contains("\"queue_max_depth\":10"));
+        assert!(jsonl.contains("\"deferred_work_total\":2"));
         assert!(jsonl.contains("\"bucket_key\":\"inline:dirty:10\""));
         assert!(jsonl.contains("\"n_b\":32"));
         assert!(jsonl.contains("\"alpha\":0.050000"));
@@ -9317,6 +10137,10 @@ mod tests {
             .expect("headless evidence sink config");
 
         let budget = render_budget_from_program_config(&config);
+        let load_governor = LoadGovernorState::new(
+            config.load_governor.clone(),
+            effect_queue_config.max_queue_depth,
+        );
         let conformal_predictor = config.conformal_config.clone().map(ConformalPredictor::new);
         let locale_context = config.locale_context.clone();
         let locale_version = locale_context.version();
@@ -9362,6 +10186,7 @@ mod tests {
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
+            load_governor,
             conformal_predictor,
             last_frame_time_us: None,
             last_update_us: None,
