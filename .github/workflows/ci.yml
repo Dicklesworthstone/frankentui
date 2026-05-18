@@ -324,7 +324,7 @@ jobs:
         run: ./scripts/bench_budget.sh --quick
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: target/benchmark-results
@@ -361,7 +361,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: Upload docs artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: documentation
           path: target/doc
@@ -423,7 +423,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: widget-api-e2e-logs
           path: /tmp/widget_api_e2e_*/
@@ -501,7 +501,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: demo-showcase-e2e-logs
           path: /tmp/ftui-demo-e2e-*/
@@ -645,7 +645,7 @@ jobs:
 
       - name: Upload E2E logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-pty-logs-${{ matrix.os }}
           path: /tmp/ftui_e2e_*/
@@ -653,7 +653,7 @@ jobs:
 
       - name: Upload PTY E2E JSONL logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-pty-jsonl-${{ matrix.os }}
           path: /tmp/ftui_e2e_*/**/*.jsonl
@@ -662,7 +662,7 @@ jobs:
 
       - name: Upload PTY failure repro bundle
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-pty-failure-bundle-${{ matrix.os }}
           path: /tmp/ftui_e2e_failure_bundle_${{ matrix.os }}/
@@ -671,7 +671,7 @@ jobs:
 
       - name: Upload test summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-pty-summary-${{ matrix.os }}
           path: /tmp/ftui_e2e_*/results/summary.json
@@ -1026,7 +1026,7 @@ jobs:
 
       - name: Upload golden-trace logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: golden-trace-logs
           path: |
@@ -1036,7 +1036,7 @@ jobs:
 
       - name: Upload typography/rescale release-gate artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frankenterm-typography-rescale-release-gates
           path: /tmp/frankenterm_release_gates/remote_typography_rescale/
@@ -1321,7 +1321,7 @@ jobs:
 
       - name: Upload doctor_frankentui verification artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: doctor-frankentui-verification
           path: /tmp/doctor_frankentui_ci/

@@ -313,7 +313,7 @@ jobs:
 
       - name: Upload doctor_frankentui extended verification artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: doctor-frankentui-extended-verification
           path: /tmp/doctor_frankentui_ci_extended/
