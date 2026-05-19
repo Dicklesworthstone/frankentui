@@ -69,10 +69,10 @@ web-time = "1.1.0"
 asupersync = { version = "0.3.1", optional = true }
 
 # Optional telemetry dependencies (feature-gated)
-opentelemetry = { version = "0.31", optional = true }
-opentelemetry_sdk = { version = "0.31", optional = true }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client"], optional = true }
-tracing-opentelemetry = { version = "0.32", optional = true }
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry_sdk = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "reqwest-blocking-client"], optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
 tracing-subscriber = { version = "0.3.20", features = ["registry", "env-filter"], optional = true }
 
 # State persistence dependencies (feature-gated)
