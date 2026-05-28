@@ -193,6 +193,8 @@ pub mod paragraph;
 pub mod popover;
 pub mod pretty;
 pub mod progress;
+/// Receipt verifier panel — renders signed-decision-receipt verifier verdicts.
+pub mod receipt_verifier_panel;
 pub mod rule;
 pub mod scrollbar;
 pub mod sparkline;
