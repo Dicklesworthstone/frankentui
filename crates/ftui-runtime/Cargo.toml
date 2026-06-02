@@ -96,7 +96,7 @@ im = "15.1"
 flate2 = "1.1"
 # OpenTelemetry testing infrastructure
 opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["testing"] }
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3.20", features = ["registry", "env-filter"] }
 
