@@ -2,7 +2,7 @@
 name = "ftui-render"
 version = "0.4.0"
 edition = "2024"
-license-file = "../../LICENSE"
+license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Render kernel: cells, buffers, diffs, and ANSI presentation."
 repository = "https://github.com/Dicklesworthstone/frankentui"
 homepage = "https://github.com/Dicklesworthstone/frankentui"

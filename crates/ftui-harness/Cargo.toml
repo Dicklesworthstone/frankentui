@@ -2,7 +2,7 @@
 name = "ftui-harness"
 version = "0.4.0"
 edition = "2024"
-license-file = "../../LICENSE"
+license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Test harness and reference fixtures for FrankenTUI."
 repository = "https://github.com/Dicklesworthstone/frankentui"
 homepage = "https://github.com/Dicklesworthstone/frankentui"

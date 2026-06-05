@@ -2,7 +2,7 @@
 name = "ftui-backend"
 version = "0.4.0"
 edition = "2024"
-license-file = "../../LICENSE"
+license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Backend traits for FrankenTUI: platform abstraction for input, presentation, and time."
 repository = "https://github.com/Dicklesworthstone/frankentui"
 homepage = "https://github.com/Dicklesworthstone/frankentui"

@@ -2,7 +2,7 @@
 name = "ftui-widgets"
 version = "0.4.0"
 edition = "2024"
-license-file = "../../LICENSE"
+license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Widget library built on FrankenTUI render and layout."
 repository = "https://github.com/Dicklesworthstone/frankentui"
 homepage = "https://github.com/Dicklesworthstone/frankentui"
