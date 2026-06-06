@@ -2649,6 +2649,10 @@ impl LoadGovernorState {
         }
     }
 
+    // Internal constructor that gathers all snapshot fields in one place; the
+    // wide signature is intentional (a builder would add indirection for a
+    // private helper). Pre-existing lint, unrelated to the #78 fix.
+    #[allow(clippy::too_many_arguments)]
     fn snapshot(
         &self,
         mode: RuntimeLoadMode,
@@ -2747,11 +2751,34 @@ impl RuntimeLane {
     }
 
     /// Resolve the default task executor backend for this lane.
+    ///
+    /// # Input-lag regression fix (#78)
+    ///
+    /// The `Structured` lane changes *subscription cancellation* semantics
+    /// (CancellationToken-backed stop signals in `subscription.rs`); it must
+    /// NOT also collapse `Cmd::Task` concurrency. Earlier this returned
+    /// `EffectQueue`, which routed every `Cmd::Task` through a single
+    /// `effect_queue_loop` worker thread with a Smith's-rule (SPT) scheduler,
+    /// serializing all tasks. Apps that forward PTY output via per-pane
+    /// `Cmd::task` polling loops (e.g. 10ms drains) then contended for one
+    /// serialized worker, adding per-keystroke head-of-line latency versus
+    /// v0.2.1, where each `Cmd::task` got its own `std::thread::spawn`.
+    ///
+    /// Structured cancellation does not depend on the effect queue (stop
+    /// signals are token-backed regardless of executor backend), so the two
+    /// concerns are decoupled here: `Structured` keeps the structured
+    /// cancellation semantics but restores per-task-thread (`Spawned`)
+    /// execution. Apps that explicitly opt into `EffectQueue` still get it
+    /// (the lane default only applies when the app uses the legacy default
+    /// backend — see `EffectQueueConfig::uses_legacy_default_backend`).
     #[must_use]
     fn task_executor_backend(self) -> TaskExecutorBackend {
         match self {
-            Self::Legacy => TaskExecutorBackend::Spawned,
-            Self::Structured => TaskExecutorBackend::EffectQueue,
+            // Legacy and Structured both use per-task `Spawned` execution.
+            // (Structured only changes cancellation semantics, not concurrency
+            // — see the regression note above.) Kept as a combined arm so the
+            // `match_same_arms` lint stays happy under `-D warnings`.
+            Self::Legacy | Self::Structured => TaskExecutorBackend::Spawned,
             Self::Asupersync => {
                 #[cfg(feature = "asupersync-executor")]
                 {
@@ -11417,21 +11444,31 @@ mod tests {
     }
 
     #[test]
-    fn headless_default_task_executor_is_queued_for_structured_lane() {
+    fn headless_default_task_executor_is_spawned_for_structured_lane() {
+        // Input-lag regression fix (#78): the default Structured lane must use
+        // per-task `Spawned` execution, NOT the single-worker effect queue.
+        // Routing every `Cmd::Task` through one serialized `effect_queue_loop`
+        // worker added per-keystroke head-of-line latency for apps that forward
+        // PTY output via per-pane polling tasks. Structured cancellation does
+        // not require the effect queue, so the default backend is `Spawned`
+        // ("spawned") here, matching v0.2.1 task concurrency.
         let program =
             headless_program_with_config(TestModel { value: 0 }, ProgramConfig::default());
-        assert_eq!(program.task_executor.kind_name(), "queued");
+        assert_eq!(program.task_executor.kind_name(), "spawned");
     }
 
     #[test]
-    fn headless_structured_lane_task_executor_writes_queued_backend_evidence() {
-        let evidence_path = temp_evidence_path("task_executor_queued_backend");
+    fn headless_structured_lane_task_executor_writes_spawned_backend_evidence() {
+        // Input-lag regression fix (#78): the default Structured lane emits the
+        // "spawned" backend in startup evidence (was "queued"), reflecting the
+        // restored per-task-thread execution.
+        let evidence_path = temp_evidence_path("task_executor_spawned_backend");
         let sink_config = EvidenceSinkConfig::enabled_file(&evidence_path);
         let config = ProgramConfig::default().with_evidence_sink(sink_config);
         let _program = headless_program_with_config(TestModel { value: 0 }, config);
 
         let backend_line = read_evidence_event(&evidence_path, "task_executor_backend");
-        assert_eq!(backend_line["backend"], "queued");
+        assert_eq!(backend_line["backend"], "spawned");
     }
 
     #[test]
@@ -13109,10 +13146,17 @@ mod tests {
     }
 
     #[test]
-    fn program_config_default_lane_resolves_to_effect_queue_backend() {
+    fn program_config_default_lane_resolves_to_spawned_backend() {
+        // Input-lag regression fix (#78): the default Structured lane now
+        // resolves to per-task `Spawned` execution instead of the single-worker
+        // `EffectQueue`. Structured cancellation is independent of the task
+        // executor backend, so the lane no longer serializes `Cmd::Task` through
+        // one `effect_queue_loop` worker (which caused per-keystroke head-of-line
+        // latency for PTY-forwarding apps). `enabled` is the legacy convenience
+        // flag mirroring the backend, so it is now false for the default lane.
         let resolved = ProgramConfig::default().resolved_effect_queue_config();
-        assert!(resolved.enabled);
-        assert_eq!(resolved.backend, TaskExecutorBackend::EffectQueue);
+        assert!(!resolved.enabled);
+        assert_eq!(resolved.backend, TaskExecutorBackend::Spawned);
     }
 
     #[test]
