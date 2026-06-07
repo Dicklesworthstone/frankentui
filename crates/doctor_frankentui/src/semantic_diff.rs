@@ -447,10 +447,9 @@ fn marker_observation(
         (SemanticObservationKind::SideEffect, rest)
     } else if let Some(rest) = name.strip_prefix("event:") {
         (SemanticObservationKind::EventOrdering, rest)
-    } else if let Some(rest) = name.strip_prefix("improvement:") {
-        (SemanticObservationKind::Improvement, rest)
     } else {
-        return None;
+        let rest = name.strip_prefix("improvement:")?;
+        (SemanticObservationKind::Improvement, rest)
     };
     let (key, value) = split_key_value(rest, label.unwrap_or("observed"));
     Some(SemanticObservation::new(

@@ -346,6 +346,15 @@ pub struct RuntimeDiffConfig {
     ///
     /// Contains cost model constants, prior parameters, and decay settings.
     pub strategy_config: DiffStrategyConfig,
+
+    /// Maximum successful incremental frames to allow between physical full redraws.
+    ///
+    /// Terminals and mux panes can lose their visible buffer without notifying the
+    /// process. A bounded full redraw interval repairs that state divergence even
+    /// when the application model has not changed. Set to `0` to disable.
+    ///
+    /// Default: 240
+    pub full_redraw_interval_frames: u64,
 }
 
 impl Default for RuntimeDiffConfig {
@@ -358,6 +367,7 @@ impl Default for RuntimeDiffConfig {
             reset_on_resize: true,
             reset_on_invalidation: true,
             strategy_config: DiffStrategyConfig::default(),
+            full_redraw_interval_frames: 240,
         }
     }
 }
@@ -430,6 +440,15 @@ impl RuntimeDiffConfig {
         self.strategy_config = config;
         self
     }
+
+    /// Set the maximum successful incremental frames between physical full redraws.
+    ///
+    /// A value of `0` disables periodic terminal resynchronization.
+    #[must_use]
+    pub fn with_full_redraw_interval_frames(mut self, frames: u64) -> Self {
+        self.full_redraw_interval_frames = frames;
+        self
+    }
 }
 
 /// Unified terminal output coordinator.
@@ -482,6 +501,8 @@ pub struct TerminalWriter<W: Write> {
     diff_scratch: BufferDiff,
     /// Frames since last diff probe while in FullRedraw.
     full_redraw_probe: u64,
+    /// Successful incremental frames since the terminal was physically redrawn.
+    frames_since_full_redraw: u64,
     /// Runtime diff configuration.
     #[allow(dead_code)] // runtime toggles wired up in follow-up work
     diff_config: RuntimeDiffConfig,
@@ -630,6 +651,7 @@ impl<W: Write> TerminalWriter<W> {
             diff_strategy,
             diff_scratch,
             full_redraw_probe: 0,
+            frames_since_full_redraw: 0,
             diff_config,
             evidence_sink: None,
             diff_evidence_run_id: default_diff_run_id(),
@@ -669,6 +691,7 @@ impl<W: Write> TerminalWriter<W> {
             self.diff_strategy.reset();
         }
         self.full_redraw_probe = 0;
+        self.frames_since_full_redraw = 0;
         self.last_diff_strategy = None;
     }
 
@@ -679,6 +702,7 @@ impl<W: Write> TerminalWriter<W> {
             self.diff_strategy.reset();
         }
         self.full_redraw_probe = 0;
+        self.frames_since_full_redraw = 0;
         self.last_diff_strategy = None;
     }
 
@@ -1100,10 +1124,11 @@ impl<W: Write> TerminalWriter<W> {
         }
 
         if let Ok(stats) = result {
+            self.record_successful_present(stats.diff_strategy);
             // 3-buffer rotation: reuse clone_buf's allocation to avoid per-frame alloc.
             // Only advance the diff baseline after a successful present. If a write
-            // failed partway through, the terminal state is unknown, so keeping the
-            // old baseline forces a conservative repaint on the next frame.
+            // failed partway through, the terminal state is unknown; the error path
+            // below invalidates the baseline so the next frame physically repaints.
             let new_prev = match self.clone_buf.take() {
                 Some(mut buf)
                     if buf.width() == buffer.width() && buf.height() == buffer.height() =>
@@ -1157,6 +1182,7 @@ impl<W: Write> TerminalWriter<W> {
             return Ok(());
         }
 
+        self.invalidate_after_present_error();
         result.map(|_| ())
     }
 
@@ -1219,6 +1245,7 @@ impl<W: Write> TerminalWriter<W> {
         }
 
         if let Ok(stats) = result {
+            self.record_successful_present(stats.diff_strategy);
             if let Some(ref mut trace) = self.render_trace {
                 let payload_info = match stats.diff_strategy {
                     DiffStrategy::FullRedraw => {
@@ -1264,6 +1291,7 @@ impl<W: Write> TerminalWriter<W> {
             return Ok(());
         }
 
+        self.invalidate_after_present_error();
         result.map(|_| ())
     }
 
@@ -1273,6 +1301,15 @@ impl<W: Write> TerminalWriter<W> {
             .as_ref()
             .map(|prev| (prev.width(), prev.height()));
         if prev_dims.is_none() || prev_dims != Some((buffer.width(), buffer.height())) {
+            self.full_redraw_probe = 0;
+            self.last_diff_strategy = Some(DiffStrategy::FullRedraw);
+            return DiffDecision {
+                strategy: DiffStrategy::FullRedraw,
+                has_diff: false,
+            };
+        }
+
+        if self.full_redraw_interval_due() {
             self.full_redraw_probe = 0;
             self.last_diff_strategy = Some(DiffStrategy::FullRedraw);
             return DiffDecision {
@@ -1547,6 +1584,25 @@ impl<W: Write> TerminalWriter<W> {
 
         self.last_diff_strategy = Some(strategy);
         DiffDecision { strategy, has_diff }
+    }
+
+    fn full_redraw_interval_due(&self) -> bool {
+        self.diff_config.full_redraw_interval_frames > 0
+            && self.frames_since_full_redraw >= self.diff_config.full_redraw_interval_frames
+    }
+
+    fn record_successful_present(&mut self, strategy: DiffStrategy) {
+        if strategy == DiffStrategy::FullRedraw {
+            self.frames_since_full_redraw = 0;
+        } else {
+            self.frames_since_full_redraw = self.frames_since_full_redraw.saturating_add(1);
+        }
+    }
+
+    fn invalidate_after_present_error(&mut self) {
+        self.prev_buffer = None;
+        self.last_inline_region = None;
+        self.reset_diff_strategy();
     }
 
     /// Present UI in inline mode with cursor save/restore.
@@ -4042,6 +4098,7 @@ mod tests {
         assert!(config.tile_diff_config.enabled);
         assert!(config.reset_on_resize);
         assert!(config.reset_on_invalidation);
+        assert_eq!(config.full_redraw_interval_frames, 240);
     }
 
     #[test]
@@ -4059,7 +4116,8 @@ mod tests {
             .with_dirty_spans_enabled(false)
             .with_tile_diff_config(tile_config)
             .with_reset_on_resize(false)
-            .with_reset_on_invalidation(false);
+            .with_reset_on_invalidation(false)
+            .with_full_redraw_interval_frames(17);
 
         assert!(!config.bayesian_enabled);
         assert!(!config.dirty_rows_enabled);
@@ -4071,6 +4129,7 @@ mod tests {
         assert_eq!(config.tile_diff_config.max_tiles, 2048);
         assert!(!config.reset_on_resize);
         assert!(!config.reset_on_invalidation);
+        assert_eq!(config.full_redraw_interval_frames, 17);
     }
 
     #[test]
@@ -4160,6 +4219,95 @@ mod tests {
         buffer.set_raw(1, 1, Cell::from_char('Y'));
         writer.present_ui(&buffer, None, false).unwrap();
         assert!(writer.last_diff_strategy().is_some());
+    }
+
+    #[test]
+    fn full_redraw_interval_forces_terminal_resync() {
+        let mut output = Vec::new();
+        let mut writer = TerminalWriter::with_diff_config(
+            &mut output,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+            RuntimeDiffConfig::default()
+                .with_bayesian_enabled(false)
+                .with_full_redraw_interval_frames(1),
+        );
+        writer.set_size(4, 2);
+
+        let mut buffer = Buffer::new(4, 2);
+        buffer.set_raw(0, 0, Cell::from_char('A'));
+
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_ne!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+    }
+
+    #[test]
+    fn full_redraw_interval_emits_current_frame_after_incremental_baseline() {
+        let state = Rc::new(RefCell::new(FaultState::default()));
+        let writer_backend = SingleWriteFaultWriter::new(Rc::clone(&state), usize::MAX, 1);
+        let mut writer = TerminalWriter::with_diff_config(
+            writer_backend,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+            RuntimeDiffConfig::default()
+                .with_bayesian_enabled(false)
+                .with_full_redraw_interval_frames(1),
+        );
+        writer.set_size(4, 2);
+
+        let mut buffer = Buffer::new(4, 2);
+        buffer.set_raw(0, 0, Cell::from_char('Q'));
+
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+
+        buffer.set_raw(1, 0, Cell::from_char('Z'));
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_ne!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+
+        state.borrow_mut().bytes.clear();
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+
+        let bytes = state.borrow().bytes.clone();
+        assert!(
+            bytes.windows(b"QZ".len()).any(|window| window == b"QZ"),
+            "forced full redraw should emit adjacent current-frame cells"
+        );
+    }
+
+    #[test]
+    fn full_redraw_interval_zero_disables_terminal_resync() {
+        let mut output = Vec::new();
+        let mut writer = TerminalWriter::with_diff_config(
+            &mut output,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+            RuntimeDiffConfig::default()
+                .with_bayesian_enabled(false)
+                .with_full_redraw_interval_frames(0),
+        );
+        writer.set_size(4, 2);
+
+        let mut buffer = Buffer::new(4, 2);
+        buffer.set_raw(0, 0, Cell::from_char('A'));
+
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+
+        for _ in 0..5 {
+            writer.present_ui(&buffer, None, false).unwrap();
+            assert_ne!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+        }
     }
 
     #[test]
@@ -5385,6 +5533,52 @@ mod tests {
             bytes.contains(&b'A'),
             "retry should emit the missing cell content after a failed present"
         );
+    }
+
+    #[test]
+    fn present_ui_write_failure_with_existing_baseline_invalidates_diff_state() {
+        let state = Rc::new(RefCell::new(FaultState::default()));
+        let writer_backend = SingleWriteFaultWriter::new(Rc::clone(&state), 1, 1);
+        let mut writer = TerminalWriter::new(
+            writer_backend,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(4, 2);
+
+        let mut previous = Buffer::new(4, 2);
+        previous.set_raw(0, 0, Cell::from_char('A'));
+        writer.prev_buffer = Some(previous);
+        writer.last_inline_region = Some(InlineRegion {
+            start: 0,
+            height: 2,
+        });
+        writer.last_diff_strategy = Some(DiffStrategy::DirtyRows);
+        writer.frames_since_full_redraw = 7;
+
+        let mut buffer = Buffer::new(4, 2);
+        buffer.set_raw(0, 0, Cell::from_char('B'));
+
+        let err = writer
+            .present_ui(&buffer, None, true)
+            .expect_err("present should hit the injected write fault");
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert!(
+            writer.prev_buffer.is_none(),
+            "failed present with a prior baseline must force the next frame to repaint"
+        );
+        assert!(
+            writer.last_inline_region.is_none(),
+            "failed present must drop inline-region assumptions"
+        );
+        assert_eq!(writer.last_diff_strategy(), None);
+        assert_eq!(writer.frames_since_full_redraw, 0);
+
+        writer
+            .present_ui(&buffer, None, true)
+            .expect("retry after transient failure should succeed");
+        assert_eq!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
     }
 
     #[test]
