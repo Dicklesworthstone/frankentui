@@ -66,7 +66,7 @@ tracing = "0.1.41"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.2"
 web-time = "1.1.0"
-asupersync = { version = "0.3.1", optional = true }
+asupersync = { version = "0.3.4", optional = true }
 
 # Optional telemetry dependencies (feature-gated)
 opentelemetry = { version = "0.32", optional = true }
