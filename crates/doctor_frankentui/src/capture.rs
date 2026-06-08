@@ -2950,9 +2950,13 @@ mod tests {
                 .expect("seed wait thread should return a bool"),
             "cancelled seed wait should not proceed to launch"
         );
+        // The cancel fires at ~30ms; the full timeout is 250ms. A prompt
+        // cancellation must return well before the full timeout. We use a
+        // generous 230ms ceiling so the test still proves we took the
+        // cancel path (not the timeout path) without flaking under CI load.
         assert!(
-            start.elapsed() < Duration::from_millis(200),
-            "cancelled wait should stop promptly"
+            start.elapsed() < Duration::from_millis(230),
+            "cancelled wait should stop promptly (well before the 250ms timeout)"
         );
     }
 

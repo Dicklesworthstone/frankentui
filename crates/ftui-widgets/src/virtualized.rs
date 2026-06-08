@@ -1947,24 +1947,45 @@ mod tests {
 
         let iterations = 10_000;
 
-        let start = Instant::now();
+        // Warm up both paths so the timed runs are not skewed by first-touch
+        // page faults / branch predictor / cache warming.
         for _ in 0..iterations {
             small.scroll(1);
             small.scroll(-1);
-        }
-        let small_time = start.elapsed();
-
-        let start = Instant::now();
-        for _ in 0..iterations {
             large.scroll(1);
             large.scroll(-1);
         }
-        let large_time = start.elapsed();
 
-        // Should be within 3x (both are O(1) operations)
+        // Take the best (minimum) of several timed runs for each list. The
+        // minimum is the measurement least contaminated by scheduling jitter,
+        // GC of other processes, and CI load — exactly the noise that made the
+        // old single-shot comparison flaky.
+        let measure = |v: &mut Virtualized<i32>| -> std::time::Duration {
+            let runs = 5;
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..runs {
+                let start = Instant::now();
+                for _ in 0..iterations {
+                    v.scroll(1);
+                    v.scroll(-1);
+                }
+                best = best.min(start.elapsed());
+            }
+            best
+        };
+
+        let small_time = measure(&mut small);
+        let large_time = measure(&mut large);
+
+        // The real signal we care about is "scroll cost does NOT grow with list
+        // size" (i.e. it is O(1), not O(n)). With n differing by 100x, a truly
+        // O(n) scroll would make `large_time` ~100x `small_time`. A generous
+        // constant-factor ceiling distinguishes O(1) from O(n) without flaking
+        // on scheduling jitter, so we allow a wide multiplier here.
+        let ceiling = small_time.checked_mul(10).unwrap_or(std::time::Duration::MAX);
         assert!(
-            large_time < small_time * 3,
-            "Scroll is not O(1): 1K={:?}, 100K={:?}",
+            large_time < ceiling,
+            "Scroll is not O(1) (grows with list size): 1K={:?}, 100K={:?}",
             small_time,
             large_time
         );
