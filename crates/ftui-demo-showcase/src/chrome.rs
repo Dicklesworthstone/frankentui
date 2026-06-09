@@ -3,10 +3,11 @@
 //! Shared UI chrome: tab bar, status bar, and help overlay.
 
 use ftui_core::geometry::Rect;
+use ftui_render::cell::{Cell, CellAttrs, CellContent};
 use ftui_render::frame::{Frame, HitId};
 use ftui_runtime::MouseCapturePolicy;
 use ftui_style::{Style, StyleFlags};
-use ftui_text::{Line, Span, Text, WrapMode, display_width};
+use ftui_text::{Line, Span, Text, WrapMode, display_width, grapheme_width, graphemes};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -319,6 +320,85 @@ fn rects_intersect(a: Rect, b: Rect) -> bool {
     !(ax2 <= b.x || bx2 <= a.x || ay2 <= b.y || by2 <= a.y)
 }
 
+fn apply_chrome_style(cell: &mut Cell, style: Style) {
+    if let Some(fg) = style.fg {
+        cell.fg = fg;
+    }
+    if let Some(bg) = style.bg {
+        match bg.a() {
+            0 => {}
+            255 => cell.bg = bg,
+            _ => cell.bg = bg.over(cell.bg),
+        }
+    }
+    if let Some(attrs) = style.attrs {
+        cell.attrs = cell.attrs.merged_flags(attrs.into());
+    }
+}
+
+fn clear_chrome_area(frame: &mut Frame, area: Rect, style: Style) {
+    if area.is_empty() {
+        return;
+    }
+
+    let mut cell = Cell::from_char(' ');
+    apply_chrome_style(&mut cell, style);
+    frame.buffer.fill(area, cell);
+}
+
+fn render_chrome_spans(frame: &mut Frame, area: Rect, base_style: Style, spans: &[Span<'_>]) {
+    clear_chrome_area(frame, area, base_style);
+    if area.is_empty() {
+        return;
+    }
+
+    let mut x = area.x;
+    let max_x = area.right();
+    for span in spans {
+        if x >= max_x {
+            break;
+        }
+        x = render_chrome_span(frame, x, area.y, span.as_str(), span.style, max_x);
+    }
+}
+
+fn render_chrome_span(
+    frame: &mut Frame,
+    mut x: u16,
+    y: u16,
+    content: &str,
+    style: Option<Style>,
+    max_x: u16,
+) -> u16 {
+    for grapheme in graphemes(content) {
+        let width = grapheme_width(grapheme);
+        if width == 0 {
+            continue;
+        }
+        if x >= max_x || x as u32 + width as u32 > max_x as u32 {
+            break;
+        }
+
+        let content = if width > 1 || grapheme.chars().count() > 1 {
+            CellContent::from_grapheme(frame.intern_with_width(grapheme, width as u8))
+        } else if let Some(ch) = grapheme.chars().next() {
+            CellContent::from_char(ch)
+        } else {
+            continue;
+        };
+
+        let mut cell = frame.buffer.get(x, y).copied().unwrap_or_default();
+        cell.content = content;
+        cell.attrs = CellAttrs::new(cell.attrs.flags(), CellAttrs::LINK_ID_NONE);
+        if let Some(style) = style {
+            apply_chrome_style(&mut cell, style);
+        }
+        frame.buffer.set_fast(x, y, cell);
+        x = x.saturating_add(width as u16);
+    }
+    x
+}
+
 // ---------------------------------------------------------------------------
 // Tab bar
 // ---------------------------------------------------------------------------
@@ -330,8 +410,7 @@ fn rects_intersect(a: Rect, b: Rect) -> bool {
 pub fn render_tab_bar(current: ScreenId, frame: &mut Frame, area: Rect) {
     // Fill background
     let bg_style = theme::tab_bar();
-    let blank = Paragraph::new("").style(bg_style);
-    blank.render(area, frame);
+    clear_chrome_area(frame, area, bg_style);
 
     // Lay out tabs left-to-right
     let mut x = area.x;
@@ -380,15 +459,14 @@ pub fn render_tab_bar(current: ScreenId, frame: &mut Frame, area: Rect) {
         );
         let pad_style = Style::new().bg(bg);
 
-        let line = Line::from_spans([
+        let spans = [
             Span::styled(" ", pad_style),
-            Span::styled(key_label.clone(), key_style),
+            Span::styled(key_label.as_str(), key_style),
             Span::styled(": ", key_style),
             Span::styled(label_text, label_style),
             Span::styled(" ", pad_style),
-        ]);
-        let tab = Paragraph::new(Text::from_lines([line]));
-        tab.render(tab_area, frame);
+        ];
+        render_chrome_spans(frame, tab_area, Style::default(), &spans);
 
         // Register hit region for mouse clicks
         frame.register_hit_region(tab_area, HitId::new(TAB_HIT_BASE + i as u32));
@@ -420,8 +498,7 @@ pub fn render_tab_bar(current: ScreenId, frame: &mut Frame, area: Rect) {
                 .bg(theme::alpha::SURFACE)
                 .fg(theme::fg::MUTED)
                 .attrs(StyleFlags::DIM);
-            let sep = Paragraph::new("│").style(sep_style);
-            sep.render(sep_area, frame);
+            render_chrome_spans(frame, sep_area, sep_style, &[Span::raw("│")]);
             x = x.saturating_add(1);
         }
     }
@@ -596,8 +673,7 @@ pub fn render_status_bar(state: &StatusBarState<'_>, frame: &mut Frame, area: Re
     // Fill background
     let bg_style = theme::status_bar();
     let bg_color = theme::alpha::SURFACE;
-    let blank = Paragraph::new("").style(bg_style);
-    blank.render(area, frame);
+    clear_chrome_area(frame, area, bg_style);
 
     // Get screen accent color for title emphasis
     let screen_accent = accent_for(state.current_screen);
@@ -955,9 +1031,7 @@ pub fn render_status_bar(state: &StatusBarState<'_>, frame: &mut Frame, area: Re
         spans.push(Span::styled(" ", pad_style));
     }
 
-    let line = Line::from_spans(spans);
-    let bar = Paragraph::new(Text::from_lines([line]));
-    bar.render(area, frame);
+    render_chrome_spans(frame, area, Style::default(), &spans);
 
     // Register hit regions for clickable status bar elements (bd-iuvb.17.4).
     // Uses pre-computed positions from above (before spans consumed the strings).
@@ -1399,6 +1473,47 @@ mod tests {
             found_accent,
             "Shakespeare tab should have its accent bg color"
         );
+    }
+
+    #[test]
+    fn chrome_spans_match_one_line_paragraph_rendering() {
+        let area = Rect::new(0, 0, 16, 1);
+        let bg_style = theme::tab_bar();
+        let accent_style = Style::new()
+            .bg(theme::with_alpha(
+                theme::screen_accent::DASHBOARD,
+                TAB_ACCENT_ALPHA,
+            ))
+            .fg(theme::fg::PRIMARY)
+            .attrs(StyleFlags::BOLD);
+        let muted_style = Style::new()
+            .bg(theme::alpha::SURFACE)
+            .fg(theme::fg::MUTED)
+            .attrs(StyleFlags::DIM);
+        let spans = [
+            Span::styled(" A", accent_style),
+            Span::styled("│", muted_style),
+            Span::styled("B ", muted_style),
+        ];
+
+        let mut expected_pool = GraphemePool::new();
+        let mut expected = Frame::new(area.width, area.height, &mut expected_pool);
+        clear_chrome_area(&mut expected, area, bg_style);
+        Paragraph::new(Text::from_lines([Line::from_spans(spans.clone())]))
+            .render(area, &mut expected);
+
+        let mut actual_pool = GraphemePool::new();
+        let mut actual = Frame::new(area.width, area.height, &mut actual_pool);
+        clear_chrome_area(&mut actual, area, bg_style);
+        render_chrome_spans(&mut actual, area, Style::default(), &spans);
+
+        for x in 0..area.width {
+            assert_eq!(
+                expected.buffer.get(x, 0),
+                actual.buffer.get(x, 0),
+                "cell mismatch at x={x}"
+            );
+        }
     }
 
     #[test]
