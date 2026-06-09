@@ -31,7 +31,7 @@ use ftui_extras::text_effects::{
     StyledMultiLine, StyledText, TextEffect,
 };
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::{Cell as RenderCell, PackedRgba};
+use ftui_render::cell::{Cell as RenderCell, CellAttrs, CellContent, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::{Style, StyleFlags};
@@ -3811,10 +3811,12 @@ impl Dashboard {
             return;
         }
         let hint_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
-        let text = truncate_to_width(hint, hint_area.width);
-        Paragraph::new(text)
-            .style(Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE))
-            .render(hint_area, frame);
+        render_static_dashboard_line(
+            frame,
+            hint_area,
+            hint,
+            Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE),
+        );
     }
 
     // =========================================================================
@@ -5709,9 +5711,12 @@ impl Dashboard {
         }
 
         let hint = "g:charts c:code e:fx m:md | drag bottom dividers: resize | 1-9:screens | t:theme | q:quit";
-        Paragraph::new(hint)
-            .style(Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE))
-            .render(area, frame);
+        render_static_dashboard_line(
+            frame,
+            area,
+            hint,
+            Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE),
+        );
     }
 
     fn register_panel_links(&self, frame: &mut Frame) {
@@ -6185,6 +6190,81 @@ fn render_text(frame: &mut Frame, area: Rect, text: &Text) {
                 .render(span_area, frame);
             x_offset += text_len;
         }
+    }
+}
+
+fn apply_dashboard_line_style(cell: &mut RenderCell, style: Style) {
+    if let Some(fg) = style.fg {
+        cell.fg = fg;
+    }
+    if let Some(bg) = style.bg {
+        match bg.a() {
+            0 => {}
+            255 => cell.bg = bg,
+            _ => cell.bg = bg.over(cell.bg),
+        }
+    }
+    if let Some(attrs) = style.attrs {
+        cell.attrs = cell.attrs.merged_flags(attrs.into());
+    }
+}
+
+fn clear_dashboard_line_area(frame: &mut Frame, area: Rect, style: Style) {
+    if area.is_empty() {
+        return;
+    }
+
+    let mut cell = RenderCell::from_char(' ');
+    apply_dashboard_line_style(&mut cell, style);
+    frame.buffer.fill(area, cell);
+}
+
+fn render_static_dashboard_line(frame: &mut Frame, area: Rect, text: &str, style: Style) {
+    if area.is_empty() {
+        return;
+    }
+
+    let deg = frame.buffer.degradation;
+    if !deg.render_content() {
+        clear_dashboard_line_area(frame, area, Style::default());
+        return;
+    }
+
+    let style = if deg.apply_styling() {
+        style
+    } else {
+        Style::default()
+    };
+    clear_dashboard_line_area(frame, area, style);
+
+    let mut text_style = style;
+    text_style.bg = None;
+
+    let mut x = area.x;
+    let max_x = area.right();
+    for grapheme in graphemes(text) {
+        let width = grapheme_width(grapheme);
+        if width == 0 {
+            continue;
+        }
+        if x >= max_x || x as u32 + width as u32 > max_x as u32 {
+            break;
+        }
+
+        let content = if width > 1 || grapheme.chars().count() > 1 {
+            CellContent::from_grapheme(frame.intern_with_width(grapheme, width as u8))
+        } else if let Some(ch) = grapheme.chars().next() {
+            CellContent::from_char(ch)
+        } else {
+            continue;
+        };
+
+        let mut cell = frame.buffer.get(x, area.y).copied().unwrap_or_default();
+        cell.content = content;
+        cell.attrs = cell.attrs.with_link(CellAttrs::LINK_ID_NONE);
+        apply_dashboard_line_style(&mut cell, text_style);
+        frame.buffer.set_fast(x, area.y, cell);
+        x = x.saturating_add(width as u16);
     }
 }
 
