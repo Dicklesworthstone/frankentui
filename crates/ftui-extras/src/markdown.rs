@@ -60,7 +60,7 @@ use pulldown_cmark::{
 };
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 type Line = ftui_text::text::Line<'static>;
 type Text = ftui_text::text::Text<'static>;
@@ -576,23 +576,46 @@ impl LatexMathCache {
     fn contains(&self, latex: &str) -> bool {
         self.entries.contains_key(latex)
     }
+
+    #[cfg(test)]
+    fn remove(&mut self, latex: &str) {
+        if self.entries.remove(latex).is_some() {
+            self.order.retain(|entry| entry != latex);
+        }
+    }
+}
+
+fn global_latex_math_cache() -> &'static Mutex<LatexMathCache> {
+    static CACHE: OnceLock<Mutex<LatexMathCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(LatexMathCache::default()))
+}
+
+fn get_cached_latex(cache: &Mutex<LatexMathCache>, latex: &str) -> Option<Option<String>> {
+    cache.lock().ok().map(|cache| cache.get(latex))
+}
+
+fn insert_cached_latex(cache: &Mutex<LatexMathCache>, latex: &str, unicode: String) {
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(latex, unicode);
+    }
 }
 
 fn cached_latex_to_unicode(cache: &Mutex<LatexMathCache>, latex: &str) -> String {
-    match cache.lock() {
-        Ok(cache) => {
-            if let Some(unicode) = cache.get(latex) {
-                return unicode;
-            }
-        }
-        Err(_) => return latex_to_unicode(latex),
+    match get_cached_latex(cache, latex) {
+        Some(Some(unicode)) => return unicode,
+        Some(None) => {}
+        None => return latex_to_unicode(latex),
+    }
+
+    if let Some(Some(unicode)) = get_cached_latex(global_latex_math_cache(), latex) {
+        insert_cached_latex(cache, latex, unicode.clone());
+        return unicode;
     }
 
     let unicode = latex_to_unicode(latex);
-    match cache.lock() {
-        Ok(mut cache) => cache.insert(latex, unicode),
-        Err(_) => unicode,
-    }
+    insert_cached_latex(global_latex_math_cache(), latex, unicode.clone());
+    insert_cached_latex(cache, latex, unicode.clone());
+    unicode
 }
 
 /// Apply fallback conversions for LaTeX constructs not handled by unicodeit.
@@ -3304,6 +3327,35 @@ The end.
         assert_eq!(cache.len(), LATEX_CACHE_CAPACITY);
         assert!(!cache.contains(r"\alpha_0"));
         assert!(cache.contains(&format!(r"\alpha_{}", LATEX_CACHE_CAPACITY)));
+    }
+
+    #[test]
+    fn fresh_renderer_uses_shared_latex_math_cache() {
+        let latex = r"\ftuiSharedLatexCacheSentinel";
+        let cached = "FTUI_SHARED_LATEX_CACHE_HIT";
+
+        {
+            let mut cache = global_latex_math_cache()
+                .lock()
+                .expect("shared LaTeX cache should be lockable");
+            cache.remove(latex);
+            cache.insert(latex, cached.to_owned());
+        }
+
+        let renderer = MarkdownRenderer::new(MarkdownTheme::default());
+        let rendered = renderer.render(&format!("Shared cache ${latex}$ value."));
+        let content = plain(&rendered);
+        let renderer_cache_len = math_cache_len(&renderer);
+
+        {
+            let mut cache = global_latex_math_cache()
+                .lock()
+                .expect("shared LaTeX cache should be lockable");
+            cache.remove(latex);
+        }
+
+        assert!(content.contains(cached));
+        assert_eq!(renderer_cache_len, 1);
     }
 
     // =========================================================================
