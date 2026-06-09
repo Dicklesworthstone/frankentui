@@ -137,17 +137,33 @@ fn line_min_width(line: &Line<'_>) -> usize {
 }
 
 impl<'a> Paragraph<'a> {
-    /// Create a new paragraph from the given text.
-    #[must_use]
-    pub fn new<'t>(text: impl Into<FtuiText<'t>>) -> Self {
+    fn with_static_text(text: FtuiText<'static>) -> Self {
         Self {
-            text: text_into_owned(text.into()),
+            text,
             block: None,
             style: Style::default(),
             wrap: None,
             alignment: Alignment::Left,
             scroll: (0, 0),
         }
+    }
+
+    /// Create a new paragraph from the given text.
+    #[must_use]
+    pub fn new<'t>(text: impl Into<FtuiText<'t>>) -> Self {
+        Self::with_static_text(text_into_owned(text.into()))
+    }
+
+    /// Create a new paragraph from text that is already valid for the widget's storage lifetime.
+    #[must_use]
+    pub fn from_static_text(text: FtuiText<'static>) -> Self {
+        Self::with_static_text(text)
+    }
+
+    /// Create a new paragraph from a static string without copying the string contents.
+    #[must_use]
+    pub fn from_static_str(text: &'static str) -> Self {
+        Self::from_static_text(FtuiText::raw(text))
     }
 
     /// Set the surrounding block.
@@ -635,6 +651,31 @@ mod tests {
 
         assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('H'));
         assert_eq!(frame.buffer.get(4, 0).unwrap().content.as_char(), Some('o'));
+    }
+
+    #[test]
+    fn from_static_str_preserves_rendering_without_owning_static_spans() {
+        let area = Rect::new(0, 0, 8, 2);
+
+        let fast = Paragraph::from_static_str("Hi\nthere").style(Style::new().bold());
+        let slow = Paragraph::new("Hi\nthere").style(Style::new().bold());
+
+        let mut fast_pool = GraphemePool::new();
+        let mut fast_frame = Frame::new(8, 2, &mut fast_pool);
+        fast.render(area, &mut fast_frame);
+
+        let mut slow_pool = GraphemePool::new();
+        let mut slow_frame = Frame::new(8, 2, &mut slow_pool);
+        slow.render(area, &mut slow_frame);
+
+        assert_eq!(raw_row_text(&fast_frame, 0), raw_row_text(&slow_frame, 0));
+        assert_eq!(raw_row_text(&fast_frame, 1), raw_row_text(&slow_frame, 1));
+
+        let first_span = &fast.text.lines()[0].spans()[0];
+        match &first_span.content {
+            std::borrow::Cow::Borrowed(text) => assert_eq!(*text, "Hi"),
+            std::borrow::Cow::Owned(_) => panic!("static paragraph text should stay borrowed"),
+        }
     }
 
     #[test]

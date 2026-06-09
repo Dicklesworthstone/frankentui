@@ -1207,7 +1207,7 @@ impl Screen for PerformanceHud {
 
         // Title bar
         let title = "PERFORMANCE CHALLENGE MODE — DEGRADATION TIERS";
-        Paragraph::new(title)
+        Paragraph::from_static_str(title)
             .style(
                 Style::new()
                     .fg(theme::fg::PRIMARY)
