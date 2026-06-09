@@ -1,0 +1,1493 @@
+   Compiling zerocopy v0.8.50
+   Compiling half v2.7.1
+   Compiling clap_builder v4.6.0
+   Compiling ciborium-ll v0.2.2
+   Compiling ahash v0.8.12
+   Compiling ppv-lite86 v0.2.21
+   Compiling ftui-core v0.4.0 (/data/projects/frankentui/crates/ftui-core)
+   Compiling rand_chacha v0.9.0
+   Compiling tinytemplate v1.2.1
+   Compiling ciborium v0.2.2
+   Compiling clap v4.6.1
+   Compiling criterion v0.8.2
+   Compiling ftui-render v0.4.0 (/data/projects/frankentui/crates/ftui-render)
+   Compiling proptest v1.11.0
+    Finished `bench` profile [optimized + debuginfo] target(s) in 3m 45s
+     Running benches/diff_bench.rs (/data/tmp/cargo-target/release/deps/diff_bench-fc89bc6ce37cc628)
+Benchmarking diff/identical/compute/80x24
+Benchmarking diff/identical/compute/80x24: Warming up for 3.0000 s
+Benchmarking diff/identical/compute/80x24: Collecting 20 samples in estimated 1.0000 s (236k iterations)
+Benchmarking diff/identical/compute/80x24: Analyzing
+diff/identical/compute/80x24
+                        time:   [3.5453 µs 3.6687 µs 3.8268 µs]
+                        thrpt:  [501.73 Melem/s 523.35 Melem/s 541.56 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/identical/compute/120x40
+Benchmarking diff/identical/compute/120x40: Warming up for 3.0000 s
+Benchmarking diff/identical/compute/120x40: Collecting 20 samples in estimated 1.0004 s (118k iterations)
+Benchmarking diff/identical/compute/120x40: Analyzing
+diff/identical/compute/120x40
+                        time:   [8.1857 µs 8.5169 µs 9.0359 µs]
+                        thrpt:  [531.22 Melem/s 563.59 Melem/s 586.39 Melem/s]
+Benchmarking diff/identical/compute/200x60
+Benchmarking diff/identical/compute/200x60: Warming up for 3.0000 s
+Benchmarking diff/identical/compute/200x60: Collecting 20 samples in estimated 1.0014 s (36k iterations)
+Benchmarking diff/identical/compute/200x60: Analyzing
+diff/identical/compute/200x60
+                        time:   [27.903 µs 32.510 µs 40.090 µs]
+                        thrpt:  [299.33 Melem/s 369.12 Melem/s 430.06 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking diff/sparse_5pct/compute/80x24
+Benchmarking diff/sparse_5pct/compute/80x24: Warming up for 3.0000 s
+Benchmarking diff/sparse_5pct/compute/80x24: Collecting 20 samples in estimated 1.0006 s (282k iterations)
+Benchmarking diff/sparse_5pct/compute/80x24: Analyzing
+diff/sparse_5pct/compute/80x24
+                        time:   [3.4206 µs 3.4877 µs 3.5549 µs]
+                        thrpt:  [540.10 Melem/s 550.50 Melem/s 561.30 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/sparse_5pct/compute/120x40
+Benchmarking diff/sparse_5pct/compute/120x40: Warming up for 3.0000 s
+Benchmarking diff/sparse_5pct/compute/120x40: Collecting 20 samples in estimated 1.0015 s (113k iterations)
+Benchmarking diff/sparse_5pct/compute/120x40: Analyzing
+diff/sparse_5pct/compute/120x40
+                        time:   [8.3116 µs 8.8672 µs 9.5294 µs]
+                        thrpt:  [503.70 Melem/s 541.32 Melem/s 577.51 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/sparse_5pct/compute/200x60
+Benchmarking diff/sparse_5pct/compute/200x60: Warming up for 3.0000 s
+Benchmarking diff/sparse_5pct/compute/200x60: Collecting 20 samples in estimated 1.0026 s (45k iterations)
+Benchmarking diff/sparse_5pct/compute/200x60: Analyzing
+diff/sparse_5pct/compute/200x60
+                        time:   [21.307 µs 22.131 µs 23.229 µs]
+                        thrpt:  [516.59 Melem/s 542.23 Melem/s 563.20 Melem/s]
+
+Benchmarking diff/heavy_50pct/compute/80x24
+Benchmarking diff/heavy_50pct/compute/80x24: Warming up for 3.0000 s
+Benchmarking diff/heavy_50pct/compute/80x24: Collecting 20 samples in estimated 1.0005 s (252k iterations)
+Benchmarking diff/heavy_50pct/compute/80x24: Analyzing
+diff/heavy_50pct/compute/80x24
+                        time:   [4.0030 µs 4.1077 µs 4.2003 µs]
+                        thrpt:  [457.11 Melem/s 467.42 Melem/s 479.64 Melem/s]
+Benchmarking diff/heavy_50pct/compute/120x40
+Benchmarking diff/heavy_50pct/compute/120x40: Warming up for 3.0000 s
+Benchmarking diff/heavy_50pct/compute/120x40: Collecting 20 samples in estimated 1.0005 s (117k iterations)
+Benchmarking diff/heavy_50pct/compute/120x40: Analyzing
+diff/heavy_50pct/compute/120x40
+                        time:   [8.6900 µs 9.0123 µs 9.3944 µs]
+                        thrpt:  [510.94 Melem/s 532.60 Melem/s 552.36 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/heavy_50pct/compute/200x60
+Benchmarking diff/heavy_50pct/compute/200x60: Warming up for 3.0000 s
+Benchmarking diff/heavy_50pct/compute/200x60: Collecting 20 samples in estimated 1.0006 s (41k iterations)
+Benchmarking diff/heavy_50pct/compute/200x60: Analyzing
+diff/heavy_50pct/compute/200x60
+                        time:   [22.925 µs 23.873 µs 24.892 µs]
+                        thrpt:  [482.08 Melem/s 502.66 Melem/s 523.44 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking diff/full_100pct/compute/80x24
+Benchmarking diff/full_100pct/compute/80x24: Warming up for 3.0000 s
+Benchmarking diff/full_100pct/compute/80x24: Collecting 20 samples in estimated 1.0005 s (244k iterations)
+Benchmarking diff/full_100pct/compute/80x24: Analyzing
+diff/full_100pct/compute/80x24
+                        time:   [3.8188 µs 3.8885 µs 3.9974 µs]
+                        thrpt:  [480.31 Melem/s 493.76 Melem/s 502.77 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/full_100pct/compute/120x40
+Benchmarking diff/full_100pct/compute/120x40: Warming up for 3.0000 s
+Benchmarking diff/full_100pct/compute/120x40: Collecting 20 samples in estimated 1.0003 s (121k iterations)
+Benchmarking diff/full_100pct/compute/120x40: Analyzing
+diff/full_100pct/compute/120x40
+                        time:   [7.9387 µs 8.0335 µs 8.1685 µs]
+                        thrpt:  [587.62 Melem/s 597.49 Melem/s 604.63 Melem/s]
+Found 5 outliers among 20 measurements (25.00%)
+  3 (15.00%) low mild
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/full_100pct/compute/200x60
+Benchmarking diff/full_100pct/compute/200x60: Warming up for 3.0000 s
+Benchmarking diff/full_100pct/compute/200x60: Collecting 20 samples in estimated 1.0048 s (38k iterations)
+Benchmarking diff/full_100pct/compute/200x60: Analyzing
+diff/full_100pct/compute/200x60
+                        time:   [26.705 µs 28.162 µs 30.253 µs]
+                        thrpt:  [396.65 Melem/s 426.11 Melem/s 449.35 Melem/s]
+
+Benchmarking diff/runs/coalesce/80x24@5%
+Benchmarking diff/runs/coalesce/80x24@5%: Warming up for 3.0000 s
+Benchmarking diff/runs/coalesce/80x24@5%: Collecting 20 samples in estimated 1.0000 s (2.7M iterations)
+Benchmarking diff/runs/coalesce/80x24@5%: Analyzing
+diff/runs/coalesce/80x24@5%
+                        time:   [379.94 ns 393.52 ns 409.22 ns]
+Benchmarking diff/runs/coalesce/80x24@50%
+Benchmarking diff/runs/coalesce/80x24@50%: Warming up for 3.0000 s
+Benchmarking diff/runs/coalesce/80x24@50%: Collecting 20 samples in estimated 1.0002 s (1.1M iterations)
+Benchmarking diff/runs/coalesce/80x24@50%: Analyzing
+diff/runs/coalesce/80x24@50%
+                        time:   [925.75 ns 959.08 ns 993.37 ns]
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/runs/coalesce/200x60@5%
+Benchmarking diff/runs/coalesce/200x60@5%: Warming up for 3.0000 s
+Benchmarking diff/runs/coalesce/200x60@5%: Collecting 20 samples in estimated 1.0001 s (428k iterations)
+Benchmarking diff/runs/coalesce/200x60@5%: Analyzing
+diff/runs/coalesce/200x60@5%
+                        time:   [2.2359 µs 2.2565 µs 2.2862 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking diff/full_vs_dirty/compute/200x60@2%
+Benchmarking diff/full_vs_dirty/compute/200x60@2%: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute/200x60@2%: Collecting 20 samples in estimated 1.0005 s (43k iterations)
+Benchmarking diff/full_vs_dirty/compute/200x60@2%: Analyzing
+diff/full_vs_dirty/compute/200x60@2%
+                        time:   [21.732 µs 22.906 µs 24.266 µs]
+                        thrpt:  [494.53 Melem/s 523.89 Melem/s 552.17 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@2%
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@2%: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@2%: Collecting 20 samples in estimated 1.0006 s (114k iterations)
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@2%: Analyzing
+diff/full_vs_dirty/compute_dirty/200x60@2%
+                        time:   [8.2085 µs 8.2265 µs 8.2445 µs]
+                        thrpt:  [1.4555 Gelem/s 1.4587 Gelem/s 1.4619 Gelem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking diff/full_vs_dirty/compute/200x60@5%
+Benchmarking diff/full_vs_dirty/compute/200x60@5%: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute/200x60@5%: Collecting 20 samples in estimated 1.0034 s (46k iterations)
+Benchmarking diff/full_vs_dirty/compute/200x60@5%: Analyzing
+diff/full_vs_dirty/compute/200x60@5%
+                        time:   [22.112 µs 22.637 µs 23.234 µs]
+                        thrpt:  [516.49 Melem/s 530.11 Melem/s 542.69 Melem/s]
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@5%
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@5%: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@5%: Collecting 20 samples in estimated 1.0013 s (86k iterations)
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@5%: Analyzing
+diff/full_vs_dirty/compute_dirty/200x60@5%
+                        time:   [11.039 µs 11.433 µs 11.791 µs]
+                        thrpt:  [1.0177 Gelem/s 1.0496 Gelem/s 1.0871 Gelem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking diff/full_vs_dirty/compute/200x60@1row
+Benchmarking diff/full_vs_dirty/compute/200x60@1row: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute/200x60@1row: Collecting 20 samples in estimated 1.0019 s (50k iterations)
+Benchmarking diff/full_vs_dirty/compute/200x60@1row: Analyzing
+diff/full_vs_dirty/compute/200x60@1row
+                        time:   [19.692 µs 20.122 µs 20.733 µs]
+                        thrpt:  [578.79 Melem/s 596.35 Melem/s 609.39 Melem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@1row
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@1row: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@1row: Collecting 20 samples in estimated 1.0003 s (480k iterations)
+Benchmarking diff/full_vs_dirty/compute_dirty/200x60@1row: Analyzing
+diff/full_vs_dirty/compute_dirty/200x60@1row
+                        time:   [2.0180 µs 2.0330 µs 2.0508 µs]
+                        thrpt:  [5.8513 Gelem/s 5.9025 Gelem/s 5.9464 Gelem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/full_vs_dirty/compute/240x80@2%
+Benchmarking diff/full_vs_dirty/compute/240x80@2%: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute/240x80@2%: Collecting 20 samples in estimated 1.0065 s (28k iterations)
+Benchmarking diff/full_vs_dirty/compute/240x80@2%: Analyzing
+diff/full_vs_dirty/compute/240x80@2%
+                        time:   [33.002 µs 33.743 µs 34.649 µs]
+                        thrpt:  [554.13 Melem/s 569.01 Melem/s 581.78 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@2%
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@2%: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@2%: Collecting 20 samples in estimated 1.0005 s (107k iterations)
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@2%: Analyzing
+diff/full_vs_dirty/compute_dirty/240x80@2%
+                        time:   [8.7882 µs 8.9331 µs 9.1395 µs]
+                        thrpt:  [2.1008 Gelem/s 2.1493 Gelem/s 2.1847 Gelem/s]
+Found 4 outliers among 20 measurements (20.00%)
+  4 (20.00%) high severe
+Benchmarking diff/full_vs_dirty/compute/240x80@5%
+Benchmarking diff/full_vs_dirty/compute/240x80@5%: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute/240x80@5%: Collecting 20 samples in estimated 1.0027 s (29k iterations)
+Benchmarking diff/full_vs_dirty/compute/240x80@5%: Analyzing
+diff/full_vs_dirty/compute/240x80@5%
+                        time:   [33.950 µs 34.814 µs 35.831 µs]
+                        thrpt:  [535.84 Melem/s 551.50 Melem/s 565.55 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@5%
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@5%: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@5%: Collecting 20 samples in estimated 1.0004 s (102k iterations)
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@5%: Analyzing
+diff/full_vs_dirty/compute_dirty/240x80@5%
+                        time:   [9.5002 µs 9.8287 µs 10.208 µs]
+                        thrpt:  [1.8809 Gelem/s 1.9535 Gelem/s 2.0210 Gelem/s]
+Benchmarking diff/full_vs_dirty/compute/240x80@1row
+Benchmarking diff/full_vs_dirty/compute/240x80@1row: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute/240x80@1row: Collecting 20 samples in estimated 1.0016 s (29k iterations)
+Benchmarking diff/full_vs_dirty/compute/240x80@1row: Analyzing
+diff/full_vs_dirty/compute/240x80@1row
+                        time:   [33.806 µs 35.568 µs 38.340 µs]
+                        thrpt:  [500.78 Melem/s 539.81 Melem/s 567.95 Melem/s]
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@1row
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@1row: Warming up for 3.0000 s
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@1row: Collecting 20 samples in estimated 1.0001 s (364k iterations)
+Benchmarking diff/full_vs_dirty/compute_dirty/240x80@1row: Analyzing
+diff/full_vs_dirty/compute_dirty/240x80@1row
+                        time:   [2.6619 µs 2.7004 µs 2.7642 µs]
+                        thrpt:  [6.9459 Gelem/s 7.1101 Gelem/s 7.2129 Gelem/s]
+
+Benchmarking diff/selector_overhead/select_observe/200x60@2%
+Benchmarking diff/selector_overhead/select_observe/200x60@2%: Warming up for 3.0000 s
+Benchmarking diff/selector_overhead/select_observe/200x60@2%: Collecting 20 samples in estimated 1.0001 s (736k iterations)
+Benchmarking diff/selector_overhead/select_observe/200x60@2%: Analyzing
+diff/selector_overhead/select_observe/200x60@2%
+                        time:   [859.82 ns 879.03 ns 896.86 ns]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking diff/selector_overhead/select_observe/200x60@50%
+Benchmarking diff/selector_overhead/select_observe/200x60@50%: Warming up for 3.0000 s
+Benchmarking diff/selector_overhead/select_observe/200x60@50%: Collecting 20 samples in estimated 1.0001 s (880k iterations)
+Benchmarking diff/selector_overhead/select_observe/200x60@50%: Analyzing
+diff/selector_overhead/select_observe/200x60@50%
+                        time:   [632.34 ns 642.31 ns 658.73 ns]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking diff/selector_overhead/select_observe/240x80@2%
+Benchmarking diff/selector_overhead/select_observe/240x80@2%: Warming up for 3.0000 s
+Benchmarking diff/selector_overhead/select_observe/240x80@2%: Collecting 20 samples in estimated 1.0000 s (659k iterations)
+Benchmarking diff/selector_overhead/select_observe/240x80@2%: Analyzing
+diff/selector_overhead/select_observe/240x80@2%
+                        time:   [931.99 ns 962.95 ns 990.97 ns]
+Benchmarking diff/selector_overhead/select_observe/240x80@35%
+Benchmarking diff/selector_overhead/select_observe/240x80@35%: Warming up for 3.0000 s
+Benchmarking diff/selector_overhead/select_observe/240x80@35%: Collecting 20 samples in estimated 1.0001 s (693k iterations)
+Benchmarking diff/selector_overhead/select_observe/240x80@35%: Analyzing
+diff/selector_overhead/select_observe/240x80@35%
+                        time:   [888.10 ns 921.25 ns 954.07 ns]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking diff/selector_vs_fixed/fixed_full/200x60@2%
+Benchmarking diff/selector_vs_fixed/fixed_full/200x60@2%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/fixed_full/200x60@2%: Collecting 20 samples in estimated 1.0010 s (47k iterations)
+Benchmarking diff/selector_vs_fixed/fixed_full/200x60@2%: Analyzing
+diff/selector_vs_fixed/fixed_full/200x60@2%
+                        time:   [20.970 µs 21.459 µs 22.281 µs]
+Found 4 outliers among 20 measurements (20.00%)
+  2 (10.00%) high mild
+  2 (10.00%) high severe
+Benchmarking diff/selector_vs_fixed/fixed_dirty/200x60@2%
+Benchmarking diff/selector_vs_fixed/fixed_dirty/200x60@2%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/fixed_dirty/200x60@2%: Collecting 20 samples in estimated 1.0012 s (116k iterations)
+Benchmarking diff/selector_vs_fixed/fixed_dirty/200x60@2%: Analyzing
+diff/selector_vs_fixed/fixed_dirty/200x60@2%
+                        time:   [8.5742 µs 8.7480 µs 8.9497 µs]
+Benchmarking diff/selector_vs_fixed/selector/200x60@2%
+Benchmarking diff/selector_vs_fixed/selector/200x60@2%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/selector/200x60@2%: Collecting 20 samples in estimated 1.0001 s (101k iterations)
+Benchmarking diff/selector_vs_fixed/selector/200x60@2%: Analyzing
+diff/selector_vs_fixed/selector/200x60@2%
+                        time:   [8.5860 µs 8.8310 µs 9.1099 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking diff/selector_vs_fixed/fixed_full/200x60@50%
+Benchmarking diff/selector_vs_fixed/fixed_full/200x60@50%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/fixed_full/200x60@50%: Collecting 20 samples in estimated 1.0009 s (46k iterations)
+Benchmarking diff/selector_vs_fixed/fixed_full/200x60@50%: Analyzing
+diff/selector_vs_fixed/fixed_full/200x60@50%
+                        time:   [21.463 µs 21.983 µs 22.487 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/selector_vs_fixed/fixed_dirty/200x60@50%
+Benchmarking diff/selector_vs_fixed/fixed_dirty/200x60@50%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/fixed_dirty/200x60@50%: Collecting 20 samples in estimated 1.0019 s (79k iterations)
+Benchmarking diff/selector_vs_fixed/fixed_dirty/200x60@50%: Analyzing
+diff/selector_vs_fixed/fixed_dirty/200x60@50%
+                        time:   [11.800 µs 11.963 µs 12.166 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/selector_vs_fixed/selector/200x60@50%
+Benchmarking diff/selector_vs_fixed/selector/200x60@50%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/selector/200x60@50%: Collecting 20 samples in estimated 1.0001 s (78k iterations)
+Benchmarking diff/selector_vs_fixed/selector/200x60@50%: Analyzing
+diff/selector_vs_fixed/selector/200x60@50%
+                        time:   [11.827 µs 12.046 µs 12.375 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/selector_vs_fixed/fixed_full/240x80@2%
+Benchmarking diff/selector_vs_fixed/fixed_full/240x80@2%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/fixed_full/240x80@2%: Collecting 20 samples in estimated 1.0052 s (30k iterations)
+Benchmarking diff/selector_vs_fixed/fixed_full/240x80@2%: Analyzing
+diff/selector_vs_fixed/fixed_full/240x80@2%
+                        time:   [33.940 µs 34.911 µs 36.014 µs]
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high mild
+Benchmarking diff/selector_vs_fixed/fixed_dirty/240x80@2%
+Benchmarking diff/selector_vs_fixed/fixed_dirty/240x80@2%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/fixed_dirty/240x80@2%: Collecting 20 samples in estimated 1.0018 s (105k iterations)
+Benchmarking diff/selector_vs_fixed/fixed_dirty/240x80@2%: Analyzing
+diff/selector_vs_fixed/fixed_dirty/240x80@2%
+                        time:   [9.1742 µs 9.3268 µs 9.5105 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking diff/selector_vs_fixed/selector/240x80@2%
+Benchmarking diff/selector_vs_fixed/selector/240x80@2%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/selector/240x80@2%: Collecting 20 samples in estimated 1.0013 s (97k iterations)
+Benchmarking diff/selector_vs_fixed/selector/240x80@2%: Analyzing
+diff/selector_vs_fixed/selector/240x80@2%
+                        time:   [9.3293 µs 9.5533 µs 9.9451 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/selector_vs_fixed/fixed_full/240x80@35%
+Benchmarking diff/selector_vs_fixed/fixed_full/240x80@35%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/fixed_full/240x80@35%: Collecting 20 samples in estimated 1.0052 s (28k iterations)
+Benchmarking diff/selector_vs_fixed/fixed_full/240x80@35%: Analyzing
+diff/selector_vs_fixed/fixed_full/240x80@35%
+                        time:   [35.413 µs 36.880 µs 38.925 µs]
+Benchmarking diff/selector_vs_fixed/fixed_dirty/240x80@35%
+Benchmarking diff/selector_vs_fixed/fixed_dirty/240x80@35%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/fixed_dirty/240x80@35%: Collecting 20 samples in estimated 1.0018 s (87k iterations)
+Benchmarking diff/selector_vs_fixed/fixed_dirty/240x80@35%: Analyzing
+diff/selector_vs_fixed/fixed_dirty/240x80@35%
+                        time:   [11.177 µs 11.450 µs 11.743 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking diff/selector_vs_fixed/selector/240x80@35%
+Benchmarking diff/selector_vs_fixed/selector/240x80@35%: Warming up for 3.0000 s
+Benchmarking diff/selector_vs_fixed/selector/240x80@35%: Collecting 20 samples in estimated 1.0017 s (82k iterations)
+Benchmarking diff/selector_vs_fixed/selector/240x80@35%: Analyzing
+diff/selector_vs_fixed/selector/240x80@35%
+                        time:   [11.425 µs 11.768 µs 12.171 µs]
+
+Benchmarking diff/span_sparse_stats/compute/200x60@sparse_5pct
+Benchmarking diff/span_sparse_stats/compute/200x60@sparse_5pct: Warming up for 3.0000 s
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":1,"p50_us":29,"p95_us":29,"throughput_cells_per_s":413793103.45}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":2,"p50_us":23,"p95_us":23,"throughput_cells_per_s":571428571.43}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":4,"p50_us":19,"p95_us":19,"throughput_cells_per_s":631578947.37}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":8,"p50_us":19,"p95_us":19,"throughput_cells_per_s":631578947.37}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":16,"p50_us":19,"p95_us":19,"throughput_cells_per_s":631578947.37}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":32,"p50_us":19,"p95_us":19,"throughput_cells_per_s":621359223.30}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":64,"p50_us":19,"p95_us":27,"throughput_cells_per_s":605200945.63}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":128,"p50_us":24,"p95_us":31,"throughput_cells_per_s":471165644.17}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":256,"p50_us":19,"p95_us":24,"throughput_cells_per_s":571003717.47}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":512,"p50_us":23,"p95_us":24,"throughput_cells_per_s":546862483.31}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":1024,"p50_us":19,"p95_us":19,"throughput_cells_per_s":619979818.37}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":2048,"p50_us":19,"p95_us":24,"throughput_cells_per_s":603788418.54}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":4096,"p50_us":19,"p95_us":25,"throughput_cells_per_s":585114994.52}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":8192,"p50_us":19,"p95_us":26,"throughput_cells_per_s":574235795.11}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":16384,"p50_us":19,"p95_us":25,"throughput_cells_per_s":571123143.78}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":32768,"p50_us":19,"p95_us":24,"throughput_cells_per_s":580324951.04}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":65536,"p50_us":19,"p95_us":26,"throughput_cells_per_s":573751917.84}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":131072,"p50_us":19,"p95_us":24,"throughput_cells_per_s":597000921.20}
+Benchmarking diff/span_sparse_stats/compute/200x60@sparse_5pct: Collecting 20 samples in estimated 1.0028 s (48k iterations)
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":227,"p50_us":19,"p95_us":24,"throughput_cells_per_s":550414225.10}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":454,"p50_us":19,"p95_us":32,"throughput_cells_per_s":532551319.65}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":681,"p50_us":19,"p95_us":31,"throughput_cells_per_s":529377469.72}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":908,"p50_us":20,"p95_us":31,"throughput_cells_per_s":517600114.01}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":1135,"p50_us":19,"p95_us":29,"throughput_cells_per_s":535756431.44}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":1362,"p50_us":19,"p95_us":19,"throughput_cells_per_s":619536787.84}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":1589,"p50_us":19,"p95_us":19,"throughput_cells_per_s":615792023.25}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":1816,"p50_us":19,"p95_us":24,"throughput_cells_per_s":560926640.93}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":2043,"p50_us":19,"p95_us":19,"throughput_cells_per_s":615917998.19}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":2270,"p50_us":19,"p95_us":32,"throughput_cells_per_s":548198832.76}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":2497,"p50_us":19,"p95_us":24,"throughput_cells_per_s":589796079.05}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":2724,"p50_us":19,"p95_us":19,"throughput_cells_per_s":619290301.80}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":2951,"p50_us":19,"p95_us":19,"throughput_cells_per_s":619665074.28}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":3178,"p50_us":19,"p95_us":24,"throughput_cells_per_s":575889823.47}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":3405,"p50_us":19,"p95_us":24,"throughput_cells_per_s":606501410.12}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":3632,"p50_us":19,"p95_us":25,"throughput_cells_per_s":576485060.12}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":3859,"p50_us":19,"p95_us":30,"throughput_cells_per_s":563837818.09}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":4086,"p50_us":19,"p95_us":31,"throughput_cells_per_s":545418140.56}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":4313,"p50_us":19,"p95_us":24,"throughput_cells_per_s":577962902.99}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":200,"height":60,"iters":4540,"p50_us":19,"p95_us":25,"throughput_cells_per_s":564185410.71}
+Benchmarking diff/span_sparse_stats/compute/200x60@sparse_5pct: Analyzing
+diff/span_sparse_stats/compute/200x60@sparse_5pct
+                        time:   [20.319 µs 20.804 µs 21.209 µs]
+                        thrpt:  [565.80 Melem/s 576.81 Melem/s 590.58 Melem/s]
+Benchmarking diff/span_sparse_stats/compute_dirty/200x60@sparse_5pct
+Benchmarking diff/span_sparse_stats/compute_dirty/200x60@sparse_5pct: Warming up for 3.0000 s
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":1,"p50_us":103,"p95_us":103,"throughput_cells_per_s":116504854.37}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":2,"p50_us":14,"p95_us":14,"throughput_cells_per_s":1000000000.00}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":4,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1200000000.00}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":8,"p50_us":10,"p95_us":11,"throughput_cells_per_s":1185185185.19}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":16,"p50_us":10,"p95_us":11,"throughput_cells_per_s":1192546583.85}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":32,"p50_us":10,"p95_us":11,"throughput_cells_per_s":1119533527.70}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":64,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1185185185.19}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":128,"p50_us":10,"p95_us":11,"throughput_cells_per_s":1136094674.56}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":256,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1165402124.43}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":512,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1185642609.03}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":1024,"p50_us":13,"p95_us":13,"throughput_cells_per_s":947344075.24}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":2048,"p50_us":10,"p95_us":18,"throughput_cells_per_s":1055035631.49}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":4096,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1168033079.06}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":8192,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1079599367.42}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":16384,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1096500376.45}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":32768,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1074281405.47}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":65536,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1117711683.62}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":131072,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1110917741.19}
+Benchmarking diff/span_sparse_stats/compute_dirty/200x60@sparse_5pct: Collecting 20 samples in estimated 1.0021 s (87k iterations)
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":416,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1037837837.84}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":832,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1171555972.78}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":1248,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1165991902.83}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":1664,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1172863436.12}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":2080,"p50_us":13,"p95_us":18,"throughput_cells_per_s":852371683.23}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":2496,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1153597288.55}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":2912,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1176367614.88}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":3328,"p50_us":10,"p95_us":16,"throughput_cells_per_s":1042008036.32}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":3744,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1162191525.69}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":4160,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1181063240.83}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":4576,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1102429231.08}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":4992,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1143555284.06}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":5408,"p50_us":13,"p95_us":16,"throughput_cells_per_s":939092685.04}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":5824,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1174489538.69}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":6240,"p50_us":11,"p95_us":13,"throughput_cells_per_s":1011987620.45}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":6656,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1049842271.29}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":7072,"p50_us":10,"p95_us":19,"throughput_cells_per_s":967232359.61}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":7488,"p50_us":10,"p95_us":13,"throughput_cells_per_s":1096941952.02}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":7904,"p50_us":10,"p95_us":18,"throughput_cells_per_s":1010827862.56}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":200,"height":60,"iters":8320,"p50_us":10,"p95_us":10,"throughput_cells_per_s":1160026490.99}
+Benchmarking diff/span_sparse_stats/compute_dirty/200x60@sparse_5pct: Analyzing
+diff/span_sparse_stats/compute_dirty/200x60@sparse_5pct
+                        time:   [10.765 µs 11.241 µs 11.707 µs]
+                        thrpt:  [1.0251 Gelem/s 1.0675 Gelem/s 1.1147 Gelem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/span_sparse_stats/compute/200x60@single_row
+Benchmarking diff/span_sparse_stats/compute/200x60@single_row: Warming up for 3.0000 s
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":1,"p50_us":52,"p95_us":52,"throughput_cells_per_s":230769230.77}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":2,"p50_us":30,"p95_us":30,"throughput_cells_per_s":413793103.45}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":4,"p50_us":26,"p95_us":26,"throughput_cells_per_s":461538461.54}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":8,"p50_us":26,"p95_us":58,"throughput_cells_per_s":367816091.95}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":16,"p50_us":25,"p95_us":40,"throughput_cells_per_s":454976303.32}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":32,"p50_us":24,"p95_us":24,"throughput_cells_per_s":528925619.83}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":64,"p50_us":19,"p95_us":21,"throughput_cells_per_s":607114624.51}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":128,"p50_us":19,"p95_us":20,"throughput_cells_per_s":619604679.31}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":256,"p50_us":19,"p95_us":23,"throughput_cells_per_s":583586626.14}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":512,"p50_us":24,"p95_us":26,"throughput_cells_per_s":508188585.61}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":1024,"p50_us":19,"p95_us":22,"throughput_cells_per_s":598947163.19}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":2048,"p50_us":19,"p95_us":26,"throughput_cells_per_s":575604272.06}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":4096,"p50_us":19,"p95_us":28,"throughput_cells_per_s":563727907.70}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":8192,"p50_us":19,"p95_us":29,"throughput_cells_per_s":557636127.45}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":16384,"p50_us":19,"p95_us":28,"throughput_cells_per_s":556162802.54}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":32768,"p50_us":19,"p95_us":27,"throughput_cells_per_s":565749112.28}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":65536,"p50_us":19,"p95_us":24,"throughput_cells_per_s":589529677.31}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":131072,"p50_us":19,"p95_us":24,"throughput_cells_per_s":582617962.56}
+Benchmarking diff/span_sparse_stats/compute/200x60@single_row: Collecting 20 samples in estimated 1.0037 s (47k iterations)
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":225,"p50_us":19,"p95_us":19,"throughput_cells_per_s":618698441.80}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":450,"p50_us":19,"p95_us":21,"throughput_cells_per_s":612175490.31}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":675,"p50_us":19,"p95_us":20,"throughput_cells_per_s":616907844.63}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":900,"p50_us":19,"p95_us":21,"throughput_cells_per_s":612731192.56}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":1125,"p50_us":20,"p95_us":31,"throughput_cells_per_s":500723266.94}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":1350,"p50_us":19,"p95_us":32,"throughput_cells_per_s":514024622.41}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":1575,"p50_us":19,"p95_us":21,"throughput_cells_per_s":601814997.61}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":1800,"p50_us":19,"p95_us":24,"throughput_cells_per_s":543738200.13}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":2025,"p50_us":19,"p95_us":23,"throughput_cells_per_s":609251598.35}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":2250,"p50_us":19,"p95_us":30,"throughput_cells_per_s":568996038.10}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":2475,"p50_us":19,"p95_us":27,"throughput_cells_per_s":554311310.19}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":2700,"p50_us":19,"p95_us":24,"throughput_cells_per_s":573390436.41}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":2925,"p50_us":19,"p95_us":24,"throughput_cells_per_s":568402642.83}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":3150,"p50_us":19,"p95_us":30,"throughput_cells_per_s":575421290.59}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":3375,"p50_us":19,"p95_us":33,"throughput_cells_per_s":538785935.69}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":3600,"p50_us":19,"p95_us":26,"throughput_cells_per_s":577200577.20}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":3825,"p50_us":19,"p95_us":19,"throughput_cells_per_s":609149181.83}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":4050,"p50_us":19,"p95_us":24,"throughput_cells_per_s":591557524.71}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":4275,"p50_us":19,"p95_us":24,"throughput_cells_per_s":550328802.69}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":200,"height":60,"iters":4500,"p50_us":19,"p95_us":29,"throughput_cells_per_s":557361820.72}
+Benchmarking diff/span_sparse_stats/compute/200x60@single_row: Analyzing
+diff/span_sparse_stats/compute/200x60@single_row
+                        time:   [20.606 µs 21.077 µs 21.517 µs]
+                        thrpt:  [557.70 Melem/s 569.34 Melem/s 582.36 Melem/s]
+Benchmarking diff/span_sparse_stats/compute_dirty/200x60@single_row
+Benchmarking diff/span_sparse_stats/compute_dirty/200x60@single_row: Warming up for 3.0000 s
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":1,"p50_us":133,"p95_us":133,"throughput_cells_per_s":90225563.91}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":2,"p50_us":17,"p95_us":17,"throughput_cells_per_s":774193548.39}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":4,"p50_us":14,"p95_us":14,"throughput_cells_per_s":857142857.14}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":8,"p50_us":14,"p95_us":14,"throughput_cells_per_s":857142857.14}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":16,"p50_us":16,"p95_us":16,"throughput_cells_per_s":750000000.00}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":32,"p50_us":14,"p95_us":14,"throughput_cells_per_s":857142857.14}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":64,"p50_us":14,"p95_us":23,"throughput_cells_per_s":763419483.10}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":128,"p50_us":12,"p95_us":27,"throughput_cells_per_s":645378151.26}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":256,"p50_us":11,"p95_us":12,"throughput_cells_per_s":1046678023.85}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":512,"p50_us":11,"p95_us":12,"throughput_cells_per_s":1056941338.38}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":1024,"p50_us":11,"p95_us":12,"throughput_cells_per_s":1065279583.88}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":2048,"p50_us":11,"p95_us":16,"throughput_cells_per_s":936299908.56}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":4096,"p50_us":11,"p95_us":15,"throughput_cells_per_s":927483724.88}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":8192,"p50_us":13,"p95_us":21,"throughput_cells_per_s":810661037.08}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":16384,"p50_us":11,"p95_us":17,"throughput_cells_per_s":939584229.39}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":32768,"p50_us":11,"p95_us":16,"throughput_cells_per_s":965188832.54}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":65536,"p50_us":12,"p95_us":16,"throughput_cells_per_s":939137662.14}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":131072,"p50_us":12,"p95_us":19,"throughput_cells_per_s":875558613.50}
+Benchmarking diff/span_sparse_stats/compute_dirty/200x60@single_row: Collecting 20 samples in estimated 1.0025 s (72k iterations)
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":342,"p50_us":12,"p95_us":20,"throughput_cells_per_s":836356225.80}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":684,"p50_us":11,"p95_us":16,"throughput_cells_per_s":946494464.94}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":1026,"p50_us":11,"p95_us":19,"throughput_cells_per_s":883847810.48}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":1368,"p50_us":15,"p95_us":20,"throughput_cells_per_s":773208986.86}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":1710,"p50_us":14,"p95_us":16,"throughput_cells_per_s":852584344.36}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":2052,"p50_us":12,"p95_us":18,"throughput_cells_per_s":909372922.67}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":2394,"p50_us":11,"p95_us":16,"throughput_cells_per_s":916919345.06}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":2736,"p50_us":11,"p95_us":13,"throughput_cells_per_s":1033395234.65}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":3078,"p50_us":11,"p95_us":16,"throughput_cells_per_s":991756840.21}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":3420,"p50_us":11,"p95_us":14,"throughput_cells_per_s":980574869.19}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":3762,"p50_us":11,"p95_us":11,"throughput_cells_per_s":1064892788.90}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":4104,"p50_us":11,"p95_us":13,"throughput_cells_per_s":1054899860.77}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":4446,"p50_us":11,"p95_us":13,"throughput_cells_per_s":1051498847.04}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":4788,"p50_us":11,"p95_us":15,"throughput_cells_per_s":965809379.73}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":5130,"p50_us":11,"p95_us":22,"throughput_cells_per_s":859908645.18}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":5472,"p50_us":11,"p95_us":17,"throughput_cells_per_s":928441145.28}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":5814,"p50_us":11,"p95_us":11,"throughput_cells_per_s":1066952133.35}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":6156,"p50_us":11,"p95_us":11,"throughput_cells_per_s":1069817960.64}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":6498,"p50_us":11,"p95_us":14,"throughput_cells_per_s":1010418286.43}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":200,"height":60,"iters":6840,"p50_us":11,"p95_us":16,"throughput_cells_per_s":991184639.54}
+Benchmarking diff/span_sparse_stats/compute_dirty/200x60@single_row: Analyzing
+diff/span_sparse_stats/compute_dirty/200x60@single_row
+                        time:   [11.684 µs 12.083 µs 12.578 µs]
+                        thrpt:  [954.04 Melem/s 993.09 Melem/s 1.0270 Gelem/s]
+Benchmarking diff/span_sparse_stats/compute/240x80@sparse_5pct
+Benchmarking diff/span_sparse_stats/compute/240x80@sparse_5pct: Warming up for 3.0000 s
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1,"p50_us":285,"p95_us":285,"throughput_cells_per_s":67368421.05}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":2,"p50_us":110,"p95_us":110,"throughput_cells_per_s":244585987.26}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":4,"p50_us":37,"p95_us":78,"throughput_cells_per_s":410695187.17}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":8,"p50_us":32,"p95_us":34,"throughput_cells_per_s":595348837.21}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":16,"p50_us":31,"p95_us":57,"throughput_cells_per_s":581818181.82}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":32,"p50_us":31,"p95_us":33,"throughput_cells_per_s":600586510.26}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":64,"p50_us":31,"p95_us":32,"throughput_cells_per_s":606216082.88}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":128,"p50_us":31,"p95_us":32,"throughput_cells_per_s":605618531.30}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":256,"p50_us":31,"p95_us":47,"throughput_cells_per_s":535891844.74}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":512,"p50_us":33,"p95_us":55,"throughput_cells_per_s":485020722.32}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1024,"p50_us":31,"p95_us":39,"throughput_cells_per_s":596468660.88}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":2048,"p50_us":31,"p95_us":42,"throughput_cells_per_s":567108470.23}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":4096,"p50_us":31,"p95_us":32,"throughput_cells_per_s":595466040.74}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":8192,"p50_us":32,"p95_us":39,"throughput_cells_per_s":578931405.60}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":16384,"p50_us":32,"p95_us":44,"throughput_cells_per_s":557152573.11}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":32768,"p50_us":31,"p95_us":47,"throughput_cells_per_s":557266077.70}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":65536,"p50_us":32,"p95_us":45,"throughput_cells_per_s":557404319.64}
+Benchmarking diff/span_sparse_stats/compute/240x80@sparse_5pct: Collecting 20 samples in estimated 1.0046 s (29k iterations)
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":137,"p50_us":32,"p95_us":33,"throughput_cells_per_s":581818181.82}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":274,"p50_us":32,"p95_us":32,"throughput_cells_per_s":586619090.10}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":411,"p50_us":32,"p95_us":48,"throughput_cells_per_s":566978014.08}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":548,"p50_us":32,"p95_us":49,"throughput_cells_per_s":546094358.23}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":685,"p50_us":32,"p95_us":40,"throughput_cells_per_s":574699584.88}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":822,"p50_us":38,"p95_us":56,"throughput_cells_per_s":495880855.88}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":959,"p50_us":32,"p95_us":46,"throughput_cells_per_s":539933141.75}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1096,"p50_us":32,"p95_us":40,"throughput_cells_per_s":541332029.94}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1233,"p50_us":32,"p95_us":50,"throughput_cells_per_s":539261959.00}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1370,"p50_us":32,"p95_us":33,"throughput_cells_per_s":588482706.16}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1507,"p50_us":32,"p95_us":32,"throughput_cells_per_s":588312797.36}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1644,"p50_us":32,"p95_us":32,"throughput_cells_per_s":587974070.49}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1781,"p50_us":31,"p95_us":32,"throughput_cells_per_s":595351428.52}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":1918,"p50_us":31,"p95_us":44,"throughput_cells_per_s":557279702.18}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":2055,"p50_us":32,"p95_us":46,"throughput_cells_per_s":551123030.51}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":2192,"p50_us":32,"p95_us":47,"throughput_cells_per_s":548614333.76}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":2329,"p50_us":31,"p95_us":31,"throughput_cells_per_s":608135344.28}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":2466,"p50_us":32,"p95_us":43,"throughput_cells_per_s":549711485.99}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":2603,"p50_us":32,"p95_us":51,"throughput_cells_per_s":508403609.25}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute","width":240,"height":80,"iters":2740,"p50_us":32,"p95_us":47,"throughput_cells_per_s":540028947.72}
+Benchmarking diff/span_sparse_stats/compute/240x80@sparse_5pct: Analyzing
+diff/span_sparse_stats/compute/240x80@sparse_5pct
+                        time:   [33.468 µs 34.623 µs 35.671 µs]
+                        thrpt:  [538.25 Melem/s 554.55 Melem/s 573.69 Melem/s]
+Benchmarking diff/span_sparse_stats/compute_dirty/240x80@sparse_5pct
+Benchmarking diff/span_sparse_stats/compute_dirty/240x80@sparse_5pct: Warming up for 3.0000 s
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":1,"p50_us":89,"p95_us":89,"throughput_cells_per_s":215730337.08}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":2,"p50_us":14,"p95_us":14,"throughput_cells_per_s":1600000000.00}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":4,"p50_us":9,"p95_us":9,"throughput_cells_per_s":2133333333.33}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":8,"p50_us":9,"p95_us":22,"throughput_cells_per_s":1807058823.53}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":16,"p50_us":9,"p95_us":9,"throughput_cells_per_s":2133333333.33}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":32,"p50_us":9,"p95_us":9,"throughput_cells_per_s":2226086956.52}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":64,"p50_us":9,"p95_us":16,"throughput_cells_per_s":1914018691.59}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":128,"p50_us":8,"p95_us":17,"throughput_cells_per_s":1908074534.16}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":256,"p50_us":8,"p95_us":9,"throughput_cells_per_s":2301123595.51}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":512,"p50_us":8,"p95_us":11,"throughput_cells_per_s":1966866746.70}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":1024,"p50_us":11,"p95_us":15,"throughput_cells_per_s":1622981674.10}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":2048,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2233927962.73}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":4096,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2120162833.96}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":8192,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2097207925.54}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":16384,"p50_us":8,"p95_us":10,"throughput_cells_per_s":2306996391.80}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":32768,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2176439698.21}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":65536,"p50_us":8,"p95_us":10,"throughput_cells_per_s":2277804689.96}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":131072,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2166785255.49}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":262144,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2142504353.62}
+Benchmarking diff/span_sparse_stats/compute_dirty/240x80@sparse_5pct: Collecting 20 samples in estimated 1.0018 s (103k iterations)
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":491,"p50_us":11,"p95_us":15,"throughput_cells_per_s":1696454921.72}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":982,"p50_us":8,"p95_us":9,"throughput_cells_per_s":2297076023.39}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":1473,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2077238340.07}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":1964,"p50_us":8,"p95_us":14,"throughput_cells_per_s":1886100135.05}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":2455,"p50_us":10,"p95_us":16,"throughput_cells_per_s":1681986868.40}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":2946,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2062543757.29}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":3437,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2139419679.04}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":3928,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2101705495.49}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":4419,"p50_us":8,"p95_us":12,"throughput_cells_per_s":1952519906.11}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":4910,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2199584684.66}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":5401,"p50_us":8,"p95_us":15,"throughput_cells_per_s":1978312793.32}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":5892,"p50_us":8,"p95_us":13,"throughput_cells_per_s":1956662515.57}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":6383,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2135563803.65}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":6874,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2223246411.97}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":7365,"p50_us":8,"p95_us":8,"throughput_cells_per_s":2326095538.89}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":7856,"p50_us":8,"p95_us":8,"throughput_cells_per_s":2317582164.31}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":8347,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2228156716.63}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":8838,"p50_us":8,"p95_us":13,"throughput_cells_per_s":2006356413.17}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":9329,"p50_us":8,"p95_us":11,"throughput_cells_per_s":2089069279.22}
+{"event":"diff_span_bench","case":"sparse_5pct","method":"compute_dirty","width":240,"height":80,"iters":9820,"p50_us":8,"p95_us":13,"throughput_cells_per_s":2045211958.17}
+Benchmarking diff/span_sparse_stats/compute_dirty/240x80@sparse_5pct: Analyzing
+diff/span_sparse_stats/compute_dirty/240x80@sparse_5pct
+                        time:   [8.7875 µs 9.0754 µs 9.3590 µs]
+                        thrpt:  [2.0515 Gelem/s 2.1156 Gelem/s 2.1849 Gelem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking diff/span_sparse_stats/compute/240x80@single_row
+Benchmarking diff/span_sparse_stats/compute/240x80@single_row: Warming up for 3.0000 s
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1,"p50_us":167,"p95_us":167,"throughput_cells_per_s":114970059.88}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2,"p50_us":58,"p95_us":58,"throughput_cells_per_s":376470588.24}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":4,"p50_us":40,"p95_us":42,"throughput_cells_per_s":474074074.07}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":8,"p50_us":58,"p95_us":225,"throughput_cells_per_s":206729475.10}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":16,"p50_us":38,"p95_us":59,"throughput_cells_per_s":489952153.11}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":32,"p50_us":30,"p95_us":31,"throughput_cells_per_s":626938775.51}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":64,"p50_us":30,"p95_us":30,"throughput_cells_per_s":623439878.23}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":128,"p50_us":30,"p95_us":31,"throughput_cells_per_s":620292781.42}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":256,"p50_us":30,"p95_us":30,"throughput_cells_per_s":625343511.45}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":512,"p50_us":30,"p95_us":30,"throughput_cells_per_s":624429905.35}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1024,"p50_us":30,"p95_us":38,"throughput_cells_per_s":601523634.69}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2048,"p50_us":30,"p95_us":43,"throughput_cells_per_s":574071478.63}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":4096,"p50_us":30,"p95_us":47,"throughput_cells_per_s":569436741.08}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":8192,"p50_us":30,"p95_us":47,"throughput_cells_per_s":567088023.42}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":16384,"p50_us":30,"p95_us":40,"throughput_cells_per_s":595648699.72}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":32768,"p50_us":30,"p95_us":41,"throughput_cells_per_s":587798666.22}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":65536,"p50_us":30,"p95_us":42,"throughput_cells_per_s":585260704.00}
+Benchmarking diff/span_sparse_stats/compute/240x80@single_row: Collecting 20 samples in estimated 1.0039 s (30k iterations)
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":143,"p50_us":31,"p95_us":71,"throughput_cells_per_s":409241317.63}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":286,"p50_us":33,"p95_us":58,"throughput_cells_per_s":500565177.76}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":429,"p50_us":30,"p95_us":38,"throughput_cells_per_s":612173913.04}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":572,"p50_us":30,"p95_us":30,"throughput_cells_per_s":625813436.66}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":715,"p50_us":30,"p95_us":31,"throughput_cells_per_s":624795193.88}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":858,"p50_us":30,"p95_us":30,"throughput_cells_per_s":627087933.00}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1001,"p50_us":30,"p95_us":51,"throughput_cells_per_s":550709189.38}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1144,"p50_us":30,"p95_us":30,"throughput_cells_per_s":626330947.56}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1287,"p50_us":30,"p95_us":31,"throughput_cells_per_s":623087397.25}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1430,"p50_us":30,"p95_us":30,"throughput_cells_per_s":626763457.06}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1573,"p50_us":30,"p95_us":31,"throughput_cells_per_s":625421412.30}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1716,"p50_us":30,"p95_us":30,"throughput_cells_per_s":627040194.88}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":1859,"p50_us":30,"p95_us":44,"throughput_cells_per_s":571542033.63}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2002,"p50_us":31,"p95_us":43,"throughput_cells_per_s":564208548.61}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2145,"p50_us":30,"p95_us":53,"throughput_cells_per_s":535322943.34}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2288,"p50_us":31,"p95_us":45,"throughput_cells_per_s":566088502.87}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2431,"p50_us":30,"p95_us":51,"throughput_cells_per_s":543645173.31}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2574,"p50_us":30,"p95_us":41,"throughput_cells_per_s":567155546.37}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2717,"p50_us":30,"p95_us":50,"throughput_cells_per_s":552826849.51}
+{"event":"diff_span_bench","case":"single_row","method":"compute","width":240,"height":80,"iters":2860,"p50_us":30,"p95_us":46,"throughput_cells_per_s":563171119.43}
+Benchmarking diff/span_sparse_stats/compute/240x80@single_row: Analyzing
+diff/span_sparse_stats/compute/240x80@single_row
+                        time:   [32.729 µs 33.675 µs 34.323 µs]
+                        thrpt:  [559.39 Melem/s 570.16 Melem/s 586.64 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/span_sparse_stats/compute_dirty/240x80@single_row
+Benchmarking diff/span_sparse_stats/compute_dirty/240x80@single_row: Warming up for 3.0000 s
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":1,"p50_us":203,"p95_us":203,"throughput_cells_per_s":94581280.79}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":2,"p50_us":755,"p95_us":755,"throughput_cells_per_s":38787878.79}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":4,"p50_us":55,"p95_us":103,"throughput_cells_per_s":316049382.72}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":8,"p50_us":31,"p95_us":39,"throughput_cells_per_s":609523809.52}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":16,"p50_us":23,"p95_us":35,"throughput_cells_per_s":756650246.31}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":32,"p50_us":29,"p95_us":30,"throughput_cells_per_s":714418604.65}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":64,"p50_us":23,"p95_us":35,"throughput_cells_per_s":795854922.28}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":128,"p50_us":19,"p95_us":39,"throughput_cells_per_s":890434782.61}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":256,"p50_us":18,"p95_us":26,"throughput_cells_per_s":986393738.71}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":512,"p50_us":22,"p95_us":26,"throughput_cells_per_s":819541475.61}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":1024,"p50_us":23,"p95_us":39,"throughput_cells_per_s":775941273.98}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":2048,"p50_us":19,"p95_us":25,"throughput_cells_per_s":943099726.58}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":4096,"p50_us":19,"p95_us":26,"throughput_cells_per_s":928370577.61}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":8192,"p50_us":18,"p95_us":26,"throughput_cells_per_s":989633432.75}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":16384,"p50_us":18,"p95_us":37,"throughput_cells_per_s":876254676.22}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":32768,"p50_us":19,"p95_us":39,"throughput_cells_per_s":783269549.20}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":65536,"p50_us":18,"p95_us":37,"throughput_cells_per_s":876376124.90}
+Benchmarking diff/span_sparse_stats/compute_dirty/240x80@single_row: Collecting 20 samples in estimated 1.0031 s (43k iterations)
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":207,"p50_us":23,"p95_us":35,"throughput_cells_per_s":755158654.76}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":414,"p50_us":23,"p95_us":35,"throughput_cells_per_s":761014839.64}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":621,"p50_us":22,"p95_us":38,"throughput_cells_per_s":803395997.57}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":828,"p50_us":18,"p95_us":23,"throughput_cells_per_s":1009115145.36}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":1035,"p50_us":18,"p95_us":30,"throughput_cells_per_s":913193327.51}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":1242,"p50_us":18,"p95_us":48,"throughput_cells_per_s":745479554.83}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":1449,"p50_us":23,"p95_us":38,"throughput_cells_per_s":748837209.30}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":1656,"p50_us":22,"p95_us":38,"throughput_cells_per_s":834673037.04}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":1863,"p50_us":22,"p95_us":30,"throughput_cells_per_s":851434148.20}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":2070,"p50_us":18,"p95_us":31,"throughput_cells_per_s":905681015.43}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":2277,"p50_us":18,"p95_us":18,"throughput_cells_per_s":1046119977.99}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":2484,"p50_us":18,"p95_us":34,"throughput_cells_per_s":868389140.77}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":2691,"p50_us":22,"p95_us":42,"throughput_cells_per_s":745924407.36}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":2898,"p50_us":18,"p95_us":26,"throughput_cells_per_s":991316431.79}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":3105,"p50_us":20,"p95_us":43,"throughput_cells_per_s":795739398.55}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":3312,"p50_us":22,"p95_us":38,"throughput_cells_per_s":796612632.48}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":3519,"p50_us":18,"p95_us":32,"throughput_cells_per_s":927947700.21}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":3726,"p50_us":18,"p95_us":18,"throughput_cells_per_s":1045146021.13}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":3933,"p50_us":18,"p95_us":22,"throughput_cells_per_s":1014954100.08}
+{"event":"diff_span_bench","case":"single_row","method":"compute_dirty","width":240,"height":80,"iters":4140,"p50_us":18,"p95_us":38,"throughput_cells_per_s":867839245.36}
+Benchmarking diff/span_sparse_stats/compute_dirty/240x80@single_row: Analyzing
+diff/span_sparse_stats/compute_dirty/240x80@single_row
+                        time:   [20.192 µs 21.440 µs 22.851 µs]
+                        thrpt:  [840.23 Melem/s 895.51 Melem/s 950.88 Melem/s]
+
+Benchmarking diff/span_dense_regression/dense_gate/200x60@50%
+Benchmarking diff/span_dense_regression/dense_gate/200x60@50%: Warming up for 3.0000 s
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1,"full_p50_us":91,"dirty_p50_us":27,"ratio":0.297,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":2,"full_p50_us":28,"dirty_p50_us":16,"ratio":0.571,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":4,"full_p50_us":24,"dirty_p50_us":15,"ratio":0.625,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":8,"full_p50_us":24,"dirty_p50_us":15,"ratio":0.625,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":16,"full_p50_us":24,"dirty_p50_us":15,"ratio":0.625,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":32,"full_p50_us":24,"dirty_p50_us":14,"ratio":0.583,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":64,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":128,"full_p50_us":24,"dirty_p50_us":14,"ratio":0.583,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":256,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":512,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1024,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":2048,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":4096,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":8192,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":16384,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":32768,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":65536,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+Benchmarking diff/span_dense_regression/dense_gate/200x60@50%: Collecting 20 samples in estimated 1.0071 s (30k iterations)
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":141,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":282,"full_p50_us":20,"dirty_p50_us":11,"ratio":0.550,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":423,"full_p50_us":20,"dirty_p50_us":11,"ratio":0.550,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":564,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":705,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":846,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":987,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1128,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1269,"full_p50_us":20,"dirty_p50_us":11,"ratio":0.550,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1410,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1551,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1692,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1833,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":1974,"full_p50_us":20,"dirty_p50_us":11,"ratio":0.550,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":2115,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":2256,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":2397,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":2538,"full_p50_us":20,"dirty_p50_us":11,"ratio":0.550,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":2679,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":200,"height":60,"iters":2820,"full_p50_us":19,"dirty_p50_us":11,"ratio":0.579,"max_overhead":1.020}
+Benchmarking diff/span_dense_regression/dense_gate/200x60@50%: Analyzing
+diff/span_dense_regression/dense_gate/200x60@50%
+                        time:   [31.562 µs 32.147 µs 32.831 µs]
+                        thrpt:  [365.51 Melem/s 373.28 Melem/s 380.21 Melem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/span_dense_regression/dense_gate/240x80@50%
+Benchmarking diff/span_dense_regression/dense_gate/240x80@50%: Warming up for 3.0000 s
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1,"full_p50_us":194,"dirty_p50_us":47,"ratio":0.242,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":2,"full_p50_us":59,"dirty_p50_us":17,"ratio":0.288,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":4,"full_p50_us":35,"dirty_p50_us":14,"ratio":0.400,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":8,"full_p50_us":33,"dirty_p50_us":14,"ratio":0.424,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":16,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":32,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":64,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":128,"full_p50_us":31,"dirty_p50_us":17,"ratio":0.548,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":256,"full_p50_us":38,"dirty_p50_us":13,"ratio":0.342,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":512,"full_p50_us":38,"dirty_p50_us":13,"ratio":0.342,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1024,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":2048,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":4096,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":8192,"full_p50_us":33,"dirty_p50_us":14,"ratio":0.424,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":16384,"full_p50_us":39,"dirty_p50_us":14,"ratio":0.359,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":32768,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+Benchmarking diff/span_dense_regression/dense_gate/240x80@50%: Collecting 20 samples in estimated 1.0027 s (18k iterations)
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":88,"full_p50_us":39,"dirty_p50_us":17,"ratio":0.436,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":176,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":264,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":352,"full_p50_us":31,"dirty_p50_us":22,"ratio":0.710,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":440,"full_p50_us":38,"dirty_p50_us":17,"ratio":0.447,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":528,"full_p50_us":31,"dirty_p50_us":17,"ratio":0.548,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":616,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":704,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":792,"full_p50_us":38,"dirty_p50_us":14,"ratio":0.368,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":880,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":968,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1056,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1144,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1232,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1320,"full_p50_us":31,"dirty_p50_us":14,"ratio":0.452,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1408,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1496,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1584,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1672,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+{"event":"diff_span_dense_gate","width":240,"height":80,"iters":1760,"full_p50_us":32,"dirty_p50_us":14,"ratio":0.438,"max_overhead":1.020}
+Benchmarking diff/span_dense_regression/dense_gate/240x80@50%: Analyzing
+diff/span_dense_regression/dense_gate/240x80@50%
+                        time:   [48.203 µs 50.063 µs 52.232 µs]
+                        thrpt:  [367.59 Melem/s 383.52 Melem/s 398.32 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking diff/tile_sparse_stats/compute/320x90@1%
+Benchmarking diff/tile_sparse_stats/compute/320x90@1%: Warming up for 3.0000 s
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1,"p50_us":338,"p95_us":338,"throughput_cells_per_s":85207100.59}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":2,"p50_us":245,"p95_us":245,"throughput_cells_per_s":150000000.00}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":4,"p50_us":80,"p95_us":103,"throughput_cells_per_s":362264150.94}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":8,"p50_us":59,"p95_us":70,"throughput_cells_per_s":503056768.56}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":16,"p50_us":46,"p95_us":52,"throughput_cells_per_s":620188425.30}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":32,"p50_us":46,"p95_us":46,"throughput_cells_per_s":622282241.73}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":64,"p50_us":46,"p95_us":54,"throughput_cells_per_s":596504854.37}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":128,"p50_us":58,"p95_us":116,"throughput_cells_per_s":366222928.67}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":256,"p50_us":52,"p95_us":89,"throughput_cells_per_s":523450479.23}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":512,"p50_us":46,"p95_us":80,"throughput_cells_per_s":546194021.56}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1024,"p50_us":46,"p95_us":72,"throughput_cells_per_s":566953111.48}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":2048,"p50_us":46,"p95_us":75,"throughput_cells_per_s":523892170.36}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":4096,"p50_us":46,"p95_us":74,"throughput_cells_per_s":539768562.37}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":8192,"p50_us":46,"p95_us":73,"throughput_cells_per_s":559493838.99}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":16384,"p50_us":45,"p95_us":66,"throughput_cells_per_s":574355878.25}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":32768,"p50_us":46,"p95_us":67,"throughput_cells_per_s":574538055.94}
+Benchmarking diff/tile_sparse_stats/compute/320x90@1%: Collecting 20 samples in estimated 1.0070 s (20k iterations)
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":93,"p50_us":47,"p95_us":60,"throughput_cells_per_s":566377669.70}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":186,"p50_us":46,"p95_us":89,"throughput_cells_per_s":486451144.21}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":279,"p50_us":46,"p95_us":64,"throughput_cells_per_s":558659528.61}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":372,"p50_us":46,"p95_us":61,"throughput_cells_per_s":601684825.34}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":465,"p50_us":46,"p95_us":54,"throughput_cells_per_s":608727272.73}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":558,"p50_us":46,"p95_us":65,"throughput_cells_per_s":584697107.51}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":651,"p50_us":46,"p95_us":54,"throughput_cells_per_s":612565752.93}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":744,"p50_us":46,"p95_us":54,"throughput_cells_per_s":615529573.99}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":837,"p50_us":46,"p95_us":54,"throughput_cells_per_s":612190166.60}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":930,"p50_us":46,"p95_us":67,"throughput_cells_per_s":572014351.61}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1023,"p50_us":46,"p95_us":68,"throughput_cells_per_s":567206360.82}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1116,"p50_us":46,"p95_us":79,"throughput_cells_per_s":522215542.59}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1209,"p50_us":54,"p95_us":87,"throughput_cells_per_s":481426892.50}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1302,"p50_us":46,"p95_us":76,"throughput_cells_per_s":525367780.98}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1395,"p50_us":45,"p95_us":78,"throughput_cells_per_s":559110455.49}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1488,"p50_us":45,"p95_us":54,"throughput_cells_per_s":621186293.27}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1581,"p50_us":45,"p95_us":68,"throughput_cells_per_s":583514455.61}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1674,"p50_us":45,"p95_us":60,"throughput_cells_per_s":590309901.92}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1767,"p50_us":45,"p95_us":54,"throughput_cells_per_s":624818593.69}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":1,"iters":1860,"p50_us":45,"p95_us":73,"throughput_cells_per_s":550924068.99}
+Benchmarking diff/tile_sparse_stats/compute/320x90@1%: Analyzing
+diff/tile_sparse_stats/compute/320x90@1%
+                        time:   [48.494 µs 50.396 µs 52.529 µs]
+                        thrpt:  [548.27 Melem/s 571.47 Melem/s 593.89 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking diff/tile_sparse_stats/compute_dirty/320x90@1%
+Benchmarking diff/tile_sparse_stats/compute_dirty/320x90@1%: Warming up for 3.0000 s
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":1,"p50_us":87,"p95_us":87,"throughput_cells_per_s":331034482.76,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":2,"p50_us":38,"p95_us":38,"throughput_cells_per_s":900000000.00,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":4,"p50_us":25,"p95_us":26,"throughput_cells_per_s":1152000000.00,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":8,"p50_us":24,"p95_us":36,"throughput_cells_per_s":1123902439.02,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":16,"p50_us":19,"p95_us":35,"throughput_cells_per_s":1379640718.56,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":32,"p50_us":20,"p95_us":24,"throughput_cells_per_s":1444514106.58,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":64,"p50_us":20,"p95_us":22,"throughput_cells_per_s":1396363636.36,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":128,"p50_us":20,"p95_us":22,"throughput_cells_per_s":1419484020.02,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":256,"p50_us":24,"p95_us":60,"throughput_cells_per_s":1007213114.75,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":512,"p50_us":25,"p95_us":38,"throughput_cells_per_s":1038934686.11,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":1024,"p50_us":24,"p95_us":38,"throughput_cells_per_s":1167968316.83,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":2048,"p50_us":24,"p95_us":42,"throughput_cells_per_s":1132251934.04,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":4096,"p50_us":20,"p95_us":33,"throughput_cells_per_s":1343241365.96,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":8192,"p50_us":20,"p95_us":31,"throughput_cells_per_s":1286743676.17,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":16384,"p50_us":20,"p95_us":32,"throughput_cells_per_s":1303550472.40,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":32768,"p50_us":20,"p95_us":40,"throughput_cells_per_s":1151537529.48,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":65536,"p50_us":22,"p95_us":42,"throughput_cells_per_s":1077227252.62,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+Benchmarking diff/tile_sparse_stats/compute_dirty/320x90@1%: Collecting 20 samples in estimated 1.0044 s (39k iterations)
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":185,"p50_us":32,"p95_us":60,"throughput_cells_per_s":726380368.10,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":370,"p50_us":24,"p95_us":38,"throughput_cells_per_s":1081937252.51,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":555,"p50_us":24,"p95_us":31,"throughput_cells_per_s":1186196660.48,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":740,"p50_us":21,"p95_us":39,"throughput_cells_per_s":1217133066.82,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":925,"p50_us":20,"p95_us":29,"throughput_cells_per_s":1327288127.15,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":1110,"p50_us":21,"p95_us":37,"throughput_cells_per_s":1205111772.91,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":1295,"p50_us":31,"p95_us":57,"throughput_cells_per_s":801685224.20,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":1480,"p50_us":26,"p95_us":45,"throughput_cells_per_s":988313856.43,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":1665,"p50_us":20,"p95_us":41,"throughput_cells_per_s":1196228109.56,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":1850,"p50_us":25,"p95_us":42,"throughput_cells_per_s":1049645390.07,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":2035,"p50_us":20,"p95_us":33,"throughput_cells_per_s":1213667425.97,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":2220,"p50_us":29,"p95_us":55,"throughput_cells_per_s":900380228.14,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":2405,"p50_us":27,"p95_us":46,"throughput_cells_per_s":942316064.43,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":2590,"p50_us":24,"p95_us":44,"throughput_cells_per_s":1023434498.66,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":2775,"p50_us":23,"p95_us":41,"throughput_cells_per_s":1097560975.61,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":2960,"p50_us":23,"p95_us":44,"throughput_cells_per_s":1032183073.01,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":3145,"p50_us":20,"p95_us":27,"throughput_cells_per_s":1391913696.92,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":3330,"p50_us":20,"p95_us":26,"throughput_cells_per_s":1401244849.65,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":3515,"p50_us":20,"p95_us":27,"throughput_cells_per_s":1401814027.56,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":1,"iters":3700,"p50_us":20,"p95_us":25,"throughput_cells_per_s":1397196690.57,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":169,"skipped_tiles":71,"dirty_tile_ratio":0.7042,"fallback":"dense_tiles"}
+Benchmarking diff/tile_sparse_stats/compute_dirty/320x90@1%: Analyzing
+diff/tile_sparse_stats/compute_dirty/320x90@1%
+                        time:   [22.414 µs 24.380 µs 27.094 µs]
+                        thrpt:  [1.0630 Gelem/s 1.1813 Gelem/s 1.2849 Gelem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/tile_sparse_stats/compute/320x90@2%
+Benchmarking diff/tile_sparse_stats/compute/320x90@2%: Warming up for 3.0000 s
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1,"p50_us":669,"p95_us":669,"throughput_cells_per_s":43049327.35}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":2,"p50_us":212,"p95_us":212,"throughput_cells_per_s":180000000.00}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":4,"p50_us":94,"p95_us":103,"throughput_cells_per_s":326345609.07}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":8,"p50_us":89,"p95_us":98,"throughput_cells_per_s":366295707.47}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":16,"p50_us":64,"p95_us":93,"throughput_cells_per_s":407427055.70}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":32,"p50_us":84,"p95_us":635,"throughput_cells_per_s":228401486.99}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":64,"p50_us":53,"p95_us":89,"throughput_cells_per_s":515436241.61}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":128,"p50_us":53,"p95_us":92,"throughput_cells_per_s":434409615.84}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":256,"p50_us":58,"p95_us":90,"throughput_cells_per_s":472554800.67}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":512,"p50_us":47,"p95_us":53,"throughput_cells_per_s":598660224.92}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1024,"p50_us":54,"p95_us":89,"throughput_cells_per_s":477845650.31}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":2048,"p50_us":52,"p95_us":90,"throughput_cells_per_s":474325693.61}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":4096,"p50_us":47,"p95_us":83,"throughput_cells_per_s":500402137.95}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":8192,"p50_us":47,"p95_us":72,"throughput_cells_per_s":551012086.18}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":16384,"p50_us":47,"p95_us":65,"throughput_cells_per_s":575708350.87}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":32768,"p50_us":47,"p95_us":67,"throughput_cells_per_s":567544337.60}
+Benchmarking diff/tile_sparse_stats/compute/320x90@2%: Collecting 20 samples in estimated 1.0013 s (19k iterations)
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":91,"p50_us":47,"p95_us":68,"throughput_cells_per_s":590137356.45}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":182,"p50_us":47,"p95_us":52,"throughput_cells_per_s":596925179.36}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":273,"p50_us":47,"p95_us":53,"throughput_cells_per_s":600183206.11}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":364,"p50_us":47,"p95_us":55,"throughput_cells_per_s":593041805.74}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":455,"p50_us":47,"p95_us":59,"throughput_cells_per_s":594043247.65}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":546,"p50_us":47,"p95_us":47,"throughput_cells_per_s":601261805.53}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":637,"p50_us":47,"p95_us":59,"throughput_cells_per_s":599490229.40}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":728,"p50_us":47,"p95_us":61,"throughput_cells_per_s":594825238.31}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":819,"p50_us":47,"p95_us":49,"throughput_cells_per_s":601177520.07}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":910,"p50_us":47,"p95_us":54,"throughput_cells_per_s":599218053.36}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1001,"p50_us":47,"p95_us":52,"throughput_cells_per_s":600074934.43}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1092,"p50_us":47,"p95_us":68,"throughput_cells_per_s":556177271.60}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1183,"p50_us":53,"p95_us":101,"throughput_cells_per_s":477798813.58}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1274,"p50_us":52,"p95_us":95,"throughput_cells_per_s":486117809.16}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1365,"p50_us":58,"p95_us":106,"throughput_cells_per_s":449994848.96}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1456,"p50_us":46,"p95_us":54,"throughput_cells_per_s":608003711.87}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1547,"p50_us":47,"p95_us":71,"throughput_cells_per_s":577089269.99}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1638,"p50_us":47,"p95_us":78,"throughput_cells_per_s":533013954.01}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1729,"p50_us":49,"p95_us":81,"throughput_cells_per_s":512565234.85}
+{"event":"diff_tile_sparse_bench","method":"compute","width":320,"height":90,"pct":2,"iters":1820,"p50_us":48,"p95_us":81,"throughput_cells_per_s":513555087.44}
+Benchmarking diff/tile_sparse_stats/compute/320x90@2%: Analyzing
+diff/tile_sparse_stats/compute/320x90@2%
+                        time:   [51.056 µs 53.923 µs 56.484 µs]
+                        thrpt:  [509.87 Melem/s 534.09 Melem/s 564.09 Melem/s]
+Benchmarking diff/tile_sparse_stats/compute_dirty/320x90@2%
+Benchmarking diff/tile_sparse_stats/compute_dirty/320x90@2%: Warming up for 3.0000 s
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":1,"p50_us":960,"p95_us":960,"throughput_cells_per_s":30000000.00,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":2,"p50_us":462,"p95_us":462,"throughput_cells_per_s":94736842.11,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":4,"p50_us":149,"p95_us":287,"throughput_cells_per_s":212939001.85,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":8,"p50_us":64,"p95_us":97,"throughput_cells_per_s":529655172.41,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":16,"p50_us":49,"p95_us":100,"throughput_cells_per_s":547919143.88,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":32,"p50_us":33,"p95_us":120,"throughput_cells_per_s":676155539.25,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":64,"p50_us":33,"p95_us":68,"throughput_cells_per_s":746234817.81,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":128,"p50_us":32,"p95_us":73,"throughput_cells_per_s":702974828.38,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":256,"p50_us":33,"p95_us":53,"throughput_cells_per_s":797231833.91,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":512,"p50_us":29,"p95_us":48,"throughput_cells_per_s":916615901.04,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":1024,"p50_us":22,"p95_us":44,"throughput_cells_per_s":1096367894.72,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":2048,"p50_us":22,"p95_us":28,"throughput_cells_per_s":1243357645.77,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":4096,"p50_us":22,"p95_us":39,"throughput_cells_per_s":1107068583.66,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":8192,"p50_us":22,"p95_us":34,"throughput_cells_per_s":1137136164.49,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":16384,"p50_us":22,"p95_us":36,"throughput_cells_per_s":1163535936.12,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":32768,"p50_us":22,"p95_us":35,"throughput_cells_per_s":1165297362.97,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":65536,"p50_us":22,"p95_us":35,"throughput_cells_per_s":1162018723.44,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+Benchmarking diff/tile_sparse_stats/compute_dirty/320x90@2%: Collecting 20 samples in estimated 1.0047 s (39k iterations)
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":188,"p50_us":29,"p95_us":64,"throughput_cells_per_s":837623762.38,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":376,"p50_us":22,"p95_us":43,"throughput_cells_per_s":1077385334.79,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":564,"p50_us":22,"p95_us":32,"throughput_cells_per_s":1257602973.06,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":752,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1292296676.41,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":940,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1292774939.11,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":1128,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1284148944.58,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":1316,"p50_us":22,"p95_us":25,"throughput_cells_per_s":1272436715.24,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":1504,"p50_us":22,"p95_us":23,"throughput_cells_per_s":1277809900.29,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":1692,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1291500357.80,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":1880,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1284707557.24,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":2068,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1287276028.27,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":2256,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1287558955.25,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":2444,"p50_us":22,"p95_us":26,"throughput_cells_per_s":1264660330.24,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":2632,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1283924185.71,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":2820,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1285510779.07,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":3008,"p50_us":22,"p95_us":24,"throughput_cells_per_s":1275721206.94,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":3196,"p50_us":22,"p95_us":22,"throughput_cells_per_s":1289377617.77,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":3384,"p50_us":22,"p95_us":30,"throughput_cells_per_s":1224223391.83,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":3572,"p50_us":22,"p95_us":37,"throughput_cells_per_s":1145050199.24,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":320,"height":90,"pct":2,"iters":3760,"p50_us":22,"p95_us":24,"throughput_cells_per_s":1275236704.51,"tile_w":16,"tile_h":8,"tiles_x":20,"tiles_y":12,"dirty_tiles":192,"skipped_tiles":48,"dirty_tile_ratio":0.8000,"fallback":"dense_tiles"}
+Benchmarking diff/tile_sparse_stats/compute_dirty/320x90@2%: Analyzing
+diff/tile_sparse_stats/compute_dirty/320x90@2%
+                        time:   [22.462 µs 22.945 µs 23.576 µs]
+                        thrpt:  [1.2216 Gelem/s 1.2552 Gelem/s 1.2822 Gelem/s]
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) high mild
+  3 (15.00%) high severe
+Benchmarking diff/tile_sparse_stats/compute/400x100@1%
+Benchmarking diff/tile_sparse_stats/compute/400x100@1%: Warming up for 3.0000 s
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":1,"p50_us":79,"p95_us":79,"throughput_cells_per_s":506329113.92}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":2,"p50_us":66,"p95_us":66,"throughput_cells_per_s":606060606.06}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":4,"p50_us":65,"p95_us":65,"throughput_cells_per_s":615384615.38}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":8,"p50_us":64,"p95_us":117,"throughput_cells_per_s":565371024.73}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":16,"p50_us":64,"p95_us":112,"throughput_cells_per_s":595348837.21}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":32,"p50_us":64,"p95_us":73,"throughput_cells_per_s":615976900.87}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":64,"p50_us":80,"p95_us":102,"throughput_cells_per_s":503243562.02}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":128,"p50_us":64,"p95_us":85,"throughput_cells_per_s":599461421.38}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":256,"p50_us":64,"p95_us":74,"throughput_cells_per_s":614719654.22}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":512,"p50_us":64,"p95_us":79,"throughput_cells_per_s":600392835.16}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":1024,"p50_us":65,"p95_us":93,"throughput_cells_per_s":540440691.38}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":2048,"p50_us":65,"p95_us":85,"throughput_cells_per_s":585255727.89}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":4096,"p50_us":65,"p95_us":101,"throughput_cells_per_s":528780519.29}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":8192,"p50_us":65,"p95_us":87,"throughput_cells_per_s":575876389.03}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":16384,"p50_us":78,"p95_us":129,"throughput_cells_per_s":450373432.81}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":32768,"p50_us":66,"p95_us":117,"throughput_cells_per_s":498118829.19}
+Benchmarking diff/tile_sparse_stats/compute/400x100@1%: Collecting 20 samples in estimated 1.0022 s (12k iterations)
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":59,"p50_us":64,"p95_us":87,"throughput_cells_per_s":604508196.72}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":118,"p50_us":64,"p95_us":102,"throughput_cells_per_s":572815533.98}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":177,"p50_us":64,"p95_us":80,"throughput_cells_per_s":597518777.96}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":236,"p50_us":64,"p95_us":74,"throughput_cells_per_s":612072878.17}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":295,"p50_us":64,"p95_us":111,"throughput_cells_per_s":551633864.71}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":354,"p50_us":80,"p95_us":114,"throughput_cells_per_s":484400656.81}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":413,"p50_us":80,"p95_us":111,"throughput_cells_per_s":468227424.75}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":472,"p50_us":64,"p95_us":84,"throughput_cells_per_s":568726089.71}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":531,"p50_us":65,"p95_us":98,"throughput_cells_per_s":527387396.34}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":590,"p50_us":65,"p95_us":89,"throughput_cells_per_s":549322657.23}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":649,"p50_us":64,"p95_us":74,"throughput_cells_per_s":616305018.76}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":708,"p50_us":65,"p95_us":82,"throughput_cells_per_s":606696801.56}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":767,"p50_us":65,"p95_us":106,"throughput_cells_per_s":520388086.03}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":826,"p50_us":65,"p95_us":85,"throughput_cells_per_s":549979192.68}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":885,"p50_us":64,"p95_us":78,"throughput_cells_per_s":604952406.99}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":944,"p50_us":65,"p95_us":94,"throughput_cells_per_s":540981962.49}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":1003,"p50_us":64,"p95_us":81,"throughput_cells_per_s":598261284.50}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":1062,"p50_us":65,"p95_us":84,"throughput_cells_per_s":585494941.70}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":1121,"p50_us":64,"p95_us":87,"throughput_cells_per_s":568970549.05}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":1,"iters":1180,"p50_us":65,"p95_us":81,"throughput_cells_per_s":606496710.53}
+Benchmarking diff/tile_sparse_stats/compute/400x100@1%: Analyzing
+diff/tile_sparse_stats/compute/400x100@1%
+                        time:   [68.039 µs 69.863 µs 72.242 µs]
+                        thrpt:  [553.69 Melem/s 572.55 Melem/s 587.90 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/tile_sparse_stats/compute_dirty/400x100@1%
+Benchmarking diff/tile_sparse_stats/compute_dirty/400x100@1%: Warming up for 3.0000 s
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":1,"p50_us":298,"p95_us":298,"throughput_cells_per_s":134228187.92,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":2,"p50_us":22,"p95_us":22,"throughput_cells_per_s":2162162162.16,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":4,"p50_us":15,"p95_us":17,"throughput_cells_per_s":2622950819.67,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":8,"p50_us":14,"p95_us":15,"throughput_cells_per_s":2831858407.08,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":16,"p50_us":14,"p95_us":15,"throughput_cells_per_s":2844444444.44,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":32,"p50_us":14,"p95_us":14,"throughput_cells_per_s":2869955156.95,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":64,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2962962962.96,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":128,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2957827845.18,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":256,"p50_us":13,"p95_us":14,"throughput_cells_per_s":3014424492.20,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":512,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2974150450.19,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":1024,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2932207029.85,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":2048,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2961570442.14,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":4096,"p50_us":13,"p95_us":18,"throughput_cells_per_s":2784500339.90,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":8192,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2939625011.21,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":16384,"p50_us":13,"p95_us":17,"throughput_cells_per_s":2905376649.17,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":32768,"p50_us":13,"p95_us":18,"throughput_cells_per_s":2778255874.59,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":65536,"p50_us":13,"p95_us":18,"throughput_cells_per_s":2671950553.26,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":131072,"p50_us":14,"p95_us":18,"throughput_cells_per_s":2582007580.23,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+Benchmarking diff/tile_sparse_stats/compute_dirty/400x100@1%: Collecting 20 samples in estimated 1.0015 s (64k iterations)
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":304,"p50_us":15,"p95_us":30,"throughput_cells_per_s":2159474338.48,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":608,"p50_us":18,"p95_us":18,"throughput_cells_per_s":2259803010.59,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":912,"p50_us":14,"p95_us":29,"throughput_cells_per_s":2482983936.84,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":1216,"p50_us":14,"p95_us":14,"throughput_cells_per_s":2704475952.18,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":1520,"p50_us":14,"p95_us":15,"throughput_cells_per_s":2835820895.52,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":1824,"p50_us":14,"p95_us":14,"throughput_cells_per_s":2837033868.65,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":2128,"p50_us":14,"p95_us":15,"throughput_cells_per_s":2797239566.22,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":2432,"p50_us":14,"p95_us":20,"throughput_cells_per_s":2387239263.80,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":2736,"p50_us":17,"p95_us":22,"throughput_cells_per_s":2077172737.11,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":3040,"p50_us":15,"p95_us":23,"throughput_cells_per_s":2313370367.55,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":3344,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2949308755.76,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":3648,"p50_us":14,"p95_us":14,"throughput_cells_per_s":2895180651.18,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":3952,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2973049218.56,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":4256,"p50_us":14,"p95_us":19,"throughput_cells_per_s":2639625391.51,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":4560,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2905152504.58,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":4864,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2947208967.66,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":5168,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2774876840.68,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":5472,"p50_us":13,"p95_us":17,"throughput_cells_per_s":2699955592.84,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":5776,"p50_us":13,"p95_us":19,"throughput_cells_per_s":2780666281.53,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":1,"iters":6080,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2897687330.96,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+Benchmarking diff/tile_sparse_stats/compute_dirty/400x100@1%: Analyzing
+diff/tile_sparse_stats/compute_dirty/400x100@1%
+                        time:   [14.050 µs 14.467 µs 15.067 µs]
+                        thrpt:  [2.6549 Gelem/s 2.7649 Gelem/s 2.8470 Gelem/s]
+Benchmarking diff/tile_sparse_stats/compute/400x100@2%
+Benchmarking diff/tile_sparse_stats/compute/400x100@2%: Warming up for 3.0000 s
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":1,"p50_us":1090,"p95_us":1090,"throughput_cells_per_s":36697247.71}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":2,"p50_us":503,"p95_us":503,"throughput_cells_per_s":106951871.66}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":4,"p50_us":135,"p95_us":250,"throughput_cells_per_s":280210157.62}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":8,"p50_us":79,"p95_us":88,"throughput_cells_per_s":514469453.38}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":16,"p50_us":66,"p95_us":87,"throughput_cells_per_s":600375234.52}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":32,"p50_us":65,"p95_us":81,"throughput_cells_per_s":593967517.40}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":64,"p50_us":69,"p95_us":113,"throughput_cells_per_s":532778355.88}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":128,"p50_us":65,"p95_us":78,"throughput_cells_per_s":595972529.39}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":256,"p50_us":65,"p95_us":111,"throughput_cells_per_s":541426532.02}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":512,"p50_us":65,"p95_us":89,"throughput_cells_per_s":569695958.16}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":1024,"p50_us":77,"p95_us":114,"throughput_cells_per_s":488642870.78}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":2048,"p50_us":65,"p95_us":90,"throughput_cells_per_s":558334810.05}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":4096,"p50_us":65,"p95_us":107,"throughput_cells_per_s":561765391.63}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":8192,"p50_us":65,"p95_us":96,"throughput_cells_per_s":552080156.76}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":16384,"p50_us":65,"p95_us":91,"throughput_cells_per_s":563741323.80}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":32768,"p50_us":65,"p95_us":102,"throughput_cells_per_s":537555294.72}
+Benchmarking diff/tile_sparse_stats/compute/400x100@2%: Collecting 20 samples in estimated 1.0068 s (14k iterations)
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":65,"p50_us":67,"p95_us":114,"throughput_cells_per_s":531262770.74}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":130,"p50_us":65,"p95_us":82,"throughput_cells_per_s":594353640.42}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":195,"p50_us":65,"p95_us":80,"throughput_cells_per_s":601573345.67}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":260,"p50_us":65,"p95_us":89,"throughput_cells_per_s":571177504.39}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":325,"p50_us":78,"p95_us":113,"throughput_cells_per_s":462057934.96}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":390,"p50_us":65,"p95_us":81,"throughput_cells_per_s":562020391.25}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":455,"p50_us":64,"p95_us":80,"throughput_cells_per_s":569105691.06}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":520,"p50_us":78,"p95_us":125,"throughput_cells_per_s":467573339.33}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":585,"p50_us":81,"p95_us":130,"throughput_cells_per_s":441609421.00}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":650,"p50_us":81,"p95_us":107,"throughput_cells_per_s":500500500.50}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":715,"p50_us":80,"p95_us":127,"throughput_cells_per_s":460517841.04}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":780,"p50_us":64,"p95_us":87,"throughput_cells_per_s":570154599.61}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":845,"p50_us":65,"p95_us":81,"throughput_cells_per_s":597754001.24}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":910,"p50_us":65,"p95_us":80,"throughput_cells_per_s":593201003.88}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":975,"p50_us":65,"p95_us":81,"throughput_cells_per_s":600166199.87}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":1040,"p50_us":65,"p95_us":112,"throughput_cells_per_s":521996637.14}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":1105,"p50_us":65,"p95_us":84,"throughput_cells_per_s":561940602.12}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":1170,"p50_us":65,"p95_us":80,"throughput_cells_per_s":598105997.67}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":1235,"p50_us":65,"p95_us":93,"throughput_cells_per_s":570986048.98}
+{"event":"diff_tile_sparse_bench","method":"compute","width":400,"height":100,"pct":2,"iters":1300,"p50_us":65,"p95_us":81,"throughput_cells_per_s":593058929.53}
+Benchmarking diff/tile_sparse_stats/compute/400x100@2%: Analyzing
+diff/tile_sparse_stats/compute/400x100@2%
+                        time:   [69.168 µs 71.532 µs 75.079 µs]
+                        thrpt:  [532.77 Melem/s 559.19 Melem/s 578.30 Melem/s]
+Benchmarking diff/tile_sparse_stats/compute_dirty/400x100@2%
+Benchmarking diff/tile_sparse_stats/compute_dirty/400x100@2%: Warming up for 3.0000 s
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":1,"p50_us":685,"p95_us":685,"throughput_cells_per_s":58394160.58,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":2,"p50_us":266,"p95_us":266,"throughput_cells_per_s":207253886.01,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":4,"p50_us":45,"p95_us":460,"throughput_cells_per_s":279232111.69,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":8,"p50_us":21,"p95_us":37,"throughput_cells_per_s":1748633879.78,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":16,"p50_us":20,"p95_us":28,"throughput_cells_per_s":2000000000.00,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":32,"p50_us":17,"p95_us":23,"throughput_cells_per_s":2188034188.03,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":64,"p50_us":17,"p95_us":39,"throughput_cells_per_s":1955691367.46,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":128,"p50_us":18,"p95_us":60,"throughput_cells_per_s":1192083818.39,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":256,"p50_us":17,"p95_us":18,"throughput_cells_per_s":2314647377.94,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":512,"p50_us":14,"p95_us":17,"throughput_cells_per_s":2699709992.09,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":1024,"p50_us":14,"p95_us":18,"throughput_cells_per_s":2635609034.17,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":2048,"p50_us":15,"p95_us":20,"throughput_cells_per_s":2369410539.71,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":4096,"p50_us":15,"p95_us":24,"throughput_cells_per_s":2306663475.48,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":8192,"p50_us":14,"p95_us":20,"throughput_cells_per_s":2448936885.77,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":16384,"p50_us":14,"p95_us":17,"throughput_cells_per_s":2731338120.62,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":32768,"p50_us":14,"p95_us":21,"throughput_cells_per_s":2578391180.84,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":65536,"p50_us":14,"p95_us":17,"throughput_cells_per_s":2792803638.45,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":131072,"p50_us":14,"p95_us":18,"throughput_cells_per_s":2685698010.60,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+Benchmarking diff/tile_sparse_stats/compute_dirty/400x100@2%: Collecting 20 samples in estimated 1.0015 s (65k iterations)
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":308,"p50_us":13,"p95_us":16,"throughput_cells_per_s":2840673276.46,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":616,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2897800776.20,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":924,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2929613189.60,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":1232,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2907203114.86,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":1540,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2907992257.94,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":1848,"p50_us":14,"p95_us":18,"throughput_cells_per_s":2749386297.70,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":2156,"p50_us":14,"p95_us":18,"throughput_cells_per_s":2698204117.39,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":2464,"p50_us":14,"p95_us":22,"throughput_cells_per_s":2522328854.77,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":2772,"p50_us":14,"p95_us":22,"throughput_cells_per_s":2454998339.42,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":3080,"p50_us":17,"p95_us":24,"throughput_cells_per_s":2342383451.21,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":3388,"p50_us":14,"p95_us":19,"throughput_cells_per_s":2587098867.95,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":3696,"p50_us":14,"p95_us":21,"throughput_cells_per_s":2631260456.34,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":4004,"p50_us":13,"p95_us":17,"throughput_cells_per_s":2825339143.01,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":4312,"p50_us":14,"p95_us":18,"throughput_cells_per_s":2588584892.92,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":4620,"p50_us":14,"p95_us":21,"throughput_cells_per_s":2451578668.08,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":4928,"p50_us":14,"p95_us":17,"throughput_cells_per_s":2750000000.00,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":5236,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2924363646.52,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":5544,"p50_us":13,"p95_us":14,"throughput_cells_per_s":2951801615.93,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":5852,"p50_us":14,"p95_us":17,"throughput_cells_per_s":2758458148.22,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+{"event":"diff_tile_sparse_bench","method":"compute_dirty","width":400,"height":100,"pct":2,"iters":6160,"p50_us":13,"p95_us":19,"throughput_cells_per_s":2743264306.39,"tile_w":16,"tile_h":8,"tiles_x":25,"tiles_y":13,"dirty_tiles":315,"skipped_tiles":10,"dirty_tile_ratio":0.9692,"fallback":"dense_tiles"}
+Benchmarking diff/tile_sparse_stats/compute_dirty/400x100@2%: Analyzing
+diff/tile_sparse_stats/compute_dirty/400x100@2%
+                        time:   [14.308 µs 14.751 µs 15.317 µs]
+                        thrpt:  [2.6115 Gelem/s 2.7117 Gelem/s 2.7956 Gelem/s]
+
+Benchmarking diff/tile_dense_regression/dense_gate/320x90@50%
+Benchmarking diff/tile_dense_regression/dense_gate/320x90@50%: Warming up for 3.0000 s
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":1,"full_p50_us":352,"dirty_p50_us":122,"ratio":0.347,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":2,"full_p50_us":94,"dirty_p50_us":60,"ratio":0.638,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":4,"full_p50_us":69,"dirty_p50_us":58,"ratio":0.841,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":8,"full_p50_us":69,"dirty_p50_us":58,"ratio":0.841,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":16,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":32,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":64,"full_p50_us":69,"dirty_p50_us":58,"ratio":0.841,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":128,"full_p50_us":69,"dirty_p50_us":58,"ratio":0.841,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":256,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":512,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":1024,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":2048,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":4096,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":8192,"full_p50_us":69,"dirty_p50_us":58,"ratio":0.841,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":16384,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+Benchmarking diff/tile_dense_regression/dense_gate/320x90@50%: Collecting 20 samples in estimated 1.0248 s (7350 iterations)
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":35,"full_p50_us":70,"dirty_p50_us":60,"ratio":0.857,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":70,"full_p50_us":70,"dirty_p50_us":60,"ratio":0.857,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":105,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":140,"full_p50_us":86,"dirty_p50_us":73,"ratio":0.849,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":175,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":210,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":245,"full_p50_us":70,"dirty_p50_us":60,"ratio":0.857,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":280,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":315,"full_p50_us":70,"dirty_p50_us":59,"ratio":0.843,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":350,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":385,"full_p50_us":70,"dirty_p50_us":59,"ratio":0.843,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":420,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":455,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":490,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":525,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":560,"full_p50_us":70,"dirty_p50_us":59,"ratio":0.843,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":595,"full_p50_us":70,"dirty_p50_us":59,"ratio":0.843,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":630,"full_p50_us":69,"dirty_p50_us":59,"ratio":0.855,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":665,"full_p50_us":70,"dirty_p50_us":60,"ratio":0.857,"max_overhead":1.020,"fallback":"dense_cells"}
+{"event":"diff_tile_dense_gate","width":320,"height":90,"iters":700,"full_p50_us":70,"dirty_p50_us":59,"ratio":0.843,"max_overhead":1.020,"fallback":"dense_cells"}
+Benchmarking diff/tile_dense_regression/dense_gate/320x90@50%: Analyzing
+diff/tile_dense_regression/dense_gate/320x90@50%
+                        time:   [136.94 µs 142.87 µs 148.67 µs]
+                        thrpt:  [193.72 Melem/s 201.58 Melem/s 210.31 Melem/s]
+Benchmarking diff/tile_dense_regression/dense_gate/400x100@50%
+Benchmarking diff/tile_dense_regression/dense_gate/400x100@50%: Warming up for 3.0000 s
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":1,"full_p50_us":1230,"dirty_p50_us":303,"ratio":0.246,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":2,"full_p50_us":418,"dirty_p50_us":93,"ratio":0.222,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":4,"full_p50_us":68,"dirty_p50_us":46,"ratio":0.676,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":8,"full_p50_us":66,"dirty_p50_us":46,"ratio":0.697,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":16,"full_p50_us":66,"dirty_p50_us":49,"ratio":0.742,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":32,"full_p50_us":66,"dirty_p50_us":46,"ratio":0.697,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":64,"full_p50_us":66,"dirty_p50_us":46,"ratio":0.697,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":128,"full_p50_us":66,"dirty_p50_us":46,"ratio":0.697,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":256,"full_p50_us":66,"dirty_p50_us":47,"ratio":0.712,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":512,"full_p50_us":67,"dirty_p50_us":49,"ratio":0.731,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":1024,"full_p50_us":66,"dirty_p50_us":48,"ratio":0.727,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":2048,"full_p50_us":66,"dirty_p50_us":48,"ratio":0.727,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":4096,"full_p50_us":77,"dirty_p50_us":58,"ratio":0.753,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":8192,"full_p50_us":67,"dirty_p50_us":51,"ratio":0.761,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":16384,"full_p50_us":75,"dirty_p50_us":57,"ratio":0.760,"max_overhead":1.020,"fallback":"dense_tiles"}
+Benchmarking diff/tile_dense_regression/dense_gate/400x100@50%: Collecting 20 samples in estimated 1.0237 s (7140 iterations)
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":34,"full_p50_us":114,"dirty_p50_us":79,"ratio":0.693,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":68,"full_p50_us":99,"dirty_p50_us":65,"ratio":0.657,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":102,"full_p50_us":85,"dirty_p50_us":60,"ratio":0.706,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":136,"full_p50_us":69,"dirty_p50_us":48,"ratio":0.696,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":170,"full_p50_us":82,"dirty_p50_us":58,"ratio":0.707,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":204,"full_p50_us":82,"dirty_p50_us":57,"ratio":0.695,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":238,"full_p50_us":95,"dirty_p50_us":66,"ratio":0.695,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":272,"full_p50_us":114,"dirty_p50_us":80,"ratio":0.702,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":306,"full_p50_us":114,"dirty_p50_us":80,"ratio":0.702,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":340,"full_p50_us":114,"dirty_p50_us":80,"ratio":0.702,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":374,"full_p50_us":114,"dirty_p50_us":79,"ratio":0.693,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":408,"full_p50_us":107,"dirty_p50_us":68,"ratio":0.636,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":442,"full_p50_us":114,"dirty_p50_us":79,"ratio":0.693,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":476,"full_p50_us":114,"dirty_p50_us":79,"ratio":0.693,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":510,"full_p50_us":114,"dirty_p50_us":76,"ratio":0.667,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":544,"full_p50_us":83,"dirty_p50_us":59,"ratio":0.711,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":578,"full_p50_us":114,"dirty_p50_us":78,"ratio":0.684,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":612,"full_p50_us":114,"dirty_p50_us":78,"ratio":0.684,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":646,"full_p50_us":115,"dirty_p50_us":79,"ratio":0.687,"max_overhead":1.020,"fallback":"dense_tiles"}
+{"event":"diff_tile_dense_gate","width":400,"height":100,"iters":680,"full_p50_us":115,"dirty_p50_us":80,"ratio":0.696,"max_overhead":1.020,"fallback":"dense_tiles"}
+Benchmarking diff/tile_dense_regression/dense_gate/400x100@50%: Analyzing
+diff/tile_dense_regression/dense_gate/400x100@50%
+                        time:   [201.95 µs 215.36 µs 230.07 µs]
+                        thrpt:  [173.86 Melem/s 185.73 Melem/s 198.07 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking diff/large_screen/compute/320x90@2%
+Benchmarking diff/large_screen/compute/320x90@2%: Warming up for 3.0000 s
+Benchmarking diff/large_screen/compute/320x90@2%: Collecting 20 samples in estimated 1.0161 s (13k iterations)
+Benchmarking diff/large_screen/compute/320x90@2%: Analyzing
+diff/large_screen/compute/320x90@2%
+                        time:   [69.904 µs 78.603 µs 86.367 µs]
+                        thrpt:  [333.46 Melem/s 366.40 Melem/s 411.99 Melem/s]
+Benchmarking diff/large_screen/compute_dirty/320x90@2%
+Benchmarking diff/large_screen/compute_dirty/320x90@2%: Warming up for 3.0000 s
+Benchmarking diff/large_screen/compute_dirty/320x90@2%: Collecting 20 samples in estimated 1.0022 s (30k iterations)
+Benchmarking diff/large_screen/compute_dirty/320x90@2%: Analyzing
+diff/large_screen/compute_dirty/320x90@2%
+                        time:   [25.221 µs 26.432 µs 27.962 µs]
+                        thrpt:  [1.0300 Gelem/s 1.0896 Gelem/s 1.1419 Gelem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/large_screen/compute/400x100@2%
+Benchmarking diff/large_screen/compute/400x100@2%: Warming up for 3.0000 s
+Benchmarking diff/large_screen/compute/400x100@2%: Collecting 20 samples in estimated 1.0137 s (13k iterations)
+Benchmarking diff/large_screen/compute/400x100@2%: Analyzing
+diff/large_screen/compute/400x100@2%
+                        time:   [69.345 µs 71.519 µs 73.727 µs]
+                        thrpt:  [542.54 Melem/s 559.29 Melem/s 576.83 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/large_screen/compute_dirty/400x100@2%
+Benchmarking diff/large_screen/compute_dirty/400x100@2%: Warming up for 3.0000 s
+Benchmarking diff/large_screen/compute_dirty/400x100@2%: Collecting 20 samples in estimated 1.0003 s (63k iterations)
+Benchmarking diff/large_screen/compute_dirty/400x100@2%: Analyzing
+diff/large_screen/compute_dirty/400x100@2%
+                        time:   [15.095 µs 15.382 µs 15.685 µs]
+                        thrpt:  [2.5501 Gelem/s 2.6004 Gelem/s 2.6499 Gelem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking diff/cells_per_second/compute/80x24@0%
+Benchmarking diff/cells_per_second/compute/80x24@0%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/80x24@0%: Collecting 20 samples in estimated 1.0001 s (300k iterations)
+Benchmarking diff/cells_per_second/compute/80x24@0%: Analyzing
+diff/cells_per_second/compute/80x24@0%
+                        time:   [3.2494 µs 3.3151 µs 3.4091 µs]
+                        thrpt:  [563.20 Melem/s 579.17 Melem/s 590.88 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/cells_per_second/compute_dirty/80x24@0%
+Benchmarking diff/cells_per_second/compute_dirty/80x24@0%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/80x24@0%: Collecting 20 samples in estimated 1.0000 s (14M iterations)
+Benchmarking diff/cells_per_second/compute_dirty/80x24@0%: Analyzing
+diff/cells_per_second/compute_dirty/80x24@0%
+                        time:   [67.582 ns 69.455 ns 71.808 ns]
+                        thrpt:  [26.738 Gelem/s 27.644 Gelem/s 28.410 Gelem/s]
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) low mild
+  3 (15.00%) high severe
+Benchmarking diff/cells_per_second/compute/80x24@5%
+Benchmarking diff/cells_per_second/compute/80x24@5%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/80x24@5%: Collecting 20 samples in estimated 1.0005 s (293k iterations)
+Benchmarking diff/cells_per_second/compute/80x24@5%: Analyzing
+diff/cells_per_second/compute/80x24@5%
+                        time:   [3.3569 µs 3.4485 µs 3.6014 µs]
+                        thrpt:  [533.12 Melem/s 556.77 Melem/s 571.95 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking diff/cells_per_second/compute_dirty/80x24@5%
+Benchmarking diff/cells_per_second/compute_dirty/80x24@5%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/80x24@5%: Collecting 20 samples in estimated 1.0001 s (717k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/80x24@5%: Analyzing
+diff/cells_per_second/compute_dirty/80x24@5%
+                        time:   [1.3903 µs 1.4084 µs 1.4280 µs]
+                        thrpt:  [1.3446 Gelem/s 1.3632 Gelem/s 1.3810 Gelem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking diff/cells_per_second/compute/80x24@50%
+Benchmarking diff/cells_per_second/compute/80x24@50%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/80x24@50%: Collecting 20 samples in estimated 1.0006 s (243k iterations)
+Benchmarking diff/cells_per_second/compute/80x24@50%: Analyzing
+diff/cells_per_second/compute/80x24@50%
+                        time:   [3.8716 µs 3.9165 µs 3.9821 µs]
+                        thrpt:  [482.15 Melem/s 490.24 Melem/s 495.92 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/cells_per_second/compute_dirty/80x24@50%
+Benchmarking diff/cells_per_second/compute_dirty/80x24@50%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/80x24@50%: Collecting 20 samples in estimated 1.0004 s (472k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/80x24@50%: Analyzing
+diff/cells_per_second/compute_dirty/80x24@50%
+                        time:   [2.2108 µs 2.2961 µs 2.3963 µs]
+                        thrpt:  [801.22 Melem/s 836.19 Melem/s 868.48 Melem/s]
+Benchmarking diff/cells_per_second/compute/80x24@100%
+Benchmarking diff/cells_per_second/compute/80x24@100%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/80x24@100%: Collecting 20 samples in estimated 1.0004 s (249k iterations)
+Benchmarking diff/cells_per_second/compute/80x24@100%: Analyzing
+diff/cells_per_second/compute/80x24@100%
+                        time:   [3.8479 µs 3.8904 µs 3.9593 µs]
+                        thrpt:  [484.94 Melem/s 493.52 Melem/s 498.97 Melem/s]
+Found 4 outliers among 20 measurements (20.00%)
+  4 (20.00%) high severe
+Benchmarking diff/cells_per_second/compute_dirty/80x24@100%
+Benchmarking diff/cells_per_second/compute_dirty/80x24@100%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/80x24@100%: Collecting 20 samples in estimated 1.0000 s (478k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/80x24@100%: Analyzing
+diff/cells_per_second/compute_dirty/80x24@100%
+                        time:   [2.0077 µs 2.0591 µs 2.1211 µs]
+                        thrpt:  [905.18 Melem/s 932.44 Melem/s 956.31 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking diff/cells_per_second/compute/200x60@0%
+Benchmarking diff/cells_per_second/compute/200x60@0%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/200x60@0%: Collecting 20 samples in estimated 1.0032 s (49k iterations)
+Benchmarking diff/cells_per_second/compute/200x60@0%: Analyzing
+diff/cells_per_second/compute/200x60@0%
+                        time:   [19.266 µs 19.301 µs 19.372 µs]
+                        thrpt:  [619.45 Melem/s 621.72 Melem/s 622.86 Melem/s]
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) high mild
+  3 (15.00%) high severe
+Benchmarking diff/cells_per_second/compute_dirty/200x60@0%
+Benchmarking diff/cells_per_second/compute_dirty/200x60@0%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/200x60@0%: Collecting 20 samples in estimated 1.0001 s (855k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/200x60@0%: Analyzing
+diff/cells_per_second/compute_dirty/200x60@0%
+                        time:   [1.1657 µs 1.1826 µs 1.2047 µs]
+                        thrpt:  [9.9613 Gelem/s 10.147 Gelem/s 10.294 Gelem/s]
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) high mild
+  3 (15.00%) high severe
+Benchmarking diff/cells_per_second/compute/200x60@5%
+Benchmarking diff/cells_per_second/compute/200x60@5%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/200x60@5%: Collecting 20 samples in estimated 1.0027 s (44k iterations)
+Benchmarking diff/cells_per_second/compute/200x60@5%: Analyzing
+diff/cells_per_second/compute/200x60@5%
+                        time:   [22.445 µs 23.903 µs 26.177 µs]
+                        thrpt:  [458.41 Melem/s 502.04 Melem/s 534.64 Melem/s]
+Benchmarking diff/cells_per_second/compute_dirty/200x60@5%
+Benchmarking diff/cells_per_second/compute_dirty/200x60@5%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/200x60@5%: Collecting 20 samples in estimated 1.0024 s (85k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/200x60@5%: Analyzing
+diff/cells_per_second/compute_dirty/200x60@5%
+                        time:   [12.035 µs 12.932 µs 14.013 µs]
+                        thrpt:  [856.32 Melem/s 927.92 Melem/s 997.12 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/cells_per_second/compute/200x60@50%
+Benchmarking diff/cells_per_second/compute/200x60@50%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/200x60@50%: Collecting 20 samples in estimated 1.0036 s (42k iterations)
+Benchmarking diff/cells_per_second/compute/200x60@50%: Analyzing
+diff/cells_per_second/compute/200x60@50%
+                        time:   [23.026 µs 24.711 µs 26.680 µs]
+                        thrpt:  [449.78 Melem/s 485.61 Melem/s 521.15 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking diff/cells_per_second/compute_dirty/200x60@50%
+Benchmarking diff/cells_per_second/compute_dirty/200x60@50%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/200x60@50%: Collecting 20 samples in estimated 1.0026 s (75k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/200x60@50%: Analyzing
+diff/cells_per_second/compute_dirty/200x60@50%
+                        time:   [13.968 µs 15.774 µs 18.035 µs]
+                        thrpt:  [665.36 Melem/s 760.74 Melem/s 859.10 Melem/s]
+Benchmarking diff/cells_per_second/compute/200x60@100%
+Benchmarking diff/cells_per_second/compute/200x60@100%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/200x60@100%: Collecting 20 samples in estimated 1.0017 s (37k iterations)
+Benchmarking diff/cells_per_second/compute/200x60@100%: Analyzing
+diff/cells_per_second/compute/200x60@100%
+                        time:   [26.015 µs 27.161 µs 28.107 µs]
+                        thrpt:  [426.94 Melem/s 441.82 Melem/s 461.27 Melem/s]
+Benchmarking diff/cells_per_second/compute_dirty/200x60@100%
+Benchmarking diff/cells_per_second/compute_dirty/200x60@100%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/200x60@100%: Collecting 20 samples in estimated 1.0038 s (29k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/200x60@100%: Analyzing
+diff/cells_per_second/compute_dirty/200x60@100%
+                        time:   [32.047 µs 32.605 µs 33.520 µs]
+                        thrpt:  [358.00 Melem/s 368.04 Melem/s 374.45 Melem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high severe
+Benchmarking diff/cells_per_second/compute/320x90@0%
+Benchmarking diff/cells_per_second/compute/320x90@0%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/320x90@0%: Collecting 20 samples in estimated 1.0012 s (14k iterations)
+Benchmarking diff/cells_per_second/compute/320x90@0%: Analyzing
+diff/cells_per_second/compute/320x90@0%
+                        time:   [61.772 µs 68.195 µs 75.885 µs]
+                        thrpt:  [379.52 Melem/s 422.32 Melem/s 466.23 Melem/s]
+Benchmarking diff/cells_per_second/compute_dirty/320x90@0%
+Benchmarking diff/cells_per_second/compute_dirty/320x90@0%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/320x90@0%: Collecting 20 samples in estimated 1.0001 s (381k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/320x90@0%: Analyzing
+diff/cells_per_second/compute_dirty/320x90@0%
+                        time:   [2.5523 µs 2.6132 µs 2.6904 µs]
+                        thrpt:  [10.705 Gelem/s 11.021 Gelem/s 11.284 Gelem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking diff/cells_per_second/compute/320x90@5%
+Benchmarking diff/cells_per_second/compute/320x90@5%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/320x90@5%: Collecting 20 samples in estimated 1.0084 s (17k iterations)
+Benchmarking diff/cells_per_second/compute/320x90@5%: Analyzing
+diff/cells_per_second/compute/320x90@5%
+                        time:   [53.047 µs 54.681 µs 56.561 µs]
+                        thrpt:  [509.18 Melem/s 526.69 Melem/s 542.92 Melem/s]
+Benchmarking diff/cells_per_second/compute_dirty/320x90@5%
+Benchmarking diff/cells_per_second/compute_dirty/320x90@5%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute_dirty/320x90@5%: Collecting 20 samples in estimated 1.0006 s (28k iterations)
+Benchmarking diff/cells_per_second/compute_dirty/320x90@5%: Analyzing
+diff/cells_per_second/compute_dirty/320x90@5%
+                        time:   [35.901 µs 37.330 µs 38.775 µs]
+                        thrpt:  [742.74 Melem/s 771.50 Melem/s 802.21 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking diff/cells_per_second/compute/320x90@50%
+Benchmarking diff/cells_per_second/compute/320x90@50%: Warming up for 3.0000 s
+Benchmarking diff/cells_per_second/compute/320x90@50%: Collecting 20 samples in estimated 1.0079 s (12k iterations)

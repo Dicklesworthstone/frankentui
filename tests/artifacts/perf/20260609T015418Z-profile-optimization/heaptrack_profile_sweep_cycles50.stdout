@@ -1,0 +1,5 @@
+heaptrack output will be written to "/data/projects/frankentui/tests/artifacts/perf/20260609T015418Z-profile-optimization/heaptrack_profile_sweep_cycles50.gz.zst"
+starting application, this might take some time...
+Heaptrack finished! Now run the following to investigate the data:
+
+  heaptrack --analyze "/data/projects/frankentui/tests/artifacts/perf/20260609T015418Z-profile-optimization/heaptrack_profile_sweep_cycles50.gz.zst"

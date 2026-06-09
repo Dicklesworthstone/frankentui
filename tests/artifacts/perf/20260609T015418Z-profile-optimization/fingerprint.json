@@ -1,0 +1,46 @@
+{
+  "run_id": "1780970071_762856",
+  "captured_at_utc": "2026-06-09T01:54:32Z",
+  "git_sha": "824e3d4db93ccbea8e4024a147339464b2bcb3bb",
+  "git_dirty": false,
+  "hardware": {
+    "cpu_model": "AMD Ryzen Threadripper PRO 5995WX 64-Cores",
+    "cpu_cores_per_socket": 64,
+    "cpu_sockets": 1,
+    "cpu_threads_total": 128,
+    "cpu_mhz_reported": "",
+    "ram_total": "523505748 kB",
+    "swap_total": "67108860 kB"
+  },
+  "storage": {
+    "device": "/dev/nvme1n1",
+    "model": "Samsung SSD 9100 PRO 4TB",
+    "mount_point": "/data/projects/frankentui",
+    "filesystem": "btrfs",
+    "mount_options": "rw,noatime,compress=zstd:1,ssd,discard=async,space_cache=v2,subvolid=5,subvol=/"
+  },
+  "os": {
+    "distribution": "Ubuntu 25.10",
+    "kernel": "6.17.0-23-generic"
+  },
+  "toolchain": {
+    "rustc": "rustc 1.98.0-nightly (54333ff07 2026-05-22)",
+    "go": "go version go1.24.4 linux/amd64",
+    "node": "",
+    "python": "Python 3.13.7",
+    "clang": "Ubuntu clang version 20.1.8 (0ubuntu4)",
+    "gcc": "gcc (Ubuntu 15.2.0-4ubuntu4) 15.2.0"
+  },
+  "build_profile": {
+    "name": "release-perf"
+  },
+  "tuning_applied": {
+    "governor": "powersave",
+    "no_turbo": "n/a",
+    "smt_active": "1",
+    "perf_event_paranoid": "4",
+    "kptr_restrict": "1",
+    "nmi_watchdog": "1",
+    "thp": "madvise"
+  }
+}

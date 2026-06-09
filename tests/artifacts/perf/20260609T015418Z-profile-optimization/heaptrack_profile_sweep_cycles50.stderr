@@ -1,0 +1,7 @@
+Profile sweep: 45 screens x 2 sizes x 50 cycles = 4500 renders (render_mode=pipeline, arena_mode=off)
+..........
+Done in 114.25s (39.4 renders/sec) | mode=pipeline | frame_us p50=440 p95=2948 p99=234773 max=13667520 | allocs/frame p50=259 p95=1083 p99=6191 max=24710 | arena_peak_bytes=0 | bytes/frame p50=7119 p95=23713 p99=56816 max=64168 | changed_cells/frame p50=2655 p95=4366 p99=4380 max=4800 | present_us p50=37 p95=91 p99=352 max=195884
+heaptrack stats:
+	allocations:          	2271422
+	leaked allocations:   	296
+	temporary allocations:	360184
