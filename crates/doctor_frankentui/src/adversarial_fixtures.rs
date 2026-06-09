@@ -2384,7 +2384,7 @@ fn hash_source(source: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(source.as_bytes());
-    format!("{:x}", hasher.finalize())
+    crate::util::hex_encode(&hasher.finalize())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

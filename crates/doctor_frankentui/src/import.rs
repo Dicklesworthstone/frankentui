@@ -1206,7 +1206,7 @@ fn forecast_determinism_hash(
     })?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::util::hex_encode(&hasher.finalize()))
 }
 
 fn usize_to_u8_clamped(value: usize) -> u8 {
@@ -1559,7 +1559,7 @@ fn watch_determinism_hash(
     })?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::util::hex_encode(&hasher.finalize()))
 }
 
 fn validate_snapshot_shape(snapshot_dir: &Path) -> std::result::Result<(), IntakeFailure> {
@@ -2229,7 +2229,7 @@ fn compute_directory_hash(snapshot_dir: &Path) -> std::result::Result<String, In
         hasher.update([0_u8]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::util::hex_encode(&hasher.finalize()))
 }
 
 fn collect_files(root: &Path) -> std::result::Result<Vec<PathBuf>, IntakeFailure> {
@@ -2387,7 +2387,7 @@ fn sha256_file(path: &Path) -> std::result::Result<String, IntakeFailure> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::util::hex_encode(&hasher.finalize()))
 }
 
 fn ensure_required_command(

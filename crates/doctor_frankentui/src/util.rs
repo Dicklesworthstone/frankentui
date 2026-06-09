@@ -31,6 +31,11 @@ pub fn command_exists(command: &str) -> bool {
     which::which(command).is_ok()
 }
 
+#[must_use]
+pub fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputModeOverride {
     Human,

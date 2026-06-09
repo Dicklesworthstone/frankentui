@@ -724,7 +724,10 @@ fn hash_serializable<T: Serialize>(value: &T) -> Result<String> {
     let bytes = serde_json::to_vec(value)?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    Ok(format!(
+        "sha256:{}",
+        crate::util::hex_encode(&hasher.finalize())
+    ))
 }
 
 fn expected_clause_ids(report: &SemanticDiffReport) -> BTreeSet<String> {

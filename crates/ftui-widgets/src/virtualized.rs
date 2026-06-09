@@ -1982,7 +1982,9 @@ mod tests {
         // O(n) scroll would make `large_time` ~100x `small_time`. A generous
         // constant-factor ceiling distinguishes O(1) from O(n) without flaking
         // on scheduling jitter, so we allow a wide multiplier here.
-        let ceiling = small_time.checked_mul(10).unwrap_or(std::time::Duration::MAX);
+        let ceiling = small_time
+            .checked_mul(10)
+            .unwrap_or(std::time::Duration::MAX);
         assert!(
             large_time < ceiling,
             "Scroll is not O(1) (grows with list size): 1K={:?}, 100K={:?}",

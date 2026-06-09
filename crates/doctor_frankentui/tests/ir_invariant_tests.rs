@@ -352,7 +352,7 @@ fn stable_ingestion_normalization_hash(ir: &MigrationIr) -> String {
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    doctor_frankentui::util::hex_encode(&hasher.finalize())
 }
 
 fn stable_json_hash(value: &serde_json::Value) -> String {
