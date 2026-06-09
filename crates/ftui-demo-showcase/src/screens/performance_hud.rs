@@ -22,6 +22,7 @@ use ftui_core::event::{
 };
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
+use ftui_render::cell::Cell as RenderCell;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
@@ -44,6 +45,41 @@ const BRAILLE_BLOCKS: [char; 9] = [
     ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
     '\u{2588}',
 ];
+
+fn apply_cell_style(cell: &mut RenderCell, style: Style) {
+    if let Some(fg) = style.fg {
+        cell.fg = fg;
+    }
+    if let Some(bg) = style.bg {
+        match bg.a() {
+            0 => {}
+            255 => cell.bg = bg,
+            _ => cell.bg = bg.over(cell.bg),
+        }
+    }
+    if let Some(attrs) = style.attrs {
+        let cell_flags: ftui_render::cell::StyleFlags = attrs.into();
+        cell.attrs = cell.attrs.merged_flags(cell_flags);
+    }
+}
+
+fn render_sparkline_cell(frame: &mut Frame, x: u16, y: u16, ch: char, style: Style) {
+    let degradation = frame.buffer.degradation;
+    let style = if degradation.apply_styling() {
+        style
+    } else {
+        Style::default()
+    };
+    let ch = if degradation.render_content() {
+        ch
+    } else {
+        ' '
+    };
+
+    let mut cell = RenderCell::from_char(ch);
+    apply_cell_style(&mut cell, style);
+    frame.buffer.set_fast(x, y, cell);
+}
 
 /// Stress harness ramp/hold/cooldown constants.
 const STRESS_MAX_PENALTY_MS: f64 = 200.0;
@@ -708,9 +744,7 @@ impl PerformanceHud {
                     Style::new()
                 };
 
-                let cell_area = Rect::new(x, y, 1, 1);
-                let s = String::from(ch);
-                Paragraph::new(&*s).style(style).render(cell_area, frame);
+                render_sparkline_cell(frame, x, y, ch, style);
             }
         }
 
