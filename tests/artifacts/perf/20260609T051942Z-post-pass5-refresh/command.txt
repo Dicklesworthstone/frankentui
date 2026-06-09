@@ -1,0 +1,1 @@
+RCH_REQUIRE_REMOTE=1 rch exec --json -- cargo run --profile release-perf -p ftui-demo-showcase --bin profile_sweep -- --cycles 200 --render-mode pipeline --arena-mode off --json 2>&1 | tee profile_sweep_cycles200_pipeline_arena_off.output
