@@ -824,7 +824,7 @@ impl MetaballsCanvasAdapter {
                                     (s - glow) / (threshold - glow)
                                 };
                                 let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
-                                painter.point_colored_at_index_in_bounds(
+                                painter.point_colored_sparse_at_index_in_bounds(
                                     row_offset + x_base + j,
                                     color,
                                 );
@@ -856,7 +856,7 @@ impl MetaballsCanvasAdapter {
                                 (sum - glow) / (threshold - glow)
                             };
                             let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
-                            painter.point_colored_at_index_in_bounds(row_offset + x, color);
+                            painter.point_colored_sparse_at_index_in_bounds(row_offset + x, color);
                         }
                     }
                 }
@@ -970,7 +970,7 @@ impl MetaballsCanvasAdapter {
                                     (s - glow) / (threshold - glow)
                                 };
                                 let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
-                                painter.point_colored_at_index_in_bounds(
+                                painter.point_colored_sparse_at_index_in_bounds(
                                     row_offset + x_base + j,
                                     color,
                                 );
@@ -1001,7 +1001,7 @@ impl MetaballsCanvasAdapter {
                                 (sum - glow) / (threshold - glow)
                             };
                             let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
-                            painter.point_colored_at_index_in_bounds(row_offset + x, color);
+                            painter.point_colored_sparse_at_index_in_bounds(row_offset + x, color);
                         }
                     }
                 }

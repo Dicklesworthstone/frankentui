@@ -300,6 +300,17 @@ impl Painter {
         self.colors[idx] = Some(color);
     }
 
+    /// Set a single pixel with color by precomputed in-bounds index in sparse mode.
+    ///
+    /// Dense sparse renderers already know full-coverage mode is inactive. This keeps
+    /// their inner loops branch-free while preserving the same generation/color state.
+    #[inline]
+    pub fn point_colored_sparse_at_index_in_bounds(&mut self, idx: usize, color: PackedRgba) {
+        debug_assert!(idx < self.pixels.len());
+        self.pixels[idx] = self.generation;
+        self.colors[idx] = Some(color);
+    }
+
     /// Set color by precomputed in-bounds index for full-coverage frames.
     ///
     /// Callers must ensure full coverage is active for the current generation.
@@ -1411,6 +1422,21 @@ mod tests {
         assert!(p.get(1, 3));
         let idx = p.index(1, 3).expect("index should exist");
         assert_eq!(p.colors[idx], Some(blue));
+    }
+
+    #[test]
+    fn sparse_index_colored_point_matches_checked_index_path() {
+        let mut checked = Painter::new(2, 4, Mode::Braille);
+        let mut sparse = Painter::new(2, 4, Mode::Braille);
+        let color = PackedRgba::rgb(20, 180, 220);
+        let idx = checked.index(1, 2).expect("index should exist");
+
+        checked.point_colored_at_index_in_bounds(idx, color);
+        sparse.point_colored_sparse_at_index_in_bounds(idx, color);
+
+        assert_eq!(checked.pixels, sparse.pixels);
+        assert_eq!(checked.colors, sparse.colors);
+        assert_eq!(checked.braille_cell(0, 0), sparse.braille_cell(0, 0));
     }
 
     #[test]

@@ -783,7 +783,8 @@ impl QuakeE1M1State {
                         let r = (base.r() as f32 * brightness) as u8;
                         let g = (base.g() as f32 * brightness) as u8;
                         let b = (base.b() as f32 * brightness) as u8;
-                        painter.point_colored_at_index_in_bounds(idx, PackedRgba::rgb(r, g, b));
+                        painter
+                            .point_colored_sparse_at_index_in_bounds(idx, PackedRgba::rgb(r, g, b));
                     }
                 }
 
