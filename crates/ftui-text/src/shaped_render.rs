@@ -41,7 +41,7 @@
 //! assert_eq!(layout.placements()[0].render_hint, RenderHint::DirectChar('H'));
 //! ```
 
-use crate::cluster_map::{ClusterEntry, ClusterMap};
+use crate::cluster_map::ClusterMap;
 use crate::justification::{GlueSpec, SUBCELL_SCALE};
 use crate::shaping::ShapedRun;
 
@@ -176,28 +176,28 @@ impl ShapedLineLayout {
         }
 
         let cluster_map = ClusterMap::from_shaped_run(text, run);
+        let cluster_metrics = cluster_glyph_metrics(run);
         let mut placements = Vec::with_capacity(cluster_map.total_cells());
         let mut subcell_accumulator: i32 = 0;
 
         // Build placement for each cluster in the map.
-        for entry in cluster_map.entries() {
+        for (entry, metrics) in cluster_map.entries().iter().zip(cluster_metrics.iter()) {
+            debug_assert_eq!(entry.byte_start, metrics.byte_start);
             let cluster_text = &text[entry.byte_start as usize..entry.byte_end as usize];
             let nominal_width = entry.cell_width as i32;
 
             // Compute spacing delta from shaped glyph advances.
-            let shaped_advance = sum_cluster_advance(run, entry);
+            let shaped_advance = metrics.x_advance_subcell;
             let delta_subcell = shaped_advance - (nominal_width * SUBCELL_SCALE as i32);
             subcell_accumulator += delta_subcell;
+            let y_offset = metrics.first_y_offset_subcell;
 
             let spacing = if delta_subcell != 0 {
-                // Also check for y-offsets from the first glyph in this cluster.
-                let y_offset = first_cluster_y_offset(run, entry);
                 SpacingDelta {
                     x_subcell: delta_subcell,
                     y_subcell: y_offset,
                 }
             } else {
-                let y_offset = first_cluster_y_offset(run, entry);
                 if y_offset != 0 {
                     SpacingDelta {
                         x_subcell: 0,
@@ -401,7 +401,12 @@ impl ShapedLineLayout {
 
     /// Get the placement for a cell column.
     pub fn placement_at_cell(&self, cell_x: usize) -> Option<&CellPlacement> {
-        self.placements.iter().find(|p| p.cell_x as usize == cell_x)
+        let idx = self
+            .placements
+            .partition_point(|p| (p.cell_x as usize) < cell_x);
+        self.placements
+            .get(idx)
+            .filter(|p| p.cell_x as usize == cell_x)
     }
 
     /// Get all placements for a grapheme index.
@@ -428,31 +433,36 @@ impl ShapedLineLayout {
 // Helper functions
 // ---------------------------------------------------------------------------
 
-/// Sum the x_advance values for all glyphs in a cluster, in sub-cell units.
-fn sum_cluster_advance(run: &ShapedRun, entry: &ClusterEntry) -> i32 {
-    let byte_start = entry.byte_start;
-    let mut total = 0i32;
-
-    for glyph in &run.glyphs {
-        if glyph.cluster == byte_start {
-            total += glyph.x_advance * SUBCELL_SCALE as i32;
-        }
-    }
-
-    total
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClusterGlyphMetrics {
+    byte_start: u32,
+    x_advance_subcell: i32,
+    first_y_offset_subcell: i32,
 }
 
-/// Get the y_offset of the first glyph in a cluster, in sub-cell units.
-fn first_cluster_y_offset(run: &ShapedRun, entry: &ClusterEntry) -> i32 {
-    let byte_start = entry.byte_start;
+/// Group shaped glyph metrics once in the same order as `ClusterMap::from_shaped_run`.
+fn cluster_glyph_metrics(run: &ShapedRun) -> Vec<ClusterGlyphMetrics> {
+    let mut metrics = Vec::with_capacity(run.glyphs.len());
+    let mut i = 0;
 
-    for glyph in &run.glyphs {
-        if glyph.cluster == byte_start {
-            return glyph.y_offset * SUBCELL_SCALE as i32;
+    while i < run.glyphs.len() {
+        let cluster = run.glyphs[i].cluster;
+        let first_y_offset_subcell = run.glyphs[i].y_offset * SUBCELL_SCALE as i32;
+        let mut x_advance_subcell = 0i32;
+
+        while i < run.glyphs.len() && run.glyphs[i].cluster == cluster {
+            x_advance_subcell += run.glyphs[i].x_advance * SUBCELL_SCALE as i32;
+            i += 1;
         }
+
+        metrics.push(ClusterGlyphMetrics {
+            byte_start: cluster,
+            x_advance_subcell,
+            first_y_offset_subcell,
+        });
     }
 
-    0
+    metrics
 }
 
 /// Determine the render hint for a grapheme cluster.
@@ -483,7 +493,7 @@ fn render_hint_for_cluster(cluster_text: &str, cell_width: u8) -> RenderHint {
 mod tests {
     use super::*;
     use crate::script_segmentation::{RunDirection, Script};
-    use crate::shaping::{FontFeatures, NoopShaper, TextShaper};
+    use crate::shaping::{FontFeatures, NoopShaper, ShapedGlyph, TextShaper};
 
     // -----------------------------------------------------------------------
     // Construction tests
@@ -611,6 +621,60 @@ mod tests {
         assert!(layout.is_empty());
     }
 
+    #[test]
+    fn from_run_groups_multi_glyph_cluster_once() {
+        let text = "office";
+        let run = ShapedRun {
+            glyphs: vec![
+                ShapedGlyph {
+                    glyph_id: 'o' as u32,
+                    cluster: 0,
+                    x_advance: 1,
+                    y_advance: 0,
+                    x_offset: 0,
+                    y_offset: 0,
+                },
+                ShapedGlyph {
+                    glyph_id: 42,
+                    cluster: 1,
+                    x_advance: 2,
+                    y_advance: 0,
+                    x_offset: 0,
+                    y_offset: 3,
+                },
+                ShapedGlyph {
+                    glyph_id: 'c' as u32,
+                    cluster: 4,
+                    x_advance: 1,
+                    y_advance: 0,
+                    x_offset: 0,
+                    y_offset: 0,
+                },
+                ShapedGlyph {
+                    glyph_id: 'e' as u32,
+                    cluster: 5,
+                    x_advance: 1,
+                    y_advance: 0,
+                    x_offset: 0,
+                    y_offset: 0,
+                },
+            ],
+            total_advance: 5,
+        };
+
+        let layout = ShapedLineLayout::from_run(text, &run);
+        let ligature = layout
+            .placements()
+            .iter()
+            .find(|p| p.byte_start == 1)
+            .unwrap();
+
+        assert_eq!(layout.total_cells(), 5);
+        assert_eq!(ligature.byte_end, 4);
+        assert_eq!(ligature.spacing.x_subcell, 0);
+        assert_eq!(ligature.spacing.y_subcell, 3 * SUBCELL_SCALE as i32);
+    }
+
     // -----------------------------------------------------------------------
     // Interaction helpers
     // -----------------------------------------------------------------------
@@ -623,6 +687,36 @@ mod tests {
         assert!(matches!(p.render_hint, RenderHint::DirectChar('B')));
 
         assert!(layout.placement_at_cell(5).is_none());
+    }
+
+    #[test]
+    fn placement_at_cell_returns_first_duplicate_cell() {
+        let layout = ShapedLineLayout {
+            placements: vec![
+                CellPlacement {
+                    cell_x: 0,
+                    render_hint: RenderHint::DirectChar('a'),
+                    spacing: SpacingDelta::ZERO,
+                    byte_start: 0,
+                    byte_end: 1,
+                    grapheme_index: 0,
+                },
+                CellPlacement {
+                    cell_x: 0,
+                    render_hint: RenderHint::DirectChar('b'),
+                    spacing: SpacingDelta::ZERO,
+                    byte_start: 1,
+                    byte_end: 2,
+                    grapheme_index: 1,
+                },
+            ],
+            total_cells: 0,
+            subcell_remainder: 0,
+            cluster_map: ClusterMap::from_text(""),
+        };
+
+        let placement = layout.placement_at_cell(0).unwrap();
+        assert_eq!(placement.byte_start, 0);
     }
 
     #[test]
