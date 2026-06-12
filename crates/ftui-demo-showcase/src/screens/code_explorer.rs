@@ -18,7 +18,7 @@ use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::{Style, StyleFlags};
 use ftui_text::search::search_ascii_case_insensitive;
-use ftui_text::{display_width, grapheme_count, grapheme_width, graphemes};
+use ftui_text::{grapheme_count, grapheme_width, graphemes};
 use ftui_widgets::StatefulWidget;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
@@ -1331,8 +1331,7 @@ impl CodeExplorer {
                 let before = &line[last..start];
                 if !before.is_empty() && cursor_x < max_x {
                     let remaining = max_x.saturating_sub(cursor_x);
-                    let clipped = truncate_to_width(before, remaining);
-                    let width = display_width(clipped.as_str()) as u16;
+                    let (clipped, width) = truncate_to_width_with_width(before, remaining);
                     if width > 0 {
                         let area = Rect::new(cursor_x, line_y, width.min(remaining), 1);
                         Paragraph::new(clipped)
@@ -1348,8 +1347,7 @@ impl CodeExplorer {
 
                 let matched = &line[start..end];
                 let remaining = max_x.saturating_sub(cursor_x);
-                let clipped = truncate_to_width(matched, remaining);
-                let width = display_width(clipped.as_str()) as u16;
+                let (clipped, width) = truncate_to_width_with_width(matched, remaining);
                 if width == 0 {
                     break;
                 }
@@ -1393,8 +1391,7 @@ impl CodeExplorer {
             if cursor_x < max_x && last < line.len() {
                 let tail = &line[last..];
                 let remaining = max_x.saturating_sub(cursor_x);
-                let clipped = truncate_to_width(tail, remaining);
-                let width = display_width(clipped.as_str()) as u16;
+                let (clipped, width) = truncate_to_width_with_width(tail, remaining);
                 if width > 0 {
                     Paragraph::new(clipped)
                         .style(Style::new().fg(theme::fg::SECONDARY))
@@ -2265,27 +2262,29 @@ impl CodeExplorer {
 }
 
 fn truncate_to_width(text: &str, max_width: u16) -> String {
+    truncate_to_width_with_width(text, max_width).0
+}
+
+fn truncate_to_width_with_width(text: &str, max_width: u16) -> (String, u16) {
     if max_width == 0 {
-        return String::new();
+        return (String::new(), 0);
     }
     let mut out = String::new();
     let max = max_width as usize;
-    graphemes(text)
-        .scan(0usize, |width, grapheme| {
-            let w = grapheme_width(grapheme);
-            if *width + w > max {
-                return None;
-            }
-            *width += w;
-            Some(grapheme)
-        })
-        .for_each(|grapheme| out.push_str(grapheme));
-    out
+    let mut width = 0usize;
+    for grapheme in graphemes(text) {
+        let next_width = width + grapheme_width(grapheme);
+        if next_width > max {
+            break;
+        }
+        width = next_width;
+        out.push_str(grapheme);
+    }
+    (out, width as u16)
 }
 
 fn pad_to_width(text: &str, width: u16) -> String {
-    let mut out = truncate_to_width(text, width);
-    let current = display_width(out.as_str()) as u16;
+    let (mut out, current) = truncate_to_width_with_width(text, width);
     if current < width {
         out.push_str(&" ".repeat((width - current) as usize));
     }
@@ -2407,6 +2406,28 @@ mod tests {
         assert_eq!(truncate_to_grapheme_count(text, 1), "a");
         assert_eq!(truncate_to_grapheme_count(text, 2), "a😀");
         assert_eq!(truncate_to_grapheme_count(text, 3), "a😀b");
+    }
+
+    #[test]
+    fn truncate_width_with_width_matches_rendered_width() {
+        for (text, width) in [
+            ("sqlite3_prepare_v2", 7),
+            ("a😀b", 3),
+            ("e\u{301}cole", 4),
+            ("wide→arrow", 6),
+            ("", 5),
+            ("text", 0),
+        ] {
+            let (clipped, measured) = truncate_to_width_with_width(text, width);
+            assert_eq!(clipped, truncate_to_width(text, width));
+            assert_eq!(measured as usize, ftui_text::display_width(&clipped));
+        }
+    }
+
+    #[test]
+    fn pad_to_width_uses_rendered_width_for_wide_graphemes() {
+        assert_eq!(pad_to_width("a😀b", 5), "a😀b ");
+        assert_eq!(ftui_text::display_width(&pad_to_width("a😀b", 5)), 5);
     }
 
     #[test]
