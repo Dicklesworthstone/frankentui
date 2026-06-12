@@ -608,6 +608,24 @@ impl<W: Write> Presenter<W> {
             }
             let row_runs = &self.runs_buf[row_start..i];
 
+            if row_runs.len() == 1 {
+                let run = row_runs[0];
+
+                #[cfg(feature = "tracing")]
+                tracing::trace!(
+                    row = row_y,
+                    spans = 1,
+                    cost =
+                        cost_model::cheapest_move_cost(self.cursor_x, self.cursor_y, run.x0, row_y)
+                            .saturating_add(run.len()),
+                    "row plan single-run fast path"
+                );
+
+                let row = buffer.row_cells(row_y);
+                self.emit_row_span(row, run.y, run.x0, run.x1, pool, links)?;
+                continue;
+            }
+
             let plan = cost_model::plan_row_reuse(
                 row_runs,
                 self.cursor_x,
@@ -625,54 +643,69 @@ impl<W: Write> Presenter<W> {
 
             let row = buffer.row_cells(row_y);
             for span in plan.spans() {
-                self.move_cursor_optimal(span.x0, span.y)?;
-                // Hot path: avoid recomputing `y * width + x` for every cell.
-                let start = span.x0 as usize;
-                let end = span.x1 as usize;
-                debug_assert!(start <= end);
-                debug_assert!(end < row.len());
-                let mut idx = start;
-                while idx <= end {
-                    let cell = &row[idx];
-                    self.emit_cell(idx as u16, cell, pool, links)?;
-
-                    // Repair invalid wide-char tails.
-                    //
-                    // Direct wide chars are always safe to repair because they can
-                    // only span a small, fixed number of cells. Grapheme-pool refs
-                    // may encode much wider payloads (up to 15 cells), so blindly
-                    // repairing all missing tails can erase unrelated content later in
-                    // the row. We only extend the repair to width-2 grapheme refs,
-                    // where clearing a single orphan tail cell is still bounded.
-                    let mut advance = 1usize;
-                    let width = cell.content.width();
-                    let should_repair_invalid_tail = cell.content.as_char().is_some()
-                        || (cell.content.is_grapheme() && width == 2);
-                    if width > 1 && should_repair_invalid_tail {
-                        for off in 1..width {
-                            let tx = idx + off;
-                            if tx >= row.len() {
-                                break;
-                            }
-                            if row[tx].is_continuation() {
-                                if tx <= end {
-                                    advance = advance.max(off + 1);
-                                }
-                                continue;
-                            }
-                            // Orphan detected: repair with a space.
-                            self.move_cursor_optimal(tx as u16, span.y)?;
-                            self.emit_orphan_continuation_space(tx as u16, links)?;
-                            if tx <= end {
-                                advance = advance.max(off + 1);
-                            }
-                        }
-                    }
-
-                    idx = idx.saturating_add(advance);
-                }
+                self.emit_row_span(row, span.y, span.x0, span.x1, pool, links)?;
             }
         }
+        Ok(())
+    }
+
+    #[inline]
+    fn emit_row_span(
+        &mut self,
+        row: &[Cell],
+        y: u16,
+        x0: u16,
+        x1: u16,
+        pool: Option<&GraphemePool>,
+        links: Option<&LinkRegistry>,
+    ) -> io::Result<()> {
+        self.move_cursor_optimal(x0, y)?;
+        // Hot path: avoid recomputing `y * width + x` for every cell.
+        let start = x0 as usize;
+        let end = x1 as usize;
+        debug_assert!(start <= end);
+        debug_assert!(end < row.len());
+        let mut idx = start;
+        while idx <= end {
+            let cell = &row[idx];
+            self.emit_cell(idx as u16, cell, pool, links)?;
+
+            // Repair invalid wide-char tails.
+            //
+            // Direct wide chars are always safe to repair because they can
+            // only span a small, fixed number of cells. Grapheme-pool refs
+            // may encode much wider payloads (up to 15 cells), so blindly
+            // repairing all missing tails can erase unrelated content later in
+            // the row. We only extend the repair to width-2 grapheme refs,
+            // where clearing a single orphan tail cell is still bounded.
+            let mut advance = 1usize;
+            let width = cell.content.width();
+            let should_repair_invalid_tail =
+                cell.content.as_char().is_some() || (cell.content.is_grapheme() && width == 2);
+            if width > 1 && should_repair_invalid_tail {
+                for off in 1..width {
+                    let tx = idx + off;
+                    if tx >= row.len() {
+                        break;
+                    }
+                    if row[tx].is_continuation() {
+                        if tx <= end {
+                            advance = advance.max(off + 1);
+                        }
+                        continue;
+                    }
+                    // Orphan detected: repair with a space.
+                    self.move_cursor_optimal(tx as u16, y)?;
+                    self.emit_orphan_continuation_space(tx as u16, links)?;
+                    if tx <= end {
+                        advance = advance.max(off + 1);
+                    }
+                }
+            }
+
+            idx = idx.saturating_add(advance);
+        }
+
         Ok(())
     }
 
@@ -1372,6 +1405,31 @@ mod tests {
             .write_all(b"\x1b[0m")
             .expect("reset should succeed");
 
+        presenter.into_inner().expect("presenter output")
+    }
+
+    fn emit_spans_with_links_for_output(
+        buffer: &Buffer,
+        spans: &[cost_model::RowSpan],
+        links: &LinkRegistry,
+    ) -> Vec<u8> {
+        let mut presenter = test_presenter_with_hyperlinks();
+
+        for span in spans {
+            presenter
+                .move_cursor_optimal(span.x0, span.y)
+                .expect("cursor move should succeed");
+            for x in span.x0..=span.x1 {
+                let cell = buffer.get_unchecked(x, span.y);
+                presenter
+                    .emit_cell(x, cell, None, Some(links))
+                    .expect("emit_cell should succeed");
+            }
+        }
+
+        presenter
+            .finish_frame()
+            .expect("frame cleanup should succeed");
         presenter.into_inner().expect("presenter output")
     }
 
@@ -3811,6 +3869,59 @@ mod tests {
         assert_eq!(
             plan2.total_cost(),
             cost_model::cheapest_move_cost(Some(2), Some(7), 18, 7) + runs[0].len()
+        );
+    }
+
+    #[test]
+    fn emit_diff_runs_single_run_matches_planned_span_output() {
+        let mut links = LinkRegistry::new();
+        let link_id = links.register("https://example.com/single-run");
+        let mut buffer = Buffer::new(16, 3);
+
+        for (offset, ch) in ['A', 'B', 'C', 'D'].into_iter().enumerate() {
+            let x = 4 + offset as u16;
+            let cell = Cell::from_char(ch)
+                .with_fg(PackedRgba::rgb(10 + offset as u8, 20, 30))
+                .with_bg(PackedRgba::rgb(1, 2 + offset as u8, 3))
+                .with_attrs(CellAttrs::new(StyleFlags::BOLD, link_id));
+            buffer.set_raw(x, 1, cell);
+        }
+
+        let blank = Buffer::new(16, 3);
+        let diff = BufferDiff::compute(&blank, &buffer);
+        let runs = diff.runs();
+        assert_eq!(runs.len(), 1, "fixture should produce one contiguous run");
+        let run = runs[0];
+
+        let mut fast_path = test_presenter_with_hyperlinks();
+        fast_path.prepare_runs(&diff);
+        fast_path
+            .emit_diff_runs(&buffer, None, Some(&links))
+            .expect("single-run fast path should emit");
+        fast_path
+            .finish_frame()
+            .expect("single-run fast path cleanup should succeed");
+        let fast_output = fast_path.into_inner().expect("fast path output");
+
+        let planned_output = emit_spans_with_links_for_output(
+            &buffer,
+            &[cost_model::RowSpan {
+                y: run.y,
+                x0: run.x0,
+                x1: run.x1,
+            }],
+            &links,
+        );
+
+        assert_eq!(
+            fast_output, planned_output,
+            "single-run fast path must emit the same bytes as the planned one-span path"
+        );
+        assert!(
+            fast_output
+                .windows(b"https://example.com/single-run".len())
+                .any(|window| window == b"https://example.com/single-run"),
+            "linked single-run cells should still emit the hyperlink payload"
         );
     }
 
