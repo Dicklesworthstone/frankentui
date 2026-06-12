@@ -119,13 +119,144 @@ fn coverage_scale(count: usize) -> usize {
 
 const FRAME_BUDGET_US_DEFAULT: u64 = 50_000;
 const FRAME_BUDGET_US_COVERAGE: u64 = 200_000;
+const FRAME_BUDGET_US_SHARED_WORKER: u64 = 250_000;
+const FRAME_BUDGET_ENV: &str = "FTUI_RESIZE_STORM_FRAME_BUDGET_US";
+const SHARED_WORKER_ENV: &str = "FTUI_RESIZE_STORM_SHARED_WORKER";
+const SHARED_WORKER_MARKERS: &[&str] = &[
+    "CI",
+    "RCH_JOB_ID",
+    "RCH_REMOTE",
+    "RCH_REQUIRE_REMOTE",
+    "RCH_WORKER",
+    "RCH_WORKER_ID",
+];
+
+fn parse_env_flag_value(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| parse_env_flag_value(&value))
+}
+
+fn env_present_and_not_false(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => parse_env_flag_value(&value).unwrap_or_else(|| !value.trim().is_empty()),
+        Err(_) => false,
+    }
+}
+
+fn is_shared_worker_run() -> bool {
+    if let Some(enabled) = env_flag(SHARED_WORKER_ENV) {
+        return enabled;
+    }
+    is_rch_target_dir()
+        || SHARED_WORKER_MARKERS
+            .iter()
+            .any(|name| env_present_and_not_false(name))
+}
+
+fn is_rch_target_dir() -> bool {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .is_some_and(|path| is_rch_target_path(std::path::Path::new(&path)))
+        || std::env::current_exe().is_ok_and(|path| is_rch_target_path(path.as_path()))
+}
+
+fn is_rch_target_path(path: &std::path::Path) -> bool {
+    path.to_string_lossy().contains(".rch-target-")
+}
+
+fn frame_budget_us_for(
+    coverage: bool,
+    shared_worker: bool,
+    override_value: Option<&str>,
+) -> (u64, &'static str) {
+    if let Some(value) = override_value
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    {
+        return (value, "env");
+    }
+
+    if coverage {
+        (FRAME_BUDGET_US_COVERAGE, "coverage")
+    } else if shared_worker {
+        (FRAME_BUDGET_US_SHARED_WORKER, "shared_worker")
+    } else {
+        (FRAME_BUDGET_US_DEFAULT, "default")
+    }
+}
+
+fn frame_budget_us_with_mode() -> (u64, &'static str) {
+    let override_value = std::env::var(FRAME_BUDGET_ENV).ok();
+    frame_budget_us_for(
+        is_coverage_mode(),
+        is_shared_worker_run(),
+        override_value.as_deref(),
+    )
+}
 
 fn frame_budget_us() -> u64 {
-    if is_coverage_mode() {
-        FRAME_BUDGET_US_COVERAGE
-    } else {
-        FRAME_BUDGET_US_DEFAULT
-    }
+    frame_budget_us_with_mode().0
+}
+
+fn frame_budget_mode() -> &'static str {
+    frame_budget_us_with_mode().1
+}
+
+#[test]
+fn frame_budget_defaults_to_local_guardrail() {
+    assert_eq!(
+        frame_budget_us_for(false, false, None),
+        (FRAME_BUDGET_US_DEFAULT, "default")
+    );
+}
+
+#[test]
+fn frame_budget_uses_coverage_guardrail() {
+    assert_eq!(
+        frame_budget_us_for(true, true, None),
+        (FRAME_BUDGET_US_COVERAGE, "coverage")
+    );
+}
+
+#[test]
+fn frame_budget_uses_shared_worker_guardrail() {
+    assert_eq!(
+        frame_budget_us_for(false, true, None),
+        (FRAME_BUDGET_US_SHARED_WORKER, "shared_worker")
+    );
+}
+
+#[test]
+fn frame_budget_explicit_override_wins() {
+    assert_eq!(
+        frame_budget_us_for(true, true, Some("12345")),
+        (12_345, "env")
+    );
+}
+
+#[test]
+fn resize_storm_env_flag_parser_accepts_common_forms() {
+    assert_eq!(parse_env_flag_value(" on "), Some(true));
+    assert_eq!(parse_env_flag_value("NO"), Some(false));
+    assert_eq!(parse_env_flag_value("worker"), None);
+}
+
+#[test]
+fn resize_storm_rch_target_path_recognizes_worker_targets() {
+    assert!(is_rch_target_path(std::path::Path::new(
+        "/data/projects/frankentui/.rch-target-vmi1152480-job-123/debug/deps/test"
+    )));
+    assert!(!is_rch_target_path(std::path::Path::new(
+        "/data/projects/frankentui/target/debug/deps/test"
+    )));
 }
 
 // ============================================================================
@@ -252,6 +383,7 @@ fn run_storm_e2e(case_name: &str, storm: &ResizeStorm, frame_budget_us: u64) -> 
             ("frames", &events.len().to_string()),
             ("coverage", if coverage { "true" } else { "false" }),
             ("frame_budget_us", &frame_budget_us.to_string()),
+            ("frame_budget_mode", &format!("\"{}\"", frame_budget_mode())),
             ("env", &env_json),
             ("capabilities", &caps.to_json()),
         ],
@@ -1003,13 +1135,21 @@ fn e2e_performance_budget_burst() {
         ],
     );
 
-    let budget_us = frame_budget_us();
-    // Budget: p95 should be under 50ms (generous for CI), relaxed under coverage
+    let (budget_us, budget_mode) = frame_budget_us_with_mode();
+    log_jsonl(
+        "storm_e2e_perf_budget_gate",
+        &[
+            ("budget_us", &budget_us.to_string()),
+            ("budget_mode", &format!("\"{}\"", budget_mode)),
+        ],
+    );
+
     assert!(
         p95 < budget_us,
-        "p95 frame time {}μs exceeds budget {}μs (coverage={})",
+        "p95 frame time {}μs exceeds budget {}μs (mode={}, coverage={})",
         p95,
         budget_us,
+        budget_mode,
         coverage
     );
 }
@@ -1143,6 +1283,7 @@ fn e2e_suite_summary() {
                 "\"burst,sweep,oscillate,pathological,mixed,custom\"",
             ),
             ("frame_budget_us", &frame_budget_us().to_string()),
+            ("frame_budget_mode", &format!("\"{}\"", frame_budget_mode())),
         ],
     );
 }

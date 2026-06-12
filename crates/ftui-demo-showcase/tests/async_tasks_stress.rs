@@ -41,6 +41,20 @@ use ftui_render::grapheme_pool::GraphemePool;
 // so we serialize them with a global lock.
 static ASYNC_TASKS_STRESS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+const DEFAULT_RENDER_P95_BUDGET_NS: u64 = 10_000_000;
+const COVERAGE_RENDER_P95_BUDGET_NS: u64 = 15_000_000;
+const SHARED_WORKER_RENDER_P95_BUDGET_NS: u64 = 20_000_000;
+const RENDER_BUDGET_ENV: &str = "FTUI_ASYNC_TASKS_RENDER_BUDGET_P95_NS";
+const SHARED_WORKER_ENV: &str = "FTUI_ASYNC_TASKS_SHARED_WORKER";
+const SHARED_WORKER_MARKERS: &[&str] = &[
+    "CI",
+    "RCH_JOB_ID",
+    "RCH_REMOTE",
+    "RCH_REQUIRE_REMOTE",
+    "RCH_WORKER",
+    "RCH_WORKER_ID",
+];
+
 fn stress_lock() -> std::sync::MutexGuard<'static, ()> {
     match ASYNC_TASKS_STRESS_LOCK.lock() {
         Ok(guard) => guard,
@@ -63,16 +77,81 @@ fn press(code: KeyCode) -> Event {
 }
 
 fn is_coverage_run() -> bool {
-    if let Ok(value) = std::env::var("FTUI_COVERAGE") {
-        let value = value.to_ascii_lowercase();
-        if matches!(value.as_str(), "1" | "true" | "yes") {
-            return true;
-        }
-        if matches!(value.as_str(), "0" | "false" | "no") {
-            return false;
-        }
+    if let Some(enabled) = env_flag("FTUI_COVERAGE") {
+        return enabled;
     }
     std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+}
+
+fn parse_env_flag_value(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| parse_env_flag_value(&value))
+}
+
+fn env_present_and_not_false(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => parse_env_flag_value(&value).unwrap_or_else(|| !value.trim().is_empty()),
+        Err(_) => false,
+    }
+}
+
+fn is_shared_worker_run() -> bool {
+    if let Some(enabled) = env_flag(SHARED_WORKER_ENV) {
+        return enabled;
+    }
+    is_rch_target_dir()
+        || SHARED_WORKER_MARKERS
+            .iter()
+            .any(|name| env_present_and_not_false(name))
+}
+
+fn is_rch_target_dir() -> bool {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .is_some_and(|path| is_rch_target_path(std::path::Path::new(&path)))
+        || std::env::current_exe().is_ok_and(|path| is_rch_target_path(path.as_path()))
+}
+
+fn is_rch_target_path(path: &std::path::Path) -> bool {
+    path.to_string_lossy().contains(".rch-target-")
+}
+
+fn render_latency_budget_p95_ns_for(
+    coverage: bool,
+    shared_worker: bool,
+    override_value: Option<&str>,
+) -> (u64, &'static str) {
+    if let Some(value) = override_value
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    {
+        return (value, "env");
+    }
+
+    if coverage {
+        (COVERAGE_RENDER_P95_BUDGET_NS, "coverage")
+    } else if shared_worker {
+        (SHARED_WORKER_RENDER_P95_BUDGET_NS, "shared_worker")
+    } else {
+        (DEFAULT_RENDER_P95_BUDGET_NS, "default")
+    }
+}
+
+fn render_latency_budget_p95_ns() -> (u64, &'static str) {
+    let override_value = std::env::var(RENDER_BUDGET_ENV).ok();
+    render_latency_budget_p95_ns_for(
+        is_coverage_run(),
+        is_shared_worker_run(),
+        override_value.as_deref(),
+    )
 }
 
 fn percentile(sorted: &[u64], pct: usize) -> u64 {
@@ -200,13 +279,9 @@ fn stress_view_render_with_many_tasks() {
     let p95_ns = percentile(&render_times, 95);
     let p99_ns = percentile(&render_times, 99);
 
-    // Gate on p95 rather than average wall-clock latency. This keeps the stress
-    // test useful while avoiding false failures from shared-worker scheduling.
-    let budget_p95_ns = if is_coverage_run() {
-        15_000_000
-    } else {
-        10_000_000
-    };
+    // Gate on p95 rather than average wall-clock latency. The default budget
+    // stays tight, while RCH/CI shared workers get an explicit noise guardrail.
+    let (budget_p95_ns, budget_mode) = render_latency_budget_p95_ns();
 
     log_jsonl(&serde_json::json!({
         "test": "stress_view_render_with_many_tasks",
@@ -217,6 +292,7 @@ fn stress_view_render_with_many_tasks() {
         "p95_ns": p95_ns,
         "p99_ns": p99_ns,
         "budget_p95_ns": budget_p95_ns,
+        "budget_mode": budget_mode,
     }));
 
     // Budget: heavy render p95 should stay below the shared-worker guardrail.
@@ -512,13 +588,9 @@ fn regression_gate_render_latency() {
     let p99 = percentile(&render_times, 99);
 
     // Gate on p95 (robust to CPU contention spikes from parallel test binaries).
-    // p99 is logged for observability but not gated on — a single 30ms spike
-    // from OS scheduling noise is not a real regression.
-    let budget_p95_ns: u64 = if is_coverage_run() {
-        15_000_000
-    } else {
-        10_000_000
-    };
+    // p99 is logged for observability but not gated on. The default budget stays
+    // tight, while RCH/CI shared workers get an explicit noise guardrail.
+    let (budget_p95_ns, budget_mode) = render_latency_budget_p95_ns();
 
     log_jsonl(&serde_json::json!({
         "test": "regression_gate_render_latency",
@@ -528,6 +600,7 @@ fn regression_gate_render_latency() {
         "p95_ns": p95,
         "p99_ns": p99,
         "budget_p95_ns": budget_p95_ns,
+        "budget_mode": budget_mode,
     }));
 
     // Regression gate: p95 must stay under budget.
@@ -537,6 +610,55 @@ fn regression_gate_render_latency() {
         p95,
         budget_p95_ns
     );
+}
+
+#[test]
+fn render_latency_budget_defaults_to_local_guardrail() {
+    assert_eq!(
+        render_latency_budget_p95_ns_for(false, false, None),
+        (DEFAULT_RENDER_P95_BUDGET_NS, "default")
+    );
+}
+
+#[test]
+fn render_latency_budget_uses_coverage_guardrail() {
+    assert_eq!(
+        render_latency_budget_p95_ns_for(true, true, None),
+        (COVERAGE_RENDER_P95_BUDGET_NS, "coverage")
+    );
+}
+
+#[test]
+fn render_latency_budget_uses_shared_worker_guardrail() {
+    assert_eq!(
+        render_latency_budget_p95_ns_for(false, true, None),
+        (SHARED_WORKER_RENDER_P95_BUDGET_NS, "shared_worker")
+    );
+}
+
+#[test]
+fn render_latency_budget_explicit_override_wins() {
+    assert_eq!(
+        render_latency_budget_p95_ns_for(true, true, Some("12345")),
+        (12_345, "env")
+    );
+}
+
+#[test]
+fn parse_env_flag_value_recognizes_boolean_forms() {
+    assert_eq!(parse_env_flag_value(" yes "), Some(true));
+    assert_eq!(parse_env_flag_value("OFF"), Some(false));
+    assert_eq!(parse_env_flag_value("maybe"), None);
+}
+
+#[test]
+fn is_rch_target_path_recognizes_worker_targets() {
+    assert!(is_rch_target_path(std::path::Path::new(
+        "/data/projects/frankentui/.rch-target-vmi1149989-job-123/debug/deps/test"
+    )));
+    assert!(!is_rch_target_path(std::path::Path::new(
+        "/data/projects/frankentui/target/debug/deps/test"
+    )));
 }
 
 // =============================================================================

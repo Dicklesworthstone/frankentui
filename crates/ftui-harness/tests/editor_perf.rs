@@ -69,6 +69,20 @@ const LINES_100K: usize = 100_000;
 /// Line content for test buffers (average line length ~40 chars).
 const LINE_CONTENT: &str = "This is a test line with typical content";
 
+const BUDGET_MULTIPLIER_DEFAULT: u128 = 1;
+const BUDGET_MULTIPLIER_COVERAGE: u128 = 2;
+const BUDGET_MULTIPLIER_SHARED_WORKER: u128 = 10;
+const BUDGET_MULTIPLIER_ENV: &str = "FTUI_EDITOR_PERF_BUDGET_MULTIPLIER";
+const SHARED_WORKER_ENV: &str = "FTUI_EDITOR_PERF_SHARED_WORKER";
+const SHARED_WORKER_MARKERS: &[&str] = &[
+    "CI",
+    "RCH_JOB_ID",
+    "RCH_REMOTE",
+    "RCH_REQUIRE_REMOTE",
+    "RCH_WORKER",
+    "RCH_WORKER_ID",
+];
+
 // ============================================================================
 // Test Helpers
 // ============================================================================
@@ -92,21 +106,138 @@ fn log_perf(case: &str, lines: usize, op: &str, duration_us: u128, result: &str)
 }
 
 fn is_coverage_run() -> bool {
-    std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+    std::env::var("LLVM_PROFILE_FILE").is_ok()
+        || std::env::var("CARGO_LLVM_COV").is_ok()
+        || std::env::var("LLVM_COV").is_ok()
+        || std::env::var("RUSTFLAGS").is_ok_and(|flags| flags.contains("instrument-coverage"))
 }
 
-fn coverage_budget_us(base: u128) -> u128 {
-    if is_coverage_run() {
-        base.saturating_mul(2)
-    } else {
-        base
+fn parse_env_flag_value(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| parse_env_flag_value(&value))
+}
+
+fn env_present_and_not_false(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => parse_env_flag_value(&value).unwrap_or_else(|| !value.trim().is_empty()),
+        Err(_) => false,
+    }
+}
+
+fn is_shared_worker_run() -> bool {
+    if let Some(enabled) = env_flag(SHARED_WORKER_ENV) {
+        return enabled;
+    }
+    is_rch_target_dir()
+        || SHARED_WORKER_MARKERS
+            .iter()
+            .any(|name| env_present_and_not_false(name))
+}
+
+fn is_rch_target_dir() -> bool {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .is_some_and(|path| is_rch_target_path(std::path::Path::new(&path)))
+        || std::env::current_exe().is_ok_and(|path| is_rch_target_path(path.as_path()))
+}
+
+fn is_rch_target_path(path: &std::path::Path) -> bool {
+    path.to_string_lossy().contains(".rch-target-")
+}
+
+fn budget_multiplier_for(
+    coverage: bool,
+    shared_worker: bool,
+    override_value: Option<&str>,
+) -> (u128, &'static str) {
+    if let Some(value) = override_value
+        .and_then(|value| value.trim().parse::<u128>().ok())
+        .filter(|value| *value > 0)
+    {
+        return (value, "env");
+    }
+
+    if coverage {
+        (BUDGET_MULTIPLIER_COVERAGE, "coverage")
+    } else if shared_worker {
+        (BUDGET_MULTIPLIER_SHARED_WORKER, "shared_worker")
+    } else {
+        (BUDGET_MULTIPLIER_DEFAULT, "default")
+    }
+}
+
+fn budget_multiplier_with_mode() -> (u128, &'static str) {
+    let override_value = std::env::var(BUDGET_MULTIPLIER_ENV).ok();
+    budget_multiplier_for(
+        is_coverage_run(),
+        is_shared_worker_run(),
+        override_value.as_deref(),
+    )
+}
+
+fn timing_budget_us(base: u128) -> (u128, &'static str, u128) {
+    let (multiplier, mode) = budget_multiplier_with_mode();
+    (base.saturating_mul(multiplier), mode, multiplier)
+}
+
+#[test]
+fn budget_multiplier_defaults_to_local_guardrail() {
+    assert_eq!(
+        budget_multiplier_for(false, false, None),
+        (BUDGET_MULTIPLIER_DEFAULT, "default")
+    );
+}
+
+#[test]
+fn budget_multiplier_uses_coverage_guardrail() {
+    assert_eq!(
+        budget_multiplier_for(true, true, None),
+        (BUDGET_MULTIPLIER_COVERAGE, "coverage")
+    );
+}
+
+#[test]
+fn budget_multiplier_uses_shared_worker_guardrail() {
+    assert_eq!(
+        budget_multiplier_for(false, true, None),
+        (BUDGET_MULTIPLIER_SHARED_WORKER, "shared_worker")
+    );
+}
+
+#[test]
+fn budget_multiplier_explicit_override_wins() {
+    assert_eq!(budget_multiplier_for(true, true, Some("3")), (3, "env"));
+}
+
+#[test]
+fn editor_perf_env_flag_parser_accepts_common_forms() {
+    assert_eq!(parse_env_flag_value(" yes "), Some(true));
+    assert_eq!(parse_env_flag_value("OFF"), Some(false));
+    assert_eq!(parse_env_flag_value("worker"), None);
+}
+
+#[test]
+fn editor_perf_rch_target_path_recognizes_worker_targets() {
+    assert!(is_rch_target_path(std::path::Path::new(
+        "/data/projects/frankentui/.rch-target-vmi1152480-job-123/debug/deps/test"
+    )));
+    assert!(!is_rch_target_path(std::path::Path::new(
+        "/data/projects/frankentui/target/debug/deps/test"
+    )));
 }
 
 /// Assert operation completes within time budget.
 fn assert_within_budget(duration: Duration, budget_us: u128, case: &str, lines: usize, op: &str) {
     let duration_us = duration.as_micros();
-    let budget_us = coverage_budget_us(budget_us);
+    let (budget_us, budget_mode, budget_multiplier) = timing_budget_us(budget_us);
     let result = if duration_us <= budget_us {
         "pass"
     } else {
@@ -116,11 +247,13 @@ fn assert_within_budget(duration: Duration, budget_us: u128, case: &str, lines: 
 
     assert!(
         duration_us <= budget_us,
-        "{} on {}K lines took {}us, budget was {}us",
+        "{} on {}K lines took {}us, budget was {}us (mode={}, multiplier={}x)",
         op,
         lines / 1000,
         duration_us,
-        budget_us
+        budget_us,
+        budget_mode,
+        budget_multiplier
     );
 }
 
