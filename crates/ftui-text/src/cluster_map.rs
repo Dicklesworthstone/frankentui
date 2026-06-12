@@ -127,7 +127,7 @@ impl ClusterMap {
             };
         }
 
-        let mut entries = Vec::new();
+        let mut entries = Vec::with_capacity(text.len());
         let mut cell_offset = 0u32;
 
         for (grapheme_idx, (byte_offset, grapheme)) in text.grapheme_indices(true).enumerate() {
