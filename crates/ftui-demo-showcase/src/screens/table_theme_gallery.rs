@@ -302,15 +302,13 @@ impl TableThemeGallery {
             .filter(|value| !value.trim().is_empty())
     }
 
-    fn table_rows() -> Vec<Row> {
+    fn table_rows() -> [Row; 4] {
         [
             Row::new(["Latency", "16.2ms", "v"]),
             Row::new(["Errors", "0.3%", "v"]),
             Row::new(["Throughput", "9.8k/s", "^"]),
             Row::new(["Cache Hit", "94%", "^"]),
         ]
-        .into_iter()
-        .collect()
     }
 
     fn table_header() -> Row {
@@ -1023,6 +1021,35 @@ mod tests {
         assert_eq!(gallery.zebra_strength, ZebraStrength::Subtle);
         assert_eq!(gallery.border_style, BorderStyle::Preset);
         assert!(!gallery.highlight_row);
+    }
+
+    #[test]
+    fn table_rows_are_fixed_size_and_render_in_order() {
+        let rows: [Row; 4] = TableThemeGallery::table_rows();
+        let widths = [
+            Constraint::Percentage(50.0),
+            Constraint::Percentage(30.0),
+            Constraint::Percentage(20.0),
+        ];
+        let table = Table::new(rows, widths).header(TableThemeGallery::table_header());
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(48, 6, &mut pool);
+        Widget::render(&table, Rect::new(0, 0, 48, 6), &mut frame);
+        let rendered = buffer_to_text(&frame.buffer);
+
+        let latency = rendered.find("Latency").expect("latency row should render");
+        let errors = rendered.find("Errors").expect("errors row should render");
+        let throughput = rendered
+            .find("Throughput")
+            .expect("throughput row should render");
+        let cache_hit = rendered
+            .find("Cache Hit")
+            .expect("cache hit row should render");
+        assert!(
+            latency < errors && errors < throughput && throughput < cache_hit,
+            "table fixture row order should remain stable"
+        );
     }
 
     #[test]
