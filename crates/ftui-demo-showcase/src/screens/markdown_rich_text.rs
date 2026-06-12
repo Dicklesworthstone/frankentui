@@ -301,10 +301,19 @@ struct MarkdownPanel<'a> {
     border_style: Style,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MarkdownViewportKey {
+    width: u16,
+    scroll: u16,
+    height: u16,
+}
+
 #[derive(Default)]
 struct RenderedMarkdownCache {
     width: Option<u16>,
     rendered: Option<Text<'static>>,
+    viewport_key: Option<MarkdownViewportKey>,
+    viewport: Option<Text<'static>>,
 }
 
 impl RenderedMarkdownCache {
@@ -312,6 +321,8 @@ impl RenderedMarkdownCache {
         if self.width != Some(width) {
             self.width = Some(width);
             self.rendered = None;
+            self.viewport_key = None;
+            self.viewport = None;
         }
 
         self.rendered.get_or_insert_with(|| {
@@ -323,13 +334,43 @@ impl RenderedMarkdownCache {
         })
     }
 
+    fn viewport(
+        &mut self,
+        width: u16,
+        scroll: u16,
+        height: u16,
+        renderer: &MarkdownRenderer,
+        markdown: &str,
+    ) -> &Text<'static> {
+        let key = MarkdownViewportKey {
+            width,
+            scroll,
+            height,
+        };
+
+        if self.viewport_key != Some(key) || self.viewport.is_none() {
+            let wrapped = {
+                let rendered = self.text(width, renderer, markdown);
+                wrap_markdown_for_viewport(rendered, width, scroll, height)
+            };
+            self.viewport_key = Some(key);
+            self.viewport = Some(wrapped);
+        }
+
+        self.viewport
+            .as_ref()
+            .expect("viewport cache is populated after refresh")
+    }
+
     fn clear(&mut self) {
         self.width = None;
         self.rendered = None;
+        self.viewport_key = None;
+        self.viewport = None;
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StreamRenderKey {
     width: u16,
     position: usize,
@@ -339,6 +380,8 @@ struct StreamRenderKey {
 struct StreamRenderEntry {
     text: Text<'static>,
     detection: MarkdownDetection,
+    viewport_key: Option<MarkdownViewportKey>,
+    viewport: Option<Text<'static>>,
 }
 
 #[derive(Default)]
@@ -348,16 +391,16 @@ struct StreamRenderCache {
 }
 
 impl StreamRenderCache {
-    fn text_and_detection(
+    fn viewport_and_detection(
         &mut self,
-        width: u16,
+        viewport_key: MarkdownViewportKey,
         position: usize,
         complete: bool,
         renderer: &MarkdownRenderer,
         fragment: &str,
     ) -> (&Text<'static>, MarkdownDetection) {
         let key = StreamRenderKey {
-            width,
+            width: viewport_key.width,
             position,
             complete,
         };
@@ -369,8 +412,8 @@ impl StreamRenderCache {
         let entry = self.entry.get_or_insert_with(|| {
             let mut text = renderer
                 .clone()
-                .rule_width(RULE_WIDTH.min(width))
-                .table_max_width(width)
+                .rule_width(RULE_WIDTH.min(viewport_key.width))
+                .table_max_width(viewport_key.width)
                 .render_streaming(fragment);
 
             if !complete {
@@ -381,9 +424,28 @@ impl StreamRenderCache {
             StreamRenderEntry {
                 text,
                 detection: is_likely_markdown(fragment),
+                viewport_key: None,
+                viewport: None,
             }
         });
-        (&entry.text, entry.detection)
+
+        if entry.viewport_key != Some(viewport_key) || entry.viewport.is_none() {
+            entry.viewport = Some(wrap_markdown_for_viewport(
+                &entry.text,
+                viewport_key.width,
+                viewport_key.scroll,
+                viewport_key.height,
+            ));
+            entry.viewport_key = Some(viewport_key);
+        }
+
+        (
+            entry
+                .viewport
+                .as_ref()
+                .expect("stream viewport cache is populated after refresh"),
+            entry.detection,
+        )
     }
 
     fn clear(&mut self) {
@@ -626,10 +688,17 @@ impl Widget for MarkdownPanel<'_> {
         let max_width = inner.width.saturating_sub(1).max(1);
         let wrapped = {
             let mut cache = self.render_cache.borrow_mut();
-            let rendered = cache.text(max_width, self.renderer, self.markdown);
-            wrap_markdown_for_viewport(rendered, max_width, self.scroll, inner.height)
+            cache
+                .viewport(
+                    max_width,
+                    self.scroll,
+                    inner.height,
+                    self.renderer,
+                    self.markdown,
+                )
+                .clone()
         };
-        Paragraph::new(wrapped)
+        Paragraph::from_static_text(wrapped)
             .wrap(WrapMode::None)
             .render(inner, frame);
     }
@@ -1077,24 +1146,20 @@ impl MarkdownRichText {
         let stream_complete = self.stream_complete();
         let (wrapped_stream, detection) = {
             let mut cache = self.stream_render_cache.borrow_mut();
-            let (stream_text, detection) = cache.text_and_detection(
-                chunks[0].width,
+            let (stream_text, detection) = cache.viewport_and_detection(
+                MarkdownViewportKey {
+                    width: chunks[0].width,
+                    scroll: self.stream_scroll,
+                    height: chunks[0].height,
+                },
                 self.stream_position,
                 stream_complete,
                 &self.stream_renderer,
                 fragment,
             );
-            (
-                wrap_markdown_for_viewport(
-                    stream_text,
-                    chunks[0].width,
-                    self.stream_scroll,
-                    chunks[0].height,
-                ),
-                detection,
-            )
+            (stream_text.clone(), detection)
         };
-        Paragraph::new(wrapped_stream)
+        Paragraph::from_static_text(wrapped_stream)
             .wrap(WrapMode::None)
             .render(chunks[0], frame);
 
@@ -1464,6 +1529,104 @@ mod tests {
         let expected = Text::from_lines(full.lines()[1..4].iter().cloned());
 
         assert_eq!(viewport, expected);
+    }
+
+    #[test]
+    fn markdown_viewport_cache_matches_direct_wrap() {
+        let renderer = MarkdownRenderer::new(MarkdownTheme::default());
+        let mut cache = RenderedMarkdownCache::default();
+        let key = MarkdownViewportKey {
+            width: 12,
+            scroll: 1,
+            height: 4,
+        };
+
+        let cached = cache
+            .viewport(
+                key.width,
+                key.scroll,
+                key.height,
+                &renderer,
+                SAMPLE_MARKDOWN,
+            )
+            .clone();
+        let expected = wrap_markdown_for_viewport(
+            cache
+                .rendered
+                .as_ref()
+                .expect("rendered markdown is cached with the viewport"),
+            key.width,
+            key.scroll,
+            key.height,
+        );
+
+        assert_eq!(cached, expected);
+        assert_eq!(cache.viewport_key, Some(key));
+        assert_eq!(
+            cache
+                .viewport(
+                    key.width,
+                    key.scroll,
+                    key.height,
+                    &renderer,
+                    SAMPLE_MARKDOWN,
+                )
+                .clone(),
+            cached
+        );
+    }
+
+    #[test]
+    fn stream_viewport_cache_keys_scroll_and_height() {
+        let renderer = MarkdownRenderer::new(MarkdownTheme::default());
+        let mut cache = StreamRenderCache::default();
+        let fragment = &STREAMING_MARKDOWN[..STREAMING_MARKDOWN
+            .find("## Architecture Overview")
+            .expect("fixture contains architecture section")];
+        let position = fragment.len();
+        let first_key = MarkdownViewportKey {
+            width: 20,
+            scroll: 0,
+            height: 5,
+        };
+
+        let (cached, detection) =
+            cache.viewport_and_detection(first_key, position, false, &renderer, fragment);
+        let cached = cached.clone();
+        assert!(detection.is_likely());
+
+        let entry = cache
+            .entry
+            .as_ref()
+            .expect("stream render entry is cached with the viewport");
+        assert_eq!(
+            cached,
+            wrap_markdown_for_viewport(
+                &entry.text,
+                first_key.width,
+                first_key.scroll,
+                first_key.height
+            )
+        );
+        assert_eq!(entry.viewport_key, Some(first_key));
+
+        let second_key = MarkdownViewportKey {
+            scroll: 1,
+            ..first_key
+        };
+        let _ = cache.viewport_and_detection(second_key, position, false, &renderer, fragment);
+        assert_eq!(
+            cache.entry.as_ref().and_then(|entry| entry.viewport_key),
+            Some(second_key)
+        );
+        assert_eq!(
+            cache.key,
+            Some(StreamRenderKey {
+                width: second_key.width,
+                position,
+                complete: false,
+            })
+        );
     }
 
     #[test]
