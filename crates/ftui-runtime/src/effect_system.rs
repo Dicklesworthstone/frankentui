@@ -123,6 +123,17 @@ pub struct QueueTelemetry {
 }
 
 /// Snapshot the current queue telemetry counters.
+///
+/// This is a lock-free, best-effort snapshot: the three counters are loaded
+/// independently, so under concurrent enqueue/process/drop the derived
+/// `in_flight` may transiently disagree with any single instantaneous state.
+/// The skew is bounded and one-directional — `enqueued` is loaded first (the
+/// oldest value) and `processed`/`dropped` last (the newest), so `in_flight`
+/// can only *under*estimate the true backlog (floored at 0 by the saturating
+/// subtraction), never overestimate it. That is the safe bias for the consumers
+/// (load-governor pressure classification, backpressure), which read it
+/// per-frame and recover on the next interval; do not treat it as an exact,
+/// linearizable count.
 #[must_use]
 pub fn queue_telemetry() -> QueueTelemetry {
     let enqueued = effects_queue_enqueued();

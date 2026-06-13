@@ -261,6 +261,16 @@ mod tests {
         assert_eq!(rule.categorize(5), PluralCategory::Many);
         assert_eq!(rule.categorize(12), PluralCategory::Many);
         assert_eq!(rule.categorize(22), PluralCategory::Few);
+
+        // CLDR `pl` diverges from `ru`: Polish `one` is ONLY exactly 1, so
+        // `i % 10 == 1` values other than 1 are `many`, not `one`. (Russian
+        // categorizes 21 as `one`; Polish categorizes it as `many`.) These
+        // cases guard against "fixing" Polish to use the Russian rule.
+        assert_eq!(rule.categorize(21), PluralCategory::Many);
+        assert_eq!(rule.categorize(11), PluralCategory::Many);
+        assert_eq!(rule.categorize(0), PluralCategory::Many);
+        assert_eq!(rule.categorize(24), PluralCategory::Few);
+        assert_eq!(rule.categorize(25), PluralCategory::Many);
     }
 
     #[test]
