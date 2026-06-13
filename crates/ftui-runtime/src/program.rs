@@ -2479,6 +2479,16 @@ impl LoadGovernorState {
                 self.mode = RuntimeLoadMode::Unsafe;
                 self.recovery_intervals_observed = 0;
             }
+            // Strict-semantics failure is terminal: once Unsafe is entered the
+            // governor latches there regardless of later pressure (this mirrors
+            // the `Unsafe => {}` arm in `observe_steady_interval`, which already
+            // refuses to recover Unsafe under steady load). Without this guard,
+            // a subsequent overload interval would downgrade Unsafe to
+            // Degraded/Stressed and then recover to Healthy, silently escaping
+            // the fail-fast guarantee. Only an explicit reset clears Unsafe.
+            _ if self.mode == RuntimeLoadMode::Unsafe => {
+                self.recovery_intervals_observed = 0;
+            }
             RuntimePressureClass::HardOverload => {
                 self.mode = RuntimeLoadMode::Degraded;
                 self.recovery_intervals_observed = 0;
@@ -2499,7 +2509,11 @@ impl LoadGovernorState {
             mode_before,
             pressure,
             disposition,
-            if self.mode == RuntimeLoadMode::Recovered {
+            if self.mode == RuntimeLoadMode::Unsafe {
+                // Whether freshly violated this interval or latched from a prior
+                // one, the terminal cause is always the strict-semantics failure.
+                "strict_semantics_violation"
+            } else if self.mode == RuntimeLoadMode::Recovered {
                 "recovery_hysteresis_satisfied"
             } else if mode_before == RuntimeLoadMode::Recovered
                 && self.mode == RuntimeLoadMode::Healthy
@@ -2509,7 +2523,10 @@ impl LoadGovernorState {
                 reason_code
             },
             mode_before != self.mode,
-            pressure != RuntimePressureClass::Unsafe,
+            // Reflect the latched mode, not the instantaneous pressure: once the
+            // governor is Unsafe, strict semantics stay unpreserved even on an
+            // interval whose raw pressure classified lower.
+            self.mode != RuntimeLoadMode::Unsafe,
             observation,
             dropped_delta,
         )
@@ -8453,6 +8470,64 @@ mod tests {
         );
         assert!(!unsafe_snapshot.strict_semantics_preserved);
         assert_eq!(unsafe_snapshot.reason_code, "strict_semantics_violation");
+    }
+
+    #[test]
+    fn load_governor_unsafe_latches_through_later_pressure() {
+        let mut governor = test_load_governor(100, 2);
+
+        // Enter Unsafe via a strict-semantics violation.
+        let entered = governor.observe(governor_observation(
+            8.0,
+            0,
+            0,
+            DegradationLevel::Full,
+            false,
+            true,
+        ));
+        assert_eq!(entered.mode, RuntimeLoadMode::Unsafe);
+
+        // A later hard-overload interval (queue ratio >= degraded watermark) with
+        // NO fresh violation must not downgrade the terminal Unsafe state.
+        let hard = governor.observe(governor_observation(
+            8.0,
+            90,
+            0,
+            DegradationLevel::SimpleBorders,
+            false,
+            false,
+        ));
+        assert_eq!(hard.mode, RuntimeLoadMode::Unsafe);
+        assert_eq!(
+            hard.disposition,
+            RuntimeWorkDisposition::FailFastStrictGuarantee
+        );
+        assert!(!hard.strict_semantics_preserved);
+        assert_eq!(hard.reason_code, "strict_semantics_violation");
+
+        // A soft-overload interval (would otherwise classify as Stressed) must
+        // also keep Unsafe latched rather than escaping downward.
+        let soft = governor.observe(governor_observation(
+            8.0,
+            60,
+            0,
+            DegradationLevel::Full,
+            true,
+            false,
+        ));
+        assert_eq!(soft.mode, RuntimeLoadMode::Unsafe);
+
+        // And a fully steady interval never recovers out of Unsafe.
+        let steady = governor.observe(governor_observation(
+            8.0,
+            0,
+            0,
+            DegradationLevel::Full,
+            false,
+            false,
+        ));
+        assert_eq!(steady.mode, RuntimeLoadMode::Unsafe);
+        assert!(!steady.strict_semantics_preserved);
     }
 
     #[test]
