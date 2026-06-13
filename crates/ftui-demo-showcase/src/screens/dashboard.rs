@@ -3982,56 +3982,26 @@ impl Dashboard {
             return;
         }
 
-        // Use arena to avoid per-frame heap allocations for sparkline data.
-        let arena = frame.arena;
-        let cpu_heap;
-        let mem_heap;
-        let net_in_heap;
-        let net_out_heap;
-        let cpu_data: &[f64] = if let Some(a) = arena {
-            a.alloc_iter(self.simulated_data.cpu_history.iter().copied())
-        } else {
-            cpu_heap = self
-                .simulated_data
-                .cpu_history
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            &cpu_heap
-        };
-        let mem_data: &[f64] = if let Some(a) = arena {
-            a.alloc_iter(self.simulated_data.memory_history.iter().copied())
-        } else {
-            mem_heap = self
-                .simulated_data
-                .memory_history
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            &mem_heap
-        };
-        let net_in_data: &[f64] = if let Some(a) = arena {
-            a.alloc_iter(self.simulated_data.network_in.iter().copied())
-        } else {
-            net_in_heap = self
-                .simulated_data
-                .network_in
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            &net_in_heap
-        };
-        let net_out_data: &[f64] = if let Some(a) = arena {
-            a.alloc_iter(self.simulated_data.network_out.iter().copied())
-        } else {
-            net_out_heap = self
-                .simulated_data
-                .network_out
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            &net_out_heap
-        };
+        let mut cpu_scratch = [0.0; DASHBOARD_HISTORY_SCRATCH_CAP];
+        let mut mem_scratch = [0.0; DASHBOARD_HISTORY_SCRATCH_CAP];
+        let mut net_in_scratch = [0.0; DASHBOARD_HISTORY_SCRATCH_CAP];
+        let mut net_out_scratch = [0.0; DASHBOARD_HISTORY_SCRATCH_CAP];
+        let cpu_data = fill_dashboard_f64_scratch(
+            &mut cpu_scratch,
+            self.simulated_data.cpu_history.iter().copied(),
+        );
+        let mem_data = fill_dashboard_f64_scratch(
+            &mut mem_scratch,
+            self.simulated_data.memory_history.iter().copied(),
+        );
+        let net_in_data = fill_dashboard_f64_scratch(
+            &mut net_in_scratch,
+            self.simulated_data.network_in.iter().copied(),
+        );
+        let net_out_data = fill_dashboard_f64_scratch(
+            &mut net_out_scratch,
+            self.simulated_data.network_out.iter().copied(),
+        );
 
         let cpu_last = cpu_data.last().copied().unwrap_or(0.0);
         let mem_last = mem_data.last().copied().unwrap_or(0.0);
@@ -4183,21 +4153,6 @@ impl Dashboard {
             return;
         }
 
-        let cpu_points: Vec<(f64, f64)> = self
-            .simulated_data
-            .cpu_history
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (i as f64, *v))
-            .collect();
-        let mem_points: Vec<(f64, f64)> = self
-            .simulated_data
-            .memory_history
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (i as f64, *v))
-            .collect();
-
         let net_max = self
             .simulated_data
             .network_in
@@ -4205,24 +4160,34 @@ impl Dashboard {
             .chain(self.simulated_data.network_out.iter())
             .copied()
             .fold(1.0, f64::max);
-        let net_points: Vec<(f64, f64)> = self
-            .simulated_data
-            .network_in
-            .iter()
-            .zip(self.simulated_data.network_out.iter())
-            .enumerate()
-            .map(|(i, (net_in, net_out))| {
-                let avg = (*net_in + *net_out) * 0.5;
-                let scaled = (avg / net_max * 100.0).clamp(0.0, 100.0);
-                (i as f64, scaled)
-            })
-            .collect();
+        let mut cpu_point_scratch = [(0.0, 0.0); DASHBOARD_HISTORY_SCRATCH_CAP];
+        let mut mem_point_scratch = [(0.0, 0.0); DASHBOARD_HISTORY_SCRATCH_CAP];
+        let mut net_point_scratch = [(0.0, 0.0); DASHBOARD_HISTORY_SCRATCH_CAP];
+        let cpu_points = fill_dashboard_point_scratch(
+            &mut cpu_point_scratch,
+            self.simulated_data.cpu_history.iter().copied(),
+        );
+        let mem_points = fill_dashboard_point_scratch(
+            &mut mem_point_scratch,
+            self.simulated_data.memory_history.iter().copied(),
+        );
+        let net_points = fill_dashboard_point_scratch(
+            &mut net_point_scratch,
+            self.simulated_data
+                .network_in
+                .iter()
+                .zip(self.simulated_data.network_out.iter())
+                .map(|(net_in, net_out)| {
+                    let avg = (*net_in + *net_out) * 0.5;
+                    (avg / net_max * 100.0).clamp(0.0, 100.0)
+                }),
+        );
 
         let palette = Self::chart_palette_extended();
         let series = vec![
-            Series::new("CPU", &cpu_points, palette[0]).markers(true),
-            Series::new("MEM", &mem_points, palette[1]),
-            Series::new("NET", &net_points, palette[2]),
+            Series::new("CPU", cpu_points, palette[0]).markers(true),
+            Series::new("MEM", mem_points, palette[1]),
+            Series::new("NET", net_points, palette[2]),
         ];
 
         let chart = LineChart::new(series)
@@ -6291,6 +6256,24 @@ where
     &scratch[..len]
 }
 
+fn fill_dashboard_point_scratch<I, const N: usize>(
+    scratch: &mut [(f64, f64); N],
+    values: I,
+) -> &[(f64, f64)]
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut len = 0;
+    for value in values {
+        if len == N {
+            break;
+        }
+        scratch[len] = (len as f64, value);
+        len += 1;
+    }
+    &scratch[..len]
+}
+
 fn truncate_to_width(text: &str, max_width: u16) -> String {
     if max_width == 0 {
         return String::new();
@@ -7011,6 +6994,27 @@ mod tests {
         let data = fill_dashboard_f64_scratch(&mut scratch, (0..6).map(f64::from));
 
         assert_eq!(data, &[0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn dashboard_point_scratch_preserves_indices_order_and_caps() {
+        let mut scratch = [(0.0, 0.0); 4];
+        let data = fill_dashboard_point_scratch(&mut scratch, (0..6).map(|v| f64::from(v) * 1.5));
+
+        assert_eq!(data, &[(0.0, 0.0), (1.0, 1.5), (2.0, 3.0), (3.0, 4.5)]);
+    }
+
+    #[test]
+    fn dashboard_history_scratch_cap_covers_simulated_history() {
+        let mut dashboard = Dashboard::new();
+        for tick in 0..200 {
+            dashboard.simulated_data.tick(tick);
+        }
+
+        assert!(dashboard.simulated_data.cpu_history.len() <= DASHBOARD_HISTORY_SCRATCH_CAP);
+        assert!(dashboard.simulated_data.memory_history.len() <= DASHBOARD_HISTORY_SCRATCH_CAP);
+        assert!(dashboard.simulated_data.network_in.len() <= DASHBOARD_HISTORY_SCRATCH_CAP);
+        assert!(dashboard.simulated_data.network_out.len() <= DASHBOARD_HISTORY_SCRATCH_CAP);
     }
 
     #[test]
