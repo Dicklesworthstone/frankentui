@@ -10,6 +10,7 @@
 //! - Unicode text with CJK and emoji in a `Table`
 //! - `WrapMode` and `Alignment` cycling
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
@@ -1379,13 +1380,12 @@ impl MarkdownRichText {
             return;
         }
 
-        let chunks = Flex::vertical()
-            .constraints([Constraint::Fixed(1), Constraint::Min(1)])
-            .split(inner);
-
-        Paragraph::new("w: cycle wrap | a: cycle alignment")
-            .style(theme::muted())
-            .render(chunks[0], frame);
+        let controls = Rect::new(inner.x, inner.y, inner.width, 1);
+        render_markdown_line_segments(
+            frame,
+            controls,
+            &[("w: cycle wrap | a: cycle alignment", theme::muted())],
+        );
 
         let demo_text = "The quick brown fox jumps over the lazy dog. \
              Supercalifragilisticexpialidocious is quite a long word \
@@ -1393,33 +1393,47 @@ impl MarkdownRichText {
              \u{4f60}\u{597d}\u{4e16}\u{754c} contains CJK characters \
              that are double-width. \u{1f980} Ferris says hello!";
 
+        let body = Rect::new(
+            inner.x,
+            inner.y.saturating_add(1),
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+        if body.is_empty() {
+            return;
+        }
+
         Paragraph::new(demo_text)
             .wrap(self.current_wrap())
             .alignment(self.current_alignment())
             .style(Style::new().fg(theme::fg::PRIMARY))
-            .render(chunks[1], frame);
+            .render(body, frame);
     }
 
     fn render_streaming_panel(&self, frame: &mut Frame, area: Rect) {
         // Build title with streaming status
         let progress_pct =
             (self.stream_position as f64 / STREAMING_MARKDOWN.len() as f64 * 100.0) as u8;
-        let status = if self.stream_complete() {
-            "Complete".to_string()
+        let title: Cow<'static, str> = if self.stream_complete() {
+            Cow::Borrowed("LLM Streaming Simulation | Complete")
         } else if self.stream_paused {
-            format!("Paused ({progress_pct}%)")
+            Cow::Owned(format!(
+                "LLM Streaming Simulation | Paused ({progress_pct}%)"
+            ))
         } else if self.stream_turbo {
-            format!("Turbo... {progress_pct}%")
+            Cow::Owned(format!(
+                "LLM Streaming Simulation | Turbo... {progress_pct}%"
+            ))
         } else {
-            format!("Streaming... {progress_pct}%")
+            Cow::Owned(format!(
+                "LLM Streaming Simulation | Streaming... {progress_pct}%"
+            ))
         };
-
-        let title = format!("LLM Streaming Simulation | {status}");
 
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(title.as_str())
+            .title(title.as_ref())
             .title_alignment(Alignment::Center)
             .style(Style::new().fg(theme::screen_accent::MARKDOWN));
 
@@ -1767,6 +1781,18 @@ mod tests {
         assert!(frame_row_text(&frame, 0, 72).contains("Detection: 4 indicators | Confident"));
         assert!(frame_row_text(&frame, 1, 72).contains("Confidence: 67% | Chars: 123/"));
         assert!(frame_row_text(&frame, 2, 72).contains("Space: play/pause"));
+    }
+
+    #[test]
+    fn wrap_demo_controls_render_fixed_direct_row() {
+        let screen = MarkdownRichText::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(50, 8, &mut pool);
+
+        screen.render_wrap_demo(&mut frame, Rect::new(0, 0, 50, 8));
+
+        assert!(frame_row_text(&frame, 1, 50).contains("w: cycle wrap | a: cycle alignment"));
+        assert!(frame_row_text(&frame, 2, 50).contains("The quick brown fox"));
     }
 
     #[test]
