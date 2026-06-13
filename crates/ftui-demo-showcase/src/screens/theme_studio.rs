@@ -12,15 +12,14 @@ use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
-use ftui_render::cell::{Cell, PackedRgba};
+use ftui_render::cell::{Cell, CellAttrs, CellContent, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::{Style, StyleFlags};
-use ftui_text::display_width;
+use ftui_text::{display_width, graphemes};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
-use ftui_widgets::paragraph::Paragraph;
 
 use super::{HelpEntry, Screen};
 use crate::determinism;
@@ -28,6 +27,7 @@ use crate::determinism;
 use crate::theme::ScopedThemeLock;
 use crate::theme::{self, ThemeId};
 use std::cell::Cell as StdCell;
+use std::fmt::Write as _;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use web_time::Instant;
@@ -823,6 +823,11 @@ impl ThemeStudioDemo {
         format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
     }
 
+    fn color_hex_into(c: PackedRgba, out: &mut String) {
+        out.clear();
+        let _ = write!(out, "#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b());
+    }
+
     /// Export current theme to JSON format.
     pub fn export_json(&self) -> String {
         let theme_id = theme::current_theme();
@@ -955,9 +960,8 @@ palette = 7={}
                 Style::new().fg(theme::fg::PRIMARY.resolve())
             };
 
-            let text = format!("{}{}", prefix, theme_id.name());
             let line_area = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
-            Paragraph::new(text).style(style).render(line_area, frame);
+            render_theme_studio_joined_text(frame, line_area, &[prefix, theme_id.name()], style);
         }
     }
 
@@ -989,6 +993,8 @@ palette = 7={}
         block.render(area, frame);
 
         let bg_color = theme::bg::BASE.resolve();
+        let mut hex = String::with_capacity(7);
+        let mut ratio_text = String::with_capacity(6);
 
         // Render token list with contrast info
         for (i, token) in self.tokens.iter().enumerate() {
@@ -1004,9 +1010,8 @@ palette = 7={}
             let prefix = if is_selected { "▶ " } else { "  " };
 
             // Format: "▶ token::NAME     #RRGGBB  4.52:1 AA"
-            let hex = Self::color_hex(color);
+            Self::color_hex_into(color, &mut hex);
             let name_width = 20;
-            let padded_name = format!("{:<width$}", token.name, width = name_width);
 
             let line_area = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
 
@@ -1018,9 +1023,12 @@ palette = 7={}
             } else {
                 Style::new().fg(theme::fg::MUTED.resolve())
             };
-            Paragraph::new(prefix)
-                .style(prefix_style)
-                .render(Rect::new(line_area.x, line_area.y, 2, 1), frame);
+            render_theme_studio_text(
+                frame,
+                Rect::new(line_area.x, line_area.y, 2, 1),
+                prefix,
+                prefix_style,
+            );
 
             // Render color swatch (2 cells of solid color)
             let swatch_x = line_area.x + 2;
@@ -1043,9 +1051,11 @@ palette = 7={}
             };
             if name_x < line_area.x + line_area.width {
                 let available = (line_area.x + line_area.width).saturating_sub(name_x);
-                Paragraph::new(&*padded_name).style(name_style).render(
-                    Rect::new(name_x, line_area.y, available.min(name_width as u16), 1),
+                render_theme_studio_text(
                     frame,
+                    Rect::new(name_x, line_area.y, available.min(name_width as u16), 1),
+                    token.name,
+                    name_style,
                 );
             }
 
@@ -1053,19 +1063,26 @@ palette = 7={}
             let hex_x = name_x + name_width as u16 + 1;
             if hex_x + 8 <= line_area.x + line_area.width {
                 let hex_style = Style::new().fg(theme::fg::SECONDARY.resolve());
-                Paragraph::new(&*hex)
-                    .style(hex_style)
-                    .render(Rect::new(hex_x, line_area.y, 8, 1), frame);
+                render_theme_studio_text(
+                    frame,
+                    Rect::new(hex_x, line_area.y, 8, 1),
+                    &hex,
+                    hex_style,
+                );
             }
 
             // Render contrast ratio
             let ratio_x = hex_x + 9;
             if ratio_x + 8 <= line_area.x + line_area.width {
-                let ratio_text = format!("{:.1}:1", contrast);
+                ratio_text.clear();
+                let _ = write!(ratio_text, "{contrast:.1}:1");
                 let ratio_style = Style::new().fg(theme::fg::MUTED.resolve());
-                Paragraph::new(&*ratio_text)
-                    .style(ratio_style)
-                    .render(Rect::new(ratio_x, line_area.y, 6, 1), frame);
+                render_theme_studio_text(
+                    frame,
+                    Rect::new(ratio_x, line_area.y, 6, 1),
+                    &ratio_text,
+                    ratio_style,
+                );
             }
 
             // Render WCAG rating
@@ -1073,9 +1090,12 @@ palette = 7={}
             let rating_width = display_width(rating) as u16;
             if rating_x + rating_width <= line_area.x + line_area.width {
                 let rating_style = Style::new().fg(rating_color).attrs(StyleFlags::BOLD);
-                Paragraph::new(rating)
-                    .style(rating_style)
-                    .render(Rect::new(rating_x, line_area.y, rating_width, 1), frame);
+                render_theme_studio_text(
+                    frame,
+                    Rect::new(rating_x, line_area.y, rating_width, 1),
+                    rating,
+                    rating_style,
+                );
             }
         }
     }
@@ -1091,7 +1111,103 @@ palette = 7={}
             .fg(theme::fg::MUTED.resolve())
             .bg(theme::alpha::SURFACE.resolve());
 
-        Paragraph::new(status).style(style).render(area, frame);
+        render_theme_studio_text(frame, area, status, style);
+    }
+}
+
+fn apply_theme_studio_line_style(cell: &mut Cell, style: Style) {
+    if let Some(fg) = style.fg {
+        cell.fg = fg;
+    }
+    if let Some(bg) = style.bg {
+        match bg.a() {
+            0 => {}
+            255 => cell.bg = bg,
+            _ => cell.bg = bg.over(cell.bg),
+        }
+    }
+    if let Some(attrs) = style.attrs {
+        cell.attrs = cell.attrs.merged_flags(attrs.into());
+    }
+}
+
+fn clear_theme_studio_line_area(frame: &mut Frame, area: Rect, style: Style) {
+    if area.is_empty() {
+        return;
+    }
+
+    let mut cell = Cell::from_char(' ');
+    apply_theme_studio_line_style(&mut cell, style);
+    frame.buffer.fill(area, cell);
+}
+
+fn draw_theme_studio_text(
+    frame: &mut Frame,
+    mut x: u16,
+    y: u16,
+    max_x: u16,
+    text: &str,
+    style: Style,
+) -> u16 {
+    for grapheme in graphemes(text) {
+        let width = display_width(grapheme);
+        if width == 0 {
+            continue;
+        }
+        if x >= max_x || x as u32 + width as u32 > max_x as u32 {
+            break;
+        }
+
+        let content = if width > 1 || grapheme.chars().count() > 1 {
+            CellContent::from_grapheme(frame.intern_with_width(grapheme, width as u8))
+        } else if let Some(ch) = grapheme.chars().next() {
+            CellContent::from_char(ch)
+        } else {
+            continue;
+        };
+
+        let mut cell = frame.buffer.get(x, y).copied().unwrap_or_default();
+        cell.content = content;
+        cell.attrs = cell.attrs.with_link(CellAttrs::LINK_ID_NONE);
+        apply_theme_studio_line_style(&mut cell, style);
+        frame.buffer.set_fast(x, y, cell);
+        x = x.saturating_add(width as u16);
+    }
+    x
+}
+
+fn render_theme_studio_text(frame: &mut Frame, area: Rect, text: &str, style: Style) {
+    render_theme_studio_joined_text(frame, area, &[text], style);
+}
+
+fn render_theme_studio_joined_text(frame: &mut Frame, area: Rect, parts: &[&str], style: Style) {
+    if area.is_empty() {
+        return;
+    }
+
+    let deg = frame.buffer.degradation;
+    if !deg.render_content() {
+        clear_theme_studio_line_area(frame, area, Style::default());
+        return;
+    }
+
+    let style = if deg.apply_styling() {
+        style
+    } else {
+        Style::default()
+    };
+    clear_theme_studio_line_area(frame, area, style);
+
+    let mut text_style = style;
+    text_style.bg = None;
+
+    let mut x = area.x;
+    let max_x = area.right();
+    for part in parts {
+        x = draw_theme_studio_text(frame, x, area.y, max_x, part, text_style);
+        if x >= max_x {
+            break;
+        }
     }
 }
 
@@ -1416,6 +1532,19 @@ mod tests {
         })
     }
 
+    fn frame_row_text(frame: &Frame, x: u16, y: u16, width: u16) -> String {
+        let mut row = String::with_capacity(width as usize);
+        for dx in 0..width {
+            let ch = frame
+                .buffer
+                .get(x + dx, y)
+                .and_then(|cell| cell.content.as_char())
+                .unwrap_or(' ');
+            row.push(ch);
+        }
+        row
+    }
+
     // -----------------------------------------------------------------------
     // Initialization Tests
     // -----------------------------------------------------------------------
@@ -1530,6 +1659,29 @@ mod tests {
         let color = PackedRgba::rgb(171, 205, 239);
         let hex = ThemeStudioDemo::color_hex(color);
         assert_eq!(hex, hex.to_uppercase());
+    }
+
+    #[test]
+    fn token_inspector_rows_render_direct_text_fields() {
+        let _lock = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+        let demo = ThemeStudioDemo::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+
+        demo.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let inspector = demo.layout_inspector.get();
+        assert!(!inspector.is_empty());
+        let first_token_row = frame_row_text(&frame, inspector.x, inspector.y + 1, inspector.width);
+
+        assert!(first_token_row.contains("fg::PRIMARY"));
+        assert!(first_token_row.contains('#'));
+        assert!(first_token_row.contains(":1"));
+        assert!(
+            ["AAA", "AA", "AA Large", "Fail"]
+                .iter()
+                .any(|rating| first_token_row.contains(rating))
+        );
     }
 
     // -----------------------------------------------------------------------
