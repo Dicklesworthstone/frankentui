@@ -1,6 +1,6 @@
 [package]
 name = "ftui-core"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Terminal lifecycle, capabilities, and event parsing for FrankenTUI."

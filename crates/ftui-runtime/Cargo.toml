@@ -1,6 +1,6 @@
 [package]
 name = "ftui-runtime"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Elm-style runtime loop and subscriptions for FrankenTUI."
@@ -53,14 +53,14 @@ telemetry = [
 asupersync-executor = ["dep:asupersync"]
 
 [dependencies]
-ftui-backend = { path = "../ftui-backend", version = "0.4.0" }
-ftui-core = { path = "../ftui-core", version = "0.4.0" }
-ftui-layout = { path = "../ftui-layout", version = "0.4.0" }
-ftui-i18n = { path = "../ftui-i18n", version = "0.4.0" }
-ftui-render = { path = "../ftui-render", version = "0.4.0" }
-ftui-style = { path = "../ftui-style", version = "0.4.0" }
-ftui-text = { path = "../ftui-text", version = "0.4.0" }
-ftui-tty = { path = "../ftui-tty", version = "0.4.0", optional = true }
+ftui-backend = { path = "../ftui-backend", version = "0.4.1" }
+ftui-core = { path = "../ftui-core", version = "0.4.1" }
+ftui-layout = { path = "../ftui-layout", version = "0.4.1" }
+ftui-i18n = { path = "../ftui-i18n", version = "0.4.1" }
+ftui-render = { path = "../ftui-render", version = "0.4.1" }
+ftui-style = { path = "../ftui-style", version = "0.4.1" }
+ftui-text = { path = "../ftui-text", version = "0.4.1" }
+ftui-tty = { path = "../ftui-tty", version = "0.4.1", optional = true }
 arc-swap = "1.8.2"
 tracing = "0.1.41"
 unicode-segmentation = "1.13.3"
@@ -84,7 +84,7 @@ flate2 = { version = "1.1", optional = true }
 toml = { version = "1.1.2", optional = true }
 
 [dev-dependencies]
-ftui-core = { path = "../ftui-core", version = "0.4.0", features = ["test-helpers"] }
+ftui-core = { path = "../ftui-core", version = "0.4.1", features = ["test-helpers"] }
 ftui-harness = { path = "../ftui-harness" }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.7.0"
