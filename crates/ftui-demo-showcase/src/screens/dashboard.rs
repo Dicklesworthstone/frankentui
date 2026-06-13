@@ -4969,144 +4969,140 @@ impl Dashboard {
         let cols = Flex::horizontal()
             .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
             .split(area);
-
-        let left_lines = [
-            format!("FPS: {:.0}  Tick: {}", self.fps, self.tick_count),
-            format!("Events/s: {:.0}", events_per_sec),
-            format!("CPU: {:>3.0}%  MEM: {:>3.0}%", cpu, mem),
-            format!("NET: {:>4.0}↓ / {:>4.0}↑", net_in, net_out),
-            format!("Frame: {frame_ms:>4.1}ms ±{jitter_ms:>3.1}"),
-        ];
-        let right_lines = [
-            format!(
-                "Size: {}x{}  Cells: {}",
-                dashboard_size.0, dashboard_size.1, cells
-            ),
-            format!("Theme: {theme_name}"),
-            format!("Alerts: {alerts}"),
-            "Pipeline: BUF→DIFF→ANSI".to_string(),
-            format!("Headroom: {headroom:+.1}ms"),
-        ];
-
-        let left_count = left_lines
-            .len()
-            .min(cols[0].height as usize)
-            .min(area.height as usize);
-        let right_count = right_lines
-            .len()
-            .min(cols[1].height as usize)
-            .min(area.height as usize);
-
-        let left_rows = Flex::vertical()
-            .constraints(vec![Constraint::Fixed(1); left_count])
-            .split(cols[0]);
-        let right_rows = Flex::vertical()
-            .constraints(vec![Constraint::Fixed(1); right_count])
-            .split(cols[1]);
-
-        for (idx, (row, line)) in left_rows.iter().zip(left_lines.iter()).enumerate() {
-            if row.is_empty() {
-                continue;
+        let stat_row = |column: Rect, idx: usize| {
+            if column.is_empty() || idx >= column.height as usize || idx >= area.height as usize {
+                return None;
             }
-            let text = truncate_to_width(line, row.width);
-            match idx {
-                0 => {
-                    StyledText::new(text)
-                        .bold()
-                        .effect(TextEffect::Pulse {
-                            speed: 1.6,
-                            min_alpha: 0.35,
-                        })
-                        .base_color(status_color)
-                        .time(self.time)
-                        .render(*row, frame);
-                }
-                1 => {
-                    StyledText::new(text)
-                        .bold()
-                        .effect(TextEffect::ColorWave {
-                            color1: theme::accent::PRIMARY.into(),
-                            color2: theme::accent::ACCENT_8.into(),
-                            speed: 1.2,
-                            wavelength: 6.0,
-                        })
-                        .base_color(theme::fg::PRIMARY.into())
-                        .time(self.time)
-                        .render(*row, frame);
-                }
-                2 => {
-                    Paragraph::new(text)
-                        .style(
-                            Style::new()
-                                .fg(theme::fg::PRIMARY)
-                                .bg(theme::alpha::SURFACE),
-                        )
-                        .render(*row, frame);
-                }
-                _ => {
-                    Paragraph::new(text)
-                        .style(
-                            Style::new()
-                                .fg(theme::fg::SECONDARY)
-                                .bg(theme::alpha::OVERLAY),
-                        )
-                        .render(*row, frame);
-                }
-            }
+            Some(Rect::new(
+                column.x,
+                column.y.saturating_add(idx as u16),
+                column.width,
+                1,
+            ))
+        };
+
+        if let Some(row) = stat_row(cols[0], 0) {
+            let text = format!("FPS: {:.0}  Tick: {}", self.fps, self.tick_count);
+            StyledText::new(truncate_to_width(&text, row.width))
+                .bold()
+                .effect(TextEffect::Pulse {
+                    speed: 1.6,
+                    min_alpha: 0.35,
+                })
+                .base_color(status_color)
+                .time(self.time)
+                .render(row, frame);
+        }
+        if let Some(row) = stat_row(cols[0], 1) {
+            let text = format!("Events/s: {:.0}", events_per_sec);
+            StyledText::new(truncate_to_width(&text, row.width))
+                .bold()
+                .effect(TextEffect::ColorWave {
+                    color1: theme::accent::PRIMARY.into(),
+                    color2: theme::accent::ACCENT_8.into(),
+                    speed: 1.2,
+                    wavelength: 6.0,
+                })
+                .base_color(theme::fg::PRIMARY.into())
+                .time(self.time)
+                .render(row, frame);
+        }
+        if let Some(row) = stat_row(cols[0], 2) {
+            let text = format!("CPU: {:>3.0}%  MEM: {:>3.0}%", cpu, mem);
+            render_static_dashboard_line(
+                frame,
+                row,
+                &text,
+                Style::new()
+                    .fg(theme::fg::PRIMARY)
+                    .bg(theme::alpha::SURFACE),
+            );
+        }
+        if let Some(row) = stat_row(cols[0], 3) {
+            let text = format!("NET: {:>4.0}↓ / {:>4.0}↑", net_in, net_out);
+            render_static_dashboard_line(
+                frame,
+                row,
+                &text,
+                Style::new()
+                    .fg(theme::fg::SECONDARY)
+                    .bg(theme::alpha::OVERLAY),
+            );
+        }
+        if let Some(row) = stat_row(cols[0], 4) {
+            let text = format!("Frame: {frame_ms:>4.1}ms ±{jitter_ms:>3.1}");
+            render_static_dashboard_line(
+                frame,
+                row,
+                &text,
+                Style::new()
+                    .fg(theme::fg::SECONDARY)
+                    .bg(theme::alpha::OVERLAY),
+            );
         }
 
-        for (idx, (row, line)) in right_rows.iter().zip(right_lines.iter()).enumerate() {
-            if row.is_empty() {
-                continue;
-            }
-            let text = truncate_to_width(line, row.width);
-            match idx {
-                2 => {
-                    StyledText::new(text)
-                        .bold()
-                        .effect(TextEffect::PulsingGlow {
-                            color: theme::accent::WARNING.into(),
-                            speed: 1.1,
-                        })
-                        .base_color(theme::intent::warning_text())
-                        .time(self.time)
-                        .render(*row, frame);
-                }
-                3 => {
-                    StyledText::new(text)
-                        .effect(TextEffect::AnimatedGradient {
-                            gradient: ColorGradient::lavender(),
-                            speed: 0.45,
-                        })
-                        .base_color(theme::fg::PRIMARY.into())
-                        .time(self.time)
-                        .render(*row, frame);
-                }
-                4 => {
-                    let accent = if headroom < 0.0 {
-                        theme::intent::warning_text()
-                    } else {
-                        theme::intent::success_text()
-                    };
-                    StyledText::new(text)
-                        .effect(TextEffect::Pulse {
-                            speed: 1.1,
-                            min_alpha: 0.5,
-                        })
-                        .base_color(accent)
-                        .time(self.time)
-                        .render(*row, frame);
-                }
-                _ => {
-                    Paragraph::new(text)
-                        .style(
-                            Style::new()
-                                .fg(theme::fg::SECONDARY)
-                                .bg(theme::alpha::SURFACE),
-                        )
-                        .render(*row, frame);
-                }
-            }
+        if let Some(row) = stat_row(cols[1], 0) {
+            let text = format!(
+                "Size: {}x{}  Cells: {}",
+                dashboard_size.0, dashboard_size.1, cells
+            );
+            render_static_dashboard_line(
+                frame,
+                row,
+                &text,
+                Style::new()
+                    .fg(theme::fg::SECONDARY)
+                    .bg(theme::alpha::SURFACE),
+            );
+        }
+        if let Some(row) = stat_row(cols[1], 1) {
+            let text = format!("Theme: {theme_name}");
+            render_static_dashboard_line(
+                frame,
+                row,
+                &text,
+                Style::new()
+                    .fg(theme::fg::SECONDARY)
+                    .bg(theme::alpha::SURFACE),
+            );
+        }
+        if let Some(row) = stat_row(cols[1], 2) {
+            let text = format!("Alerts: {alerts}");
+            StyledText::new(truncate_to_width(&text, row.width))
+                .bold()
+                .effect(TextEffect::PulsingGlow {
+                    color: theme::accent::WARNING.into(),
+                    speed: 1.1,
+                })
+                .base_color(theme::intent::warning_text())
+                .time(self.time)
+                .render(row, frame);
+        }
+        if let Some(row) = stat_row(cols[1], 3) {
+            StyledText::new(truncate_to_width("Pipeline: BUF→DIFF→ANSI", row.width))
+                .effect(TextEffect::AnimatedGradient {
+                    gradient: ColorGradient::lavender(),
+                    speed: 0.45,
+                })
+                .base_color(theme::fg::PRIMARY.into())
+                .time(self.time)
+                .render(row, frame);
+        }
+        if let Some(row) = stat_row(cols[1], 4) {
+            let text = format!("Headroom: {headroom:+.1}ms");
+            let accent = if headroom < 0.0 {
+                theme::intent::warning_text()
+            } else {
+                theme::intent::success_text()
+            };
+            StyledText::new(truncate_to_width(&text, row.width))
+                .effect(TextEffect::Pulse {
+                    speed: 1.1,
+                    min_alpha: 0.5,
+                })
+                .base_color(accent)
+                .time(self.time)
+                .render(row, frame);
         }
     }
 
@@ -7038,6 +7034,52 @@ mod tests {
         assert!(frame_row.contains("2.0ms"));
         assert!(net_row.starts_with("NET "));
         assert!(net_row.contains("100"));
+    }
+
+    #[test]
+    fn dashboard_info_stats_render_fixed_rows() {
+        let mut state = Dashboard::new();
+        state.fps = 60.0;
+        state.tick_count = 42;
+        state.time = 0.0;
+        state.frame_times.clear();
+        state.frame_times.extend([10_000, 12_000]);
+        state.simulated_data.events_per_second = 123.0;
+        state.simulated_data.cpu_history.clear();
+        state.simulated_data.cpu_history.push_back(42.0);
+        state.simulated_data.memory_history.clear();
+        state.simulated_data.memory_history.push_back(64.0);
+        state.simulated_data.network_in.clear();
+        state.simulated_data.network_in.push_back(100.0);
+        state.simulated_data.network_out.clear();
+        state.simulated_data.network_out.push_back(200.0);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(64, 5, &mut pool);
+        state.render_info_stats(
+            &mut frame,
+            Rect::new(0, 0, 64, 5),
+            (120, 40),
+            "TestTheme",
+            123.0,
+        );
+
+        let row0 = frame_row_text(&frame, 0, 64);
+        let row1 = frame_row_text(&frame, 1, 64);
+        let row2 = frame_row_text(&frame, 2, 64);
+        let row3 = frame_row_text(&frame, 3, 64);
+        let row4 = frame_row_text(&frame, 4, 64);
+
+        assert!(row0.contains("FPS: 60  Tick: 42"));
+        assert!(row0.contains("Size: 120x40  Cells: 4800"));
+        assert!(row1.contains("Events/s: 123"));
+        assert!(row1.contains("Theme: TestTheme"));
+        assert!(row2.contains("CPU:  42%  MEM:  64%"));
+        assert!(row2.contains("Alerts:"));
+        assert!(row3.contains("NET:  100↓ /  200↑"));
+        assert!(row3.contains("Pipeline: BUF→DIFF→ANSI"));
+        assert!(row4.contains("Frame: 16.7ms ±2.0"));
+        assert!(row4.contains("Headroom: -0.7ms"));
     }
 
     #[test]
