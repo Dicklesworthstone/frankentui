@@ -746,6 +746,177 @@ fn render_cached_markdown_text(frame: &mut Frame, area: Rect, text: &Text<'_>) {
     }
 }
 
+fn render_markdown_line_segments(frame: &mut Frame, area: Rect, segments: &[(&str, Style)]) {
+    if area.is_empty() {
+        return;
+    }
+
+    let degradation = frame.buffer.degradation;
+    if !degradation.render_content() {
+        clear_markdown_text_area(frame, area, Style::default());
+        return;
+    }
+
+    clear_markdown_text_area(frame, area, Style::default());
+
+    let mut x = area.x;
+    for (content, style) in segments {
+        if x >= area.right() {
+            break;
+        }
+
+        let span_style = if degradation.apply_styling() {
+            *style
+        } else {
+            Style::default()
+        };
+        x = draw_markdown_span(frame, x, area.y, content, span_style, area.right(), None);
+    }
+}
+
+fn draw_markdown_repeated_char(
+    frame: &mut Frame,
+    mut x: u16,
+    y: u16,
+    ch: char,
+    count: usize,
+    style: Style,
+    max_x: u16,
+) -> u16 {
+    let span_style = if frame.buffer.degradation.apply_styling() {
+        style
+    } else {
+        Style::default()
+    };
+
+    for _ in 0..count {
+        if x >= max_x {
+            break;
+        }
+
+        let mut cell = inherited_markdown_text_cell(frame, x, y, CellContent::from_char(ch));
+        apply_markdown_style(&mut cell, span_style);
+        frame.buffer.set_fast(x, y, cell);
+        x = x.saturating_add(1);
+    }
+
+    x
+}
+
+fn render_stream_progress_bar(frame: &mut Frame, area: Rect, progress: f64) {
+    if area.is_empty() {
+        return;
+    }
+
+    let degradation = frame.buffer.degradation;
+    if !degradation.render_content() {
+        clear_markdown_text_area(frame, area, Style::default());
+        return;
+    }
+
+    clear_markdown_text_area(frame, area, Style::default());
+
+    let progress = if progress.is_finite() {
+        progress.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let bar_width = area.width.saturating_sub(4) as usize;
+    let filled = (progress * bar_width as f64) as usize;
+    let empty = bar_width.saturating_sub(filled);
+    let max_x = area.right();
+    let y = area.y;
+
+    let mut x = draw_markdown_span(frame, area.x, y, "  ", Style::new(), max_x, None);
+    x = draw_markdown_span(frame, x, y, "[", theme::muted(), max_x, None);
+    x = draw_markdown_repeated_char(
+        frame,
+        x,
+        y,
+        '█',
+        filled,
+        Style::new().fg(theme::accent::SUCCESS),
+        max_x,
+    );
+    x = draw_markdown_repeated_char(
+        frame,
+        x,
+        y,
+        '░',
+        empty,
+        Style::new().fg(theme::fg::MUTED).dim(),
+        max_x,
+    );
+    draw_markdown_span(frame, x, y, "]", theme::muted(), max_x, None);
+}
+
+fn render_stream_detection_lines(
+    frame: &mut Frame,
+    area: Rect,
+    detection: MarkdownDetection,
+    stream_position: usize,
+) {
+    if area.is_empty() {
+        return;
+    }
+
+    let degradation = frame.buffer.degradation;
+    if !degradation.render_content() {
+        clear_markdown_text_area(frame, area, Style::default());
+        return;
+    }
+
+    clear_markdown_text_area(frame, area, Style::default());
+
+    let detection_status = if detection.is_confident() {
+        "Confident"
+    } else if detection.is_likely() {
+        "Likely"
+    } else {
+        "Uncertain"
+    };
+
+    if area.height >= 1 {
+        let det_line1 = format!(
+            "Detection: {} indicators | {}",
+            detection.indicators, detection_status
+        );
+        render_markdown_line_segments(
+            frame,
+            Rect::new(area.x, area.y, area.width, 1),
+            &[("  ", Style::new()), (det_line1.as_str(), theme::muted())],
+        );
+    }
+
+    if area.height >= 2 {
+        let det_line2 = format!(
+            "Confidence: {:.0}% | Chars: {}/{}",
+            detection.confidence() * 100.0,
+            stream_position,
+            STREAMING_MARKDOWN.len()
+        );
+        render_markdown_line_segments(
+            frame,
+            Rect::new(area.x, area.y.saturating_add(1), area.width, 1),
+            &[("  ", Style::new()), (det_line2.as_str(), theme::muted())],
+        );
+    }
+
+    if area.height >= 3 {
+        render_markdown_line_segments(
+            frame,
+            Rect::new(area.x, area.y.saturating_add(2), area.width, 1),
+            &[
+                ("  ", Style::new()),
+                (
+                    "Space: play/pause | r: restart | f: turbo | ↑↓: scroll stream",
+                    Style::new().fg(theme::accent::INFO).dim(),
+                ),
+            ],
+        );
+    }
+}
+
 fn clear_markdown_text_area(frame: &mut Frame, area: Rect, style: Style) {
     if area.is_empty() {
         return;
@@ -1290,55 +1461,10 @@ impl MarkdownRichText {
 
         // Render mini progress bar
         let progress = self.stream_position as f64 / STREAMING_MARKDOWN.len() as f64;
-        let bar_width = chunks[1].width.saturating_sub(4) as usize;
-        let filled = (progress * bar_width as f64) as usize;
-        let empty = bar_width.saturating_sub(filled);
-
-        let progress_bar = Line::from_spans([
-            Span::styled("  ", Style::new()),
-            Span::styled("[", theme::muted()),
-            Span::styled("█".repeat(filled), Style::new().fg(theme::accent::SUCCESS)),
-            Span::styled("░".repeat(empty), Style::new().fg(theme::fg::MUTED).dim()),
-            Span::styled("]", theme::muted()),
-        ]);
-        Paragraph::new(Text::from_lines([progress_bar])).render(chunks[1], frame);
+        render_stream_progress_bar(frame, chunks[1], progress);
 
         // Detection status panel
-        let det_line1 = format!(
-            "Detection: {} indicators | {}",
-            detection.indicators,
-            if detection.is_confident() {
-                "Confident"
-            } else if detection.is_likely() {
-                "Likely"
-            } else {
-                "Uncertain"
-            }
-        );
-        let det_line2 = format!(
-            "Confidence: {:.0}% | Chars: {}/{}",
-            detection.confidence() * 100.0,
-            self.stream_position,
-            STREAMING_MARKDOWN.len()
-        );
-        let det_line3 = "Space: play/pause | r: restart | f: turbo | ↑↓: scroll stream";
-
-        let detection_text = Text::from_lines([
-            Line::from_spans([
-                Span::styled("  ", Style::new()),
-                Span::styled(det_line1, theme::muted()),
-            ]),
-            Line::from_spans([
-                Span::styled("  ", Style::new()),
-                Span::styled(det_line2, theme::muted()),
-            ]),
-            Line::from_spans([
-                Span::styled("  ", Style::new()),
-                Span::styled(det_line3, Style::new().fg(theme::accent::INFO).dim()),
-            ]),
-        ]);
-
-        Paragraph::new(detection_text).render(chunks[2], frame);
+        render_stream_detection_lines(frame, chunks[2], detection, self.stream_position);
     }
 }
 
@@ -1567,6 +1693,18 @@ mod tests {
             .render(SAMPLE_MARKDOWN)
     }
 
+    fn frame_row_text(frame: &Frame<'_>, y: u16, width: u16) -> String {
+        (0..width)
+            .map(|x| {
+                frame
+                    .buffer
+                    .get(x, y)
+                    .and_then(|cell| cell.content.as_char())
+                    .unwrap_or(' ')
+            })
+            .collect()
+    }
+
     fn assert_cached_markdown_text_matches_paragraph(
         text: Text<'static>,
         degradation: DegradationLevel,
@@ -1606,6 +1744,29 @@ mod tests {
         assert_eq!(screen.md_scroll, 0);
         assert_eq!(screen.title(), "Markdown and Rich Text");
         assert_eq!(screen.tab_label(), "Markdown");
+    }
+
+    #[test]
+    fn stream_progress_bar_renders_direct_progress_row() {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 1, &mut pool);
+
+        render_stream_progress_bar(&mut frame, Rect::new(0, 0, 12, 1), 0.5);
+
+        assert_eq!(frame_row_text(&frame, 0, 12), "  [████░░░░]");
+    }
+
+    #[test]
+    fn stream_detection_lines_render_direct_rows() {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(72, 3, &mut pool);
+        let detection = is_likely_markdown("```rust\ncode\n```");
+
+        render_stream_detection_lines(&mut frame, Rect::new(0, 0, 72, 3), detection, 123);
+
+        assert!(frame_row_text(&frame, 0, 72).contains("Detection: 4 indicators | Confident"));
+        assert!(frame_row_text(&frame, 1, 72).contains("Confidence: 67% | Chars: 123/"));
+        assert!(frame_row_text(&frame, 2, 72).contains("Space: play/pause"));
     }
 
     #[test]
