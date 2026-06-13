@@ -21,7 +21,7 @@ use ftui_extras::markdown::{
 use ftui_extras::syntax::SyntaxHighlighter;
 use ftui_extras::visual_fx::{Backdrop, PlasmaFx, PlasmaPalette, Scrim, ThemeInputs};
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::{Cell, CellAttrs, CellContent, StyleFlags};
+use ftui_render::cell::{Cell as RenderCell, CellAttrs, CellContent, StyleFlags};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
@@ -751,7 +751,7 @@ fn clear_markdown_text_area(frame: &mut Frame, area: Rect, style: Style) {
         return;
     }
 
-    let mut cell = Cell::from_char(' ');
+    let mut cell = RenderCell::from_char(' ');
     apply_markdown_style(&mut cell, style);
     frame.buffer.fill(area, cell);
 }
@@ -801,14 +801,14 @@ fn draw_markdown_span(
     x
 }
 
-fn inherited_markdown_text_cell(frame: &Frame, x: u16, y: u16, content: CellContent) -> Cell {
+fn inherited_markdown_text_cell(frame: &Frame, x: u16, y: u16, content: CellContent) -> RenderCell {
     let mut cell = frame.buffer.get(x, y).copied().unwrap_or_default();
     cell.content = content;
     cell.attrs = CellAttrs::new(cell.attrs.flags(), 0);
     cell
 }
 
-fn apply_markdown_style(cell: &mut Cell, style: Style) {
+fn apply_markdown_style(cell: &mut RenderCell, style: Style) {
     if let Some(fg) = style.fg {
         cell.fg = fg;
     }
