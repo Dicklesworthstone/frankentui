@@ -224,6 +224,8 @@ pub struct TableThemeGallery {
     selected: usize,
     grid_columns: Cell<usize>,
     card_layout: RefCell<Vec<Rect>>,
+    card_table_states: RefCell<Vec<TableState>>,
+    preview_table_state: RefCell<TableState>,
     log_path: Option<String>,
     run_id: Option<String>,
     last_logged_state: Cell<Option<LogState>>,
@@ -255,6 +257,8 @@ impl TableThemeGallery {
             selected: 0,
             grid_columns: Cell::new(1),
             card_layout: RefCell::new(Vec::new()),
+            card_table_states: RefCell::new(Vec::new()),
+            preview_table_state: RefCell::new(TableState::default()),
             log_path,
             run_id: determinism::demo_run_id(),
             last_logged_state: Cell::new(None),
@@ -457,6 +461,17 @@ impl TableThemeGallery {
         self.apply_overrides(self.preset_theme(idx))
     }
 
+    fn reset_table_state(state: &mut TableState, selected: Option<usize>) {
+        state.selected = selected;
+        state.hovered = None;
+        state.offset = 0;
+        state.sort_column = None;
+        state.sort_ascending = false;
+        state.filter.clear();
+        state.cached_display_indices = None;
+        state.cached_intrinsic_widths = None;
+    }
+
     fn save_custom_preset(&mut self) {
         if self.preset_count() == 0 {
             return;
@@ -580,11 +595,15 @@ impl TableThemeGallery {
             .theme(self.preview_theme(preset_idx))
             .theme_phase(PREVIEW_PHASE)
             .column_spacing(1);
-        let mut state = TableState::default();
-        if self.highlight_row {
-            state.selected = Some(HIGHLIGHT_ROW_INDEX);
+
+        let selected_row = self.highlight_row.then_some(HIGHLIGHT_ROW_INDEX);
+        let mut states = self.card_table_states.borrow_mut();
+        if states.len() <= preset_idx {
+            states.resize_with(preset_idx.saturating_add(1), TableState::default);
         }
-        StatefulWidget::render(&table, rows[1], frame, &mut state);
+        let state = &mut states[preset_idx];
+        Self::reset_table_state(state, selected_row);
+        StatefulWidget::render(&table, rows[1], frame, state);
     }
 
     fn render_markdown_preview(&self, frame: &mut Frame, area: Rect, theme: TableTheme) {
@@ -613,13 +632,11 @@ impl TableThemeGallery {
             .theme(theme)
             .theme_phase(PREVIEW_PHASE)
             .column_spacing(1);
-        if self.highlight_row {
-            let mut state = TableState::default();
-            state.selected = Some(HIGHLIGHT_ROW_INDEX);
-            StatefulWidget::render(&table, area, frame, &mut state);
-        } else {
-            Widget::render(&table, area, frame);
-        }
+
+        let selected_row = self.highlight_row.then_some(HIGHLIGHT_ROW_INDEX);
+        let mut state = self.preview_table_state.borrow_mut();
+        Self::reset_table_state(&mut state, selected_row);
+        StatefulWidget::render(&table, area, frame, &mut state);
     }
 
     fn render_preview_panel(&self, frame: &mut Frame, area: Rect) {
@@ -1166,6 +1183,67 @@ mod tests {
     }
 
     #[test]
+    fn gallery_reuses_table_states_and_resets_visible_state() {
+        let mut gallery = TableThemeGallery::with_log_path(None);
+        gallery.preview_mode = PreviewMode::Widget;
+        gallery.highlight_row = true;
+
+        drop(render_text(&gallery, 120, 40));
+
+        let preset_count = gallery.preset_count();
+        let card_states_ptr = {
+            let states = gallery.card_table_states.borrow();
+            assert_eq!(states.len(), preset_count);
+            assert!(
+                states
+                    .iter()
+                    .all(|state| state.selected == Some(HIGHLIGHT_ROW_INDEX))
+            );
+            states.as_ptr()
+        };
+        let preview_state_ptr = {
+            let state = gallery.preview_table_state.borrow();
+            assert_eq!(state.selected, Some(HIGHLIGHT_ROW_INDEX));
+            std::ptr::from_ref(&*state)
+        };
+
+        {
+            let mut states = gallery.card_table_states.borrow_mut();
+            states[0].selected = Some(0);
+            states[0].hovered = Some(2);
+            states[0].offset = 99;
+            states[0].filter.push_str("stale");
+        }
+        {
+            let mut state = gallery.preview_table_state.borrow_mut();
+            state.selected = Some(0);
+            state.hovered = Some(2);
+            state.offset = 99;
+            state.filter.push_str("stale");
+        }
+
+        gallery.highlight_row = false;
+        drop(render_text(&gallery, 120, 40));
+
+        {
+            let states = gallery.card_table_states.borrow();
+            assert!(std::ptr::eq(states.as_ptr(), card_states_ptr));
+            assert_eq!(states[0].selected, None);
+            assert_eq!(states[0].hovered, None);
+            assert_eq!(states[0].offset, 0);
+            assert!(states[0].filter.is_empty());
+        }
+        {
+            let state = gallery.preview_table_state.borrow();
+            assert!(std::ptr::eq(std::ptr::from_ref(&*state), preview_state_ptr));
+            assert_eq!(state.selected, None);
+            assert_eq!(state.hovered, None);
+            assert_eq!(state.offset, 0);
+            assert!(state.filter.is_empty());
+        }
+    }
+
+    #[test]
     fn gallery_render_deterministic_with_overrides() {
         let keys = [
             KeyCode::Char('v'),
@@ -1194,6 +1272,85 @@ mod tests {
         assert_eq!(
             first, third,
             "render must be deterministic across instances"
+        );
+    }
+
+    #[test]
+    fn gallery_reused_table_states_reset_highlight_for_custom_presets() {
+        let mut gallery = TableThemeGallery::with_log_path(None);
+        gallery.selected = 2;
+        gallery.update(&key_press(KeyCode::Char('s')));
+        assert_eq!(gallery.custom_presets.len(), 1);
+
+        for code in [
+            KeyCode::Char('v'),
+            KeyCode::Char('h'),
+            KeyCode::Char('z'),
+            KeyCode::Char('b'),
+            KeyCode::Char('l'),
+        ] {
+            gallery.update(&key_press(code));
+        }
+
+        let highlighted = render_text(&gallery, 120, 40);
+        let highlighted_again = render_text(&gallery, 120, 40);
+        assert_eq!(
+            highlighted, highlighted_again,
+            "reused table states must keep highlighted custom renders deterministic"
+        );
+
+        let preset_count = gallery.preset_count();
+        {
+            let states = gallery.card_table_states.borrow();
+            assert!(states.len() >= preset_count);
+            assert!(
+                states
+                    .iter()
+                    .take(preset_count)
+                    .all(|state| state.selected == Some(HIGHLIGHT_ROW_INDEX)),
+                "card table states should apply the requested highlight row"
+            );
+        }
+        assert_eq!(
+            gallery.preview_table_state.borrow().selected,
+            Some(HIGHLIGHT_ROW_INDEX)
+        );
+
+        gallery.update(&key_press(KeyCode::Char('l')));
+        let without_highlight = render_text(&gallery, 120, 40);
+        let without_highlight_again = render_text(&gallery, 120, 40);
+        assert_eq!(
+            without_highlight, without_highlight_again,
+            "reused table states must keep unhighlighted custom renders deterministic"
+        );
+
+        {
+            let states = gallery.card_table_states.borrow();
+            assert!(
+                states
+                    .iter()
+                    .take(preset_count)
+                    .all(|state| state.selected.is_none()),
+                "card table states must not leak prior highlight selection"
+            );
+        }
+        assert!(gallery.preview_table_state.borrow().selected.is_none());
+
+        let mut fresh = TableThemeGallery::with_log_path(None);
+        fresh.selected = 2;
+        fresh.update(&key_press(KeyCode::Char('s')));
+        for code in [
+            KeyCode::Char('v'),
+            KeyCode::Char('h'),
+            KeyCode::Char('z'),
+            KeyCode::Char('b'),
+        ] {
+            fresh.update(&key_press(code));
+        }
+        let fresh_without_highlight = render_text(&fresh, 120, 40);
+        assert_eq!(
+            without_highlight, fresh_without_highlight,
+            "reused states must match a fresh gallery with the same custom preset and overrides"
         );
     }
 
