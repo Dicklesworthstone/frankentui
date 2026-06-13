@@ -2,7 +2,9 @@
 
 //! Code Explorer screen — SQLite C source with syntax highlighting and search.
 
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
@@ -13,12 +15,14 @@ use ftui_extras::text_effects::{
     ColorGradient, Direction, StyledMultiLine, StyledText, TextEffect,
 };
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::{Cell as RenderCell, PackedRgba};
+use ftui_render::cell::{
+    Cell as RenderCell, CellAttrs, CellContent, PackedRgba, StyleFlags as CellStyleFlags,
+};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::{Style, StyleFlags};
 use ftui_text::search::search_ascii_case_insensitive;
-use ftui_text::{grapheme_count, grapheme_width, graphemes};
+use ftui_text::{Line, Span, Text, grapheme_count, grapheme_width, graphemes};
 use ftui_widgets::StatefulWidget;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
@@ -238,6 +242,8 @@ pub struct CodeExplorer {
     viewport_height: Cell<u16>,
     /// Syntax highlighter with C language support (initialized on first render/use).
     highlighter: OnceCell<SyntaxHighlighter>,
+    /// Owned syntax-highlighted source lines, keyed by source line index.
+    highlight_cache: RefCell<HashMap<usize, Text<'static>>>,
     /// Search input.
     search_input: TextInput,
     /// Whether search bar is active.
@@ -300,6 +306,7 @@ impl CodeExplorer {
             scroll_offset: 0,
             viewport_height: Cell::new(30),
             highlighter: OnceCell::new(),
+            highlight_cache: RefCell::new(HashMap::new()),
             search_input: TextInput::new()
                 .with_placeholder("Search code... (/ to focus)")
                 .with_style(
@@ -358,12 +365,14 @@ impl CodeExplorer {
         self.current_match = 0;
         self.match_density.clear();
         self.metadata_json = OnceCell::new();
+        self.highlight_cache.get_mut().clear();
     }
 
     pub fn apply_theme(&mut self) {
         if let Some(highlighter) = self.highlighter.get_mut() {
             highlighter.set_theme(theme::syntax_theme());
         }
+        self.highlight_cache.get_mut().clear();
         let input_style = Style::new()
             .fg(theme::fg::PRIMARY)
             .bg(theme::alpha::SURFACE);
@@ -387,6 +396,23 @@ impl CodeExplorer {
             highlighter.set_theme(theme::syntax_theme());
             highlighter
         })
+    }
+
+    fn render_highlighted_source_line(
+        &self,
+        frame: &mut Frame,
+        line_idx: usize,
+        line: &'static str,
+        area: Rect,
+    ) {
+        let mut cache = self.highlight_cache.borrow_mut();
+        match cache.entry(line_idx) {
+            Entry::Occupied(entry) => render_cached_code_text(frame, area, entry.get()),
+            Entry::Vacant(entry) => {
+                let highlighted = own_code_text(self.highlighter().highlight(line, "c"));
+                render_cached_code_text(frame, area, entry.insert(highlighted));
+            }
+        }
     }
 
     fn metadata_json(&self) -> &str {
@@ -1305,8 +1331,7 @@ impl CodeExplorer {
 
             if !is_any_match || query.is_empty() {
                 // Syntax-highlighted line
-                let highlighted = self.highlighter().highlight(line, "c");
-                Paragraph::new(highlighted).render(content_area, frame);
+                self.render_highlighted_source_line(frame, line_idx, line, content_area);
                 continue;
             }
 
@@ -2305,12 +2330,151 @@ fn truncate_to_grapheme_count(text: &str, max_count: usize) -> String {
     out
 }
 
+fn own_code_text(text: Text<'_>) -> Text<'static> {
+    Text::from_lines(text.lines().iter().map(|line| {
+        Line::from_spans(line.spans().iter().map(|span| {
+            let mut owned = match span.style {
+                Some(style) => Span::styled(span.as_str().to_owned(), style),
+                None => Span::raw(span.as_str().to_owned()),
+            };
+            if let Some(link) = span.link.as_ref() {
+                owned = owned.link(link.as_ref().to_owned());
+            }
+            owned
+        }))
+    }))
+}
+
+fn render_cached_code_text(frame: &mut Frame, area: Rect, text: &Text<'_>) {
+    if area.is_empty() {
+        return;
+    }
+
+    let degradation = frame.buffer.degradation;
+    if !degradation.render_content() {
+        clear_code_text_area(frame, area, Style::default());
+        return;
+    }
+
+    clear_code_text_area(frame, area, Style::default());
+
+    let mut y = area.y;
+    for line in text.lines() {
+        if y >= area.bottom() {
+            break;
+        }
+
+        let mut x = area.x;
+        for span in line.spans() {
+            if x >= area.right() {
+                break;
+            }
+
+            let span_style = if degradation.apply_styling() {
+                span.style.unwrap_or_default()
+            } else {
+                Style::default()
+            };
+            x = draw_code_span(
+                frame,
+                x,
+                y,
+                span.as_str(),
+                span_style,
+                area.right(),
+                span.link.as_deref(),
+            );
+        }
+
+        y = y.saturating_add(1);
+    }
+}
+
+fn clear_code_text_area(frame: &mut Frame, area: Rect, style: Style) {
+    if area.is_empty() {
+        return;
+    }
+
+    let mut cell = RenderCell::from_char(' ');
+    apply_code_style(&mut cell, style);
+    frame.buffer.fill(area, cell);
+}
+
+fn draw_code_span(
+    frame: &mut Frame,
+    mut x: u16,
+    y: u16,
+    content: &str,
+    style: Style,
+    max_x: u16,
+    link_url: Option<&str>,
+) -> u16 {
+    let link_id = link_url.map_or(0, |url| frame.register_link(url));
+
+    for grapheme in graphemes(content) {
+        if x >= max_x {
+            break;
+        }
+        let width = grapheme_width(grapheme);
+        if width == 0 {
+            continue;
+        }
+        if x.saturating_add(width as u16) > max_x {
+            break;
+        }
+
+        let content = if width > 1 || grapheme.chars().count() > 1 {
+            let id = frame.intern_with_width(grapheme, width as u8);
+            CellContent::from_grapheme(id)
+        } else if let Some(ch) = grapheme.chars().next() {
+            CellContent::from_char(ch)
+        } else {
+            continue;
+        };
+
+        let mut cell = inherited_code_text_cell(frame, x, y, content);
+        apply_code_style(&mut cell, style);
+        if link_id != 0 {
+            cell.attrs = cell.attrs.with_link(link_id);
+        }
+        frame.buffer.set_fast(x, y, cell);
+
+        x = x.saturating_add(width as u16);
+    }
+
+    x
+}
+
+fn inherited_code_text_cell(frame: &Frame, x: u16, y: u16, content: CellContent) -> RenderCell {
+    let mut cell = frame.buffer.get(x, y).copied().unwrap_or_default();
+    cell.content = content;
+    cell.attrs = CellAttrs::new(cell.attrs.flags(), 0);
+    cell
+}
+
+fn apply_code_style(cell: &mut RenderCell, style: Style) {
+    if let Some(fg) = style.fg {
+        cell.fg = fg;
+    }
+    if let Some(bg) = style.bg {
+        match bg.a() {
+            0 => {}
+            255 => cell.bg = bg,
+            _ => cell.bg = bg.over(cell.bg),
+        }
+    }
+    if let Some(attrs) = style.attrs {
+        cell.attrs = cell.attrs.merged_flags(CellStyleFlags::from(attrs));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ftui_core::event::MouseEvent;
     use ftui_render::frame::Frame;
     use ftui_render::grapheme_pool::GraphemePool;
+    use ftui_widgets::paragraph::Paragraph;
 
     fn render_screen(screen: &CodeExplorer) {
         let mut pool = GraphemePool::new();
@@ -2325,6 +2489,58 @@ mod tests {
             y,
             modifiers: Modifiers::NONE,
         })
+    }
+
+    #[test]
+    fn cached_code_text_renderer_matches_paragraph() {
+        let text = Text::from_spans([
+            Span::styled(
+                "static",
+                Style::new()
+                    .fg(theme::accent::PRIMARY)
+                    .attrs(StyleFlags::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled("sqlite3_open", Style::new().fg(theme::accent::SUCCESS)),
+            Span::raw("(db);"),
+        ]);
+        let area = Rect::new(1, 1, 24, 1);
+
+        let mut direct_pool = GraphemePool::new();
+        let mut direct = Frame::new(32, 4, &mut direct_pool);
+        render_cached_code_text(&mut direct, area, &text);
+
+        let mut paragraph_pool = GraphemePool::new();
+        let mut paragraph = Frame::new(32, 4, &mut paragraph_pool);
+        Paragraph::new(text).render(area, &mut paragraph);
+
+        assert_eq!(direct.buffer, paragraph.buffer);
+    }
+
+    #[test]
+    fn code_explorer_reuses_and_invalidates_highlight_cache() {
+        let mut ce = CodeExplorer::new();
+
+        render_screen(&ce);
+        let cached_lines = ce.highlight_cache.borrow().len();
+        assert!(
+            cached_lines > 0,
+            "source render should cache highlighted lines"
+        );
+
+        render_screen(&ce);
+        assert_eq!(
+            ce.highlight_cache.borrow().len(),
+            cached_lines,
+            "unchanged viewport should reuse cached highlighted lines"
+        );
+
+        ce.apply_theme();
+        assert_eq!(
+            ce.highlight_cache.borrow().len(),
+            0,
+            "theme changes must invalidate cached syntax styles"
+        );
     }
 
     #[test]
