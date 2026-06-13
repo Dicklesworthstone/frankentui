@@ -837,6 +837,7 @@ pub struct MarkdownRichText {
     stream_renderer: MarkdownRenderer,
     rendered_markdown_cache: RefCell<RenderedMarkdownCache>,
     stream_render_cache: RefCell<StreamRenderCache>,
+    style_sampler_cache: RefCell<Option<Text<'static>>>,
     tick_count: u64,
     markdown_backdrop: RefCell<Backdrop>,
     focus: FocusPanel,
@@ -879,6 +880,7 @@ impl MarkdownRichText {
             stream_renderer,
             rendered_markdown_cache: RefCell::default(),
             stream_render_cache: RefCell::default(),
+            style_sampler_cache: RefCell::default(),
             tick_count: 0,
             markdown_backdrop: RefCell::new(markdown_backdrop),
             focus: FocusPanel::Markdown,
@@ -892,6 +894,7 @@ impl MarkdownRichText {
         self.stream_renderer = Self::build_renderer(Self::build_theme());
         self.rendered_markdown_cache.borrow_mut().clear();
         self.stream_render_cache.borrow_mut().clear();
+        *self.style_sampler_cache.borrow_mut() = None;
         let theme_inputs = Self::current_fx_theme();
         self.markdown_backdrop.borrow_mut().set_theme(theme_inputs);
     }
@@ -941,6 +944,46 @@ impl MarkdownRichText {
 
     fn current_fx_theme() -> ThemeInputs {
         ThemeInputs::from(theme::palette(theme::current_theme()))
+    }
+
+    fn build_style_sampler_text() -> Text<'static> {
+        Text::from_lines([
+            Line::from_spans([
+                Span::styled("Bold", theme::bold()),
+                Span::raw("  "),
+                Span::styled("Dim", theme::dim()),
+                Span::raw("  "),
+                Span::styled("Italic", theme::italic()),
+                Span::raw("  "),
+                Span::styled("Underline", theme::underline()),
+            ]),
+            Line::from_spans([
+                Span::styled("Strikethrough", theme::strikethrough()),
+                Span::raw("  "),
+                Span::styled("Reverse", theme::reverse()),
+                Span::raw("  "),
+                Span::styled("Blink", theme::blink_style()),
+            ]),
+            Line::from_spans([
+                Span::styled("Dbl-Underline", theme::double_underline()),
+                Span::raw("  "),
+                Span::styled("Curly-Underline", theme::curly_underline()),
+                Span::raw("  "),
+                Span::styled("[Hidden]", theme::hidden()),
+            ]),
+            Line::new(),
+            Line::from_spans([
+                Span::styled("Error", theme::error_style()),
+                Span::raw("  "),
+                Span::styled("Success", theme::success()),
+                Span::raw("  "),
+                Span::styled("Warning", theme::warning()),
+                Span::raw("  "),
+                Span::styled("Link", theme::link()),
+                Span::raw("  "),
+                Span::styled("Code", theme::code()),
+            ]),
+        ])
     }
 
     /// Advance the streaming simulation by one tick.
@@ -1092,45 +1135,9 @@ impl MarkdownRichText {
             return;
         }
 
-        let styles_text = Text::from_lines([
-            Line::from_spans([
-                Span::styled("Bold", theme::bold()),
-                Span::raw("  "),
-                Span::styled("Dim", theme::dim()),
-                Span::raw("  "),
-                Span::styled("Italic", theme::italic()),
-                Span::raw("  "),
-                Span::styled("Underline", theme::underline()),
-            ]),
-            Line::from_spans([
-                Span::styled("Strikethrough", theme::strikethrough()),
-                Span::raw("  "),
-                Span::styled("Reverse", theme::reverse()),
-                Span::raw("  "),
-                Span::styled("Blink", theme::blink_style()),
-            ]),
-            Line::from_spans([
-                Span::styled("Dbl-Underline", theme::double_underline()),
-                Span::raw("  "),
-                Span::styled("Curly-Underline", theme::curly_underline()),
-                Span::raw("  "),
-                Span::styled("[Hidden]", theme::hidden()),
-            ]),
-            Line::new(),
-            Line::from_spans([
-                Span::styled("Error", theme::error_style()),
-                Span::raw("  "),
-                Span::styled("Success", theme::success()),
-                Span::raw("  "),
-                Span::styled("Warning", theme::warning()),
-                Span::raw("  "),
-                Span::styled("Link", theme::link()),
-                Span::raw("  "),
-                Span::styled("Code", theme::code()),
-            ]),
-        ]);
-
-        Paragraph::new(styles_text).render(inner, frame);
+        let mut cache = self.style_sampler_cache.borrow_mut();
+        let styles_text = cache.get_or_insert_with(Self::build_style_sampler_text);
+        render_cached_markdown_text(frame, inner, styles_text);
     }
 
     fn render_unicode_table(&self, frame: &mut Frame, area: Rect) {
@@ -1658,6 +1665,14 @@ mod tests {
         ]);
 
         assert_cached_markdown_text_matches_paragraph(text, DegradationLevel::NoStyling);
+    }
+
+    #[test]
+    fn cached_style_sampler_renderer_matches_paragraph() {
+        assert_cached_markdown_text_matches_paragraph(
+            MarkdownRichText::build_style_sampler_text(),
+            DegradationLevel::Full,
+        );
     }
 
     #[test]
