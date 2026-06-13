@@ -117,6 +117,9 @@ pub type Rects = SmallVec<[Rect; LAYOUT_INLINE_CAP]>;
 /// Stack-inlined vector of sizes returned by the constraint solver.
 type Sizes = SmallVec<[u16; LAYOUT_INLINE_CAP]>;
 
+/// Stack-inlined vector of flex constraints.
+type Constraints = SmallVec<[Constraint; LAYOUT_INLINE_CAP]>;
+
 /// A constraint on the size of a layout area.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Constraint {
@@ -499,7 +502,7 @@ impl Measurement {
 #[derive(Debug, Clone, Default)]
 pub struct Flex {
     direction: Direction,
-    constraints: Vec<Constraint>,
+    constraints: Constraints,
     margin: Sides,
     gap: u16,
     alignment: Alignment,
@@ -1507,6 +1510,17 @@ mod tests {
         let flex = Flex::horizontal().constraints([]);
         let rects = flex.split(Rect::new(0, 0, 100, 100));
         assert!(rects.is_empty());
+    }
+
+    #[test]
+    fn flex_constraints_stay_inline_for_common_layouts() {
+        let flex = Flex::horizontal().constraints([Constraint::Fixed(1); LAYOUT_INLINE_CAP]);
+        assert_eq!(flex.constraint_count(), LAYOUT_INLINE_CAP);
+        assert!(!flex.constraints.spilled());
+
+        let rects = flex.split(Rect::new(0, 0, LAYOUT_INLINE_CAP as u16, 1));
+        assert_eq!(rects.len(), LAYOUT_INLINE_CAP);
+        assert!(rects.iter().all(|rect| rect.width == 1));
     }
 
     // --- Ratio constraint ---
