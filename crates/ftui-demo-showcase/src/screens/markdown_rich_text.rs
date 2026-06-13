@@ -21,11 +21,12 @@ use ftui_extras::markdown::{
 use ftui_extras::syntax::SyntaxHighlighter;
 use ftui_extras::visual_fx::{Backdrop, PlasmaFx, PlasmaPalette, Scrim, ThemeInputs};
 use ftui_layout::{Constraint, Flex};
+use ftui_render::cell::{Cell, CellAttrs, CellContent, StyleFlags};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
-use ftui_text::WrapMode;
 use ftui_text::text::{Line, Span, Text};
+use ftui_text::{WrapMode, grapheme_width, graphemes};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -686,21 +687,140 @@ impl Widget for MarkdownPanel<'_> {
         }
 
         let max_width = inner.width.saturating_sub(1).max(1);
-        let wrapped = {
+        {
             let mut cache = self.render_cache.borrow_mut();
-            cache
-                .viewport(
-                    max_width,
-                    self.scroll,
-                    inner.height,
-                    self.renderer,
-                    self.markdown,
-                )
-                .clone()
+            let wrapped = cache.viewport(
+                max_width,
+                self.scroll,
+                inner.height,
+                self.renderer,
+                self.markdown,
+            );
+            render_cached_markdown_text(frame, inner, wrapped);
+        }
+    }
+}
+
+fn render_cached_markdown_text(frame: &mut Frame, area: Rect, text: &Text<'_>) {
+    if area.is_empty() {
+        return;
+    }
+
+    let degradation = frame.buffer.degradation;
+    if !degradation.render_content() {
+        clear_markdown_text_area(frame, area, Style::default());
+        return;
+    }
+
+    clear_markdown_text_area(frame, area, Style::default());
+
+    let mut y = area.y;
+    for line in text.lines() {
+        if y >= area.bottom() {
+            break;
+        }
+
+        let mut x = area.x;
+        for span in line.spans() {
+            if x >= area.right() {
+                break;
+            }
+
+            let span_style = if degradation.apply_styling() {
+                span.style.unwrap_or_default()
+            } else {
+                Style::default()
+            };
+            x = draw_markdown_span(
+                frame,
+                x,
+                y,
+                span.content.as_ref(),
+                span_style,
+                area.right(),
+                span.link.as_deref(),
+            );
+        }
+
+        y = y.saturating_add(1);
+    }
+}
+
+fn clear_markdown_text_area(frame: &mut Frame, area: Rect, style: Style) {
+    if area.is_empty() {
+        return;
+    }
+
+    let mut cell = Cell::from_char(' ');
+    apply_markdown_style(&mut cell, style);
+    frame.buffer.fill(area, cell);
+}
+
+fn draw_markdown_span(
+    frame: &mut Frame,
+    mut x: u16,
+    y: u16,
+    content: &str,
+    style: Style,
+    max_x: u16,
+    link_url: Option<&str>,
+) -> u16 {
+    let link_id = link_url.map_or(0, |url| frame.register_link(url));
+
+    for grapheme in graphemes(content) {
+        if x >= max_x {
+            break;
+        }
+        let width = grapheme_width(grapheme);
+        if width == 0 {
+            continue;
+        }
+        if x.saturating_add(width as u16) > max_x {
+            break;
+        }
+
+        let content = if width > 1 || grapheme.chars().count() > 1 {
+            let id = frame.intern_with_width(grapheme, width as u8);
+            CellContent::from_grapheme(id)
+        } else if let Some(ch) = grapheme.chars().next() {
+            CellContent::from_char(ch)
+        } else {
+            continue;
         };
-        Paragraph::from_static_text(wrapped)
-            .wrap(WrapMode::None)
-            .render(inner, frame);
+
+        let mut cell = inherited_markdown_text_cell(frame, x, y, content);
+        apply_markdown_style(&mut cell, style);
+        if link_id != 0 {
+            cell.attrs = cell.attrs.with_link(link_id);
+        }
+        frame.buffer.set_fast(x, y, cell);
+
+        x = x.saturating_add(width as u16);
+    }
+
+    x
+}
+
+fn inherited_markdown_text_cell(frame: &Frame, x: u16, y: u16, content: CellContent) -> Cell {
+    let mut cell = frame.buffer.get(x, y).copied().unwrap_or_default();
+    cell.content = content;
+    cell.attrs = CellAttrs::new(cell.attrs.flags(), 0);
+    cell
+}
+
+fn apply_markdown_style(cell: &mut Cell, style: Style) {
+    if let Some(fg) = style.fg {
+        cell.fg = fg;
+    }
+    if let Some(bg) = style.bg {
+        match bg.a() {
+            0 => {}
+            255 => cell.bg = bg,
+            _ => cell.bg = bg.over(cell.bg),
+        }
+    }
+    if let Some(attrs) = style.attrs {
+        cell.attrs = cell.attrs.merged_flags(StyleFlags::from(attrs));
     }
 }
 
@@ -1144,7 +1264,7 @@ impl MarkdownRichText {
         // Render the streaming markdown fragment
         let fragment = self.current_stream_fragment();
         let stream_complete = self.stream_complete();
-        let (wrapped_stream, detection) = {
+        let detection = {
             let mut cache = self.stream_render_cache.borrow_mut();
             let (stream_text, detection) = cache.viewport_and_detection(
                 MarkdownViewportKey {
@@ -1157,11 +1277,9 @@ impl MarkdownRichText {
                 &self.stream_renderer,
                 fragment,
             );
-            (stream_text.clone(), detection)
+            render_cached_markdown_text(frame, chunks[0], stream_text);
+            detection
         };
-        Paragraph::from_static_text(wrapped_stream)
-            .wrap(WrapMode::None)
-            .render(chunks[0], frame);
 
         // Render mini progress bar
         let progress = self.stream_position as f64 / STREAMING_MARKDOWN.len() as f64;
@@ -1432,11 +1550,39 @@ impl Screen for MarkdownRichText {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::budget::DegradationLevel;
+    use ftui_render::grapheme_pool::GraphemePool;
+    use ftui_render::link_registry::LinkRegistry;
 
     fn rendered_sample() -> Text<'static> {
         MarkdownRenderer::new(MarkdownTheme::default())
             .rule_width(RULE_WIDTH)
             .render(SAMPLE_MARKDOWN)
+    }
+
+    fn assert_cached_markdown_text_matches_paragraph(
+        text: Text<'static>,
+        degradation: DegradationLevel,
+    ) {
+        let area = Rect::new(1, 1, 12, 2);
+        let mut direct_pool = GraphemePool::new();
+        let mut direct_links = LinkRegistry::new();
+        let mut direct = Frame::new(14, 4, &mut direct_pool);
+        direct.set_links(&mut direct_links);
+        direct.set_degradation(degradation);
+
+        let mut paragraph_pool = GraphemePool::new();
+        let mut paragraph_links = LinkRegistry::new();
+        let mut paragraph = Frame::new(14, 4, &mut paragraph_pool);
+        paragraph.set_links(&mut paragraph_links);
+        paragraph.set_degradation(degradation);
+
+        render_cached_markdown_text(&mut direct, area, &text);
+        Paragraph::from_static_text(text)
+            .wrap(WrapMode::None)
+            .render(area, &mut paragraph);
+
+        assert_eq!(direct.buffer, paragraph.buffer);
     }
 
     fn press(code: KeyCode) -> Event {
@@ -1480,6 +1626,38 @@ mod tests {
             .join("\n");
         assert!(plain.contains("pub enum Strategy"));
         assert!(plain.contains("class Span"));
+    }
+
+    #[test]
+    fn cached_markdown_text_renderer_matches_paragraph_full_styling() {
+        let text = Text::from_lines([
+            Line::from_spans([
+                Span::styled("Bold ", Style::new().bold().fg(theme::accent::PRIMARY)),
+                Span::raw("wide \u{1f980}"),
+            ]),
+            Line::from_spans([
+                Span::raw("link ").link("https://example.com"),
+                Span::styled("tail", Style::new().underline()),
+            ]),
+        ]);
+
+        assert_cached_markdown_text_matches_paragraph(text, DegradationLevel::Full);
+    }
+
+    #[test]
+    fn cached_markdown_text_renderer_matches_paragraph_no_styling() {
+        let text = Text::from_lines([
+            Line::from_spans([
+                Span::styled("Muted", Style::new().fg(theme::fg::MUTED).italic()),
+                Span::raw(" plain"),
+            ]),
+            Line::from_spans([Span::styled(
+                "Alert",
+                Style::new().fg(theme::accent::ERROR).bold(),
+            )]),
+        ]);
+
+        assert_cached_markdown_text_matches_paragraph(text, DegradationLevel::NoStyling);
     }
 
     #[test]
