@@ -297,7 +297,7 @@ impl ShapedLineLayout {
     /// `ratio_fixed` is in 1/256 sub-cell units (positive = stretch,
     /// negative = shrink). Space characters get their glue adjusted
     /// according to the ratio.
-    pub fn apply_justification(&mut self, text: &str, ratio_fixed: i32, glue: &GlueSpec) {
+    pub fn apply_justification(&mut self, _text: &str, ratio_fixed: i32, glue: &GlueSpec) {
         if ratio_fixed == 0 || self.placements.is_empty() {
             return;
         }
@@ -311,18 +311,12 @@ impl ShapedLineLayout {
         }
 
         for placement in &mut self.placements {
-            if matches!(placement.render_hint, RenderHint::Continuation) {
-                continue;
-            }
-
-            let byte_start = placement.byte_start as usize;
-            let byte_end = placement.byte_end as usize;
-            if byte_start < text.len() && byte_end <= text.len() {
-                let cluster = &text[byte_start..byte_end];
-                if cluster.chars().all(|c| c == ' ' || c == '\u{00A0}') {
-                    placement.spacing.x_subcell += delta_per_space;
-                    self.subcell_remainder += delta_per_space;
-                }
+            if matches!(
+                placement.render_hint,
+                RenderHint::DirectChar(' ' | '\u{00A0}')
+            ) {
+                placement.spacing.x_subcell += delta_per_space;
+                self.subcell_remainder += delta_per_space;
             }
         }
     }
@@ -757,6 +751,22 @@ mod tests {
         assert!(space_placement.is_some());
         let sp = space_placement.unwrap();
         assert!(sp.spacing.x_subcell > 0);
+    }
+
+    #[test]
+    fn apply_justification_stretches_nbsp() {
+        let text = "hello\u{00A0}world";
+        let mut layout = ShapedLineLayout::from_text(text);
+
+        let ratio = SUBCELL_SCALE as i32;
+        layout.apply_justification(text, ratio, &GlueSpec::WORD_SPACE);
+
+        let nbsp_placement = layout
+            .placements()
+            .iter()
+            .find(|p| matches!(p.render_hint, RenderHint::DirectChar('\u{00A0}')));
+        assert!(nbsp_placement.is_some());
+        assert!(nbsp_placement.unwrap().spacing.x_subcell > 0);
     }
 
     #[test]
