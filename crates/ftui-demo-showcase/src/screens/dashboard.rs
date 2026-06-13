@@ -52,6 +52,8 @@ use crate::data::{AlertSeverity, SimulatedData};
 use crate::determinism;
 use crate::theme;
 
+const DASHBOARD_HISTORY_SCRATCH_CAP: usize = 64;
+
 struct CodeSample {
     label: &'static str,
     lang: &'static str,
@@ -4667,9 +4669,12 @@ impl Dashboard {
         let spark_x = area.x + label_width;
         let spark_area = Rect::new(spark_x, area.y, value_x.saturating_sub(spark_x), 1);
 
-        Paragraph::new(format!("{label} "))
-            .style(Style::new().fg(theme::fg::SECONDARY))
-            .render(label_area, frame);
+        render_static_dashboard_line(
+            frame,
+            label_area,
+            label,
+            Style::new().fg(theme::fg::SECONDARY),
+        );
 
         if !spark_area.is_empty() && !data.is_empty() {
             Sparkline::new(data)
@@ -4679,9 +4684,12 @@ impl Dashboard {
         }
 
         if !value_area.is_empty() {
-            Paragraph::new(value_label)
-                .style(Style::new().fg(theme::fg::PRIMARY))
-                .render(value_area, frame);
+            render_static_dashboard_line(
+                frame,
+                value_area,
+                &value_label,
+                Style::new().fg(theme::fg::PRIMARY),
+            );
         }
     }
 
@@ -5142,15 +5150,16 @@ impl Dashboard {
             return;
         }
 
-        let rows = Flex::vertical()
-            .constraints(vec![Constraint::Fixed(1); area.height.min(2) as usize])
-            .split(area);
+        let first_row = Rect::new(area.x, area.y, area.width, 1);
+        let second_row = (area.height >= 2).then_some(Rect::new(area.x, area.y + 1, area.width, 1));
 
-        let frame_data: Vec<f64> = self
-            .frame_times
-            .iter()
-            .map(|sample| *sample as f64 / 1000.0)
-            .collect();
+        let mut frame_scratch = [0.0; DASHBOARD_HISTORY_SCRATCH_CAP];
+        let frame_data = fill_dashboard_f64_scratch(
+            &mut frame_scratch,
+            self.frame_times
+                .iter()
+                .map(|sample| *sample as f64 / 1000.0),
+        );
         let frame_avg = if frame_data.is_empty() {
             0.0
         } else {
@@ -5161,37 +5170,37 @@ impl Dashboard {
         } else {
             "n/a".to_string()
         };
-        let net_data: Vec<f64> = self
-            .simulated_data
-            .network_in
-            .iter()
-            .zip(self.simulated_data.network_out.iter())
-            .map(|(a, b)| a + b)
-            .collect();
+        let mut net_scratch = [0.0; DASHBOARD_HISTORY_SCRATCH_CAP];
+        let net_data = fill_dashboard_f64_scratch(
+            &mut net_scratch,
+            self.simulated_data
+                .network_in
+                .iter()
+                .zip(self.simulated_data.network_out.iter())
+                .map(|(a, b)| a + b),
+        );
         let net_last = net_data.last().copied().unwrap_or(0.0);
         let net_label = Self::format_rate(net_last);
 
-        if let Some(row) = rows.first() {
-            self.render_labeled_sparkline(
-                frame,
-                *row,
-                "FRM",
-                frame_label,
-                &frame_data,
+        self.render_labeled_sparkline(
+            frame,
+            first_row,
+            "FRM",
+            frame_label,
+            frame_data,
+            theme::accent::ACCENT_6.into(),
+            (
                 theme::accent::ACCENT_6.into(),
-                (
-                    theme::accent::ACCENT_6.into(),
-                    theme::accent::ACCENT_3.into(),
-                ),
-            );
-        }
-        if let Some(row) = rows.get(1) {
+                theme::accent::ACCENT_3.into(),
+            ),
+        );
+        if let Some(row) = second_row {
             self.render_labeled_sparkline(
                 frame,
-                *row,
+                row,
                 "NET",
                 net_label,
-                &net_data,
+                net_data,
                 theme::accent::ACCENT_8.into(),
                 (
                     theme::accent::ACCENT_8.into(),
@@ -6268,6 +6277,21 @@ fn render_static_dashboard_line(frame: &mut Frame, area: Rect, text: &str, style
     }
 }
 
+fn fill_dashboard_f64_scratch<I, const N: usize>(scratch: &mut [f64; N], values: I) -> &[f64]
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut len = 0;
+    for value in values {
+        if len == N {
+            break;
+        }
+        scratch[len] = value;
+        len += 1;
+    }
+    &scratch[..len]
+}
+
 fn truncate_to_width(text: &str, max_width: u16) -> String {
     if max_width == 0 {
         return String::new();
@@ -6564,6 +6588,19 @@ mod tests {
     use super::*;
     use ftui_extras::syntax::SyntaxHighlighter;
     use ftui_render::grapheme_pool::GraphemePool;
+
+    fn frame_row_text(frame: &Frame, y: u16, width: u16) -> String {
+        let mut row = String::with_capacity(width as usize);
+        for x in 0..width {
+            let ch = frame
+                .buffer
+                .get(x, y)
+                .and_then(|cell| cell.content.as_char())
+                .unwrap_or(' ');
+            row.push(ch);
+        }
+        row
+    }
 
     #[test]
     fn dashboard_renders_header() {
@@ -6967,6 +7004,37 @@ mod tests {
             state.simulated_data.cpu_history.len() > initial_len,
             "CPU history should grow on tick"
         );
+    }
+
+    #[test]
+    fn dashboard_f64_scratch_preserves_order_and_caps() {
+        let mut scratch = [0.0; 4];
+        let data = fill_dashboard_f64_scratch(&mut scratch, (0..6).map(f64::from));
+
+        assert_eq!(data, &[0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn dashboard_info_sparkline_strip_renders_bounded_history_rows() {
+        let mut state = Dashboard::new();
+        state.frame_times.clear();
+        state.frame_times.extend([1000, 2000, 3000]);
+        state.simulated_data.network_in.clear();
+        state.simulated_data.network_out.clear();
+        state.simulated_data.network_in.extend([10.0, 20.0, 25.0]);
+        state.simulated_data.network_out.extend([20.0, 40.0, 75.0]);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(24, 2, &mut pool);
+        state.render_info_sparkline_strip(&mut frame, Rect::new(0, 0, 24, 2));
+
+        let frame_row = frame_row_text(&frame, 0, 24);
+        let net_row = frame_row_text(&frame, 1, 24);
+
+        assert!(frame_row.starts_with("FRM "));
+        assert!(frame_row.contains("2.0ms"));
+        assert!(net_row.starts_with("NET "));
+        assert!(net_row.contains("100"));
     }
 
     #[test]
