@@ -5257,15 +5257,12 @@ impl Dashboard {
             theme::intent::error_text(),
         );
 
-        let mut constraints = Vec::new();
-        let bar_count = area.height.min(4) as usize;
-        for _ in 0..bar_count {
-            constraints.push(Constraint::Fixed(1));
-        }
-        let rows = Flex::vertical().constraints(constraints).split(area);
         let bars = [("CPU", cpu), ("MEM", mem), ("NET", net), ("DSK", disk)];
-        for (row, (label, value)) in rows.iter().zip(bars.iter()) {
-            self.render_mini_bar_row(frame, *row, label, *value, colors);
+        let bar_count = area.height.min(bars.len() as u16);
+        for idx in 0..bar_count {
+            let row = Rect::new(area.x, area.y.saturating_add(idx), area.width, 1);
+            let (label, value) = bars[idx as usize];
+            self.render_mini_bar_row(frame, row, label, value, colors);
         }
     }
 
@@ -5283,9 +5280,8 @@ impl Dashboard {
 
         let label_width = 4.min(area.width);
         let label_area = Rect::new(area.x, area.y, label_width, 1);
-        Paragraph::new(format!("{label} "))
-            .style(Style::new().fg(theme::fg::SECONDARY))
-            .render(label_area, frame);
+        let text_style = Style::new().fg(theme::fg::SECONDARY);
+        render_static_dashboard_line(frame, label_area, label, text_style);
 
         let bar_width = area.width.saturating_sub(label_width);
         if bar_width == 0 {
@@ -5297,11 +5293,14 @@ impl Dashboard {
             let percent = if bar_area.width == 5 {
                 format!(" {:3.0}%", value * 100.0)
             } else {
-                format!("{:3.0}%", value * 100.0).trim_start().to_owned()
+                format!("{:3.0}%", value * 100.0)
             };
-            Paragraph::new(percent)
-                .style(Style::new().fg(theme::fg::SECONDARY))
-                .render(bar_area, frame);
+            let percent = if bar_area.width == 5 {
+                percent.as_str()
+            } else {
+                percent.trim_start()
+            };
+            render_static_dashboard_line(frame, bar_area, percent, text_style);
             return;
         }
 
@@ -7111,6 +7110,21 @@ mod tests {
             })
             .collect();
         assert_eq!(rendered, "DSK   67%");
+    }
+
+    #[test]
+    fn dashboard_mini_bars_render_four_fixed_rows() {
+        let state = Dashboard::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 5, &mut pool);
+
+        state.render_mini_bars(&mut frame, Rect::new(0, 0, 12, 5));
+
+        assert!(frame_row_text(&frame, 0, 12).starts_with("CPU "));
+        assert!(frame_row_text(&frame, 1, 12).starts_with("MEM "));
+        assert!(frame_row_text(&frame, 2, 12).starts_with("NET "));
+        assert!(frame_row_text(&frame, 3, 12).starts_with("DSK "));
+        assert_eq!(frame_row_text(&frame, 4, 12), "            ");
     }
 
     #[test]
