@@ -8,7 +8,7 @@
 //! - `SyntaxHighlighter` for file preview
 //! - `filesize::decimal()` for human-readable sizes
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
@@ -21,7 +21,7 @@ use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
-use ftui_text::{display_width, grapheme_width, graphemes};
+use ftui_text::{Line, Span, Text, display_width, grapheme_width, graphemes};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -55,6 +55,28 @@ impl Panel {
             Self::Preview => Self::FilePicker,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreviewEntryKey {
+    name: String,
+    kind: FileKind,
+    size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreviewCacheKey {
+    path: String,
+    selected_index: usize,
+    selected_entry: Option<PreviewEntryKey>,
+    show_hidden: bool,
+    theme_generation: u64,
+}
+
+struct PreviewCacheEntry {
+    key: PreviewCacheKey,
+    paragraph_scroll: u16,
+    paragraph: Paragraph<'static>,
 }
 
 /// Sample file content for preview.
@@ -102,6 +124,8 @@ pub struct FileBrowser {
     focus: Panel,
     picker: FilePicker,
     highlighter: SyntaxHighlighter,
+    preview_theme_generation: u64,
+    preview_cache: RefCell<Option<PreviewCacheEntry>>,
     preview_scroll: usize,
     show_hidden: bool,
     entries: Vec<FileEntry>,
@@ -134,6 +158,8 @@ impl FileBrowser {
             focus: Panel::FilePicker,
             picker,
             highlighter,
+            preview_theme_generation: 0,
+            preview_cache: RefCell::new(None),
             preview_scroll: 0,
             show_hidden: false,
             entries,
@@ -146,11 +172,14 @@ impl FileBrowser {
     pub fn apply_theme(&mut self) {
         self.picker.set_style(Self::picker_style());
         self.highlighter.set_theme(theme::syntax_theme());
+        self.preview_theme_generation = self.preview_theme_generation.wrapping_add(1);
+        self.invalidate_preview_cache();
     }
 
     fn set_entries(&mut self, entries: Vec<FileEntry>) {
         self.entries = entries.clone();
         self.picker.set_entries(entries);
+        self.invalidate_preview_cache();
     }
 
     fn visible_entries(&self) -> Vec<&FileEntry> {
@@ -163,6 +192,28 @@ impl FileBrowser {
 
     fn current_path(&self) -> &str {
         self.picker.path()
+    }
+
+    fn invalidate_preview_cache(&self) {
+        self.preview_cache.borrow_mut().take();
+    }
+
+    fn preview_cache_key(&self) -> PreviewCacheKey {
+        PreviewCacheKey {
+            path: self.current_path().to_string(),
+            selected_index: self.picker.selected_index(),
+            selected_entry: self.picker.selected_entry().map(|entry| PreviewEntryKey {
+                name: entry.name.clone(),
+                kind: entry.kind,
+                size: entry.size,
+            }),
+            show_hidden: self.show_hidden,
+            theme_generation: self.preview_theme_generation,
+        }
+    }
+
+    fn preview_scroll_u16(&self) -> u16 {
+        self.preview_scroll.min(u16::MAX as usize) as u16
     }
 
     fn enter_selected_directory(&mut self) {
@@ -207,10 +258,18 @@ impl FileBrowser {
         let entry = self.picker.selected_entry();
         if let Some(entry) = entry {
             if entry.is_dir() {
-                let mut listing = String::from("Directory contents:\n");
-                for item in self.visible_entries().iter().take(8) {
+                let entries = self.visible_entries();
+                let mut listing = String::with_capacity(
+                    "Directory contents:\n".len() + entries.len().min(8) * 24,
+                );
+                listing.push_str("Directory contents:\n");
+                for item in entries.into_iter().take(8) {
                     let icon = icons::entry_icon(item);
-                    listing.push_str(&format!("  {icon} {}\n", item.name));
+                    listing.push_str("  ");
+                    listing.push_str(icon);
+                    listing.push(' ');
+                    listing.push_str(&item.name);
+                    listing.push('\n');
                 }
                 return (listing, "plain");
             }
@@ -241,6 +300,52 @@ impl FileBrowser {
             Some("package.json") | Some("data.json") => (SAMPLE_JSON.to_string(), "json"),
             _ => ("(no preview available)".to_string(), "plain"),
         }
+    }
+
+    fn preview_paragraph(text: Text<'static>, scroll: u16) -> Paragraph<'static> {
+        Paragraph::from_static_text(text)
+            .style(Style::new().fg(theme::fg::PRIMARY))
+            .scroll((scroll, 0))
+    }
+
+    fn render_highlighted_preview(&self, frame: &mut Frame, area: Rect) {
+        let key = self.preview_cache_key();
+        let scroll = self.preview_scroll_u16();
+
+        {
+            let cache = self.preview_cache.borrow();
+            if let Some(entry) = cache.as_ref()
+                && entry.key == key
+                && entry.paragraph_scroll == scroll
+            {
+                entry.paragraph.render(area, frame);
+                return;
+            }
+        }
+
+        {
+            let mut cache = self.preview_cache.borrow_mut();
+            if let Some(entry) = cache.as_mut()
+                && entry.key == key
+            {
+                let paragraph = entry.paragraph.clone().scroll((scroll, 0));
+                paragraph.render(area, frame);
+                entry.paragraph = paragraph;
+                entry.paragraph_scroll = scroll;
+                return;
+            }
+        }
+
+        let (content, lang) = self.current_preview();
+        let highlighted = text_into_owned(self.highlighter.highlight(&content, lang));
+        let paragraph = Self::preview_paragraph(highlighted, scroll);
+        paragraph.render(area, frame);
+
+        *self.preview_cache.borrow_mut() = Some(PreviewCacheEntry {
+            key,
+            paragraph_scroll: scroll,
+            paragraph,
+        });
     }
 
     fn render_tree_panel(&self, frame: &mut Frame, area: Rect) {
@@ -423,13 +528,15 @@ impl FileBrowser {
             .style(Style::new().fg(theme::fg::SECONDARY))
             .render(header_body[0], frame);
 
-        let (content, lang) = self.current_preview();
-        let highlighted = self.highlighter.highlight(&content, lang);
-        Paragraph::new(highlighted)
-            .style(Style::new().fg(theme::fg::PRIMARY))
-            .scroll((self.preview_scroll as u16, 0))
-            .render(header_body[1], frame);
+        self.render_highlighted_preview(frame, header_body[1]);
     }
+}
+
+fn text_into_owned(text: Text<'_>) -> Text<'static> {
+    Text::from_lines(
+        text.into_iter()
+            .map(|line| Line::from_spans(line.into_iter().map(Span::into_owned))),
+    )
 }
 
 fn simulated_entries() -> Vec<FileEntry> {
@@ -858,6 +965,7 @@ impl Screen for FileBrowser {
                                 allowed_extensions: vec![],
                                 show_hidden: self.show_hidden,
                             });
+                            self.invalidate_preview_cache();
                         }
                         KeyCode::Enter => self.enter_selected_directory(),
                         KeyCode::Backspace => self.go_up(),
@@ -978,6 +1086,7 @@ impl Screen for FileBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     fn press(code: KeyCode) -> Event {
         Event::Key(KeyEvent {
@@ -993,6 +1102,12 @@ mod tests {
             modifiers: Modifiers::CTRL,
             kind: KeyEventKind::Press,
         })
+    }
+
+    fn render_preview(screen: &FileBrowser) {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        screen.render_highlighted_preview(&mut frame, Rect::new(0, 0, 40, 8));
     }
 
     #[test]
@@ -1051,6 +1166,54 @@ mod tests {
         assert!(!screen.show_hidden);
         screen.update(&press(KeyCode::Char('.')));
         assert!(screen.show_hidden);
+    }
+
+    #[test]
+    fn preview_cache_populates_and_tracks_selection() {
+        let mut screen = FileBrowser::new();
+        assert!(screen.preview_cache.borrow().is_none());
+
+        render_preview(&screen);
+        let first_key = screen.preview_cache.borrow().as_ref().unwrap().key.clone();
+        assert_eq!(first_key, screen.preview_cache_key());
+
+        screen.update(&press(KeyCode::Down));
+        render_preview(&screen);
+        let next_key = screen.preview_cache.borrow().as_ref().unwrap().key.clone();
+        assert_ne!(next_key, first_key);
+        assert_eq!(next_key, screen.preview_cache_key());
+    }
+
+    #[test]
+    fn preview_cache_keeps_content_key_when_only_scroll_changes() {
+        let mut screen = FileBrowser::new();
+        render_preview(&screen);
+        let first_key = screen.preview_cache.borrow().as_ref().unwrap().key.clone();
+
+        screen.focus = Panel::Preview;
+        screen.update(&press(KeyCode::Down));
+        render_preview(&screen);
+        let cache = screen.preview_cache.borrow();
+        let entry = cache.as_ref().unwrap();
+        assert_eq!(entry.key, first_key);
+        assert_eq!(entry.paragraph_scroll, 1);
+    }
+
+    #[test]
+    fn preview_cache_invalidates_on_theme_filter_and_entries() {
+        let mut screen = FileBrowser::new();
+        render_preview(&screen);
+
+        screen.apply_theme();
+        assert!(screen.preview_cache.borrow().is_none());
+
+        render_preview(&screen);
+        screen.update(&press(KeyCode::Char('.')));
+        assert!(screen.preview_cache.borrow().is_none());
+
+        render_preview(&screen);
+        screen.enter_selected_directory();
+        assert!(screen.preview_cache.borrow().is_none());
     }
 
     #[test]
