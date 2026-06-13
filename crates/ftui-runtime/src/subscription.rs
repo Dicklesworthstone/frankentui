@@ -288,6 +288,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
         for running in &to_stop {
             running.signal_stop();
         }
+        let stopped_count = to_stop.len();
         // Phase 2: Join with bounded timeout.
         for running in to_stop {
             let _ = running.join_bounded();
@@ -295,12 +296,14 @@ impl<M: Send + 'static> SubscriptionManager<M> {
         self.active = remaining;
 
         // Start new subscriptions
+        let mut started_count = 0usize;
         let mut active_ids: HashSet<SubId> = self.active.iter().map(|r| r.id).collect();
         for sub in subscriptions {
             let id = sub.id();
             if !active_ids.insert(id) {
                 continue;
             }
+            started_count += 1;
 
             crate::debug_trace!("starting subscription: id={}", id);
             tracing::debug!(sub_id = id, "Starting subscription");
@@ -348,8 +351,8 @@ impl<M: Send + 'static> SubscriptionManager<M> {
         tracing::trace!(
             active_before = active_count_before,
             active_after = active_count_after,
-            started = active_count_after.saturating_sub(active_count_before),
-            stopped = active_count_before.saturating_sub(active_count_after),
+            started = started_count,
+            stopped = stopped_count,
             reconcile_us = reconcile_elapsed_us,
             "subscription reconcile complete"
         );
