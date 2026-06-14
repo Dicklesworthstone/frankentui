@@ -2,8 +2,11 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{ChildStderr, Command, Stdio};
+use std::time::Duration;
 use std::{collections::BTreeMap, collections::BTreeSet};
+
+use wait_timeout::ChildExt;
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -24,6 +27,10 @@ const MIGRATION_FORECAST_FILENAME: &str = "migration_forecast.json";
 const FORECAST_SCHEMA_VERSION: &str = "doctor-migration-forecast-v1";
 const INCREMENTAL_WATCH_FILENAME: &str = "incremental_watch.json";
 const WATCH_SCHEMA_VERSION: &str = "doctor-incremental-watch-v1";
+/// Upper bound for the `git archive | tar` snapshot pipeline. Generous enough
+/// for large repositories, but bounded so a stalled or malformed repository
+/// cannot hang the importer indefinitely.
+const GIT_SNAPSHOT_TIMEOUT_SECONDS: u64 = 180;
 const WATCH_PIPELINE_STAGES: [&str; 7] = [
     "ingest",
     "ir_lower",
@@ -699,9 +706,15 @@ fn materialize_git_snapshot(
     commit: &str,
     snapshot_dir: &Path,
 ) -> std::result::Result<(), IntakeFailure> {
+    // Bound the `git archive | tar` pipeline so a stalled or malformed
+    // repository cannot hang the importer indefinitely. `tar` drives the
+    // pipeline (it pulls git's stdout), so we wait on `tar` first and tear down
+    // the whole pipeline on timeout, then reap `git`. Both children are killed
+    // and reaped on every error path to avoid leaking processes.
+    let timeout = Duration::from_secs(GIT_SNAPSHOT_TIMEOUT_SECONDS);
     let command_cwd = stable_command_cwd();
-    let mut git_archive = Command::new("git");
-    git_archive
+
+    let mut git_child = Command::new("git")
         .current_dir(&command_cwd)
         .arg("-C")
         .arg(repo_dir)
@@ -709,67 +722,139 @@ fn materialize_git_snapshot(
         .arg("--format=tar")
         .arg(commit)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!("failed to spawn git archive: {error}"),
+            )
+        })?;
 
-    let mut git_child = git_archive.spawn().map_err(|error| {
-        IntakeFailure::new(
-            IntakeErrorClass::Unknown,
-            format!("failed to spawn git archive: {error}"),
-        )
-    })?;
+    let git_stdout = match git_child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            reap(&mut git_child);
+            return Err(IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                "git archive did not expose stdout for tar pipeline",
+            ));
+        }
+    };
 
-    let git_stdout = git_child.stdout.take().ok_or_else(|| {
-        IntakeFailure::new(
-            IntakeErrorClass::Unknown,
-            "git archive did not expose stdout for tar pipeline",
-        )
-    })?;
-
-    let tar_output = Command::new("tar")
+    let mut tar_child = match Command::new("tar")
         .current_dir(&command_cwd)
         .arg("-xf")
         .arg("-")
         .arg("-C")
         .arg(snapshot_dir)
         .stdin(Stdio::from(git_stdout))
-        .output()
-        .map_err(|error| {
-            IntakeFailure::new(
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            reap(&mut git_child);
+            return Err(IntakeFailure::new(
                 IntakeErrorClass::Unknown,
-                format!("failed to execute tar extraction: {error}"),
-            )
-        })?;
+                format!("failed to spawn tar extraction: {error}"),
+            ));
+        }
+    };
 
-    let git_output = git_child.wait_with_output().map_err(|error| {
-        IntakeFailure::new(
-            IntakeErrorClass::Unknown,
-            format!("failed to wait for git archive completion: {error}"),
-        )
-    })?;
+    let tar_status = match tar_child.wait_timeout(timeout) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            reap(&mut tar_child);
+            reap(&mut git_child);
+            return Err(IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!(
+                    "tar extraction timed out after {}s for commit {commit}",
+                    timeout.as_secs()
+                ),
+            ));
+        }
+        Err(error) => {
+            reap(&mut tar_child);
+            reap(&mut git_child);
+            return Err(IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!("failed to wait for tar extraction: {error}"),
+            ));
+        }
+    };
 
-    if !git_output.status.success() {
-        let stderr = String::from_utf8_lossy(&git_output.stderr).to_string();
+    // With tar finished, git's stdout has been fully consumed (or closed via
+    // EPIPE if tar died early), so git is finished or about to be; the timeout
+    // here is just a backstop.
+    let git_status = match git_child.wait_timeout(timeout) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            reap(&mut git_child);
+            return Err(IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!(
+                    "git archive timed out after {}s for commit {commit}",
+                    timeout.as_secs()
+                ),
+            ));
+        }
+        Err(error) => {
+            reap(&mut git_child);
+            return Err(IntakeFailure::new(
+                IntakeErrorClass::Unknown,
+                format!("failed to wait for git archive completion: {error}"),
+            ));
+        }
+    };
+
+    // Both children have exited, so the remaining stderr is bounded and can be
+    // drained without risk of blocking.
+    let git_stderr = drain_stderr(git_child.stderr.take());
+    let tar_stderr = drain_stderr(tar_child.stderr.take());
+
+    if !git_status.success() {
         return Err(IntakeFailure::new(
-            classify_git_stderr(&stderr),
+            classify_git_stderr(&git_stderr),
             format!(
                 "git archive failed for commit {commit}: {}",
-                normalize_stderr(&stderr)
+                normalize_stderr(&git_stderr)
             ),
         ));
     }
 
-    if !tar_output.status.success() {
-        let stderr = String::from_utf8_lossy(&tar_output.stderr).to_string();
+    if !tar_status.success() {
         return Err(IntakeFailure::new(
             IntakeErrorClass::IncompatibleRepo,
             format!(
                 "tar extraction failed for commit {commit}: {}",
-                normalize_stderr(&stderr)
+                normalize_stderr(&tar_stderr)
             ),
         ));
     }
 
     Ok(())
+}
+
+/// Kill a child and reap it so we never leak a process or zombie on an error or
+/// timeout path. Best-effort: a child that already exited simply returns
+/// errors from `kill`, which are ignored.
+fn reap(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Drain a finished child's stderr handle into a lossy UTF-8 string. The caller
+/// must only invoke this after the child has exited so the read cannot block.
+fn drain_stderr(handle: Option<ChildStderr>) -> String {
+    let Some(mut handle) = handle else {
+        return String::new();
+    };
+    let mut buf = Vec::new();
+    let _ = handle.read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 fn write_intake_metadata(run_dir: &Path, metadata: &IntakeMetadata) -> Result<()> {

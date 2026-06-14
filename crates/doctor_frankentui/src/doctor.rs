@@ -648,12 +648,29 @@ fn capture_tmux_pane(session_name: &str, output_path: &Path) -> Result<()> {
     }
 }
 
-fn kill_tmux_session(session_name: &str) {
+/// Best-effort kill of a tmux session, returning whether the session is
+/// confirmed gone afterward. `tmux kill-session` can exit successfully while the
+/// session lingers for a moment, and it can also fail outright (server gone,
+/// permissions), so we re-check `has-session` with a short bounded poll instead
+/// of trusting the kill command's exit status. The caller uses the result to
+/// surface a lingering session rather than silently leaking it.
+fn kill_tmux_session(session_name: &str) -> bool {
+    const KILL_CONFIRM_ATTEMPTS: usize = 10;
+    const KILL_CONFIRM_POLL_MS: u64 = 50;
+
     let _ = Command::new("tmux")
         .args(["kill-session", "-t", session_name])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+
+    for _ in 0..KILL_CONFIRM_ATTEMPTS {
+        if !tmux_has_session(session_name) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(KILL_CONFIRM_POLL_MS));
+    }
+    !tmux_has_session(session_name)
 }
 
 fn run_tmux_app_smoke_fallback(
@@ -711,7 +728,9 @@ fn run_tmux_app_smoke_fallback(
         .stderr(Stdio::null())
         .status()?;
     if !pipe_status.success() {
-        kill_tmux_session(&session_name);
+        // Best-effort teardown on the error path; we are returning an error
+        // regardless, so the confirmation result is intentionally ignored.
+        let _ = kill_tmux_session(&session_name);
         return Err(DoctorError::exit(
             exit_status_code(pipe_status),
             format!("failed to attach tmux pipe-pane for session {session_name}"),
@@ -742,8 +761,13 @@ fn run_tmux_app_smoke_fallback(
     if timed_out || !args.tmux_keep_open {
         let _ = capture_tmux_pane(&session_name, &smoke_paths.tmux_pane_capture);
     }
-    if timed_out && !args.tmux_keep_open {
-        kill_tmux_session(&session_name);
+    let mut kill_failed = false;
+    if timed_out && !args.tmux_keep_open && !kill_tmux_session(&session_name) {
+        kill_failed = true;
+        ui.warning(&format!(
+            "failed to terminate lingering tmux session '{session_name}'; \
+             clean up manually with: tmux kill-session -t {session_name}"
+        ));
     }
 
     let status_label = if timed_out {
@@ -765,6 +789,7 @@ fn run_tmux_app_smoke_fallback(
         "tmux_pane_capture": smoke_paths.tmux_pane_capture.display().to_string(),
         "tmux_pane_log": smoke_paths.tmux_pane_log.display().to_string(),
         "tmux_keep_open": args.tmux_keep_open,
+        "tmux_kill_failed": kill_failed,
     });
     write_string(
         &smoke_paths.summary_path,
