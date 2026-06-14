@@ -254,6 +254,7 @@ assumptions do not match.
 
 ## See Also
 
+- [OpenTUI Import — Operations](opentui-import-operations.md) -- operator runbooks, playbooks, and troubleshooting for running migrations with the `doctor_frankentui` CLI
 - [Operational Playbook](operational-playbook.md) -- shipping order and quality gates
 - [Glossary](glossary.md) -- terminology definitions
 - [Cache and Layout Rationale](spec/cache-and-layout.md) -- why 16-byte cells and row-major storage
