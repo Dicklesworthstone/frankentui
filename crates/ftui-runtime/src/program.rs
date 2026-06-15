@@ -7406,6 +7406,101 @@ mod tests {
         ftui_layout::PaneTree::from_snapshot(snapshot).expect("valid nested pane tree")
     }
 
+    /// First-child share (in basis points) of a split node's ratio.
+    fn root_first_share_bps(tree: &ftui_layout::PaneTree, split: ftui_layout::PaneId) -> u32 {
+        match &tree.node(split).expect("split node present").kind {
+            PaneNodeKind::Split(node) => {
+                node.ratio.numerator() * 10_000
+                    / (node.ratio.numerator() + node.ratio.denominator())
+            }
+            other => panic!("expected split node, got {other:?}"),
+        }
+    }
+
+    /// A fixed, timing-independent pressure-snap profile for deterministic tests.
+    fn fixed_neutral_pressure() -> PanePressureSnapProfile {
+        PanePressureSnapProfile {
+            strength_bps: 5_000,
+            hysteresis_bps: 100,
+        }
+    }
+
+    /// Apply a terminal dispatch's geometry-bearing transition to the live tree
+    /// using a fixed, caller-supplied pressure profile.
+    ///
+    /// Unlike the realistic path (which derives pressure from pointer motion and
+    /// therefore from wall-clock `speed`), this helper always uses `pressure`, so
+    /// repeated runs of the same scripted event sequence are byte-for-byte
+    /// deterministic. Returns the number of operations applied.
+    fn apply_dispatch_fixed(
+        tree: &mut ftui_layout::PaneTree,
+        layout: &ftui_layout::PaneLayout,
+        dispatch: &PaneTerminalDispatch,
+        pressure: PanePressureSnapProfile,
+        seed: &mut u64,
+    ) -> usize {
+        let Some(transition) = dispatch.primary_transition.as_ref() else {
+            return 0;
+        };
+        let ops = tree.operations_for_transition(transition, layout, pressure);
+        let applied = ops.len();
+        for op in ops {
+            tree.apply_operation(*seed, op).expect("operation applies");
+            *seed += 1;
+        }
+        applied
+    }
+
+    /// Drive a full scripted horizontal splitter drag through the live
+    /// adapter -> bridge -> tree path with a fixed pressure profile. Press at
+    /// `down_x`, then send Drag events for every position in `drag_xs` except the
+    /// last, which is sent as the release (Up). Pointer x must increase across
+    /// samples (the adapter tracks magnitude via saturating deltas). Returns the
+    /// number of operations applied.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_horizontal_drag_fixed(
+        adapter: &mut PaneTerminalAdapter,
+        tree: &mut ftui_layout::PaneTree,
+        layout: &ftui_layout::PaneLayout,
+        target: PaneResizeTarget,
+        down_x: u16,
+        y: u16,
+        drag_xs: &[u16],
+        pressure: PanePressureSnapProfile,
+        seed: &mut u64,
+    ) -> usize {
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            down_x,
+            y,
+        ));
+        let mut applied = apply_dispatch_fixed(
+            tree,
+            layout,
+            &adapter.translate(&down, Some(target)),
+            pressure,
+            seed,
+        );
+
+        let last = drag_xs.len().saturating_sub(1);
+        for (idx, &x) in drag_xs.iter().enumerate() {
+            let kind = if idx == last {
+                MouseEventKind::Up(MouseButton::Left)
+            } else {
+                MouseEventKind::Drag(MouseButton::Left)
+            };
+            let event = Event::Mouse(MouseEvent::new(kind, x, y));
+            applied += apply_dispatch_fixed(
+                tree,
+                layout,
+                &adapter.translate(&event, None),
+                pressure,
+                seed,
+            );
+        }
+        applied
+    }
+
     #[test]
     fn pane_terminal_splitter_resolution_is_deterministic() {
         let tree = nested_pane_tree();
@@ -7562,16 +7657,6 @@ mod tests {
         // transition into PaneOperation values, and apply_operation moves the
         // live root split ratio. This closes the historical gap where the
         // adapter emitted transitions that no production path consumed.
-        fn root_first_share_bps(tree: &ftui_layout::PaneTree, split: ftui_layout::PaneId) -> u32 {
-            match &tree.node(split).expect("split node present").kind {
-                PaneNodeKind::Split(node) => {
-                    node.ratio.numerator() * 10_000
-                        / (node.ratio.numerator() + node.ratio.denominator())
-                }
-                other => panic!("expected split node, got {other:?}"),
-            }
-        }
-
         fn apply_dispatch(
             tree: &mut ftui_layout::PaneTree,
             layout: &ftui_layout::PaneLayout,
@@ -7657,6 +7742,549 @@ mod tests {
             "rightward splitter drag should grow the first child: after={after_share} before={before_share}"
         );
         assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
+    fn pane_terminal_adapter_resize_interrupt_cancels_drag_and_preserves_tree() {
+        // Edge interruption: a terminal resize (SIGWINCH) arrives mid-drag. With
+        // the default config (cancel_on_resize = true) the adapter must cancel the
+        // in-flight gesture cleanly, leave the live tree valid and unmutated by the
+        // interrupt itself, and remain reusable for a fresh gesture afterwards.
+        let mut tree = nested_pane_tree();
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 50, 20))
+            .expect("layout should solve");
+        let root_split = pane_id(1);
+        let target = PaneResizeTarget {
+            split_id: root_split,
+            axis: SplitAxis::Horizontal,
+        };
+        let pressure = fixed_neutral_pressure();
+        let mut seed = 4_100u64;
+
+        let initial_hash = tree.state_hash();
+
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+
+        // Arm + drag (without releasing) so a gesture is genuinely in flight.
+        let _ = apply_dispatch_fixed(
+            &mut tree,
+            &layout,
+            &adapter.translate(
+                &Event::Mouse(MouseEvent::new(
+                    MouseEventKind::Down(MouseButton::Left),
+                    25,
+                    10,
+                )),
+                Some(target),
+            ),
+            pressure,
+            &mut seed,
+        );
+        for x in [30u16, 36] {
+            let _ = apply_dispatch_fixed(
+                &mut tree,
+                &layout,
+                &adapter.translate(
+                    &Event::Mouse(MouseEvent::new(
+                        MouseEventKind::Drag(MouseButton::Left),
+                        x,
+                        10,
+                    )),
+                    None,
+                ),
+                pressure,
+                &mut seed,
+            );
+        }
+        let mid_drag_hash = tree.state_hash();
+        assert_ne!(
+            mid_drag_hash, initial_hash,
+            "drag should have mutated the tree before the interrupt"
+        );
+        assert!(tree.validate().is_ok());
+        assert_eq!(adapter.active_pointer_id(), Some(1));
+
+        // Resize interrupt mid-drag.
+        let resize_dispatch = adapter.translate(
+            &Event::Resize {
+                width: 60,
+                height: 24,
+            },
+            None,
+        );
+        let cancel = resize_dispatch
+            .primary_event
+            .as_ref()
+            .expect("resize interrupt should emit a cancel semantic event");
+        assert!(matches!(
+            cancel.kind,
+            PaneSemanticInputEventKind::Cancel {
+                target: Some(actual),
+                reason: PaneCancelReason::Programmatic
+            } if actual == target
+        ));
+        assert_eq!(
+            resize_dispatch.log.phase,
+            PaneTerminalLifecyclePhase::ResizeInterrupt
+        );
+        assert_eq!(
+            resize_dispatch.log.outcome,
+            PaneTerminalLogOutcome::SemanticForwarded
+        );
+
+        // The cancel transition carries no geometry, so the bridge yields no ops
+        // and the tree is left exactly as the last drag sample left it.
+        let cancel_transition = resize_dispatch
+            .primary_transition
+            .as_ref()
+            .expect("cancel transition present");
+        let cancel_ops = tree.operations_for_transition(cancel_transition, &layout, pressure);
+        assert!(
+            cancel_ops.is_empty(),
+            "cancel transition must not mutate the live tree"
+        );
+        assert_eq!(tree.state_hash(), mid_drag_hash);
+        assert!(tree.validate().is_ok());
+
+        // Adapter is back to idle with no active pointer.
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+
+        // Reusable: a fresh gesture at the new viewport mutates the tree again.
+        let new_layout = tree
+            .solve_layout(Rect::new(0, 0, 60, 24))
+            .expect("layout should solve at new size");
+        let before_reuse = tree.state_hash();
+        let applied = drive_horizontal_drag_fixed(
+            &mut adapter,
+            &mut tree,
+            &new_layout,
+            target,
+            30,
+            12,
+            &[36, 42, 48],
+            pressure,
+            &mut seed,
+        );
+        assert!(applied > 0, "fresh gesture should apply operations");
+        assert_ne!(
+            tree.state_hash(),
+            before_reuse,
+            "adapter must remain usable after a resize interrupt"
+        );
+        assert!(tree.validate().is_ok());
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
+    fn pane_terminal_adapter_survives_resize_storm_and_is_deterministic() {
+        // Resize-storm stability at the live-tree level. The default config
+        // cancels in-flight gestures on resize (matching real SIGWINCH behavior),
+        // so a storm rapidly re-grabs the splitter and re-drags across many
+        // viewport sizes. After every step the tree must stay structurally valid
+        // and within ratio bounds, and the whole scripted storm must be
+        // byte-for-byte deterministic across repeated runs.
+        fn run_storm() -> u64 {
+            let mut adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default())
+                .expect("valid adapter");
+            let mut tree = nested_pane_tree();
+            let root_split = pane_id(1);
+            let target = PaneResizeTarget {
+                split_id: root_split,
+                axis: SplitAxis::Horizontal,
+            };
+            let pressure = fixed_neutral_pressure();
+            let mut seed = 5_200u64;
+
+            // Sizes the "window manager" cycles through during the storm.
+            let sizes: [(u16, u16); 6] =
+                [(50, 20), (80, 24), (40, 16), (120, 40), (30, 12), (100, 30)];
+
+            for (idx, &(w, h)) in sizes.iter().enumerate() {
+                let layout = tree
+                    .solve_layout(Rect::new(0, 0, w, h))
+                    .expect("layout should solve under storm");
+
+                // Re-grab near 1/5 width and drag rightward to 3/5 width (always
+                // increasing x, comfortably mid-rail to avoid child minimums).
+                let down_x = (w / 5).max(2);
+                let drag_x = (3 * w / 5).max(down_x + 2);
+                let _ = apply_dispatch_fixed(
+                    &mut tree,
+                    &layout,
+                    &adapter.translate(
+                        &Event::Mouse(MouseEvent::new(
+                            MouseEventKind::Down(MouseButton::Left),
+                            down_x,
+                            h / 2,
+                        )),
+                        Some(target),
+                    ),
+                    pressure,
+                    &mut seed,
+                );
+                let _ = apply_dispatch_fixed(
+                    &mut tree,
+                    &layout,
+                    &adapter.translate(
+                        &Event::Mouse(MouseEvent::new(
+                            MouseEventKind::Drag(MouseButton::Left),
+                            drag_x,
+                            h / 2,
+                        )),
+                        None,
+                    ),
+                    pressure,
+                    &mut seed,
+                );
+                assert!(
+                    tree.validate().is_ok(),
+                    "tree invalid after drag at step {idx}"
+                );
+                let share = root_first_share_bps(&tree, root_split);
+                assert!(
+                    share > 0 && share < 10_000,
+                    "split ratio escaped bounds at step {idx}: {share}"
+                );
+
+                // Storm: a resize arrives mid-gesture and cancels it cleanly.
+                let resize = adapter.translate(
+                    &Event::Resize {
+                        width: w,
+                        height: h,
+                    },
+                    None,
+                );
+                if let Some(cancel_transition) = resize.primary_transition.as_ref() {
+                    let cancel_ops =
+                        tree.operations_for_transition(cancel_transition, &layout, pressure);
+                    assert!(
+                        cancel_ops.is_empty(),
+                        "resize cancel must not mutate the tree at step {idx}"
+                    );
+                }
+                assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+                assert_eq!(adapter.active_pointer_id(), None);
+                assert!(
+                    tree.validate().is_ok(),
+                    "tree invalid after resize at step {idx}"
+                );
+            }
+
+            // A final complete gesture (with a real release) settles the tree.
+            let (w, h) = (90u16, 30u16);
+            let layout = tree
+                .solve_layout(Rect::new(0, 0, w, h))
+                .expect("final layout should solve");
+            let _ = drive_horizontal_drag_fixed(
+                &mut adapter,
+                &mut tree,
+                &layout,
+                target,
+                (w / 5).max(2),
+                h / 2,
+                &[w / 2, 3 * w / 5],
+                pressure,
+                &mut seed,
+            );
+            assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+            assert!(tree.validate().is_ok());
+
+            tree.state_hash()
+        }
+
+        let first = run_storm();
+        let second = run_storm();
+        assert_eq!(
+            first, second,
+            "resize storm with repeated re-grabs must be deterministic"
+        );
+    }
+
+    #[test]
+    fn pane_terminal_adapter_geometry_is_capability_invariant() {
+        // Capability variance: the terminal adapter consumes already-parsed
+        // `Event` values and makes no terminal-capability queries, so the same
+        // logical drag must produce identical live-tree geometry whether the host
+        // is a dumb terminal, a modern emulator, or tmux. We assert both halves:
+        // (1) the capability profiles genuinely differ (non-vacuous), and (2) the
+        // resulting tree state is identical across all three. This locks the
+        // invariant that pane resize is capability-independent and would catch any
+        // future regression that silently couples geometry to terminal caps.
+        fn drag_under(
+            over: ftui_core::capability_override::CapabilityOverride,
+        ) -> (bool, bool, bool, u64) {
+            ftui_core::capability_override::with_capability_override(over, || {
+                let caps = ftui_core::capability_override::current_capabilities();
+                let mut tree = nested_pane_tree();
+                let layout = tree
+                    .solve_layout(Rect::new(0, 0, 50, 20))
+                    .expect("layout should solve");
+                let target = PaneResizeTarget {
+                    split_id: pane_id(1),
+                    axis: SplitAxis::Horizontal,
+                };
+                let pressure = fixed_neutral_pressure();
+                let mut seed = 6_300u64;
+                let mut adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default())
+                    .expect("valid adapter");
+                let applied = drive_horizontal_drag_fixed(
+                    &mut adapter,
+                    &mut tree,
+                    &layout,
+                    target,
+                    25,
+                    10,
+                    &[30, 36, 42],
+                    pressure,
+                    &mut seed,
+                );
+                assert!(
+                    applied > 0,
+                    "drag should apply operations under every profile"
+                );
+                (
+                    caps.mouse_sgr,
+                    caps.true_color,
+                    caps.in_tmux,
+                    tree.state_hash(),
+                )
+            })
+        }
+
+        let (dumb_sgr, dumb_truecolor, _dumb_tmux, dumb_hash) =
+            drag_under(ftui_core::capability_override::CapabilityOverride::dumb());
+        let (modern_sgr, modern_truecolor, modern_tmux, modern_hash) =
+            drag_under(ftui_core::capability_override::CapabilityOverride::modern());
+        let (_tmux_sgr, _tmux_truecolor, tmux_tmux, tmux_hash) =
+            drag_under(ftui_core::capability_override::CapabilityOverride::tmux());
+
+        // Non-vacuous: the three profiles really do present different caps.
+        assert!(
+            dumb_sgr != modern_sgr || dumb_truecolor != modern_truecolor,
+            "dumb and modern profiles must differ in capabilities"
+        );
+        assert!(
+            modern_tmux != tmux_tmux,
+            "modern and tmux profiles must differ in the in_tmux flag"
+        );
+
+        // Invariant: identical geometry regardless of terminal capabilities.
+        assert_eq!(
+            dumb_hash, modern_hash,
+            "geometry must not depend on terminal capabilities"
+        );
+        assert_eq!(
+            modern_hash, tmux_hash,
+            "geometry must not depend on terminal capabilities"
+        );
+    }
+
+    #[test]
+    fn pane_terminal_adapter_dispatch_log_traces_routing_and_failures() {
+        // Diagnostic logs must capture event routing (the lifecycle phase of each
+        // translated event) and failure context (deterministic ignore reasons), so
+        // operators can reconstruct what the adapter did from the dispatch log
+        // alone. This exercises both the happy routing path and two failure paths.
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        // Failure path 1: wrong activation button is ignored with a precise reason.
+        let wrong_button = adapter.translate(
+            &Event::Mouse(MouseEvent::new(
+                MouseEventKind::Down(MouseButton::Right),
+                5,
+                5,
+            )),
+            Some(target),
+        );
+        assert_eq!(
+            wrong_button.log.phase,
+            PaneTerminalLifecyclePhase::MouseDown
+        );
+        assert_eq!(
+            wrong_button.log.outcome,
+            PaneTerminalLogOutcome::Ignored(PaneTerminalIgnoredReason::ActivationButtonRequired)
+        );
+        assert!(wrong_button.primary_event.is_none());
+        assert_eq!(adapter.active_pointer_id(), None);
+
+        // Routing: a real gesture progresses MouseDown -> MouseDrag -> MouseUp,
+        // each forwarded with a monotonically increasing sequence number.
+        let down = adapter.translate(
+            &Event::Mouse(MouseEvent::new(
+                MouseEventKind::Down(MouseButton::Left),
+                25,
+                10,
+            )),
+            Some(target),
+        );
+        assert_eq!(down.log.phase, PaneTerminalLifecyclePhase::MouseDown);
+        assert_eq!(down.log.outcome, PaneTerminalLogOutcome::SemanticForwarded);
+        assert_eq!(down.log.target, Some(target));
+        assert_eq!(down.log.pointer_id, Some(1));
+        let down_seq = down.log.sequence.expect("down sequence");
+
+        let drag = adapter.translate(
+            &Event::Mouse(MouseEvent::new(
+                MouseEventKind::Drag(MouseButton::Left),
+                31,
+                10,
+            )),
+            None,
+        );
+        assert_eq!(drag.log.phase, PaneTerminalLifecyclePhase::MouseDrag);
+        assert_eq!(drag.log.outcome, PaneTerminalLogOutcome::SemanticForwarded);
+        let drag_seq = drag.log.sequence.expect("drag sequence");
+        assert!(drag_seq > down_seq, "sequence numbers must be monotonic");
+
+        let up = adapter.translate(
+            &Event::Mouse(MouseEvent::new(
+                MouseEventKind::Up(MouseButton::Left),
+                31,
+                10,
+            )),
+            None,
+        );
+        assert_eq!(up.log.phase, PaneTerminalLifecyclePhase::MouseUp);
+        assert_eq!(up.log.outcome, PaneTerminalLogOutcome::SemanticForwarded);
+        assert!(up.log.sequence.expect("up sequence") > drag_seq);
+
+        // Failure path 2: a resize with no active gesture is a clean no-op with a
+        // precise reason rather than a spurious cancel.
+        let idle_resize = adapter.translate(
+            &Event::Resize {
+                width: 80,
+                height: 24,
+            },
+            None,
+        );
+        assert_eq!(
+            idle_resize.log.phase,
+            PaneTerminalLifecyclePhase::ResizeInterrupt
+        );
+        assert_eq!(
+            idle_resize.log.outcome,
+            PaneTerminalLogOutcome::Ignored(PaneTerminalIgnoredReason::ResizeNoop)
+        );
+        assert!(idle_resize.primary_event.is_none());
+    }
+
+    #[test]
+    fn pane_terminal_adapter_resize_preserves_gesture_when_cancel_disabled() {
+        // Edge interruption, opposite branch: with cancel_on_resize disabled a
+        // resize event is a deterministic no-op that leaves the active gesture
+        // intact, so the drag can continue to completion afterwards.
+        let config = PaneTerminalAdapterConfig {
+            cancel_on_resize: false,
+            ..PaneTerminalAdapterConfig::default()
+        };
+        let mut adapter = PaneTerminalAdapter::new(config).expect("valid adapter");
+        let mut tree = nested_pane_tree();
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 50, 20))
+            .expect("layout should solve");
+        let root_split = pane_id(1);
+        let target = PaneResizeTarget {
+            split_id: root_split,
+            axis: SplitAxis::Horizontal,
+        };
+        let pressure = fixed_neutral_pressure();
+        let mut seed = 7_700u64;
+
+        // Arm + first drag sample.
+        let _ = apply_dispatch_fixed(
+            &mut tree,
+            &layout,
+            &adapter.translate(
+                &Event::Mouse(MouseEvent::new(
+                    MouseEventKind::Down(MouseButton::Left),
+                    20,
+                    10,
+                )),
+                Some(target),
+            ),
+            pressure,
+            &mut seed,
+        );
+        let _ = apply_dispatch_fixed(
+            &mut tree,
+            &layout,
+            &adapter.translate(
+                &Event::Mouse(MouseEvent::new(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    26,
+                    10,
+                )),
+                None,
+            ),
+            pressure,
+            &mut seed,
+        );
+        assert_eq!(adapter.active_pointer_id(), Some(1));
+
+        // Resize arrives mid-drag: ignored as a no-op, gesture survives.
+        let resize = adapter.translate(
+            &Event::Resize {
+                width: 50,
+                height: 20,
+            },
+            None,
+        );
+        assert!(resize.primary_event.is_none());
+        assert!(resize.primary_transition.is_none());
+        assert_eq!(
+            resize.log.outcome,
+            PaneTerminalLogOutcome::Ignored(PaneTerminalIgnoredReason::ResizeNoop)
+        );
+        assert_eq!(
+            adapter.active_pointer_id(),
+            Some(1),
+            "gesture must survive the resize when cancel_on_resize is disabled"
+        );
+
+        // The drag continues and a release commits cleanly.
+        let before_finish = tree.state_hash();
+        for x in [32u16, 38] {
+            let _ = apply_dispatch_fixed(
+                &mut tree,
+                &layout,
+                &adapter.translate(
+                    &Event::Mouse(MouseEvent::new(
+                        MouseEventKind::Drag(MouseButton::Left),
+                        x,
+                        10,
+                    )),
+                    None,
+                ),
+                pressure,
+                &mut seed,
+            );
+        }
+        let _ = apply_dispatch_fixed(
+            &mut tree,
+            &layout,
+            &adapter.translate(
+                &Event::Mouse(MouseEvent::new(
+                    MouseEventKind::Up(MouseButton::Left),
+                    38,
+                    10,
+                )),
+                None,
+            ),
+            pressure,
+            &mut seed,
+        );
+        assert_ne!(
+            tree.state_hash(),
+            before_finish,
+            "the surviving gesture should keep mutating the tree"
+        );
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+        assert!(tree.validate().is_ok());
     }
 
     #[test]
