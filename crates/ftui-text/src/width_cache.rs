@@ -82,8 +82,13 @@ impl CacheStats {
 /// The cache uses a 64-bit hash as the lookup key rather than storing the
 /// full string. This trades theoretical correctness for memory efficiency.
 /// With FxHash, collision probability is ~1 in 2^64, making this safe for
-/// practical use. If you require guaranteed correctness, use `contains()`
-/// to verify presence before trusting cached values.
+/// practical use.
+///
+/// Note that `contains()`, `get()`, and `peek()` all key on this same hash, so
+/// none of them can distinguish a collision — on the (astronomically unlikely)
+/// event of two distinct strings hashing equal, a lookup for one returns the
+/// other's cached width. If you require collision-proof correctness, key a cache
+/// on the full string instead of using `WidthCache`.
 ///
 /// # Thread Safety
 /// `WidthCache` is not thread-safe. For concurrent use, wrap in a mutex
