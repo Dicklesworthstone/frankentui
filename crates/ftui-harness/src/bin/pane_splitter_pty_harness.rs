@@ -1,29 +1,47 @@
 #![forbid(unsafe_code)]
 
-//! Live pane-splitter PTY harness (bd-x9lqw acceptance #3).
+//! Live pane PTY harness (bd-x9lqw acceptance #3, extended for bd-a46q1.3).
 //!
 //! This binary runs the **real** terminal runtime ([`ftui_runtime::App`] /
-//! `Program`) with a single root horizontal split and drives the production
-//! pane-resize path end-to-end:
+//! `Program`) with a single root split and drives the production pane interaction
+//! paths end-to-end over a genuine PTY. It started life proving splitter *drag*
+//! resize and now also exercises the other terminal-input modalities the
+//! `PaneTerminalAdapter` supports, so the PTY E2E suite can validate them against
+//! the production code path rather than an in-process stub:
 //!
 //! ```text
-//! crossterm SGR mouse bytes (over a real PTY)
-//!   -> ftui_core::Event::Mouse
-//!   -> PaneTerminalAdapter::translate_with_handles  (terminal hit-testing)
+//! crossterm input bytes (over a real PTY)
+//!   -> ftui_core::Event (Mouse / Key / Scroll)
+//!   -> PaneTerminalAdapter::translate{_with_handles}   (terminal hit-testing)
 //!   -> PaneDragResizeTransition
-//!   -> PaneTree::operations_for_transition           (fixed-pressure bridge)
-//!   -> PaneTree::apply_operation                     (live tree mutation)
+//!   -> PaneTree::operations_for_transition             (fixed-pressure bridge)
+//!   -> PaneTree::apply_operation                       (live tree mutation)
 //! ```
 //!
-//! It exists so a PTY-level E2E test can send genuine SGR mouse sequences and
-//! prove the live split ratio changes in **both** inline and alt-screen modes
-//! (the one DoD item the in-process integration tests in `ftui-runtime` could
-//! not cover). After the runtime tears down and the terminal is restored, the
-//! harness prints a single deterministic, greppable result marker to stdout:
+//! Covered terminal-input paths (all genuine `PaneTerminalAdapter` contracts):
+//!
+//! - **Pointer drag** resize: SGR mouse down/drag/up over the splitter handle.
+//! - **Keyboard** resize: arrow keys / `+` / `-` (with `Shift` = 5x step). The
+//!   host (this harness) resolves the splitter target from the rendered handles
+//!   and feeds it through the documented `translate(event, target_hint)` contract
+//!   — exactly how a focus-aware host wires keyboard resize.
+//! - **Wheel** nudge resize: SGR scroll over the splitter handle.
+//! - **Escape** recovery: cancels an armed/active pointer interaction.
+//!
+//! Plus harness **affordance** keys for the structural operations the production
+//! terminal adapter does *not yet* bind to input (that input binding is tracked
+//! by bd-21pbi.2). These drive the operation -> render -> teardown stack over a
+//! real PTY so we still get end-to-end coverage of split/close/swap behaviour:
+//!
+//! - `s` -> split the left leaf, `c` -> close the right leaf, `w` -> swap leaves.
+//!
+//! After the runtime tears down and the terminal is restored, the harness prints
+//! a single deterministic, greppable result marker to stdout:
 //!
 //! ```text
 //! PANE_RESULT mode=alt initial_bps=5000 final_bps=8000 applied_ops=3 \
-//!     down_resolved=true committed=true tree_valid=true
+//!     down_resolved=true committed=true tree_valid=true node_count=3 \
+//!     first_leaf=left canceled=false
 //! ```
 //!
 //! Determinism note: the realistic resize path derives snap *pressure* from
@@ -31,14 +49,18 @@
 //! reported ratio byte-for-byte reproducible across runs and identical between
 //! screen modes, this harness applies transitions with a FIXED neutral pressure
 //! profile -- exactly like the `apply_dispatch_fixed` helper in the
-//! `ftui-runtime` adapter tests.
+//! `ftui-runtime` adapter tests. Keyboard and wheel nudges step by a fixed
+//! `PANE_SNAP_DEFAULT_STEP_BPS` per unit/line and are geometry-independent, so
+//! their reported ratios are exact and identical across screen modes.
 //!
 //! ## Environment
 //!
 //! - `PANE_HARNESS_SCREEN_MODE` -- `inline` | `alt` (default `alt`).
+//! - `PANE_HARNESS_AXIS` -- root split axis: `horizontal` (default) | `vertical`.
 //! - `PANE_HARNESS_UI_HEIGHT`   -- inline UI height in rows (default `12`).
 //! - `PANE_HARNESS_EXIT_AFTER_MS` -- safety auto-quit if no gesture arrives
-//!   (default `4000`). The harness normally exits as soon as a drag commits.
+//!   (default `4000`). The harness normally exits as soon as a drag commits, a
+//!   structural affordance is applied, or an interaction is canceled.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -48,19 +70,20 @@ use std::time::Duration;
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{
-    PANE_TREE_SCHEMA_VERSION, PaneId, PaneLeaf, PaneNodeKind, PaneNodeRecord,
-    PanePressureSnapProfile, PaneSplit, PaneSplitRatio, PaneTree, PaneTreeSnapshot, SplitAxis,
+    PANE_TREE_SCHEMA_VERSION, PaneId, PaneLayout, PaneLeaf, PaneNodeKind, PaneNodeRecord,
+    PaneOperation, PanePlacement, PanePressureSnapProfile, PaneSplit, PaneSplitRatio, PaneTree,
+    PaneTreeSnapshot, SplitAxis,
 };
 use ftui_render::frame::Frame;
 use ftui_runtime::{
-    App, Cmd, Every, Model, PaneTerminalAdapter, PaneTerminalAdapterConfig, ScreenMode,
-    Subscription, UiAnchor, pane_terminal_splitter_handles,
+    App, Cmd, Every, Model, PaneTerminalAdapter, PaneTerminalAdapterConfig, PaneTerminalDispatch,
+    PaneTerminalLifecyclePhase, ScreenMode, Subscription, UiAnchor, pane_terminal_splitter_handles,
 };
 use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::Borders;
 
-/// Root horizontal split node id.
+/// Root split node id.
 const ROOT: u64 = 1;
 /// Left (first) leaf id.
 const LEFT: u64 = 2;
@@ -84,8 +107,8 @@ fn pane_id(raw: u64) -> PaneId {
     PaneId::new(raw).expect("non-zero pane id")
 }
 
-/// Build a single root horizontal split (`left | right`) at a 1:1 ratio.
-fn root_split_tree() -> PaneTree {
+/// Build a single root split (`left | right` or `left / right`) at a 1:1 ratio.
+fn root_split_tree(axis: SplitAxis) -> PaneTree {
     let snapshot = PaneTreeSnapshot {
         schema_version: PANE_TREE_SCHEMA_VERSION,
         root: pane_id(ROOT),
@@ -95,7 +118,7 @@ fn root_split_tree() -> PaneTree {
                 pane_id(ROOT),
                 None,
                 PaneSplit {
-                    axis: SplitAxis::Horizontal,
+                    axis,
                     ratio: PaneSplitRatio::new(1, 1).expect("valid ratio"),
                     first: pane_id(LEFT),
                     second: pane_id(RIGHT),
@@ -109,13 +132,29 @@ fn root_split_tree() -> PaneTree {
     PaneTree::from_snapshot(snapshot).expect("valid root split tree")
 }
 
-/// First-child share (basis points) of the root split's ratio.
-fn root_first_share_bps(tree: &PaneTree) -> u32 {
-    match &tree.node(pane_id(ROOT)).expect("root node present").kind {
-        PaneNodeKind::Split(node) => {
-            node.ratio.numerator() * 10_000 / (node.ratio.numerator() + node.ratio.denominator())
-        }
-        other => panic!("root must be a split node, got {other:?}"),
+/// First-child share (basis points) of the root split's ratio, or `None` when the
+/// root is no longer a split node (e.g. after a close promotes a sibling to root).
+fn root_first_share_bps(tree: &PaneTree) -> Option<u32> {
+    match &tree.node(pane_id(ROOT))?.kind {
+        PaneNodeKind::Split(node) => Some(
+            node.ratio.numerator() * 10_000 / (node.ratio.numerator() + node.ratio.denominator()),
+        ),
+        PaneNodeKind::Leaf(_) => None,
+    }
+}
+
+/// Surface key of the root split's first child *if* it is a leaf, else `-`.
+/// Lets a test observe leaf ordering (so a swap is provably a swap, not a no-op).
+fn root_first_leaf_name(tree: &PaneTree) -> String {
+    let Some(root) = tree.node(pane_id(ROOT)) else {
+        return "-".to_string();
+    };
+    let PaneNodeKind::Split(split) = &root.kind else {
+        return "-".to_string();
+    };
+    match tree.node(split.first).map(|node| &node.kind) {
+        Some(PaneNodeKind::Leaf(leaf)) => leaf.surface_key.clone(),
+        _ => "-".to_string(),
     }
 }
 
@@ -131,7 +170,10 @@ struct Shared {
     applied_ops: u64,
     down_resolved: bool,
     committed: bool,
+    canceled: bool,
     tree_valid: bool,
+    node_count: usize,
+    first_leaf: String,
 }
 
 struct Harness {
@@ -168,10 +210,6 @@ impl Harness {
 
     /// Run one raw terminal event through the full production resize path.
     fn handle_event(&mut self, event: &Event) -> Cmd<Msg> {
-        let Event::Mouse(mouse) = event else {
-            return Cmd::none();
-        };
-
         let area = self
             .with_shared(|s| s.area)
             .unwrap_or_else(|| Rect::new(0, 0, 80, 24));
@@ -180,48 +218,130 @@ impl Harness {
         };
         let handles = pane_terminal_splitter_handles(&self.tree, &layout, HIT_THICKNESS);
 
-        // Faithful terminal path: the adapter resolves the splitter target from
-        // the hit-test handles on press and reuses the armed target on
-        // drag/release.
-        let dispatch = self.adapter.translate_with_handles(event, &handles);
+        match event {
+            Event::Mouse(mouse) => {
+                // Faithful terminal path: the adapter resolves the splitter target
+                // from the hit-test handles on press/scroll and reuses the armed
+                // target on drag/release.
+                let dispatch = self.adapter.translate_with_handles(event, &handles);
 
-        if matches!(mouse.kind, MouseEventKind::Down(_))
-            && self.adapter.active_pointer_id().is_some()
-        {
-            self.with_shared(|s| s.down_resolved = true);
-        }
+                if matches!(mouse.kind, MouseEventKind::Down(_))
+                    && self.adapter.active_pointer_id().is_some()
+                {
+                    self.with_shared(|s| s.down_resolved = true);
+                }
 
-        if let Some(transition) = dispatch.primary_transition.as_ref() {
-            let ops = self
-                .tree
-                .operations_for_transition(transition, &layout, FIXED_PRESSURE);
-            for op in ops {
-                if self.tree.apply_operation(self.op_seed, op).is_ok() {
-                    self.op_seed += 1;
-                    self.with_shared(|s| s.applied_ops += 1);
+                self.apply_dispatch(&dispatch, &layout);
+
+                let committed = matches!(mouse.kind, MouseEventKind::Up(_))
+                    && dispatch.primary_transition.is_some();
+                self.record_state(committed);
+
+                if committed {
+                    // Gesture finished: quit promptly so the test reads a stable result.
+                    Cmd::quit()
+                } else {
+                    Cmd::none()
                 }
             }
+            Event::Key(key) => {
+                // Harness affordances for the structural operations the production
+                // terminal adapter does not yet bind to input (bd-21pbi.2). These
+                // exercise operation -> render -> teardown over a real PTY.
+                if let Some(op) = affordance_operation(key) {
+                    if self.tree.apply_operation(self.op_seed, op).is_ok() {
+                        self.op_seed += 1;
+                        self.with_shared(|s| s.applied_ops += 1);
+                    }
+                    self.record_state(false);
+                    return Cmd::quit();
+                }
+
+                // Resize / Escape via the real adapter. The host resolves the
+                // splitter target (here, the single root splitter) and supplies it
+                // through the documented `translate(event, target_hint)` contract.
+                let target = handles.first().map(|handle| handle.target);
+                let dispatch = self.adapter.translate(event, target);
+                let canceled = dispatch.log.phase == PaneTerminalLifecyclePhase::KeyCancel;
+                self.apply_dispatch(&dispatch, &layout);
+                if canceled {
+                    self.with_shared(|s| s.canceled = true);
+                }
+                self.record_state(false);
+
+                if canceled {
+                    // Interaction canceled: quit so the test reads a stable result
+                    // without depending on the safety auto-quit timer.
+                    Cmd::quit()
+                } else {
+                    Cmd::none()
+                }
+            }
+            _ => Cmd::none(),
         }
+    }
 
-        let committed =
-            matches!(mouse.kind, MouseEventKind::Up(_)) && dispatch.primary_transition.is_some();
+    /// Realize a dispatched transition into live pane operations (fixed pressure).
+    fn apply_dispatch(&mut self, dispatch: &PaneTerminalDispatch, layout: &PaneLayout) {
+        let Some(transition) = dispatch.primary_transition.as_ref() else {
+            return;
+        };
+        let ops = self
+            .tree
+            .operations_for_transition(transition, layout, FIXED_PRESSURE);
+        for op in ops {
+            if self.tree.apply_operation(self.op_seed, op).is_ok() {
+                self.op_seed += 1;
+                self.with_shared(|s| s.applied_ops += 1);
+            }
+        }
+    }
 
+    /// Snapshot the post-operation tree state into the shared result.
+    fn record_state(&mut self, committed: bool) {
         let bps = root_first_share_bps(&self.tree);
+        let node_count = self.tree.nodes().count();
+        let first_leaf = root_first_leaf_name(&self.tree);
         let valid = self.tree.validate().is_ok();
         self.with_shared(|s| {
-            s.final_bps = bps;
+            if let Some(bps) = bps {
+                s.final_bps = bps;
+            }
+            s.node_count = node_count;
+            s.first_leaf = first_leaf;
             s.tree_valid = valid;
             if committed {
                 s.committed = true;
             }
         });
+    }
+}
 
-        if committed {
-            // Gesture finished: quit promptly so the test reads a stable result.
-            Cmd::quit()
-        } else {
-            Cmd::none()
-        }
+/// Map a harness affordance key to a structural pane operation, or `None` for
+/// keys that should flow to the resize/cancel adapter path instead.
+fn affordance_operation(key: &KeyEvent) -> Option<PaneOperation> {
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    match c {
+        's' => Some(PaneOperation::SplitLeaf {
+            target: pane_id(LEFT),
+            axis: SplitAxis::Vertical,
+            ratio: PaneSplitRatio::new(1, 1).expect("valid ratio"),
+            placement: PanePlacement::ExistingFirst,
+            new_leaf: PaneLeaf::new("split"),
+        }),
+        'c' => Some(PaneOperation::CloseNode {
+            target: pane_id(RIGHT),
+        }),
+        'w' => Some(PaneOperation::SwapNodes {
+            first: pane_id(LEFT),
+            second: pane_id(RIGHT),
+        }),
+        _ => None,
     }
 }
 
@@ -250,17 +370,15 @@ impl Model for Harness {
         let Ok(layout) = self.tree.solve_layout(area) else {
             return;
         };
-        if let Some(left) = layout.rect(pane_id(LEFT)) {
-            Block::new()
-                .borders(Borders::ALL)
-                .title("left")
-                .render(left, frame);
-        }
-        if let Some(right) = layout.rect(pane_id(RIGHT)) {
-            Block::new()
-                .borders(Borders::ALL)
-                .title("right")
-                .render(right, frame);
+        for record in self.tree.nodes() {
+            if let PaneNodeKind::Leaf(leaf) = &record.kind
+                && let Some(rect) = layout.rect(record.id)
+            {
+                Block::new()
+                    .borders(Borders::ALL)
+                    .title(leaf.surface_key.as_str())
+                    .render(rect, frame);
+            }
         }
     }
 
@@ -282,6 +400,10 @@ fn env_u16(key: &str, default: u16) -> u16 {
 
 fn main() -> std::io::Result<()> {
     let mode = std::env::var("PANE_HARNESS_SCREEN_MODE").unwrap_or_else(|_| "alt".to_string());
+    let axis = match std::env::var("PANE_HARNESS_AXIS").as_deref() {
+        Ok("vertical") => SplitAxis::Vertical,
+        _ => SplitAxis::Horizontal,
+    };
     let ui_height = env_u16("PANE_HARNESS_UI_HEIGHT", 12).max(4);
     let exit_after_ms = u32::from(env_u16("PANE_HARNESS_EXIT_AFTER_MS", 4_000)).max(200);
 
@@ -294,8 +416,10 @@ fn main() -> std::io::Result<()> {
         (ScreenMode::AltScreen, UiAnchor::Top)
     };
 
-    let tree = root_split_tree();
-    let initial_bps = root_first_share_bps(&tree);
+    let tree = root_split_tree(axis);
+    let initial_bps = root_first_share_bps(&tree).expect("root split has a first share");
+    let node_count = tree.nodes().count();
+    let first_leaf = root_first_leaf_name(&tree);
     let shared = Arc::new(Mutex::new(Shared {
         mode: mode.clone(),
         area: Rect::new(0, 0, 80, 24),
@@ -304,7 +428,10 @@ fn main() -> std::io::Result<()> {
         applied_ops: 0,
         down_resolved: false,
         committed: false,
+        canceled: false,
         tree_valid: true,
+        node_count,
+        first_leaf,
     }));
 
     let adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default())
@@ -327,7 +454,7 @@ fn main() -> std::io::Result<()> {
     // Terminal is restored here. Emit the deterministic, greppable result line.
     let snap = shared.lock().expect("shared state lock").clone();
     println!(
-        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={}",
+        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={}",
         snap.mode,
         snap.initial_bps,
         snap.final_bps,
@@ -335,6 +462,9 @@ fn main() -> std::io::Result<()> {
         snap.down_resolved,
         snap.committed,
         snap.tree_valid,
+        snap.node_count,
+        snap.first_leaf,
+        snap.canceled,
     );
     let _ = std::io::stdout().flush();
 

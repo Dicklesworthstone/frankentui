@@ -340,16 +340,19 @@ if $RUN_TERMINAL; then
     run_step "pane_terminal_layout_resize_smoke" "terminal" bash "$PROJECT_ROOT/tests/e2e/scripts/test_layout_composer_resize.sh" || true
     run_step "pane_layout_semantic_replay_harness" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-layout --test pane_semantic_replay_harness -- --nocapture || true
     run_step "pane_terminal_splitter_drag_pty" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_splitter_drag_pty_e2e -- --test-threads=1 --nocapture || true
+    run_step "pane_terminal_input_pty_smoke" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_input_pty_e2e pty_keyboard_plus_minus_resize -- --test-threads=1 --nocapture || true
 
     if [[ "$MODE" != "smoke" ]]; then
         run_step "pane_terminal_layout_resize_thrash" "terminal" env LAYOUT_RESIZE_PROFILE=thrash bash "$PROJECT_ROOT/tests/e2e/scripts/test_layout_composer_resize.sh" || true
         run_step "pane_terminal_action_timeline_full" "terminal" bash "$PROJECT_ROOT/tests/e2e/scripts/test_action_timeline.sh" || true
+        run_step "pane_terminal_input_pty_full" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_input_pty_e2e -- --test-threads=1 --nocapture || true
     fi
 
     if [[ "$MODE" == "stress" ]]; then
         i=1
         while [[ "$i" -le "$STRESS_ITERATIONS" ]]; do
             run_step "pane_terminal_layout_resize_stress_${i}" "terminal" bash "$PROJECT_ROOT/tests/e2e/scripts/test_layout_composer_resize.sh" || true
+            run_step "pane_terminal_input_pty_stress_${i}" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_input_pty_e2e pty_keyboard_resize_is_exact_and_mode_independent -- --test-threads=1 --nocapture || true
             i=$((i + 1))
         done
     fi
