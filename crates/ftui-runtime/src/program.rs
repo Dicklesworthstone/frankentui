@@ -7554,6 +7554,112 @@ mod tests {
     }
 
     #[test]
+    fn pane_terminal_adapter_drives_live_tree_mutation() {
+        // End-to-end proof that the terminal adapter actually mutates the live
+        // pane tree. Raw crossterm events flow through PaneTerminalAdapter into
+        // PaneDragResizeTransition values, the layout bridge
+        // (PaneTree::operations_for_transition) turns each geometry-bearing
+        // transition into PaneOperation values, and apply_operation moves the
+        // live root split ratio. This closes the historical gap where the
+        // adapter emitted transitions that no production path consumed.
+        fn root_first_share_bps(tree: &ftui_layout::PaneTree, split: ftui_layout::PaneId) -> u32 {
+            match &tree.node(split).expect("split node present").kind {
+                PaneNodeKind::Split(node) => {
+                    node.ratio.numerator() * 10_000
+                        / (node.ratio.numerator() + node.ratio.denominator())
+                }
+                other => panic!("expected split node, got {other:?}"),
+            }
+        }
+
+        fn apply_dispatch(
+            tree: &mut ftui_layout::PaneTree,
+            layout: &ftui_layout::PaneLayout,
+            dispatch: &PaneTerminalDispatch,
+            neutral: PanePressureSnapProfile,
+            seed: &mut u64,
+        ) -> usize {
+            let Some(transition) = dispatch.primary_transition.as_ref() else {
+                return 0;
+            };
+            let pressure = dispatch.pressure_snap_profile().unwrap_or(neutral);
+            let ops = tree.operations_for_transition(transition, layout, pressure);
+            let applied = ops.len();
+            for op in ops {
+                tree.apply_operation(*seed, op).expect("operation applies");
+                *seed += 1;
+            }
+            applied
+        }
+
+        let mut tree = nested_pane_tree();
+        // The root split's own rectangle spans the whole viewport regardless of
+        // its ratio, so a single solve is sufficient for targeting it.
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 50, 20))
+            .expect("layout should solve");
+        let root_split = pane_id(1);
+        let target = PaneResizeTarget {
+            split_id: root_split,
+            axis: SplitAxis::Horizontal,
+        };
+        let neutral = PanePressureSnapProfile {
+            strength_bps: 5_000,
+            hysteresis_bps: 100,
+        };
+
+        let before_share = root_first_share_bps(&tree, root_split);
+
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let mut op_seed = 7_000u64;
+        let mut geometry_transitions = 0usize;
+
+        // Press on the splitter (arms the machine; no geometry yet).
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            25,
+            10,
+        ));
+        let down_dispatch = adapter.translate(&down, Some(target));
+        geometry_transitions +=
+            apply_dispatch(&mut tree, &layout, &down_dispatch, neutral, &mut op_seed);
+
+        // Drag rightward across cells, applying each transition to the tree.
+        for x in [30u16, 36, 42] {
+            let drag = Event::Mouse(MouseEvent::new(
+                MouseEventKind::Drag(MouseButton::Left),
+                x,
+                10,
+            ));
+            let dispatch = adapter.translate(&drag, None);
+            geometry_transitions +=
+                apply_dispatch(&mut tree, &layout, &dispatch, neutral, &mut op_seed);
+        }
+
+        // Release.
+        let up = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            42,
+            10,
+        ));
+        let up_dispatch = adapter.translate(&up, None);
+        geometry_transitions +=
+            apply_dispatch(&mut tree, &layout, &up_dispatch, neutral, &mut op_seed);
+
+        assert!(
+            geometry_transitions > 0,
+            "drag lifecycle should yield at least one geometry-bearing transition"
+        );
+        let after_share = root_first_share_bps(&tree, root_split);
+        assert!(
+            after_share > before_share,
+            "rightward splitter drag should grow the first child: after={after_share} before={before_share}"
+        );
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
     fn pane_terminal_adapter_focus_loss_emits_cancel() {
         let mut adapter =
             PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");

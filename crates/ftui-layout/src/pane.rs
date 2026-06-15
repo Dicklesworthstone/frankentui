@@ -821,6 +821,62 @@ impl fmt::Display for PaneEdgeResizePlanError {
 
 impl std::error::Error for PaneEdgeResizePlanError {}
 
+/// Errors while planning a directly-addressed splitter resize/nudge.
+///
+/// Unlike [`PaneEdgeResizePlanError`] (which is keyed by a leaf and walks to its
+/// nearest ancestor split), these errors describe a [`PaneResizeTarget`] that
+/// names a split node directly — the form produced by host splitter hit-testing
+/// and the [`PaneDragResizeMachine`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneSplitterResizePlanError {
+    /// The target split id is absent from the tree.
+    MissingSplit { split: PaneId },
+    /// The target node exists but is a leaf, not a split.
+    NotASplit { node: PaneId },
+    /// The split exists but its axis disagrees with the target axis.
+    AxisMismatch {
+        split: PaneId,
+        expected: SplitAxis,
+        actual: SplitAxis,
+    },
+    /// The current layout has no rectangle for the target split.
+    MissingLayoutRect { node: PaneId },
+    /// The derived ratio could not be constructed.
+    InvalidRatio { numerator: u32, denominator: u32 },
+}
+
+impl fmt::Display for PaneSplitterResizePlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSplit { split } => {
+                write!(f, "splitter target {} not found", split.get())
+            }
+            Self::NotASplit { node } => write!(f, "node {} is a leaf, not a split", node.get()),
+            Self::AxisMismatch {
+                split,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "split {} has axis {actual:?} but target requested {expected:?}",
+                split.get()
+            ),
+            Self::MissingLayoutRect { node } => {
+                write!(f, "layout missing rectangle for split {}", node.get())
+            }
+            Self::InvalidRatio {
+                numerator,
+                denominator,
+            } => write!(
+                f,
+                "invalid planned ratio {numerator}/{denominator} for splitter resize"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PaneSplitterResizePlanError {}
+
 /// Errors while planning reflow moves and docking previews.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneReflowPlanError {
@@ -5143,6 +5199,174 @@ impl PaneTree {
             );
         }
         Ok(outcomes)
+    }
+
+    /// Build a normalized split ratio from a first-child share in basis points.
+    ///
+    /// The share is clamped to `1..=9_999` so neither child collapses to a zero
+    /// ratio, mirroring the bounds enforced by [`PaneTree::plan_edge_resize`].
+    fn ratio_from_first_share_bps(
+        first_share_bps: u16,
+    ) -> Result<PaneSplitRatio, PaneSplitterResizePlanError> {
+        let first = first_share_bps.clamp(1, 9_999);
+        let numerator = u32::from(first);
+        let denominator = u32::from(10_000_u16 - first);
+        PaneSplitRatio::new(numerator, denominator).map_err(|_| {
+            PaneSplitterResizePlanError::InvalidRatio {
+                numerator,
+                denominator,
+            }
+        })
+    }
+
+    /// Resolve a [`PaneResizeTarget`] to its split node, verifying axis agreement.
+    fn resolve_splitter_target(
+        &self,
+        target: PaneResizeTarget,
+    ) -> Result<&PaneSplit, PaneSplitterResizePlanError> {
+        let node =
+            self.nodes
+                .get(&target.split_id)
+                .ok_or(PaneSplitterResizePlanError::MissingSplit {
+                    split: target.split_id,
+                })?;
+        let PaneNodeKind::Split(split) = &node.kind else {
+            return Err(PaneSplitterResizePlanError::NotASplit {
+                node: target.split_id,
+            });
+        };
+        if split.axis != target.axis {
+            return Err(PaneSplitterResizePlanError::AxisMismatch {
+                split: target.split_id,
+                expected: target.axis,
+                actual: split.axis,
+            });
+        }
+        Ok(split)
+    }
+
+    /// Plan a split-ratio operation for a directly-addressed splitter target
+    /// from one pointer sample.
+    ///
+    /// This is the splitter-handle analogue of [`PaneTree::plan_edge_resize`]:
+    /// where `plan_edge_resize` walks from a leaf to its nearest ancestor split,
+    /// this resizes the split named by [`PaneResizeTarget`] directly. The pointer
+    /// position is projected onto the split's axis (with the same elastic edge
+    /// resistance and pressure-tuned snapping used by edge resize) to derive the
+    /// new first-child share. It is the pointer-drag primitive consumed by
+    /// [`PaneTree::operations_for_transition`].
+    pub fn plan_splitter_resize(
+        &self,
+        target: PaneResizeTarget,
+        layout: &PaneLayout,
+        pointer: PanePointerPosition,
+        pressure: PanePressureSnapProfile,
+    ) -> Result<PaneOperation, PaneSplitterResizePlanError> {
+        self.resolve_splitter_target(target)?;
+        let split_rect =
+            layout
+                .rect(target.split_id)
+                .ok_or(PaneSplitterResizePlanError::MissingLayoutRect {
+                    node: target.split_id,
+                })?;
+        let share =
+            axis_share_from_pointer(split_rect, pointer, target.axis, PANE_EDGE_GRIP_INSET_CELLS);
+        let raw_bps = elastic_ratio_bps(
+            (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16,
+            pressure,
+        );
+        let snapped = pressure
+            .apply_to_tuning(PaneSnapTuning::default())
+            .decide(raw_bps, None)
+            .snapped_ratio_bps
+            .unwrap_or(raw_bps);
+        let ratio = Self::ratio_from_first_share_bps(snapped)?;
+        Ok(PaneOperation::SetSplitRatio {
+            split: target.split_id,
+            ratio,
+        })
+    }
+
+    /// Plan a discrete split-ratio nudge for a directly-addressed splitter
+    /// target.
+    ///
+    /// The split's *current* ratio is stepped by `delta_bps`: positive values
+    /// grow the first child, negative values grow the second. This realizes
+    /// keyboard- and wheel-driven resize transitions, which carry no pointer
+    /// geometry and instead advance the existing ratio.
+    pub fn plan_splitter_nudge(
+        &self,
+        target: PaneResizeTarget,
+        delta_bps: i32,
+    ) -> Result<PaneOperation, PaneSplitterResizePlanError> {
+        let split = self.resolve_splitter_target(target)?;
+        let total = u64::from(split.ratio.numerator()) + u64::from(split.ratio.denominator());
+        let current_bps = ((u64::from(split.ratio.numerator()) * 10_000) / total) as i32;
+        let next_bps = current_bps.saturating_add(delta_bps).clamp(1, 9_999) as u16;
+        let ratio = Self::ratio_from_first_share_bps(next_bps)?;
+        Ok(PaneOperation::SetSplitRatio {
+            split: target.split_id,
+            ratio,
+        })
+    }
+
+    /// Bridge one drag/resize state-machine transition into the pane operations
+    /// that realize it against this tree.
+    ///
+    /// This is the connective tissue between host input adapters — the terminal
+    /// `PaneTerminalAdapter` and the web pointer-capture adapter — and live
+    /// [`PaneTree`] mutation. Adapters emit [`PaneDragResizeTransition`] values;
+    /// this method converts each geometry-bearing effect into [`PaneOperation`]s
+    /// ready for [`PaneTree::apply_operation`]:
+    ///
+    /// - `DragStarted` / `DragUpdated` / `Committed` → pointer-derived
+    ///   [`PaneTree::plan_splitter_resize`] at the effect's current/end position.
+    /// - `KeyboardApplied` / `WheelApplied` → [`PaneTree::plan_splitter_nudge`]
+    ///   stepping by [`PANE_SNAP_DEFAULT_STEP_BPS`] per unit/line.
+    ///
+    /// Non-geometric transitions (`Armed`, `Canceled`, `Noop`) and targets that
+    /// can no longer be resolved against `layout` (for example a split removed
+    /// since the gesture began) yield an empty vector. For diagnostics on
+    /// resolution failures, call [`PaneTree::plan_splitter_resize`] /
+    /// [`PaneTree::plan_splitter_nudge`] directly.
+    #[must_use]
+    pub fn operations_for_transition(
+        &self,
+        transition: &PaneDragResizeTransition,
+        layout: &PaneLayout,
+        pressure: PanePressureSnapProfile,
+    ) -> Vec<PaneOperation> {
+        let planned = match transition.effect {
+            PaneDragResizeEffect::DragStarted {
+                target, current, ..
+            }
+            | PaneDragResizeEffect::DragUpdated {
+                target, current, ..
+            } => self.plan_splitter_resize(target, layout, current, pressure),
+            PaneDragResizeEffect::Committed { target, end, .. } => {
+                self.plan_splitter_resize(target, layout, end, pressure)
+            }
+            PaneDragResizeEffect::KeyboardApplied {
+                target,
+                direction,
+                units,
+            } => {
+                let magnitude = i32::from(units) * i32::from(PANE_SNAP_DEFAULT_STEP_BPS);
+                let delta_bps = match direction {
+                    PaneResizeDirection::Increase => magnitude,
+                    PaneResizeDirection::Decrease => -magnitude,
+                };
+                self.plan_splitter_nudge(target, delta_bps)
+            }
+            PaneDragResizeEffect::WheelApplied { target, lines } => {
+                let delta_bps = i32::from(lines) * i32::from(PANE_SNAP_DEFAULT_STEP_BPS);
+                self.plan_splitter_nudge(target, delta_bps)
+            }
+            PaneDragResizeEffect::Armed { .. }
+            | PaneDragResizeEffect::Canceled { .. }
+            | PaneDragResizeEffect::Noop { .. } => return Vec::new(),
+        };
+        planned.into_iter().collect()
     }
 
     /// Plan a cluster move by moving the anchor and then reattaching members.
@@ -9888,5 +10112,269 @@ mod tests {
                 actual: None,
             } if node_id == child_id && expected == split_id
         ));
+    }
+
+    fn neutral_pressure() -> PanePressureSnapProfile {
+        PanePressureSnapProfile {
+            strength_bps: 5_000,
+            hysteresis_bps: 100,
+        }
+    }
+
+    fn first_share_bps(op: &PaneOperation) -> u32 {
+        match op {
+            PaneOperation::SetSplitRatio { ratio, .. } => {
+                ratio.numerator() * 10_000 / (ratio.numerator() + ratio.denominator())
+            }
+            other => panic!("expected SetSplitRatio, got {other:?}"),
+        }
+    }
+
+    fn split_target(split: PaneId, axis: SplitAxis) -> PaneResizeTarget {
+        PaneResizeTarget {
+            split_id: split,
+            axis,
+        }
+    }
+
+    fn drag_updated_transition(
+        target: PaneResizeTarget,
+        current: PanePointerPosition,
+    ) -> PaneDragResizeTransition {
+        PaneDragResizeTransition {
+            transition_id: 1,
+            sequence: 1,
+            from: PaneDragResizeState::Idle,
+            to: PaneDragResizeState::Idle,
+            effect: PaneDragResizeEffect::DragUpdated {
+                target,
+                pointer_id: 1,
+                previous: PanePointerPosition::new(current.x - 1, current.y),
+                current,
+                delta_x: 1,
+                delta_y: 0,
+                total_delta_x: 1,
+                total_delta_y: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn plan_splitter_resize_tracks_pointer_along_axis() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 60, 16))
+            .expect("layout solves");
+        let rect = layout.rect(id(1)).expect("root split rect");
+        let target = split_target(id(1), SplitAxis::Horizontal);
+
+        let left_pointer = PanePointerPosition::new(i32::from(rect.x) + 2, i32::from(rect.y) + 4);
+        let right_pointer = PanePointerPosition::new(
+            i32::from(rect.x) + i32::from(rect.width) - 3,
+            i32::from(rect.y) + 4,
+        );
+
+        let left_op = tree
+            .plan_splitter_resize(target, &layout, left_pointer, neutral_pressure())
+            .expect("left plan");
+        let right_op = tree
+            .plan_splitter_resize(target, &layout, right_pointer, neutral_pressure())
+            .expect("right plan");
+
+        assert!(matches!(left_op, PaneOperation::SetSplitRatio { split, .. } if split == id(1)));
+        assert!(matches!(right_op, PaneOperation::SetSplitRatio { split, .. } if split == id(1)));
+        // Dragging the splitter rightward grows the first (left) child's share.
+        assert!(
+            first_share_bps(&right_op) > first_share_bps(&left_op),
+            "right={} left={}",
+            first_share_bps(&right_op),
+            first_share_bps(&left_op)
+        );
+    }
+
+    #[test]
+    fn plan_splitter_resize_rejects_non_split_target() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 60, 16))
+            .expect("layout solves");
+        // id(2) is the left leaf, not a split.
+        let err = tree
+            .plan_splitter_resize(
+                split_target(id(2), SplitAxis::Horizontal),
+                &layout,
+                PanePointerPosition::new(5, 5),
+                neutral_pressure(),
+            )
+            .expect_err("leaf target must be rejected");
+        assert_eq!(err, PaneSplitterResizePlanError::NotASplit { node: id(2) });
+    }
+
+    #[test]
+    fn plan_splitter_resize_rejects_axis_mismatch() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 60, 16))
+            .expect("layout solves");
+        let err = tree
+            .plan_splitter_resize(
+                split_target(id(1), SplitAxis::Vertical),
+                &layout,
+                PanePointerPosition::new(5, 5),
+                neutral_pressure(),
+            )
+            .expect_err("axis mismatch must be rejected");
+        assert_eq!(
+            err,
+            PaneSplitterResizePlanError::AxisMismatch {
+                split: id(1),
+                expected: SplitAxis::Vertical,
+                actual: SplitAxis::Horizontal,
+            }
+        );
+    }
+
+    #[test]
+    fn plan_splitter_resize_rejects_missing_split() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 60, 16))
+            .expect("layout solves");
+        let err = tree
+            .plan_splitter_resize(
+                split_target(id(99), SplitAxis::Horizontal),
+                &layout,
+                PanePointerPosition::new(5, 5),
+                neutral_pressure(),
+            )
+            .expect_err("missing split must be rejected");
+        assert_eq!(
+            err,
+            PaneSplitterResizePlanError::MissingSplit { split: id(99) }
+        );
+    }
+
+    #[test]
+    fn plan_splitter_nudge_steps_current_ratio() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        // make_valid_snapshot's root ratio is 3/2 -> a first-child share of 6000 bps.
+        let target = split_target(id(1), SplitAxis::Horizontal);
+        let up = tree
+            .plan_splitter_nudge(target, i32::from(PANE_SNAP_DEFAULT_STEP_BPS))
+            .expect("nudge up");
+        let down = tree
+            .plan_splitter_nudge(target, -i32::from(PANE_SNAP_DEFAULT_STEP_BPS))
+            .expect("nudge down");
+        assert_eq!(first_share_bps(&up), 6_500);
+        assert_eq!(first_share_bps(&down), 5_500);
+    }
+
+    #[test]
+    fn operations_for_transition_drag_updated_mutates_ratio() {
+        let mut tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 60, 16))
+            .expect("layout solves");
+        let rect = layout.rect(id(1)).expect("root split rect");
+        let target = split_target(id(1), SplitAxis::Horizontal);
+        let pointer = PanePointerPosition::new(
+            i32::from(rect.x) + i32::from(rect.width) - 3,
+            i32::from(rect.y) + 4,
+        );
+        let transition = drag_updated_transition(target, pointer);
+
+        let before = split_ratio(&tree, id(1));
+        let before_share =
+            before.numerator() * 10_000 / (before.numerator() + before.denominator());
+
+        let ops = tree.operations_for_transition(&transition, &layout, neutral_pressure());
+        assert_eq!(ops.len(), 1);
+        for (offset, op) in ops.iter().cloned().enumerate() {
+            tree.apply_operation(1_000 + offset as u64, op)
+                .expect("operation applies");
+        }
+
+        let after = split_ratio(&tree, id(1));
+        let after_share = after.numerator() * 10_000 / (after.numerator() + after.denominator());
+        assert!(
+            after_share > before_share,
+            "after={after_share} before={before_share}"
+        );
+    }
+
+    #[test]
+    fn operations_for_transition_keyboard_applied_nudges() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 60, 16))
+            .expect("layout solves");
+        let target = split_target(id(1), SplitAxis::Horizontal);
+        let transition = PaneDragResizeTransition {
+            transition_id: 2,
+            sequence: 2,
+            from: PaneDragResizeState::Idle,
+            to: PaneDragResizeState::Idle,
+            effect: PaneDragResizeEffect::KeyboardApplied {
+                target,
+                direction: PaneResizeDirection::Increase,
+                units: 2,
+            },
+        };
+        let ops = tree.operations_for_transition(&transition, &layout, neutral_pressure());
+        assert_eq!(ops.len(), 1);
+        // 6000 (3/2) + 2 * 500 = 7000.
+        assert_eq!(first_share_bps(&ops[0]), 7_000);
+    }
+
+    #[test]
+    fn operations_for_transition_is_empty_for_non_geometric_and_unresolvable() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 60, 16))
+            .expect("layout solves");
+        let target = split_target(id(1), SplitAxis::Horizontal);
+
+        let armed = PaneDragResizeTransition {
+            transition_id: 3,
+            sequence: 3,
+            from: PaneDragResizeState::Idle,
+            to: PaneDragResizeState::Idle,
+            effect: PaneDragResizeEffect::Armed {
+                target,
+                pointer_id: 1,
+                origin: PanePointerPosition::new(5, 5),
+            },
+        };
+        assert!(
+            tree.operations_for_transition(&armed, &layout, neutral_pressure())
+                .is_empty()
+        );
+
+        let canceled = PaneDragResizeTransition {
+            transition_id: 4,
+            sequence: 4,
+            from: PaneDragResizeState::Idle,
+            to: PaneDragResizeState::Idle,
+            effect: PaneDragResizeEffect::Canceled {
+                target: Some(target),
+                pointer_id: Some(1),
+                reason: PaneCancelReason::EscapeKey,
+            },
+        };
+        assert!(
+            tree.operations_for_transition(&canceled, &layout, neutral_pressure())
+                .is_empty()
+        );
+
+        // A drag targeting a split that no longer exists is swallowed (no panic,
+        // no operation), matching the documented best-effort bridge contract.
+        let stale = drag_updated_transition(
+            split_target(id(99), SplitAxis::Horizontal),
+            PanePointerPosition::new(10, 5),
+        );
+        assert!(
+            tree.operations_for_transition(&stale, &layout, neutral_pressure())
+                .is_empty()
+        );
     }
 }
