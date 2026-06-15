@@ -1149,3 +1149,180 @@ fn e2e_resize_storm_determinism() {
     );
     log_test_end("e2e_resize_storm_determinism", start, checksum, true);
 }
+
+// ===========================================================================
+// Scenario 16: Splitter Drag Mutates the Live Pane Tree (Adapter + Bridge)
+// ===========================================================================
+
+/// First-child share (basis points) of a split node, or `None` for leaves.
+fn split_first_share_bps(tree: &ftui_layout::PaneTree, split: ftui_layout::PaneId) -> Option<u32> {
+    match &tree.node(split)?.kind {
+        ftui_layout::PaneNodeKind::Split(node) => {
+            let numerator = node.ratio.numerator();
+            let denominator = node.ratio.denominator();
+            Some(numerator * 10_000 / (numerator + denominator))
+        }
+        ftui_layout::PaneNodeKind::Leaf(_) => None,
+    }
+}
+
+fn mouse_event(kind: ftui_core::event::MouseEventKind, x: u16, y: u16) -> Event {
+    Event::Mouse(ftui_core::event::MouseEvent::new(kind, x, y))
+}
+
+/// End-to-end proof that a splitter drag fed through the screen event loop
+/// (`Screen::update`) actually mutates the live pane tree. The path under test
+/// is the production wiring landed for bd-ut4al: raw mouse events →
+/// `PaneTerminalAdapter` (owned by `LayoutLab`) → `PaneDragResizeTransition` →
+/// `PaneTree::operations_for_transition` → timeline-recorded `apply_operation`.
+/// Previously the adapter was test-only and the demo synthesized its own motion.
+#[test]
+fn e2e_splitter_drag_mutates_live_split_ratio() {
+    use ftui_core::event::{MouseButton, MouseEventKind};
+    use ftui_demo_showcase::pane_interaction::{
+        PaneGestureMode, collect_splitter_primitives, pointer_down_context_at,
+    };
+    use ftui_layout::{PANE_EDGE_GRIP_INSET_CELLS, PanePointerPosition, SplitAxis};
+
+    let start = Instant::now();
+    log_test_start("e2e_splitter_drag_mutates_live_split_ratio", 140, 40);
+
+    let mut lab = LayoutLab::new();
+
+    // Render once so the pane workspace caches its on-screen bounds for
+    // hit-testing the splitter on the following events.
+    let _ = render_lab(&lab, 140, 40);
+    let pane_area = lab.embedded_pane_workspace_bounds();
+    assert!(
+        !pane_area.is_empty(),
+        "pane workspace bounds must be initialized after render"
+    );
+
+    let layout = lab
+        .pane_tree()
+        .solve_layout(pane_area)
+        .expect("pane layout should solve");
+
+    // Locate a splitter rail point that resolves to a resize gesture.
+    let splitters = collect_splitter_primitives(lab.pane_tree(), &layout, pane_area, None, None);
+    let (drag_x, drag_y, target) = splitters
+        .iter()
+        .find_map(|splitter| {
+            let x = splitter
+                .rail_rect
+                .x
+                .saturating_add(splitter.rail_rect.width / 2);
+            let y = splitter
+                .rail_rect
+                .y
+                .saturating_add(splitter.rail_rect.height / 2);
+            let pointer = PanePointerPosition::new(i32::from(x), i32::from(y));
+            pointer_down_context_at(
+                lab.pane_tree(),
+                pane_area,
+                pointer,
+                PANE_EDGE_GRIP_INSET_CELLS,
+            )
+            .filter(|context| matches!(context.mode, PaneGestureMode::Resize(_)))
+            .map(|context| (x, y, context.target))
+        })
+        .expect("expected a splitter rail point that maps to a resize gesture");
+
+    let before = split_first_share_bps(lab.pane_tree(), target.split_id)
+        .expect("resize target must address a split node");
+    log_jsonl(
+        "splitter_target",
+        &[
+            ("split_id", &format!("{:?}", target.split_id)),
+            ("axis", &format!("{:?}", target.axis)),
+            ("drag_x", &drag_x.to_string()),
+            ("drag_y", &drag_y.to_string()),
+            ("before_bps", &before.to_string()),
+        ],
+    );
+
+    // Drag along the split's primary axis toward whichever third-point of the
+    // viewport is farther from the current splitter — a large, in-bounds move
+    // that unambiguously changes the ratio without clamping at an extreme.
+    let (axis_start, orth, vertical_axis) = match target.axis {
+        SplitAxis::Horizontal => (i32::from(drag_x), drag_y, false),
+        SplitAxis::Vertical => (i32::from(drag_y), drag_x, true),
+    };
+    let axis_origin = if vertical_axis {
+        i32::from(pane_area.y)
+    } else {
+        i32::from(pane_area.x)
+    };
+    let axis_extent = if vertical_axis {
+        i32::from(pane_area.height)
+    } else {
+        i32::from(pane_area.width)
+    };
+    let one_third = axis_origin + axis_extent / 3;
+    let two_third = axis_origin + 2 * axis_extent / 3;
+    let axis_end = if (axis_start - one_third).abs() >= (axis_start - two_third).abs() {
+        one_third
+    } else {
+        two_third
+    };
+
+    let to_event = |axis_value: i32| -> (u16, u16) {
+        let clamped = u16::try_from(axis_value.clamp(0, i32::from(u16::MAX))).unwrap_or(0);
+        if vertical_axis {
+            (orth, clamped)
+        } else {
+            (clamped, orth)
+        }
+    };
+
+    // Pointer-down on the splitter arms the adapter.
+    lab.update(&mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        drag_x,
+        drag_y,
+    ));
+
+    // Several drag samples carry the splitter to the target position. Multiple
+    // samples ensure the adapter clears its drag threshold and emits geometry.
+    let steps = 4;
+    for step in 1..=steps {
+        let axis_value = axis_start + (axis_end - axis_start) * step / steps;
+        let (mx, my) = to_event(axis_value);
+        lab.update(&mouse_event(
+            MouseEventKind::Drag(MouseButton::Left),
+            mx,
+            my,
+        ));
+    }
+
+    // Release commits the gesture.
+    let (up_x, up_y) = to_event(axis_end);
+    lab.update(&mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        up_x,
+        up_y,
+    ));
+
+    let after = split_first_share_bps(lab.pane_tree(), target.split_id)
+        .expect("resize target must still address a split node");
+    log_jsonl(
+        "splitter_result",
+        &[
+            ("before_bps", &before.to_string()),
+            ("after_bps", &after.to_string()),
+        ],
+    );
+
+    assert_ne!(
+        before, after,
+        "splitter drag through Screen::update must change the live split ratio \
+         (before={before} after={after})"
+    );
+
+    log_test_end(
+        "e2e_splitter_drag_mutates_live_split_ratio",
+        start,
+        u64::from(after),
+        true,
+    );
+}

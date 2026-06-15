@@ -707,7 +707,7 @@ pub fn apply_operations_with_timeline(
 }
 
 #[must_use]
-fn apply_resize_operations_with_timeline(
+pub fn apply_resize_operations_with_timeline(
     state: PaneTimelineApplyState<'_>,
     sequence: u64,
     operations: &[PaneOperation],

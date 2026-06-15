@@ -812,12 +812,15 @@ impl PanePointerCaptureAdapter {
 mod tests {
     use super::{
         PanePointerCaptureAdapter, PanePointerCaptureCommand, PanePointerCaptureConfig,
-        PanePointerIgnoredReason, PanePointerLifecyclePhase, PanePointerLogOutcome,
+        PanePointerDispatch, PanePointerIgnoredReason, PanePointerLifecyclePhase,
+        PanePointerLogOutcome,
     };
     use ftui_layout::{
-        PaneCancelReason, PaneDragResizeEffect, PaneDragResizeState, PaneId, PaneInertialThrow,
-        PaneModifierSnapshot, PaneMotionVector, PanePointerButton, PanePointerPosition,
-        PanePressureSnapProfile, PaneResizeTarget, PaneSemanticInputEventKind, SplitAxis,
+        PANE_TREE_SCHEMA_VERSION, PaneCancelReason, PaneDragResizeEffect, PaneDragResizeState,
+        PaneId, PaneInertialThrow, PaneLayout, PaneLeaf, PaneModifierSnapshot, PaneMotionVector,
+        PaneNodeKind, PaneNodeRecord, PanePointerButton, PanePointerPosition,
+        PanePressureSnapProfile, PaneResizeTarget, PaneSemanticInputEventKind, PaneSplit,
+        PaneSplitRatio, PaneTree, PaneTreeSnapshot, Rect, SplitAxis,
     };
 
     fn target() -> PaneResizeTarget {
@@ -834,6 +837,156 @@ mod tests {
     fn adapter() -> PanePointerCaptureAdapter {
         PanePointerCaptureAdapter::new(PanePointerCaptureConfig::default())
             .expect("default config should be valid")
+    }
+
+    fn pane_id(raw: u64) -> PaneId {
+        PaneId::new(raw).expect("test pane id must be non-zero")
+    }
+
+    /// A horizontal root split (left | right-column) where the right child is a
+    /// vertical split, matching the runtime bridge test's fixture. The root
+    /// split spans the whole viewport regardless of ratio, so one solve targets
+    /// it precisely.
+    fn nested_pane_tree() -> PaneTree {
+        let root = pane_id(1);
+        let left = pane_id(2);
+        let right_split = pane_id(3);
+        let right_top = pane_id(4);
+        let right_bottom = pane_id(5);
+        let snapshot = PaneTreeSnapshot {
+            schema_version: PANE_TREE_SCHEMA_VERSION,
+            root,
+            next_id: pane_id(6),
+            nodes: vec![
+                PaneNodeRecord::split(
+                    root,
+                    None,
+                    PaneSplit {
+                        axis: SplitAxis::Horizontal,
+                        ratio: PaneSplitRatio::new(1, 1).expect("valid ratio"),
+                        first: left,
+                        second: right_split,
+                    },
+                ),
+                PaneNodeRecord::leaf(left, Some(root), PaneLeaf::new("left")),
+                PaneNodeRecord::split(
+                    right_split,
+                    Some(root),
+                    PaneSplit {
+                        axis: SplitAxis::Vertical,
+                        ratio: PaneSplitRatio::new(1, 1).expect("valid ratio"),
+                        first: right_top,
+                        second: right_bottom,
+                    },
+                ),
+                PaneNodeRecord::leaf(right_top, Some(right_split), PaneLeaf::new("right_top")),
+                PaneNodeRecord::leaf(
+                    right_bottom,
+                    Some(right_split),
+                    PaneLeaf::new("right_bottom"),
+                ),
+            ],
+            extensions: std::collections::BTreeMap::new(),
+        };
+        PaneTree::from_snapshot(snapshot).expect("valid nested pane tree")
+    }
+
+    fn root_first_share_bps(tree: &PaneTree, split: PaneId) -> u32 {
+        match &tree.node(split).expect("split node present").kind {
+            PaneNodeKind::Split(node) => {
+                node.ratio.numerator() * 10_000
+                    / (node.ratio.numerator() + node.ratio.denominator())
+            }
+            PaneNodeKind::Leaf(_) => panic!("expected split node"),
+        }
+    }
+
+    fn apply_dispatch(
+        tree: &mut PaneTree,
+        layout: &PaneLayout,
+        dispatch: &PanePointerDispatch,
+        neutral: PanePressureSnapProfile,
+        seed: &mut u64,
+    ) -> usize {
+        let Some(transition) = dispatch.transition.as_ref() else {
+            return 0;
+        };
+        let pressure = dispatch.pressure_snap_profile().unwrap_or(neutral);
+        let ops = tree.operations_for_transition(transition, layout, pressure);
+        let applied = ops.len();
+        for op in ops {
+            tree.apply_operation(*seed, op).expect("operation applies");
+            *seed += 1;
+        }
+        applied
+    }
+
+    /// Web parity for the runtime's `pane_terminal_adapter_drives_live_tree_mutation`:
+    /// a pointer-capture drag flows through `PanePointerCaptureAdapter` into
+    /// `PaneDragResizeTransition` values, the layout bridge
+    /// (`PaneTree::operations_for_transition`) converts each geometry-bearing
+    /// transition into `PaneOperation` values, and `apply_operation` moves the
+    /// live root split ratio. This closes the web-side gap where the adapter
+    /// emitted transitions that no in-tree host consumed.
+    #[test]
+    fn web_pointer_capture_drives_live_tree_mutation() {
+        let mut tree = nested_pane_tree();
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 50, 20))
+            .expect("layout should solve");
+        let root_split = pane_id(1);
+        let resize_target = PaneResizeTarget {
+            split_id: root_split,
+            axis: SplitAxis::Horizontal,
+        };
+        let neutral = PanePressureSnapProfile {
+            strength_bps: 5_000,
+            hysteresis_bps: 100,
+        };
+
+        let before = root_first_share_bps(&tree, root_split);
+
+        let mut adapter = adapter();
+        let mut op_seed = 9_000u64;
+        let mut geometry_transitions = 0usize;
+
+        // Pointer-down arms the capture machine (Armed transition carries no
+        // geometry, so the bridge yields no operations yet).
+        let down = adapter.pointer_down(
+            resize_target,
+            7,
+            PanePointerButton::Primary,
+            pos(25, 10),
+            PaneModifierSnapshot::default(),
+        );
+        geometry_transitions += apply_dispatch(&mut tree, &layout, &down, neutral, &mut op_seed);
+
+        // Drag rightward across cells, applying each transition to the tree.
+        for x in [30, 36, 42] {
+            let moved = adapter.pointer_move(7, pos(x, 10), PaneModifierSnapshot::default());
+            geometry_transitions +=
+                apply_dispatch(&mut tree, &layout, &moved, neutral, &mut op_seed);
+        }
+
+        // Release commits the gesture.
+        let up = adapter.pointer_up(
+            7,
+            PanePointerButton::Primary,
+            pos(42, 10),
+            PaneModifierSnapshot::default(),
+        );
+        geometry_transitions += apply_dispatch(&mut tree, &layout, &up, neutral, &mut op_seed);
+
+        assert!(
+            geometry_transitions > 0,
+            "drag lifecycle should yield at least one geometry-bearing transition"
+        );
+        let after = root_first_share_bps(&tree, root_split);
+        assert!(
+            after > before,
+            "rightward pointer drag should grow the first child: after={after} before={before}"
+        );
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
     }
 
     #[test]

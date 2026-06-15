@@ -5,19 +5,21 @@
 use std::cell::Cell;
 use std::collections::BTreeSet;
 
-use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
+use ftui_core::event::{
+    Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ftui_core::geometry::{Rect, Sides};
 use ftui_layout::{
     Alignment as FlexAlignment, Constraint, Flex, PANE_EDGE_GRIP_INSET_CELLS,
     PANE_MAGNETIC_FIELD_CELLS, PaneId, PaneInertialThrow, PaneInteractionTimeline,
     PaneLayoutIntelligenceMode, PaneMotionVector, PaneNodeKind, PanePointerPosition,
-    PanePressureSnapProfile, PaneSelectionState, PaneTree, WorkspaceMetadata, WorkspaceSnapshot,
-    decode_workspace_snapshot_json, to_canonical_workspace_snapshot_json,
+    PanePressureSnapProfile, PaneResizeTarget, PaneSelectionState, PaneTree, WorkspaceMetadata,
+    WorkspaceSnapshot, decode_workspace_snapshot_json, to_canonical_workspace_snapshot_json,
 };
 use ftui_render::cell::{Cell as RenderCell, PackedRgba};
 use ftui_render::drawing::Draw;
 use ftui_render::frame::Frame;
-use ftui_runtime::Cmd;
+use ftui_runtime::{Cmd, PaneTerminalAdapter, PaneTerminalAdapterConfig};
 use ftui_style::{Style, StyleFlags};
 use ftui_text::{display_width, truncate_to_width};
 use ftui_widgets::Widget;
@@ -33,8 +35,9 @@ use ftui_widgets::rule::Rule;
 use super::{HelpEntry, Screen};
 use crate::pane_interaction::{
     ActivePaneGesture, PaneDragSemanticsContext, PaneDragSemanticsInput, PaneGestureArmState,
-    PanePreviewState, PaneSplitterPrimitive, PaneSplitterVisualState, PaneTimelineApplyState,
-    PaneTimelineStatus, apply_drag_semantics, apply_operations_with_timeline, arm_active_gesture,
+    PaneGestureMode, PanePreviewState, PaneSplitterPrimitive, PaneSplitterVisualState,
+    PaneTimelineApplyState, PaneTimelineStatus, apply_drag_semantics,
+    apply_operations_with_timeline, apply_resize_operations_with_timeline, arm_active_gesture,
     collect_splitter_primitives, default_pane_layout_tree, pointer_down_context_at,
     rollback_timeline_to_cursor, update_selection_for_pointer_down,
 };
@@ -74,6 +77,14 @@ impl Direction {
         }
     }
 }
+
+/// Fallback snap pressure for adapter-driven splitter resize before the
+/// terminal adapter has derived motion (e.g. the very first drag sample).
+/// Mirrors the neutral profile used by the `ftui-runtime` integration tests.
+const NEUTRAL_RESIZE_PRESSURE: PanePressureSnapProfile = PanePressureSnapProfile {
+    strength_bps: 5_000,
+    hysteresis_bps: 100,
+};
 
 /// Layout Lab screen state.
 pub struct LayoutLab {
@@ -151,6 +162,18 @@ pub struct LayoutLab {
     pane_intelligence_mode: PaneLayoutIntelligenceMode,
     /// Adjustable magnetic docking attraction radius.
     pane_magnetic_field_cells: f64,
+    /// Terminal input adapter owning the splitter drag-resize state machine.
+    ///
+    /// Single-pane splitter resize gestures are translated through this adapter
+    /// into `PaneDragResizeTransition` values that the layout bridge
+    /// (`PaneTree::operations_for_transition`) turns into live tree mutations —
+    /// the same production path proven by the `ftui-runtime` integration tests,
+    /// now driving the demo instead of locally synthesized motion.
+    pane_terminal_adapter: PaneTerminalAdapter,
+    /// Splitter target the terminal adapter armed on the active pointer-down.
+    /// `Some` only while an adapter-driven single-pane resize is in flight; its
+    /// presence also routes drag samples to the adapter path.
+    pane_resize_target: Option<PaneResizeTarget>,
 }
 
 /// User-visible summary of the latest pane workspace recovery decision.
@@ -281,6 +304,9 @@ impl LayoutLab {
             pane_hover_pointer: Cell::new(None),
             pane_intelligence_mode: PaneLayoutIntelligenceMode::Focus,
             pane_magnetic_field_cells: PANE_MAGNETIC_FIELD_CELLS,
+            pane_terminal_adapter: PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default())
+                .expect("default pane terminal adapter config is valid"),
+            pane_resize_target: None,
         }
     }
 
@@ -1142,6 +1168,27 @@ impl LayoutLab {
         );
         self.pane_active_gesture.set(active_gesture);
 
+        // Single-pane splitter resize is owned by the production terminal
+        // adapter + layout bridge instead of locally synthesized motion. The
+        // adapter arms its drag-resize state machine on this pointer-down and
+        // carries the resolved target through the rest of the gesture. Group
+        // resize (multi-selection) and pane move/dock keep the reflow path.
+        self.pane_resize_target = None;
+        if matches!(context.mode, PaneGestureMode::Resize(_))
+            && self.pane_selection.selected.len() <= 1
+        {
+            let (px, py) = Self::pane_pointer_cells(pointer);
+            let down = Event::Mouse(MouseEvent::new(
+                MouseEventKind::Down(MouseButton::Left),
+                px,
+                py,
+            ));
+            let _ = self
+                .pane_terminal_adapter
+                .translate(&down, Some(context.target));
+            self.pane_resize_target = Some(context.target);
+        }
+
         self.pane_last_pointer = Some(pointer);
         self.pane_last_motion = PaneMotionVector::from_delta(0, 0, 16, 0);
         self.pane_drag_direction_changes = 0;
@@ -1152,6 +1199,16 @@ impl LayoutLab {
         let Some(active) = self.pane_active_gesture.get() else {
             return;
         };
+
+        // Adapter-driven single-pane resize: feed the raw pointer sample through
+        // PaneTerminalAdapter and realize the resulting transition against the
+        // live tree via the layout bridge. Move/dock and group-resize gestures
+        // fall through to the synthetic-motion reflow path below.
+        if self.pane_resize_target.is_some() && matches!(active.mode, PaneGestureMode::Resize(_)) {
+            self.apply_pane_resize_via_adapter(active, pointer, committed);
+            self.pane_last_pointer = Some(pointer);
+            return;
+        }
 
         let previous = self.pane_last_pointer.unwrap_or(pointer);
         let delta_x = pointer.x.saturating_sub(previous.x);
@@ -1213,6 +1270,90 @@ impl LayoutLab {
         self.pane_last_pointer = Some(pointer);
     }
 
+    /// Translate one splitter drag/commit sample through the terminal adapter
+    /// and apply the resulting transition to the live pane tree via the layout
+    /// bridge. This is the production resize path: raw pointer motion →
+    /// [`PaneTerminalAdapter`] → `PaneDragResizeTransition` →
+    /// [`PaneTree::operations_for_transition`] → timeline-recorded
+    /// `apply_operation`, replacing the demo's previously hand-synthesized
+    /// motion vectors.
+    fn apply_pane_resize_via_adapter(
+        &mut self,
+        active: ActivePaneGesture,
+        pointer: PanePointerPosition,
+        committed: bool,
+    ) {
+        let viewport = self.pane_preview.get();
+        if viewport.is_empty() {
+            return;
+        }
+
+        let (px, py) = Self::pane_pointer_cells(pointer);
+        let kind = if committed {
+            MouseEventKind::Up(MouseButton::Left)
+        } else {
+            MouseEventKind::Drag(MouseButton::Left)
+        };
+        let event = Event::Mouse(MouseEvent::new(kind, px, py));
+        // The adapter already holds the target armed on pointer-down, so no
+        // target hint is needed for in-flight drag/commit samples.
+        let dispatch = self.pane_terminal_adapter.translate(&event, None);
+        // Read the derived snap pressure before moving the transition out of the
+        // dispatch (the accessor borrows the whole struct).
+        let pressure = dispatch
+            .pressure_snap_profile()
+            .unwrap_or(NEUTRAL_RESIZE_PRESSURE);
+        let Some(transition) = dispatch.primary_transition else {
+            return;
+        };
+        let Ok(layout) = self.pane_tree.solve_layout(viewport) else {
+            return;
+        };
+        let operations = self
+            .pane_tree
+            .operations_for_transition(&transition, &layout, pressure);
+        if operations.is_empty() {
+            return;
+        }
+
+        // Resize collapses any docking preview; keep parity with the reflow
+        // path's resize branch.
+        self.pane_preview_state = PanePreviewState::default();
+        self.pane_live_reflow_signature = None;
+        self.pane_sequence = self.pane_sequence.saturating_add(1);
+        self.pane_last_applied_ops = apply_resize_operations_with_timeline(
+            PaneTimelineApplyState {
+                layout_tree: &mut self.pane_tree,
+                timeline: &mut self.pane_timeline,
+                next_operation_id: &mut self.pane_next_operation_id,
+                workspace_generation: &mut self.pane_workspace_generation,
+            },
+            self.pane_sequence,
+            &operations,
+            active.coalesce_after_operation_id,
+            pressure,
+            !committed,
+        );
+    }
+
+    /// Clamp an `i32` pane pointer position into terminal cell coordinates.
+    fn pane_pointer_cells(pointer: PanePointerPosition) -> (u16, u16) {
+        (
+            u16::try_from(pointer.x.max(0)).unwrap_or(u16::MAX),
+            u16::try_from(pointer.y.max(0)).unwrap_or(u16::MAX),
+        )
+    }
+
+    /// Read-only access to the live pane workspace tree.
+    ///
+    /// Exposed so embedding hosts and integration tests can inspect pane
+    /// geometry (splitter hit-testing, current split ratios) without mutating
+    /// state — pairs with [`Self::embedded_pane_workspace_bounds`].
+    #[must_use]
+    pub fn pane_tree(&self) -> &PaneTree {
+        &self.pane_tree
+    }
+
     fn finish_pane_gesture(&mut self) {
         self.pane_active_gesture.set(None);
         self.pane_gesture_timeline_cursor_start = None;
@@ -1222,6 +1363,9 @@ impl LayoutLab {
         self.pane_last_delta_sign = None;
         self.pane_drag_direction_changes = 0;
         self.pane_hover_pointer.set(None);
+        // Clear any latched adapter state so the next gesture arms cleanly.
+        let _ = self.pane_terminal_adapter.force_cancel_all();
+        self.pane_resize_target = None;
     }
 
     fn cancel_pane_gesture(&mut self) {
@@ -3612,6 +3756,135 @@ mod tests {
             lab.pane_splitter_active.get(),
             0,
             "active diagnostics should clear after gesture completion"
+        );
+    }
+
+    #[test]
+    fn pane_splitter_drag_uses_terminal_adapter_and_mutates_tree() {
+        use ftui_layout::SplitAxis;
+
+        let mut lab = LayoutLab::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(140, 40, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 140, 40));
+
+        let pane_area = lab.pane_preview.get();
+        let layout = lab
+            .pane_tree
+            .solve_layout(pane_area)
+            .expect("pane layout should solve");
+        let splitters = collect_splitter_primitives(&lab.pane_tree, &layout, pane_area, None, None);
+        let (drag_x, drag_y, target) = splitters
+            .iter()
+            .find_map(|splitter| {
+                let x = splitter
+                    .rail_rect
+                    .x
+                    .saturating_add(splitter.rail_rect.width / 2);
+                let y = splitter
+                    .rail_rect
+                    .y
+                    .saturating_add(splitter.rail_rect.height / 2);
+                let pointer = PanePointerPosition::new(i32::from(x), i32::from(y));
+                pointer_down_context_at(
+                    &lab.pane_tree,
+                    pane_area,
+                    pointer,
+                    PANE_EDGE_GRIP_INSET_CELLS,
+                )
+                .filter(|context| matches!(context.mode, PaneGestureMode::Resize(_)))
+                .map(|context| (x, y, context.target))
+            })
+            .expect("expected a splitter rail point that maps to a resize gesture");
+
+        let ratio_bps = |lab: &LayoutLab| -> u32 {
+            match &lab
+                .pane_tree
+                .node(target.split_id)
+                .expect("split node present")
+                .kind
+            {
+                PaneNodeKind::Split(node) => {
+                    node.ratio.numerator() * 10_000
+                        / (node.ratio.numerator() + node.ratio.denominator())
+                }
+                PaneNodeKind::Leaf(_) => panic!("resize target must address a split node"),
+            }
+        };
+        let before = ratio_bps(&lab);
+
+        // Pointer-down on the splitter arms the production terminal adapter path
+        // (distinct from the synthetic-motion move path).
+        lab.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            drag_x,
+            drag_y,
+            Modifiers::NONE,
+        );
+        assert!(
+            lab.pane_resize_target.is_some(),
+            "single-pane splitter resize must arm the terminal adapter"
+        );
+
+        // Drag toward the panel interior along the split axis, well past the
+        // adapter's 2-cell drag threshold.
+        let (origin, extent, start) = match target.axis {
+            SplitAxis::Horizontal => (
+                i32::from(pane_area.x),
+                i32::from(pane_area.width),
+                i32::from(drag_x),
+            ),
+            SplitAxis::Vertical => (
+                i32::from(pane_area.y),
+                i32::from(pane_area.height),
+                i32::from(drag_y),
+            ),
+        };
+        let dir = if start <= origin + extent / 2 { 1 } else { -1 };
+        let along = |axis_value: i32| -> (u16, u16) {
+            let clamped = u16::try_from(axis_value.max(0)).unwrap_or(u16::MAX);
+            match target.axis {
+                SplitAxis::Horizontal => (clamped, drag_y),
+                SplitAxis::Vertical => (drag_x, clamped),
+            }
+        };
+        let mut last = (drag_x, drag_y);
+        for step in [6, 12, 18, 24] {
+            last = along(start + dir * step);
+            lab.handle_mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                last.0,
+                last.1,
+                Modifiers::NONE,
+            );
+        }
+        lab.handle_mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            last.0,
+            last.1,
+            Modifiers::NONE,
+        );
+
+        assert!(
+            lab.pane_resize_target.is_none(),
+            "gesture completion must clear the adapter target"
+        );
+        assert!(
+            lab.pane_active_gesture.get().is_none(),
+            "gesture completion must clear the active gesture"
+        );
+        assert!(
+            lab.pane_last_applied_ops > 0,
+            "adapter-driven resize must apply at least one operation"
+        );
+        assert_ne!(
+            before,
+            ratio_bps(&lab),
+            "splitter drag must mutate the live split ratio"
+        );
+        assert!(
+            !lab.pane_timeline.entries.is_empty(),
+            "adapter resize must record timeline entries for undo"
         );
     }
 
