@@ -248,7 +248,7 @@ impl FenwickTree {
 /// Lowest set bit of `x`. E.g., `lowbit(6) = 2`, `lowbit(4) = 4`.
 #[inline]
 fn lowbit(x: usize) -> usize {
-    x & x.wrapping_neg()
+    x.isolate_lowest_one()
 }
 
 /// Most significant bit that fits within `n`.

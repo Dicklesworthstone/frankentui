@@ -620,7 +620,7 @@ fn count_crossings(rank_a: &[usize], rank_b: &[usize], graph: &LayoutGraph) -> u
             let mut i = idx.saturating_add(1);
             while i < self.tree.len() {
                 self.tree[i] = self.tree[i].saturating_add(value);
-                i += i & i.wrapping_neg();
+                i += i.isolate_lowest_one();
             }
         }
 
@@ -753,7 +753,7 @@ fn count_crossings_reuse(
             let mut fi = b.saturating_add(1);
             while fi < scratch.fenwick_tree.len() {
                 scratch.fenwick_tree[fi] = scratch.fenwick_tree[fi].saturating_add(1);
-                fi += fi & fi.wrapping_neg();
+                fi += fi.isolate_lowest_one();
             }
             total_seen = total_seen.saturating_add(1);
         }
