@@ -29,6 +29,7 @@ use ftui_layout::{
 };
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
+use ftui_style::PaneAffordanceTheme;
 
 /// Translate a raw terminal key event into a canonical [`PaneCommand`].
 ///
@@ -250,8 +251,28 @@ impl Default for PaneFocusRing {
     fn default() -> Self {
         Self {
             border: BorderChars::DOUBLE,
-            // Gold border: high-contrast and stable across themes.
+            // Gold border: high-contrast and stable across themes. Used when no
+            // theme is wired in; prefer [`PaneFocusRing::themed`] when a theme is
+            // available so the ring respects palette + high-contrast preferences.
             cell: Cell::from_char(' ').with_fg(PackedRgba::rgb(0xFF, 0xD7, 0x00)),
+        }
+    }
+}
+
+impl PaneFocusRing {
+    /// Build a focus ring whose color is the theme's contrast-guaranteed pane
+    /// focus-ring affordance (bd-3bfbp).
+    ///
+    /// The supplied [`PaneAffordanceTheme`] has already been contrast-clamped
+    /// against the pane surface (AA by default, AAA when built in the
+    /// high-contrast profile), so the ring stays visible across every theme
+    /// without per-call tuning.
+    #[must_use]
+    pub fn themed(affordance: &PaneAffordanceTheme) -> Self {
+        let rgb = affordance.focus_ring.to_rgb();
+        Self {
+            border: BorderChars::DOUBLE,
+            cell: Cell::from_char(' ').with_fg(PackedRgba::rgb(rgb.r, rgb.g, rgb.b)),
         }
     }
 }
@@ -591,6 +612,33 @@ mod tests {
             buffer.get(5, 3).and_then(|c| c.content.as_char()),
             Some('╝')
         );
+    }
+
+    #[test]
+    fn themed_focus_ring_uses_the_affordance_color() {
+        use ftui_style::theme::themes;
+        let resolved = themes::dark().resolve(true);
+        let affordance = PaneAffordanceTheme::from_resolved(&resolved, false);
+        let ring = PaneFocusRing::themed(&affordance);
+        // The ring's fg must equal the theme's contrast-clamped focus-ring color,
+        // not the hardcoded gold default.
+        let want = affordance.focus_ring.to_rgb();
+        assert_eq!(ring.cell.fg, PackedRgba::rgb(want.r, want.g, want.b));
+        assert_ne!(ring.cell.fg, PaneFocusRing::default().cell.fg);
+        // Glyph set is unchanged (still the distinct double-line border).
+        assert_eq!(ring.border, BorderChars::DOUBLE);
+    }
+
+    #[test]
+    fn themed_focus_ring_high_contrast_is_at_least_as_visible() {
+        use ftui_style::theme::themes;
+        let resolved = themes::solarized_light().resolve(false);
+        let normal = PaneAffordanceTheme::from_resolved(&resolved, false);
+        let high = PaneAffordanceTheme::from_resolved(&resolved, true);
+        let ratio = |c: ftui_style::color::Color| {
+            ftui_style::color::contrast_ratio(c.to_rgb(), resolved.surface.to_rgb())
+        };
+        assert!(ratio(high.focus_ring) + 1e-9 >= ratio(normal.focus_ring));
     }
 
     #[test]

@@ -68,7 +68,7 @@ pub use table_theme::{
     TableEffectScope, TableEffectTarget, TablePresetId, TableSection, TableTheme,
     TableThemeDiagnostics, TableThemeSpec,
 };
-pub use theme::{AdaptiveColor, ResolvedTheme, Theme, ThemeBuilder};
+pub use theme::{AdaptiveColor, PaneAffordanceTheme, ResolvedTheme, Theme, ThemeBuilder};
 
 #[cfg(test)]
 mod tests {

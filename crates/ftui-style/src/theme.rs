@@ -21,7 +21,9 @@
 //!     .build();
 //! ```
 
-use crate::color::Color;
+use crate::color::{
+    Color, Rgb, WCAG_AA_LARGE_TEXT, WCAG_AA_NORMAL_TEXT, WCAG_AAA_NORMAL_TEXT, contrast_ratio,
+};
 use std::env;
 
 /// An adaptive color that can change based on light/dark mode.
@@ -259,6 +261,133 @@ pub struct ResolvedTheme {
     pub scrollbar_track: Color,
     /// Scrollbar thumb color.
     pub scrollbar_thumb: Color,
+}
+
+/// Themeable colors for pane interaction affordances (bd-3bfbp).
+///
+/// Covers the splitter rail/handle in its three interaction states
+/// (idle / hover / active), the magnetic-snap dock-preview emphasis, and the
+/// keyboard focus ring around the active pane. Every color is *derived* from a
+/// [`ResolvedTheme`] slot — there are no ad-hoc hardcoded values — and then
+/// contrast-clamped so the affordance stays visible against the pane surface it
+/// is drawn on:
+///
+/// - In the default profile each state meets at least WCAG AA: the large-text
+///   bar (3.0:1) for the ever-present low-emphasis idle divider, and the
+///   normal-text bar (4.5:1) for the meaning-bearing hover/active/snap/ring
+///   states.
+/// - In the high-contrast profile (`high_contrast = true`) every state is
+///   lifted to WCAG AAA (7.0:1).
+///
+/// Clamping preserves the themed hue when it already passes the target, and
+/// otherwise blends it toward whichever extreme (pure black or pure white)
+/// maximizes contrast with the surface, by the smallest amount that reaches the
+/// target ratio. This keeps affordances on-palette in well-designed themes
+/// while guaranteeing they never become invisible in low-contrast ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneAffordanceTheme {
+    /// Surface the affordances are drawn on (the pane background).
+    pub background: Color,
+    /// Idle splitter rail/handle (low-emphasis, always-present divider).
+    pub splitter_idle: Color,
+    /// Hovered splitter (pointer over the handle).
+    pub splitter_hover: Color,
+    /// Actively dragged splitter.
+    pub splitter_active: Color,
+    /// Magnetic-snap / dock-preview emphasis.
+    pub snap: Color,
+    /// Keyboard focus ring around the active pane.
+    pub focus_ring: Color,
+    /// Whether this was built in the high-contrast profile.
+    pub high_contrast: bool,
+}
+
+impl PaneAffordanceTheme {
+    /// Derive affordance colors from a resolved theme.
+    ///
+    /// `high_contrast` selects the WCAG target tier (AA vs AAA). Pass the
+    /// effective accessibility preference for the host here.
+    #[must_use]
+    pub fn from_resolved(theme: &ResolvedTheme, high_contrast: bool) -> Self {
+        let bg = theme.surface;
+        let (idle_target, emph_target) = if high_contrast {
+            (WCAG_AAA_NORMAL_TEXT, WCAG_AAA_NORMAL_TEXT)
+        } else {
+            (WCAG_AA_LARGE_TEXT, WCAG_AA_NORMAL_TEXT)
+        };
+        Self {
+            background: bg,
+            splitter_idle: ensure_min_contrast(theme.border, bg, idle_target),
+            splitter_hover: ensure_min_contrast(theme.primary, bg, emph_target),
+            splitter_active: ensure_min_contrast(theme.border_focused, bg, emph_target),
+            snap: ensure_min_contrast(theme.warning, bg, emph_target),
+            focus_ring: ensure_min_contrast(theme.border_focused, bg, emph_target),
+            high_contrast,
+        }
+    }
+
+    /// The minimum WCAG contrast ratio across all affordance states vs the
+    /// surface. Useful as a single accessibility health metric in tests.
+    #[must_use]
+    pub fn min_contrast_ratio(&self) -> f64 {
+        let bg = self.background.to_rgb();
+        [
+            self.splitter_idle,
+            self.splitter_hover,
+            self.splitter_active,
+            self.snap,
+            self.focus_ring,
+        ]
+        .into_iter()
+        .map(|c| contrast_ratio(c.to_rgb(), bg))
+        .fold(f64::INFINITY, f64::min)
+    }
+}
+
+/// Blend `color` toward the maximum-contrast extreme for `bg` by the smallest
+/// step that reaches `target` contrast.
+///
+/// Returns `color` unchanged when it already passes the target, or the extreme
+/// (pure black/white) when even a full blend cannot reach it (e.g. a target
+/// above the surface's own max achievable ratio). Deterministic: a fixed 16-step
+/// blend, no floating-point search state.
+fn ensure_min_contrast(color: Color, bg: Color, target: f64) -> Color {
+    let bg_rgb = bg.to_rgb();
+    let c_rgb = color.to_rgb();
+    if contrast_ratio(c_rgb, bg_rgb) >= target {
+        return color;
+    }
+    // Blend toward whichever extreme maximizes contrast with the surface. The
+    // crossover between black and white as the better foil sits near a surface
+    // luminance of ~0.18, so compare the realized ratios rather than testing a
+    // luminance midpoint.
+    let white = Rgb::new(255, 255, 255);
+    let black = Rgb::new(0, 0, 0);
+    let extreme = if contrast_ratio(white, bg_rgb) >= contrast_ratio(black, bg_rgb) {
+        white
+    } else {
+        black
+    };
+    const STEPS: u16 = 16;
+    for step in 1..=STEPS {
+        let t = f64::from(step) / f64::from(STEPS);
+        let blended = lerp_rgb(c_rgb, extreme, t);
+        if contrast_ratio(blended, bg_rgb) >= target {
+            return Color::Rgb(blended);
+        }
+    }
+    Color::Rgb(extreme)
+}
+
+/// Linearly interpolate between two RGB colors (`t` clamped to `[0, 1]`).
+fn lerp_rgb(a: Rgb, b: Rgb, t: f64) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| -> u8 {
+        let xf = f64::from(x);
+        let yf = f64::from(y);
+        (xf + (yf - xf) * t).round().clamp(0.0, 255.0) as u8
+    };
+    Rgb::new(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b))
 }
 
 /// Builder for creating custom themes.
@@ -762,6 +891,134 @@ impl SharedResolvedTheme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// All built-in themes, exercised for affordance contrast in both modes.
+    fn all_named_themes() -> Vec<(&'static str, Theme)> {
+        vec![
+            ("default", themes::default()),
+            ("dark", themes::dark()),
+            ("light", themes::light()),
+            ("nord", themes::nord()),
+            ("dracula", themes::dracula()),
+            ("solarized_dark", themes::solarized_dark()),
+            ("solarized_light", themes::solarized_light()),
+            ("monokai", themes::monokai()),
+            ("doom", themes::doom()),
+            ("quake", themes::quake()),
+        ]
+    }
+
+    /// Maximum contrast ratio any color can reach against `bg` (black or white).
+    fn max_achievable_contrast(bg: Color) -> f64 {
+        let bg = bg.to_rgb();
+        contrast_ratio(Rgb::new(255, 255, 255), bg).max(contrast_ratio(Rgb::new(0, 0, 0), bg))
+    }
+
+    fn assert_meets(state: Color, bg: Color, target: f64, ctx: &str) {
+        // The clamp guarantees `target`, or the surface's own ceiling when the
+        // target exceeds what any color can reach against this surface.
+        let bar = target.min(max_achievable_contrast(bg));
+        let got = contrast_ratio(state.to_rgb(), bg.to_rgb());
+        assert!(
+            got + 1e-9 >= bar,
+            "{ctx}: contrast {got:.3} below required {bar:.3}"
+        );
+    }
+
+    #[test]
+    fn pane_affordance_theme_is_visible_in_every_named_theme() {
+        for (name, theme) in all_named_themes() {
+            for &is_dark in &[true, false] {
+                let resolved = theme.resolve(is_dark);
+                let bg = resolved.surface;
+
+                // Default profile: idle holds the AA large-text bar; the
+                // meaning-bearing states hold the AA normal-text bar.
+                let aff = PaneAffordanceTheme::from_resolved(&resolved, false);
+                let ctx = format!("{name}/dark={is_dark}/default");
+                assert_meets(aff.splitter_idle, bg, WCAG_AA_LARGE_TEXT, &ctx);
+                assert_meets(aff.splitter_hover, bg, WCAG_AA_NORMAL_TEXT, &ctx);
+                assert_meets(aff.splitter_active, bg, WCAG_AA_NORMAL_TEXT, &ctx);
+                assert_meets(aff.snap, bg, WCAG_AA_NORMAL_TEXT, &ctx);
+                assert_meets(aff.focus_ring, bg, WCAG_AA_NORMAL_TEXT, &ctx);
+                assert!(!aff.high_contrast);
+
+                // High-contrast profile: every state lifts to AAA (capped by the
+                // surface ceiling where AAA is physically unreachable).
+                let hc = PaneAffordanceTheme::from_resolved(&resolved, true);
+                let hctx = format!("{name}/dark={is_dark}/high_contrast");
+                assert_meets(hc.splitter_idle, bg, WCAG_AAA_NORMAL_TEXT, &hctx);
+                assert_meets(hc.splitter_hover, bg, WCAG_AAA_NORMAL_TEXT, &hctx);
+                assert_meets(hc.splitter_active, bg, WCAG_AAA_NORMAL_TEXT, &hctx);
+                assert_meets(hc.snap, bg, WCAG_AAA_NORMAL_TEXT, &hctx);
+                assert_meets(hc.focus_ring, bg, WCAG_AAA_NORMAL_TEXT, &hctx);
+                assert!(hc.high_contrast);
+
+                // High contrast must never be *worse* than default.
+                assert!(
+                    hc.min_contrast_ratio() + 1e-9 >= aff.min_contrast_ratio(),
+                    "{name}/dark={is_dark}: high-contrast min {:.3} < default min {:.3}",
+                    hc.min_contrast_ratio(),
+                    aff.min_contrast_ratio()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pane_affordance_states_are_derived_from_the_theme() {
+        let resolved = themes::dark().resolve(true);
+        let dark = PaneAffordanceTheme::from_resolved(&resolved, false);
+        let light = PaneAffordanceTheme::from_resolved(&themes::light().resolve(false), false);
+
+        // The surface passes through verbatim (it is the canvas, not clamped).
+        assert_eq!(dark.background, resolved.surface);
+
+        // A slot that already clears the target is used verbatim — proving the
+        // affordance is *derived* from the theme, not synthesized. The dark
+        // theme's bright primary clears AA on its very dark surface.
+        assert!(
+            contrast_ratio(resolved.primary.to_rgb(), resolved.surface.to_rgb())
+                >= WCAG_AA_NORMAL_TEXT
+        );
+        assert_eq!(dark.splitter_hover, resolved.primary);
+
+        // Two distinct themes produce distinct affordances — proving the colors
+        // track the theme rather than being a hardcoded constant.
+        assert_ne!(dark.background, light.background);
+        assert_ne!(dark.splitter_hover, light.splitter_hover);
+    }
+
+    #[test]
+    fn ensure_min_contrast_is_a_noop_when_already_compliant() {
+        // White on near-black easily clears AAA, so it is returned untouched.
+        let bg = Color::rgb(10, 12, 16);
+        let fg = Color::rgb(255, 255, 255);
+        assert_eq!(ensure_min_contrast(fg, bg, WCAG_AAA_NORMAL_TEXT), fg);
+    }
+
+    #[test]
+    fn ensure_min_contrast_lifts_low_contrast_colors() {
+        // A mid-gray foil on a mid-gray surface fails AA; the clamp must lift it.
+        let bg = Color::rgb(120, 120, 120);
+        let fg = Color::rgb(130, 130, 130);
+        let before = contrast_ratio(fg.to_rgb(), bg.to_rgb());
+        assert!(before < WCAG_AA_LARGE_TEXT);
+        let fixed = ensure_min_contrast(fg, bg, WCAG_AA_LARGE_TEXT);
+        let after = contrast_ratio(fixed.to_rgb(), bg.to_rgb());
+        assert!(
+            after + 1e-9 >= WCAG_AA_LARGE_TEXT.min(max_achievable_contrast(bg)),
+            "clamp failed to lift contrast: {before:.3} -> {after:.3}"
+        );
+    }
+
+    #[test]
+    fn from_resolved_is_deterministic() {
+        let resolved = themes::nord().resolve(true);
+        let a = PaneAffordanceTheme::from_resolved(&resolved, true);
+        let b = PaneAffordanceTheme::from_resolved(&resolved, true);
+        assert_eq!(a, b);
+    }
 
     #[test]
     fn adaptive_color_fixed() {
