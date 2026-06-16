@@ -1,0 +1,121 @@
+{
+  "schema_version": "pane-a11y-compliance-v1",
+  "feature_bead": "bd-21pbi",
+  "matrix_bead": "bd-21pbi.6",
+  "description": "Accessibility compliance matrix for the pane workspace. Each dimension maps a WCAG-aligned a11y requirement to its source implementation beads and to the regression tests (per host) that prove it. The suite parses this file and asserts every named evidence test exists, so the matrix and the suite cannot drift.",
+  "hosts": [
+    "terminal",
+    "web"
+  ],
+  "suite": "crates/ftui-demo-showcase/tests/pane_a11y_compliance_a11y.rs",
+  "cadence": "cargo test -p ftui-demo-showcase --test pane_a11y_compliance_a11y (CI + scripts/pane_e2e.sh)",
+  "dimensions": [
+    {
+      "id": "keyboard_parity",
+      "title": "Keyboard parity: every pane operation is reachable pointer-free, and equivalent intent reaches identical state on both hosts",
+      "wcag": [
+        "2.1.1 Keyboard",
+        "2.1.3 Keyboard (No Exception)"
+      ],
+      "source_beads": [
+        "bd-21pbi.1",
+        "bd-21pbi.2",
+        "bd-21pbi.3"
+      ],
+      "terminal_evidence": [
+        "terminal_keyboard_completes_all_pane_ops",
+        "cross_host_command_parity"
+      ],
+      "web_evidence": [
+        "web_keyboard_completes_all_pane_ops",
+        "web_keymap_is_browser_safe",
+        "cross_host_command_parity"
+      ]
+    },
+    {
+      "id": "focus_visibility",
+      "title": "Focus visibility: the active pane is unambiguous via a contrast-safe focus ring (terminal) and a roving-tabindex + aria-current/separator tree (web)",
+      "wcag": [
+        "2.4.7 Focus Visible",
+        "4.1.2 Name, Role, Value"
+      ],
+      "source_beads": [
+        "bd-21pbi.2",
+        "bd-21pbi.3",
+        "bd-3bfbp"
+      ],
+      "terminal_evidence": [
+        "terminal_focus_ring_is_contrast_safe"
+      ],
+      "web_evidence": [
+        "web_roving_tabindex_invariant",
+        "web_separator_aria_semantics"
+      ]
+    },
+    {
+      "id": "announcements",
+      "title": "Accessible announcements: every effective command emits one concise, deterministic announcement; bursts coalesce so the live region is not spammed",
+      "wcag": [
+        "4.1.3 Status Messages"
+      ],
+      "source_beads": [
+        "bd-21pbi.4"
+      ],
+      "terminal_evidence": [
+        "terminal_every_command_announces"
+      ],
+      "web_evidence": [
+        "web_every_command_announces",
+        "announcements_coalesce"
+      ]
+    },
+    {
+      "id": "adaptive_modes",
+      "title": "Adaptive modes: reduced-motion, high-contrast, and large-target preferences are honored and are presentation-only (keyboard/focus/announcement semantics are invariant to them)",
+      "wcag": [
+        "2.3.3 Animation from Interactions",
+        "1.4.11 Non-text Contrast",
+        "2.5.5 Target Size (Enhanced)"
+      ],
+      "source_beads": [
+        "bd-21pbi.5",
+        "bd-18yus",
+        "bd-3bfbp"
+      ],
+      "terminal_evidence": [
+        "adaptive_modes_preserve_semantics",
+        "reduced_motion_steps_instantly",
+        "high_contrast_lifts_focus_ring",
+        "large_target_enlarges_handles"
+      ],
+      "web_evidence": [
+        "adaptive_modes_preserve_semantics",
+        "web_exposes_a11y_dataset"
+      ]
+    }
+  ],
+  "known_limitations": [
+    {
+      "id": "term-color-downgrade",
+      "summary": "On Ansi16/Mono terminals the high-contrast focus-ring color is downgraded by the active color profile, so the contrast guarantee weakens.",
+      "mitigation": "The focus ring uses a distinct double-line border glyph set (BorderChars::DOUBLE) independent of color, so the active-pane cue survives even monochrome output.",
+      "owner": "bd-21pbi.6"
+    },
+    {
+      "id": "term-large-target",
+      "summary": "Terminal large-target enlargement is bounded by cell granularity (whole cells), so the minimum bump is one cell.",
+      "mitigation": "enlarge_target guarantees at least a +1-cell bump and ~150% growth; browser hosts get pixel-accurate target sizing via the data-pane-large-target attribute and CSS.",
+      "owner": "bd-21pbi.6"
+    },
+    {
+      "id": "screen-reader-live-region",
+      "summary": "Announcements are produced host-agnostically; actual screen-reader verbalization depends on the host wiring the text into an aria-live region (web) or status line (terminal).",
+      "mitigation": "Controllers expose take_announcement()/pending_announcement(); the web and terminal production-keyboard E2E suites (bd-kxg62, bd-8e1oc) verify the host wiring end to end.",
+      "owner": "bd-21pbi.6"
+    }
+  ],
+  "notes": [
+    "Evidence names are test functions in the suite file; the suite's compliance_matrix_is_consistent_with_suite test fails if any named evidence test is missing.",
+    "Adaptive modes are presentation-only by contract (spec section 12); the adaptive_modes_preserve_semantics test proves identical pane state + announcements across none-vs-all modes on both hosts."
+  ]
+}
