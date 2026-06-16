@@ -57,6 +57,7 @@ pub mod lens;
 pub mod locale;
 pub mod log_sink;
 pub mod metrics_registry;
+pub mod pane_keymap;
 pub mod policy_config;
 pub mod policy_registry;
 pub mod process_subscription;
