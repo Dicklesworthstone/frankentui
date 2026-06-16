@@ -217,3 +217,33 @@ Hosts call `take()` once per render / live-region update — the web host into a
 `aria-live` region, the terminal host into a status line / log hook. No-ops emit
 no announcement. The controllers (`PaneKeyboardController`,
 `PaneWebKeyboardController`) expose `take_announcement()` / `pending_announcement()`.
+
+## 12. Adaptive Accessibility Modes
+
+`PaneAccessibilityPreferences { reduced_motion, high_contrast, large_target }`
+(host-agnostic, in `ftui_layout::pane_command`) carries three adaptive
+preferences applied uniformly across hosts. Both controllers store them
+(`with_preferences` / `set_preferences` / `preferences`).
+
+**Invariant (normative): adaptive modes are presentation-only.** None of the
+three modes is an input to `resolve` — they do not change the command
+vocabulary, the focus graph, or announcements. For a fixed key stream, the
+resulting topology, focus, maximize state, and announcement text MUST be
+identical regardless of which modes are active. This preserves the determinism
+and cross-host equivalence of §8 while layering on adaptive presentation.
+
+| Mode | Effect | Mechanism |
+|------|--------|-----------|
+| `reduced_motion` | Affordance micro-animations collapse to instant steps; no semantic cue is lost (state still changes), only the in-between motion is removed | `PaneAffordanceMotion` (deterministic, integer-only, clock-free): `reduced()` / `with_reduced_motion(true)` step the hover fade-in and active pulse. Controllers expose `affordance_motion()` |
+| `high_contrast` | Splitter / focus-ring affordance colors lift from WCAG AA to AAA against the pane surface | `ftui_style::PaneAffordanceTheme::from_resolved(theme, high_contrast)`; the terminal controller's `focus_ring(theme)` applies it. Colors are derived from theme slots and contrast-clamped — no hardcoded values |
+| `large_target` | Splitter handles / hit regions enlarge for precision and touch ergonomics | `PaneAccessibilityPreferences::enlarge_target(base)` — ~150% rounded up with a +1-cell floor, monotonic, never smaller than `base` |
+
+**Host wiring.** The terminal host (`ftui_runtime`) reads the high-contrast
+preference through `focus_ring(&ResolvedTheme)` and the reduced-motion
+preference through `affordance_motion()`. The web host (`ftui_web`) exposes the
+three flags as `data-*` attributes for the workspace root via
+`accessibility_dataset()` (`data-pane-reduced-motion`, `data-pane-high-contrast`,
+`data-pane-large-target`), so browser CSS applies high-contrast palettes,
+reduced-motion overrides, and enlarged hit targets through attribute selectors.
+The same host-agnostic preference therefore drives equivalent presentation on
+both platforms.

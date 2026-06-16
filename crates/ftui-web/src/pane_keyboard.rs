@@ -25,10 +25,10 @@
 
 use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_layout::{
-    PaneAnnouncement, PaneAnnouncer, PaneCardinalDirection, PaneCommand, PaneCommandAcceleration,
-    PaneCommandEffect, PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal, PaneId,
-    PaneLayout, PaneNodeKind, PaneResizeDirection, PaneTree, SplitAxis, announce_command,
-    focus_order, resolve_pane_command,
+    PaneAccessibilityPreferences, PaneAffordanceMotion, PaneAnnouncement, PaneAnnouncer,
+    PaneCardinalDirection, PaneCommand, PaneCommandAcceleration, PaneCommandEffect,
+    PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal, PaneId, PaneLayout, PaneNodeKind,
+    PaneResizeDirection, PaneTree, SplitAxis, announce_command, focus_order, resolve_pane_command,
 };
 
 /// Translate a browser key event into a canonical [`PaneCommand`].
@@ -255,6 +255,7 @@ pub struct PaneWebKeyboardController {
     op_seed: u64,
     repeat_count: u16,
     announcer: PaneAnnouncer,
+    preferences: PaneAccessibilityPreferences,
 }
 
 impl PaneWebKeyboardController {
@@ -270,6 +271,7 @@ impl PaneWebKeyboardController {
             op_seed: 0,
             repeat_count: 0,
             announcer: PaneAnnouncer::new(),
+            preferences: PaneAccessibilityPreferences::none(),
         }
     }
 
@@ -290,6 +292,51 @@ impl PaneWebKeyboardController {
     pub const fn with_acceleration(mut self, acceleration: PaneCommandAcceleration) -> Self {
         self.acceleration = acceleration;
         self
+    }
+
+    /// Set the accessibility preferences (reduced-motion / high-contrast /
+    /// large-target) at construction time (bd-21pbi.5).
+    #[must_use]
+    pub const fn with_preferences(mut self, preferences: PaneAccessibilityPreferences) -> Self {
+        self.preferences = preferences;
+        self
+    }
+
+    /// Update the accessibility preferences at runtime (e.g. when the browser
+    /// reports a `prefers-reduced-motion` / `prefers-contrast` media-query
+    /// change). Never affects focus/command semantics — presentation only.
+    pub const fn set_preferences(&mut self, preferences: PaneAccessibilityPreferences) {
+        self.preferences = preferences;
+    }
+
+    /// The active accessibility preferences.
+    #[must_use]
+    pub const fn preferences(&self) -> PaneAccessibilityPreferences {
+        self.preferences
+    }
+
+    /// The affordance micro-animation policy implied by the current
+    /// preferences (motion is stepped under reduced-motion).
+    #[must_use]
+    pub fn affordance_motion(&self) -> PaneAffordanceMotion {
+        self.preferences.affordance_motion()
+    }
+
+    /// Accessibility state as `data-*` attribute pairs for the workspace root.
+    ///
+    /// The browser host stamps these on the pane container so CSS can apply
+    /// high-contrast palettes, reduced-motion overrides, and enlarged hit
+    /// targets via attribute selectors (e.g.
+    /// `[data-pane-high-contrast="true"] .pane-splitter { … }`). This is the web
+    /// counterpart to the terminal host's themed focus ring + sizing: the same
+    /// host-agnostic preference drives presentation on both platforms.
+    #[must_use]
+    pub fn accessibility_dataset(&self) -> [(&'static str, bool); 3] {
+        [
+            ("data-pane-reduced-motion", self.preferences.reduced_motion),
+            ("data-pane-high-contrast", self.preferences.high_contrast),
+            ("data-pane-large-target", self.preferences.large_target),
+        ]
     }
 
     /// The current focus context.
@@ -629,5 +676,82 @@ mod tests {
         );
         // Only one announcement for the burst.
         assert!(controller.take_announcement().is_none());
+    }
+
+    #[test]
+    fn web_preferences_do_not_alter_keyboard_semantics() {
+        use ftui_layout::PaneAccessibilityPreferences;
+        // Same browser key stream, no-modes vs all-modes controller: focus /
+        // maximize / topology / announcements must be identical (a11y modes are
+        // presentation-only, mirroring the terminal-host invariant).
+        fn drive(
+            prefs: PaneAccessibilityPreferences,
+        ) -> (u64, Option<PaneId>, Option<PaneId>, Vec<String>) {
+            let mut tree = nested();
+            let mut controller =
+                PaneWebKeyboardController::new(Some(pid(2))).with_preferences(prefs);
+            let area = Rect::new(0, 0, 80, 24);
+            let seq = [
+                key(KeyCode::Char('n'), Modifiers::NONE), // focus next
+                key(KeyCode::Down, Modifiers::NONE),      // focus directional
+                key(KeyCode::Char('s'), Modifiers::NONE), // split
+                key(KeyCode::Char('f'), Modifiers::NONE), // maximize
+                key(KeyCode::Escape, Modifiers::NONE),    // restore
+            ];
+            let mut announcements = Vec::new();
+            for k in seq {
+                let layout = tree.solve_layout(area).expect("solves");
+                controller.handle_key(&k, &mut tree, &layout);
+                if let Some(a) = controller.take_announcement() {
+                    announcements.push(a.text);
+                }
+            }
+            (
+                tree.state_hash(),
+                controller.active(),
+                controller.maximized(),
+                announcements,
+            )
+        }
+        let plain = drive(PaneAccessibilityPreferences::none());
+        let full = drive(PaneAccessibilityPreferences::all());
+        assert_eq!(plain, full, "a11y modes must not change pane semantics");
+    }
+
+    #[test]
+    fn accessibility_dataset_reflects_preferences() {
+        use ftui_layout::PaneAccessibilityPreferences;
+        // Default: every data-attribute is false.
+        let plain = PaneWebKeyboardController::new(None);
+        assert_eq!(
+            plain.accessibility_dataset(),
+            [
+                ("data-pane-reduced-motion", false),
+                ("data-pane-high-contrast", false),
+                ("data-pane-large-target", false),
+            ]
+        );
+        // Each preference flips exactly its own attribute.
+        let prefs = PaneAccessibilityPreferences::none()
+            .with_high_contrast(true)
+            .with_large_target(true);
+        let controller = PaneWebKeyboardController::new(None).with_preferences(prefs);
+        let ds = controller.accessibility_dataset();
+        assert_eq!(ds[0], ("data-pane-reduced-motion", false));
+        assert_eq!(ds[1], ("data-pane-high-contrast", true));
+        assert_eq!(ds[2], ("data-pane-large-target", true));
+    }
+
+    #[test]
+    fn web_affordance_motion_honors_reduced_motion() {
+        use ftui_layout::PaneAccessibilityPreferences;
+        let reduced = PaneWebKeyboardController::new(None)
+            .with_preferences(PaneAccessibilityPreferences::none().with_reduced_motion(true));
+        assert!(reduced.affordance_motion().reduced_motion);
+        assert!(
+            !PaneWebKeyboardController::new(None)
+                .affordance_motion()
+                .reduced_motion
+        );
     }
 }

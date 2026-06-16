@@ -95,10 +95,11 @@ pub use pane::{
     PaneSplitRatio, PaneTransaction, PaneTransactionOutcome, PaneTree, PaneTreeSnapshot, SplitAxis,
 };
 pub use pane_command::{
-    PaneAnnouncement, PaneAnnouncementCategory, PaneAnnouncer, PaneCardinalDirection, PaneCommand,
-    PaneCommandAcceleration, PaneCommandEffect, PaneCommandNoopReason, PaneCommandResolution,
-    PaneFocusContext, PaneFocusOrdinal, PaneKeymapOwner, PaneKeymapPrecedence, announce_command,
-    focus_cyclic, focus_directional, focus_edge, focus_order, resolve as resolve_pane_command,
+    PaneAccessibilityPreferences, PaneAnnouncement, PaneAnnouncementCategory, PaneAnnouncer,
+    PaneCardinalDirection, PaneCommand, PaneCommandAcceleration, PaneCommandEffect,
+    PaneCommandNoopReason, PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal,
+    PaneKeymapOwner, PaneKeymapPrecedence, announce_command, focus_cyclic, focus_directional,
+    focus_edge, focus_order, resolve as resolve_pane_command,
 };
 pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};

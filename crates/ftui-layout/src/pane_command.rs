@@ -28,10 +28,10 @@
 
 use crate::Rect;
 use crate::pane::{
-    PANE_SNAP_DEFAULT_HYSTERESIS_BPS, PaneDragResizeMachine, PaneId, PaneLayout, PaneLeaf,
-    PaneNodeKind, PaneOperation, PanePlacement, PanePressureSnapProfile, PaneResizeDirection,
-    PaneResizeTarget, PaneSemanticInputEvent, PaneSemanticInputEventKind, PaneSplitRatio, PaneTree,
-    SplitAxis,
+    PANE_SNAP_DEFAULT_HYSTERESIS_BPS, PaneAffordanceMotion, PaneDragResizeMachine, PaneId,
+    PaneLayout, PaneLeaf, PaneNodeKind, PaneOperation, PanePlacement, PanePressureSnapProfile,
+    PaneResizeDirection, PaneResizeTarget, PaneSemanticInputEvent, PaneSemanticInputEventKind,
+    PaneSplitRatio, PaneTree, SplitAxis,
 };
 
 /// Neutral snap profile used when lowering keyboard resize commands through the
@@ -297,6 +297,107 @@ impl PaneKeymapPrecedence {
                 Self::ApplicationFirst => PaneKeymapOwner::Application,
             },
         }
+    }
+}
+
+/// Host-agnostic accessibility preferences for pane interaction (bd-21pbi.5).
+///
+/// These three adaptive modes are applied uniformly across hosts so a
+/// pointer-free, low-vision, or touch user gets the same behavior in the
+/// terminal and in the browser:
+///
+/// - **Reduced motion** collapses affordance micro-animations to instant steps
+///   (see [`PaneAffordanceMotion`]) — the state change is preserved, the motion
+///   is not.
+/// - **High contrast** lifts splitter / focus-ring affordance colors to WCAG
+///   AAA (applied by the host theme; see `ftui_style::PaneAffordanceTheme`,
+///   which takes this flag).
+/// - **Large target** enlarges splitter handles / hit regions for precision and
+///   touch ergonomics (see [`enlarge_target`](Self::enlarge_target)).
+///
+/// Crucially, none of these modes changes the keyboard command vocabulary, the
+/// focus graph, or announcements — pane *semantics* are mode-invariant. They are
+/// not inputs to [`resolve`] at all; they only affect presentation (motion,
+/// color, size). This is what keeps keyboard/focus behavior deterministic and
+/// identical regardless of the active accessibility modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PaneAccessibilityPreferences {
+    /// Collapse affordance micro-animations to instant steps.
+    pub reduced_motion: bool,
+    /// Use high-contrast (WCAG AAA) affordance colors.
+    pub high_contrast: bool,
+    /// Enlarge splitter handles / hit regions.
+    pub large_target: bool,
+}
+
+impl PaneAccessibilityPreferences {
+    /// No accessibility modes enabled (equivalent to [`Default`]).
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            reduced_motion: false,
+            high_contrast: false,
+            large_target: false,
+        }
+    }
+
+    /// All accessibility modes enabled.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            reduced_motion: true,
+            high_contrast: true,
+            large_target: true,
+        }
+    }
+
+    /// Set the reduced-motion preference.
+    #[must_use]
+    pub const fn with_reduced_motion(mut self, on: bool) -> Self {
+        self.reduced_motion = on;
+        self
+    }
+
+    /// Set the high-contrast preference.
+    #[must_use]
+    pub const fn with_high_contrast(mut self, on: bool) -> Self {
+        self.high_contrast = on;
+        self
+    }
+
+    /// Set the large-target preference.
+    #[must_use]
+    pub const fn with_large_target(mut self, on: bool) -> Self {
+        self.large_target = on;
+        self
+    }
+
+    /// Whether any adaptive mode is active.
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.reduced_motion || self.high_contrast || self.large_target
+    }
+
+    /// The affordance micro-animation policy implied by these preferences:
+    /// the default timing, with motion stepped when reduced-motion is set.
+    #[must_use]
+    pub fn affordance_motion(self) -> PaneAffordanceMotion {
+        PaneAffordanceMotion::default().with_reduced_motion(self.reduced_motion)
+    }
+
+    /// The minimum interactive target size (in cells) for a `base` size.
+    ///
+    /// In large-target mode a base of `n` cells grows to ~150% (rounded up),
+    /// with at least a +1-cell bump so even a 1-cell rail becomes easier to hit;
+    /// otherwise `base` is returned unchanged. Monotonic non-decreasing in
+    /// `base`, and never smaller than `base`.
+    #[must_use]
+    pub fn enlarge_target(self, base: u16) -> u16 {
+        if !self.large_target {
+            return base;
+        }
+        let scaled = (u32::from(base) * 3).div_ceil(2) as u16;
+        scaled.max(base.saturating_add(1))
     }
 }
 
@@ -951,6 +1052,95 @@ mod tests {
 
     fn pid(raw: u64) -> PaneId {
         PaneId::new(raw).expect("non-zero id")
+    }
+
+    #[test]
+    fn accessibility_preferences_constructors() {
+        assert_eq!(
+            PaneAccessibilityPreferences::none(),
+            PaneAccessibilityPreferences::default()
+        );
+        assert!(!PaneAccessibilityPreferences::none().any());
+        let all = PaneAccessibilityPreferences::all();
+        assert!(all.reduced_motion && all.high_contrast && all.large_target);
+        assert!(all.any());
+        // Builder setters are independent.
+        let only_hc = PaneAccessibilityPreferences::none().with_high_contrast(true);
+        assert!(only_hc.high_contrast && !only_hc.reduced_motion && !only_hc.large_target);
+        assert!(only_hc.any());
+    }
+
+    #[test]
+    fn affordance_motion_reflects_reduced_motion_preference() {
+        let on = PaneAccessibilityPreferences::none().with_reduced_motion(true);
+        assert!(on.affordance_motion().reduced_motion);
+        // Stepped: full emphasis on frame 0.
+        assert_eq!(
+            on.affordance_motion().hover_emphasis_bps(0),
+            crate::pane::PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+        );
+        let off = PaneAccessibilityPreferences::none();
+        assert!(!off.affordance_motion().reduced_motion);
+        // Animated: frame 0 is below full when not reduced.
+        assert!(
+            off.affordance_motion().hover_emphasis_bps(0)
+                < crate::pane::PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+        );
+    }
+
+    #[test]
+    fn enlarge_target_grows_only_in_large_target_mode_and_is_monotonic() {
+        let normal = PaneAccessibilityPreferences::none();
+        let large = PaneAccessibilityPreferences::none().with_large_target(true);
+        let mut prev_normal = 0u16;
+        let mut prev_large = 0u16;
+        for base in 0..=20u16 {
+            // Default mode is identity.
+            assert_eq!(normal.enlarge_target(base), base);
+            let grown = large.enlarge_target(base);
+            // Large target never shrinks, and strictly grows any positive base.
+            assert!(grown >= base, "large target must not shrink base {base}");
+            if base > 0 {
+                assert!(grown > base, "large target must grow base {base}");
+            }
+            // Both functions are monotonic non-decreasing in base.
+            assert!(normal.enlarge_target(base) >= prev_normal);
+            assert!(grown >= prev_large);
+            prev_normal = normal.enlarge_target(base);
+            prev_large = grown;
+        }
+        // Concrete ergonomics: a 1-cell rail becomes 2, a 2-cell rail becomes 3.
+        assert_eq!(large.enlarge_target(1), 2);
+        assert_eq!(large.enlarge_target(2), 3);
+        // Saturating: a max base does not overflow.
+        assert!(large.enlarge_target(u16::MAX) >= u16::MAX - 1);
+    }
+
+    #[test]
+    fn accessibility_preferences_are_not_an_input_to_resolution() {
+        // The modes are presentation-only: resolve() takes no preferences, so a
+        // fixed command resolves to byte-identical effects regardless of which
+        // modes a host has enabled. We demonstrate this by resolving the same
+        // command and confirming the resolution is independent of any prefs the
+        // caller might be tracking alongside it.
+        let tree = nested();
+        let layout = tree.solve_layout(Rect::new(0, 0, 80, 24)).expect("solves");
+        let ctx = PaneFocusContext {
+            active: Some(pid(2)),
+            maximized: None,
+        };
+        let baseline = resolve(&tree, &layout, ctx, PaneCommand::FocusNext);
+        for prefs in [
+            PaneAccessibilityPreferences::none(),
+            PaneAccessibilityPreferences::all(),
+            PaneAccessibilityPreferences::none().with_large_target(true),
+        ] {
+            // prefs deliberately do not participate in resolution.
+            let _ = prefs;
+            let again = resolve(&tree, &layout, ctx, PaneCommand::FocusNext);
+            assert_eq!(again.next_active, baseline.next_active);
+            assert_eq!(again.next_maximized, baseline.next_maximized);
+        }
     }
 
     /// First-child share of a split node in basis points.

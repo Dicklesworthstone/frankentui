@@ -22,14 +22,14 @@
 
 use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_layout::{
-    PaneAnnouncement, PaneAnnouncer, PaneCardinalDirection, PaneCommand, PaneCommandAcceleration,
-    PaneCommandEffect, PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal, PaneId,
-    PaneLayout, PaneResizeDirection, PaneTree, Rect, SplitAxis, announce_command,
-    resolve_pane_command,
+    PaneAccessibilityPreferences, PaneAffordanceMotion, PaneAnnouncement, PaneAnnouncer,
+    PaneCardinalDirection, PaneCommand, PaneCommandAcceleration, PaneCommandEffect,
+    PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal, PaneId, PaneLayout,
+    PaneResizeDirection, PaneTree, Rect, SplitAxis, announce_command, resolve_pane_command,
 };
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
-use ftui_style::PaneAffordanceTheme;
+use ftui_style::{PaneAffordanceTheme, ResolvedTheme};
 
 /// Translate a raw terminal key event into a canonical [`PaneCommand`].
 ///
@@ -136,6 +136,7 @@ pub struct PaneKeyboardController {
     op_seed: u64,
     repeat_count: u16,
     announcer: PaneAnnouncer,
+    preferences: PaneAccessibilityPreferences,
 }
 
 impl PaneKeyboardController {
@@ -151,6 +152,7 @@ impl PaneKeyboardController {
             op_seed: 0,
             repeat_count: 0,
             announcer: PaneAnnouncer::new(),
+            preferences: PaneAccessibilityPreferences::none(),
         }
     }
 
@@ -171,6 +173,43 @@ impl PaneKeyboardController {
     pub const fn with_acceleration(mut self, acceleration: PaneCommandAcceleration) -> Self {
         self.acceleration = acceleration;
         self
+    }
+
+    /// Set the accessibility preferences (reduced-motion / high-contrast /
+    /// large-target) at construction time (bd-21pbi.5).
+    #[must_use]
+    pub const fn with_preferences(mut self, preferences: PaneAccessibilityPreferences) -> Self {
+        self.preferences = preferences;
+        self
+    }
+
+    /// Update the accessibility preferences at runtime (e.g. when the user
+    /// toggles a mode). Never affects focus/command semantics — only the
+    /// presentation helpers below.
+    pub const fn set_preferences(&mut self, preferences: PaneAccessibilityPreferences) {
+        self.preferences = preferences;
+    }
+
+    /// The active accessibility preferences.
+    #[must_use]
+    pub const fn preferences(&self) -> PaneAccessibilityPreferences {
+        self.preferences
+    }
+
+    /// The affordance micro-animation policy implied by the current
+    /// preferences (motion is stepped under reduced-motion).
+    #[must_use]
+    pub fn affordance_motion(&self) -> PaneAffordanceMotion {
+        self.preferences.affordance_motion()
+    }
+
+    /// Build a focus ring for the active pane from `theme`, honoring the
+    /// high-contrast preference. The ring color is contrast-clamped against the
+    /// pane surface (AAA when high-contrast is on, AA otherwise).
+    #[must_use]
+    pub fn focus_ring(&self, theme: &ResolvedTheme) -> PaneFocusRing {
+        let affordance = PaneAffordanceTheme::from_resolved(theme, self.preferences.high_contrast);
+        PaneFocusRing::themed(&affordance)
     }
 
     /// The current focus context (active + maximized pane).
@@ -639,6 +678,84 @@ mod tests {
             ftui_style::color::contrast_ratio(c.to_rgb(), resolved.surface.to_rgb())
         };
         assert!(ratio(high.focus_ring) + 1e-9 >= ratio(normal.focus_ring));
+    }
+
+    #[test]
+    fn preferences_do_not_alter_keyboard_semantics() {
+        use ftui_layout::PaneAccessibilityPreferences;
+        // Identical key stream, two controllers: one with no a11y modes, one with
+        // all of them. Focus/maximize/topology and announcements must be byte
+        // identical — a11y modes are presentation-only.
+        fn drive(
+            prefs: PaneAccessibilityPreferences,
+        ) -> (u64, Option<PaneId>, Option<PaneId>, Vec<String>) {
+            let mut tree = nested();
+            let mut controller = PaneKeyboardController::new(Some(pid(2))).with_preferences(prefs);
+            let area = Rect::new(0, 0, 80, 24);
+            let seq = [
+                key(KeyCode::Tab, Modifiers::NONE),
+                key(KeyCode::Down, Modifiers::CTRL),
+                key(KeyCode::Char('s'), Modifiers::ALT),
+                key(KeyCode::Char('z'), Modifiers::ALT),
+                key(KeyCode::Char('r'), Modifiers::ALT),
+            ];
+            let mut announcements = Vec::new();
+            for k in seq {
+                let layout = tree.solve_layout(area).expect("solves");
+                controller.handle_key(&k, &mut tree, &layout);
+                if let Some(a) = controller.take_announcement() {
+                    announcements.push(a.text);
+                }
+            }
+            (
+                tree.state_hash(),
+                controller.active(),
+                controller.maximized(),
+                announcements,
+            )
+        }
+        let plain = drive(PaneAccessibilityPreferences::none());
+        let full = drive(PaneAccessibilityPreferences::all());
+        assert_eq!(plain, full, "a11y modes must not change pane semantics");
+    }
+
+    #[test]
+    fn focus_ring_honors_high_contrast_preference() {
+        use ftui_layout::PaneAccessibilityPreferences;
+        use ftui_style::theme::themes;
+        let theme = themes::dark().resolve(true);
+        let normal_aff = PaneAffordanceTheme::from_resolved(&theme, false);
+        let high_aff = PaneAffordanceTheme::from_resolved(&theme, true);
+
+        // The controller wires its high-contrast preference straight into the
+        // themed ring: each ring's color matches the affordance for its profile.
+        let normal_ctl = PaneKeyboardController::new(Some(pid(2)));
+        let high_ctl = PaneKeyboardController::new(Some(pid(2)))
+            .with_preferences(PaneAccessibilityPreferences::none().with_high_contrast(true));
+        assert_eq!(
+            normal_ctl.focus_ring(&theme).cell.fg,
+            PaneFocusRing::themed(&normal_aff).cell.fg
+        );
+        assert_eq!(
+            high_ctl.focus_ring(&theme).cell.fg,
+            PaneFocusRing::themed(&high_aff).cell.fg
+        );
+
+        // And high contrast is never less visible than the default profile.
+        let ratio = |c: ftui_style::color::Color| {
+            ftui_style::color::contrast_ratio(c.to_rgb(), theme.surface.to_rgb())
+        };
+        assert!(ratio(high_aff.focus_ring) + 1e-9 >= ratio(normal_aff.focus_ring));
+    }
+
+    #[test]
+    fn controller_affordance_motion_honors_reduced_motion() {
+        use ftui_layout::PaneAccessibilityPreferences;
+        let reduced = PaneKeyboardController::new(None)
+            .with_preferences(PaneAccessibilityPreferences::none().with_reduced_motion(true));
+        assert!(reduced.affordance_motion().reduced_motion);
+        let plain = PaneKeyboardController::new(None);
+        assert!(!plain.affordance_motion().reduced_motion);
     }
 
     #[test]
