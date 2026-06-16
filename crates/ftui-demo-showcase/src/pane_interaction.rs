@@ -626,6 +626,155 @@ pub fn build_resize_overlay(
     })
 }
 
+/// Pointer input modality, which sets the minimum comfortable hit-target size
+/// for pane affordances (bd-c2z7c). Touch needs a larger target than a mouse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneInputModality {
+    /// A precise pointer (mouse / trackpad).
+    Mouse,
+    /// A coarse pointer (touch / pen), needing a larger target per WCAG 2.5.5.
+    Touch,
+}
+
+impl PaneInputModality {
+    /// Minimum comfortable thickness (cells) on the handle's minor axis — the
+    /// thin dimension the user must land on.
+    #[must_use]
+    pub const fn min_target_thickness(self) -> u16 {
+        match self {
+            Self::Mouse => 1,
+            Self::Touch => 2,
+        }
+    }
+
+    /// Minimum comfortable span (cells) on the handle's major axis.
+    #[must_use]
+    pub const fn min_target_span(self) -> u16 {
+        match self {
+            Self::Mouse => 1,
+            Self::Touch => 3,
+        }
+    }
+}
+
+/// A target-size adequacy report for one splitter handle and input modality
+/// (bd-c2z7c). Used by the discoverability pass to flag handles that are hard to
+/// grab, especially under touch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneTargetReport {
+    /// The modality the handle was judged against.
+    pub modality: PaneInputModality,
+    /// Minimum required thickness (minor axis), cells.
+    pub required_thickness: u16,
+    /// Minimum required span (major axis), cells.
+    pub required_span: u16,
+    /// Measured thickness — the handle's minor axis (`min(w, h)`).
+    pub measured_thickness: u16,
+    /// Measured span — the handle's major axis (`max(w, h)`).
+    pub measured_span: u16,
+    /// Whether the handle meets both minimums for this modality.
+    pub passes: bool,
+}
+
+/// Judge whether a splitter handle is a comfortable target for `modality`.
+#[must_use]
+pub fn pane_handle_target_report(handle: Rect, modality: PaneInputModality) -> PaneTargetReport {
+    let measured_thickness = handle.width.min(handle.height);
+    let measured_span = handle.width.max(handle.height);
+    let required_thickness = modality.min_target_thickness();
+    let required_span = modality.min_target_span();
+    PaneTargetReport {
+        modality,
+        required_thickness,
+        required_span,
+        measured_thickness,
+        measured_span,
+        passes: measured_thickness >= required_thickness && measured_span >= required_span,
+    }
+}
+
+/// The recommended handle thickness for `modality`, honoring the large-target
+/// accessibility preference (bd-21pbi.5). This is the remediation a host applies
+/// when [`pane_handle_target_report`] fails: grow the rail/handle to this size.
+#[must_use]
+pub fn pane_recommended_handle_thickness(
+    modality: PaneInputModality,
+    prefs: ftui_layout::PaneAccessibilityPreferences,
+) -> u16 {
+    prefs.enlarge_target(modality.min_target_thickness())
+}
+
+/// The recommended handle span for `modality`, honoring the large-target
+/// accessibility preference.
+#[must_use]
+pub fn pane_recommended_handle_span(
+    modality: PaneInputModality,
+    prefs: ftui_layout::PaneAccessibilityPreferences,
+) -> u16 {
+    prefs.enlarge_target(modality.min_target_span())
+}
+
+/// One discoverable cue for a pointer-driven pane action (bd-c2z7c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneActionHint {
+    /// The visible UI cue a first-time user can act on.
+    pub cue: &'static str,
+    /// What the action does.
+    pub action: &'static str,
+    /// The input gesture that triggers it.
+    pub gesture: &'static str,
+}
+
+/// First-run discoverability hints for pointer pane interactions, in display
+/// order. Surfaced as an onboarding affordance so resize/split/maximize/mode
+/// actions are discoverable without prior instruction.
+#[must_use]
+pub fn pane_first_run_hints() -> &'static [PaneActionHint] {
+    &[
+        PaneActionHint {
+            cue: "drag the splitter handle",
+            action: "resize the panes",
+            gesture: "drag",
+        },
+        PaneActionHint {
+            cue: "double-click a splitter",
+            action: "reset the split to 50/50",
+            gesture: "double-click",
+        },
+        PaneActionHint {
+            cue: "double-click a pane",
+            action: "maximize / restore the pane",
+            gesture: "double-click",
+        },
+        PaneActionHint {
+            cue: "right-click a pane",
+            action: "cycle layout intelligence modes",
+            gesture: "right-click",
+        },
+        PaneActionHint {
+            cue: "scroll over a splitter",
+            action: "nudge the split ratio",
+            gesture: "scroll",
+        },
+    ]
+}
+
+/// An empty-/single-pane onboarding hint, shown when there is nothing to resize
+/// yet so the user discovers how to create panes. Returns `None` once the
+/// workspace has more than one pane.
+#[must_use]
+pub fn pane_empty_state_hint(tree: &PaneTree) -> Option<PaneActionHint> {
+    let leaves = tree
+        .nodes()
+        .filter(|node| matches!(node.kind, PaneNodeKind::Leaf(_)))
+        .count();
+    (leaves <= 1).then_some(PaneActionHint {
+        cue: "press Alt+s / Alt+v (or the split button)",
+        action: "split this pane to create a workspace",
+        gesture: "key / click",
+    })
+}
+
 #[must_use]
 pub fn edge_fling_projection(
     pointer: PanePointerPosition,

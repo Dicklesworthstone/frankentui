@@ -1,0 +1,81 @@
+{
+  "schema_version": "pane-discoverability-v1",
+  "task_bead": "bd-c2z7c",
+  "feature_bead": "bd-2pouv",
+  "description": "First-run discoverability + interaction-friction checklist for pane interactions. Each item ties a discoverability requirement to its UI cue and to the regression test that validates it, plus a remediation. The suite parses this file and asserts every cited evidence test exists.",
+  "suite": "crates/ftui-demo-showcase/tests/pane_discoverability_a11y.rs",
+  "items": [
+    {
+      "id": "resize-handle-visible",
+      "requirement": "The splitter handle is visibly distinct (idle/hover/active) so users discover resize without instruction.",
+      "ui_cue": "PaneSplitterPrimitive states via collect_splitter_primitives",
+      "evidence": "first_run_hints_cover_core_pointer_actions",
+      "remediation": "Render PaneSplitterPrimitive with PaneAffordanceTheme splitter_idle/hover/active colors.",
+      "status": "passing"
+    },
+    {
+      "id": "mouse-target-size",
+      "requirement": "Splitter handles meet the minimum mouse target size.",
+      "ui_cue": "handle thickness >= 1 and span >= 1 (PaneInputModality::Mouse)",
+      "evidence": "default_handles_pass_mouse_target",
+      "remediation": "1-cell rails always pass mouse; no action needed.",
+      "status": "passing"
+    },
+    {
+      "id": "touch-target-size",
+      "requirement": "Splitter handles meet the larger touch target size, or large-target mode is available to reach it.",
+      "ui_cue": "thickness >= 2 and span >= 3 (PaneInputModality::Touch); PaneAccessibilityPreferences.large_target enlarges to reach it",
+      "evidence": "touch_targets_validated_and_remediable_by_large_target",
+      "remediation": "Enable large_target (enlarge_target) or use the 2-cell rail promoted on large viewports.",
+      "status": "passing"
+    },
+    {
+      "id": "first-run-hints",
+      "requirement": "First-time users see discoverable cues for resize/reset/maximize/mode/scroll actions.",
+      "ui_cue": "pane_first_run_hints()",
+      "evidence": "first_run_hints_cover_core_pointer_actions",
+      "remediation": "Surface pane_first_run_hints() in an onboarding affordance.",
+      "status": "passing"
+    },
+    {
+      "id": "empty-state-hint",
+      "requirement": "A single-pane workspace hints how to create panes.",
+      "ui_cue": "pane_empty_state_hint(tree)",
+      "evidence": "empty_state_hint_appears_only_for_single_pane",
+      "remediation": "Show pane_empty_state_hint() when the workspace has one pane.",
+      "status": "passing"
+    },
+    {
+      "id": "resize-feedback",
+      "requirement": "Live resize gives clear feedback: ghost boundary, snap guide, and live size badges.",
+      "ui_cue": "PaneResizeOverlay via build_resize_overlay",
+      "evidence": "resize_overlay_provides_discoverable_feedback",
+      "remediation": "Render PaneResizeOverlay during an active drag.",
+      "status": "passing"
+    },
+    {
+      "id": "reduced-motion",
+      "requirement": "Affordance feedback respects reduced motion (no essential motion-only cue).",
+      "ui_cue": "PaneResizeOverlay is static; PaneAffordanceMotion steps under reduced motion",
+      "evidence": "affordances_are_reduced_motion_safe",
+      "remediation": "Overlay is static geometry; gate any emphasis via PaneAffordanceMotion.",
+      "status": "passing"
+    },
+    {
+      "id": "contrast",
+      "requirement": "Affordance colors meet WCAG contrast in default and high-contrast themes.",
+      "ui_cue": "PaneAffordanceTheme (AA default / AAA high-contrast)",
+      "evidence": "affordance_colors_meet_contrast",
+      "remediation": "Paint affordances with PaneAffordanceTheme; enable high_contrast for AAA.",
+      "status": "passing"
+    }
+  ],
+  "known_friction": [
+    {
+      "id": "small-viewport-touch",
+      "summary": "On small terminals the 1-cell splitter rail is below the touch target minimum (thickness 2).",
+      "remediation": "Large-target mode (enlarge_target) bumps the handle to >= 2 cells; web hosts additionally widen the hit area in CSS via data-pane-large-target.",
+      "owner": "bd-c2z7c"
+    }
+  ]
+}
