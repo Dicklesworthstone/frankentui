@@ -22,9 +22,10 @@
 
 use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_layout::{
-    PaneCardinalDirection, PaneCommand, PaneCommandAcceleration, PaneCommandEffect,
-    PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal, PaneId, PaneLayout,
-    PaneResizeDirection, PaneTree, Rect, SplitAxis, resolve_pane_command,
+    PaneAnnouncement, PaneAnnouncer, PaneCardinalDirection, PaneCommand, PaneCommandAcceleration,
+    PaneCommandEffect, PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal, PaneId,
+    PaneLayout, PaneResizeDirection, PaneTree, Rect, SplitAxis, announce_command,
+    resolve_pane_command,
 };
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
@@ -133,6 +134,7 @@ pub struct PaneKeyboardController {
     acceleration: PaneCommandAcceleration,
     op_seed: u64,
     repeat_count: u16,
+    announcer: PaneAnnouncer,
 }
 
 impl PaneKeyboardController {
@@ -147,7 +149,20 @@ impl PaneKeyboardController {
             acceleration: PaneCommandAcceleration::default(),
             op_seed: 0,
             repeat_count: 0,
+            announcer: PaneAnnouncer::new(),
         }
+    }
+
+    /// Take the pending accessibility announcement (for a status line / screen
+    /// reader), coalesced and de-duplicated. Call once per render.
+    pub fn take_announcement(&mut self) -> Option<PaneAnnouncement> {
+        self.announcer.take()
+    }
+
+    /// Peek the pending accessibility announcement without consuming it.
+    #[must_use]
+    pub fn pending_announcement(&self) -> Option<&PaneAnnouncement> {
+        self.announcer.pending()
     }
 
     /// Override the resize acceleration policy.
@@ -212,6 +227,8 @@ impl PaneKeyboardController {
         }
         self.focus.active = resolution.next_active;
         self.focus.maximized = resolution.next_maximized;
+        self.announcer
+            .offer(announce_command(command, &resolution, tree));
         PaneKeyOutcome::Handled {
             command,
             resolution,
@@ -583,5 +600,18 @@ mod tests {
         assert!(hints.iter().any(|h| h.action.contains("focus next")));
         assert!(hints.iter().any(|h| h.action.contains("split")));
         assert!(hints.iter().any(|h| h.action.contains("maximize")));
+    }
+
+    #[test]
+    fn controller_surfaces_announcements() {
+        let mut tree = nested();
+        let mut controller = PaneKeyboardController::new(Some(pid(2)));
+        let layout = tree.solve_layout(Rect::new(0, 0, 80, 24)).expect("solves");
+        // Tab -> focus next (2 -> 4) announces the newly focused pane.
+        controller.handle_key(&key(KeyCode::Tab, Modifiers::NONE), &mut tree, &layout);
+        let spoken = controller.take_announcement().expect("focus announces");
+        assert_eq!(spoken.text, "Focused pane right_top");
+        // Nothing pending after taking.
+        assert!(controller.take_announcement().is_none());
     }
 }

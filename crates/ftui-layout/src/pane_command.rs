@@ -750,6 +750,196 @@ fn resolve_restore(ctx: PaneFocusContext) -> PaneCommandResolution {
     }
 }
 
+// --------------------------------------------------------------------------
+// Accessible announcements (bd-21pbi.4)
+// --------------------------------------------------------------------------
+
+/// Category of a pane state-change announcement (for host channel routing and
+/// coalescing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneAnnouncementCategory {
+    /// Focus moved to a different pane.
+    Focus,
+    /// A pane was resized.
+    Resize,
+    /// A pane was split.
+    Split,
+    /// A pane was closed.
+    Close,
+    /// A pane was moved/docked.
+    Move,
+    /// Two panes were swapped.
+    Swap,
+    /// A pane was maximized.
+    Maximize,
+    /// The layout was restored from maximized.
+    Restore,
+}
+
+/// A concise, host-agnostic accessibility announcement for a pane state change.
+/// The web host renders `text` into an `aria-live` region; the terminal host
+/// surfaces it via a status line / log hook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneAnnouncement {
+    /// The human-readable announcement text.
+    pub text: String,
+    /// The announcement category.
+    pub category: PaneAnnouncementCategory,
+}
+
+impl PaneAnnouncement {
+    fn new(category: PaneAnnouncementCategory, text: impl Into<String>) -> Self {
+        Self {
+            category,
+            text: text.into(),
+        }
+    }
+}
+
+const fn cardinal_label(direction: PaneCardinalDirection) -> &'static str {
+    match direction {
+        PaneCardinalDirection::Left => "left",
+        PaneCardinalDirection::Right => "right",
+        PaneCardinalDirection::Up => "up",
+        PaneCardinalDirection::Down => "down",
+    }
+}
+
+const fn axis_label(axis: SplitAxis) -> &'static str {
+    match axis {
+        SplitAxis::Horizontal => "horizontal",
+        SplitAxis::Vertical => "vertical",
+    }
+}
+
+/// The active pane's own share of its enclosing split, as a percentage.
+fn active_pane_share_pct(tree: &PaneTree, active: PaneId) -> Option<u16> {
+    let split_id = enclosing_split(tree, active)?;
+    let PaneNodeKind::Split(split) = &tree.node(split_id)?.kind else {
+        return None;
+    };
+    let num = split.ratio.numerator();
+    let den = split.ratio.denominator();
+    let first_share = num * 100 / (num + den);
+    let share = if split.first == active {
+        first_share
+    } else {
+        100 - first_share
+    };
+    u16::try_from(share).ok()
+}
+
+/// Generate a concise accessibility announcement for a resolved command.
+///
+/// Returns `None` for no-ops (nothing changed). `tree` MUST be the post-apply
+/// state, so counts and ratios reflect the result.
+#[must_use]
+pub fn announce_command(
+    command: PaneCommand,
+    resolution: &PaneCommandResolution,
+    tree: &PaneTree,
+) -> Option<PaneAnnouncement> {
+    if matches!(resolution.effect, PaneCommandEffect::Noop(_)) {
+        return None;
+    }
+    let leaf_count = focus_order(tree).len();
+    match command {
+        PaneCommand::FocusNext
+        | PaneCommand::FocusPrevious
+        | PaneCommand::FocusDirectional(_)
+        | PaneCommand::FocusEdge(_) => {
+            let active = resolution.next_active?;
+            let label = leaf_surface_key(tree, active).unwrap_or_else(|| "pane".to_owned());
+            Some(PaneAnnouncement::new(
+                PaneAnnouncementCategory::Focus,
+                format!("Focused pane {label}"),
+            ))
+        }
+        PaneCommand::ResizeStep { .. } => {
+            let active = resolution.next_active?;
+            let pct = active_pane_share_pct(tree, active)?;
+            Some(PaneAnnouncement::new(
+                PaneAnnouncementCategory::Resize,
+                format!("Resized pane to {pct} percent"),
+            ))
+        }
+        PaneCommand::Split(axis) => Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Split,
+            format!("Split pane {}, {leaf_count} panes", axis_label(axis)),
+        )),
+        PaneCommand::Close => Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Close,
+            format!("Closed pane, {leaf_count} remaining"),
+        )),
+        PaneCommand::MovePane(dir) => Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Move,
+            format!("Moved pane {}", cardinal_label(dir)),
+        )),
+        PaneCommand::SwapPane(_) => Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Swap,
+            "Swapped pane",
+        )),
+        PaneCommand::Maximize => Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Maximize,
+            "Maximized pane",
+        )),
+        PaneCommand::Restore => Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Restore,
+            "Restored pane",
+        )),
+    }
+}
+
+/// Coalescing announcer that keeps host live regions / status lines bounded and
+/// non-spammy: the latest offered announcement wins (so a burst of resize/repeat
+/// announcements collapses to one), and consecutive identical text is
+/// suppressed. Hosts call [`PaneAnnouncer::take`] once per render / live-region
+/// update.
+#[derive(Debug, Clone, Default)]
+pub struct PaneAnnouncer {
+    pending: Option<PaneAnnouncement>,
+    last_spoken: Option<String>,
+}
+
+impl PaneAnnouncer {
+    /// Create an empty announcer.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Offer an announcement; the most recent non-empty offer is retained, so
+    /// rapid bursts coalesce to the final state.
+    pub fn offer(&mut self, announcement: Option<PaneAnnouncement>) {
+        if announcement.is_some() {
+            self.pending = announcement;
+        }
+    }
+
+    /// Take the pending announcement to speak now, suppressing an exact repeat
+    /// of the previously spoken text.
+    pub fn take(&mut self) -> Option<PaneAnnouncement> {
+        let pending = self.pending.take()?;
+        if self.last_spoken.as_deref() == Some(pending.text.as_str()) {
+            return None;
+        }
+        self.last_spoken = Some(pending.text.clone());
+        Some(pending)
+    }
+
+    /// Peek the pending announcement without consuming it.
+    #[must_use]
+    pub fn pending(&self) -> Option<&PaneAnnouncement> {
+        self.pending.as_ref()
+    }
+
+    /// The most recently spoken announcement text.
+    #[must_use]
+    pub fn last_spoken(&self) -> Option<&str> {
+        self.last_spoken.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1125,5 +1315,150 @@ mod tests {
         // Active pane must be a real leaf after the stream.
         let tree = nested();
         assert!(focus_order(&tree).contains(&first.1.expect("active set")));
+    }
+
+    fn announce(
+        tree: &PaneTree,
+        layout: &PaneLayout,
+        ctx: PaneFocusContext,
+        command: PaneCommand,
+    ) -> Option<PaneAnnouncement> {
+        let res = resolve(tree, layout, ctx, command);
+        announce_command(command, &res, tree)
+    }
+
+    #[test]
+    fn announcements_describe_each_transition() {
+        let tree = nested();
+        let layout = solved(&tree);
+        // Focus.
+        let a = announce(
+            &tree,
+            &layout,
+            PaneFocusContext::active(pid(2)),
+            PaneCommand::FocusNext,
+        )
+        .unwrap();
+        assert_eq!(a.category, PaneAnnouncementCategory::Focus);
+        assert_eq!(a.text, "Focused pane right_top");
+        // Maximize / restore.
+        let a = announce(
+            &tree,
+            &layout,
+            PaneFocusContext::active(pid(2)),
+            PaneCommand::Maximize,
+        )
+        .unwrap();
+        assert_eq!(a.text, "Maximized pane");
+        let restore_ctx = PaneFocusContext {
+            active: Some(pid(2)),
+            maximized: Some(pid(2)),
+        };
+        let a = announce(&tree, &layout, restore_ctx, PaneCommand::Restore).unwrap();
+        assert_eq!(a.text, "Restored pane");
+    }
+
+    #[test]
+    fn announcement_reports_split_and_close_counts() {
+        // Split grows the leaf count to 4; the announcement reflects the AFTER tree.
+        let mut tree = nested();
+        let layout = solved(&tree);
+        let res = resolve(
+            &tree,
+            &layout,
+            PaneFocusContext::active(pid(2)),
+            PaneCommand::Split(SplitAxis::Vertical),
+        );
+        if let PaneCommandEffect::Structural(ops) = &res.effect {
+            for (i, op) in ops.iter().enumerate() {
+                tree.apply_operation(i as u64, op.clone()).unwrap();
+            }
+        }
+        let a = announce_command(PaneCommand::Split(SplitAxis::Vertical), &res, &tree).unwrap();
+        assert_eq!(a.category, PaneAnnouncementCategory::Split);
+        assert_eq!(a.text, "Split pane vertical, 4 panes");
+    }
+
+    #[test]
+    fn resize_announcement_reports_active_share() {
+        // left(2) is the first child of the 1:1 root; grow by 1 step (+500 bps = +5%).
+        let mut tree = nested();
+        let layout = solved(&tree);
+        let res = resolve(
+            &tree,
+            &layout,
+            PaneFocusContext::active(pid(2)),
+            PaneCommand::ResizeStep {
+                direction: PaneResizeDirection::Increase,
+                units: 1,
+            },
+        );
+        if let PaneCommandEffect::Structural(ops) = &res.effect {
+            for (i, op) in ops.iter().enumerate() {
+                tree.apply_operation(i as u64, op.clone()).unwrap();
+            }
+        }
+        let a = announce_command(
+            PaneCommand::ResizeStep {
+                direction: PaneResizeDirection::Increase,
+                units: 1,
+            },
+            &res,
+            &tree,
+        )
+        .unwrap();
+        assert_eq!(a.category, PaneAnnouncementCategory::Resize);
+        assert_eq!(a.text, "Resized pane to 55 percent");
+    }
+
+    #[test]
+    fn noop_command_is_not_announced() {
+        let tree = nested();
+        let layout = solved(&tree);
+        // No active pane -> FocusNext is a no-op -> no announcement.
+        let a = announce(
+            &tree,
+            &layout,
+            PaneFocusContext::default(),
+            PaneCommand::FocusNext,
+        );
+        assert!(a.is_none());
+    }
+
+    #[test]
+    fn announcer_coalesces_bursts_and_dedupes() {
+        let mut announcer = PaneAnnouncer::new();
+        // A burst of resize announcements coalesces to the latest on take().
+        announcer.offer(Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Resize,
+            "Resized pane to 55 percent",
+        )));
+        announcer.offer(Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Resize,
+            "Resized pane to 60 percent",
+        )));
+        announcer.offer(Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Resize,
+            "Resized pane to 65 percent",
+        )));
+        let spoken = announcer.take().unwrap();
+        assert_eq!(spoken.text, "Resized pane to 65 percent");
+        // Nothing pending now.
+        assert!(announcer.take().is_none());
+        // Offering the same text again is suppressed (dedupe).
+        announcer.offer(Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Resize,
+            "Resized pane to 65 percent",
+        )));
+        assert!(announcer.take().is_none());
+        // A different text is spoken.
+        announcer.offer(Some(PaneAnnouncement::new(
+            PaneAnnouncementCategory::Focus,
+            "Focused pane left",
+        )));
+        assert_eq!(announcer.take().unwrap().text, "Focused pane left");
+        // Offering None does not disturb state.
+        announcer.offer(None);
+        assert!(announcer.take().is_none());
     }
 }

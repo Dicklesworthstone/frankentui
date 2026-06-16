@@ -193,3 +193,27 @@ DOM attributes:
   (`0`)/`valuemax` (`100`) carrying the first child's share percentage, so
   assistive tech can identify the active pane, splitter orientation, and resize
   affordances.
+
+## 11. Accessible Announcements
+
+Every effective command (non-no-op) SHOULD emit one concise, deterministic
+announcement via `announce_command(command, resolution, tree)`, where `tree` is
+the post-apply state:
+
+| Command | Announcement |
+|---------|--------------|
+| Focus* | `Focused pane <label>` |
+| `ResizeStep` | `Resized pane to <pct> percent` (the active pane's own share) |
+| `Split(axis)` | `Split pane <axis>, <n> panes` |
+| `Close` | `Closed pane, <n> remaining` |
+| `MovePane(dir)` | `Moved pane <dir>` |
+| `SwapPane` | `Swapped pane` |
+| `Maximize` / `Restore` | `Maximized pane` / `Restored pane` |
+
+Announcements MUST be bounded and non-spammy. `PaneAnnouncer` enforces this:
+the most recent offer wins (so a burst of resize/key-repeat announcements
+coalesces to the final value), and consecutive identical text is suppressed.
+Hosts call `take()` once per render / live-region update — the web host into an
+`aria-live` region, the terminal host into a status line / log hook. No-ops emit
+no announcement. The controllers (`PaneKeyboardController`,
+`PaneWebKeyboardController`) expose `take_announcement()` / `pending_announcement()`.

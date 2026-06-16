@@ -25,9 +25,10 @@
 
 use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_layout::{
-    PaneCardinalDirection, PaneCommand, PaneCommandAcceleration, PaneCommandEffect,
-    PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal, PaneId, PaneLayout, PaneNodeKind,
-    PaneResizeDirection, PaneTree, SplitAxis, focus_order, resolve_pane_command,
+    PaneAnnouncement, PaneAnnouncer, PaneCardinalDirection, PaneCommand, PaneCommandAcceleration,
+    PaneCommandEffect, PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal, PaneId,
+    PaneLayout, PaneNodeKind, PaneResizeDirection, PaneTree, SplitAxis, announce_command,
+    focus_order, resolve_pane_command,
 };
 
 /// Translate a browser key event into a canonical [`PaneCommand`].
@@ -253,6 +254,7 @@ pub struct PaneWebKeyboardController {
     acceleration: PaneCommandAcceleration,
     op_seed: u64,
     repeat_count: u16,
+    announcer: PaneAnnouncer,
 }
 
 impl PaneWebKeyboardController {
@@ -267,7 +269,20 @@ impl PaneWebKeyboardController {
             acceleration: PaneCommandAcceleration::default(),
             op_seed: 0,
             repeat_count: 0,
+            announcer: PaneAnnouncer::new(),
         }
+    }
+
+    /// Take the pending accessibility announcement (for an `aria-live` region),
+    /// coalesced and de-duplicated. Call once per render / live-region update.
+    pub fn take_announcement(&mut self) -> Option<PaneAnnouncement> {
+        self.announcer.take()
+    }
+
+    /// Peek the pending accessibility announcement without consuming it.
+    #[must_use]
+    pub fn pending_announcement(&self) -> Option<&PaneAnnouncement> {
+        self.announcer.pending()
     }
 
     /// Override the resize acceleration policy.
@@ -337,6 +352,8 @@ impl PaneWebKeyboardController {
         }
         self.focus.active = resolution.next_active;
         self.focus.maximized = resolution.next_maximized;
+        self.announcer
+            .offer(announce_command(command, &resolution, tree));
         PaneWebKeyOutcome::Handled {
             command,
             resolution,
@@ -575,5 +592,42 @@ mod tests {
         assert_eq!(out, PaneWebKeyOutcome::Unbound);
         assert_eq!(tree.state_hash(), before);
         assert_eq!(controller.active(), Some(pid(2)));
+    }
+
+    #[test]
+    fn controller_surfaces_announcements_and_coalesces_resize() {
+        let mut tree = nested();
+        let mut controller = PaneWebKeyboardController::new(Some(pid(2)));
+        let area = Rect::new(0, 0, 80, 24);
+
+        // Right arrow -> focus announcement for the live region.
+        let layout = tree.solve_layout(area).expect("solves");
+        controller.handle_key(&key(KeyCode::Right, Modifiers::NONE), &mut tree, &layout);
+        assert_eq!(
+            controller
+                .take_announcement()
+                .expect("focus announces")
+                .text,
+            "Focused pane right_top"
+        );
+
+        // A burst of resize key presses coalesces to a single announcement
+        // reflecting the final value (non-spammy live region).
+        controller.set_active(Some(pid(2)));
+        for _ in 0..3 {
+            let layout = tree.solve_layout(area).expect("solves");
+            controller.handle_key(
+                &key(KeyCode::Char('='), Modifiers::NONE),
+                &mut tree,
+                &layout,
+            );
+        }
+        let spoken = controller.take_announcement().expect("resize announces");
+        assert_eq!(
+            spoken.category,
+            ftui_layout::PaneAnnouncementCategory::Resize
+        );
+        // Only one announcement for the burst.
+        assert!(controller.take_announcement().is_none());
     }
 }
