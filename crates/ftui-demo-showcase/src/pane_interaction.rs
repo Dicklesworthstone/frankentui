@@ -6,10 +6,11 @@
 //! preview-state shaping used by both terminal and web adapters.
 
 use ftui_layout::{
-    PaneDockPreview, PaneDockZone, PaneId, PaneInertialThrow, PaneInteractionTimeline,
-    PaneInteractionTimelineError, PaneLayout, PaneLeaf, PaneMotionVector, PaneNodeKind,
-    PaneOperation, PanePlacement, PanePointerPosition, PanePressureSnapProfile, PaneResizeGrip,
-    PaneResizeTarget, PaneSelectionState, PaneSplitRatio, PaneTree, Rect, SplitAxis,
+    PANE_SNAP_DEFAULT_HYSTERESIS_BPS, PANE_SNAP_DEFAULT_STEP_BPS, PaneDockPreview, PaneDockZone,
+    PaneId, PaneInertialThrow, PaneInteractionTimeline, PaneInteractionTimelineError, PaneLayout,
+    PaneLeaf, PaneMotionVector, PaneNodeKind, PaneOperation, PanePlacement, PanePointerPosition,
+    PanePressureSnapProfile, PaneResizeGrip, PaneResizeTarget, PaneSelectionState, PaneSplitRatio,
+    PaneTree, Rect, SplitAxis,
 };
 
 pub const PANE_MAGNETIC_FIELD_MIN_CELLS: f64 = 3.5;
@@ -382,6 +383,247 @@ pub fn collect_splitter_primitives(
     }
 
     primitives
+}
+
+/// Z-order for pane resize-overlay layers, painted back-to-front (bd-j1mo9).
+///
+/// Hosts paint lower `z_index` first so badges are never occluded by the ghost
+/// boundary or snap guides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PaneOverlayLayer {
+    /// Faint guide line marking the snap target the divider would settle on.
+    SnapGuide,
+    /// The proposed (ghost) divider position the resize would commit.
+    GhostBoundary,
+    /// Live size badges (topmost, never occluded).
+    SizeBadge,
+}
+
+impl PaneOverlayLayer {
+    /// Deterministic paint-order index (lower paints first / underneath).
+    #[must_use]
+    pub const fn z_index(self) -> u8 {
+        match self {
+            Self::SnapGuide => 0,
+            Self::GhostBoundary => 1,
+            Self::SizeBadge => 2,
+        }
+    }
+}
+
+/// A snap-guide line marking the snap target a live resize would settle on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneSnapGuide {
+    /// One-cell-thick line rect spanning the split's cross axis.
+    pub line: Rect,
+    /// Split axis the guide belongs to.
+    pub axis: SplitAxis,
+    /// First-child share at this guide, in basis points (0..=10_000).
+    pub share_bps: u16,
+}
+
+/// The proposed (ghost) divider position during a live resize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneGhostBoundary {
+    /// One-cell-thick rail rect at the proposed divider position.
+    pub rail: Rect,
+    /// Split axis the boundary belongs to.
+    pub axis: SplitAxis,
+    /// First-child share at the ghost position, in basis points.
+    pub share_bps: u16,
+    /// Whether the ghost is currently resting on a snap target.
+    pub snapped: bool,
+}
+
+/// A live size badge for one pane affected by a resize.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneSizeBadge {
+    /// The pane the badge describes.
+    pub pane: PaneId,
+    /// The pane's proposed rect (where the badge anchors).
+    pub anchor: Rect,
+    /// Deterministic label, e.g. `"62% 50x20"` (percentage + cell dimensions).
+    pub label: String,
+}
+
+/// What to render in the resize overlay (the optional guide/badge toggle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneResizeOverlayConfig {
+    /// Render the snap-target guide line.
+    pub show_snap_guides: bool,
+    /// Render live size badges.
+    pub show_size_badges: bool,
+    /// Snap granularity in basis points (matches `PaneSnapTuning::step_bps`).
+    pub snap_step_bps: u16,
+    /// Window (bps) within which the ghost is considered resting on a snap
+    /// target (matches `PaneSnapTuning::hysteresis_bps`).
+    pub snap_hysteresis_bps: u16,
+}
+
+impl Default for PaneResizeOverlayConfig {
+    fn default() -> Self {
+        Self {
+            show_snap_guides: true,
+            show_size_badges: true,
+            snap_step_bps: PANE_SNAP_DEFAULT_STEP_BPS,
+            snap_hysteresis_bps: PANE_SNAP_DEFAULT_HYSTERESIS_BPS,
+        }
+    }
+}
+
+/// Host-agnostic visual feedback for one active splitter resize (bd-j1mo9):
+/// the proposed ghost boundary, the snap-target guide, and live size badges.
+///
+/// This is shape + label data only (no colors): hosts paint it using the
+/// contrast-safe `ftui_style::PaneAffordanceTheme` (e.g. `splitter_active` for
+/// the ghost, `snap` for guides) in the [`PaneOverlayLayer`] z-order. The
+/// overlay is static geometry — it carries no animation — so it is inherently
+/// reduced-motion safe and renders identically regardless of motion settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneResizeOverlay {
+    /// The split being resized.
+    pub split_id: PaneId,
+    /// The split axis.
+    pub axis: SplitAxis,
+    /// The proposed divider position.
+    pub ghost: PaneGhostBoundary,
+    /// Snap-target guides (empty when disabled).
+    pub snap_guides: Vec<PaneSnapGuide>,
+    /// Live size badges (empty when disabled).
+    pub badges: Vec<PaneSizeBadge>,
+}
+
+/// Compute proposed first/second child rects and the divider coordinate for a
+/// split at `share_bps` (the cross-axis coordinate: x for a horizontal split's
+/// vertical divider, y for a vertical split's horizontal divider).
+fn proposed_split_rects(split_rect: Rect, axis: SplitAxis, share_bps: u16) -> (Rect, Rect, u16) {
+    match axis {
+        SplitAxis::Horizontal => {
+            let w = split_rect.width;
+            let first_w = ((u32::from(w) * u32::from(share_bps)) / 10_000) as u16;
+            let divider = split_rect.x.saturating_add(first_w);
+            let first = Rect::new(split_rect.x, split_rect.y, first_w, split_rect.height);
+            let second = Rect::new(
+                divider,
+                split_rect.y,
+                w.saturating_sub(first_w),
+                split_rect.height,
+            );
+            (first, second, divider)
+        }
+        SplitAxis::Vertical => {
+            let h = split_rect.height;
+            let first_h = ((u32::from(h) * u32::from(share_bps)) / 10_000) as u16;
+            let divider = split_rect.y.saturating_add(first_h);
+            let first = Rect::new(split_rect.x, split_rect.y, split_rect.width, first_h);
+            let second = Rect::new(
+                split_rect.x,
+                divider,
+                split_rect.width,
+                h.saturating_sub(first_h),
+            );
+            (first, second, divider)
+        }
+    }
+}
+
+/// Round `share_bps` to the nearest snap step, clamped to a valid interior share.
+fn nearest_snap_bps(share_bps: u16, step_bps: u16) -> u16 {
+    let step = u32::from(step_bps.max(1));
+    let s = u32::from(share_bps);
+    let snapped = ((s + step / 2) / step) * step;
+    snapped.clamp(1, 9_999) as u16
+}
+
+/// Deterministic size-badge label: rounded percentage plus cell dimensions.
+fn size_badge_label(share_bps: u16, rect: Rect) -> String {
+    let pct = (u32::from(share_bps) + 50) / 100;
+    format!("{pct}% {}x{}", rect.width, rect.height)
+}
+
+/// Build the resize-overlay feedback for a live splitter drag at
+/// `proposed_share_bps` (the first-child share the drag is currently proposing).
+///
+/// Returns `None` if the target is not a live split on `axis`, or the split has
+/// no solved rect. The overlay is a pure function of `(tree, layout, target,
+/// share, config)`, so repeated builds for the same drag sample are byte
+/// identical — feedback stays stable under rapid drag.
+#[must_use]
+pub fn build_resize_overlay(
+    tree: &PaneTree,
+    layout: &PaneLayout,
+    target: PaneResizeTarget,
+    proposed_share_bps: u16,
+    config: PaneResizeOverlayConfig,
+) -> Option<PaneResizeOverlay> {
+    let node = tree.node(target.split_id)?;
+    let PaneNodeKind::Split(split) = &node.kind else {
+        return None;
+    };
+    if split.axis != target.axis {
+        return None;
+    }
+    let split_rect = layout.rect(target.split_id)?;
+    if split_rect.is_empty() {
+        return None;
+    }
+
+    let share = proposed_share_bps.clamp(1, 9_999);
+    let (first_rect, second_rect, divider) = proposed_split_rects(split_rect, split.axis, share);
+
+    let rail = match split.axis {
+        SplitAxis::Horizontal => Rect::new(divider, split_rect.y, 1, split_rect.height),
+        SplitAxis::Vertical => Rect::new(split_rect.x, divider, split_rect.width, 1),
+    };
+
+    let step = config.snap_step_bps.max(1);
+    let snapped_bps = nearest_snap_bps(share, step);
+    // On a snap target only when within the hysteresis window of it (so a freely
+    // dragged divider between grid points reads as un-snapped).
+    let snapped = share.abs_diff(snapped_bps) <= config.snap_hysteresis_bps;
+
+    let ghost = PaneGhostBoundary {
+        rail,
+        axis: split.axis,
+        share_bps: share,
+        snapped,
+    };
+
+    let mut snap_guides = Vec::new();
+    if config.show_snap_guides {
+        let (_, _, guide_pos) = proposed_split_rects(split_rect, split.axis, snapped_bps);
+        let line = match split.axis {
+            SplitAxis::Horizontal => Rect::new(guide_pos, split_rect.y, 1, split_rect.height),
+            SplitAxis::Vertical => Rect::new(split_rect.x, guide_pos, split_rect.width, 1),
+        };
+        snap_guides.push(PaneSnapGuide {
+            line,
+            axis: split.axis,
+            share_bps: snapped_bps,
+        });
+    }
+
+    let mut badges = Vec::new();
+    if config.show_size_badges {
+        badges.push(PaneSizeBadge {
+            pane: split.first,
+            anchor: first_rect,
+            label: size_badge_label(share, first_rect),
+        });
+        badges.push(PaneSizeBadge {
+            pane: split.second,
+            anchor: second_rect,
+            label: size_badge_label(10_000 - share, second_rect),
+        });
+    }
+
+    Some(PaneResizeOverlay {
+        split_id: target.split_id,
+        axis: split.axis,
+        ghost,
+        snap_guides,
+        badges,
+    })
 }
 
 #[must_use]
@@ -1920,5 +2162,146 @@ mod tests {
             .find(|splitter| splitter.split_id == first.split_id)
             .expect("active splitter");
         assert_eq!(active_match.state, PaneSplitterVisualState::Active);
+    }
+
+    /// Resolve a usable `(PaneResizeTarget, split_rect)` for the first splitter.
+    fn first_resize_target() -> (PaneTree, PaneLayout, PaneResizeTarget, Rect) {
+        let tree = default_pane_layout_tree();
+        let viewport = Rect::new(0, 0, 120, 40);
+        let layout = tree.solve_layout(viewport).expect("layout solves");
+        let splitters = collect_splitter_primitives(&tree, &layout, viewport, None, None);
+        let first = splitters.first().copied().expect("a splitter exists");
+        let split_rect = layout.rect(first.split_id).expect("split has a rect");
+        (tree, layout, first.target, split_rect)
+    }
+
+    #[test]
+    fn resize_overlay_ghost_tracks_proposed_share() {
+        let (tree, layout, target, _rect) = first_resize_target();
+        let cfg = PaneResizeOverlayConfig::default();
+        let low = build_resize_overlay(&tree, &layout, target, 2_000, cfg).expect("overlay builds");
+        let high =
+            build_resize_overlay(&tree, &layout, target, 8_000, cfg).expect("overlay builds");
+        assert_eq!(low.ghost.share_bps, 2_000);
+        assert_eq!(high.ghost.share_bps, 8_000);
+        // A larger first-child share pushes the ghost divider further along the
+        // split axis.
+        match target.axis {
+            SplitAxis::Horizontal => assert!(high.ghost.rail.x > low.ghost.rail.x),
+            SplitAxis::Vertical => assert!(high.ghost.rail.y > low.ghost.rail.y),
+        }
+        // The ghost rail is one cell thick on its cross axis.
+        match target.axis {
+            SplitAxis::Horizontal => assert_eq!(low.ghost.rail.width, 1),
+            SplitAxis::Vertical => assert_eq!(low.ghost.rail.height, 1),
+        }
+    }
+
+    #[test]
+    fn resize_overlay_badges_partition_the_split() {
+        let (tree, layout, target, split_rect) = first_resize_target();
+        let overlay = build_resize_overlay(
+            &tree,
+            &layout,
+            target,
+            6_000,
+            PaneResizeOverlayConfig::default(),
+        )
+        .expect("overlay builds");
+        assert_eq!(overlay.badges.len(), 2, "one badge per child");
+        let (first, second) = (&overlay.badges[0], &overlay.badges[1]);
+        // The two child rects tile the split with no gap or overlap on the axis.
+        match target.axis {
+            SplitAxis::Horizontal => {
+                assert_eq!(first.anchor.width + second.anchor.width, split_rect.width);
+                assert_eq!(second.anchor.x, first.anchor.x + first.anchor.width);
+            }
+            SplitAxis::Vertical => {
+                assert_eq!(
+                    first.anchor.height + second.anchor.height,
+                    split_rect.height
+                );
+                assert_eq!(second.anchor.y, first.anchor.y + first.anchor.height);
+            }
+        }
+        // Labels are deterministic: 60% / 40% with the proposed dimensions.
+        assert!(first.label.starts_with("60% "), "got {}", first.label);
+        assert!(second.label.starts_with("40% "), "got {}", second.label);
+    }
+
+    #[test]
+    fn resize_overlay_detects_snap_targets() {
+        let (tree, layout, target, _rect) = first_resize_target();
+        let cfg = PaneResizeOverlayConfig::default(); // step = 500 bps
+        // Exactly on a snap multiple -> snapped, guide sits at the same share.
+        let on = build_resize_overlay(&tree, &layout, target, 5_000, cfg).expect("builds");
+        assert!(on.ghost.snapped);
+        assert_eq!(on.snap_guides.len(), 1);
+        assert_eq!(on.snap_guides[0].share_bps, 5_000);
+        // Midway between two snap multiples (5_000 and 5_500) -> not snapped, but
+        // the guide still points at the nearest target.
+        let off = build_resize_overlay(&tree, &layout, target, 5_250, cfg).expect("builds");
+        assert!(!off.ghost.snapped);
+        assert!(off.snap_guides[0].share_bps == 5_000 || off.snap_guides[0].share_bps == 5_500);
+    }
+
+    #[test]
+    fn resize_overlay_config_toggles_keep_it_uncluttered() {
+        let (tree, layout, target, _rect) = first_resize_target();
+        let minimal = PaneResizeOverlayConfig {
+            show_snap_guides: false,
+            show_size_badges: false,
+            snap_step_bps: PANE_SNAP_DEFAULT_STEP_BPS,
+            snap_hysteresis_bps: PANE_SNAP_DEFAULT_HYSTERESIS_BPS,
+        };
+        let overlay = build_resize_overlay(&tree, &layout, target, 5_000, minimal).expect("builds");
+        assert!(overlay.snap_guides.is_empty(), "guides suppressed");
+        assert!(overlay.badges.is_empty(), "badges suppressed");
+        // The ghost boundary always renders (it is the core resize feedback).
+        assert_eq!(overlay.ghost.share_bps, 5_000);
+    }
+
+    #[test]
+    fn resize_overlay_is_stable_under_repeated_builds() {
+        let (tree, layout, target, _rect) = first_resize_target();
+        let cfg = PaneResizeOverlayConfig::default();
+        let a = build_resize_overlay(&tree, &layout, target, 4_321, cfg).expect("builds");
+        let b = build_resize_overlay(&tree, &layout, target, 4_321, cfg).expect("builds");
+        assert_eq!(a, b, "identical drag sample yields identical overlay");
+    }
+
+    #[test]
+    fn resize_overlay_rejects_non_split_target() {
+        let tree = default_pane_layout_tree();
+        let viewport = Rect::new(0, 0, 120, 40);
+        let layout = tree.solve_layout(viewport).expect("layout solves");
+        let leaf = tree
+            .nodes()
+            .find_map(|n| matches!(n.kind, PaneNodeKind::Leaf(_)).then_some(n.id))
+            .expect("a leaf exists");
+        let bogus = PaneResizeTarget {
+            split_id: leaf,
+            axis: SplitAxis::Horizontal,
+        };
+        assert!(
+            build_resize_overlay(
+                &tree,
+                &layout,
+                bogus,
+                5_000,
+                PaneResizeOverlayConfig::default()
+            )
+            .is_none(),
+            "a leaf target must not produce a resize overlay"
+        );
+    }
+
+    #[test]
+    fn overlay_layer_z_order_is_deterministic() {
+        // Guides paint under the ghost, which paints under badges.
+        assert!(PaneOverlayLayer::SnapGuide.z_index() < PaneOverlayLayer::GhostBoundary.z_index());
+        assert!(PaneOverlayLayer::GhostBoundary.z_index() < PaneOverlayLayer::SizeBadge.z_index());
+        // Ord agrees with z_index.
+        assert!(PaneOverlayLayer::SnapGuide < PaneOverlayLayer::SizeBadge);
     }
 }
