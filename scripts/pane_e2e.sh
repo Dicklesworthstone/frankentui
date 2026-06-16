@@ -341,6 +341,9 @@ if $RUN_TERMINAL; then
     run_step "pane_layout_semantic_replay_harness" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-layout --test pane_semantic_replay_harness -- --nocapture || true
     run_step "pane_terminal_splitter_drag_pty" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_splitter_drag_pty_e2e -- --test-threads=1 --nocapture || true
     run_step "pane_terminal_input_pty_smoke" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_input_pty_e2e pty_keyboard_plus_minus_resize -- --test-threads=1 --nocapture || true
+    # Production terminal keyboard binding over PTY (bd-8e1oc): key -> PaneCommand
+    # -> live tree, via PANE_HARNESS_INPUT=keymap. Smoke runs keyboard focus nav.
+    run_step "pane_terminal_keymap_smoke" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_input_pty_e2e pty_keymap_tab_navigates_focus_to_next_pane -- --test-threads=1 --nocapture || true
 
     if [[ "$MODE" != "smoke" ]]; then
         run_step "pane_terminal_layout_resize_thrash" "terminal" env LAYOUT_RESIZE_PROFILE=thrash bash "$PROJECT_ROOT/tests/e2e/scripts/test_layout_composer_resize.sh" || true
@@ -353,6 +356,7 @@ if $RUN_TERMINAL; then
         while [[ "$i" -le "$STRESS_ITERATIONS" ]]; do
             run_step "pane_terminal_layout_resize_stress_${i}" "terminal" bash "$PROJECT_ROOT/tests/e2e/scripts/test_layout_composer_resize.sh" || true
             run_step "pane_terminal_input_pty_stress_${i}" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_input_pty_e2e pty_keyboard_resize_is_exact_and_mode_independent -- --test-threads=1 --nocapture || true
+            run_step "pane_terminal_keymap_stress_${i}" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-harness --test pane_input_pty_e2e pty_keymap_tab_navigates_focus_to_next_pane -- --test-threads=1 --nocapture || true
             i=$((i + 1))
         done
     fi

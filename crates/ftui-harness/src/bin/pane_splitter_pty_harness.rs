@@ -53,9 +53,21 @@
 //! `PANE_SNAP_DEFAULT_STEP_BPS` per unit/line and are geometry-independent, so
 //! their reported ratios are exact and identical across screen modes.
 //!
+//! ## Production keyboard-binding mode (bd-8e1oc)
+//!
+//! With `PANE_HARNESS_INPUT=keymap`, `Event::Key` is instead routed through the
+//! **production** terminal keyboard binding
+//! (`ftui_runtime::pane_keymap::PaneKeyboardController` — key -> `PaneCommand`
+//! -> resolve -> apply, bd-21pbi.2), not the affordance/adapter paths. The
+//! controller starts focused on the left leaf; the scripted test sends a key
+//! sequence then `q`, and the marker additionally reports `active_pane=<name>`
+//! (keyboard focus navigation) and `maximized=<bool>`. This proves split / close
+//! / move / swap / focus-nav via the real input binding end-to-end over a PTY.
+//!
 //! ## Environment
 //!
 //! - `PANE_HARNESS_SCREEN_MODE` -- `inline` | `alt` (default `alt`).
+//! - `PANE_HARNESS_INPUT` -- `adapter` (default) | `keymap` (production keyboard).
 //! - `PANE_HARNESS_AXIS` -- root split axis: `horizontal` (default) | `vertical`.
 //! - `PANE_HARNESS_UI_HEIGHT`   -- inline UI height in rows (default `12`).
 //! - `PANE_HARNESS_EXIT_AFTER_MS` -- safety auto-quit if no gesture arrives
@@ -70,11 +82,12 @@ use std::time::Duration;
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{
-    PANE_TREE_SCHEMA_VERSION, PaneId, PaneLayout, PaneLeaf, PaneNodeKind, PaneNodeRecord,
-    PaneOperation, PanePlacement, PanePressureSnapProfile, PaneSplit, PaneSplitRatio, PaneTree,
-    PaneTreeSnapshot, SplitAxis,
+    PANE_TREE_SCHEMA_VERSION, PaneCommandEffect, PaneId, PaneLayout, PaneLeaf, PaneNodeKind,
+    PaneNodeRecord, PaneOperation, PanePlacement, PanePressureSnapProfile, PaneSplit,
+    PaneSplitRatio, PaneTree, PaneTreeSnapshot, SplitAxis,
 };
 use ftui_render::frame::Frame;
+use ftui_runtime::pane_keymap::{PaneKeyOutcome, PaneKeyboardController};
 use ftui_runtime::{
     App, Cmd, Every, Model, PaneTerminalAdapter, PaneTerminalAdapterConfig, PaneTerminalDispatch,
     PaneTerminalLifecyclePhase, ScreenMode, Subscription, UiAnchor, pane_terminal_splitter_handles,
@@ -158,6 +171,14 @@ fn root_first_leaf_name(tree: &PaneTree) -> String {
     }
 }
 
+/// Surface key of a pane node if it is a leaf, else `-`.
+fn leaf_name(tree: &PaneTree, id: PaneId) -> String {
+    match tree.node(id).map(|node| &node.kind) {
+        Some(PaneNodeKind::Leaf(leaf)) => leaf.surface_key.clone(),
+        _ => "-".to_string(),
+    }
+}
+
 /// Mutable state shared between the model and `main` so the result can be
 /// emitted *after* the terminal is restored. Also carries the most recent
 /// rendered pane area for hit-testing (set from `view`, read from `update`).
@@ -174,11 +195,18 @@ struct Shared {
     tree_valid: bool,
     node_count: usize,
     first_leaf: String,
+    active_pane: String,
+    maximized: bool,
 }
 
 struct Harness {
     tree: PaneTree,
     adapter: PaneTerminalAdapter,
+    /// Production keyboard binding controller, present only in `keymap` input
+    /// mode (`PANE_HARNESS_INPUT=keymap`). When present, `Event::Key` is routed
+    /// through the real `ftui_runtime::pane_keymap` path instead of the adapter
+    /// resize / affordance paths.
+    keyboard: Option<PaneKeyboardController>,
     op_seed: u64,
     ticks_remaining: u32,
     shared: Arc<Mutex<Shared>>,
@@ -216,6 +244,43 @@ impl Harness {
         let Ok(layout) = self.tree.solve_layout(area) else {
             return Cmd::none();
         };
+
+        // Production keyboard-binding mode (bd-8e1oc): route `Event::Key` through
+        // the real `ftui_runtime::pane_keymap` controller — the same key ->
+        // PaneCommand -> resolve -> apply path a focus-aware terminal host uses.
+        // The scripted test sends a key sequence then `q`; the marker reports the
+        // final focus + structural state. This is NOT the affordance-key path.
+        if let Some(mut keyboard) = self.keyboard.take() {
+            if let Event::Key(key) = event
+                && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            {
+                let out = keyboard.handle_key(key, &mut self.tree, &layout);
+                let applied = match &out {
+                    PaneKeyOutcome::Handled { resolution, .. } => match &resolution.effect {
+                        PaneCommandEffect::Structural(ops) => {
+                            u64::try_from(ops.len()).unwrap_or_default()
+                        }
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                let active = keyboard
+                    .active()
+                    .map_or_else(|| "-".to_string(), |id| leaf_name(&self.tree, id));
+                let maximized = keyboard.maximized().is_some();
+                if applied > 0 {
+                    self.with_shared(|s| s.applied_ops += applied);
+                }
+                self.with_shared(|s| {
+                    s.active_pane = active;
+                    s.maximized = maximized;
+                });
+                self.record_state(false);
+            }
+            self.keyboard = Some(keyboard);
+            return Cmd::none();
+        }
+
         let handles = pane_terminal_splitter_handles(&self.tree, &layout, HIT_THICKNESS);
 
         match event {
@@ -406,6 +471,8 @@ fn main() -> std::io::Result<()> {
     };
     let ui_height = env_u16("PANE_HARNESS_UI_HEIGHT", 12).max(4);
     let exit_after_ms = u32::from(env_u16("PANE_HARNESS_EXIT_AFTER_MS", 4_000)).max(200);
+    // Production keyboard-binding input mode (bd-8e1oc).
+    let keymap_mode = std::env::var("PANE_HARNESS_INPUT").as_deref() == Ok("keymap");
 
     let (screen_mode, anchor) = if mode == "inline" {
         // Anchor the inline UI at the TOP so the rendered pane area's cell
@@ -420,6 +487,12 @@ fn main() -> std::io::Result<()> {
     let initial_bps = root_first_share_bps(&tree).expect("root split has a first share");
     let node_count = tree.nodes().count();
     let first_leaf = root_first_leaf_name(&tree);
+    // In keymap mode the controller starts focused on the left leaf.
+    let keyboard = keymap_mode.then(|| PaneKeyboardController::new(Some(pane_id(LEFT))));
+    let initial_active = keyboard
+        .as_ref()
+        .and_then(PaneKeyboardController::active)
+        .map_or_else(|| "-".to_string(), |id| leaf_name(&tree, id));
     let shared = Arc::new(Mutex::new(Shared {
         mode: mode.clone(),
         area: Rect::new(0, 0, 80, 24),
@@ -432,6 +505,8 @@ fn main() -> std::io::Result<()> {
         tree_valid: true,
         node_count,
         first_leaf,
+        active_pane: initial_active,
+        maximized: false,
     }));
 
     let adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default())
@@ -440,6 +515,7 @@ fn main() -> std::io::Result<()> {
     let model = Harness {
         tree,
         adapter,
+        keyboard,
         op_seed: 1,
         ticks_remaining: exit_after_ms.div_ceil(100).max(1),
         shared: Arc::clone(&shared),
@@ -454,7 +530,7 @@ fn main() -> std::io::Result<()> {
     // Terminal is restored here. Emit the deterministic, greppable result line.
     let snap = shared.lock().expect("shared state lock").clone();
     println!(
-        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={}",
+        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={}",
         snap.mode,
         snap.initial_bps,
         snap.final_bps,
@@ -465,6 +541,8 @@ fn main() -> std::io::Result<()> {
         snap.node_count,
         snap.first_leaf,
         snap.canceled,
+        snap.active_pane,
+        snap.maximized,
     );
     let _ = std::io::stdout().flush();
 

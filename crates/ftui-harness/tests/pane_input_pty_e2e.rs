@@ -26,6 +26,18 @@
 //! - **Capability matrix**: the canonical keyboard resize under several `TERM`
 //!   profiles (xterm / screen / tmux), with clean teardown each time.
 //!
+//! ## Production keyboard bindings (bd-8e1oc)
+//!
+//! A second group (`pty_keymap_*`) drives the **production** terminal keyboard
+//! binding (`ftui_runtime::pane_keymap`) over a real PTY via
+//! `PANE_HARNESS_INPUT=keymap` — key -> `PaneCommand` -> resolve -> live tree,
+//! NOT the affordance keys. Covered: keyboard focus navigation (Tab, Ctrl+Arrow),
+//! split (Alt+s), close (Alt+w), and maximize (Alt+z), asserted via the marker's
+//! `active_pane` / `node_count` / `maximized` fields, plus a TERM capability
+//! matrix. (Resize-interrupt and focus-loss cancel paths remain covered
+//! in-process by the `ftui-runtime` adapter tests because `ftui-pty` cannot
+//! inject a mid-run `SIGWINCH` / focus event.)
+//!
 //! Starting state is always a 1:1 root split (5000 bps first-pane share).
 
 use std::time::Duration;
@@ -61,10 +73,21 @@ const MOUSE_DOWN_ON_SPLITTER: &[u8] = b"\x1b[<0;41;3M";
 const SCROLL_UP_ON_SPLITTER: &[u8] = b"\x1b[<64;41;3M";
 const SCROLL_DOWN_ON_SPLITTER: &[u8] = b"\x1b[<65;41;3M";
 
-// Structural affordance keys.
+// Structural affordance keys (adapter-mode harness affordances).
 const KEY_SPLIT: &[u8] = b"s";
 const KEY_CLOSE: &[u8] = b"c";
 const KEY_SWAP: &[u8] = b"w";
+
+// --- Production keyboard bindings (PANE_HARNESS_INPUT=keymap, bd-8e1oc) ------
+//
+// Terminal keymap from `ftui_runtime::pane_keymap`. Tab/BackTab and CSI arrows
+// (modifier param `1;5` = Ctrl) are robust over a PTY; Alt bindings are ESC-
+// prefixed and must arrive as a single chunk so the parser decodes `Alt+<char>`.
+const KEY_TAB: &[u8] = b"\x09"; // FocusNext
+const KEY_CTRL_RIGHT: &[u8] = b"\x1b[1;5C"; // FocusDirectional(Right)
+const KEY_ALT_S: &[u8] = b"\x1bs"; // Split(Horizontal)
+const KEY_ALT_W: &[u8] = b"\x1bw"; // Close
+const KEY_ALT_Z: &[u8] = b"\x1bz"; // Maximize
 
 #[derive(Debug)]
 struct PaneResult {
@@ -78,6 +101,10 @@ struct PaneResult {
     node_count: usize,
     first_leaf: String,
     canceled: bool,
+    /// Focused leaf surface key (keymap mode); `-` in adapter mode.
+    active_pane: String,
+    /// Whether a pane is maximized (keymap mode).
+    maximized: bool,
 }
 
 fn parse_marker(output: &[u8]) -> PaneResult {
@@ -101,6 +128,8 @@ fn parse_marker(output: &[u8]) -> PaneResult {
     let mut node_count = None;
     let mut first_leaf = None;
     let mut canceled = None;
+    let mut active_pane = None;
+    let mut maximized = None;
     for pair in kv.split_whitespace() {
         let Some((key, value)) = pair.split_once('=') else {
             continue;
@@ -116,6 +145,8 @@ fn parse_marker(output: &[u8]) -> PaneResult {
             "node_count" => node_count = value.parse().ok(),
             "first_leaf" => first_leaf = Some(value.to_string()),
             "canceled" => canceled = Some(value == "true"),
+            "active_pane" => active_pane = Some(value.to_string()),
+            "maximized" => maximized = Some(value == "true"),
             _ => {}
         }
     }
@@ -131,6 +162,9 @@ fn parse_marker(output: &[u8]) -> PaneResult {
         node_count: node_count.expect("node_count field"),
         first_leaf: first_leaf.expect("first_leaf field"),
         canceled: canceled.expect("canceled field"),
+        // Back-compatible defaults for adapter-mode markers.
+        active_pane: active_pane.unwrap_or_else(|| "-".to_string()),
+        maximized: maximized.unwrap_or(false),
     }
 }
 
@@ -138,6 +172,8 @@ struct Scenario {
     mode: &'static str,
     axis: &'static str,
     term: Option<&'static str>,
+    /// Harness input mode: `adapter` (default) or `keymap` (production keyboard).
+    input: &'static str,
     /// Input chunks delivered sequentially with a small inter-chunk gap so that
     /// (for example) a lone trailing ESC is decoded on its own.
     parts: Vec<&'static [u8]>,
@@ -150,6 +186,7 @@ impl Scenario {
             mode,
             axis: "horizontal",
             term: None,
+            input: "adapter",
             parts,
             exit_after_ms: 3000,
         }
@@ -157,6 +194,12 @@ impl Scenario {
 
     fn axis(mut self, axis: &'static str) -> Self {
         self.axis = axis;
+        self
+    }
+
+    /// Drive the production keyboard binding (`PANE_HARNESS_INPUT=keymap`).
+    fn keymap(mut self) -> Self {
+        self.input = "keymap";
         self
     }
 
@@ -178,6 +221,7 @@ fn run(scn: &Scenario) -> Vec<u8> {
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_pane_splitter_pty_harness"));
     cmd.env("PANE_HARNESS_SCREEN_MODE", scn.mode);
     cmd.env("PANE_HARNESS_AXIS", scn.axis);
+    cmd.env("PANE_HARNESS_INPUT", scn.input);
     cmd.env("PANE_HARNESS_UI_HEIGHT", "12");
     cmd.env("PANE_HARNESS_EXIT_AFTER_MS", scn.exit_after_ms.to_string());
 
@@ -452,6 +496,112 @@ fn pty_keyboard_resize_across_terminal_capability_matrix() {
             kitty_keyboard: false,
             intercept_signals: true,
         };
+        let expectations = CleanupExpectations::for_session(&options);
+        assert_terminal_restored(&output, &expectations)
+            .unwrap_or_else(|err| panic!("[{term}] terminal cleanup verification failed: {err}"));
+    }
+}
+
+// --- Production keyboard bindings over PTY (bd-8e1oc) -----------------------
+//
+// These drive the REAL terminal keyboard binding (`ftui_runtime::pane_keymap`),
+// not the harness affordance keys, via `PANE_HARNESS_INPUT=keymap`. The harness
+// starts focused on the left leaf; each scenario sends a key sequence then `q`,
+// and the marker reports `active_pane` (keyboard focus navigation) plus the
+// structural state (`node_count`, `first_leaf`, `maximized`).
+
+/// Run a keymap-mode scenario (key sequence followed by `q`) and parse the marker.
+fn keymap_result(mode: &'static str, key: &'static [u8]) -> PaneResult {
+    run_result(&Scenario::new(mode, vec![key, KEY_QUIT]).keymap())
+}
+
+#[test]
+fn pty_keymap_tab_navigates_focus_to_next_pane() {
+    // Start focus = left; Tab -> FocusNext -> right. Mode-independent.
+    for mode in ["alt", "inline"] {
+        let result = keymap_result(mode, KEY_TAB);
+        assert!(result.tree_valid, "[{mode}] tree invalid after focus nav");
+        assert_eq!(
+            result.active_pane, "right",
+            "[{mode}] Tab should move keyboard focus to the next pane"
+        );
+        // Focus navigation is not a structural change.
+        assert_eq!(
+            result.node_count, 3,
+            "[{mode}] focus nav must not mutate the tree"
+        );
+        assert!(!result.maximized);
+    }
+}
+
+#[test]
+fn pty_keymap_ctrl_arrow_directional_focus() {
+    // Ctrl+Right -> FocusDirectional(Right): left -> right pane.
+    let result = keymap_result("alt", KEY_CTRL_RIGHT);
+    assert!(result.tree_valid);
+    assert_eq!(
+        result.active_pane, "right",
+        "Ctrl+Right should focus the pane to the right"
+    );
+    assert_eq!(result.node_count, 3);
+}
+
+#[test]
+fn pty_keymap_alt_split_grows_the_tree() {
+    // Alt+s -> Split(Horizontal) on the active (left) leaf: the tree grows.
+    let result = keymap_result("alt", KEY_ALT_S);
+    assert!(result.tree_valid, "tree invalid after keyboard split");
+    assert!(
+        result.node_count > 3,
+        "Alt+s should split the active pane (node_count={})",
+        result.node_count
+    );
+    assert!(result.applied_ops > 0, "split should apply operations");
+}
+
+#[test]
+fn pty_keymap_alt_close_shrinks_the_tree() {
+    // Alt+w -> Close the active (left) leaf: the sibling is promoted, focus moves.
+    let result = keymap_result("alt", KEY_ALT_W);
+    assert!(result.tree_valid, "tree invalid after keyboard close");
+    assert!(
+        result.node_count < 3,
+        "Alt+w should close the active pane (node_count={})",
+        result.node_count
+    );
+    assert_ne!(
+        result.active_pane, "left",
+        "focus must move off the closed pane"
+    );
+}
+
+#[test]
+fn pty_keymap_alt_maximize_sets_transient_state() {
+    // Alt+z -> Maximize the active pane: transient view state, no topology change.
+    let result = keymap_result("alt", KEY_ALT_Z);
+    assert!(result.tree_valid);
+    assert!(result.maximized, "Alt+z should maximize the active pane");
+    assert_eq!(result.node_count, 3, "maximize must not mutate the tree");
+}
+
+#[test]
+fn pty_keymap_focus_nav_across_terminal_capability_matrix() {
+    // Keyboard focus navigation (Tab) under several TERM profiles, with clean
+    // teardown each time — proving the production binding works across emulators.
+    for term in ["xterm-256color", "screen", "tmux-256color"] {
+        let options = SessionOptions::default();
+        let scn = Scenario::new("alt", vec![KEY_TAB, KEY_QUIT])
+            .keymap()
+            .term(term)
+            .exit_after_ms(3000);
+        let output = run(&scn);
+        let result = parse_marker(&output);
+        assert_eq!(
+            result.active_pane, "right",
+            "[{term}] Tab focus navigation should reach the next pane"
+        );
+        assert!(result.tree_valid, "[{term}] tree invalid");
+
         let expectations = CleanupExpectations::for_session(&options);
         assert_terminal_restored(&output, &expectations)
             .unwrap_or_else(|err| panic!("[{term}] terminal cleanup verification failed: {err}"));
