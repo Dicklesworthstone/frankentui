@@ -47,6 +47,7 @@ pub mod egraph;
 pub mod grid;
 pub mod incremental;
 pub mod pane;
+pub mod pane_command;
 #[cfg(test)]
 mod repro_max_constraint;
 #[cfg(test)]
@@ -91,6 +92,12 @@ pub use pane::{
     PaneSemanticReplayDiffKind, PaneSemanticReplayError, PaneSemanticReplayFixture,
     PaneSemanticReplayOutcome, PaneSnapDecision, PaneSnapReason, PaneSnapTuning, PaneSplit,
     PaneSplitRatio, PaneTransaction, PaneTransactionOutcome, PaneTree, PaneTreeSnapshot, SplitAxis,
+};
+pub use pane_command::{
+    PaneCardinalDirection, PaneCommand, PaneCommandAcceleration, PaneCommandEffect,
+    PaneCommandNoopReason, PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal,
+    PaneKeymapOwner, PaneKeymapPrecedence, focus_cyclic, focus_directional, focus_edge,
+    focus_order, resolve as resolve_pane_command,
 };
 pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};
