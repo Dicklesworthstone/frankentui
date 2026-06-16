@@ -720,6 +720,131 @@ impl PaneInertialThrow {
     }
 }
 
+/// Full affordance emphasis, in basis points (10_000 = 100%).
+pub const PANE_AFFORDANCE_EMPHASIS_FULL_BPS: u16 = 10_000;
+
+/// Deterministic micro-animation policy for pane affordances (bd-18yus).
+///
+/// Pane affordances (splitter handles, focus emphasis, snap previews) gain a
+/// subtle emphasis ramp when they activate — a hover fade-in, a slow active
+/// pulse — so a state change reads as motion rather than a hard cut. The policy
+/// is host-agnostic and reports only a bounded emphasis weight in basis points
+/// (`[0, 10_000]`); hosts map that to blend weight / brightness themselves.
+///
+/// Design properties:
+///
+/// - **Deterministic.** Emphasis is a pure function of an integer phase tick
+///   supplied by the caller (a frame counter / animation clock), never a wall
+///   clock, and uses integer-only math — so replays and snapshots are
+///   byte-stable across platforms with no floating-point drift.
+/// - **Reduced-motion safe.** When [`reduced_motion`](Self::reduced_motion) is
+///   set, every ramp collapses to a step function: emphasis jumps to its
+///   terminal value on the first frame. No semantic cue is lost — the affordance
+///   still changes state — only the in-between motion is removed, satisfying the
+///   reduced-motion behavior-parity requirement.
+/// - **Bounded & cheap.** Each query is constant-time, allocation-free integer
+///   arithmetic (a couple of multiplies and a divide), so per-affordance,
+///   per-frame overhead is negligible even with many splitters on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneAffordanceMotion {
+    /// When set, all ramps collapse to instantaneous steps (no in-between
+    /// frames), preserving the state change without motion.
+    pub reduced_motion: bool,
+    /// Frames over which a hover emphasis fades in (≈100 ms at 60 fps by
+    /// default). Zero means "instant".
+    pub fade_in_frames: u16,
+    /// Period of the active-state pulse in frames (≈0.8 s at 60 fps by
+    /// default). Zero disables the pulse (steady full emphasis).
+    pub pulse_period_frames: u16,
+    /// Low point of the active pulse in basis points; the pulse oscillates
+    /// between this floor and full emphasis.
+    pub pulse_floor_bps: u16,
+}
+
+impl Default for PaneAffordanceMotion {
+    fn default() -> Self {
+        Self {
+            reduced_motion: false,
+            fade_in_frames: 6,
+            pulse_period_frames: 48,
+            pulse_floor_bps: 8_000,
+        }
+    }
+}
+
+impl PaneAffordanceMotion {
+    /// The reduced-motion preset: identical timing fields, but every ramp is
+    /// stepped. Use this when the host reports a reduced-motion preference.
+    #[must_use]
+    pub fn reduced() -> Self {
+        Self {
+            reduced_motion: true,
+            ..Self::default()
+        }
+    }
+
+    /// Apply a reduced-motion preference to this policy, returning the adjusted
+    /// copy. Lets a host derive the effective policy from a preference flag.
+    #[must_use]
+    pub fn with_reduced_motion(mut self, reduced_motion: bool) -> Self {
+        self.reduced_motion = reduced_motion;
+        self
+    }
+
+    /// Hover emphasis ramp in basis points.
+    ///
+    /// `elapsed_frames` counts frames since the affordance entered the hovered
+    /// state. The ramp is a quadratic ease-out from 0 to full over
+    /// [`fade_in_frames`](Self::fade_in_frames). Under reduced motion (or a zero
+    /// fade) it returns full emphasis immediately.
+    #[must_use]
+    pub fn hover_emphasis_bps(&self, elapsed_frames: u16) -> u16 {
+        if self.reduced_motion || self.fade_in_frames == 0 {
+            return PANE_AFFORDANCE_EMPHASIS_FULL_BPS;
+        }
+        affordance_ease_out_bps(elapsed_frames.min(self.fade_in_frames), self.fade_in_frames)
+    }
+
+    /// Active (dragging) emphasis pulse in basis points.
+    ///
+    /// `phase_frames` is a free-running frame counter; the pulse smoothly
+    /// ping-pongs between [`pulse_floor_bps`](Self::pulse_floor_bps) and full
+    /// emphasis over [`pulse_period_frames`](Self::pulse_period_frames). Under
+    /// reduced motion (or a zero period) it returns steady full emphasis.
+    #[must_use]
+    pub fn active_pulse_bps(&self, phase_frames: u64) -> u16 {
+        if self.reduced_motion || self.pulse_period_frames == 0 {
+            return PANE_AFFORDANCE_EMPHASIS_FULL_BPS;
+        }
+        let period = self.pulse_period_frames;
+        let half = period / 2;
+        let p = (phase_frames % u64::from(period)) as u16;
+        // Smooth ping-pong: ease up to the peak at the midpoint, then back down.
+        let ramp = if p < half {
+            affordance_ease_out_bps(p, half)
+        } else {
+            affordance_ease_out_bps(period - p, period - half)
+        };
+        let span = PANE_AFFORDANCE_EMPHASIS_FULL_BPS - self.pulse_floor_bps;
+        self.pulse_floor_bps + ((u32::from(ramp) * u32::from(span)) / 10_000) as u16
+    }
+}
+
+/// Integer quadratic ease-out from 0 to 10_000 bps over `total` frames.
+///
+/// `ease_out(x) = 1 - (1 - x)^2` with `x = t / total`, evaluated in integer
+/// space so results are identical on every platform.
+fn affordance_ease_out_bps(t: u16, total: u16) -> u16 {
+    if total == 0 {
+        return PANE_AFFORDANCE_EMPHASIS_FULL_BPS;
+    }
+    let t = t.min(total);
+    let remaining = u64::from(total - t);
+    let total2 = u64::from(total) * u64::from(total);
+    let drop = (10_000u64 * remaining * remaining) / total2;
+    (10_000 - drop) as u16
+}
+
 /// Dynamic snap aggressiveness derived from drag pressure cues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanePressureSnapProfile {
@@ -9583,6 +9708,118 @@ mod tests {
         let fast = PaneInertialThrow::from_motion(PaneMotionVector::from_delta(42, 0, 40, 0))
             .projected_pointer(start);
         assert!(fast.x > slow.x);
+    }
+
+    #[test]
+    fn affordance_hover_emphasis_ramps_monotonically_to_full() {
+        let motion = PaneAffordanceMotion::default();
+        let mut prev = 0u16;
+        for frame in 0..=motion.fade_in_frames {
+            let bps = motion.hover_emphasis_bps(frame);
+            assert!(bps >= prev, "ramp must be monotonic non-decreasing");
+            assert!(bps <= PANE_AFFORDANCE_EMPHASIS_FULL_BPS);
+            prev = bps;
+        }
+        // Reaches full at the end and saturates beyond it.
+        assert_eq!(
+            motion.hover_emphasis_bps(motion.fade_in_frames),
+            PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+        );
+        assert_eq!(
+            motion.hover_emphasis_bps(motion.fade_in_frames + 50),
+            PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+        );
+        // Ease-out: more progress is made in the first half than the second.
+        let half = motion.fade_in_frames / 2;
+        let first_half_gain = motion.hover_emphasis_bps(half);
+        let second_half_gain = PANE_AFFORDANCE_EMPHASIS_FULL_BPS - first_half_gain;
+        assert!(
+            first_half_gain >= second_half_gain,
+            "ease-out should front-load the ramp ({first_half_gain} vs {second_half_gain})"
+        );
+    }
+
+    #[test]
+    fn affordance_reduced_motion_steps_instantly_without_losing_the_cue() {
+        let reduced = PaneAffordanceMotion::reduced();
+        assert!(reduced.reduced_motion);
+        // Hover: full emphasis on the very first frame — the state change is
+        // still expressed, just without an in-between ramp.
+        assert_eq!(
+            reduced.hover_emphasis_bps(0),
+            PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+        );
+        // Active pulse: steady full emphasis at every phase (no oscillation).
+        for phase in [0u64, 1, 12, 24, 47, 1_000_000] {
+            assert_eq!(
+                reduced.active_pulse_bps(phase),
+                PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+            );
+        }
+        // with_reduced_motion derives the same stepped behavior from a flag.
+        let derived = PaneAffordanceMotion::default().with_reduced_motion(true);
+        assert_eq!(derived.hover_emphasis_bps(0), reduced.hover_emphasis_bps(0));
+    }
+
+    #[test]
+    fn affordance_active_pulse_oscillates_within_bounds_and_is_periodic() {
+        let motion = PaneAffordanceMotion::default();
+        let period = u64::from(motion.pulse_period_frames);
+        let mut min = u16::MAX;
+        let mut max = 0u16;
+        for phase in 0..period {
+            let bps = motion.active_pulse_bps(phase);
+            assert!(bps >= motion.pulse_floor_bps, "never below the floor");
+            assert!(bps <= PANE_AFFORDANCE_EMPHASIS_FULL_BPS, "never above full");
+            min = min.min(bps);
+            max = max.max(bps);
+            // Periodicity: phase and phase+period agree.
+            assert_eq!(bps, motion.active_pulse_bps(phase + period));
+            assert_eq!(bps, motion.active_pulse_bps(phase + 5 * period));
+        }
+        assert_eq!(min, motion.pulse_floor_bps, "trough sits at the floor");
+        assert_eq!(max, PANE_AFFORDANCE_EMPHASIS_FULL_BPS, "peak reaches full");
+        // Peak is at the midpoint of the period.
+        assert_eq!(
+            motion.active_pulse_bps(u64::from(motion.pulse_period_frames / 2)),
+            PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+        );
+    }
+
+    #[test]
+    fn affordance_motion_is_deterministic_and_clock_free() {
+        let motion = PaneAffordanceMotion::default();
+        // Two independent evaluations of the same phase agree exactly — the
+        // policy reads only the supplied tick, never a wall clock.
+        for frame in 0..200u64 {
+            assert_eq!(
+                motion.active_pulse_bps(frame),
+                motion.active_pulse_bps(frame)
+            );
+        }
+        for frame in 0..50u16 {
+            assert_eq!(
+                motion.hover_emphasis_bps(frame),
+                motion.hover_emphasis_bps(frame)
+            );
+        }
+    }
+
+    #[test]
+    fn affordance_zero_timing_fields_degrade_to_full() {
+        let instant = PaneAffordanceMotion {
+            fade_in_frames: 0,
+            pulse_period_frames: 0,
+            ..PaneAffordanceMotion::default()
+        };
+        assert_eq!(
+            instant.hover_emphasis_bps(0),
+            PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+        );
+        assert_eq!(
+            instant.active_pulse_bps(7),
+            PANE_AFFORDANCE_EMPHASIS_FULL_BPS
+        );
     }
 
     #[test]
