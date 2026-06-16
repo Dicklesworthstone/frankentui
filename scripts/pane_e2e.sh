@@ -364,16 +364,22 @@ if $RUN_WEB; then
     run_cargo_test_step "pane_web_runner_core_touch_yield_smoke" -p ftui-showcase-wasm runner_core_pane_touch_second_down_releases_capture_for_pinch_layer -- --nocapture || true
     run_cargo_test_step "pane_web_runner_core_context_loss_smoke" -p ftui-showcase-wasm runner_core_pane_context_lost_releases_active_capture -- --nocapture || true
     run_cargo_test_step "pane_web_runner_core_render_stall_smoke" -p ftui-showcase-wasm runner_core_pane_render_stalled_before_capture_ack_cancels_without_release -- --nocapture || true
+    # Cohesive web E2E suite (bd-a46q1.4): drives the production pointer-capture
+    # adapter + canonical coordinate normalizer end-to-end. Smoke runs the
+    # headline DPR/zoom/viewport invariance (no geometry drift) scenario.
+    run_cargo_test_step "pane_web_e2e_invariance_smoke" -p ftui-web --test pane_web_e2e web_drag_is_invariant_across_dpr_and_viewport -- --nocapture || true
 
     if [[ "$MODE" != "smoke" ]]; then
         run_cargo_test_step "pane_web_pointer_full" -p ftui-web pointer_ -- --nocapture || true
         run_cargo_test_step "pane_web_runner_core_full" -p ftui-showcase-wasm runner_core_pane -- --nocapture || true
+        run_cargo_test_step "pane_web_e2e_full" -p ftui-web --test pane_web_e2e -- --nocapture || true
     fi
 
     if [[ "$MODE" == "stress" ]]; then
         i=1
         while [[ "$i" -le "$STRESS_ITERATIONS" ]]; do
             run_cargo_test_step "pane_web_pointer_stress_${i}" -p ftui-web pointer_move_ -- --nocapture || true
+            run_cargo_test_step "pane_web_e2e_replay_stress_${i}" -p ftui-web --test pane_web_e2e web_drag_semantic_trace_replays_deterministically -- --nocapture || true
             i=$((i + 1))
         done
     fi
