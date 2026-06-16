@@ -153,3 +153,43 @@ Because `resolve` is pure over `(tree, layout, focus_context, command)`:
 Host bindings (`bd-21pbi.2`, `bd-21pbi.3`) are conformant iff, for every
 supported key sequence, the `PaneCommand` stream they emit is the documented one
 for that sequence.
+
+## 9. Default Host Keymaps
+
+Bindings differ per host because terminals and browsers reserve different keys,
+but both MUST emit the same `PaneCommand` for equivalent intent. The defaults:
+
+| Command | Terminal (`ftui_runtime::pane_keymap`) | Web (`ftui_web::pane_keyboard`) |
+|---------|----------------------------------------|---------------------------------|
+| `FocusNext` / `FocusPrevious` | `Tab` / `Shift+Tab` | `n` / `p` |
+| `FocusDirectional` | `Ctrl+Arrows` | `Arrows` |
+| `FocusEdge` | `Ctrl+Shift+Arrows` | `Home` / `End` / `PageUp` / `PageDown` |
+| `MovePane` | `Alt+Arrows` | `Shift+Arrows` |
+| `ResizeStep` grow/shrink | `Alt++` / `Alt+-` | `=` / `-` |
+| `Split` H / V | `Alt+s` / `Alt+v` | `s` / `v` |
+| `Close` | `Alt+w` | `x` / `Delete` |
+| `SwapPane` prev / next | `Alt+[` / `Alt+]` | `[` / `]` |
+| `Maximize` / `Restore` | `Alt+z` / `Alt+r` | `f` / `Escape` |
+
+The web keymap MUST refuse any key carrying Ctrl or Super so it never steals
+browser/OS shortcuts (e.g. `Ctrl+W`, `Ctrl++`). Both keymaps MUST be gated by
+the host so they fire only while the pane manager (not pane content) holds focus
+(§6).
+
+## 10. Web Accessibility Semantics (Roving Tabindex + ARIA)
+
+The web host MUST expose a `pane_accessibility_tree` mapping each pane node to
+DOM attributes:
+
+- **Roving tabindex** (normative invariant): among pane leaves, exactly the
+  effective-active leaf carries `tabindex = 0`; every other leaf carries `-1`.
+  When nothing is focused, the first leaf in `focus_order` is the active one, so
+  the pane manager is always a single reachable Tab stop with internal arrow-key
+  navigation.
+- **Panes** (`role="group"`): the active pane additionally sets
+  `aria-current="true"`.
+- **Splitters** (`role="separator"`): expose `aria-orientation` (a horizontal
+  split's divider is `vertical` and vice-versa) and `aria-valuenow`/`valuemin`
+  (`0`)/`valuemax` (`100`) carrying the first child's share percentage, so
+  assistive tech can identify the active pane, splitter orientation, and resize
+  affordances.
