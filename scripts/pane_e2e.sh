@@ -368,6 +368,10 @@ if $RUN_WEB; then
     # adapter + canonical coordinate normalizer end-to-end. Smoke runs the
     # headline DPR/zoom/viewport invariance (no geometry drift) scenario.
     run_cargo_test_step "pane_web_e2e_invariance_smoke" -p ftui-web --test pane_web_e2e web_drag_is_invariant_across_dpr_and_viewport -- --nocapture || true
+    # Production browser keyboard binding E2E (bd-kxg62): keymap -> command ->
+    # live tree, with roving-tabindex/ARIA + announcements. Smoke runs the
+    # arrow-focus + roving-tabindex scenario.
+    run_cargo_test_step "pane_web_e2e_kbd_smoke" -p ftui-web --test pane_web_e2e web_kbd_arrow_focus_traversal_keeps_roving_tabindex -- --nocapture || true
 
     if [[ "$MODE" != "smoke" ]]; then
         run_cargo_test_step "pane_web_pointer_full" -p ftui-web pointer_ -- --nocapture || true
@@ -380,6 +384,7 @@ if $RUN_WEB; then
         while [[ "$i" -le "$STRESS_ITERATIONS" ]]; do
             run_cargo_test_step "pane_web_pointer_stress_${i}" -p ftui-web pointer_move_ -- --nocapture || true
             run_cargo_test_step "pane_web_e2e_replay_stress_${i}" -p ftui-web --test pane_web_e2e web_drag_semantic_trace_replays_deterministically -- --nocapture || true
+            run_cargo_test_step "pane_web_e2e_kbd_stress_${i}" -p ftui-web --test pane_web_e2e web_kbd_command_stream_is_deterministic -- --nocapture || true
             i=$((i + 1))
         done
     fi

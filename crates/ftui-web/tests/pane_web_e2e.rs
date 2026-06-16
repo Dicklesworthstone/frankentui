@@ -43,14 +43,20 @@
 
 use std::collections::BTreeMap;
 
+use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_layout::{
-    PANE_SNAP_DEFAULT_STEP_BPS, PANE_TREE_SCHEMA_VERSION, PaneCancelReason,
-    PaneCoordinateNormalizer, PaneCoordinateRoundingPolicy, PaneDragResizeMachine,
-    PaneDragResizeState, PaneInputCoordinate, PaneLayout, PaneLeaf, PaneModifierSnapshot,
+    PANE_SNAP_DEFAULT_STEP_BPS, PANE_TREE_SCHEMA_VERSION, PaneAnnouncementCategory,
+    PaneCancelReason, PaneCardinalDirection, PaneCommand, PaneCoordinateNormalizer,
+    PaneCoordinateRoundingPolicy, PaneDragResizeMachine, PaneDragResizeState, PaneFocusContext,
+    PaneFocusOrdinal, PaneInputCoordinate, PaneLayout, PaneLeaf, PaneModifierSnapshot,
     PaneNodeKind, PaneNodeRecord, PaneOperation, PanePointerButton, PanePointerPosition,
     PanePressureSnapProfile, PaneResizeDirection, PaneResizeTarget, PaneScaleFactor,
     PaneSemanticInputEvent, PaneSemanticInputEventKind, PaneSemanticInputTrace, PaneSplit,
-    PaneSplitRatio, PaneTree, PaneTreeSnapshot, Rect, SplitAxis,
+    PaneSplitRatio, PaneTree, PaneTreeSnapshot, Rect, SplitAxis, focus_order,
+};
+use ftui_web::pane_keyboard::{
+    PaneAriaOrientation, PaneAriaRole, PaneWebKeyOutcome, PaneWebKeyboardController,
+    key_to_pane_command, pane_accessibility_tree,
 };
 use ftui_web::pane_pointer_capture::{
     PanePointerCaptureAdapter, PanePointerCaptureCommand, PanePointerDispatch,
@@ -1169,5 +1175,363 @@ fn web_keyboard_resize_semantic_event_drives_tree_via_bridge() {
         true,
         false,
         true,
+    );
+}
+
+// ===========================================================================
+// bd-kxg62: production browser keyboard binding E2E
+//
+// Drives the PRODUCTION web keyboard binding (ftui_web::pane_keyboard) end to
+// end: browser key -> PaneCommand -> resolve -> live PaneTree mutation, with
+// roving-tabindex/ARIA assertions and accessible announcements. Complements the
+// pointer/semantic coverage above. Native + deterministic (no headless browser,
+// matching the established web-E2E approach in this crate).
+// ===========================================================================
+
+fn kbd_key(code: KeyCode, modifiers: Modifiers) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers,
+        kind: KeyEventKind::Press,
+    }
+}
+
+/// Horizontal root: left(2) | vertical(top(4)/bottom(5)). Focus order [2,4,5].
+fn kbd_nested_tree() -> PaneTree {
+    let snapshot = PaneTreeSnapshot {
+        schema_version: PANE_TREE_SCHEMA_VERSION,
+        root: pane_id(1),
+        next_id: pane_id(6),
+        nodes: vec![
+            PaneNodeRecord::split(
+                pane_id(1),
+                None,
+                PaneSplit {
+                    axis: SplitAxis::Horizontal,
+                    ratio: PaneSplitRatio::new(1, 1).expect("ratio"),
+                    first: pane_id(2),
+                    second: pane_id(3),
+                },
+            ),
+            PaneNodeRecord::leaf(pane_id(2), Some(pane_id(1)), PaneLeaf::new("left")),
+            PaneNodeRecord::split(
+                pane_id(3),
+                Some(pane_id(1)),
+                PaneSplit {
+                    axis: SplitAxis::Vertical,
+                    ratio: PaneSplitRatio::new(1, 1).expect("ratio"),
+                    first: pane_id(4),
+                    second: pane_id(5),
+                },
+            ),
+            PaneNodeRecord::leaf(pane_id(4), Some(pane_id(3)), PaneLeaf::new("right_top")),
+            PaneNodeRecord::leaf(pane_id(5), Some(pane_id(3)), PaneLeaf::new("right_bottom")),
+        ],
+        extensions: BTreeMap::new(),
+    };
+    PaneTree::from_snapshot(snapshot).expect("valid nested tree")
+}
+
+fn kbd_solve(tree: &PaneTree) -> PaneLayout {
+    tree.solve_layout(Rect::new(0, 0, VIEW_W, VIEW_H))
+        .expect("layout solves")
+}
+
+/// The single roving Tab stop (the leaf with tabindex == 0), asserted unique.
+fn roving_active(tree: &PaneTree, focus: PaneFocusContext) -> ftui_layout::PaneId {
+    let nodes = pane_accessibility_tree(tree, focus);
+    let zeros: Vec<_> = nodes
+        .iter()
+        .filter(|n| n.role == PaneAriaRole::Group && n.tabindex == 0)
+        .collect();
+    assert_eq!(zeros.len(), 1, "exactly one roving Tab stop");
+    zeros[0].pane_id
+}
+
+#[test]
+fn web_kbd_arrow_focus_traversal_keeps_roving_tabindex() {
+    let mut tree = kbd_nested_tree();
+    let mut controller = PaneWebKeyboardController::new(Some(pane_id(2)));
+
+    // Right arrow: left(2) -> top-right(4).
+    let layout = kbd_solve(&tree);
+    let out = controller.handle_key(
+        &kbd_key(KeyCode::Right, Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    assert!(matches!(out, PaneWebKeyOutcome::Handled { .. }));
+    assert_eq!(controller.active(), Some(pane_id(4)));
+    assert_eq!(roving_active(&tree, controller.focus()), pane_id(4));
+
+    // Down arrow: top(4) -> bottom(5).
+    let layout = kbd_solve(&tree);
+    controller.handle_key(&kbd_key(KeyCode::Down, Modifiers::NONE), &mut tree, &layout);
+    assert_eq!(controller.active(), Some(pane_id(5)));
+    assert_eq!(roving_active(&tree, controller.focus()), pane_id(5));
+
+    // Left arrow: back to left(2).
+    let layout = kbd_solve(&tree);
+    controller.handle_key(&kbd_key(KeyCode::Left, Modifiers::NONE), &mut tree, &layout);
+    assert_eq!(controller.active(), Some(pane_id(2)));
+    println!("PANE_WEB_TRACE scenario=kbd_arrow_focus profile=web active=2 roving=ok");
+}
+
+#[test]
+fn web_kbd_cyclic_and_edge_focus() {
+    let mut tree = kbd_nested_tree();
+    let mut controller = PaneWebKeyboardController::new(Some(pane_id(2)));
+
+    // 'n' cycles forward through focus order [2,4,5].
+    for expected in [pane_id(4), pane_id(5), pane_id(2)] {
+        let layout = kbd_solve(&tree);
+        controller.handle_key(
+            &kbd_key(KeyCode::Char('n'), Modifiers::NONE),
+            &mut tree,
+            &layout,
+        );
+        assert_eq!(controller.active(), Some(expected));
+    }
+    // 'p' cycles backward.
+    let layout = kbd_solve(&tree);
+    controller.handle_key(
+        &kbd_key(KeyCode::Char('p'), Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    assert_eq!(controller.active(), Some(pane_id(5)));
+
+    // End -> focus the rightmost edge pane.
+    let layout = kbd_solve(&tree);
+    controller.handle_key(&kbd_key(KeyCode::End, Modifiers::NONE), &mut tree, &layout);
+    assert!(focus_order(&tree).contains(&controller.active().unwrap()));
+    // Home -> leftmost (left(2)).
+    let layout = kbd_solve(&tree);
+    controller.handle_key(&kbd_key(KeyCode::Home, Modifiers::NONE), &mut tree, &layout);
+    assert_eq!(controller.active(), Some(pane_id(2)));
+}
+
+#[test]
+fn web_kbd_split_and_close_mutate_tree() {
+    let mut tree = kbd_nested_tree();
+    let mut controller = PaneWebKeyboardController::new(Some(pane_id(2)));
+
+    // 's' splits the active leaf -> tree grows.
+    let layout = kbd_solve(&tree);
+    let before = tree.nodes().count();
+    controller.handle_key(
+        &kbd_key(KeyCode::Char('s'), Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    assert!(tree.nodes().count() > before, "split grows the tree");
+
+    // Focus an existing original leaf then close it -> tree shrinks, focus moves.
+    controller.set_active(Some(pane_id(4)));
+    let layout = kbd_solve(&tree);
+    let before_close = focus_order(&tree).len();
+    controller.handle_key(
+        &kbd_key(KeyCode::Delete, Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    assert!(
+        focus_order(&tree).len() < before_close,
+        "close removes a leaf"
+    );
+    assert_ne!(controller.active(), Some(pane_id(4)));
+    assert!(controller.active().is_some(), "focus moves to a survivor");
+}
+
+#[test]
+fn web_kbd_resize_updates_aria_valuenow() {
+    let mut tree = kbd_nested_tree();
+    let mut controller = PaneWebKeyboardController::new(Some(pane_id(2)));
+    // left(2) is the first child of the 1:1 root split -> value_now starts 50.
+    let root_value = |t: &PaneTree, c: &PaneWebKeyboardController| -> u16 {
+        c.accessibility_tree(t)
+            .into_iter()
+            .find(|n| n.pane_id == pane_id(1))
+            .and_then(|n| n.value_now)
+            .expect("root separator value")
+    };
+    assert_eq!(root_value(&tree, &controller), 50);
+
+    // '=' grows the active pane -> root first-share (and aria-valuenow) increases.
+    let layout = kbd_solve(&tree);
+    controller.handle_key(
+        &kbd_key(KeyCode::Char('='), Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    let after = root_value(&tree, &controller);
+    assert!(after > 50, "resize must raise aria-valuenow: {after}");
+
+    // The root separator advertises a VERTICAL divider (horizontal split).
+    let root = controller
+        .accessibility_tree(&tree)
+        .into_iter()
+        .find(|n| n.pane_id == pane_id(1))
+        .unwrap();
+    assert_eq!(root.role, PaneAriaRole::Separator);
+    assert_eq!(root.orientation, Some(PaneAriaOrientation::Vertical));
+}
+
+#[test]
+fn web_kbd_move_swap_maximize_restore() {
+    let mut tree = kbd_nested_tree();
+    let mut controller = PaneWebKeyboardController::new(Some(pane_id(4)));
+
+    // Shift+Left moves the active pane toward left(2) (structural MoveSubtree).
+    let layout = kbd_solve(&tree);
+    let before = tree.state_hash();
+    controller.handle_key(
+        &kbd_key(KeyCode::Left, Modifiers::SHIFT),
+        &mut tree,
+        &layout,
+    );
+    assert_ne!(tree.state_hash(), before, "move mutates the tree");
+
+    // ']' swaps the active pane with its cyclic neighbour.
+    let layout = kbd_solve(&tree);
+    let pre_swap = tree.state_hash();
+    controller.handle_key(
+        &kbd_key(KeyCode::Char(']'), Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    assert_ne!(tree.state_hash(), pre_swap, "swap mutates the tree");
+
+    // 'f' maximizes, Escape restores (transient view state).
+    let layout = kbd_solve(&tree);
+    controller.handle_key(
+        &kbd_key(KeyCode::Char('f'), Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    assert!(controller.maximized().is_some());
+    let layout = kbd_solve(&tree);
+    controller.handle_key(
+        &kbd_key(KeyCode::Escape, Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    assert_eq!(controller.maximized(), None);
+}
+
+#[test]
+fn web_kbd_browser_reserved_keys_are_ignored() {
+    let mut tree = kbd_nested_tree();
+    let mut controller = PaneWebKeyboardController::new(Some(pane_id(2)));
+    let layout = kbd_solve(&tree);
+    let before = tree.state_hash();
+    // Ctrl+W (close tab), Ctrl+= (zoom), Cmd+anything: never consumed.
+    for (code, mods) in [
+        (KeyCode::Char('w'), Modifiers::CTRL),
+        (KeyCode::Char('='), Modifiers::CTRL),
+        (KeyCode::Left, Modifiers::SUPER),
+    ] {
+        let out = controller.handle_key(&kbd_key(code, mods), &mut tree, &layout);
+        assert_eq!(out, PaneWebKeyOutcome::Unbound);
+    }
+    assert_eq!(
+        tree.state_hash(),
+        before,
+        "reserved keys never mutate state"
+    );
+    assert_eq!(controller.active(), Some(pane_id(2)));
+}
+
+#[test]
+fn web_kbd_announcements_surface_and_coalesce() {
+    let mut tree = kbd_nested_tree();
+    let mut controller = PaneWebKeyboardController::new(Some(pane_id(2)));
+
+    // Focus announces the newly focused pane for the aria-live region.
+    let layout = kbd_solve(&tree);
+    controller.handle_key(
+        &kbd_key(KeyCode::Right, Modifiers::NONE),
+        &mut tree,
+        &layout,
+    );
+    assert_eq!(
+        controller
+            .take_announcement()
+            .expect("focus announces")
+            .text,
+        "Focused pane right_top"
+    );
+
+    // A burst of resize presses coalesces to one announcement (non-spammy).
+    controller.set_active(Some(pane_id(2)));
+    for _ in 0..4 {
+        let layout = kbd_solve(&tree);
+        controller.handle_key(
+            &kbd_key(KeyCode::Char('='), Modifiers::NONE),
+            &mut tree,
+            &layout,
+        );
+    }
+    let spoken = controller.take_announcement().expect("resize announces");
+    assert_eq!(spoken.category, PaneAnnouncementCategory::Resize);
+    assert!(
+        controller.take_announcement().is_none(),
+        "burst coalesced to one"
+    );
+}
+
+#[test]
+fn web_kbd_command_mapping_matches_canonical_intent() {
+    // Parity at the PaneCommand level: the web keymap emits the SAME canonical
+    // commands a terminal binding would, for equivalent intent.
+    assert_eq!(
+        key_to_pane_command(&kbd_key(KeyCode::Char('n'), Modifiers::NONE), 1),
+        Some(PaneCommand::FocusNext)
+    );
+    assert_eq!(
+        key_to_pane_command(&kbd_key(KeyCode::Left, Modifiers::SHIFT), 1),
+        Some(PaneCommand::MovePane(PaneCardinalDirection::Left))
+    );
+    assert_eq!(
+        key_to_pane_command(&kbd_key(KeyCode::Char(']'), Modifiers::NONE), 1),
+        Some(PaneCommand::SwapPane(PaneFocusOrdinal::Next))
+    );
+    assert_eq!(
+        key_to_pane_command(&kbd_key(KeyCode::Char('s'), Modifiers::NONE), 1),
+        Some(PaneCommand::Split(SplitAxis::Horizontal))
+    );
+}
+
+#[test]
+fn web_kbd_command_stream_is_deterministic() {
+    fn run() -> (u64, Option<ftui_layout::PaneId>, usize) {
+        let mut tree = kbd_nested_tree();
+        let mut controller = PaneWebKeyboardController::new(Some(pane_id(2)));
+        let stream = [
+            (KeyCode::Right, Modifiers::NONE),
+            (KeyCode::Char('='), Modifiers::NONE),
+            (KeyCode::Char('s'), Modifiers::NONE),
+            (KeyCode::Char('n'), Modifiers::NONE),
+            (KeyCode::Char('f'), Modifiers::NONE),
+            (KeyCode::Escape, Modifiers::NONE),
+        ];
+        for (code, mods) in stream {
+            let layout = kbd_solve(&tree);
+            controller.handle_key(&kbd_key(code, mods), &mut tree, &layout);
+        }
+        let zeros = controller
+            .accessibility_tree(&tree)
+            .iter()
+            .filter(|n| n.tabindex == 0)
+            .count();
+        (tree.state_hash(), controller.active(), zeros)
+    }
+    let a = run();
+    let b = run();
+    assert_eq!(a, b, "web keyboard command stream must be deterministic");
+    assert_eq!(a.2, 1, "roving invariant holds after the stream");
+    println!(
+        "PANE_WEB_TRACE scenario=kbd_determinism profile=web state_hash={} roving=1",
+        a.0
     );
 }
