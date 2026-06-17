@@ -394,6 +394,45 @@ if $RUN_WEB; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# Cross-host parity diff runner (bd-a46q1.5): drives identical canonical pane
+# gestures through BOTH production adapters in-process (terminal
+# PaneTerminalAdapter + web PanePointerCaptureAdapter) and asserts zero
+# unexplained topology/operation/lifecycle differences per the parity contract
+# (docs/spec/pane-parity-contract-and-program.md §6). Inherently cross-host, so
+# it only runs when neither --terminal-only nor --web-only was given.
+# ---------------------------------------------------------------------------
+if $RUN_TERMINAL && $RUN_WEB; then
+    PARITY_ARTIFACT_DIR="$PANE_ARTIFACT_ROOT/cross_host_parity"
+    mkdir -p "$PARITY_ARTIFACT_DIR"
+    run_step "pane_cross_host_parity_smoke" "web" \
+        env "PANE_PARITY_ARTIFACT_DIR=$PARITY_ARTIFACT_DIR" "${CARGO_RUNNER[@]}" \
+        test -p ftui-web --test pane_cross_host_parity \
+        pane_cross_host_parity_corpus_reports_zero_unexplained_diffs -- --nocapture || true
+
+    if [[ "$MODE" != "smoke" ]]; then
+        run_step "pane_cross_host_parity_full" "web" \
+            env "PANE_PARITY_ARTIFACT_DIR=$PARITY_ARTIFACT_DIR" "${CARGO_RUNNER[@]}" \
+            test -p ftui-web --test pane_cross_host_parity -- --nocapture || true
+    fi
+
+    if [[ "$MODE" == "stress" ]]; then
+        i=1
+        while [[ "$i" -le "$STRESS_ITERATIONS" ]]; do
+            run_step "pane_cross_host_parity_stress_${i}" "web" \
+                env "PANE_PARITY_ARTIFACT_DIR=$PARITY_ARTIFACT_DIR" "${CARGO_RUNNER[@]}" \
+                test -p ftui-web --test pane_cross_host_parity \
+                pane_cross_host_parity_is_deterministic -- --nocapture || true
+            i=$((i + 1))
+        done
+    fi
+
+    if [[ -f "$PARITY_ARTIFACT_DIR/parity_summary.json" ]]; then
+        jsonl_assert "artifact_pane_cross_host_parity_summary" "pass" \
+            "path=$PARITY_ARTIFACT_DIR/parity_summary.json"
+    fi
+fi
+
 run_traceability_step
 
 SUMMARY_JSON="$E2E_RESULTS_DIR/pane_e2e_summary.json"
