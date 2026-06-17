@@ -609,6 +609,51 @@ fn bench_pane_core_apply_operation(c: &mut Criterion) {
         );
     });
 
+    // Per-family delta for the Local family `SetSplitRatio`: the certified fast
+    // path (in-place atomic + local-closure validation) vs the conservative
+    // baseline (clone + whole-tree validation). Both are proven equivalent in
+    // `tests/pane_operation_family_equivalence.rs`; this quantifies the win.
+    let ratio_split = base.root();
+    let ratio_value = PaneSplitRatio::new(3, 5).expect("ratio 3:5 should be valid");
+
+    group.bench_function("set_split_ratio_fast", |b| {
+        b.iter_batched(
+            || base.clone(),
+            |mut tree| {
+                let outcome = tree
+                    .apply_operation(
+                        10_002,
+                        PaneOperation::SetSplitRatio {
+                            split: ratio_split,
+                            ratio: ratio_value,
+                        },
+                    )
+                    .expect("set_split_ratio fast path should succeed");
+                black_box(outcome.after_hash);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("set_split_ratio_conservative", |b| {
+        b.iter_batched(
+            || base.clone(),
+            |mut tree| {
+                let outcome = tree
+                    .apply_operation_conservative(
+                        10_003,
+                        PaneOperation::SetSplitRatio {
+                            split: ratio_split,
+                            ratio: ratio_value,
+                        },
+                    )
+                    .expect("set_split_ratio conservative path should succeed");
+                black_box(outcome.after_hash);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
     group.finish();
 }
 

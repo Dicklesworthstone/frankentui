@@ -1181,6 +1181,20 @@ enum PaneValidationStrategy {
     LocalClosure,
 }
 
+/// Validation mode for pane operation application.
+///
+/// `Adaptive` lets each operation's [`PaneOperationFamily`] pick the cheapest
+/// sound validator (local-closure for `Local`, whole-tree for `Structural`).
+/// `AlwaysFull` forces the conservative whole-tree validator regardless of
+/// family, which is the easy-to-force baseline used for diagnosis, rollback,
+/// rollout, and as the differential oracle for the certified fast paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PaneValidationMode {
+    #[default]
+    Adaptive,
+    AlwaysFull,
+}
+
 impl Default for PaneInteractionTimeline {
     fn default() -> Self {
         Self {
@@ -3628,6 +3642,52 @@ pub enum PaneOperationKind {
     NormalizeRatios,
 }
 
+/// Semantic family of a pane operation.
+///
+/// The family partitions operations by how far their effect can reach in the
+/// tree, which is what makes certified fast paths sound. `Local` operations
+/// admit cheaper application and validation; `Structural` operations always use
+/// the conservative clone-and-full-validate baseline. The family is the single
+/// source of truth for the per-operation execution and validation strategy, so
+/// the "escalation decision" for any operation is fully recoverable from its
+/// [`PaneOperationKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneOperationFamily {
+    /// Bounded mutation whose effect is confined to a single split node and its
+    /// immediate parent/child closure (currently only `SetSplitRatio`). Eligible
+    /// for the in-place atomic apply path and local-closure validation, both of
+    /// which are proven equivalent to the conservative baseline.
+    Local,
+    /// Topology-changing mutation that can affect arbitrary regions of the tree
+    /// (`SplitLeaf`, `CloseNode`, `MoveSubtree`, `SwapNodes`, `NormalizeRatios`).
+    /// Always uses the conservative clone-and-whole-tree-validate path.
+    Structural,
+}
+
+impl PaneOperationKind {
+    /// Classify this operation kind into its [`PaneOperationFamily`].
+    #[must_use]
+    pub const fn family(self) -> PaneOperationFamily {
+        match self {
+            Self::SetSplitRatio => PaneOperationFamily::Local,
+            Self::SplitLeaf
+            | Self::CloseNode
+            | Self::MoveSubtree
+            | Self::SwapNodes
+            | Self::NormalizeRatios => PaneOperationFamily::Structural,
+        }
+    }
+}
+
+impl PaneOperation {
+    /// Classify this operation into its [`PaneOperationFamily`].
+    #[must_use]
+    pub const fn family(&self) -> PaneOperationFamily {
+        self.kind().family()
+    }
+}
+
 /// Successful transactional operation result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneOperationOutcome {
@@ -4163,15 +4223,53 @@ impl PaneTree {
     ///
     /// The operation is executed on a cloned working tree. On success, the
     /// mutated clone replaces `self`; on failure, `self` is unchanged.
+    ///
+    /// Operations in the [`PaneOperationFamily::Local`] family take a certified
+    /// fast path (in-place atomic mutation + local-closure validation) that is
+    /// proven equivalent to the conservative baseline in
+    /// `tests/pane_operation_family_equivalence.rs`. To bypass every fast path
+    /// and force the conservative whole-tree baseline, use
+    /// [`PaneTree::apply_operation_conservative`].
     pub fn apply_operation(
         &mut self,
         operation_id: u64,
         operation: PaneOperation,
     ) -> Result<PaneOperationOutcome, PaneOperationError> {
         if let PaneOperation::SetSplitRatio { split, ratio } = operation {
+            // Certified Local fast path: confine work to the touched split.
             return self.apply_set_split_ratio_atomic(operation_id, split, ratio);
         }
 
+        self.apply_operation_generic(operation_id, operation, PaneValidationMode::Adaptive)
+    }
+
+    /// Apply one structural operation using the conservative baseline path.
+    ///
+    /// This always clones a working tree and runs the whole-tree validator
+    /// regardless of [`PaneOperationFamily`], bypassing every certified fast
+    /// path. It is the easy-to-force conservative validator for diagnosis,
+    /// rollback, and rollout, and serves as the differential oracle that the
+    /// `Local` fast paths are proven equivalent to. Semantics (accept/reject and
+    /// resulting tree) are identical to [`PaneTree::apply_operation`]; only the
+    /// execution and validation cost differ.
+    pub fn apply_operation_conservative(
+        &mut self,
+        operation_id: u64,
+        operation: PaneOperation,
+    ) -> Result<PaneOperationOutcome, PaneOperationError> {
+        self.apply_operation_generic(operation_id, operation, PaneValidationMode::AlwaysFull)
+    }
+
+    /// Generic clone-based application shared by the adaptive and conservative
+    /// entry points. The `mode` selects whether validation follows the operation
+    /// family ([`PaneValidationMode::Adaptive`]) or is forced to the whole-tree
+    /// validator ([`PaneValidationMode::AlwaysFull`]).
+    fn apply_operation_generic(
+        &mut self,
+        operation_id: u64,
+        operation: PaneOperation,
+        mode: PaneValidationMode,
+    ) -> Result<PaneOperationOutcome, PaneOperationError> {
         let kind = operation.kind();
         let before_hash = self.state_hash();
         let mut working = self.clone();
@@ -4191,7 +4289,7 @@ impl PaneTree {
             });
         }
 
-        if let Err(err) = working.validate_after_operation(kind, &touched) {
+        if let Err(err) = working.validate_after_operation_with_mode(kind, &touched, mode) {
             return Err(PaneOperationError {
                 operation_id,
                 kind,
@@ -4342,23 +4440,35 @@ impl PaneTree {
         kind: PaneOperationKind,
         touched: &BTreeSet<PaneId>,
     ) -> Result<(), PaneModelError> {
-        match self.validation_strategy_for_operation(kind) {
+        self.validate_after_operation_with_mode(kind, touched, PaneValidationMode::Adaptive)
+    }
+
+    fn validate_after_operation_with_mode(
+        &self,
+        kind: PaneOperationKind,
+        touched: &BTreeSet<PaneId>,
+        mode: PaneValidationMode,
+    ) -> Result<(), PaneModelError> {
+        let strategy = match mode {
+            PaneValidationMode::AlwaysFull => PaneValidationStrategy::FullTree,
+            PaneValidationMode::Adaptive => self.validation_strategy_for_operation(kind),
+        };
+        match strategy {
             PaneValidationStrategy::FullTree => self.validate(),
             PaneValidationStrategy::LocalClosure => self.validate_local_closure(touched),
         }
     }
 
+    /// Map an operation kind to its validation strategy via its operation family.
+    /// The family is the single source of truth, so this is the deterministic,
+    /// auditable "escalation decision" for any operation.
     const fn validation_strategy_for_operation(
         &self,
         kind: PaneOperationKind,
     ) -> PaneValidationStrategy {
-        match kind {
-            PaneOperationKind::SetSplitRatio => PaneValidationStrategy::LocalClosure,
-            PaneOperationKind::SplitLeaf
-            | PaneOperationKind::CloseNode
-            | PaneOperationKind::MoveSubtree
-            | PaneOperationKind::SwapNodes
-            | PaneOperationKind::NormalizeRatios => PaneValidationStrategy::FullTree,
+        match kind.family() {
+            PaneOperationFamily::Local => PaneValidationStrategy::LocalClosure,
+            PaneOperationFamily::Structural => PaneValidationStrategy::FullTree,
         }
     }
 
@@ -10349,6 +10459,94 @@ mod tests {
                 actual: None,
             } if node_id == child_id && expected == split_id
         ));
+    }
+
+    #[test]
+    fn operation_family_classifier_partitions_local_and_structural_kinds() {
+        assert_eq!(
+            PaneOperationKind::SetSplitRatio.family(),
+            PaneOperationFamily::Local
+        );
+        for kind in [
+            PaneOperationKind::SplitLeaf,
+            PaneOperationKind::CloseNode,
+            PaneOperationKind::MoveSubtree,
+            PaneOperationKind::SwapNodes,
+            PaneOperationKind::NormalizeRatios,
+        ] {
+            assert_eq!(
+                kind.family(),
+                PaneOperationFamily::Structural,
+                "operation kind {kind:?} must be structural"
+            );
+        }
+        // PaneOperation::family() delegates to its kind.
+        let op = PaneOperation::SetSplitRatio {
+            split: id(1),
+            ratio: PaneSplitRatio::new(1, 1).expect("valid ratio"),
+        };
+        assert_eq!(op.family(), PaneOperationFamily::Local);
+        assert_eq!(op.family(), op.kind().family());
+    }
+
+    #[test]
+    fn validation_strategy_is_derived_from_operation_family() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        assert_eq!(
+            tree.validation_strategy_for_operation(PaneOperationKind::SetSplitRatio),
+            PaneValidationStrategy::LocalClosure
+        );
+        for kind in [
+            PaneOperationKind::SplitLeaf,
+            PaneOperationKind::CloseNode,
+            PaneOperationKind::MoveSubtree,
+            PaneOperationKind::SwapNodes,
+            PaneOperationKind::NormalizeRatios,
+        ] {
+            assert_eq!(
+                tree.validation_strategy_for_operation(kind),
+                PaneValidationStrategy::FullTree,
+                "structural kind {kind:?} must use whole-tree validation"
+            );
+        }
+    }
+
+    #[test]
+    fn always_full_validation_mode_catches_corruption_outside_touched_closure() {
+        // A corruption far from the touched node is invisible to local-closure
+        // validation but caught by the forced whole-tree validator. This proves
+        // the conservative override is genuinely distinct and easy to force.
+        let mut tree = PaneTree::from_snapshot(make_nested_snapshot()).expect("valid tree");
+        // Break the parent pointer of a leaf (id 5) that is NOT in the touched
+        // closure of the root split (id 1).
+        let far_leaf = id(5);
+        tree.nodes.get_mut(&far_leaf).expect("present").parent = None;
+
+        let touched = BTreeSet::from([id(1)]);
+
+        // Adaptive validation for the Local family only inspects the touched
+        // closure (the root split and its direct children), so it misses the
+        // far corruption.
+        assert!(
+            tree.validate_after_operation_with_mode(
+                PaneOperationKind::SetSplitRatio,
+                &touched,
+                PaneValidationMode::Adaptive,
+            )
+            .is_ok(),
+            "local closure over the root split must not see a far leaf corruption"
+        );
+
+        // Forcing whole-tree validation catches it regardless of touched set.
+        assert!(
+            tree.validate_after_operation_with_mode(
+                PaneOperationKind::SetSplitRatio,
+                &touched,
+                PaneValidationMode::AlwaysFull,
+            )
+            .is_err(),
+            "forced full validation must detect the far leaf corruption"
+        );
     }
 
     fn neutral_pressure() -> PanePressureSnapProfile {
