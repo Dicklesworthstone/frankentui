@@ -433,6 +433,29 @@ if $RUN_TERMINAL && $RUN_WEB; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# Long-run soak / stress / chaos (bd-a46q1.6): host-agnostic reliability of the
+# pane split-tree engine under prolonged random-but-valid streams, resize
+# storms, split/close churn, deep/wide trees, and rollback/invalid-op chaos.
+# Runs in full/stress modes (kept out of smoke for speed); knobs scale with
+# mode. Triage/quarantine: docs/testing/pane-soak-flake-triage.md.
+# ---------------------------------------------------------------------------
+if [[ "$MODE" != "smoke" ]]; then
+    SOAK_ARTIFACT_DIR="$PANE_ARTIFACT_ROOT/soak_stress"
+    mkdir -p "$SOAK_ARTIFACT_DIR"
+    if [[ "$MODE" == "stress" ]]; then
+        SOAK_STEPS=20000; SOAK_RESIZES=20000; SOAK_CHURN=8000; SOAK_DEPTH=256; SOAK_WIDTH=512
+    else
+        SOAK_STEPS=5000; SOAK_RESIZES=6000; SOAK_CHURN=3000; SOAK_DEPTH=96; SOAK_WIDTH=256
+    fi
+    run_step "pane_soak_stress_chaos" "terminal" \
+        env "PANE_SOAK_ARTIFACT_DIR=$SOAK_ARTIFACT_DIR" \
+        "PANE_SOAK_STEPS=$SOAK_STEPS" "PANE_STRESS_RESIZES=$SOAK_RESIZES" \
+        "PANE_STRESS_CHURN=$SOAK_CHURN" "PANE_STRESS_DEPTH=$SOAK_DEPTH" \
+        "PANE_STRESS_WIDTH=$SOAK_WIDTH" "${CARGO_RUNNER[@]}" \
+        test -p ftui-layout --test pane_soak_stress -- --nocapture || true
+fi
+
 run_traceability_step
 
 SUMMARY_JSON="$E2E_RESULTS_DIR/pane_e2e_summary.json"
