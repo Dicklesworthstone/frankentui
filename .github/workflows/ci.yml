@@ -1430,3 +1430,64 @@ jobs:
           cargo check --target wasm32-unknown-unknown -p ftui-text
           cargo check --target wasm32-unknown-unknown -p ftui-i18n
           cargo check --target wasm32-unknown-unknown -p frankenterm-core
+
+  # ==========================================================================
+  # Pane Perf — Symbolized Replay Artifacts (bd-1pvzq.1)
+  # ==========================================================================
+  # Runs the pane profiling harness + adapter benches in fast --test mode and
+  # publishes a checksummed "symbolized pane replay artifact" bundle that ties
+  # the deterministic replay manifest to per-binary symbolization provenance.
+  # The strict validator fails the job if symbols, manifests, path conventions,
+  # or checksums silently degrade (bd-1pvzq.1 AC2). Later perf gates (bd-1pvzq.2
+  # / .3 / .5) consume the uploaded index.
+  pane-perf-artifacts:
+    name: Pane Perf Replay Artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-pane-perf-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Verify symbolization toolchain
+        run: |
+          set -euo pipefail
+          for tool in readelf addr2line file sha256sum python3; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
+          done
+
+      - name: Emit symbolized pane replay artifacts
+        run: ./scripts/pane_profile.sh --test --out-dir target/pane-profiling/ci
+
+      - name: Validate replay artifact contract (strict)
+        run: |
+          python3 scripts/pane_replay_artifacts.py validate \
+            --index target/pane-profiling/ci/replay_artifact_index.json \
+            --require-symbolization \
+            --json
+
+      - name: Upload pane replay artifact bundle
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pane-replay-artifacts
+          path: target/pane-profiling/ci
+          retention-days: 30

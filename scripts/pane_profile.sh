@@ -420,6 +420,65 @@ validate_stack_reports() {
     done
 }
 
+# Emit machine-parseable symbolization fields for one bench binary so the
+# replay-artifact index (bd-1pvzq.1) can decide whether a profile of this exact
+# binary can be symbolized back to source without re-inspecting the ELF.
+emit_binary_symbolization_fields() {
+    local binary="$1"
+    local build_id="unknown"
+    local debug_info="unknown"
+    local has_debug_line="false"
+    local stripped="unknown"
+    local addr2line_ready="false"
+    local binary_sha256="unknown"
+
+    if command -v readelf >/dev/null 2>&1; then
+        local sections
+        sections="$(readelf -S "$binary" 2>/dev/null || true)"
+        if grep -q '\.debug_info' <<<"$sections"; then
+            debug_info="present"
+        else
+            debug_info="missing"
+        fi
+        if grep -q '\.debug_line' <<<"$sections"; then
+            has_debug_line="true"
+        fi
+        if grep -q '\.symtab' <<<"$sections"; then
+            stripped="false"
+        else
+            stripped="true"
+        fi
+        build_id="$(readelf -n "$binary" 2>/dev/null \
+            | sed -nE 's/.*Build ID: ([0-9a-fA-F]+).*/\1/p' | head -n1)"
+        [[ -n "$build_id" ]] || build_id="missing"
+    fi
+
+    # addr2line maps sample addresses to source via .debug_line/.debug_info; a
+    # binary is symbolizable iff both are present and it was not stripped.
+    if [[ "$debug_info" == "present" && "$has_debug_line" == "true" && "$stripped" == "false" ]]; then
+        addr2line_ready="true"
+    fi
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        binary_sha256="$(sha256sum "$binary" 2>/dev/null | cut -d' ' -f1)"
+        [[ -n "$binary_sha256" ]] || binary_sha256="unknown"
+    fi
+
+    echo "build_id=${build_id}"
+    echo "debug_info=${debug_info}"
+    echo "debug_line=${has_debug_line}"
+    echo "stripped=${stripped}"
+    echo "addr2line_ready=${addr2line_ready}"
+    echo "binary_sha256=${binary_sha256}"
+    # symbolization_ready needs both a content-addressable build-id (to match a
+    # profile to this binary) and addr2line readiness (to resolve the symbols).
+    if [[ "$addr2line_ready" == "true" && "$build_id" != "missing" && "$build_id" != "unknown" ]]; then
+        echo "symbolization_ready=true"
+    else
+        echo "symbolization_ready=false"
+    fi
+}
+
 record_symbol_metadata() {
     local output_file="${OUT_DIR}/symbol_metadata.txt"
     local prefixes=(
@@ -476,18 +535,15 @@ record_symbol_metadata() {
             fi
             if [[ -e "$binary" ]]; then
                 file "$binary"
-                if command -v readelf >/dev/null 2>&1; then
-                    if readelf -S "$binary" | grep -q '\.debug_info'; then
-                        echo "debug_info=present"
-                    else
-                        echo "debug_info=missing"
-                    fi
-                else
-                    echo "debug_info=unknown (readelf unavailable)"
-                fi
+                emit_binary_symbolization_fields "$binary"
             else
                 echo "local_binary_status=missing"
+                echo "build_id=unknown"
                 echo "debug_info=unknown (exact executed binary not present locally)"
+                echo "stripped=unknown"
+                echo "addr2line_ready=false"
+                echo "binary_sha256=unknown"
+                echo "symbolization_ready=false"
             fi
             echo
         } >> "$output_file"
@@ -503,19 +559,15 @@ validate_symbol_metadata() {
         pane_pointer_bench
     )
 
+    local field
     for prefix in "${prefixes[@]}"; do
-        if ! grep -A8 -F "== ${prefix} ==" "$output_file" | grep -q '^executed_path='; then
-            echo "ERROR: symbol metadata missing executed_path for ${prefix}" >&2
-            exit 1
-        fi
-        if ! grep -A8 -F "== ${prefix} ==" "$output_file" | grep -q '^binary_source='; then
-            echo "ERROR: symbol metadata missing binary_source for ${prefix}" >&2
-            exit 1
-        fi
-        if ! grep -A8 -F "== ${prefix} ==" "$output_file" | grep -q '^exact_binary_status='; then
-            echo "ERROR: symbol metadata missing exact_binary_status for ${prefix}" >&2
-            exit 1
-        fi
+        for field in executed_path binary_source exact_binary_status \
+            build_id debug_info stripped addr2line_ready symbolization_ready; do
+            if ! grep -A20 -F "== ${prefix} ==" "$output_file" | grep -q "^${field}="; then
+                echo "ERROR: symbol metadata missing ${field} for ${prefix}" >&2
+                exit 1
+            fi
+        done
     done
 }
 
@@ -627,12 +679,39 @@ fi
 record_symbol_metadata
 validate_symbol_metadata
 
+# Symbolized replay artifact index (bd-1pvzq.1): tie the harness replay manifest
+# (deterministic state hashes + diagnostics) to the per-binary symbolization
+# provenance under one checksummed, schema-versioned index, then self-validate
+# the contract. The self-check is lenient (structure + replay + checksums) so
+# rch local runs that could not fetch the exact remote binary still pass; CI runs
+# the validator separately with --require-symbolization for the strict gate.
+emit_and_validate_replay_index() {
+    local emit_args=(emit --out-dir "$OUT_DIR")
+    if [[ "$TEST_MODE" == "true" ]]; then emit_args+=(--test-mode); fi
+    if [[ "$PERF_STAT" == "true" ]]; then emit_args+=(--perf-stat); fi
+    if [[ "$STACK_REPORTS" == "true" ]]; then emit_args+=(--stack-reports); fi
+    if command -v rch >/dev/null 2>&1; then
+        emit_args+=(--runner rch)
+    else
+        emit_args+=(--runner local)
+    fi
+
+    python3 "${SCRIPT_DIR}/pane_replay_artifacts.py" "${emit_args[@]}"
+    python3 "${SCRIPT_DIR}/pane_replay_artifacts.py" validate \
+        --index "${OUT_DIR}/replay_artifact_index.json"
+}
+
+emit_and_validate_replay_index
+
 cat > "${OUT_DIR}/README.txt" <<EOF
-Pane profiling artifacts for bd-1y0ph.
+Pane profiling artifacts for bd-1y0ph (replay-artifact contract: bd-1pvzq.1).
 
 Files:
+- replay_artifact_index.json checksummed index tying replay evidence to
+                            symbolization provenance (validate with
+                            scripts/pane_replay_artifacts.py)
 - pane_core_profile_harness.txt  long-lived pane-core harness output
-- pane_core_profile_harness/     manifest, snapshots, and verbose log
+- pane_core_profile_harness/     manifest, snapshots, and verbose log (replay evidence)
 - layout_bench.txt          pane/core/* Criterion output
 - pane_terminal_bench.txt   pane/terminal/* Criterion output
 - pane_pointer_bench.txt    pane/web_pointer/* Criterion output
@@ -641,7 +720,11 @@ Files:
 - *.perf.data / *.perf.txt  optional perf record/report stack artifacts
 - *.symbols.txt             post-symbolized user-space top-frame summaries
 - executed-binaries/        fetched exact remote bench binaries when materialized locally
-- symbol_metadata.txt       executed-path provenance + exact-binary trust/readiness
+- symbol_metadata.txt       executed-path provenance + build-id/debug-info/addr2line readiness
+
+Validate the contract:
+- python3 scripts/pane_replay_artifacts.py validate \\
+      --index ${OUT_DIR}/replay_artifact_index.json [--require-symbolization]
 
 Runner:
 - ${0##*/}
