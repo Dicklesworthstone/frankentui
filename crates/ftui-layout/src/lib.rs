@@ -48,6 +48,7 @@ pub mod grid;
 pub mod incremental;
 pub mod pane;
 pub mod pane_command;
+pub mod pane_execution;
 pub mod pane_memory;
 pub mod pane_persistent;
 pub mod pane_retention;
@@ -104,6 +105,9 @@ pub use pane_command::{
     PaneCommandNoopReason, PaneCommandResolution, PaneFocusContext, PaneFocusOrdinal,
     PaneKeymapOwner, PaneKeymapPrecedence, announce_command, focus_cyclic, focus_directional,
     focus_edge, focus_order, resolve as resolve_pane_command,
+};
+pub use pane_execution::{
+    PaneExecutionDecision, PaneExecutionPolicy, PaneStrategyReason, PaneWorkloadProfile,
 };
 pub use pane_memory::{
     PANE_MEMORY_TELEMETRY_SCHEMA_VERSION, PaneMemoryComparison, PaneMemoryDriver,

@@ -26,9 +26,10 @@ use std::env;
 use std::fs;
 
 use ftui_layout::{
-    PANE_MEMORY_TELEMETRY_SCHEMA_VERSION, PaneId, PaneInteractionTimeline, PaneLeaf,
-    PaneMemoryComparison, PaneNodeKind, PaneOperation, PanePlacement, PaneRetentionDecision,
-    PaneRetentionPolicy, PaneSplitRatio, PaneTree, PaneVersionStore, SplitAxis, VersionedPaneTree,
+    PANE_MEMORY_TELEMETRY_SCHEMA_VERSION, PaneExecutionDecision, PaneExecutionPolicy, PaneId,
+    PaneInteractionTimeline, PaneLeaf, PaneMemoryComparison, PaneNodeKind, PaneOperation,
+    PanePlacement, PaneRetentionDecision, PaneRetentionPolicy, PaneSplitRatio, PaneTree,
+    PaneVersionStore, PaneWorkloadProfile, SplitAxis, VersionedPaneTree,
     apply_retention_to_timeline, apply_retention_to_version_store, pane_memory_comparison,
 };
 use serde::Serialize;
@@ -259,6 +260,10 @@ struct ScenarioMemoryReport {
     /// Before/after evidence: the same policy class applied to the checkpointed
     /// timeline (budget = 1/2 unbounded footprint).
     timeline_retention: PaneRetentionDecision,
+    /// The deterministic execution-strategy the selector picks for this workload
+    /// shape (resize-dominated bursts route to persistent; mixed falls back to
+    /// the checkpointed default).
+    selector_decision: PaneExecutionDecision,
 }
 
 fn run_scenario(
@@ -312,6 +317,12 @@ fn run_scenario(
         &PaneRetentionPolicy::bounded(timeline_budget, 0),
     );
 
+    // Deterministic strategy selection for this workload shape, carrying the
+    // representative version-store retention budget.
+    let selector_decision =
+        PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(version_budget, 0))
+            .select(PaneWorkloadProfile::observe(ops, 240, true));
+
     ScenarioMemoryReport {
         scenario,
         leaf_count: leaf_ids(base).len(),
@@ -322,6 +333,7 @@ fn run_scenario(
         comparison,
         version_retention,
         timeline_retention,
+        selector_decision,
     }
 }
 
@@ -377,6 +389,7 @@ fn print_scenario(report: &ScenarioMemoryReport) {
     println!("  {}", c.summary);
     println!("  policy/{}", report.version_retention.log);
     println!("  policy/{}", report.timeline_retention.log);
+    println!("  selector/{}", report.selector_decision.log);
 }
 
 fn main() {
