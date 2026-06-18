@@ -1501,6 +1501,20 @@ jobs:
             --require-match \
             --json
 
+      # bd-1pvzq.5: prove the user-visible optimized workflow stays safe under
+      # sustained interaction and rolls back to the conservative path on a
+      # monitor violation, with operator-grade JSONL + a self-contained bundle.
+      - name: Pane soak + rollback E2E
+        run: ./scripts/pane_soak_rollback.sh --out-dir target/pane-soak/ci
+
+      - name: Upload pane soak + rollback bundle
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pane-soak-rollback
+          path: target/pane-soak/ci
+          retention-days: 30
+
       - name: Upload pane replay artifact bundle
         if: always()
         uses: actions/upload-artifact@v7
