@@ -99,7 +99,14 @@ impl ActivePointerCapture {
         }
     }
 
-    fn record_pointer_step(&mut self, position: PanePointerPosition) {
+    /// Fold one pointer sample into the motion accumulators and return the step
+    /// delta `(x, y)` computed from `last_position`.
+    ///
+    /// The returned delta lets the caller build the `PointerMove` semantic event
+    /// without re-subtracting the same positions — `last_position` is advanced by
+    /// the caller (only on a committed transition), so this delta is exactly the
+    /// one the event needs.
+    fn record_pointer_step(&mut self, position: PanePointerPosition) -> (i32, i32) {
         let step_delta_x = position.x.saturating_sub(self.last_position.x);
         let step_delta_y = position.y.saturating_sub(self.last_position.y);
         let step_sign_x = Self::delta_sign(step_delta_x);
@@ -121,6 +128,8 @@ impl ActivePointerCapture {
         self.sample_count = self.sample_count.saturating_add(1);
         self.previous_step_sign_x = step_sign_x;
         self.previous_step_sign_y = step_sign_y;
+
+        (step_delta_x, step_delta_y)
     }
 
     fn motion_summary(&self) -> PaneMotionVector {
@@ -514,14 +523,17 @@ impl PanePointerCaptureAdapter {
             Err(dispatch) => return dispatch,
         };
 
+        // Fold the sample once and reuse the step delta for the semantic event
+        // (record_pointer_step does not advance `last_position`, so this delta is
+        // identical to re-subtracting the positions — one subtraction pair, not two).
+        let (delta_x, delta_y) = active.record_pointer_step(position);
         let kind = PaneSemanticInputEventKind::PointerMove {
             target: active.target,
             pointer_id,
             position,
-            delta_x: position.x.saturating_sub(active.last_position.x),
-            delta_y: position.y.saturating_sub(active.last_position.y),
+            delta_x,
+            delta_y,
         };
-        active.record_pointer_step(position);
 
         let mut dispatch = self.forward_semantic(
             DispatchContext {
@@ -1189,6 +1201,51 @@ mod tests {
             dispatch.pressure_snap_profile(),
             Some(PanePressureSnapProfile::from_motion(expected_motion))
         );
+    }
+
+    #[test]
+    fn pointer_move_event_delta_matches_position_step() {
+        // record_pointer_step now returns the step delta that the PointerMove
+        // event reuses (one subtraction, not two). The emitted delta must equal
+        // the raw position step measured from the previous committed position at
+        // every move — proving the reuse is exactly equivalent to the prior
+        // inline computation.
+        let mut adapter = adapter();
+        adapter.pointer_down(
+            target(),
+            31,
+            PanePointerButton::Primary,
+            pos(10, 10),
+            PaneModifierSnapshot::default(),
+        );
+        let mut prev = pos(10, 10);
+        for &(x, y) in &[(24, 12), (20, 18), (35, 18)] {
+            let here = pos(x, y);
+            let dispatch = adapter.pointer_move(31, here, PaneModifierSnapshot::default());
+            match &dispatch
+                .semantic_event
+                .as_ref()
+                .expect("move emits a semantic event")
+                .kind
+            {
+                PaneSemanticInputEventKind::PointerMove {
+                    delta_x,
+                    delta_y,
+                    position,
+                    ..
+                } => {
+                    assert_eq!(*delta_x, here.x - prev.x);
+                    assert_eq!(*delta_y, here.y - prev.y);
+                    assert_eq!(position.x, here.x);
+                    assert_eq!(position.y, here.y);
+                }
+                other => panic!("expected PointerMove, got {other:?}"),
+            }
+            // last_position advances only on a committed transition; mirror that.
+            if dispatch.motion.is_some() {
+                prev = here;
+            }
+        }
     }
 
     #[test]
