@@ -1335,7 +1335,7 @@ impl PaneTerminalAdapter {
             }
             MouseEventKind::Drag(button) => {
                 let pane_button = pane_button(button);
-                let Some(mut active) = self.active else {
+                let Some(active) = self.active else {
                     return PaneTerminalDispatch::ignored(
                         PaneTerminalLifecyclePhase::MouseDrag,
                         PaneTerminalIgnoredReason::NoActivePointer,
@@ -1351,61 +1351,15 @@ impl PaneTerminalAdapter {
                         Some(active.target),
                     );
                 }
-                let delta_x = position.x.saturating_sub(active.last_position.x);
-                let delta_y = position.y.saturating_sub(active.last_position.y);
-                if self.should_coalesce_drag(delta_x, delta_y) {
-                    return PaneTerminalDispatch::ignored(
-                        PaneTerminalLifecyclePhase::MouseDrag,
-                        PaneTerminalIgnoredReason::DragCoalesced,
-                        Some(active.pointer_id),
-                        Some(active.target),
-                    );
-                }
-                if active.sample_count > 0 {
-                    let flipped_x = delta_x.signum() != 0
-                        && active.previous_step_delta_x.signum() != 0
-                        && delta_x.signum() != active.previous_step_delta_x.signum();
-                    let flipped_y = delta_y.signum() != 0
-                        && active.previous_step_delta_y.signum() != 0
-                        && delta_y.signum() != active.previous_step_delta_y.signum();
-                    if flipped_x || flipped_y {
-                        active.direction_changes = active.direction_changes.saturating_add(1);
-                    }
-                }
-                active.cumulative_delta_x = active.cumulative_delta_x.saturating_add(delta_x);
-                active.cumulative_delta_y = active.cumulative_delta_y.saturating_add(delta_y);
-                active.sample_count = active.sample_count.saturating_add(1);
-                active.previous_step_delta_x = delta_x;
-                active.previous_step_delta_y = delta_y;
-                let kind = PaneSemanticInputEventKind::PointerMove {
-                    target: active.target,
-                    pointer_id: active.pointer_id,
+                self.apply_pointer_motion(
+                    active,
                     position,
-                    delta_x,
-                    delta_y,
-                };
-                let mut dispatch = self.forward_semantic(
-                    PaneTerminalLifecyclePhase::MouseDrag,
-                    Some(active.pointer_id),
-                    Some(active.target),
-                    kind,
                     modifiers,
-                );
-                if dispatch.primary_transition.is_some() {
-                    active.last_position = position;
-                    self.active = Some(active);
-                    let duration = active.start_time.elapsed().as_millis() as u32;
-                    dispatch.motion = Some(PaneMotionVector::from_delta(
-                        active.cumulative_delta_x,
-                        active.cumulative_delta_y,
-                        duration,
-                        active.direction_changes,
-                    ));
-                }
-                dispatch
+                    PaneTerminalLifecyclePhase::MouseDrag,
+                )
             }
             MouseEventKind::Moved => {
-                let Some(mut active) = self.active else {
+                let Some(active) = self.active else {
                     return PaneTerminalDispatch::ignored(
                         PaneTerminalLifecyclePhase::MouseMove,
                         PaneTerminalIgnoredReason::NoActivePointer,
@@ -1413,58 +1367,12 @@ impl PaneTerminalAdapter {
                         target_hint,
                     );
                 };
-                let delta_x = position.x.saturating_sub(active.last_position.x);
-                let delta_y = position.y.saturating_sub(active.last_position.y);
-                if self.should_coalesce_drag(delta_x, delta_y) {
-                    return PaneTerminalDispatch::ignored(
-                        PaneTerminalLifecyclePhase::MouseMove,
-                        PaneTerminalIgnoredReason::DragCoalesced,
-                        Some(active.pointer_id),
-                        Some(active.target),
-                    );
-                }
-                if active.sample_count > 0 {
-                    let flipped_x = delta_x.signum() != 0
-                        && active.previous_step_delta_x.signum() != 0
-                        && delta_x.signum() != active.previous_step_delta_x.signum();
-                    let flipped_y = delta_y.signum() != 0
-                        && active.previous_step_delta_y.signum() != 0
-                        && delta_y.signum() != active.previous_step_delta_y.signum();
-                    if flipped_x || flipped_y {
-                        active.direction_changes = active.direction_changes.saturating_add(1);
-                    }
-                }
-                active.cumulative_delta_x = active.cumulative_delta_x.saturating_add(delta_x);
-                active.cumulative_delta_y = active.cumulative_delta_y.saturating_add(delta_y);
-                active.sample_count = active.sample_count.saturating_add(1);
-                active.previous_step_delta_x = delta_x;
-                active.previous_step_delta_y = delta_y;
-                let kind = PaneSemanticInputEventKind::PointerMove {
-                    target: active.target,
-                    pointer_id: active.pointer_id,
+                self.apply_pointer_motion(
+                    active,
                     position,
-                    delta_x,
-                    delta_y,
-                };
-                let mut dispatch = self.forward_semantic(
-                    PaneTerminalLifecyclePhase::MouseMove,
-                    Some(active.pointer_id),
-                    Some(active.target),
-                    kind,
                     modifiers,
-                );
-                if dispatch.primary_transition.is_some() {
-                    active.last_position = position;
-                    self.active = Some(active);
-                    let duration = active.start_time.elapsed().as_millis() as u32;
-                    dispatch.motion = Some(PaneMotionVector::from_delta(
-                        active.cumulative_delta_x,
-                        active.cumulative_delta_y,
-                        duration,
-                        active.direction_changes,
-                    ));
-                }
-                dispatch
+                    PaneTerminalLifecyclePhase::MouseMove,
+                )
             }
             MouseEventKind::Up(button) => {
                 let pane_button = pane_button(button);
@@ -1541,6 +1449,79 @@ impl PaneTerminalAdapter {
                 )
             }
         }
+    }
+
+    /// Shared motion bookkeeping for the `Drag` and `Moved` mouse arms.
+    ///
+    /// Once each arm's arm-specific guards pass (`Drag` additionally checks the
+    /// pressed button), both perform byte-identical work: compute the step
+    /// delta, honor drag coalescing, fold direction-change and cumulative-motion
+    /// tracking into `active`, forward a `PointerMove`, and — only on a committed
+    /// transition — advance `last_position` and attach the motion vector. The
+    /// sole caller-specific input is `phase` (`MouseDrag` vs `MouseMove`), used
+    /// for both the coalesced-ignore and the forwarded event so each caller's
+    /// diagnostics are unchanged. This is a pure extraction of the two
+    /// previously-duplicated arm bodies — event ordering and semantics are
+    /// identical, and the single shared path is cheaper to audit and roll back.
+    fn apply_pointer_motion(
+        &mut self,
+        mut active: PaneTerminalActivePointer,
+        position: PanePointerPosition,
+        modifiers: PaneModifierSnapshot,
+        phase: PaneTerminalLifecyclePhase,
+    ) -> PaneTerminalDispatch {
+        let delta_x = position.x.saturating_sub(active.last_position.x);
+        let delta_y = position.y.saturating_sub(active.last_position.y);
+        if self.should_coalesce_drag(delta_x, delta_y) {
+            return PaneTerminalDispatch::ignored(
+                phase,
+                PaneTerminalIgnoredReason::DragCoalesced,
+                Some(active.pointer_id),
+                Some(active.target),
+            );
+        }
+        if active.sample_count > 0 {
+            let flipped_x = delta_x.signum() != 0
+                && active.previous_step_delta_x.signum() != 0
+                && delta_x.signum() != active.previous_step_delta_x.signum();
+            let flipped_y = delta_y.signum() != 0
+                && active.previous_step_delta_y.signum() != 0
+                && delta_y.signum() != active.previous_step_delta_y.signum();
+            if flipped_x || flipped_y {
+                active.direction_changes = active.direction_changes.saturating_add(1);
+            }
+        }
+        active.cumulative_delta_x = active.cumulative_delta_x.saturating_add(delta_x);
+        active.cumulative_delta_y = active.cumulative_delta_y.saturating_add(delta_y);
+        active.sample_count = active.sample_count.saturating_add(1);
+        active.previous_step_delta_x = delta_x;
+        active.previous_step_delta_y = delta_y;
+        let kind = PaneSemanticInputEventKind::PointerMove {
+            target: active.target,
+            pointer_id: active.pointer_id,
+            position,
+            delta_x,
+            delta_y,
+        };
+        let mut dispatch = self.forward_semantic(
+            phase,
+            Some(active.pointer_id),
+            Some(active.target),
+            kind,
+            modifiers,
+        );
+        if dispatch.primary_transition.is_some() {
+            active.last_position = position;
+            self.active = Some(active);
+            let duration = active.start_time.elapsed().as_millis() as u32;
+            dispatch.motion = Some(PaneMotionVector::from_delta(
+                active.cumulative_delta_x,
+                active.cumulative_delta_y,
+                duration,
+                active.direction_changes,
+            ));
+        }
+        dispatch
     }
 
     fn translate_key(
@@ -8548,6 +8529,44 @@ mod tests {
             .motion
             .expect("release should include cumulative motion metadata");
         assert_eq!(up_motion.direction_changes, 1);
+    }
+
+    #[test]
+    fn pane_terminal_adapter_drag_and_moved_share_motion_bookkeeping() {
+        // `Drag` and `Moved` forward identical `PointerMove` semantics through
+        // the same `apply_pointer_motion` path; only the lifecycle phase differs.
+        // Driving the identical motion sequence through each arm must therefore
+        // produce identical motion metadata at every step (the extraction's
+        // equivalence guarantee).
+        let run = |moved: bool| {
+            let mut adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default())
+                .expect("valid adapter");
+            let target = pane_target(SplitAxis::Horizontal);
+            let down = Event::Mouse(MouseEvent::new(
+                MouseEventKind::Down(MouseButton::Left),
+                10,
+                4,
+            ));
+            let _ = adapter.translate(&down, Some(target));
+            let mut motions = Vec::new();
+            for (x, y) in [(14u16, 4u16), (12, 4), (16, 4)] {
+                let kind = if moved {
+                    MouseEventKind::Moved
+                } else {
+                    MouseEventKind::Drag(MouseButton::Left)
+                };
+                let dispatch = adapter.translate(&Event::Mouse(MouseEvent::new(kind, x, y)), None);
+                assert!(dispatch.primary_event.is_some());
+                motions.push(dispatch.motion.expect("motion metadata present"));
+            }
+            motions
+        };
+
+        let via_drag = run(false);
+        let via_moved = run(true);
+        assert_eq!(via_drag, via_moved);
+        // Sanity: the reverse step (14->12) registered a direction change in both.
+        assert_eq!(via_drag[1].direction_changes, 1);
     }
 
     #[test]
