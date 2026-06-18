@@ -50,6 +50,7 @@ pub mod pane;
 pub mod pane_command;
 pub mod pane_execution;
 pub mod pane_memory;
+pub mod pane_monitors;
 pub mod pane_persistent;
 pub mod pane_retention;
 #[cfg(test)]
@@ -112,6 +113,11 @@ pub use pane_execution::{
 pub use pane_memory::{
     PANE_MEMORY_TELEMETRY_SCHEMA_VERSION, PaneMemoryComparison, PaneMemoryDriver,
     PaneMemoryStrategy, PaneMemoryStrategyFootprint, pane_memory_comparison,
+};
+pub use pane_monitors::{
+    PaneAssumption, PaneMonitorReport, PaneMonitorStatus, PaneMonitorThresholds,
+    PaneMonitorVerdict, monitor_fallback_frequency, monitor_latency_envelope, monitor_replay_depth,
+    monitor_retention_pressure, monitor_selector_churn,
 };
 pub use pane_persistent::{
     PaneVersionRetention, PaneVersionStore, PaneVersioningReport, PersistentApplyError,
