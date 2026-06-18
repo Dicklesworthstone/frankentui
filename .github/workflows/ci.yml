@@ -1484,6 +1484,23 @@ jobs:
             --require-symbolization \
             --json
 
+      # bd-1pvzq.3: the perf gate must carry behavior-preservation evidence, not
+      # just timing. Run the cross-strategy differential proof, then certify the
+      # run against the golden replay-oracle. Reaching the certify step means the
+      # matrix passed, so the differential half is recorded as passed; a golden
+      # drift (semantic regression) fails the gate with an actionable report.
+      - name: Differential determinism proof (baseline vs optimized strategies)
+        run: cargo test -p ftui-layout --test pane_determinism_matrix -- --nocapture
+
+      - name: Certify against golden replay-oracle (semantic + differential)
+        run: |
+          python3 scripts/pane_replay_artifacts.py certify \
+            --index target/pane-profiling/ci/replay_artifact_index.json \
+            --golden scripts/pane_replay_golden.json \
+            --differential-matrix-passed true \
+            --require-match \
+            --json
+
       - name: Upload pane replay artifact bundle
         if: always()
         uses: actions/upload-artifact@v7

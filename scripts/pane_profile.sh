@@ -699,6 +699,20 @@ emit_and_validate_replay_index() {
     python3 "${SCRIPT_DIR}/pane_replay_artifacts.py" "${emit_args[@]}"
     python3 "${SCRIPT_DIR}/pane_replay_artifacts.py" validate \
         --index "${OUT_DIR}/replay_artifact_index.json"
+
+    # Golden replay-oracle gate (bd-1pvzq.3): compare the run's deterministic
+    # replay state-hashes against the committed golden oracle so a behavior
+    # regression (semantic drift) cannot pass silently as just a timing number.
+    # The cross-strategy differential proof (the pane_determinism_matrix test)
+    # is supplied separately by CI; locally the matrix result is "unknown", so
+    # the golden-oracle half still gates while the matrix half is recorded.
+    local golden="${SCRIPT_DIR}/pane_replay_golden.json"
+    if [[ -f "$golden" ]]; then
+        python3 "${SCRIPT_DIR}/pane_replay_artifacts.py" certify \
+            --index "${OUT_DIR}/replay_artifact_index.json" \
+            --golden "$golden" \
+            --require-match
+    fi
 }
 
 emit_and_validate_replay_index
@@ -710,6 +724,9 @@ Files:
 - replay_artifact_index.json checksummed index tying replay evidence to
                             symbolization provenance (validate with
                             scripts/pane_replay_artifacts.py)
+- differential_certification.json golden replay-oracle + differential proof
+                            verdict (bd-1pvzq.3): certified | semantic_drift |
+                            differential_matrix_failed | scenario_not_in_golden
 - pane_core_profile_harness.txt  long-lived pane-core harness output
 - pane_core_profile_harness/     manifest, snapshots, and verbose log (replay evidence)
 - layout_bench.txt          pane/core/* Criterion output

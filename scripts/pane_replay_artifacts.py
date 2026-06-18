@@ -64,6 +64,28 @@ INDEX_FILENAME = "replay_artifact_index.json"
 HARNESS_SUBDIR = "pane_core_profile_harness"
 SYMBOL_METADATA_FILENAME = "symbol_metadata.txt"
 
+# Golden replay-oracle + differential certification (bd-1pvzq.3).
+GOLDEN_SCHEMA = "ftui.pane.replay_golden"
+GOLDEN_SCHEMA_VERSION = 1
+DIFF_CERT_SCHEMA = "ftui.pane.differential_certification"
+DIFF_CERT_SCHEMA_VERSION = 1
+DIFF_CERT_FILENAME = "differential_certification.json"
+# The substrates the bd-1pvzq.4 determinism matrix proves observationally
+# identical; the certification records them as the differential proof.
+CERTIFIED_SUBSTRATES = (
+    "baseline",
+    "conservative",
+    "checkpointed_replay",
+    "persistent",
+    "policy_selected",
+)
+DETERMINISM_MATRIX_TEST = "pane_determinism_matrix"
+# Replay hashes that are deterministic for a scenario regardless of iteration
+# count (the harness verifies replay == applied tree every iteration). The
+# aggregate_hash is intentionally NOT pinned: it XOR-mixes over iterations and
+# so depends on --iterations (full vs --test mode).
+PINNED_GOLDEN_HASHES = ("baseline_hash", "final_hash")
+
 # Bench binaries whose symbolization provenance the contract tracks. These match
 # the prefixes captured by ``record_symbol_metadata`` in pane_profile.sh.
 EXPECTED_BINARY_LABELS = (
@@ -493,6 +515,198 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Certify -- golden replay-oracle + differential certification (bd-1pvzq.3)
+# ---------------------------------------------------------------------------
+
+
+def load_golden(golden_path: Path) -> Dict[str, Any]:
+    if not golden_path.is_file():
+        raise SystemExit(f"golden oracle not found: {golden_path}")
+    try:
+        golden = json.loads(golden_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"golden oracle is not valid JSON: {golden_path}: {exc}") from exc
+    if golden.get("schema") != GOLDEN_SCHEMA:
+        raise SystemExit(
+            f"golden schema mismatch: expected {GOLDEN_SCHEMA!r}, got {golden.get('schema')!r}"
+        )
+    return golden
+
+
+def build_certification(
+    index: Dict[str, Any],
+    golden: Dict[str, Any],
+    *,
+    matrix_passed: Optional[bool],
+) -> Dict[str, Any]:
+    """Compare the run's deterministic replay hashes against the golden oracle
+    and assemble a differential-certification record.
+
+    The classification distinguishes the failure modes an operator must tell
+    apart (bd-1pvzq.3 AC4): semantic drift (a replay hash changed), a failed
+    differential matrix (strategies disagree), or a scenario the golden does not
+    cover -- versus a clean ``certified``.
+    """
+    replay = index.get("replay", {})
+    scenario = replay.get("scenario", "unknown")
+    scenarios = golden.get("scenarios", {})
+    expected = scenarios.get(scenario)
+
+    checks: List[Dict[str, Any]] = []
+    first_mismatch: Optional[Dict[str, Any]] = None
+    if expected is not None:
+        for key in PINNED_GOLDEN_HASHES:
+            exp = expected.get(key)
+            act = replay.get(key)
+            match = exp == act
+            checks.append({"hash": key, "expected": exp, "actual": act, "match": match})
+            if not match and first_mismatch is None:
+                first_mismatch = {"hash": key, "expected": exp, "actual": act}
+
+    golden_matched = expected is not None and first_mismatch is None and bool(checks)
+
+    if expected is None:
+        classification = "scenario_not_in_golden"
+    elif not golden_matched:
+        classification = "semantic_drift"
+    elif matrix_passed is False:
+        classification = "differential_matrix_failed"
+    else:
+        classification = "certified"
+
+    ns_per_iteration = replay.get("ns_per_iteration")
+    summary = _certification_summary(
+        classification, scenario, first_mismatch, ns_per_iteration, matrix_passed
+    )
+
+    return {
+        "schema": DIFF_CERT_SCHEMA,
+        "schema_version": DIFF_CERT_SCHEMA_VERSION,
+        "bead": "bd-1pvzq.3",
+        "scenario": scenario,
+        "classification": classification,
+        "golden_oracle": {
+            "matched": golden_matched,
+            "checks": checks,
+            "first_mismatch": first_mismatch,
+        },
+        "differential_matrix": {
+            "test": DETERMINISM_MATRIX_TEST,
+            "substrates": list(CERTIFIED_SUBSTRATES),
+            "passed": matrix_passed,
+        },
+        "timing": {"ns_per_iteration": ns_per_iteration},
+        "summary": summary,
+    }
+
+
+def _certification_summary(
+    classification: str,
+    scenario: str,
+    first_mismatch: Optional[Dict[str, Any]],
+    ns_per_iteration: Any,
+    matrix_passed: Optional[bool],
+) -> str:
+    if classification == "certified":
+        if matrix_passed is True:
+            diff = f"and the {DETERMINISM_MATRIX_TEST} differential proof passed"
+        else:
+            diff = (
+                f"(the {DETERMINISM_MATRIX_TEST} differential proof is run separately as the "
+                "cross-strategy gate)"
+            )
+        return (
+            f"Scenario {scenario!r} is behavior-certified: replay hashes match the golden "
+            f"oracle {diff} ({ns_per_iteration} ns/op)."
+        )
+    if classification == "semantic_drift":
+        hm = first_mismatch or {}
+        return (
+            f"SEMANTIC DRIFT in {scenario!r}: replay {hm.get('hash')} changed from golden "
+            f"{hm.get('expected')} to {hm.get('actual')} ({ns_per_iteration} ns/op). The "
+            "optimized pane execution no longer reproduces the certified state -- this is a "
+            "behavior regression, not a timing one."
+        )
+    if classification == "differential_matrix_failed":
+        return (
+            f"DIFFERENTIAL FAILURE in {scenario!r}: replay hashes match the golden oracle but "
+            f"the {DETERMINISM_MATRIX_TEST} proof failed -- the optimized strategies disagree "
+            "with the baseline. See the matrix divergence log for the first mismatching op."
+        )
+    return (
+        f"Scenario {scenario!r} is not covered by the golden oracle -- add it with "
+        "`pane_replay_artifacts.py certify --update-golden` from a trusted run before gating."
+    )
+
+
+def update_golden_from_index(
+    golden: Dict[str, Any], golden_path: Path, index: Dict[str, Any]
+) -> None:
+    replay = index.get("replay", {})
+    scenario = replay.get("scenario")
+    if not scenario:
+        raise SystemExit("cannot update golden: index has no replay scenario")
+    scenarios = golden.setdefault("scenarios", {})
+    entry = scenarios.setdefault(scenario, {})
+    for key in ("leaf_count", "operations_per_iteration", *PINNED_GOLDEN_HASHES):
+        if key in replay:
+            entry[key] = replay[key]
+    golden.setdefault("schema", GOLDEN_SCHEMA)
+    golden.setdefault("schema_version", GOLDEN_SCHEMA_VERSION)
+    golden_path.write_text(json.dumps(golden, indent=2, sort_keys=True) + "\n")
+
+
+def cmd_certify(args: argparse.Namespace) -> int:
+    index_path = Path(args.index).resolve()
+    if not index_path.is_file():
+        print(f"index not found: {index_path}", file=sys.stderr)
+        return 1
+    try:
+        index = json.loads(index_path.read_text())
+    except json.JSONDecodeError as exc:
+        print(f"index is not valid JSON: {index_path}: {exc}", file=sys.stderr)
+        return 1
+    golden_path = Path(args.golden).resolve()
+
+    matrix_passed: Optional[bool] = None
+    if args.differential_matrix_passed == "true":
+        matrix_passed = True
+    elif args.differential_matrix_passed == "false":
+        matrix_passed = False
+
+    if args.update_golden:
+        golden = load_golden(golden_path) if golden_path.is_file() else {
+            "schema": GOLDEN_SCHEMA,
+            "schema_version": GOLDEN_SCHEMA_VERSION,
+            "scenarios": {},
+        }
+        update_golden_from_index(golden, golden_path, index)
+        print(f"golden updated: {golden_path}")
+        return 0
+
+    golden = load_golden(golden_path)
+    cert = build_certification(index, golden, matrix_passed=matrix_passed)
+
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else index_path.parent
+    cert_path = out_dir / DIFF_CERT_FILENAME
+    cert_path.write_text(json.dumps(cert, indent=2, sort_keys=True) + "\n")
+
+    classification = cert["classification"]
+    ok = classification == "certified"
+    if args.json:
+        print(json.dumps({"ok": ok, **cert}, indent=2, sort_keys=True))
+    else:
+        banner = "CERTIFIED" if ok else "NOT CERTIFIED"
+        print(f"PANE DIFFERENTIAL CERTIFICATION: {banner}")
+        print(f"  {cert['summary']}")
+        print(f"  artifact={cert_path}")
+
+    if not ok and args.require_match:
+        return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Selftest -- exercises emit + validate without a cargo build.
 # ---------------------------------------------------------------------------
 
@@ -610,6 +824,46 @@ def cmd_selftest(_: argparse.Namespace) -> int:
         except ValidationError:
             check("degraded bundle fails strict validation", True)
 
+        # Certify: golden replay-oracle + differential certification.
+        # The synthetic manifest carries baseline_hash=111, final_hash=222.
+        matching_golden = {
+            "schema": GOLDEN_SCHEMA,
+            "schema_version": GOLDEN_SCHEMA_VERSION,
+            "scenarios": {
+                "selftest-scenario": {
+                    "leaf_count": 8,
+                    "operations_per_iteration": 8,
+                    "baseline_hash": 111,
+                    "final_hash": 222,
+                }
+            },
+        }
+        cert = build_certification(index, matching_golden, matrix_passed=True)
+        check("matching golden + passing matrix is certified", cert["classification"] == "certified")
+        check("certification names all substrates", set(cert["differential_matrix"]["substrates"]) == set(CERTIFIED_SUBSTRATES))
+
+        cert_drift = build_certification(index, matching_golden, matrix_passed=False)
+        check("failed matrix is not certified", cert_drift["classification"] == "differential_matrix_failed")
+
+        drift_golden = json.loads(json.dumps(matching_golden))
+        drift_golden["scenarios"]["selftest-scenario"]["final_hash"] = 999
+        cert_sem = build_certification(index, drift_golden, matrix_passed=True)
+        check("changed golden hash is semantic_drift", cert_sem["classification"] == "semantic_drift")
+        check(
+            "semantic drift records the first mismatch",
+            (cert_sem["golden_oracle"]["first_mismatch"] or {}).get("hash") == "final_hash",
+        )
+
+        empty_golden = {"schema": GOLDEN_SCHEMA, "schema_version": GOLDEN_SCHEMA_VERSION, "scenarios": {}}
+        cert_missing = build_certification(index, empty_golden, matrix_passed=True)
+        check("uncovered scenario is flagged", cert_missing["classification"] == "scenario_not_in_golden")
+
+        # update_golden round-trips: an empty golden becomes a matching one.
+        golden_path = Path(tmp) / "golden.json"
+        update_golden_from_index(dict(empty_golden), golden_path, index)
+        round_tripped = build_certification(index, load_golden(golden_path), matrix_passed=True)
+        check("update-golden then certify is certified", round_tripped["classification"] == "certified")
+
         # Missing manifest -> emit must refuse.
         empty_dir = Path(tmp) / "empty"
         (empty_dir / HARNESS_SUBDIR).mkdir(parents=True)
@@ -659,6 +913,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.add_argument("--json", action="store_true", help="emit machine-readable result")
     validate.set_defaults(func=cmd_validate)
+
+    certify = sub.add_parser(
+        "certify",
+        help="golden replay-oracle + differential certification of a bundle (bd-1pvzq.3)",
+    )
+    certify.add_argument("--index", required=True, help="path to replay_artifact_index.json")
+    certify.add_argument("--golden", required=True, help="path to the golden replay oracle JSON")
+    certify.add_argument(
+        "--out-dir",
+        default=None,
+        help="where to write differential_certification.json (default: index's directory)",
+    )
+    certify.add_argument(
+        "--differential-matrix-passed",
+        choices=("true", "false", "unknown"),
+        default="unknown",
+        help="result of the bd-1pvzq.4 determinism matrix for this run",
+    )
+    certify.add_argument(
+        "--require-match",
+        action="store_true",
+        help="exit non-zero unless the run is fully certified (CI gate)",
+    )
+    certify.add_argument(
+        "--update-golden",
+        action="store_true",
+        help="write this run's deterministic replay hashes into the golden oracle",
+    )
+    certify.add_argument("--json", action="store_true", help="emit machine-readable result")
+    certify.set_defaults(func=cmd_certify)
 
     selftest = sub.add_parser("selftest", help="exercise emit+validate on synthetic bundles")
     selftest.set_defaults(func=cmd_selftest)
