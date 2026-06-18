@@ -48,6 +48,7 @@ pub mod grid;
 pub mod incremental;
 pub mod pane;
 pub mod pane_command;
+pub mod pane_memory;
 pub mod pane_persistent;
 #[cfg(test)]
 mod repro_max_constraint;
@@ -103,9 +104,13 @@ pub use pane_command::{
     PaneKeymapOwner, PaneKeymapPrecedence, announce_command, focus_cyclic, focus_directional,
     focus_edge, focus_order, resolve as resolve_pane_command,
 };
+pub use pane_memory::{
+    PANE_MEMORY_TELEMETRY_SCHEMA_VERSION, PaneMemoryComparison, PaneMemoryDriver,
+    PaneMemoryStrategy, PaneMemoryStrategyFootprint, pane_memory_comparison,
+};
 pub use pane_persistent::{
-    PaneVersionStore, PaneVersioningReport, PersistentApplyError, PersistentApplyStrategy,
-    PersistentNode, VersionedPaneTree,
+    PaneVersionRetention, PaneVersionStore, PaneVersioningReport, PersistentApplyError,
+    PersistentApplyStrategy, PersistentNode, VersionedPaneTree,
 };
 pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};

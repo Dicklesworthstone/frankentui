@@ -595,6 +595,88 @@ impl PaneVersionStore {
         }
     }
 
+    /// Compute a deterministic retained-memory byte model over the distinct
+    /// nodes physically held by all retained versions.
+    ///
+    /// The model mirrors the canonical timeline's
+    /// [`retention_diagnostics`](crate::pane::PaneInteractionTimeline::retention_diagnostics)
+    /// methodology — `size_of` struct estimates plus measured string payload
+    /// bytes — so the two strategies are directly comparable. Because shared
+    /// subtrees are counted once (via `Arc` pointer identity), node bytes scale
+    /// with *distinct* nodes, not the logical node total.
+    #[must_use]
+    pub fn retention(&self) -> PaneVersionRetention {
+        // Per-distinct-node byte accounting in a single traversal.
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut distinct_node_count = 0usize;
+        let mut distinct_leaf_payload_bytes = 0usize;
+        let mut distinct_extension_payload_bytes = 0usize;
+        let mut stack: Vec<&Arc<PersistentNode>> =
+            self.versions.iter().map(VersionedPaneTree::root).collect();
+        while let Some(node) = stack.pop() {
+            if !seen.insert(Arc::as_ptr(node).addr()) {
+                continue;
+            }
+            distinct_node_count += 1;
+            match &**node {
+                PersistentNode::Leaf {
+                    node_extensions,
+                    leaf,
+                    ..
+                } => {
+                    distinct_leaf_payload_bytes += leaf.surface_key.len();
+                    distinct_extension_payload_bytes += string_map_payload_bytes(&leaf.extensions)
+                        .saturating_add(string_map_payload_bytes(node_extensions));
+                }
+                PersistentNode::Split {
+                    node_extensions,
+                    first,
+                    second,
+                    ..
+                } => {
+                    distinct_extension_payload_bytes += string_map_payload_bytes(node_extensions);
+                    stack.push(first);
+                    stack.push(second);
+                }
+            }
+        }
+
+        let total_logical_node_count: usize = self
+            .versions
+            .iter()
+            .map(VersionedPaneTree::node_count)
+            .sum();
+        let arc_node_bytes = std::mem::size_of::<PersistentNode>().saturating_add(ARC_HEADER_BYTES);
+        let distinct_struct_bytes = distinct_node_count.saturating_mul(arc_node_bytes);
+        let version_metadata_bytes = self
+            .versions
+            .len()
+            .saturating_mul(std::mem::size_of::<VersionedPaneTree>());
+        let estimated_total_retained_bytes = std::mem::size_of::<Self>()
+            .saturating_add(distinct_struct_bytes)
+            .saturating_add(distinct_leaf_payload_bytes)
+            .saturating_add(distinct_extension_payload_bytes)
+            .saturating_add(version_metadata_bytes);
+        let shared_nodes = total_logical_node_count.saturating_sub(distinct_node_count);
+        let sharing_ratio = if total_logical_node_count == 0 {
+            0.0
+        } else {
+            shared_nodes as f64 / total_logical_node_count as f64
+        };
+
+        PaneVersionRetention {
+            version_count: self.versions.len(),
+            distinct_node_count,
+            total_logical_node_count,
+            sharing_ratio,
+            distinct_struct_bytes,
+            distinct_leaf_payload_bytes,
+            distinct_extension_payload_bytes,
+            version_metadata_bytes,
+            estimated_total_retained_bytes,
+        }
+    }
+
     fn enforce_retention(&mut self) {
         if self.max_versions == 0 || self.versions.len() <= self.max_versions {
             return;
@@ -627,6 +709,37 @@ pub struct PaneVersioningReport {
     pub current_depth: usize,
     /// Versions pruned by the retention bound.
     pub pruned_versions: usize,
+}
+
+/// Deterministic retained-memory byte model for a [`PaneVersionStore`].
+///
+/// Mirrors the canonical timeline's
+/// [`PaneInteractionTimelineRetentionDiagnostics`](crate::pane::PaneInteractionTimelineRetentionDiagnostics)
+/// methodology (`size_of` struct estimates plus measured string payload bytes)
+/// so the persistent and checkpointed strategies are directly comparable. The
+/// defining economic property of structural sharing is captured here: node
+/// struct bytes scale with *physically distinct* (`Arc`-shared) nodes, not the
+/// logical node total summed over every retained version.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct PaneVersionRetention {
+    /// Number of retained versions held by the store.
+    pub version_count: usize,
+    /// Physically distinct `Arc` node allocations across all retained versions.
+    pub distinct_node_count: usize,
+    /// Sum of per-version node counts (what naive snapshot-per-version stores).
+    pub total_logical_node_count: usize,
+    /// `(total_logical - distinct) / total_logical` in `[0, 1]`.
+    pub sharing_ratio: f64,
+    /// `distinct_node_count × (size_of::<PersistentNode>() + ARC_HEADER_BYTES)`.
+    pub distinct_struct_bytes: usize,
+    /// Measured leaf surface-key payload bytes over distinct nodes.
+    pub distinct_leaf_payload_bytes: usize,
+    /// Measured node + leaf extension-map payload bytes over distinct nodes.
+    pub distinct_extension_payload_bytes: usize,
+    /// `version_count × size_of::<VersionedPaneTree>()` (the per-version handles).
+    pub version_metadata_bytes: usize,
+    /// Estimated total retained bytes (container + structs + payload + metadata).
+    pub estimated_total_retained_bytes: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -930,6 +1043,23 @@ fn flatten_persistent(
     }
 }
 
+/// Bytes an `Arc<T>` allocation prepends ahead of `T`: the strong and weak
+/// reference counters (`AtomicUsize` each). Added to `size_of::<PersistentNode>()`
+/// so the persistent retained-memory model accounts for the real heap cost of
+/// each physically distinct shared node.
+const ARC_HEADER_BYTES: usize = 2 * std::mem::size_of::<usize>();
+
+/// Measured payload bytes (keys + values) of a string→string extension map.
+///
+/// Mirrors the canonical timeline's private helper of the same name (in
+/// [`crate::pane`]) so the persistent and checkpointed retained-memory models
+/// are byte-comparable.
+pub(crate) fn string_map_payload_bytes(map: &BTreeMap<String, String>) -> usize {
+    map.iter()
+        .map(|(key, value)| key.len().saturating_add(value.len()))
+        .sum()
+}
+
 /// Collect physically distinct node allocations reachable from `roots`.
 ///
 /// A node already in `seen` short-circuits: because sharing is structural, a
@@ -1171,6 +1301,61 @@ mod tests {
         );
         assert!(report.distinct_nodes < report.total_logical_nodes);
         assert!(report.sharing_ratio > 0.0 && report.sharing_ratio < 1.0);
+    }
+
+    fn ratio_storm_store() -> PaneVersionStore {
+        let mut store = PaneVersionStore::new(build_demo());
+        for n in 1..=8u32 {
+            store
+                .apply(&PaneOperation::SetSplitRatio {
+                    split: PaneId::new(4).unwrap(),
+                    ratio: ratio(n, 1),
+                })
+                .expect("set ratio");
+        }
+        store
+    }
+
+    #[test]
+    fn retention_model_is_deterministic() {
+        // Two independently constructed stores over the identical workload must
+        // yield byte-identical retention models (acceptance criterion: telemetry
+        // is deterministic enough to compare strategies meaningfully).
+        assert_eq!(
+            ratio_storm_store().retention(),
+            ratio_storm_store().retention()
+        );
+    }
+
+    #[test]
+    fn retention_total_is_faithful_sum_of_classes() {
+        let store = ratio_storm_store();
+        let r = store.retention();
+        let class_sum = std::mem::size_of::<PaneVersionStore>()
+            + r.distinct_struct_bytes
+            + r.distinct_leaf_payload_bytes
+            + r.distinct_extension_payload_bytes
+            + r.version_metadata_bytes;
+        assert_eq!(r.estimated_total_retained_bytes, class_sum);
+        assert_eq!(r.version_count, 9);
+        assert!(r.distinct_node_count < r.total_logical_node_count);
+    }
+
+    #[test]
+    fn retention_node_bytes_scale_with_distinct_not_logical_nodes() {
+        // The economic claim of structural sharing: node struct bytes are paid
+        // per physically distinct node, far below the naive snapshot-per-version
+        // cost of `total_logical_node_count` nodes.
+        let store = ratio_storm_store();
+        let r = store.retention();
+        let per_node = std::mem::size_of::<PersistentNode>() + ARC_HEADER_BYTES;
+        assert_eq!(r.distinct_struct_bytes, r.distinct_node_count * per_node);
+        let naive_struct_bytes = r.total_logical_node_count * per_node;
+        assert!(
+            r.distinct_struct_bytes < naive_struct_bytes,
+            "sharing must cost fewer node-struct bytes than naive per-version snapshots"
+        );
+        assert!(r.sharing_ratio > 0.0 && r.sharing_ratio < 1.0);
     }
 
     #[test]

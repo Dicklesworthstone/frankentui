@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "pane_persistent_bench"
 harness = false
+
+[[bench]]
+name = "pane_memory_telemetry"
+harness = false
