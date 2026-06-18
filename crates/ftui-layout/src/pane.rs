@@ -13,6 +13,7 @@ use std::fmt;
 
 use ftui_core::geometry::{Rect, Sides};
 use serde::{Deserialize, Serialize};
+use smallvec::{SmallVec, smallvec};
 
 /// Current pane tree schema version.
 pub const PANE_TREE_SCHEMA_VERSION: u16 = 1;
@@ -3693,7 +3694,10 @@ impl PaneOperation {
 pub struct PaneOperationOutcome {
     pub operation_id: u64,
     pub kind: PaneOperationKind,
-    pub touched_nodes: Vec<PaneId>,
+    /// Nodes touched by the operation. Inline for the common small case (the
+    /// resize fast path touches one node), so building an outcome on the hot
+    /// path does not heap-allocate.
+    pub touched_nodes: SmallVec<[PaneId; 4]>,
     pub before_hash: u64,
     pub after_hash: u64,
 }
@@ -3703,7 +3707,9 @@ pub struct PaneOperationOutcome {
 pub struct PaneOperationError {
     pub operation_id: u64,
     pub kind: PaneOperationKind,
-    pub touched_nodes: Vec<PaneId>,
+    /// Nodes touched by the rejected operation. Inline for the common small case
+    /// (see [`PaneOperationOutcome::touched_nodes`]).
+    pub touched_nodes: SmallVec<[PaneId; 4]>,
     pub before_hash: u64,
     pub after_hash: u64,
     pub reason: PaneOperationFailure,
@@ -3934,7 +3940,7 @@ impl PaneTransaction {
                     operation_id,
                     operation: operation_for_journal,
                     kind,
-                    touched_nodes: outcome.touched_nodes.clone(),
+                    touched_nodes: outcome.touched_nodes.to_vec(),
                     before_hash: outcome.before_hash,
                     after_hash: outcome.after_hash,
                     result: PaneOperationJournalResult::Applied,
@@ -3948,7 +3954,7 @@ impl PaneTransaction {
                     operation_id,
                     operation: operation_for_journal,
                     kind,
-                    touched_nodes: err.touched_nodes.clone(),
+                    touched_nodes: err.touched_nodes.to_vec(),
                     before_hash: err.before_hash,
                     after_hash: err.after_hash,
                     result: PaneOperationJournalResult::Rejected {
@@ -4289,11 +4295,14 @@ impl PaneTree {
             });
         }
 
-        if let Err(err) = working.validate_after_operation_with_mode(kind, &touched, mode) {
+        // Collect the touched set once and reuse it for validation and the
+        // outcome (compact storage; the `&SmallVec` coerces to `&[PaneId]`).
+        let touched_nodes: SmallVec<[PaneId; 4]> = touched.into_iter().collect();
+        if let Err(err) = working.validate_after_operation_with_mode(kind, &touched_nodes, mode) {
             return Err(PaneOperationError {
                 operation_id,
                 kind,
-                touched_nodes: touched.into_iter().collect(),
+                touched_nodes,
                 before_hash,
                 after_hash: working.state_hash(),
                 reason: PaneOperationFailure::Validation(err),
@@ -4306,7 +4315,7 @@ impl PaneTree {
         Ok(PaneOperationOutcome {
             operation_id,
             kind,
-            touched_nodes: touched.into_iter().collect(),
+            touched_nodes,
             before_hash,
             after_hash,
         })
@@ -4325,7 +4334,7 @@ impl PaneTree {
                 PaneOperationError {
                     operation_id,
                     kind,
-                    touched_nodes: vec![split_id],
+                    touched_nodes: smallvec![split_id],
                     before_hash,
                     after_hash: before_hash,
                     reason: PaneOperationFailure::InvalidRatio {
@@ -4340,7 +4349,7 @@ impl PaneTree {
             let node = self.nodes.get_mut(&split_id).ok_or(PaneOperationError {
                 operation_id,
                 kind,
-                touched_nodes: vec![split_id],
+                touched_nodes: smallvec![split_id],
                 before_hash,
                 after_hash: before_hash,
                 reason: PaneOperationFailure::MissingNode { node_id: split_id },
@@ -4349,7 +4358,7 @@ impl PaneTree {
                 return Err(PaneOperationError {
                     operation_id,
                     kind,
-                    touched_nodes: vec![split_id],
+                    touched_nodes: smallvec![split_id],
                     before_hash,
                     after_hash: before_hash,
                     reason: PaneOperationFailure::ParentNotSplit { node_id: split_id },
@@ -4360,11 +4369,11 @@ impl PaneTree {
             previous_ratio
         };
 
-        if let Err(err) = self.validate_after_operation(kind, &BTreeSet::from([split_id])) {
+        if let Err(err) = self.validate_after_operation(kind, &[split_id]) {
             let node = self.nodes.get_mut(&split_id).ok_or(PaneOperationError {
                 operation_id,
                 kind,
-                touched_nodes: vec![split_id],
+                touched_nodes: smallvec![split_id],
                 before_hash,
                 after_hash: before_hash,
                 reason: PaneOperationFailure::Validation(err.clone()),
@@ -4373,7 +4382,7 @@ impl PaneTree {
                 return Err(PaneOperationError {
                     operation_id,
                     kind,
-                    touched_nodes: vec![split_id],
+                    touched_nodes: smallvec![split_id],
                     before_hash,
                     after_hash: before_hash,
                     reason: PaneOperationFailure::Validation(err),
@@ -4383,7 +4392,7 @@ impl PaneTree {
             return Err(PaneOperationError {
                 operation_id,
                 kind,
-                touched_nodes: vec![split_id],
+                touched_nodes: smallvec![split_id],
                 before_hash,
                 after_hash: before_hash,
                 reason: PaneOperationFailure::Validation(err),
@@ -4394,7 +4403,7 @@ impl PaneTree {
         Ok(PaneOperationOutcome {
             operation_id,
             kind,
-            touched_nodes: vec![split_id],
+            touched_nodes: smallvec![split_id],
             before_hash,
             after_hash,
         })
@@ -4407,25 +4416,28 @@ impl PaneTree {
     ) -> Result<(), PaneOperationError> {
         let kind = operation.kind();
         let before_hash = self.state_hash();
-        let touched_nodes = operation.referenced_nodes();
-        let mut touched = touched_nodes.iter().copied().collect::<BTreeSet<_>>();
+        let referenced: SmallVec<[PaneId; 4]> = operation.referenced_nodes().into_iter().collect();
+        let mut touched = referenced.iter().copied().collect::<BTreeSet<_>>();
 
         if let Err(reason) = self.apply_operation_inner_ref(operation, &mut touched) {
             return Err(PaneOperationError {
                 operation_id,
                 kind,
-                touched_nodes,
+                touched_nodes: referenced,
                 before_hash,
                 after_hash: self.state_hash(),
                 reason,
             });
         }
 
-        if let Err(err) = self.validate_after_operation(kind, &touched) {
+        // Validation walks the grown touched set (compact slice); errors keep
+        // reporting the initially-referenced nodes, preserving prior semantics.
+        let grown: SmallVec<[PaneId; 4]> = touched.into_iter().collect();
+        if let Err(err) = self.validate_after_operation(kind, &grown) {
             return Err(PaneOperationError {
                 operation_id,
                 kind,
-                touched_nodes,
+                touched_nodes: referenced,
                 before_hash,
                 after_hash: self.state_hash(),
                 reason: PaneOperationFailure::Validation(err),
@@ -4438,7 +4450,7 @@ impl PaneTree {
     fn validate_after_operation(
         &self,
         kind: PaneOperationKind,
-        touched: &BTreeSet<PaneId>,
+        touched: &[PaneId],
     ) -> Result<(), PaneModelError> {
         self.validate_after_operation_with_mode(kind, touched, PaneValidationMode::Adaptive)
     }
@@ -4446,7 +4458,7 @@ impl PaneTree {
     fn validate_after_operation_with_mode(
         &self,
         kind: PaneOperationKind,
-        touched: &BTreeSet<PaneId>,
+        touched: &[PaneId],
         mode: PaneValidationMode,
     ) -> Result<(), PaneModelError> {
         let strategy = match mode {
@@ -4472,7 +4484,7 @@ impl PaneTree {
         }
     }
 
-    fn validate_local_closure(&self, touched: &BTreeSet<PaneId>) -> Result<(), PaneModelError> {
+    fn validate_local_closure(&self, touched: &[PaneId]) -> Result<(), PaneModelError> {
         for node_id in touched {
             let node = self
                 .nodes
@@ -7882,6 +7894,51 @@ mod tests {
     }
 
     #[test]
+    fn touched_nodes_compact_storage_holds_correct_content() {
+        // Compact (`SmallVec`) touched-node storage must round-trip the same
+        // content as before across the structural, fast, and rejected paths.
+        let mut tree = PaneTree::singleton("root");
+        let split = tree
+            .apply_operation(
+                1,
+                PaneOperation::SplitLeaf {
+                    target: id(1),
+                    axis: SplitAxis::Horizontal,
+                    ratio: PaneSplitRatio::new(1, 1).expect("ratio"),
+                    placement: PanePlacement::ExistingFirst,
+                    new_leaf: PaneLeaf::new("b"),
+                },
+            )
+            .expect("split should succeed");
+        // Structural op: touched set carries the target (multi-element case).
+        assert!(split.touched_nodes.contains(&id(1)));
+
+        // SetSplitRatio (the resize fast path) touches exactly the split node.
+        let resize = tree
+            .apply_operation(
+                2,
+                PaneOperation::SetSplitRatio {
+                    split: id(2),
+                    ratio: PaneSplitRatio::new(3, 1).expect("ratio"),
+                },
+            )
+            .expect("resize should succeed");
+        assert_eq!(resize.touched_nodes.to_vec(), vec![id(2)]);
+
+        // A rejected fast-path op also carries compact touched-node storage.
+        let rejected = tree
+            .apply_operation(
+                3,
+                PaneOperation::SetSplitRatio {
+                    split: id(999),
+                    ratio: PaneSplitRatio::new(1, 1).expect("ratio"),
+                },
+            )
+            .expect_err("missing split must be rejected");
+        assert_eq!(rejected.touched_nodes.to_vec(), vec![id(999)]);
+    }
+
+    #[test]
     fn close_node_promotes_sibling_and_removes_split_parent() {
         let mut tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
         let outcome = tree
@@ -10465,7 +10522,7 @@ mod tests {
         tree.nodes.get_mut(&child_id).expect("child present").parent = None;
 
         let err = tree
-            .validate_local_closure(&BTreeSet::from([split_id]))
+            .validate_local_closure(&[split_id])
             .expect_err("local closure should detect broken child parent");
         assert!(matches!(
             err,
@@ -10538,7 +10595,7 @@ mod tests {
         let far_leaf = id(5);
         tree.nodes.get_mut(&far_leaf).expect("present").parent = None;
 
-        let touched = BTreeSet::from([id(1)]);
+        let touched = [id(1)];
 
         // Adaptive validation for the Local family only inspects the touched
         // closure (the root split and its direct children), so it misses the

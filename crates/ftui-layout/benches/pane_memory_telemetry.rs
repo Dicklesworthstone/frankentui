@@ -337,12 +337,42 @@ fn run_scenario(
     }
 }
 
+/// Transient allocation churn of the `SetSplitRatio` fast path (the resize hot
+/// path) applied to a plain tree — no timeline, no store, no checkpoints — so it
+/// isolates per-op allocations (bd-25wj7.3 targets driving this to zero).
+#[derive(Debug, Serialize)]
+struct FastPathAllocs {
+    op_count: usize,
+    total_allocations: u64,
+    total_bytes_allocated: u64,
+    allocations_per_op: f64,
+}
+
+fn measure_fast_path_resize(base: &PaneTree, op_count: usize) -> FastPathAllocs {
+    let ops = resize_storm_ops(base, op_count, 0xF00D);
+    let mut tree = base.clone();
+    // Measure only the apply loop (the clone and op generation are excluded).
+    let region = Region::new(GLOBAL);
+    for (i, op) in ops.iter().enumerate() {
+        tree.apply_operation(i as u64 + 1, op.clone())
+            .expect("resize apply");
+    }
+    let s = region.change();
+    FastPathAllocs {
+        op_count: ops.len(),
+        total_allocations: s.allocations as u64,
+        total_bytes_allocated: s.bytes_allocated as u64,
+        allocations_per_op: s.allocations as f64 / ops.len() as f64,
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct Manifest {
     artifact: &'static str,
     schema_version: u16,
     bead: &'static str,
     scenarios: Vec<ScenarioMemoryReport>,
+    fast_path_resize: FastPathAllocs,
 }
 
 fn out_path() -> Option<String> {
@@ -408,11 +438,17 @@ fn main() {
         schema_version: PANE_MEMORY_TELEMETRY_SCHEMA_VERSION,
         bead: "bd-25wj7.1",
         scenarios,
+        fast_path_resize: measure_fast_path_resize(&resize_base, 512),
     };
 
     for report in &manifest.scenarios {
         print_scenario(report);
     }
+    let fp = &manifest.fast_path_resize;
+    println!(
+        "== fast_path_resize (bd-25wj7.3) ==\n  ops={} allocations={} ({:.2}/op) bytes={}",
+        fp.op_count, fp.total_allocations, fp.allocations_per_op, fp.total_bytes_allocated
+    );
 
     if let Some(path) = out_path() {
         let json = serde_json::to_string_pretty(&manifest).expect("serialize manifest");
