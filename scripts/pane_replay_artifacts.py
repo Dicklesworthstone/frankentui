@@ -170,14 +170,15 @@ def parse_symbol_metadata(text: str) -> List[Dict[str, Any]]:
             continue
         if not stripped:
             continue
-        if "=" in stripped:
-            key, _, value = stripped.partition("=")
-            key = key.strip()
-            value = value.strip()
-            # First occurrence wins; ``debug_info`` can repeat with a suffix in
-            # the degraded branch, keep the explicit machine field.
-            if key not in current or current[key] in ("", "notes"):
-                current[key] = value
+        key, sep, value = stripped.partition("=")
+        key = key.strip()
+        # Only clean field names are metadata; anything else (notably the raw
+        # ``file`` output, which contains ``BuildID[sha1]=...``) goes to notes so
+        # it cannot masquerade as a key=value field.
+        if sep and key.isidentifier():
+            # First occurrence wins.
+            if key not in current:
+                current[key] = value.strip()
         else:
             current["notes"].append(stripped)
     return blocks
@@ -279,11 +280,15 @@ def build_index(
     }
 
     # --- Checksummed artifact manifest (every file in the bundle) --------
+    # The index and the differential certification are emitted/managed after
+    # this point (certify rewrites the cert), so they are not part of the
+    # checksummed inputs.
+    self_managed = {INDEX_FILENAME, DIFF_CERT_FILENAME}
     artifacts: List[Dict[str, Any]] = []
     for path in sorted(out_dir.rglob("*")):
         if not path.is_file():
             continue
-        if path.name == INDEX_FILENAME and path.parent == out_dir:
+        if path.name in self_managed and path.parent == out_dir:
             continue
         artifacts.append(file_ref(path))
 

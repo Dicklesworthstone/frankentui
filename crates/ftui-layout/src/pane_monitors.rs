@@ -228,10 +228,8 @@ impl PaneMonitorReport {
         self.verdicts.iter().filter(|v| v.status.is_violation())
     }
 
-    /// Deterministic structured JSON log (one object).
-    ///
-    /// # Panics
-    /// Never in practice: every field serializes infallibly.
+    /// Deterministic structured JSON log (one object). Infallible: falls back to
+    /// `"{}"` on the serialization error that cannot occur for these fields.
     #[must_use]
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
@@ -366,6 +364,10 @@ small for this workspace.",
             "Retention pruned {} unit(s) to fit the {}-byte budget ({:.0}% utilized) — undo \
 history beyond the kept window is gone.",
             decision.units_pruned, budget_bytes, util_pct
+        ),
+        PaneRetentionOutcome::WithinBudget if budget_bytes == 0 => format!(
+            "Retention is unbounded ({} byte(s) retained) — full undo history kept.",
+            decision.bytes_after
         ),
         PaneRetentionOutcome::WithinBudget => format!(
             "Retention is within budget ({:.0}% of {} bytes used) — full undo history retained.",
