@@ -27,8 +27,9 @@ use std::fs;
 
 use ftui_layout::{
     PANE_MEMORY_TELEMETRY_SCHEMA_VERSION, PaneId, PaneInteractionTimeline, PaneLeaf,
-    PaneMemoryComparison, PaneNodeKind, PaneOperation, PanePlacement, PaneSplitRatio, PaneTree,
-    PaneVersionStore, SplitAxis, VersionedPaneTree, pane_memory_comparison,
+    PaneMemoryComparison, PaneNodeKind, PaneOperation, PanePlacement, PaneRetentionDecision,
+    PaneRetentionPolicy, PaneSplitRatio, PaneTree, PaneVersionStore, SplitAxis, VersionedPaneTree,
+    apply_retention_to_timeline, apply_retention_to_version_store, pane_memory_comparison,
 };
 use serde::Serialize;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
@@ -252,6 +253,12 @@ struct ScenarioMemoryReport {
     persistent_transient: StrategyTransient,
     /// Modeled retained-state comparison (deterministic, per-class breakdown).
     comparison: PaneMemoryComparison,
+    /// Before/after evidence: a representative byte-budget retention policy
+    /// applied to the persistent version store (budget = 1/4 unbounded footprint).
+    version_retention: PaneRetentionDecision,
+    /// Before/after evidence: the same policy class applied to the checkpointed
+    /// timeline (budget = 1/2 unbounded footprint).
+    timeline_retention: PaneRetentionDecision,
 }
 
 fn run_scenario(
@@ -290,6 +297,21 @@ fn run_scenario(
 
     let comparison = pane_memory_comparison(&live, &timeline, &store);
 
+    // Before/after evidence: apply a representative byte-budget retention policy
+    // to clones of both substrates (the originals stay intact for the comparison).
+    let version_budget = comparison.persistent.total_retained_bytes / 4;
+    let mut store_for_policy = store.clone();
+    let version_retention = apply_retention_to_version_store(
+        &mut store_for_policy,
+        &PaneRetentionPolicy::bounded(version_budget, 0),
+    );
+    let timeline_budget = comparison.checkpointed.total_retained_bytes / 2;
+    let mut timeline_for_policy = timeline.clone();
+    let timeline_retention = apply_retention_to_timeline(
+        &mut timeline_for_policy,
+        &PaneRetentionPolicy::bounded(timeline_budget, 0),
+    );
+
     ScenarioMemoryReport {
         scenario,
         leaf_count: leaf_ids(base).len(),
@@ -298,6 +320,8 @@ fn run_scenario(
         checkpointed_transient,
         persistent_transient,
         comparison,
+        version_retention,
+        timeline_retention,
     }
 }
 
@@ -351,6 +375,8 @@ fn print_scenario(report: &ScenarioMemoryReport) {
         );
     }
     println!("  {}", c.summary);
+    println!("  policy/{}", report.version_retention.log);
+    println!("  policy/{}", report.timeline_retention.log);
 }
 
 fn main() {

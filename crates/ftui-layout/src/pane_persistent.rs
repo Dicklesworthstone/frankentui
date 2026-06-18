@@ -489,6 +489,22 @@ impl PaneVersionStore {
         store
     }
 
+    /// Install a retention bound and immediately enforce it, pruning the oldest
+    /// versions if the store currently exceeds `max_versions`.
+    ///
+    /// Unlike [`with_max_versions`](Self::with_max_versions) this acts on an
+    /// existing store, so a retention policy can re-bound it retroactively. The
+    /// newest versions (including the current one) are always kept, so the
+    /// current state — and therefore [`current`](Self::current)'s state hash —
+    /// is never discarded. Returns the number of versions pruned by this call.
+    /// `0` is unbounded.
+    pub fn set_max_versions(&mut self, max_versions: usize) -> usize {
+        let pruned_before = self.pruned;
+        self.max_versions = max_versions;
+        self.enforce_retention();
+        self.pruned.saturating_sub(pruned_before)
+    }
+
     /// Apply an operation to the current version, appending a new version.
     ///
     /// # Errors

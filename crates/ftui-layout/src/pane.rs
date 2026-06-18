@@ -6028,6 +6028,22 @@ impl PaneInteractionTimeline {
         self
     }
 
+    /// Install a retained-entry cap and immediately enforce it, pruning the
+    /// oldest entries (advancing the replay baseline and re-basing checkpoints)
+    /// if the timeline currently exceeds `max_entries`.
+    ///
+    /// Unlike [`with_max_entries`](Self::with_max_entries) this acts on an
+    /// existing timeline in place, so a retention policy can re-bound it
+    /// retroactively. The newest entries are always kept, so the head state —
+    /// and its `after_hash` — is preserved. Returns the number of entries pruned
+    /// by this call. `0` is unbounded.
+    pub fn set_max_entries(&mut self, max_entries: usize) -> usize {
+        let before = self.entries.len();
+        self.max_entries = max_entries;
+        self.enforce_entry_limit();
+        before.saturating_sub(self.entries.len())
+    }
+
     /// Number of currently-applied entries.
     #[must_use]
     pub const fn applied_len(&self) -> usize {

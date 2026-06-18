@@ -50,6 +50,7 @@ pub mod pane;
 pub mod pane_command;
 pub mod pane_memory;
 pub mod pane_persistent;
+pub mod pane_retention;
 #[cfg(test)]
 mod repro_max_constraint;
 #[cfg(test)]
@@ -111,6 +112,11 @@ pub use pane_memory::{
 pub use pane_persistent::{
     PaneVersionRetention, PaneVersionStore, PaneVersioningReport, PersistentApplyError,
     PersistentApplyStrategy, PersistentNode, VersionedPaneTree,
+};
+pub use pane_retention::{
+    PaneRetentionBudget, PaneRetentionDecision, PaneRetentionOutcome, PaneRetentionPolicy,
+    apply_to_timeline as apply_retention_to_timeline,
+    apply_to_version_store as apply_retention_to_version_store,
 };
 pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};
