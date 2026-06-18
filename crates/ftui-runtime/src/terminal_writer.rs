@@ -355,6 +355,20 @@ pub struct RuntimeDiffConfig {
     ///
     /// Default: 240
     pub full_redraw_interval_frames: u64,
+
+    /// Maximum *wall-clock* time to allow between physical full redraws.
+    ///
+    /// The frame-count interval ([`Self::full_redraw_interval_frames`]) only
+    /// advances on rendered frames, so a TUI that renders sparsely (dirty-driven,
+    /// idle, or rendering slowly) can leave a desynchronized physical terminal —
+    /// e.g. corruption from an aggressive incremental diff, or a mux pane swap /
+    /// reattach — visible for a long time. A wall-clock bound guarantees the
+    /// physical terminal is fully repainted at least this often regardless of
+    /// render cadence, so any such corruption self-heals within the interval.
+    ///
+    /// `None` (the default) disables the time-based resync, preserving the
+    /// purely frame-count behavior (and deterministic-test reproducibility).
+    pub full_redraw_max_interval: Option<std::time::Duration>,
 }
 
 impl Default for RuntimeDiffConfig {
@@ -368,6 +382,7 @@ impl Default for RuntimeDiffConfig {
             reset_on_invalidation: true,
             strategy_config: DiffStrategyConfig::default(),
             full_redraw_interval_frames: 240,
+            full_redraw_max_interval: None,
         }
     }
 }
@@ -449,6 +464,20 @@ impl RuntimeDiffConfig {
         self.full_redraw_interval_frames = frames;
         self
     }
+
+    /// Set the maximum wall-clock time between physical full redraws.
+    ///
+    /// Unlike [`Self::with_full_redraw_interval_frames`] (which only advances on
+    /// rendered frames), this bounds resynchronization by elapsed time, so an
+    /// idle or sparsely-rendering TUI still repaints the physical terminal at
+    /// least this often — bounding how long any terminal-state desync (diff
+    /// corruption, mux pane swap, reattach) can stay on screen. `None` disables
+    /// it.
+    #[must_use]
+    pub fn with_full_redraw_max_interval(mut self, interval: Option<std::time::Duration>) -> Self {
+        self.full_redraw_max_interval = interval;
+        self
+    }
 }
 
 /// Unified terminal output coordinator.
@@ -503,6 +532,11 @@ pub struct TerminalWriter<W: Write> {
     full_redraw_probe: u64,
     /// Successful incremental frames since the terminal was physically redrawn.
     frames_since_full_redraw: u64,
+    /// Wall-clock instant of the last physical full redraw, used to bound
+    /// terminal-state desync by elapsed time (see
+    /// [`RuntimeDiffConfig::full_redraw_max_interval`]). `None` until the first
+    /// full redraw is presented.
+    last_full_redraw_at: Option<Instant>,
     /// Runtime diff configuration.
     #[allow(dead_code)] // runtime toggles wired up in follow-up work
     diff_config: RuntimeDiffConfig,
@@ -652,6 +686,7 @@ impl<W: Write> TerminalWriter<W> {
             diff_scratch,
             full_redraw_probe: 0,
             frames_since_full_redraw: 0,
+            last_full_redraw_at: None,
             diff_config,
             evidence_sink: None,
             diff_evidence_run_id: default_diff_run_id(),
@@ -1587,13 +1622,32 @@ impl<W: Write> TerminalWriter<W> {
     }
 
     fn full_redraw_interval_due(&self) -> bool {
-        self.diff_config.full_redraw_interval_frames > 0
-            && self.frames_since_full_redraw >= self.diff_config.full_redraw_interval_frames
+        // Frame-count bound: resync after N rendered incremental frames.
+        let frame_due = self.diff_config.full_redraw_interval_frames > 0
+            && self.frames_since_full_redraw >= self.diff_config.full_redraw_interval_frames;
+        // Wall-clock bound: resync after the configured elapsed time regardless
+        // of how many frames have rendered. This is what bounds terminal-state
+        // desync (diff corruption, mux pane swap, reattach) on a sparsely- or
+        // idly-rendering TUI, where the frame counter advances too slowly. A
+        // missing `last_full_redraw_at` (no full redraw presented yet) is
+        // treated as due so the first eligible frame resynchronizes.
+        let time_due = self
+            .diff_config
+            .full_redraw_max_interval
+            .is_some_and(|interval| {
+                self.last_full_redraw_at
+                    .is_none_or(|at| at.elapsed() >= interval)
+            });
+        frame_due || time_due
     }
 
     fn record_successful_present(&mut self, strategy: DiffStrategy) {
         if strategy == DiffStrategy::FullRedraw {
             self.frames_since_full_redraw = 0;
+            // Anchor the wall-clock resync window to this physical full redraw.
+            if self.diff_config.full_redraw_max_interval.is_some() {
+                self.last_full_redraw_at = Some(Instant::now());
+            }
         } else {
             self.frames_since_full_redraw = self.frames_since_full_redraw.saturating_add(1);
         }
@@ -4307,6 +4361,76 @@ mod tests {
         for _ in 0..5 {
             writer.present_ui(&buffer, None, false).unwrap();
             assert_ne!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+        }
+    }
+
+    #[test]
+    fn full_redraw_max_interval_zero_forces_resync_every_frame() {
+        // A zero wall-clock interval means "always due": every present must be a
+        // full physical redraw, regardless of the frame counter. This is the
+        // wall-clock bound that repairs terminal-state desync on an idle /
+        // sparsely-rendering TUI where the frame counter advances too slowly.
+        let mut output = Vec::new();
+        let mut writer = TerminalWriter::with_diff_config(
+            &mut output,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+            RuntimeDiffConfig::default()
+                .with_bayesian_enabled(false)
+                // Disable the frame-count path to isolate the wall-clock bound.
+                .with_full_redraw_interval_frames(0)
+                .with_full_redraw_max_interval(Some(std::time::Duration::ZERO)),
+        );
+        writer.set_size(4, 2);
+
+        let mut buffer = Buffer::new(4, 2);
+        buffer.set_raw(0, 0, Cell::from_char('A'));
+
+        // First frame is a full redraw (no prior baseline) and every subsequent
+        // frame is forced full by the zero interval.
+        for _ in 0..5 {
+            writer.present_ui(&buffer, None, false).unwrap();
+            assert_eq!(
+                writer.last_diff_strategy(),
+                Some(DiffStrategy::FullRedraw),
+                "zero wall-clock interval must force a full redraw every frame"
+            );
+        }
+    }
+
+    #[test]
+    fn full_redraw_max_interval_none_keeps_incremental_after_baseline() {
+        // The wall-clock bound is opt-in: with it unset (None) and the
+        // frame-count path disabled, frames stay incremental after the initial
+        // baseline full redraw — preserving the default sparse-diff behavior and
+        // deterministic-test reproducibility.
+        let mut output = Vec::new();
+        let mut writer = TerminalWriter::with_diff_config(
+            &mut output,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+            RuntimeDiffConfig::default()
+                .with_bayesian_enabled(false)
+                .with_full_redraw_interval_frames(0)
+                .with_full_redraw_max_interval(None),
+        );
+        writer.set_size(4, 2);
+
+        let mut buffer = Buffer::new(4, 2);
+        buffer.set_raw(0, 0, Cell::from_char('A'));
+
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.last_diff_strategy(), Some(DiffStrategy::FullRedraw));
+
+        for _ in 0..5 {
+            writer.present_ui(&buffer, None, false).unwrap();
+            assert_ne!(
+                writer.last_diff_strategy(),
+                Some(DiffStrategy::FullRedraw),
+                "no wall-clock bound must leave frames incremental after baseline"
+            );
         }
     }
 
