@@ -1280,6 +1280,13 @@ The runtime supports three execution lanes (Legacy, Structured, Asupersync) with
 - `docs/WINDOWS.md`
 - `docs/testing/e2e-playbook.md`
 
+**Pane workspace:**
+- `docs/guides/pane-101.md` — getting started with panes
+- `docs/cookbook/panes.md` — task-oriented pane recipes
+- `docs/api/pane-stability-contract.md` — supported surface, schema versions, deprecation policy
+- `docs/migration/flex-to-pane-and-versioning.md` — Flex/Grid → panes + persisted-workspace versioning
+- `docs/spec/pane-parity-contract-and-program.md` — terminal/web parity guarantee
+
 ---
 
 ## E-Graph Layout Optimizer
