@@ -315,8 +315,15 @@ E2E coverage MUST enforce:
 - Treat `minor` as safe additive upgrade.
 - Treat `major` as migration-required and consult updated migration guide.
 
+For the **advanced** host API surface (event lifecycle, parser hooks,
+markers/decorations, and runtime option/theming mutation), including the full
+xterm.js → FrankenTermJS capability mapping and troubleshooting tied to the
+compatibility harness logs, see
+[`docs/migration/advanced-host-api.md`](../migration/advanced-host-api.md).
+
 ## References
 
+- `docs/migration/advanced-host-api.md`
 - `docs/spec/frankenterm-websocket-protocol.md`
 - `docs/spec/frankenterm-remote-threat-model.md`
 - `docs/spec/wasm-showcase-runner-contract.md`
