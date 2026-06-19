@@ -1282,6 +1282,7 @@ The runtime supports three execution lanes (Legacy, Structured, Asupersync) with
 
 **Pane workspace:**
 - `docs/guides/pane-101.md` — getting started with panes
+- `docs/guides/pane-showcase-scenarios.md` — demo scenarios + regression-test map
 - `docs/cookbook/panes.md` — task-oriented pane recipes
 - `docs/api/pane-stability-contract.md` — supported surface, schema versions, deprecation policy
 - `docs/migration/flex-to-pane-and-versioning.md` — Flex/Grid → panes + persisted-workspace versioning
