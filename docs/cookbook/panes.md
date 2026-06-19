@@ -98,11 +98,12 @@ let mut adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default())
 
 // per input event (e.g. inside update()):
 let dispatch = adapter.translate(&event, target_hint);
-if let Some(transition) = dispatch.transition() {
+if let Some(transition) = dispatch.primary_transition.as_ref() {
     let layout = tree.solve_layout(area);
-    for op in tree.operations_for_transition(
-        transition, &layout, PanePressureSnapProfile::neutral(),
-    ) {
+    // neutral pressure (5000 bps); derive from the drag instead with
+    // PanePressureSnapProfile::from_motion(motion) for speed-aware snapping.
+    let pressure = PanePressureSnapProfile { strength_bps: 5000, hysteresis_bps: 5000 };
+    for op in tree.operations_for_transition(transition, &layout, pressure) {
         tree.apply_operation(next_op_id(), op).ok();
     }
 }

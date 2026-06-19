@@ -115,8 +115,8 @@ pub use ftui_widgets as widgets;
 /// # Tiers
 /// - **Stable** (`ftui::pane::*`): the day-to-day API. Breaking changes follow
 ///   the deprecation policy in the stability contract and bump the relevant
-///   schema-version constant ([`pane::PANE_TREE_SCHEMA_VERSION`],
-///   [`pane::PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION`]).
+///   schema-version constant (`PANE_TREE_SCHEMA_VERSION`,
+///   `PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION`).
 /// - **Keyboard host adapter** (`ftui::pane::keyboard`, requires the `runtime`
 ///   feature): the terminal keyboard controller, focus ring, and key hints.
 /// - **Advanced** (`ftui::pane::advanced`): performance/execution tuning

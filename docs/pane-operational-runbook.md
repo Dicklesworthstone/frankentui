@@ -7,11 +7,12 @@ remediation. Companion: the
 [evidence manifest](spec/pane-release-evidence-manifest.md).
 
 > **Golden lever:** when the adaptive pane execution path misbehaves, force the
-> **conservative certified checkpointed path** — `PaneExecutionPolicy` with
-> `conservative = true` (reason `PaneStrategyReason::ConservativeFallback`). It
-> is the path the soak/rollback driver falls back to and the one the golden
-> oracle certifies. When in doubt, roll back to conservative; behavior is
-> preserved across the rollback (proven by `pane_soak_rollback`).
+> **conservative certified checkpointed path** —
+> `PaneExecutionPolicy::adaptive(retention).conservative()` (reason
+> `PaneStrategyReason::ConservativeFallback`). It is the path the soak/rollback
+> driver falls back to and the one the golden oracle certifies. When in doubt,
+> roll back to conservative; behavior is preserved across the rollback (proven
+> by `pane_soak_rollback`).
 
 ---
 
@@ -40,14 +41,15 @@ round.
 **Triage.**
 1. Identify *which* `PaneAssumption` fired and the round it fired on (soak JSONL
    `assumption` + round fields).
-2. Latency envelope → check the perf gate thresholds (p95 ≤ 8.5ms, max ≤ 15ms in
-   `ci.yml`); is this a real regression or a noisy host?
+2. Latency envelope → compare against the `monitor_latency_envelope`
+   `PaneMonitorThresholds` (and the perf gate's configured present-time
+   thresholds in `ci.yml`); is this a real regression or a noisy host?
 3. Churn/fallback frequency → the execution selector is thrashing; check whether
    the workload regime changed (resize storm vs mixed).
 
 **Remediation.**
-- Immediate: force `PaneExecutionPolicy { conservative: true, .. }` — stops
-  adaptation and pins the certified checkpointed path.
+- Immediate: pin the certified checkpointed path with
+  `PaneExecutionPolicy::adaptive(retention).conservative()` — stops adaptation.
 - Then: file/triage a perf bead; re-baseline only with evidence, never by
   loosening a threshold silently (that requires a logged override per the
   [gate policy](pane-release-gate-policy.md#override-process)).
@@ -138,8 +140,9 @@ follow-up bead (gate policy §Override). `perf_certified` is never overridden.
 
 If a deployed build exhibits any of the above under live load:
 
-1. Flip the execution policy to conservative (`conservative: true`). This is the
-   single highest-leverage, lowest-risk action; it pins the certified path.
+1. Flip the execution policy to conservative (the `.conservative()` builder on
+   `PaneExecutionPolicy`). This is the single highest-leverage, lowest-risk
+   action; it pins the certified path.
 2. If a specific screen is implicated and was shipped behind a flag, disable the
    pane variant for that screen (it falls back to the `Flex`/`Grid` path per the
    [migration guide](migration/flex-to-pane-and-versioning.md#rollback--fallback-during-integration)).

@@ -50,7 +50,7 @@ use ftui::pane::prelude::*;
 use ftui::core::geometry::Rect;
 
 // One full-screen pane to start.
-let mut tree = PaneTree::singleton("root");
+let tree = PaneTree::singleton("root");
 
 // Solve the layout for an 80x24 viewport -> rectangles per pane id.
 let area = Rect::new(0, 0, 80, 24);

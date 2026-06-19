@@ -202,8 +202,8 @@ API affordance.
 ```rust
 use ftui::pane::prelude::*;
 
-// Build and mutate a workspace.
-let mut tree = PaneTree::singleton("root");
+// Build a workspace.
+let tree = PaneTree::singleton("root");
 debug_assert!(tree.validate().is_ok());
 
 // Persist it across sessions.

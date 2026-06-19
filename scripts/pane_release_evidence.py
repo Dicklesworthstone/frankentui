@@ -178,13 +178,11 @@ def collect(
 
         runtime_arts = []
         for rel in spec["runtime"]:
-            present = False
             entry: dict[str, Any] = {"name": rel, "present": False}
             if results_dir is not None:
                 # Look for the artifact anywhere under the results dir.
                 matches = sorted(results_dir.rglob(rel))
                 if matches:
-                    present = True
                     entry = {
                         "name": rel,
                         "present": True,
@@ -192,7 +190,6 @@ def collect(
                         "sha256": sha256_file(matches[0]),
                     }
             runtime_arts.append(entry)
-            _ = present
 
         suite_red = [s for s in suites if s.get("status") == "red"]
         static_missing = [a for a in static_arts if not a["present"]]
