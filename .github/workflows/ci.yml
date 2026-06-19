@@ -719,6 +719,14 @@ jobs:
           cargo test -p ftui-web session_record::tests::gate_trace_fails_with_actionable_diff -- --nocapture
           cargo test -p ftui-web session_record::tests::gate_trace_diff_has_event_context -- --nocapture
 
+      - name: Runtime option mutation E2E (cross-engine reconfigure matrix)
+        run: |
+          set -euo pipefail
+          # bd-2vr05.13.5 — atomic runtime option/theming mutation across the
+          # simulated rendering-engine capability matrix, with structured
+          # FTUI_RUNTIME_OPTIONS_MATRIX JSONL evidence captured per cell.
+          ./scripts/frankenterm_js_runtime_options_e2e.sh
+
       - name: Harness replay gate (time-bounded PR profile)
         if: github.event_name == 'pull_request'
         run: |

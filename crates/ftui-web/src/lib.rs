@@ -15,6 +15,7 @@
 pub mod input_parser;
 pub mod pane_keyboard;
 pub mod pane_pointer_capture;
+pub mod runtime_options;
 pub mod session_record;
 pub mod step_program;
 
