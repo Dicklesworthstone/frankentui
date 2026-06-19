@@ -1525,7 +1525,22 @@ jobs:
             --bundle target/pane-release/pane_release_evidence.json \
             --json
 
-      - name: Upload pane release-evidence bundle
+      # bd-1w0w4.5: render the objective go/no-go verdict from the evidence
+      # bundle + the behavioral certification. Strict mode requires the perf
+      # runtime artifacts present and the differential certification 'certified';
+      # a NO-GO fails the job. Suite-level greenness is enforced by each suite's
+      # own job and is recorded 'declared' here unless a --test-summary is given.
+      - name: Pane release gate (strict go/no-go)
+        run: |
+          python3 scripts/pane_release_gate.py selftest
+          python3 scripts/pane_release_gate.py evaluate \
+            --bundle target/pane-release/pane_release_evidence.json \
+            --certification target/pane-profiling/ci/differential_certification.json \
+            --mode strict \
+            --out target/pane-release/pane_release_gate.json \
+            --json
+
+      - name: Upload pane release-evidence + gate
         if: always()
         uses: actions/upload-artifact@v7
         with:
