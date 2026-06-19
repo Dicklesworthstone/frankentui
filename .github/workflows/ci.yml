@@ -729,6 +729,17 @@ jobs:
           # and fails on missing coverage or any failed cell.
           ./scripts/frankenterm_js_advanced_api_compat.sh
 
+      - name: Addon-parity compatibility harness (release gate)
+        run: |
+          set -euo pipefail
+          # bd-2vr05.14.6 — single release-blocking gate over every in-tree
+          # addon-parity subsystem (fit-to-container + web-font metrics, OSC-8
+          # web links, inline-image protocol detection, and ligature/shaping
+          # fallback). Aggregates each subsystem's structured evidence into one
+          # compatibility manifest and fails on missing coverage or any failed
+          # cell.
+          ./scripts/frankenterm_js_addon_parity_compat.sh
+
       - name: Harness replay gate (time-bounded PR profile)
         if: github.event_name == 'pull_request'
         run: |

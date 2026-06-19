@@ -181,3 +181,7 @@ required-features = ["visual-fx"]
 [[test]]
 name = "frankenterm_js_parser_hooks_compat"
 required-features = ["terminal"]
+
+[[test]]
+name = "frankenterm_js_image_parity_compat"
+required-features = ["image"]
