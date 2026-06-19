@@ -1287,6 +1287,8 @@ The runtime supports three execution lanes (Legacy, Structured, Asupersync) with
 - `docs/api/pane-stability-contract.md` — supported surface, schema versions, deprecation policy
 - `docs/migration/flex-to-pane-and-versioning.md` — Flex/Grid → panes + persisted-workspace versioning
 - `docs/spec/pane-parity-contract-and-program.md` — terminal/web parity guarantee
+- `docs/pane-release-gate-policy.md` — go/no-go release gate clauses + staged rollout
+- `docs/pane-operational-runbook.md` — incident response + emergency rollback
 
 ---
 
