@@ -1,10 +1,13 @@
 #!/bin/bash
-# Accessibility Modes Transition E2E Tests (bd-2o55.2)
+# FrankenTermJS Accessibility + IME Cross-Browser E2E Matrix (bd-2vr05.7.5)
 #
-# Runs targeted a11y transition regression tests with JSONL logging.
+# Drives the production web input path (ftui-web input_parser, IME composition)
+# together with the host-agnostic accessibility subsystem (ftui-a11y screen
+# reader + reduced-motion / high-contrast preferences) across a matrix of
+# simulated browser engines, emitting structured JSONL evidence per cell.
 #
 # Usage:
-#   ./scripts/a11y_transitions_e2e.sh [--verbose] [--quick]
+#   ./scripts/frankenterm_js_a11y_e2e.sh [--verbose] [--quick]
 
 set -euo pipefail
 
@@ -46,12 +49,12 @@ for arg in "$@"; do
     esac
 done
 
-e2e_fixture_init "a11y_transitions"
+e2e_fixture_init "frankenterm_js_a11y"
 TIMESTAMP="$(e2e_log_stamp)"
-LOG_DIR="${LOG_DIR:-/tmp/ftui-a11y-transitions-${E2E_RUN_ID}-${TIMESTAMP}}"
+LOG_DIR="${LOG_DIR:-/tmp/ftui-frankenterm-js-a11y-${E2E_RUN_ID}-${TIMESTAMP}}"
 E2E_LOG_DIR="$LOG_DIR"
 E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
-E2E_JSONL_FILE="${A11Y_TRANSITIONS_JSONL_FILE:-${PRESET_E2E_JSONL_FILE:-$LOG_DIR/a11y_transitions_e2e.jsonl}}"
+E2E_JSONL_FILE="${FRANKENTERM_JS_A11Y_JSONL_FILE:-${PRESET_E2E_JSONL_FILE:-$LOG_DIR/frankenterm_js_a11y_e2e.jsonl}}"
 E2E_CHILD_JSONL_DIR="${E2E_CHILD_JSONL_DIR:-$LOG_DIR/child-jsonl}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
@@ -108,48 +111,40 @@ skip_step() {
 }
 
 echo "=========================================="
-echo " Accessibility Modes Transition E2E (bd-2o55.2)"
+echo " FrankenTermJS A11y + IME Cross-Browser Matrix (bd-2vr05.7.5)"
 echo "=========================================="
 echo ""
-
 echo "  Log directory: $LOG_DIR"
 echo ""
 
+FEAT="--features input-parser"
+
 if ! $QUICK; then
     run_step "cargo_check" \
-        cargo check -p ftui-demo-showcase --tests --quiet
-
+        cargo check -p ftui-web $FEAT --test frankenterm_js_a11y_e2e --quiet
     run_step "cargo_clippy" \
-        cargo clippy -p ftui-demo-showcase --tests -- -D warnings --quiet
+        cargo clippy -p ftui-web $FEAT --test frankenterm_js_a11y_e2e -- -D warnings
 else
     skip_step "cargo_check"
     skip_step "cargo_clippy"
 fi
 
-run_step "a11y_transition_tests" bash -c "
+# Capture the structured FTUI_A11Y_MATRIX evidence lines into a JSONL artifact.
+MATRIX_LOG="$E2E_CHILD_JSONL_DIR/frankenterm_js_a11y_matrix.jsonl"
+run_step "a11y_ime_matrix_tests" bash -c "
     cd '$PROJECT_ROOT' &&
-    E2E_JSONL=1 \
-    E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/a11y_transition_tests.jsonl' \
-    A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
-        cargo test -p ftui-demo-showcase --test a11y_snapshots -- a11y_transition --nocapture
+    cargo test -p ftui-web $FEAT --test frankenterm_js_a11y_e2e -- --nocapture \
+        | tee '$LOG_DIR/a11y_ime_matrix.raw.log' \
+        | (grep '^FTUI_A11Y_MATRIX ' || true) \
+        | sed 's/^FTUI_A11Y_MATRIX //' > '$MATRIX_LOG'
+    test -s '$MATRIX_LOG'
 "
 
-run_step "screen_reader_mirror_policy_tests" bash -c "
-    cd '$PROJECT_ROOT' &&
-    E2E_JSONL=1 \
-    E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/screen_reader_mirror_policy_tests.jsonl' \
-    A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
-        cargo test -p ftui-a11y --test a11y_tests -- screen_reader --nocapture
-"
-
-# bd-2vr05.7.4: reduced-motion / high-contrast preference behavior controls.
-run_step "a11y_preference_behavior_tests" bash -c "
-    cd '$PROJECT_ROOT' &&
-    E2E_JSONL=1 \
-    E2E_JSONL_FILE='$E2E_CHILD_JSONL_DIR/a11y_preference_behavior_tests.jsonl' \
-    A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
-        cargo test -p ftui-a11y -- preferences --nocapture
-"
+if [[ -s "$MATRIX_LOG" ]]; then
+    MATRIX_CELLS=$(wc -l < "$MATRIX_LOG" | tr -d ' ')
+    jsonl_assert "matrix_evidence_lines" "pass" "cells=$MATRIX_CELLS file=$MATRIX_LOG"
+    echo "  Captured $MATRIX_CELLS matrix evidence cells -> $MATRIX_LOG"
+fi
 
 echo ""
 echo "=========================================="

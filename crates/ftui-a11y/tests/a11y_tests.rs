@@ -1349,3 +1349,115 @@ fn ancestors_self_cycle_protection() {
     let path = tree.ancestors(1);
     assert_eq!(path, vec![1], "self-cycle should stop after one visit");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Reduced-motion / high-contrast preference integration (bd-2vr05.7.4)
+//
+// These exercise the preference subsystem end-to-end against the real
+// announcement pipeline: a live region whose value churns rapidly (a progress
+// bar updating frame-by-frame) is the canonical "motion" the reduced-motion
+// flag must tame on the assistive-tech channel.
+// ═══════════════════════════════════════════════════════════════════════
+
+use ftui_a11y::preferences::{AccessibilityPreferences, ContrastProfile, MotionProfile};
+
+/// Build a tree with a single progress bar live region at the given percent.
+fn progress_tree(percent: u8, region: LiveRegion) -> A11yTree {
+    let mut b = A11yTreeBuilder::new();
+    b.add_node(
+        A11yNodeInfo::new(1, A11yRole::Window, Rect::new(0, 0, 80, 24)).with_children(vec![2]),
+    );
+    let state = A11yState {
+        value_now: Some(f64::from(percent)),
+        value_text: Some(format!("{percent}%")),
+        ..A11yState::default()
+    };
+    b.add_node(
+        A11yNodeInfo::new(2, A11yRole::ProgressBar, Rect::new(0, 1, 40, 1))
+            .with_name("Download")
+            .with_parent(1)
+            .with_state(state)
+            .with_live_region(region),
+    );
+    b.set_root(1);
+    b.build()
+}
+
+#[test]
+fn preferences_full_motion_leaves_progress_announcements_untouched() {
+    let prefs = AccessibilityPreferences::none();
+    let motion = prefs.motion_profile();
+
+    let mut prev = progress_tree(10, LiveRegion::Assertive);
+    let mut emitted = 0usize;
+    // Simulate three frames of progress churn; with full motion every change
+    // is announced.
+    for pct in [40u8, 70, 100] {
+        let next = progress_tree(pct, LiveRegion::Assertive);
+        let batch = next.screen_reader_announcements_since(&prev, ScreenReaderPolicy::default());
+        let filtered = motion.filter_announcements(&batch);
+        assert_eq!(filtered.coalesced_count, 0);
+        assert_eq!(filtered.downgraded_count, 0);
+        emitted += filtered.announcements.len();
+        prev = next;
+    }
+    assert_eq!(emitted, 3, "every frame announces under full motion");
+}
+
+#[test]
+fn preferences_reduced_motion_downgrades_progress_churn() {
+    let prefs = AccessibilityPreferences::none().with_reduced_motion(true);
+    let motion = prefs.motion_profile();
+
+    let prev = progress_tree(10, LiveRegion::Assertive);
+    let next = progress_tree(55, LiveRegion::Assertive);
+    let batch = next.screen_reader_announcements_since(&prev, ScreenReaderPolicy::default());
+    assert_eq!(
+        batch.announcements.len(),
+        1,
+        "value change is announced once"
+    );
+    assert_eq!(batch.announcements[0].urgency, LiveRegion::Assertive);
+
+    let filtered = motion.filter_announcements(&batch);
+    assert_eq!(filtered.announcements.len(), 1);
+    // Reduced motion downgrades the interrupting assertive churn to polite.
+    assert_eq!(filtered.announcements[0].urgency, LiveRegion::Polite);
+    assert_eq!(filtered.downgraded_count, 1);
+}
+
+#[test]
+fn preferences_high_contrast_is_orthogonal_to_announcements() {
+    // High contrast must NOT alter assistive-tech text output — it is a visual
+    // channel concern surfaced via the contrast profile, not the mirror.
+    let prefs = AccessibilityPreferences::none().with_high_contrast(true);
+    let motion = prefs.motion_profile();
+    assert_eq!(motion, MotionProfile::FULL);
+
+    let prev = progress_tree(10, LiveRegion::Polite);
+    let next = progress_tree(20, LiveRegion::Polite);
+    let plain = next.screen_reader_announcements_since(&prev, ScreenReaderPolicy::default());
+    let filtered = motion.filter_announcements(&plain);
+    assert_eq!(filtered.announcements, plain.announcements);
+
+    let contrast = prefs.contrast_profile();
+    assert_eq!(
+        contrast.min_contrast_ratio_x100,
+        ContrastProfile::WCAG_AAA_X100
+    );
+    assert!(contrast.drop_dim);
+}
+
+#[test]
+fn preferences_jsonl_round_trips_through_capability_profile() {
+    // A fixed capability profile (media-query booleans) must produce a stable,
+    // greppable log line for deterministic triage.
+    let prefs = AccessibilityPreferences::from_media_queries(true, true, false);
+    let line = prefs.to_jsonl("a11y-frame-0042");
+    assert_eq!(line, prefs.to_jsonl("a11y-frame-0042"));
+    assert!(line.contains("\"reduced_motion\":true"));
+    assert!(line.contains("\"high_contrast\":true"));
+    assert!(line.contains("\"forced_colors\":false"));
+    assert!(line.contains("\"announcement_coalescing\":true"));
+    assert!(line.contains("\"min_contrast_ratio_x100\":700"));
+}

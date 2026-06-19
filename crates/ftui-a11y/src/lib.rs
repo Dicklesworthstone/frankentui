@@ -64,7 +64,12 @@
 //! ```
 
 pub mod node;
+pub mod preferences;
 pub mod tree;
+
+pub use preferences::{
+    AccessibilityPreferences, ContrastProfile, MotionFilteredAnnouncements, MotionProfile,
+};
 
 use ftui_core::geometry::Rect;
 use node::A11yNodeInfo;

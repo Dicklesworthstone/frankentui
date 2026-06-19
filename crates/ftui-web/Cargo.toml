@@ -29,6 +29,10 @@ serde_json = { version = "1.0.150", optional = true }
 tracing = { version = "0.1.41", optional = true }
 
 [dev-dependencies]
+# Host-agnostic accessibility preferences + screen-reader pipeline, exercised by
+# the cross-browser a11y/IME E2E matrix (bd-2vr05.7.5). Dev-only: ftui-a11y does
+# not depend on ftui-web, so this stays acyclic.
+ftui-a11y = { path = "../ftui-a11y", version = "0.4.1" }
 # Used only for small deterministic unit tests.
 criterion = { version = "0.8.2", features = ["html_reports"] }
 pretty_assertions = "1.4.1"
