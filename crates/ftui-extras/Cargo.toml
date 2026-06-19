@@ -177,3 +177,7 @@ required-features = ["visual-fx"]
 [[test]]
 name = "backdrop_composition_tests"
 required-features = ["visual-fx"]
+
+[[test]]
+name = "frankenterm_js_parser_hooks_compat"
+required-features = ["terminal"]
