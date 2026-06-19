@@ -1393,6 +1393,101 @@ jobs:
           cargo fuzz run fuzz_layout_constraints -- -max_len=256 -max_total_time=20
           cargo fuzz run fuzz_widget_render -- -max_len=512 -max_total_time=20
 
+      - name: Fuzz campaign with minimized repro artifacts (bd-2vr05.10.4)
+        run: |
+          set -euo pipefail
+          # Release-blocking: the campaign harness fuzzes every target, validates
+          # JSONL telemetry, and writes minimized crash repros under fuzz/artifacts.
+          # Short per-target budget keeps CI fast; nightly runs raise the duration.
+          FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-20}" ./scripts/fuzz_campaign_e2e.sh
+
+      - name: Upload fuzz campaign artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-campaign-artifacts
+          path: |
+            /tmp/fuzz_campaign_e2e_*/
+            fuzz/artifacts/
+          if-no-files-found: ignore
+
+  # ==========================================================================
+  # FrankenTerm Conformance / Differential / WebSocket Release Gates
+  # (bd-2vr05.10.5 — wire conformance/differential/fuzz into release-blocking
+  # gates; fuzz is gated by the `fuzz` job above)
+  # ==========================================================================
+  frankenterm-conformance-gates:
+    name: FrankenTerm Conformance/Differential/WS Gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-frankenterm-gates-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Conformance — VT support-matrix gate (bd-2vr05.10.1)
+        run: |
+          set -euo pipefail
+          # Tracks declared support-matrix claims; emits per-capability JSONL +
+          # a summary JSON. Fails on any unmet declared capability.
+          ./scripts/vt_support_matrix_e2e.sh /tmp/frankenterm_gates/vt
+
+      - name: Differential — xterm.js shared-fixture gate (bd-2vr05.10.2)
+        run: |
+          set -euo pipefail
+          # Runs the shared VT fixture corpus through FrankenTerm's virtual
+          # terminal and classifies mismatches against the xterm.js-compatible
+          # baseline (normalised expected differences). Fails on unclassified drift.
+          ./tests/e2e/scripts/test_xterm_shared_fixture_differential.sh
+
+      - name: Conformance — WebSocket protocol compliance gate (bd-2vr05.10.3)
+        run: |
+          set -euo pipefail
+          # Drives the in-tree frankenterm_ws_bridge through the protocol compliance
+          # client, emitting per-frame JSONL + a compliance report.
+          ./tests/e2e/scripts/test_ws_protocol_compliance.sh
+
+      - name: Upload conformance/differential/ws gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frankenterm-conformance-gate-artifacts
+          path: |
+            /tmp/frankenterm_gates/
+            /tmp/ftui_e2e_logs/
+          if-no-files-found: ignore
+
+      - name: Triage instructions (on failure)
+        if: failure()
+        run: |
+          echo "::group::FrankenTerm gate triage"
+          echo "A release-blocking conformance gate failed. See:"
+          echo "  docs/testing/frankenterm-conformance-gates.md"
+          echo "Per-gate JSONL + summaries are uploaded as 'frankenterm-conformance-gate-artifacts'."
+          echo "  - Conformance:   /tmp/frankenterm_gates/vt/meta/vt_support_matrix_{results.jsonl,summary.json}"
+          echo "  - Differential:  /tmp/ftui_e2e_logs/xterm_shared_fixture_differential/*.{jsonl,json}"
+          echo "  - WebSocket:     /tmp/ftui_e2e_logs/ws_protocol_compliance/*.{jsonl,json}"
+          echo "Grep failed cells with: jq 'select(.passed==false or .status==\"fail\")' <jsonl>"
+          echo "::endgroup::"
+
   # ==========================================================================
   # MSRV Check (Minimum Supported Rust Version)
   # ==========================================================================
