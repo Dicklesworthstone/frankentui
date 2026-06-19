@@ -317,12 +317,12 @@ fn fault_injection_hook_panic_isolated() {
     let mut handler = Recorder::default();
     parser.register_csi_hook(|_e: &CsiHookEvent| panic!("synthetic hook panic"));
 
-    // Suppress the default panic backtrace noise for the duration of this parse
-    // so the captured stderr stays clean; restore afterwards.
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    // The parser isolates the hook panic via `catch_unwind`; the panic's default
+    // backtrace lands on stderr (harmless — the aggregator greps stdout only).
+    // We deliberately do NOT install a process-global panic hook here: these
+    // integration tests run in parallel threads, and muting the global hook
+    // could swallow a *concurrent* test's panic message and hinder triage.
     parser.parse(b"\x1b[7m", &mut handler);
-    std::panic::set_hook(prev);
 
     assert_eq!(handler.csi.len(), 1, "panicking hook falls back to handler");
     let trace = parser.drain_hook_trace();
