@@ -1507,6 +1507,32 @@ jobs:
       - name: Pane soak + rollback E2E
         run: ./scripts/pane_soak_rollback.sh --out-dir target/pane-soak/ci
 
+      # bd-1w0w4.7: tie the six release-evidence dimensions (unit/e2e/parity/
+      # perf/a11y/logging) into one checksummed, schema-versioned bundle. The
+      # static artifacts (compliance/traceability/parity contract/jsonl schema/
+      # golden oracle) are checksummed from the tree; the perf runtime artifacts
+      # (replay index + differential certification) come from this run. The
+      # selftest guards the bundler's own contract.
+      - name: Pane release-evidence bundle (collect + validate)
+        run: |
+          python3 scripts/pane_release_evidence.py selftest
+          mkdir -p target/pane-release
+          python3 scripts/pane_release_evidence.py collect \
+            --out target/pane-release/pane_release_evidence.json \
+            --results-dir target/pane-profiling/ci \
+            --strict --json
+          python3 scripts/pane_release_evidence.py validate \
+            --bundle target/pane-release/pane_release_evidence.json \
+            --json
+
+      - name: Upload pane release-evidence bundle
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pane-release-evidence
+          path: target/pane-release
+          retention-days: 30
+
       - name: Upload pane soak + rollback bundle
         if: always()
         uses: actions/upload-artifact@v7
