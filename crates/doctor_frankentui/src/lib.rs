@@ -160,6 +160,7 @@ pub mod code_emission;
 pub mod codegen_optimize;
 pub mod composition_semantics;
 pub mod concolic_differential;
+pub mod controller_composition;
 pub mod corpus;
 pub mod coverage_prioritizer;
 pub mod doctor;
