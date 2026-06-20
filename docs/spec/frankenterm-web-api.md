@@ -339,6 +339,11 @@ same wire strings as `HostEventClass::as_str()` / `SdkErrorKind::code()`.
 - Treat `minor` as safe additive upgrade.
 - Treat `major` as migration-required and consult updated migration guide.
 
+For the full method-by-method and addon-by-addon migration walkthrough (lifecycle,
+input/drain model, attach, selection/clipboard/links, accessibility/shaping,
+addon-class replacements, typed errors, and troubleshooting playbooks), see
+[`docs/migration/xterm-js-to-frankenterm-js.md`](../migration/xterm-js-to-frankenterm-js.md).
+
 For the **advanced** host API surface (event lifecycle, parser hooks,
 markers/decorations, and runtime option/theming mutation), including the full
 xterm.js → FrankenTermJS capability mapping and troubleshooting tied to the
