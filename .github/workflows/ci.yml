@@ -1465,6 +1465,19 @@ jobs:
           # client, emitting per-frame JSONL + a compliance report.
           ./tests/e2e/scripts/test_ws_protocol_compliance.sh
 
+      - name: Adversarial security/reliability gate (bd-2vr05.11.6)
+        run: |
+          set -euo pipefail
+          # Single release-blocking gate over every in-tree security/reliability
+          # subsystem under hostile/degraded conditions: flow-control drop policy
+          # (interactive never dropped), bounded queue/memory caps + overload
+          # termination, OSC-8 link escape-breakout sanitization, and OSC-52
+          # clipboard bounded-payload policy. Folds each arm's incident-grade
+          # evidence into one manifest under /tmp/frankenterm_gates/ and fails on
+          # missing coverage, any failed cell, malformed JSON, or absent
+          # failure-injection coverage.
+          ./scripts/frankenterm_js_security_reliability_compat.sh
+
       - name: Upload conformance/differential/ws gate artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -1485,6 +1498,7 @@ jobs:
           echo "  - Conformance:   /tmp/frankenterm_gates/vt/meta/vt_support_matrix_{results.jsonl,summary.json}"
           echo "  - Differential:  /tmp/ftui_e2e_logs/xterm_shared_fixture_differential/*.{jsonl,json}"
           echo "  - WebSocket:     /tmp/ftui_e2e_logs/ws_protocol_compliance/*.{jsonl,json}"
+          echo "  - Security/rel:  /tmp/frankenterm_gates/security_reliability/security_reliability_compat_{manifest.jsonl,summary.json}"
           echo "Grep failed cells with: jq 'select(.passed==false or .status==\"fail\")' <jsonl>"
           echo "::endgroup::"
 

@@ -14,6 +14,7 @@ artifacts, and how to triage a failure.
 | VT support-matrix conformance | 10.1 | `frankenterm-conformance-gates` → *Conformance* | `scripts/vt_support_matrix_e2e.sh` → `ftui-pty` `vt_support_matrix_runner` | `vt_support_matrix_results.jsonl`, `vt_support_matrix_summary.json` |
 | xterm.js shared-fixture differential | 10.2 | `frankenterm-conformance-gates` → *Differential* | `tests/e2e/scripts/test_xterm_shared_fixture_differential.sh` | `xterm_shared_fixture_differential_*.jsonl`, `*_report.json`, `*_summary.json` |
 | WebSocket protocol compliance | 10.3 | `frankenterm-conformance-gates` → *WebSocket* | `tests/e2e/scripts/test_ws_protocol_compliance.sh` (drives `ftui-pty` `frankenterm_ws_bridge`) | per-frame JSONL + compliance report |
+| Adversarial security/reliability | 11.6 | `frankenterm-conformance-gates` → *Adversarial security/reliability* | `scripts/frankenterm_js_security_reliability_compat.sh` | `security_reliability_compat_manifest.jsonl`, `security_reliability_compat_summary.json` |
 | Parser/state-machine fuzz campaign | 10.4 | `fuzz` job → *Fuzz campaign* | `scripts/fuzz_campaign_e2e.sh` (`cargo fuzz`) | `fuzz_campaign_e2e.jsonl`, minimized repros under `fuzz/artifacts/` |
 
 All gate artifacts are uploaded by CI:
@@ -31,6 +32,9 @@ All gate artifacts are uploaded by CI:
 
 # WebSocket protocol compliance
 ./tests/e2e/scripts/test_ws_protocol_compliance.sh
+
+# Adversarial security/reliability (flow-control + link + clipboard policy)
+./scripts/frankenterm_js_security_reliability_compat.sh
 
 # Fuzz campaign (short budget; raise FUZZ_DURATION_SECS for soak)
 FUZZ_DURATION_SECS=20 ./scripts/fuzz_campaign_e2e.sh
@@ -71,6 +75,35 @@ A protocol frame violated the compliance contract. Inspect the per-frame JSONL +
 report for the offending frame and the expected-vs-actual envelope. Confirm the
 `frankenterm_ws_bridge` binary built (the gate builds it first).
 
+### Adversarial security/reliability failed
+A hostile/degraded scenario produced an unexpected policy decision. The harness
+folds three in-tree arms into one manifest:
+
+- **flow-control** (`ftui-pty`): drop policy, queue caps, overload transitions,
+  frame cap, deterministic replay — drives
+  `frankenterm_core::flow_control::FlowControlPolicy`, the decision core
+  `ftui_pty::ws_bridge` wraps for every websocket-attached PTY.
+- **link policy** (`ftui-render`): OSC-8 escape-breakout sanitization.
+- **clipboard policy** (`ftui-extras`, feature `clipboard`): OSC-52
+  bounded-payload cap.
+
+Inspect the failed cells and the roll-up:
+
+```bash
+jq 'select(.passed==false)' \
+  /tmp/frankenterm_gates/security_reliability/security_reliability_compat_manifest.jsonl
+jq '.' /tmp/frankenterm_gates/security_reliability/security_reliability_compat_summary.json
+```
+
+Each cell carries `subsystem`, `scenario`, `case`, `correlation_id`, the policy
+`decision ledger` (chosen action / reason / fairness / pause), and a
+`failure_injection` flag. A failed `drop_policy` cell is the most severe signal:
+it means interactive input could be dropped — fix the policy before release. A
+failed `frame_cap` or config-bounds cell usually means the external
+`frankenterm-core` registry version changed a documented default; reconcile the
+assertion with the intended bound. The live `ws_bridge` PTY/socket path is
+covered separately by the WebSocket protocol compliance gate above.
+
 ### Fuzz campaign failed
 A fuzz target found a crash. The minimized repro is written under
 `fuzz/artifacts/<target>/`. Reproduce deterministically and promote it to a
@@ -88,7 +121,11 @@ is proven actionable, not silent:
 - the fuzz campaign validates that a seeded crash produces a minimized repro
   artifact and a non-zero exit,
 - the conformance/ws runners emit a structured rejection envelope (not a panic)
-  for an unsatisfied claim / malformed frame.
+  for an unsatisfied claim / malformed frame,
+- the adversarial security/reliability harness drives an interactive-starvation
+  bypass, an OSC-8 title-rewrite breakout, and an oversized clipboard exfil; the
+  aggregator additionally fails the gate if **no** `failure_injection` cell is
+  present, so the adversarial coverage can never silently disappear.
 
 ## Notes
 
