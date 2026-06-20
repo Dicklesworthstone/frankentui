@@ -740,6 +740,18 @@ jobs:
           # cell.
           ./scripts/frankenterm_js_addon_parity_compat.sh
 
+      - name: SDK contract compatibility harness (release gate)
+        run: |
+          set -euo pipefail
+          # bd-2vr05.9.2 — release-blocking gate over the in-tree typed SDK
+          # event/error model (ftui_web::sdk_event_model). Proves the host event
+          # taxonomy, typed error codes, and bounded-buffer policy are
+          # unique/sorted/round-trip, and that the committed TypeScript
+          # definitions (crates/ftui-web/sdk/frankenterm-js-events.d.ts) stay in
+          # lockstep with the Rust model. Fails on missing coverage, any failed
+          # cell, malformed JSON, or absent failure-injection coverage.
+          ./scripts/frankenterm_js_sdk_contract_compat.sh
+
       - name: Harness replay gate (time-bounded PR profile)
         if: github.event_name == 'pull_request'
         run: |

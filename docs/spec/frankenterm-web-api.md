@@ -308,6 +308,30 @@ E2E coverage MUST enforce:
   under burst input, resize transitions, and attach mode transitions.
 - Replay-oriented JSONL traces still parse after SDK changes.
 
+## In-Tree Typed Model + TypeScript Definitions (`bd-2vr05.9.2`)
+
+The `apiContract()` runtime constants originally shipped in the
+`frankenterm-web` WASM-packaging crate, which is **transient** and not vendored
+in this checkout. The durable, in-tree source of truth for the typed host-event
+and error model is therefore:
+
+- **Rust model**: `crates/ftui-web/src/sdk_event_model.rs`
+  - `HostEventClass` — the 15-class taxonomy above (`as_str()` ↔ `from_wire()`),
+  - `SdkErrorKind` — the typed error taxonomy (`code()` ↔ `from_code()`),
+  - `EventBufferPolicy` — the bounded-buffer contract values,
+  - `typescript_definitions()` — deterministic `.d.ts` generator.
+- **TypeScript definitions** (host-consumable, generated, committed):
+  `crates/ftui-web/sdk/frankenterm-js-events.d.ts`.
+- **Lockstep guarantee**: the conformance harness
+  `crates/ftui-web/tests/frankenterm_js_sdk_contract_compat.rs` fails if the
+  committed `.d.ts` drifts from the Rust model, and is run as a release-blocking
+  CI gate via `scripts/frankenterm_js_sdk_contract_compat.sh`. Regenerate the
+  `.d.ts` after an intentional model change with
+  `FTUI_SDK_DTS_BLESS=1 cargo test -p ftui-web --test frankenterm_js_sdk_contract_compat`.
+
+The runtime payloads emitted by the (out-of-tree) browser surface MUST use the
+same wire strings as `HostEventClass::as_str()` / `SdkErrorKind::code()`.
+
 ## Migration Guidance (xterm.js → FrankenTermJS)
 
 - Prefer capability probing via `apiContract()` over duck-typing individual methods.
