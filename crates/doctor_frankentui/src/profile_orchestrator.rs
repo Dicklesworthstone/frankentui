@@ -379,6 +379,9 @@ pub struct ProfileHotspot {
     pub cpu_percent: f64,
     pub allocation_percent: f64,
     pub syscall_percent: f64,
+    /// Cross-modal share of total cost. Across all hotspots these sum to 100%
+    /// when there is any attributable weight, and to 0% in the degenerate case
+    /// where every sample has zero weight.
     pub normalized_attribution_percent: f64,
     pub opportunity_score: f64,
     pub call_count: u64,
@@ -806,16 +809,18 @@ fn rank_hotspots(hotspots: &mut [ProfileHotspot]) {
 }
 
 fn dominant_modality(percents: &BTreeMap<ProfileModality, f64>) -> ProfileModality {
-    let mut best = ProfileModality::Cpu;
-    let mut best_percent = f64::NEG_INFINITY;
-    for modality in ProfileModality::ALL {
-        let percent = percents.get(&modality).copied().unwrap_or(0.0);
-        if percent > best_percent {
-            best_percent = percent;
-            best = modality;
+    // Pick the highest-percent modality among those actually PRESENT for this
+    // site (`percents` only holds present modalities). Ties resolve to the first
+    // in canonical order (BTreeMap iterates Cpu < Allocation < Syscall). Falls
+    // back to Cpu only when no modality is present (degenerate input).
+    let mut best: Option<(ProfileModality, f64)> = None;
+    for (&modality, &percent) in percents {
+        match best {
+            Some((_, best_percent)) if percent <= best_percent => {}
+            _ => best = Some((modality, percent)),
         }
     }
-    best
+    best.map_or(ProfileModality::Cpu, |(modality, _)| modality)
 }
 
 fn candidate_levers_for(dominant: ProfileModality, category_tags: &[String]) -> Vec<String> {

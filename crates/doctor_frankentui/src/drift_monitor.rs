@@ -111,6 +111,13 @@ pub struct BocpdConfig {
     pub changepoint_threshold: f64,
     /// Floor on the Gaussian predictive sigma.
     pub min_sigma: f64,
+    /// Width multiplier for the fresh-run (`counts == 0`) prior predictive.
+    ///
+    /// A fresh run has no data, so its predictive must be wide enough to also
+    /// accept a *shifted* mean; otherwise the model can never re-acquire a new
+    /// regime after a changepoint. The effective prior sigma is
+    /// `max(sigma * prior_predictive_width, overall_series_std)`.
+    pub prior_predictive_width: f64,
 }
 
 impl Default for BocpdConfig {
@@ -121,6 +128,7 @@ impl Default for BocpdConfig {
             recent_window: 3,
             changepoint_threshold: 0.5,
             min_sigma: 1e-3,
+            prior_predictive_width: 4.0,
         }
     }
 }
@@ -452,14 +460,18 @@ impl DriftMonitor {
         let h = self.config.cusum.threshold_h.max(EPS);
         let mut s_up = 0.0;
         let mut s_dn = 0.0;
+        // Adaptive reference level. After an alarm we re-center on the new level
+        // so one sustained shift produces ONE event (not one per observation),
+        // while a genuinely new shift still re-triggers.
+        let mut center = baseline.mean;
         for (index, &value) in metric.observations.iter().enumerate() {
-            let z = (value - baseline.mean) / baseline.std;
+            let z = (value - center) / baseline.std;
             s_up = (s_up + z - k).max(0.0);
             s_dn = (s_dn - z - k).max(0.0);
             if s_up >= h {
                 events.push(cusum_event(
                     metric,
-                    baseline,
+                    (center, baseline.std),
                     index,
                     DriftDetector::CusumUpward,
                     value,
@@ -467,18 +479,21 @@ impl DriftMonitor {
                     h,
                 ));
                 s_up = 0.0;
-            }
-            if s_dn >= h {
+                s_dn = 0.0;
+                center = value;
+            } else if s_dn >= h {
                 events.push(cusum_event(
                     metric,
-                    baseline,
+                    (center, baseline.std),
                     index,
                     DriftDetector::CusumDownward,
                     value,
                     s_dn,
                     h,
                 ));
+                s_up = 0.0;
                 s_dn = 0.0;
+                center = value;
             }
         }
     }
@@ -494,6 +509,12 @@ impl DriftMonitor {
         let hazard = 1.0 / cfg.hazard_lambda.max(1.0);
         let max_run = cfg.max_run_length.max(1);
         let sigma = baseline.std.max(cfg.min_sigma);
+        // Fresh-run prior predictive: wide enough to also accept a shifted mean
+        // (covers the full observed spread), so the model can re-acquire a new
+        // regime after a changepoint instead of collapsing onto the old mean.
+        let prior_sigma = (sigma * cfg.prior_predictive_width.max(1.0))
+            .max(series_std(&metric.observations))
+            .max(cfg.min_sigma);
 
         // Run-length posterior plus per-hypothesis sufficient stats (count, sum).
         let mut rl_prob = vec![1.0];
@@ -507,12 +528,15 @@ impl DriftMonitor {
             let mut growth = vec![0.0; n + 1];
             let mut cp_mass = 0.0;
             for i in 0..n {
-                let mean = if counts[i] > 0.0 {
-                    sums[i] / counts[i]
+                // Established runs predict their own running mean with the
+                // baseline sigma; a fresh run (no data yet) uses the wide prior
+                // predictive so it can fit a shifted regime.
+                let (mean, pred_sigma) = if counts[i] > 0.0 {
+                    (sums[i] / counts[i], sigma)
                 } else {
-                    baseline.mean
+                    (baseline.mean, prior_sigma)
                 };
-                let pred = gaussian_pdf(value, mean, sigma);
+                let pred = gaussian_pdf(value, mean, pred_sigma);
                 let joint = rl_prob[i] * pred;
                 growth[i + 1] = joint * (1.0 - hazard);
                 cp_mass += joint * hazard;
@@ -520,12 +544,14 @@ impl DriftMonitor {
             growth[0] = cp_mass;
 
             let total: f64 = growth.iter().sum();
-            if total > EPS {
+            if total.is_finite() && total > f64::MIN_POSITIVE {
                 for prob in &mut growth {
                     *prob /= total;
                 }
             } else {
-                // Degenerate predictive: reset belief to a fresh run.
+                // True predictive underflow (every hypothesis assigned ~0
+                // density). Declare a fresh run; the wide prior predictive lets
+                // the next observation re-acquire the new regime.
                 growth.iter_mut().for_each(|prob| *prob = 0.0);
                 growth[0] = 1.0;
             }
@@ -600,34 +626,53 @@ fn baseline_stats(observations: &[f64], window: usize, min_sigma: f64) -> Baseli
     }
 }
 
+/// Standard deviation over the entire series, used to scale the BOCPD fresh-run
+/// prior predictive so it spans the full observed range (0.0 for <2 points).
+fn series_std(observations: &[f64]) -> f64 {
+    if observations.len() < 2 {
+        return 0.0;
+    }
+    let mean = observations.iter().sum::<f64>() / usize_to_f64(observations.len());
+    let variance = observations
+        .iter()
+        .map(|value| (*value - mean).powi(2))
+        .sum::<f64>()
+        / usize_to_f64(observations.len() - 1);
+    variance.sqrt()
+}
+
 fn cusum_event(
     metric: &DriftMetricSeries,
-    baseline: &BaselineStats,
+    reference: (f64, f64),
     index: usize,
     detector: DriftDetector,
     value: f64,
     statistic: f64,
     threshold: f64,
 ) -> DriftEvent {
+    let (center, baseline_std) = reference;
     let upward = matches!(detector, DriftDetector::CusumUpward);
     let kind = drift_kind(metric.direction, upward);
     let confidence = (statistic / (2.0 * threshold)).clamp(0.0, 1.0);
     let arrow = if upward { "rose above" } else { "fell below" };
+    // `center` is the reference the CUSUM was tracking at alarm time: the
+    // original baseline for the first alarm, or the previous shifted level for
+    // subsequent ones.
     DriftEvent {
         metric_id: metric.metric_id.clone(),
         observation_index: index_to_u32(index),
         detector,
         kind,
         value,
-        baseline_mean: baseline.mean,
-        baseline_std: baseline.std,
+        baseline_mean: center,
+        baseline_std,
         statistic,
         confidence,
         description: format!(
-            "{} {} baseline {:.4} (S={:.3} >= h={:.3}) => {}",
+            "{} {} reference {:.4} (S={:.3} >= h={:.3}) => {}",
             metric.metric_id,
             arrow,
-            baseline.mean,
+            center,
             statistic,
             threshold,
             kind.as_str()
@@ -929,6 +974,16 @@ mod tests {
             .with_observations(values)
     }
 
+    /// Two successive downward level shifts (0.90 -> 0.60 -> 0.30), each regime
+    /// held long enough for the detectors to re-acquire between shifts.
+    fn two_step_down_series() -> DriftMetricSeries {
+        let mut values = vec![0.90, 0.91, 0.89, 0.90, 0.91, 0.89, 0.90, 0.91];
+        values.extend([0.60; 10]);
+        values.extend([0.30; 10]);
+        DriftMetricSeries::new("two_step", MetricDirection::HigherIsBetter)
+            .with_observations(values)
+    }
+
     fn monitor() -> DriftMonitor {
         DriftMonitor::new(DriftMonitorConfig::default().with_baseline_window(8))
     }
@@ -1102,5 +1157,61 @@ mod tests {
         let summary = report.summaries.first().expect("summary present");
         assert!(summary.baseline_std >= 0.0);
         assert!(summary.baseline_std.is_finite());
+    }
+
+    #[test]
+    fn cusum_emits_one_event_per_sustained_shift() {
+        // A single sustained downward shift must alarm exactly ONCE, not once
+        // per observation in the degraded regime (no duplicate-alarm flood).
+        let report = monitor().analyze(vec![dropping_success_rate()]);
+        let downward = report
+            .events
+            .iter()
+            .filter(|event| event.detector == DriftDetector::CusumDownward)
+            .count();
+        assert_eq!(
+            downward, 1,
+            "sustained shift should alarm once, got {downward}"
+        );
+    }
+
+    #[test]
+    fn detectors_catch_two_successive_shifts() {
+        // After re-baselining (CUSUM) / re-acquiring the regime (BOCPD), a
+        // SECOND distinct shift must still be detected — neither detector is
+        // permanently stuck after the first event.
+        let report = monitor().analyze(vec![two_step_down_series()]);
+        let cusum_down = report
+            .events
+            .iter()
+            .filter(|event| event.detector == DriftDetector::CusumDownward)
+            .count();
+        assert_eq!(
+            cusum_down, 2,
+            "expected one CUSUM alarm per shift, got {cusum_down}"
+        );
+        let changepoints = report
+            .events
+            .iter()
+            .filter(|event| event.detector == DriftDetector::BocpdChangepoint)
+            .count();
+        assert!(
+            changepoints >= 2,
+            "BOCPD should detect both shifts after recovery, got {changepoints}"
+        );
+    }
+
+    #[test]
+    fn bocpd_run_length_recovers_within_a_stable_regime() {
+        // After a changepoint the model must re-acquire the new regime, so the
+        // expected run length grows again instead of staying pinned near 0 (the
+        // signature of the previously-stuck collapse).
+        let report = monitor().analyze(vec![two_step_down_series()]);
+        let summary = report.summaries.first().expect("summary present");
+        assert!(
+            summary.expected_run_length_final > 1.0,
+            "expected_run_length_final pinned low ({}); detector did not recover",
+            summary.expected_run_length_final
+        );
     }
 }

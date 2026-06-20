@@ -41,6 +41,11 @@ pub const TEST_BUDGET_SCHEMA_VERSION: &str = "test-budget-allocator-v1";
 /// Lower clamp keeping Beta parameters and costs strictly positive.
 const EPS: f64 = 1e-9;
 
+/// Finite cap for `improvement_ratio` so a degenerate (near-zero baseline)
+/// comparison never serializes as a non-finite f64 (which `serde_json` would
+/// emit as JSON `null`).
+const MAX_IMPROVEMENT_RATIO: f64 = 1e6;
+
 /// One candidate fixture competing for test-compute budget.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TestFixtureCandidate {
@@ -382,12 +387,8 @@ impl TestBudgetAllocator {
             .sum::<f64>();
         let confidence_gain_per_unit = safe_div(total_confidence_gain, total_compute_units_used);
 
-        let baseline_comparison = round_robin_baseline(
-            &candidates,
-            self.config,
-            total_confidence_gain,
-            confidence_gain_per_unit,
-        );
+        let baseline_comparison =
+            round_robin_baseline(&candidates, self.config, confidence_gain_per_unit);
 
         let allocation_id = allocation_id_for(self.config, &candidates, &allocations);
         let replay_command = format!(
@@ -533,7 +534,6 @@ impl ScoreKey {
 fn round_robin_baseline(
     candidates: &[TestFixtureCandidate],
     config: TestBudgetConfig,
-    voi_total_confidence_gain: f64,
     voi_confidence_gain_per_unit: f64,
 ) -> BaselineComparison {
     let mut states = candidates.iter().map(FixtureState::new).collect::<Vec<_>>();
@@ -573,15 +573,15 @@ fn round_robin_baseline(
         safe_div(baseline_confidence_gain, baseline_compute_units);
     let improvement_ratio = if baseline_confidence_gain_per_unit <= EPS {
         if voi_confidence_gain_per_unit > 0.0 {
-            f64::INFINITY
+            MAX_IMPROVEMENT_RATIO
         } else {
             1.0
         }
     } else {
-        voi_confidence_gain_per_unit / baseline_confidence_gain_per_unit
+        (voi_confidence_gain_per_unit / baseline_confidence_gain_per_unit)
+            .min(MAX_IMPROVEMENT_RATIO)
     };
 
-    let _ = voi_total_confidence_gain;
     BaselineComparison {
         strategy: "round_robin".to_string(),
         baseline_runs: total_runs,
