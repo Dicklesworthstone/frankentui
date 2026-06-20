@@ -202,6 +202,7 @@ pub mod style_semantics;
 pub mod style_translator;
 pub mod suite;
 pub mod tape;
+pub mod test_budget_allocator;
 pub mod trace;
 pub mod translation_planner;
 pub mod tsx_parser;
