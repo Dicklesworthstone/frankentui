@@ -3535,6 +3535,12 @@ struct AsupersyncTaskExecutor<M: Send + 'static> {
     evidence_sink: Option<EvidenceSink>,
     runtime: AsupersyncRuntime,
     handles: Vec<BlockingTaskHandle>,
+    /// Backpressure cap on in-flight blocking tasks (`0` = unbounded). Mirrors
+    /// the `EffectQueue` lane's `max_queue_depth` so both backends shed load and
+    /// report queue telemetry identically.
+    max_queue_depth: usize,
+    /// Total tasks rejected by backpressure or post-shutdown submission.
+    dropped: u64,
     closed: bool,
 }
 
@@ -3545,6 +3551,7 @@ impl<M: Send + 'static> AsupersyncTaskExecutor<M> {
     fn new(
         result_sender: mpsc::Sender<M>,
         evidence_sink: Option<EvidenceSink>,
+        max_queue_depth: usize,
     ) -> io::Result<Self> {
         let max_threads = thread::available_parallelism().map_or(1, |count| count.get().max(1));
         let runtime = RuntimeBuilder::new()
@@ -3560,21 +3567,45 @@ impl<M: Send + 'static> AsupersyncTaskExecutor<M> {
             evidence_sink,
             runtime,
             handles: Vec::new(),
+            max_queue_depth,
+            dropped: 0,
             closed: false,
         })
     }
 
     fn submit(&mut self, task: Box<dyn FnOnce() -> M + Send>) {
         if self.closed {
+            self.dropped += 1;
+            crate::effect_system::record_queue_drop("post_shutdown");
             tracing::debug!("rejecting asupersync task submit after shutdown");
             return;
         }
+        // Prune completed handles so the in-flight depth used for backpressure
+        // reflects only tasks that are still running or queued in the pool.
+        self.handles.retain(|handle| !handle.is_done());
+        // Backpressure: bound the number of in-flight blocking tasks, matching
+        // the EffectQueue lane (bd-2zd0a). `0` means unbounded.
+        if self.max_queue_depth > 0 && self.handles.len() >= self.max_queue_depth {
+            self.dropped += 1;
+            crate::effect_system::record_queue_drop("backpressure");
+            emit_task_executor_backpressure_evidence(
+                self.evidence_sink.as_ref(),
+                "asupersync",
+                "drop",
+                self.handles.len(),
+                self.max_queue_depth,
+                self.dropped,
+            );
+            return;
+        }
+        crate::effect_system::record_queue_enqueue(self.handles.len() as u64 + 1);
         let sender = self.result_sender.clone();
         let evidence_sink = self.evidence_sink.clone();
         let handle = self
             .runtime
             .spawn_blocking(move || {
                 let _ = run_task_closure(task, "asupersync", evidence_sink.as_ref(), &sender);
+                crate::effect_system::record_queue_processed();
             })
             .expect("asupersync blocking pool must be configured");
         self.handles.push(handle);
@@ -3633,6 +3664,7 @@ impl<M: Send + 'static> TaskExecutor<M> {
             TaskExecutorBackend::Asupersync => Self::Asupersync(AsupersyncTaskExecutor::new(
                 result_sender,
                 evidence_sink.clone(),
+                config.max_queue_depth,
             )?),
         };
 
@@ -12816,6 +12848,278 @@ mod tests {
         let completion_line = read_evidence_event(&evidence_path, "task_executor_complete");
         assert_eq!(completion_line["backend"], "asupersync");
         assert!(completion_line["duration_us"].is_number());
+    }
+
+    // =========================================================================
+    // Asupersync executor: semantic parity, failure, stress, shutdown, and
+    // backpressure coverage (bd-392ka).
+    // =========================================================================
+
+    /// Run `count` tasks (each emitting its index) through `backend` headlessly
+    /// and return the sorted multiset of delivered message payloads.
+    #[cfg(feature = "asupersync-executor")]
+    fn collect_task_batch(backend: TaskExecutorBackend, count: u32) -> Vec<u32> {
+        struct CollectModel {
+            got: Vec<u32>,
+        }
+        #[derive(Debug)]
+        enum CollectMsg {
+            Got(u32),
+        }
+        impl From<Event> for CollectMsg {
+            fn from(_: Event) -> Self {
+                CollectMsg::Got(u32::MAX)
+            }
+        }
+        impl Model for CollectModel {
+            type Message = CollectMsg;
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    CollectMsg::Got(value) => self.got.push(value),
+                }
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let config = ProgramConfig::default()
+            .with_effect_queue(EffectQueueConfig::default().with_backend(backend));
+        let mut program = headless_program_with_config(CollectModel { got: Vec::new() }, config);
+        for index in 0..count {
+            program
+                .execute_cmd(Cmd::task(move || CollectMsg::Got(index)))
+                .expect("task cmd");
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while program.model().got.len() < count as usize && Instant::now() <= deadline {
+            program
+                .process_task_results()
+                .expect("process task results");
+            program.reap_finished_tasks();
+        }
+        let mut got = program.model().got.clone();
+        got.sort_unstable();
+        got
+    }
+
+    #[cfg(feature = "asupersync-executor")]
+    #[test]
+    fn asupersync_semantic_parity_with_spawned_backend() {
+        // The same task batch must deliver an identical message multiset whether
+        // run through the legacy Spawned backend or the Asupersync backend. This
+        // is the evidence-backed semantic-parity check (a shadow-run in miniature).
+        let expected: Vec<u32> = (0..16).collect();
+        let spawned = collect_task_batch(TaskExecutorBackend::Spawned, 16);
+        let asupersync = collect_task_batch(TaskExecutorBackend::Asupersync, 16);
+        assert_eq!(
+            spawned, expected,
+            "spawned backend lost or reordered results"
+        );
+        assert_eq!(
+            asupersync, expected,
+            "asupersync backend diverged from the expected results"
+        );
+        assert_eq!(
+            asupersync, spawned,
+            "asupersync diverged from spawned (parity)"
+        );
+    }
+
+    #[cfg(feature = "asupersync-executor")]
+    #[test]
+    fn asupersync_stress_delivers_every_task() {
+        // Under a large burst, every task result must arrive exactly once.
+        let count: u32 = 200;
+        let got = collect_task_batch(TaskExecutorBackend::Asupersync, count);
+        assert_eq!(
+            got.len(),
+            count as usize,
+            "asupersync dropped tasks under load"
+        );
+        assert_eq!(got, (0..count).collect::<Vec<_>>());
+    }
+
+    #[cfg(feature = "asupersync-executor")]
+    #[test]
+    fn asupersync_task_panic_is_isolated() {
+        struct PanicModel {
+            survivor_seen: bool,
+        }
+        #[derive(Debug)]
+        enum PanicMsg {
+            Survivor,
+        }
+        impl From<Event> for PanicMsg {
+            fn from(_: Event) -> Self {
+                PanicMsg::Survivor
+            }
+        }
+        impl Model for PanicModel {
+            type Message = PanicMsg;
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    PanicMsg::Survivor => self.survivor_seen = true,
+                }
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let evidence_path = temp_evidence_path("asupersync_panic");
+        let sink_config = EvidenceSinkConfig::enabled_file(&evidence_path);
+        let config = ProgramConfig::default()
+            .with_evidence_sink(sink_config)
+            .with_effect_queue(
+                EffectQueueConfig::default().with_backend(TaskExecutorBackend::Asupersync),
+            );
+        let mut program = headless_program_with_config(
+            PanicModel {
+                survivor_seen: false,
+            },
+            config,
+        );
+
+        // A panicking task must neither crash the executor nor deliver a message...
+        program
+            .execute_cmd(Cmd::task(|| -> PanicMsg { panic!("asupersync boom") }))
+            .expect("panic task cmd");
+        // ...and a task submitted afterwards must still complete normally.
+        program
+            .execute_cmd(Cmd::task(|| PanicMsg::Survivor))
+            .expect("survivor task cmd");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !program.model().survivor_seen && Instant::now() <= deadline {
+            program
+                .process_task_results()
+                .expect("process task results");
+            program.reap_finished_tasks();
+        }
+        assert!(
+            program.model().survivor_seen,
+            "executor did not survive a panicking task"
+        );
+        let panic_line = read_evidence_event(&evidence_path, "task_executor_panic");
+        assert_eq!(panic_line["backend"], "asupersync");
+    }
+
+    #[cfg(feature = "asupersync-executor")]
+    #[test]
+    fn asupersync_rejects_tasks_after_shutdown() {
+        struct ShutdownModel {
+            seen: bool,
+        }
+        #[derive(Debug)]
+        enum ShutdownMsg {
+            Seen,
+        }
+        impl From<Event> for ShutdownMsg {
+            fn from(_: Event) -> Self {
+                ShutdownMsg::Seen
+            }
+        }
+        impl Model for ShutdownModel {
+            type Message = ShutdownMsg;
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    ShutdownMsg::Seen => self.seen = true,
+                }
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let config = ProgramConfig::default().with_effect_queue(
+            EffectQueueConfig::default().with_backend(TaskExecutorBackend::Asupersync),
+        );
+        let mut program = headless_program_with_config(ShutdownModel { seen: false }, config);
+
+        // After shutdown, new submissions are rejected (structured ownership):
+        // the task never runs, so no message is delivered.
+        program.task_executor.shutdown();
+        program
+            .execute_cmd(Cmd::task(|| ShutdownMsg::Seen))
+            .expect("post-shutdown task cmd");
+
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while Instant::now() <= deadline {
+            program
+                .process_task_results()
+                .expect("process task results");
+            program.reap_finished_tasks();
+        }
+        assert!(
+            !program.model().seen,
+            "a task submitted after shutdown was executed"
+        );
+    }
+
+    #[cfg(feature = "asupersync-executor")]
+    #[test]
+    fn asupersync_backpressure_sheds_excess_in_flight_tasks() {
+        struct SlowModel {
+            done: u32,
+        }
+        #[derive(Debug)]
+        enum SlowMsg {
+            Done,
+        }
+        impl From<Event> for SlowMsg {
+            fn from(_: Event) -> Self {
+                SlowMsg::Done
+            }
+        }
+        impl Model for SlowModel {
+            type Message = SlowMsg;
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    SlowMsg::Done => self.done += 1,
+                }
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let evidence_path = temp_evidence_path("asupersync_backpressure");
+        let sink_config = EvidenceSinkConfig::enabled_file(&evidence_path);
+        let config = ProgramConfig::default()
+            .with_evidence_sink(sink_config)
+            .with_effect_queue(
+                EffectQueueConfig::default()
+                    .with_backend(TaskExecutorBackend::Asupersync)
+                    .with_max_queue_depth(2),
+            );
+        let mut program = headless_program_with_config(SlowModel { done: 0 }, config);
+
+        // Submit more slow (still in-flight) tasks than the depth cap allows: the
+        // first two occupy the in-flight slots, the rest are shed by backpressure.
+        for _ in 0..6 {
+            program
+                .execute_cmd(Cmd::task(|| {
+                    std::thread::sleep(Duration::from_millis(120));
+                    SlowMsg::Done
+                }))
+                .expect("slow task cmd");
+        }
+
+        // Backpressure must have fired with a recorded drop.
+        let backpressure_line = read_evidence_event(&evidence_path, "task_executor_backpressure");
+        assert_eq!(backpressure_line["backend"], "asupersync");
+        assert_eq!(backpressure_line["action"], "drop");
+
+        // Drain the accepted tasks so teardown is prompt; no more than the depth
+        // cap of tasks may complete.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while program.model().done < 2 && Instant::now() <= deadline {
+            program
+                .process_task_results()
+                .expect("process task results");
+            program.reap_finished_tasks();
+        }
+        assert!(
+            program.model().done <= 2,
+            "more tasks completed than the in-flight depth cap permits"
+        );
     }
 
     // =========================================================================
