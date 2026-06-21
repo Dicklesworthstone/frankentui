@@ -184,6 +184,7 @@ pub mod mapping_atlas;
 pub mod metamorphic_oracle;
 pub mod migration_config;
 pub mod migration_ir;
+pub mod milestone_policy;
 pub mod module_graph;
 pub mod paper_verification;
 pub mod performance_diff;
