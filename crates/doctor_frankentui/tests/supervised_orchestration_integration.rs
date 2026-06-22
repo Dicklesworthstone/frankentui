@@ -1,0 +1,247 @@
+//! Real-subprocess integration coverage for the supervised orchestration
+//! substrate (bd-1dccp / bd-11ngr).
+//!
+//! The unit tests in `supervised_orchestration.rs` prove the pure decision core
+//! deterministically with a mock clock. These tests prove the
+//! [`supervise_subprocess`] supervisor against *real* child processes: success,
+//! non-zero exit (with and without retry), output capture, deadline-driven kill,
+//! and token cancellation -- all with bounded teardown so a stuck child can
+//! never wedge a doctor lane.
+
+use std::process::Command;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use doctor_frankentui::supervised_orchestration::{
+    AttemptOutcomeKind, Backoff, CancelReason, StepOutcome, SupervisionBudget, supervise_subprocess,
+};
+use ftui_runtime::cancellation::CancellationSource;
+
+fn budget(deadline_ms: u64, max_attempts: u32) -> SupervisionBudget {
+    SupervisionBudget {
+        deadline_ms,
+        max_attempts,
+    }
+}
+
+#[test]
+fn subprocess_success_records_ok() {
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "test",
+        "true",
+        budget(10_000, 3),
+        Backoff::none(),
+        &source.token(),
+        true,
+        || Command::new("true"),
+    );
+    assert_eq!(run.record.final_outcome, StepOutcome::Succeeded);
+    assert_eq!(run.exit_code, Some(0));
+    assert_eq!(run.record.attempts_used, 1);
+    assert_eq!(run.record.attempts[0].outcome, AttemptOutcomeKind::Ok);
+}
+
+#[test]
+fn subprocess_nonzero_without_retry_is_fatal() {
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "test",
+        "false",
+        budget(10_000, 3),
+        Backoff::none(),
+        &source.token(),
+        false,
+        || Command::new("false"),
+    );
+    assert!(matches!(
+        run.record.final_outcome,
+        StepOutcome::Failed { .. }
+    ));
+    assert_eq!(run.exit_code, Some(1));
+    assert_eq!(run.record.attempts_used, 1, "non-retryable must not retry");
+    assert_eq!(run.record.attempts[0].outcome, AttemptOutcomeKind::Fatal);
+}
+
+#[test]
+fn subprocess_nonzero_with_retry_exhausts_budget() {
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "test",
+        "false",
+        budget(10_000, 3),
+        Backoff::none(),
+        &source.token(),
+        true,
+        || Command::new("false"),
+    );
+    assert!(matches!(
+        run.record.final_outcome,
+        StepOutcome::Failed { .. }
+    ));
+    assert_eq!(run.record.attempts_used, 3);
+    assert!(
+        run.record
+            .attempts
+            .iter()
+            .all(|a| a.outcome == AttemptOutcomeKind::Retryable)
+    );
+}
+
+#[test]
+fn subprocess_captures_stdout() {
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "test",
+        "echo",
+        budget(10_000, 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        || {
+            let mut cmd = Command::new("echo");
+            cmd.arg("hello-supervised");
+            cmd
+        },
+    );
+    assert_eq!(run.record.final_outcome, StepOutcome::Succeeded);
+    assert!(
+        run.stdout.contains("hello-supervised"),
+        "stdout should be captured, got: {:?}",
+        run.stdout
+    );
+}
+
+#[test]
+fn subprocess_deadline_kills_child_promptly() {
+    let source = CancellationSource::new();
+    let start = Instant::now();
+    let run = supervise_subprocess(
+        "test",
+        "sleep",
+        budget(400, 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        || {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("60");
+            cmd
+        },
+    );
+    let elapsed = start.elapsed();
+    assert_eq!(run.record.final_outcome, StepOutcome::TimedOut);
+    assert_eq!(run.record.cancel_reason, Some(CancelReason::Deadline));
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "deadline must kill the child promptly, took {elapsed:?}"
+    );
+}
+
+#[test]
+fn subprocess_cancellation_kills_child_promptly() {
+    let source = Arc::new(CancellationSource::new());
+    let token = source.token();
+    let canceller = Arc::clone(&source);
+    let handle = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(150));
+        canceller.cancel();
+    });
+
+    let start = Instant::now();
+    let run = supervise_subprocess(
+        "test",
+        "sleep",
+        budget(60_000, 1),
+        Backoff::none(),
+        &token,
+        false,
+        || {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("60");
+            cmd
+        },
+    );
+    let elapsed = start.elapsed();
+    handle.join().expect("canceller thread");
+
+    assert_eq!(
+        run.record.final_outcome,
+        StepOutcome::Cancelled {
+            reason: CancelReason::Caller
+        }
+    );
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "cancellation must kill the child promptly, took {elapsed:?}"
+    );
+}
+
+#[test]
+fn subprocess_retries_then_succeeds() {
+    // A command that fails the first time and succeeds the second, driven by a
+    // counter file so the retry path is exercised deterministically.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let counter = dir.path().join("attempts");
+    let counter_path = counter.to_string_lossy().into_owned();
+
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "test",
+        "flaky",
+        budget(10_000, 3),
+        Backoff::fixed(10),
+        &source.token(),
+        true,
+        || {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(format!(
+                "n=$(cat '{counter_path}' 2>/dev/null || echo 0); n=$((n+1)); \
+                 echo $n > '{counter_path}'; [ $n -ge 2 ]"
+            ));
+            cmd
+        },
+    );
+
+    assert_eq!(run.record.final_outcome, StepOutcome::Succeeded);
+    assert_eq!(run.record.attempts_used, 2, "should fail once then succeed");
+    assert_eq!(
+        run.record.attempts[0].outcome,
+        AttemptOutcomeKind::Retryable
+    );
+    assert_eq!(run.record.attempts[1].outcome, AttemptOutcomeKind::Ok);
+}
+
+#[test]
+fn subprocess_record_evidence_is_serializable_and_triage_ready() {
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "capture",
+        "vhs_smoke",
+        budget(10_000, 2),
+        Backoff::fixed(10),
+        &source.token(),
+        true,
+        || Command::new("true"),
+    );
+
+    let terms = run.record.evidence_terms();
+    assert!(terms.contains(&"lane=capture".to_string()));
+    assert!(terms.contains(&"step=vhs_smoke".to_string()));
+    assert!(terms.contains(&"final_outcome=succeeded".to_string()));
+
+    // The record (and a derived DecisionRecord) round-trips through JSON for the
+    // evidence ledger.
+    let json = serde_json::to_string(&run.record).expect("serialize record");
+    let decoded: doctor_frankentui::supervised_orchestration::SupervisionRecord =
+        serde_json::from_str(&json).expect("deserialize record");
+    assert_eq!(decoded, run.record);
+
+    let decision = run
+        .record
+        .to_decision_record("2026-06-22T00:00:00Z", "trace-x", "policy-x");
+    assert!(!decision.fallback_active);
+    let decision_json = serde_json::to_string(&decision).expect("serialize decision");
+    assert!(decision_json.contains("supervise_capture"));
+}

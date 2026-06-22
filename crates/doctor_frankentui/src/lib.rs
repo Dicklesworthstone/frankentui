@@ -203,6 +203,7 @@ pub mod state_effects;
 pub mod state_event_translator;
 pub mod style_semantics;
 pub mod style_translator;
+pub mod supervised_orchestration;
 pub mod suite;
 pub mod tape;
 pub mod test_budget_allocator;
