@@ -397,6 +397,16 @@ fn seed_demo_run_seed_demo_wrapper_converts_args_and_succeeds() {
     );
     assert!(log.contains("event=seed_complete"));
 
+    // Structured supervision evidence (bd-vf06l): each completed stage emits a
+    // deterministic, machine-parseable supervision record alongside the existing
+    // text logs.
+    assert!(
+        log.contains(
+            "event=seed_supervision lane=seed step=ensure_project final_outcome=succeeded"
+        ),
+        "seed lane must emit structured supervision evidence per stage"
+    );
+
     let first_send_body: Value =
         serde_json::from_str(&send_messages[0].request_body).expect("parse send_message payload");
     assert_eq!(

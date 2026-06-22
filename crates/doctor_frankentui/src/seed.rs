@@ -8,6 +8,10 @@ use reqwest::blocking::Client;
 use serde_json::{Value, json};
 
 use crate::error::{DoctorError, Result};
+use crate::supervised_orchestration::{
+    AttemptEvidence, AttemptOutcomeKind, Backoff, CancelReason, StepOutcome, SupervisionBudget,
+    SupervisionRecord,
+};
 use crate::util::{OutputIntegration, append_line, normalize_http_path, now_utc_iso, output_for};
 
 const RPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -261,6 +265,70 @@ fn log_message_stage_failed(
     ));
 }
 
+/// Classify a stage failure into the supervision outcome lattice, using the
+/// deadline's cancellation/expiry state to distinguish timeout and cancellation
+/// from an ordinary failure.
+fn classify_stage_failure(deadline: &Deadline) -> StepOutcome {
+    if deadline.is_cancelled() {
+        StepOutcome::Cancelled {
+            reason: CancelReason::Caller,
+        }
+    } else if deadline.is_expired() {
+        StepOutcome::TimedOut
+    } else {
+        StepOutcome::Failed {
+            reason: "stage_failed".to_string(),
+        }
+    }
+}
+
+/// Emit a deterministic, stage-level [`SupervisionRecord`] for the seed lane.
+///
+/// This is additive structured evidence layered over the existing per-stage text
+/// logs: the RPC-level retry/backoff detail stays in the `rpc_*`/`seed_stage_*`
+/// lines, while this one machine-parseable `event=seed_supervision` line carries
+/// the stage's outcome in the shared supervision vocabulary so it can feed the
+/// evidence ledger and operator triage uniformly across lanes.
+fn emit_stage_supervision(
+    client: &RpcClient,
+    stage: &str,
+    deadline: &Deadline,
+    outcome: StepOutcome,
+) {
+    let attempt_kind = match &outcome {
+        StepOutcome::Succeeded => AttemptOutcomeKind::Ok,
+        StepOutcome::Failed { .. } => AttemptOutcomeKind::Fatal,
+        StepOutcome::TimedOut => AttemptOutcomeKind::TimedOut,
+        StepOutcome::Cancelled { .. } => AttemptOutcomeKind::Cancelled,
+    };
+    let cancel_reason = match &outcome {
+        StepOutcome::Cancelled { reason } => Some(*reason),
+        StepOutcome::TimedOut => Some(CancelReason::Deadline),
+        _ => None,
+    };
+    let record = SupervisionRecord {
+        lane: "seed".to_string(),
+        step: stage.to_string(),
+        budget: SupervisionBudget::new(deadline.timeout, 1),
+        backoff: Backoff::exponential(
+            RPC_RETRY_BASE_BACKOFF_MS,
+            RPC_RETRY_BASE_BACKOFF_MS << RPC_RETRY_MAX_ATTEMPTS.saturating_sub(1),
+        ),
+        attempts: vec![AttemptEvidence {
+            index: 1,
+            outcome: attempt_kind,
+            detail: None,
+        }],
+        attempts_used: 1,
+        final_outcome: outcome,
+        cancel_reason,
+    };
+    let _ = client.log_line(&format!(
+        "event=seed_supervision {}",
+        record.evidence_terms().join(" ")
+    ));
+}
+
 fn run_seed_stage(
     client: &mut RpcClient,
     stage: &str,
@@ -271,10 +339,12 @@ fn run_seed_stage(
     match client.call_tool(stage, arguments, deadline) {
         Ok(value) => {
             log_stage_completed(client, stage, deadline);
+            emit_stage_supervision(client, stage, deadline, StepOutcome::Succeeded);
             Ok(value)
         }
         Err(error) => {
             log_stage_failed(client, stage, deadline, &error);
+            emit_stage_supervision(client, stage, deadline, classify_stage_failure(deadline));
             Err(error)
         }
     }
@@ -713,12 +783,43 @@ pub fn run_seed_with_config(config: SeedDemoConfig) -> Result<()> {
 mod tests {
     use super::{
         Deadline, RPC_RETRY_BASE_BACKOFF_MS, RetryPolicy, RpcClient, SeedDemoConfig,
-        wait_for_server,
+        classify_stage_failure, wait_for_server,
     };
     use crate::error::DoctorError;
+    use crate::supervised_orchestration::{CancelReason, StepOutcome};
     use crate::util::OutputIntegration;
+    use ftui_runtime::cancellation::CancellationSource;
     use serde_json::json;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn classify_stage_failure_maps_deadline_state_to_outcome_lattice() {
+        // Healthy deadline (not expired, not cancelled) -> ordinary failure.
+        let live = Deadline::after(Duration::from_secs(30));
+        assert!(matches!(
+            classify_stage_failure(&live),
+            StepOutcome::Failed { .. }
+        ));
+
+        // Expired deadline -> timed out.
+        let expired = Deadline::after(Duration::ZERO);
+        assert_eq!(classify_stage_failure(&expired), StepOutcome::TimedOut);
+
+        // Cancelled token -> cancelled by caller.
+        let source = CancellationSource::new();
+        source.cancel();
+        let cancelled = Deadline {
+            started_at: Instant::now(),
+            timeout: Duration::from_secs(30),
+            cancel_token: Some(source.token()),
+        };
+        assert_eq!(
+            classify_stage_failure(&cancelled),
+            StepOutcome::Cancelled {
+                reason: CancelReason::Caller
+            }
+        );
+    }
 
     #[test]
     fn should_retry_matches_retryable_invalid_argument_messages() {
