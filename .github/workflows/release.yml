@@ -30,7 +30,7 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
       - name: Check version consistency
@@ -64,7 +64,7 @@ jobs:
     # Skip pre-release tags (containing '-', e.g. v0.3.0-rc1)
     if: ${{ !contains(needs.verify.outputs.version, '-') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@nightly
