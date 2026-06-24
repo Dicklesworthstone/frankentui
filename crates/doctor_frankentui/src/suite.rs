@@ -1,18 +1,22 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use clap::Args;
+use ftui_runtime::cancellation::CancellationSource;
 use serde::Serialize;
 
 use crate::error::{DoctorError, Result};
 use crate::profile::list_profile_names;
 use crate::report::{ReportArgs, run_report_with_runs};
 use crate::runmeta::{RunMeta, normalize_loaded_run_meta_paths};
+use crate::supervised_orchestration::{
+    Backoff, SubprocessStdio, SupervisedSubprocess, SupervisionBudget, supervise_subprocess,
+};
 use crate::util::{
-    OutputIntegration, ensure_dir, ensure_exists, exit_status_code, now_compact_timestamp,
-    now_utc_iso, output_for, write_string,
+    OutputIntegration, ensure_dir, ensure_exists, now_compact_timestamp, now_utc_iso, output_for,
+    write_string,
 };
 
 #[derive(Debug, Clone, Args)]
@@ -245,29 +249,37 @@ fn suite_run_meta_path(suite_dir: &std::path::Path, run_name: &str) -> PathBuf {
     suite_run_dir(suite_dir, run_name).join("run_meta.json")
 }
 
-fn run_capture_subprocess_to_log(command: &mut Command, log_path: &std::path::Path) -> Result<i32> {
-    let stdout_log = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(log_path)?;
-    let stderr_log = stdout_log.try_clone()?;
-    let mut spawn_error_log = stdout_log.try_clone()?;
+/// Generous per-run hang-guard for a suite capture subprocess. The inner
+/// `capture` invocation self-limits at its own `capture_timeout_seconds`
+/// (default 300s) plus seed/report time, so this deadline sits far above any
+/// legitimate run and only ever fires as a final backstop against a wedged
+/// child — preserving the suite's previously-unbounded behaviour in practice
+/// while guaranteeing the lane can never hang indefinitely.
+const SUITE_RUN_DEADLINE: Duration = Duration::from_secs(3600);
 
-    command
-        .stdout(Stdio::from(stdout_log))
-        .stderr(Stdio::from(stderr_log));
-
-    match command.status() {
-        Ok(status) => Ok(exit_status_code(status)),
-        Err(error) => {
-            let _ = writeln!(
-                spawn_error_log,
-                "suite failed to launch capture subprocess: {error}"
-            );
-            Err(error.into())
-        }
-    }
+/// Run a single suite capture subprocess under the supervised-orchestration
+/// substrate, streaming its combined stdout/stderr to `log_path` (truncated
+/// fresh) and returning a deterministic [`SupervisedSubprocess`] record. The
+/// run-once contract (`max_attempts = 1`, no retry) preserves the suite's
+/// existing semantics; the returned record's exit code is signal-aware
+/// (`128 + signal`) and its evidence terms feed the suite's structured
+/// supervision summary.
+fn run_capture_subprocess_to_log(
+    step: &str,
+    log_path: &std::path::Path,
+    make_command: impl FnMut() -> Command,
+) -> SupervisedSubprocess {
+    let source = CancellationSource::new();
+    supervise_subprocess(
+        "suite",
+        step,
+        SupervisionBudget::new(SUITE_RUN_DEADLINE, 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        &SubprocessStdio::ToFile(log_path.to_path_buf()),
+        make_command,
+    )
 }
 
 fn prepare_suite_dir(path: &std::path::Path) -> Result<()> {
@@ -568,43 +580,57 @@ fn run_suite_with_integration(args: SuiteArgs, integration: &OutputIntegration) 
 
     for plan in &run_plans {
         let profile = &plan.profile;
-        let mut command = Command::new(&current_exe);
-        command
-            .arg("capture")
-            .arg("--profile")
-            .arg(profile)
-            .arg("--project-dir")
-            .arg(&project_dir)
-            .arg("--run-root")
-            .arg(&suite_dir)
-            .arg("--run-name")
-            .arg(&plan.run_name);
-
-        if let Some(app_command) = &app_command {
-            command.arg("--app-command").arg(app_command);
-        }
-
-        if let Some(binary) = &binary {
-            command.arg("--binary").arg(binary);
-        }
-
-        if let Some(host) = &args.host {
-            command.arg("--host").arg(host);
-        }
-        if let Some(port) = &args.port {
-            command.arg("--port").arg(port);
-        }
-        if let Some(http_path) = &args.http_path {
-            command.arg("--path").arg(http_path);
-        }
-        if let Some(auth_bearer) = &args.auth_bearer {
-            command.arg("--auth-token").arg(auth_bearer);
-        }
 
         ui.info(&format!("suite running profile={profile}"));
         summary.push_str(&format!("[suite] running profile={profile}\n"));
 
-        let rc = run_capture_subprocess_to_log(&mut command, &plan.log_path)?;
+        let run = run_capture_subprocess_to_log(profile, &plan.log_path, || {
+            let mut command = Command::new(&current_exe);
+            command
+                .arg("capture")
+                .arg("--profile")
+                .arg(profile)
+                .arg("--project-dir")
+                .arg(&project_dir)
+                .arg("--run-root")
+                .arg(&suite_dir)
+                .arg("--run-name")
+                .arg(&plan.run_name);
+
+            if let Some(app_command) = &app_command {
+                command.arg("--app-command").arg(app_command);
+            }
+
+            if let Some(binary) = &binary {
+                command.arg("--binary").arg(binary);
+            }
+
+            if let Some(host) = &args.host {
+                command.arg("--host").arg(host);
+            }
+            if let Some(port) = &args.port {
+                command.arg("--port").arg(port);
+            }
+            if let Some(http_path) = &args.http_path {
+                command.arg("--path").arg(http_path);
+            }
+            if let Some(auth_bearer) = &args.auth_bearer {
+                command.arg("--auth-token").arg(auth_bearer);
+            }
+            command
+        });
+
+        summary.push_str(&format!(
+            "[suite] event=suite_supervision {}\n",
+            run.record.evidence_terms().join(" ")
+        ));
+
+        let rc = run.exit_code.ok_or_else(|| {
+            DoctorError::invalid(format!(
+                "suite capture subprocess produced no exit code for profile={profile}: outcome={:?}",
+                run.record.final_outcome
+            ))
+        })?;
         executions.push(SuiteRunExecution {
             plan: plan.clone(),
             exit_code: Some(rc),
@@ -890,15 +916,16 @@ mod tests {
     fn run_capture_subprocess_to_log_streams_stdout_and_stderr() {
         let temp = tempdir().expect("tempdir");
         let log_path = temp.path().join("runner.log");
-        let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg("printf 'stdout-line\\n'; printf 'stderr-line\\n' 1>&2; exit 7");
 
-        let exit_code = super::run_capture_subprocess_to_log(&mut command, &log_path)
-            .expect("command should run");
+        let run = super::run_capture_subprocess_to_log("profile-x", &log_path, || {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg("printf 'stdout-line\\n'; printf 'stderr-line\\n' 1>&2; exit 7");
+            command
+        });
 
-        assert_eq!(exit_code, 7);
+        assert_eq!(run.exit_code, Some(7));
         let log = fs::read_to_string(&log_path).expect("read log");
         assert!(log.contains("stdout-line"));
         assert!(log.contains("stderr-line"));
@@ -909,13 +936,30 @@ mod tests {
     fn run_capture_subprocess_to_log_preserves_signal_exit_code() {
         let temp = tempdir().expect("tempdir");
         let log_path = temp.path().join("runner.log");
-        let mut command = Command::new("sh");
-        command.arg("-c").arg("kill -TERM $$");
 
-        let exit_code = super::run_capture_subprocess_to_log(&mut command, &log_path)
-            .expect("command should run");
+        let run = super::run_capture_subprocess_to_log("profile-x", &log_path, || {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg("kill -TERM $$");
+            command
+        });
 
-        assert_eq!(exit_code, 143);
+        assert_eq!(run.exit_code, Some(143));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_capture_subprocess_to_log_emits_suite_supervision_evidence() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("runner.log");
+
+        let run =
+            super::run_capture_subprocess_to_log("profile-x", &log_path, || Command::new("true"));
+
+        assert_eq!(run.exit_code, Some(0));
+        let terms = run.record.evidence_terms();
+        assert!(terms.contains(&"lane=suite".to_string()));
+        assert!(terms.contains(&"step=profile-x".to_string()));
+        assert!(terms.contains(&"final_outcome=succeeded".to_string()));
     }
 
     #[test]
