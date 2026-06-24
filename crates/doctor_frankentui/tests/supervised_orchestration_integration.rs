@@ -14,7 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use doctor_frankentui::supervised_orchestration::{
-    AttemptOutcomeKind, Backoff, CancelReason, StepOutcome, SupervisionBudget, supervise_subprocess,
+    AttemptOutcomeKind, Backoff, CancelReason, StepOutcome, SubprocessStdio, SupervisionBudget,
+    supervise_subprocess,
 };
 use ftui_runtime::cancellation::CancellationSource;
 
@@ -35,6 +36,7 @@ fn subprocess_success_records_ok() {
         Backoff::none(),
         &source.token(),
         true,
+        &SubprocessStdio::Capture,
         || Command::new("true"),
     );
     assert_eq!(run.record.final_outcome, StepOutcome::Succeeded);
@@ -53,6 +55,7 @@ fn subprocess_nonzero_without_retry_is_fatal() {
         Backoff::none(),
         &source.token(),
         false,
+        &SubprocessStdio::Capture,
         || Command::new("false"),
     );
     assert!(matches!(
@@ -74,6 +77,7 @@ fn subprocess_nonzero_with_retry_exhausts_budget() {
         Backoff::none(),
         &source.token(),
         true,
+        &SubprocessStdio::Capture,
         || Command::new("false"),
     );
     assert!(matches!(
@@ -99,6 +103,7 @@ fn subprocess_captures_stdout() {
         Backoff::none(),
         &source.token(),
         false,
+        &SubprocessStdio::Capture,
         || {
             let mut cmd = Command::new("echo");
             cmd.arg("hello-supervised");
@@ -124,6 +129,7 @@ fn subprocess_deadline_kills_child_promptly() {
         Backoff::none(),
         &source.token(),
         false,
+        &SubprocessStdio::Capture,
         || {
             let mut cmd = Command::new("sleep");
             cmd.arg("60");
@@ -157,6 +163,7 @@ fn subprocess_cancellation_kills_child_promptly() {
         Backoff::none(),
         &token,
         false,
+        &SubprocessStdio::Capture,
         || {
             let mut cmd = Command::new("sleep");
             cmd.arg("60");
@@ -194,6 +201,7 @@ fn subprocess_retries_then_succeeds() {
         Backoff::fixed(10),
         &source.token(),
         true,
+        &SubprocessStdio::Capture,
         || {
             let mut cmd = Command::new("sh");
             cmd.arg("-c").arg(format!(
@@ -223,6 +231,7 @@ fn subprocess_record_evidence_is_serializable_and_triage_ready() {
         Backoff::fixed(10),
         &source.token(),
         true,
+        &SubprocessStdio::Capture,
         || Command::new("true"),
     );
 
@@ -244,4 +253,122 @@ fn subprocess_record_evidence_is_serializable_and_triage_ready() {
     assert!(!decision.fallback_active);
     let decision_json = serde_json::to_string(&decision).expect("serialize decision");
     assert!(decision_json.contains("supervise_capture"));
+}
+
+#[test]
+fn subprocess_signal_termination_reports_shell_convention_exit_code() {
+    // A child that signals itself (SIGTERM) has no exit *code*; the substrate must
+    // report the shell convention `128 + signal` (143 for SIGTERM) rather than the
+    // raw `None`, so signal deaths are triage-able and feed the retry classifier
+    // the same way the capture / suite lanes' `exit_status_code` does.
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "test",
+        "self_sigterm",
+        budget(10_000, 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        &SubprocessStdio::Capture,
+        || {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("kill -TERM $$");
+            cmd
+        },
+    );
+    assert_eq!(run.exit_code, Some(143), "SIGTERM must map to 128 + 15");
+    assert!(matches!(
+        run.record.final_outcome,
+        StepOutcome::Failed { .. }
+    ));
+    assert_eq!(run.record.attempts[0].outcome, AttemptOutcomeKind::Fatal);
+    assert!(
+        run.record.attempts[0]
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("exit_code=143")),
+        "evidence detail should carry the signal-aware code, got: {:?}",
+        run.record.attempts[0].detail
+    );
+}
+
+#[test]
+fn subprocess_to_file_streams_combined_output_to_log() {
+    // `ToFile` redirects stdout + stderr (interleaved) straight to disk and leaves
+    // the in-memory capture buffers empty -- the contract the capture / suite lanes
+    // need to route their on-disk logs through the substrate.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log_path = dir.path().join("capture.log");
+
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "capture",
+        "to_file",
+        budget(10_000, 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        &SubprocessStdio::ToFile(log_path.clone()),
+        || {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("echo out-line; echo err-line 1>&2");
+            cmd
+        },
+    );
+
+    assert_eq!(run.record.final_outcome, StepOutcome::Succeeded);
+    assert_eq!(run.exit_code, Some(0));
+    assert!(
+        run.stdout.is_empty() && run.stderr.is_empty(),
+        "ToFile must not populate the in-memory buffers, got stdout={:?} stderr={:?}",
+        run.stdout,
+        run.stderr
+    );
+
+    let logged = std::fs::read_to_string(&log_path).expect("read capture log");
+    assert!(
+        logged.contains("out-line") && logged.contains("err-line"),
+        "both streams must be interleaved into the log, got: {logged:?}"
+    );
+}
+
+#[test]
+fn subprocess_to_file_truncates_log_each_attempt() {
+    // Each retry must start from a fresh (truncated) log so the file reflects only
+    // the final attempt's output, matching `run_capture_subprocess_to_log`.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log_path = dir.path().join("retry.log");
+    let counter = dir.path().join("attempts");
+    let counter_path = counter.to_string_lossy().into_owned();
+
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "capture",
+        "to_file_retry",
+        budget(10_000, 3),
+        Backoff::fixed(10),
+        &source.token(),
+        true,
+        &SubprocessStdio::ToFile(log_path.clone()),
+        || {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(format!(
+                "n=$(cat '{counter_path}' 2>/dev/null || echo 0); n=$((n+1)); \
+                 echo $n > '{counter_path}'; echo attempt-$n; [ $n -ge 2 ]"
+            ));
+            cmd
+        },
+    );
+
+    assert_eq!(run.record.final_outcome, StepOutcome::Succeeded);
+    assert_eq!(run.record.attempts_used, 2);
+    let logged = std::fs::read_to_string(&log_path).expect("read retry log");
+    assert!(
+        logged.contains("attempt-2"),
+        "final attempt output must be present, got: {logged:?}"
+    );
+    assert!(
+        !logged.contains("attempt-1"),
+        "earlier attempts must be truncated, got: {logged:?}"
+    );
 }

@@ -28,6 +28,7 @@
 //! deterministic fingerprint ([`SupervisionRecord::evidence_terms`]); only
 //! configured budgets and attempt-outcome *classes* appear there.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ftui_runtime::cancellation::CancellationToken;
@@ -585,32 +586,71 @@ where
 // Subprocess supervisor (real children with wait-timeout polling)
 // ============================================================================
 
+/// How a supervised child's stdout/stderr are wired.
+///
+/// The substrate default (and the original behaviour) is [`SubprocessStdio::Capture`],
+/// which pipes both streams and drains them into the [`SupervisedSubprocess`]
+/// `stdout`/`stderr` fields. Lanes that stream a child's combined output to an
+/// on-disk log (the capture / suite lanes) use [`SubprocessStdio::ToFile`], which
+/// directs *both* streams, interleaved, into a single log file truncated fresh on
+/// each attempt — matching the existing `run_capture_subprocess_to_log` contract.
+/// In that mode the in-memory `stdout`/`stderr` fields stay empty.
+#[derive(Debug, Clone)]
+pub enum SubprocessStdio {
+    /// Pipe stdout and stderr and capture them into the returned String fields.
+    Capture,
+    /// Stream stdout and stderr (interleaved) into the file at this path,
+    /// truncated fresh on every attempt.
+    ToFile(PathBuf),
+}
+
 /// Outcome of a supervised subprocess execution.
 #[derive(Debug)]
 pub struct SupervisedSubprocess {
     /// The deterministic supervision record.
     pub record: SupervisionRecord,
-    /// Exit code of the last attempt, if the child exited.
+    /// Exit code of the last attempt, if the child exited. Signal-terminated
+    /// children report the shell convention `128 + signal` (e.g. SIGTERM → 143)
+    /// rather than `None`, matching [`crate::util::exit_status_code`].
     pub exit_code: Option<i32>,
-    /// Captured stdout of the last attempt.
+    /// Captured stdout of the last attempt (empty unless [`SubprocessStdio::Capture`]).
     pub stdout: String,
-    /// Captured stderr of the last attempt.
+    /// Captured stderr of the last attempt (empty unless [`SubprocessStdio::Capture`]).
     pub stderr: String,
 }
 
 /// How long to poll between `wait_timeout` checks while supervising a child.
 const SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+/// Open `path` (create + truncate) and clone the handle so a child's stdout and
+/// stderr can both be redirected, interleaved, into the same log file. Mirrors
+/// the capture / suite lane's existing log-redirection contract.
+fn open_interleaved_log(path: &std::path::Path) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    let out = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)?;
+    let err = out.try_clone()?;
+    Ok((out, err))
+}
+
 /// Spawn and supervise a child process to completion under `budget`, killing it
 /// on deadline or cancellation. The whole process is retried per the budget when
 /// it exits non-zero and `retry_on_nonzero` is set.
 ///
-/// Classification: exit code `0` → [`StepOutcome::Succeeded`]; non-zero →
-/// [`StepOutcome::Failed`] (retryable when `retry_on_nonzero`); deadline →
-/// [`StepOutcome::TimedOut`]; token → [`StepOutcome::Cancelled`].
+/// Classification: exit code `0` → [`StepOutcome::Succeeded`]; non-zero (or
+/// signal termination, reported as `128 + signal`) → [`StepOutcome::Failed`]
+/// (retryable when `retry_on_nonzero`); deadline → [`StepOutcome::TimedOut`];
+/// token → [`StepOutcome::Cancelled`].
+///
+/// `stdio` selects how the child's output is wired (see [`SubprocessStdio`]):
+/// captured into the returned String fields, or streamed to an on-disk log for
+/// the capture / suite lanes.
 ///
 /// `make_command` is called once per attempt so each retry gets a fresh
 /// [`std::process::Command`].
+#[allow(clippy::too_many_arguments)]
 pub fn supervise_subprocess(
     lane: &str,
     step: &str,
@@ -618,6 +658,7 @@ pub fn supervise_subprocess(
     backoff: Backoff,
     token: &CancellationToken,
     retry_on_nonzero: bool,
+    stdio: &SubprocessStdio,
     mut make_command: impl FnMut() -> std::process::Command,
 ) -> SupervisedSubprocess {
     use std::io::Read;
@@ -678,7 +719,26 @@ pub fn supervise_subprocess(
         }
 
         let mut command = make_command();
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        match stdio {
+            SubprocessStdio::Capture => {
+                command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            }
+            SubprocessStdio::ToFile(path) => match open_interleaved_log(path) {
+                Ok((out, err)) => {
+                    command.stdout(Stdio::from(out)).stderr(Stdio::from(err));
+                }
+                Err(error) => {
+                    let message = format!("log open failed: {error}");
+                    attempts.push(AttemptEvidence {
+                        index,
+                        outcome: AttemptOutcomeKind::Fatal,
+                        detail: Some(message.clone()),
+                    });
+                    final_outcome = StepOutcome::Failed { reason: message };
+                    break;
+                }
+            },
+        }
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -741,16 +801,22 @@ pub fn supervise_subprocess(
             }
         };
 
-        // Drain captured output (best-effort).
+        // Drain captured output (best-effort). Only the capture mode pipes the
+        // child's streams; `ToFile` redirects them straight to disk, so the
+        // in-memory buffers stay empty.
         last_stdout.clear();
         last_stderr.clear();
-        if let Some(mut out) = child.stdout.take() {
-            let _ = out.read_to_string(&mut last_stdout);
+        if matches!(stdio, SubprocessStdio::Capture) {
+            if let Some(mut out) = child.stdout.take() {
+                let _ = out.read_to_string(&mut last_stdout);
+            }
+            if let Some(mut err) = child.stderr.take() {
+                let _ = err.read_to_string(&mut last_stderr);
+            }
         }
-        if let Some(mut err) = child.stderr.take() {
-            let _ = err.read_to_string(&mut last_stderr);
-        }
-        last_exit = exit_status.code();
+        // Signal-aware: a child killed by a signal reports `128 + signal` rather
+        // than `None`, matching the capture / suite lane's `exit_status_code`.
+        last_exit = Some(crate::util::exit_status_code(exit_status));
 
         if exit_status.success() {
             attempts.push(AttemptEvidence {
