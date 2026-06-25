@@ -10,12 +10,17 @@ use std::thread;
 use std::time::Duration;
 
 use clap::{Args, ValueEnum};
+use ftui_runtime::cancellation::CancellationSource;
 use wait_timeout::ChildExt;
 
 use crate::error::{DoctorError, Result};
 use crate::profile::{list_profile_names, load_profile};
 use crate::runmeta::{DecisionRecord, RunMeta, retain_run_scoped_artifact_path};
 use crate::seed::SeedDemoConfig;
+use crate::supervised_orchestration::{
+    Backoff, StepOutcome, SubprocessStdio, SupervisedSubprocess, SupervisionBudget,
+    supervise_subprocess,
+};
 use crate::tape::{TapeSpec, build_capture_tape};
 use crate::util::{
     CliOutput, OutputIntegration, bool_to_u8, command_exists, ensure_dir, ensure_executable,
@@ -1201,6 +1206,11 @@ struct DockerVhsOutcome {
     exit_code: i32,
     timed_out: bool,
     log_path: PathBuf,
+    /// Deterministic, timing-free supervision evidence terms (`lane=capture
+    /// step=vhs_docker …`) from the supervised docker run, threaded up into the
+    /// capture-finalize decision record so operator triage sees the lane's
+    /// outcome in the shared supervision vocabulary.
+    supervision_evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1214,6 +1224,9 @@ struct VhsRunOutcome {
     vhs_no_sandbox_forced: bool,
     vhs_driver_used: String,
     vhs_docker_log: Option<PathBuf>,
+    /// Supervision evidence terms from the docker VHS run, present whenever the
+    /// docker driver (primary or fallback) actually ran.
+    vhs_docker_supervision: Option<Vec<String>>,
 }
 
 fn build_docker_mounts(cfg: &ResolvedCaptureConfig, run_dir: &Path) -> Vec<PathBuf> {
@@ -1236,6 +1249,33 @@ fn build_docker_mounts(cfg: &ResolvedCaptureConfig, run_dir: &Path) -> Vec<PathB
     mounts
 }
 
+/// Map a supervised docker VHS run onto the legacy `(exit_code, timed_out)`
+/// contract that the rest of the capture lane consumes.
+///
+/// Behaviour-preserving against the pre-substrate `wait_timeout` path:
+/// - a clean exit (zero or non-zero) returns that exit code, `timed_out=false`;
+/// - a deadline elapse maps to the historical timeout sentinel `124` with
+///   `timed_out=true` (the substrate kills the child and reports no exit code on
+///   deadline, exactly as the old kill+`124` branch did);
+/// - any other no-exit-code outcome (spawn or log-open failure) surfaces as an
+///   error, preserving the old `?` propagation instead of fabricating an exit.
+fn classify_docker_supervision(supervised: &SupervisedSubprocess) -> Result<(i32, bool)> {
+    let timed_out = matches!(supervised.record.final_outcome, StepOutcome::TimedOut);
+    match supervised.exit_code {
+        Some(code) => Ok((code, timed_out)),
+        None if timed_out => Ok((124, true)),
+        None => {
+            let reason = match &supervised.record.final_outcome {
+                StepOutcome::Failed { reason } => reason.clone(),
+                other => other.label().to_string(),
+            };
+            Err(DoctorError::invalid(format!(
+                "docker VHS capture produced no exit code: {reason}"
+            )))
+        }
+    }
+}
+
 fn run_vhs_with_docker(
     cfg: &ResolvedCaptureConfig,
     run_dir: &Path,
@@ -1245,72 +1285,54 @@ fn run_vhs_with_docker(
     require_command("docker")?;
 
     let docker_log = run_dir.join("vhs_docker.log");
-    let docker_log_out = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&docker_log)?;
-    let docker_log_err = docker_log_out.try_clone()?;
-
-    let mut docker = Command::new("docker");
-    docker.arg("run").arg("--rm");
-    for mount in build_docker_mounts(cfg, run_dir) {
-        docker
-            .arg("-v")
-            .arg(format!("{}:{}", mount.display(), mount.display()));
-    }
-    docker
-        .arg(VHS_DOCKER_IMAGE)
-        .arg(tape_path)
-        .stdout(Stdio::from(docker_log_out))
-        .stderr(Stdio::from(docker_log_err));
+    let mounts = build_docker_mounts(cfg, run_dir);
 
     ui.info(&format!(
         "running Docker VHS fallback via image {}",
         VHS_DOCKER_IMAGE
     ));
 
-    let mut child = docker.spawn()?;
-    let docker_spawn = std::time::Instant::now();
-    let docker_pid = child.id();
-    let timeout = Duration::from_secs(cfg.capture_timeout_seconds);
-
-    eprintln!(
-        "[doctor:subprocess] docker vhs spawned pid={} timeout={}s",
-        docker_pid, cfg.capture_timeout_seconds
+    // Route the docker child through the supervised-orchestration substrate: a
+    // run-once budget (`max_attempts=1`, no retry) bounded by the capture
+    // timeout, with both streams redirected to the interleaved docker log
+    // (byte-for-byte the old `OpenOptions`+`try_clone` redirection). The
+    // substrate kills the child on deadline, so the lane can no longer wedge on
+    // a stuck docker run, and it yields a deterministic, signal-aware exit code.
+    let source = CancellationSource::new();
+    let supervised = supervise_subprocess(
+        "capture",
+        "vhs_docker",
+        SupervisionBudget::new(Duration::from_secs(cfg.capture_timeout_seconds), 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        &SubprocessStdio::ToFile(docker_log.clone()),
+        || {
+            let mut docker = Command::new("docker");
+            docker.arg("run").arg("--rm");
+            for mount in &mounts {
+                docker
+                    .arg("-v")
+                    .arg(format!("{}:{}", mount.display(), mount.display()));
+            }
+            docker.arg(VHS_DOCKER_IMAGE).arg(tape_path);
+            docker
+        },
     );
 
-    let status = child.wait_timeout(timeout)?;
+    let supervision_evidence = supervised.record.evidence_terms();
+    eprintln!(
+        "[doctor:subprocess] event=capture_supervision {}",
+        supervision_evidence.join(" ")
+    );
 
-    let mut timed_out = false;
-    let exit_code = match status {
-        Some(status) => {
-            let code = exit_status_code(status);
-            eprintln!(
-                "[doctor:subprocess] docker vhs exited pid={} code={} elapsed={}ms",
-                docker_pid,
-                code,
-                docker_spawn.elapsed().as_millis()
-            );
-            code
-        }
-        None => {
-            timed_out = true;
-            eprintln!(
-                "[doctor:subprocess] docker vhs timeout pid={} elapsed={}ms",
-                docker_pid,
-                docker_spawn.elapsed().as_millis()
-            );
-            let _ = child.kill();
-            let _ = child.wait();
-            124
-        }
-    };
+    let (exit_code, timed_out) = classify_docker_supervision(&supervised)?;
 
     Ok(DockerVhsOutcome {
         exit_code,
         timed_out,
         log_path: docker_log,
+        supervision_evidence,
     })
 }
 
@@ -1536,6 +1558,7 @@ fn run_vhs_with_driver(
             vhs_no_sandbox_forced: false,
             vhs_driver_used: "docker".to_string(),
             vhs_docker_log: Some(docker_outcome.log_path),
+            vhs_docker_supervision: Some(docker_outcome.supervision_evidence),
         });
     }
 
@@ -1701,6 +1724,7 @@ fn run_vhs_with_driver(
     let host_vhs_exit = Some(vhs_exit);
     let mut vhs_driver_used = "host".to_string();
     let mut vhs_docker_log: Option<PathBuf> = None;
+    let mut vhs_docker_supervision: Option<Vec<String>> = None;
 
     if cfg.vhs_driver == VhsDriver::Auto
         && vhs_exit != 0
@@ -1711,6 +1735,7 @@ fn run_vhs_with_driver(
         match run_vhs_with_docker(cfg, run_dir, tape_path, ui) {
             Ok(docker_outcome) => {
                 vhs_docker_log = Some(docker_outcome.log_path.clone());
+                vhs_docker_supervision = Some(docker_outcome.supervision_evidence.clone());
                 if docker_outcome.exit_code == 0 {
                     vhs_driver_used = "docker-fallback".to_string();
                     vhs_exit = 0;
@@ -1745,6 +1770,7 @@ fn run_vhs_with_driver(
         vhs_no_sandbox_forced,
         vhs_driver_used,
         vhs_docker_log,
+        vhs_docker_supervision,
     })
 }
 
@@ -2378,6 +2404,7 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
     let vhs_no_sandbox_forced = vhs_outcome.vhs_no_sandbox_forced;
     let vhs_driver_used = vhs_outcome.vhs_driver_used;
     let vhs_docker_log = vhs_outcome.vhs_docker_log;
+    let vhs_docker_supervision = vhs_outcome.vhs_docker_supervision;
 
     finalize_tmux_observer(tmux_observer.as_ref(), cfg.tmux_keep_open);
 
@@ -2521,6 +2548,9 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
     }
     if let Some(docker_log) = &vhs_docker_log {
         finalize_evidence_terms.push(format!("vhs_docker_log={}", docker_log.display()));
+    }
+    if let Some(supervision_terms) = &vhs_docker_supervision {
+        finalize_evidence_terms.extend(supervision_terms.iter().cloned());
     }
 
     append_decision(
@@ -3951,6 +3981,80 @@ mod tests {
             false,
             Some("vhs could not open ttyd (EOF)")
         ));
+    }
+
+    #[test]
+    fn classify_docker_supervision_maps_outcomes_to_legacy_contract() {
+        use crate::supervised_orchestration::{
+            AttemptEvidence, AttemptOutcomeKind, Backoff, StepOutcome, SupervisedSubprocess,
+            SupervisionBudget, SupervisionRecord,
+        };
+
+        fn supervised(final_outcome: StepOutcome, exit_code: Option<i32>) -> SupervisedSubprocess {
+            let outcome = match &final_outcome {
+                StepOutcome::Succeeded => AttemptOutcomeKind::Ok,
+                StepOutcome::Failed { .. } => AttemptOutcomeKind::Fatal,
+                StepOutcome::TimedOut => AttemptOutcomeKind::TimedOut,
+                StepOutcome::Cancelled { .. } => AttemptOutcomeKind::Cancelled,
+            };
+            SupervisedSubprocess {
+                record: SupervisionRecord {
+                    lane: "capture".to_string(),
+                    step: "vhs_docker".to_string(),
+                    budget: SupervisionBudget::new(Duration::from_secs(300), 1),
+                    backoff: Backoff::none(),
+                    attempts: vec![AttemptEvidence {
+                        index: 1,
+                        outcome,
+                        detail: None,
+                    }],
+                    attempts_used: 1,
+                    final_outcome,
+                    cancel_reason: None,
+                },
+                exit_code,
+                stdout: String::new(),
+                stderr: String::new(),
+            }
+        }
+
+        // A clean exit (zero or non-zero) passes through unchanged, never a timeout.
+        assert_eq!(
+            super::classify_docker_supervision(&supervised(StepOutcome::Succeeded, Some(0)))
+                .expect("clean exit classifies"),
+            (0, false)
+        );
+        assert_eq!(
+            super::classify_docker_supervision(&supervised(
+                StepOutcome::Failed {
+                    reason: "exit_code=2".to_string(),
+                },
+                Some(2),
+            ))
+            .expect("non-zero exit classifies"),
+            (2, false)
+        );
+
+        // A deadline elapse maps to the historical 124 timeout sentinel.
+        assert_eq!(
+            super::classify_docker_supervision(&supervised(StepOutcome::TimedOut, None))
+                .expect("timeout classifies"),
+            (124, true)
+        );
+
+        // A no-exit-code failure (spawn / log-open) surfaces as an error rather
+        // than fabricating an exit code, preserving the old `?` propagation.
+        let err = super::classify_docker_supervision(&supervised(
+            StepOutcome::Failed {
+                reason: "spawn failed: boom".to_string(),
+            },
+            None,
+        ))
+        .expect_err("no-exit-code failure surfaces as error");
+        assert!(
+            err.to_string().contains("no exit code"),
+            "error should explain the missing exit code: {err}"
+        );
     }
 
     #[test]
