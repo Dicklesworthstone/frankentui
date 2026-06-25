@@ -12,7 +12,8 @@ use crate::error::{DoctorError, Result};
 use crate::profile::list_profile_names;
 use crate::runmeta::{RunMeta, normalize_loaded_run_meta_paths};
 use crate::supervised_orchestration::{
-    Backoff, StepOutcome, SubprocessStdio, SupervisionBudget, supervise_subprocess,
+    Backoff, StepOutcome, SubprocessStdio, SupervisedSubprocess, SupervisionBudget,
+    supervise_subprocess,
 };
 use crate::util::{
     CliOutput, OutputIntegration, command_exists, ensure_dir, ensure_executable, ensure_exists,
@@ -475,6 +476,46 @@ fn build_capture_smoke_command(
     command
 }
 
+/// Generous hang-guard added above the inner capture's own `capture_timeout_seconds`
+/// self-limit to bound a doctor capture-smoke probe. The probed `capture`
+/// subcommand is itself self-bounding (its VHS/docker + seed-demo children run
+/// under their own supervised deadlines), so this only ever fires as a final
+/// backstop against a wedged probe.
+const CAPTURE_SMOKE_DEADLINE_GRACE_SECONDS: u64 = 600;
+
+/// Run a doctor capture-smoke probe (dry-run tape generation or full capture)
+/// under the supervised-orchestration substrate. Output is discarded via
+/// [`SubprocessStdio::Null`] (the probe relies on the child's own artifacts —
+/// `capture.tape`, `run_meta.json`, observability summary — not its stdout/stderr),
+/// the run-once budget sits a generous grace above the inner capture timeout, and
+/// the returned record's signal-aware exit code drives the dry/full decision.
+fn run_capture_smoke_supervised(
+    current_exe: &PathBuf,
+    args: &DoctorArgs,
+    run_name: &str,
+    dry_run: bool,
+) -> SupervisedSubprocess {
+    let deadline = Duration::from_secs(
+        args.capture_timeout_seconds
+            .saturating_add(CAPTURE_SMOKE_DEADLINE_GRACE_SECONDS),
+    );
+    let source = CancellationSource::new();
+    supervise_subprocess(
+        "doctor",
+        if dry_run {
+            "capture_smoke_dry"
+        } else {
+            "capture_smoke_full"
+        },
+        SupervisionBudget::new(deadline, 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        &SubprocessStdio::Null,
+        || build_capture_smoke_command(current_exe, args, run_name, dry_run),
+    )
+}
+
 fn build_app_smoke_command(args: &DoctorArgs) -> Command {
     // The supervised-orchestration substrate wires stdout/stderr to their
     // on-disk logs via `SubprocessStdio::ToFiles`; this builder only assembles
@@ -917,25 +958,29 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
 
     ui.rule(Some("dry-run smoke"));
     ensure_dir(&args.run_root)?;
-    let mut dry = build_capture_smoke_command(&current_exe, &args, "doctor_dry_run", true);
-    let dry_status = dry.status()?;
-    if !dry_status.success() {
-        return Err(DoctorError::exit(
-            exit_status_code(dry_status),
-            "dry-run smoke failed",
-        ));
+    let dry = run_capture_smoke_supervised(&current_exe, &args, "doctor_dry_run", true);
+    eprintln!(
+        "[doctor:subprocess] event=doctor_supervision {}",
+        dry.record.evidence_terms().join(" ")
+    );
+    let dry_exit = dry.exit_code.unwrap_or(1);
+    if dry_exit != 0 {
+        return Err(DoctorError::exit(dry_exit, "dry-run smoke failed"));
     }
     ui.success("dry-run generated tape");
 
     if args.full {
         ui.rule(Some("full capture smoke"));
-        let mut full = build_capture_smoke_command(&current_exe, &args, "doctor_full_run", false);
-        let full_status = full.status()?;
+        let full = run_capture_smoke_supervised(&current_exe, &args, "doctor_full_run", false);
+        eprintln!(
+            "[doctor:subprocess] event=doctor_supervision {}",
+            full.record.evidence_terms().join(" ")
+        );
         capture_smoke = load_capture_smoke_observability(&args.run_root, "doctor_full_run");
 
-        if !full_status.success() {
+        if full.exit_code != Some(0) {
             degraded_capture = true;
-            let exit_code = exit_status_code(full_status);
+            let exit_code = full.exit_code.unwrap_or(1);
             capture_smoke_detail =
                 describe_capture_smoke_failure(&args.run_root, "doctor_full_run");
             degraded_reason = capture_smoke_detail
