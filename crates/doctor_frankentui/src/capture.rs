@@ -3,14 +3,13 @@ use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use clap::{Args, ValueEnum};
-use ftui_runtime::cancellation::CancellationSource;
+use ftui_runtime::cancellation::{CancellationSource, CancellationToken};
 use wait_timeout::ChildExt;
 
 use crate::error::{DoctorError, Result};
@@ -35,6 +34,12 @@ const VHS_LOG_PUMP_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 const VHS_LOG_PUMP_JOIN_POLL: Duration = Duration::from_millis(1);
 const SEED_THREAD_CANCEL_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 const SEED_THREAD_JOIN_POLL: Duration = Duration::from_millis(1);
+/// Hang-guard grace added above the seed-demo child's own `--timeout` to form the
+/// supervised deadline for the seed-demo subprocess. The child self-limits at its
+/// `--timeout`, so this generous margin sits comfortably above any legitimate run
+/// and only fires as a backstop against a wedged child — self-bounding the worker
+/// instead of relying on the main thread's join-time cancellation.
+const SEED_CHILD_DEADLINE_GRACE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum ObserveMode {
@@ -1802,21 +1807,36 @@ enum SeedDemoThreadOutcome {
 }
 
 struct SeedDemoThread {
-    cancel: Arc<AtomicBool>,
+    source: CancellationSource,
     handle: thread::JoinHandle<SeedDemoThreadOutcome>,
 }
 
-fn wait_for_seed_launch(delay: Duration, cancel: &AtomicBool) -> bool {
-    let deadline = std::time::Instant::now() + delay;
-    while std::time::Instant::now() < deadline {
-        if cancel.load(Ordering::Acquire) {
-            return false;
-        }
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        thread::sleep(remaining.min(Duration::from_millis(25)));
-    }
+/// Supervised deadline for the seed-demo child: its own `--timeout` plus a
+/// generous hang-guard grace (see [`SEED_CHILD_DEADLINE_GRACE`]).
+fn seed_child_deadline(timeout_seconds: u64) -> Duration {
+    Duration::from_secs(timeout_seconds).saturating_add(SEED_CHILD_DEADLINE_GRACE)
+}
 
-    !cancel.load(Ordering::Acquire)
+/// Block for the launch delay, returning `true` if the full delay elapsed and
+/// `false` if cancellation was requested first. Cancellation is observed
+/// immediately (the token's wait is condvar-backed), so a cancel during the
+/// delay no longer waits out a poll interval.
+fn wait_for_seed_launch(delay: Duration, token: &CancellationToken) -> bool {
+    !token.wait_timeout(delay)
+}
+
+/// Map a supervised seed-demo run onto the worker's `SeedDemoThreadOutcome`:
+/// cancellation → `Canceled`; a deadline elapse → the `124` timeout sentinel;
+/// any clean exit (or a no-exit-code spawn/log-open failure, reported as `1`)
+/// → `Completed`.
+fn seed_outcome_from_supervision(supervised: &SupervisedSubprocess) -> SeedDemoThreadOutcome {
+    match &supervised.record.final_outcome {
+        StepOutcome::Cancelled { .. } => SeedDemoThreadOutcome::Canceled,
+        StepOutcome::TimedOut => SeedDemoThreadOutcome::Completed(124),
+        StepOutcome::Succeeded | StepOutcome::Failed { .. } => {
+            SeedDemoThreadOutcome::Completed(supervised.exit_code.unwrap_or(1))
+        }
+    }
 }
 
 fn spawn_seed_demo_thread(
@@ -1826,105 +1846,84 @@ fn spawn_seed_demo_thread(
     seed_stdout_log: PathBuf,
     seed_stderr_log: PathBuf,
 ) -> SeedDemoThread {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_for_thread = Arc::clone(&cancel);
+    let source = CancellationSource::new();
+    let token = source.token();
 
     let handle = thread::spawn(move || {
-        if !wait_for_seed_launch(seed_delay, cancel_for_thread.as_ref()) {
+        if !wait_for_seed_launch(seed_delay, &token) {
             return SeedDemoThreadOutcome::Canceled;
         }
 
-        let stdout_log_file = match OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&seed_stdout_log)
-        {
-            Ok(file) => file,
-            Err(error) => {
-                let _ = write_string(&seed_stderr_log, &error.to_string());
-                return SeedDemoThreadOutcome::Completed(1);
-            }
-        };
-        let stderr_log_file = match OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&seed_stderr_log)
-        {
-            Ok(file) => file,
-            Err(error) => {
-                let _ = write_string(&seed_stderr_log, &error.to_string());
-                return SeedDemoThreadOutcome::Completed(1);
-            }
-        };
+        // Route the seed-demo child through the supervised-orchestration
+        // substrate: a run-once budget bounded by the child's own `--timeout`
+        // plus a hang-guard grace, with stdout/stderr streamed to their own
+        // on-disk logs via `ToFiles` (preserving the seed.stdout.log /
+        // seed.stderr.log split, and avoiding any in-process pipe a chatty
+        // child could deadlock on). The substrate kills the child on deadline
+        // or cancellation, so the worker self-bounds instead of relying on the
+        // main thread's join-time cancellation.
+        let supervised = supervise_subprocess(
+            "capture",
+            "seed_demo",
+            SupervisionBudget::new(seed_child_deadline(seed_config.timeout_seconds), 1),
+            Backoff::none(),
+            &token,
+            false,
+            &SubprocessStdio::ToFiles {
+                stdout: seed_stdout_log,
+                stderr: seed_stderr_log.clone(),
+            },
+            || {
+                let mut command = Command::new(&current_exe);
+                command
+                    .arg("seed-demo")
+                    .arg("--host")
+                    .arg(&seed_config.host)
+                    .arg("--port")
+                    .arg(&seed_config.port)
+                    .arg("--path")
+                    .arg(&seed_config.http_path)
+                    .arg("--auth-token")
+                    .arg(&seed_config.auth_bearer)
+                    .arg("--project-key")
+                    .arg(&seed_config.project_key)
+                    .arg("--agent-a")
+                    .arg(&seed_config.agent_a)
+                    .arg("--agent-b")
+                    .arg(&seed_config.agent_b)
+                    .arg("--messages")
+                    .arg(seed_config.messages.to_string())
+                    .arg("--timeout")
+                    .arg(seed_config.timeout_seconds.to_string())
+                    .arg("--log-file")
+                    .arg(
+                        seed_config
+                            .log_file
+                            .as_deref()
+                            .unwrap_or_else(|| Path::new("seed.log")),
+                    );
+                command
+            },
+        );
 
-        let mut child = match Command::new(&current_exe)
-            .arg("seed-demo")
-            .arg("--host")
-            .arg(seed_config.host)
-            .arg("--port")
-            .arg(seed_config.port)
-            .arg("--path")
-            .arg(seed_config.http_path)
-            .arg("--auth-token")
-            .arg(seed_config.auth_bearer)
-            .arg("--project-key")
-            .arg(seed_config.project_key)
-            .arg("--agent-a")
-            .arg(seed_config.agent_a)
-            .arg("--agent-b")
-            .arg(seed_config.agent_b)
-            .arg("--messages")
-            .arg(seed_config.messages.to_string())
-            .arg("--timeout")
-            .arg(seed_config.timeout_seconds.to_string())
-            .arg("--log-file")
-            .arg(
-                seed_config
-                    .log_file
-                    .unwrap_or_else(|| PathBuf::from("seed.log")),
-            )
-            .stdout(Stdio::from(stdout_log_file))
-            .stderr(Stdio::from(stderr_log_file))
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(error) => {
-                let _ = write_string(&seed_stderr_log, &error.to_string());
-                return SeedDemoThreadOutcome::Completed(1);
-            }
-        };
+        eprintln!(
+            "[doctor:subprocess] event=seed_capture_supervision {}",
+            supervised.record.evidence_terms().join(" ")
+        );
 
-        wait_for_seed_child_exit(&mut child, cancel_for_thread.as_ref(), &seed_stderr_log)
+        // Best-effort: surface a spawn / log-open failure reason into the seed
+        // stderr log, preserving the pre-substrate diagnostic for the no-exit
+        // failure path.
+        if supervised.exit_code.is_none()
+            && let StepOutcome::Failed { reason } = &supervised.record.final_outcome
+        {
+            let _ = write_string(&seed_stderr_log, reason);
+        }
+
+        seed_outcome_from_supervision(&supervised)
     });
 
-    SeedDemoThread { cancel, handle }
-}
-
-fn wait_for_seed_child_exit(
-    child: &mut Child,
-    cancel: &AtomicBool,
-    seed_stderr_log: &Path,
-) -> SeedDemoThreadOutcome {
-    loop {
-        if cancel.load(Ordering::Acquire) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return SeedDemoThreadOutcome::Canceled;
-        }
-
-        match child.wait_timeout(Duration::from_millis(25)) {
-            Ok(Some(status)) => {
-                return SeedDemoThreadOutcome::Completed(exit_status_code(status));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let _ = write_string(seed_stderr_log, &error.to_string());
-                return SeedDemoThreadOutcome::Completed(1);
-            }
-        }
-    }
+    SeedDemoThread { source, handle }
 }
 
 fn cancel_seed_demo_thread(seed_thread: Option<SeedDemoThread>) {
@@ -1936,16 +1935,16 @@ fn finish_seed_demo_thread(
     cancel_incomplete: bool,
     join_timeout: Duration,
 ) -> Option<i32> {
-    let SeedDemoThread { cancel, handle } = seed_thread?;
+    let SeedDemoThread { source, handle } = seed_thread?;
 
     if cancel_incomplete {
-        cancel.store(true, Ordering::Release);
+        source.cancel();
     }
 
     let start = std::time::Instant::now();
     while !handle.is_finished() {
         if start.elapsed() >= join_timeout {
-            cancel.store(true, Ordering::Release);
+            source.cancel();
             eprintln!(
                 "[doctor:subprocess] seed demo thread join timeout timeout_ms={} cancel_incomplete={}",
                 join_timeout.as_millis(),
@@ -2719,7 +2718,6 @@ mod tests {
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -2964,15 +2962,14 @@ mod tests {
 
     #[test]
     fn wait_for_seed_launch_returns_false_when_cancelled() {
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_for_thread = Arc::clone(&cancel);
+        let source = super::CancellationSource::new();
+        let token = source.token();
         let start = Instant::now();
-        let handle = thread::spawn(move || {
-            super::wait_for_seed_launch(Duration::from_millis(250), cancel_for_thread.as_ref())
-        });
+        let handle =
+            thread::spawn(move || super::wait_for_seed_launch(Duration::from_millis(250), &token));
 
         thread::sleep(Duration::from_millis(30));
-        cancel.store(true, Ordering::Release);
+        source.cancel();
 
         assert!(
             !handle
@@ -3025,68 +3022,92 @@ mod tests {
         assert!(!stderr_log.exists());
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn wait_for_seed_child_exit_kills_running_child_when_cancelled() {
-        let temp = tempdir().expect("tempdir");
-        let stderr_log = temp.path().join("seed.stderr.log");
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_for_thread = Arc::clone(&cancel);
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("sleep 5")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn sleep");
-
-        let canceller = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(50));
-            cancel_for_thread.store(true, Ordering::Release);
-        });
-
-        let start = Instant::now();
-        let outcome = super::wait_for_seed_child_exit(&mut child, cancel.as_ref(), &stderr_log);
-        canceller.join().expect("join canceller");
-
-        assert!(
-            matches!(outcome, super::SeedDemoThreadOutcome::Canceled),
-            "cancelled child should be reported as canceled"
-        );
-        assert!(
-            start.elapsed() < Duration::from_secs(1),
-            "cancelling a running child should be prompt"
-        );
-        assert!(
-            !stderr_log.exists(),
-            "cancellation should not record a wait error"
-        );
+    // Build a `SupervisedSubprocess` carrying a chosen final outcome + exit code,
+    // for deterministically exercising the seed worker's outcome mapping without
+    // spawning a real child.
+    fn make_supervised(
+        final_outcome: super::StepOutcome,
+        exit_code: Option<i32>,
+    ) -> super::SupervisedSubprocess {
+        use crate::supervised_orchestration::{
+            AttemptEvidence, AttemptOutcomeKind, Backoff, StepOutcome, SupervisionBudget,
+            SupervisionRecord,
+        };
+        let outcome = match &final_outcome {
+            StepOutcome::Succeeded => AttemptOutcomeKind::Ok,
+            StepOutcome::Failed { .. } => AttemptOutcomeKind::Fatal,
+            StepOutcome::TimedOut => AttemptOutcomeKind::TimedOut,
+            StepOutcome::Cancelled { .. } => AttemptOutcomeKind::Cancelled,
+        };
+        super::SupervisedSubprocess {
+            record: SupervisionRecord {
+                lane: "capture".to_string(),
+                step: "seed_demo".to_string(),
+                budget: SupervisionBudget::new(Duration::from_secs(30), 1),
+                backoff: Backoff::none(),
+                attempts: vec![AttemptEvidence {
+                    index: 1,
+                    outcome,
+                    detail: None,
+                }],
+                attempts_used: 1,
+                final_outcome,
+                cancel_reason: None,
+            },
+            exit_code,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn wait_for_seed_child_exit_preserves_signal_exit_code() {
-        let temp = tempdir().expect("tempdir");
-        let stderr_log = temp.path().join("seed.stderr.log");
-        let cancel = Arc::new(AtomicBool::new(false));
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("kill -TERM $$")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn self-terminating shell");
-
-        let outcome = super::wait_for_seed_child_exit(&mut child, cancel.as_ref(), &stderr_log);
-
+    fn seed_outcome_from_supervision_reports_cancellation_and_timeout() {
+        use crate::supervised_orchestration::{CancelReason, StepOutcome};
+        // Token cancellation -> the worker reports Canceled.
         assert!(matches!(
-            outcome,
+            super::seed_outcome_from_supervision(&make_supervised(
+                StepOutcome::Cancelled {
+                    reason: CancelReason::Caller,
+                },
+                None,
+            )),
+            super::SeedDemoThreadOutcome::Canceled
+        ));
+        // A deadline elapse maps to the 124 timeout sentinel.
+        assert!(matches!(
+            super::seed_outcome_from_supervision(&make_supervised(StepOutcome::TimedOut, None)),
+            super::SeedDemoThreadOutcome::Completed(124)
+        ));
+    }
+
+    #[test]
+    fn seed_outcome_from_supervision_passes_through_exit_code() {
+        use crate::supervised_orchestration::StepOutcome;
+        // Clean success.
+        assert!(matches!(
+            super::seed_outcome_from_supervision(&make_supervised(StepOutcome::Succeeded, Some(0))),
+            super::SeedDemoThreadOutcome::Completed(0)
+        ));
+        // Signal-terminated child keeps its 128+signal exit code (SIGTERM -> 143).
+        assert!(matches!(
+            super::seed_outcome_from_supervision(&make_supervised(
+                StepOutcome::Failed {
+                    reason: "exit_code=143".to_string(),
+                },
+                Some(143),
+            )),
             super::SeedDemoThreadOutcome::Completed(143)
         ));
-        assert!(
-            !stderr_log.exists(),
-            "successful wait should not record a wait error"
-        );
+        // A no-exit-code spawn / log-open failure collapses to exit code 1.
+        assert!(matches!(
+            super::seed_outcome_from_supervision(&make_supervised(
+                StepOutcome::Failed {
+                    reason: "spawn failed: boom".to_string(),
+                },
+                None,
+            )),
+            super::SeedDemoThreadOutcome::Completed(1)
+        ));
     }
 
     #[test]
@@ -3126,7 +3147,7 @@ mod tests {
 
     #[test]
     fn finish_seed_demo_thread_without_cancel_waits_for_completion() {
-        let cancel = Arc::new(AtomicBool::new(false));
+        let source = super::CancellationSource::new();
         let started = Instant::now();
         let handle = thread::spawn(|| {
             thread::sleep(Duration::from_millis(40));
@@ -3134,7 +3155,7 @@ mod tests {
         });
 
         let exit_code = super::finish_seed_demo_thread(
-            Some(super::SeedDemoThread { cancel, handle }),
+            Some(super::SeedDemoThread { source, handle }),
             false,
             Duration::from_secs(1),
         );
@@ -3148,12 +3169,12 @@ mod tests {
 
     #[test]
     fn finish_seed_demo_thread_cancel_timeout_does_not_block() {
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_for_thread = Arc::clone(&cancel);
+        let source = super::CancellationSource::new();
+        let token = source.token();
         let released = Arc::new((Mutex::new(false), Condvar::new()));
         let released_for_thread = Arc::clone(&released);
         let handle = thread::spawn(move || {
-            while !cancel_for_thread.load(Ordering::Acquire) {
+            while !token.is_cancelled() {
                 thread::sleep(Duration::from_millis(5));
             }
             let (released_lock, released_ready) = &*released_for_thread;
@@ -3166,7 +3187,7 @@ mod tests {
 
         let started = Instant::now();
         let exit_code = super::finish_seed_demo_thread(
-            Some(super::SeedDemoThread { cancel, handle }),
+            Some(super::SeedDemoThread { source, handle }),
             true,
             Duration::from_millis(50),
         );
@@ -3184,12 +3205,12 @@ mod tests {
 
     #[test]
     fn finish_seed_demo_thread_timeout_requests_cancel_and_returns_failure() {
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_for_thread = Arc::clone(&cancel);
+        let source = super::CancellationSource::new();
+        let token = source.token();
         let released = Arc::new((Mutex::new(false), Condvar::new()));
         let released_for_thread = Arc::clone(&released);
         let handle = thread::spawn(move || {
-            while !cancel_for_thread.load(Ordering::Acquire) {
+            while !token.is_cancelled() {
                 thread::sleep(Duration::from_millis(5));
             }
             let (released_lock, released_ready) = &*released_for_thread;
@@ -3200,10 +3221,10 @@ mod tests {
             super::SeedDemoThreadOutcome::Completed(0)
         });
 
-        let cancel_probe = Arc::clone(&cancel);
+        let cancel_probe = source.token();
         let started = Instant::now();
         let exit_code = super::finish_seed_demo_thread(
-            Some(super::SeedDemoThread { cancel, handle }),
+            Some(super::SeedDemoThread { source, handle }),
             false,
             Duration::from_millis(50),
         );
@@ -3214,7 +3235,7 @@ mod tests {
         );
         assert_eq!(exit_code, Some(1));
         assert!(
-            cancel_probe.load(Ordering::Acquire),
+            cancel_probe.is_cancelled(),
             "timed-out finalization should request cancellation before detaching"
         );
 
