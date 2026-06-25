@@ -596,10 +596,13 @@ where
 /// each attempt — matching the existing `run_capture_subprocess_to_log` contract.
 /// Lanes that keep the two streams in *separate* on-disk logs (the capture lane's
 /// seed-demo thread) use [`SubprocessStdio::ToFiles`], which redirects stdout and
-/// stderr into their own files, each truncated fresh on every attempt. In both
-/// `ToFile`/`ToFiles` modes the in-memory `stdout`/`stderr` fields stay empty;
-/// because the streams go straight to disk there is no in-process pipe to drain,
-/// so a chatty child can never deadlock on a full pipe.
+/// stderr into their own files, each truncated fresh on every attempt. Lanes that
+/// deliberately discard a child's output (the doctor capture-smoke probes, which
+/// rely on the child's own artifacts rather than its stdout/stderr) use
+/// [`SubprocessStdio::Null`]. In the `ToFile`/`ToFiles`/`Null` modes the in-memory
+/// `stdout`/`stderr` fields stay empty; because no stream is piped into the
+/// supervisor there is no in-process pipe to drain, so a chatty child can never
+/// deadlock on a full pipe.
 #[derive(Debug, Clone)]
 pub enum SubprocessStdio {
     /// Pipe stdout and stderr and capture them into the returned String fields.
@@ -615,6 +618,8 @@ pub enum SubprocessStdio {
         /// Destination for the child's stderr.
         stderr: PathBuf,
     },
+    /// Discard stdout and stderr (both wired to the null device).
+    Null,
 }
 
 /// Outcome of a supervised subprocess execution.
@@ -749,30 +754,37 @@ pub fn supervise_subprocess(
         }
 
         let mut command = make_command();
-        // Resolve the on-disk log handles (if any). `Capture` pipes both streams
-        // into the in-process buffers; `ToFile`/`ToFiles` redirect them straight
-        // to disk (interleaved into one file, or split across two).
+        // Wire the child's stdio. `Capture` pipes both streams into the in-process
+        // buffers and `Null` discards them (both wired inline here, yielding no log
+        // handles); `ToFile`/`ToFiles` redirect them straight to disk (interleaved
+        // into one file, or split across two) and yield handles drained below.
         let log_handles: Option<std::io::Result<(std::fs::File, std::fs::File)>> = match stdio {
-            SubprocessStdio::Capture => None,
+            SubprocessStdio::Capture => {
+                command.stdout(Stdio::piped()).stderr(Stdio::piped());
+                None
+            }
+            SubprocessStdio::Null => {
+                command.stdout(Stdio::null()).stderr(Stdio::null());
+                None
+            }
             SubprocessStdio::ToFile(path) => Some(open_interleaved_log(path)),
             SubprocessStdio::ToFiles { stdout, stderr } => Some(open_separate_logs(stdout, stderr)),
         };
-        match log_handles {
-            None => {
-                command.stdout(Stdio::piped()).stderr(Stdio::piped());
-            }
-            Some(Ok((out, err))) => {
-                command.stdout(Stdio::from(out)).stderr(Stdio::from(err));
-            }
-            Some(Err(error)) => {
-                let message = format!("log open failed: {error}");
-                attempts.push(AttemptEvidence {
-                    index,
-                    outcome: AttemptOutcomeKind::Fatal,
-                    detail: Some(message.clone()),
-                });
-                final_outcome = StepOutcome::Failed { reason: message };
-                break;
+        if let Some(handles) = log_handles {
+            match handles {
+                Ok((out, err)) => {
+                    command.stdout(Stdio::from(out)).stderr(Stdio::from(err));
+                }
+                Err(error) => {
+                    let message = format!("log open failed: {error}");
+                    attempts.push(AttemptEvidence {
+                        index,
+                        outcome: AttemptOutcomeKind::Fatal,
+                        detail: Some(message.clone()),
+                    });
+                    final_outcome = StepOutcome::Failed { reason: message };
+                    break;
+                }
             }
         }
         let mut child = match command.spawn() {

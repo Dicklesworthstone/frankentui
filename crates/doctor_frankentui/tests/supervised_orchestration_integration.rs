@@ -468,3 +468,40 @@ fn subprocess_to_files_truncates_each_log_per_attempt() {
         "stderr log must hold only the final attempt, got: {err:?}"
     );
 }
+
+#[test]
+fn subprocess_null_discards_output_and_reports_exit() {
+    // `Null` wires both streams to the null device (the doctor capture-smoke
+    // probes that rely on the child's own artifacts, not its stdout/stderr): the
+    // in-memory buffers stay empty and the child's exit code is still reported.
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "doctor",
+        "null",
+        budget(10_000, 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        &SubprocessStdio::Null,
+        || {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg("echo out-line; echo err-line 1>&2; exit 3");
+            cmd
+        },
+    );
+
+    assert_eq!(run.exit_code, Some(3));
+    assert_eq!(
+        run.record.final_outcome,
+        StepOutcome::Failed {
+            reason: "exit_code=3".to_string(),
+        }
+    );
+    assert!(
+        run.stdout.is_empty() && run.stderr.is_empty(),
+        "Null must not populate the in-memory buffers, got stdout={:?} stderr={:?}",
+        run.stdout,
+        run.stderr
+    );
+}
