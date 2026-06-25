@@ -4,13 +4,16 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use clap::{Args, ValueEnum};
+use ftui_runtime::cancellation::CancellationSource;
 use serde::Serialize;
 use serde_json::json;
-use wait_timeout::ChildExt;
 
 use crate::error::{DoctorError, Result};
 use crate::profile::list_profile_names;
 use crate::runmeta::{RunMeta, normalize_loaded_run_meta_paths};
+use crate::supervised_orchestration::{
+    Backoff, StepOutcome, SubprocessStdio, SupervisionBudget, supervise_subprocess,
+};
 use crate::util::{
     CliOutput, OutputIntegration, command_exists, ensure_dir, ensure_executable, ensure_exists,
     exit_status_code, now_compact_timestamp, output_for, shell_single_quote,
@@ -472,31 +475,17 @@ fn build_capture_smoke_command(
     command
 }
 
-fn build_app_smoke_command(
-    args: &DoctorArgs,
-    stdout_log: &PathBuf,
-    stderr_log: &PathBuf,
-) -> Result<Command> {
-    let stdout = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(stdout_log)?;
-    let stderr = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(stderr_log)?;
-
+fn build_app_smoke_command(args: &DoctorArgs) -> Command {
+    // The supervised-orchestration substrate wires stdout/stderr to their
+    // on-disk logs via `SubprocessStdio::ToFiles`; this builder only assembles
+    // the shell command.
     let project_dir = shell_single_quote(&args.project_dir.display().to_string());
     let mut command = Command::new("bash");
     command
         .arg("-lc")
-        .arg(format!("cd {project_dir} && {}", args.app_command))
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
+        .arg(format!("cd {project_dir} && {}", args.app_command));
 
-    Ok(command)
+    command
 }
 
 fn run_app_smoke_fallback(args: &DoctorArgs, ui: &CliOutput) -> Result<AppSmokeResult> {
@@ -511,21 +500,34 @@ fn run_app_smoke_fallback(args: &DoctorArgs, ui: &CliOutput) -> Result<AppSmokeR
         return run_tmux_app_smoke_fallback(args, &smoke_paths, ui);
     }
 
-    let mut command =
-        build_app_smoke_command(args, &smoke_paths.stdout_log, &smoke_paths.stderr_log)?;
-    let mut child = command.spawn()?;
+    // Route the app-launch smoke child through the supervised-orchestration
+    // substrate: a run-once budget bounded by the smoke timeout, with stdout and
+    // stderr streamed to their own on-disk logs via `ToFiles` (preserving the
+    // separate stdout.log / stderr.log split). The substrate kills the child on
+    // deadline, so the fallback self-bounds and yields a signal-aware exit code.
+    let source = CancellationSource::new();
+    let supervised = supervise_subprocess(
+        "doctor",
+        "app_smoke",
+        SupervisionBudget::new(Duration::from_secs(APP_SMOKE_TIMEOUT_SECONDS), 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        &SubprocessStdio::ToFiles {
+            stdout: smoke_paths.stdout_log.clone(),
+            stderr: smoke_paths.stderr_log.clone(),
+        },
+        || build_app_smoke_command(args),
+    );
+    eprintln!(
+        "[doctor:subprocess] event=doctor_supervision {}",
+        supervised.record.evidence_terms().join(" ")
+    );
 
-    let timeout = Duration::from_secs(APP_SMOKE_TIMEOUT_SECONDS);
-    let mut timed_out = false;
-    let exit_code = match child.wait_timeout(timeout)? {
-        Some(status) => Some(exit_status_code(status)),
-        None => {
-            timed_out = true;
-            child.kill()?;
-            let _ = child.wait();
-            None
-        }
-    };
+    // Deadline -> timeout (the substrate reports no exit code on a killed-by-
+    // deadline child); any clean exit keeps its signal-aware code.
+    let timed_out = matches!(supervised.record.final_outcome, StepOutcome::TimedOut);
+    let exit_code = supervised.exit_code;
 
     let status_label = if timed_out {
         "running_after_timeout"
@@ -1298,10 +1300,7 @@ kill -TERM $$
     #[test]
     fn app_smoke_command_shell_wraps_project_directory() {
         let args = sample_args();
-        let stdout_log = PathBuf::from("/tmp/stdout.log");
-        let stderr_log = PathBuf::from("/tmp/stderr.log");
-        let command = super::build_app_smoke_command(&args, &stdout_log, &stderr_log)
-            .expect("build app smoke command");
+        let command = super::build_app_smoke_command(&args);
         let values = arg_list(&command);
 
         assert_eq!(values[0], "-lc");
