@@ -594,7 +594,12 @@ where
 /// on-disk log (the capture / suite lanes) use [`SubprocessStdio::ToFile`], which
 /// directs *both* streams, interleaved, into a single log file truncated fresh on
 /// each attempt — matching the existing `run_capture_subprocess_to_log` contract.
-/// In that mode the in-memory `stdout`/`stderr` fields stay empty.
+/// Lanes that keep the two streams in *separate* on-disk logs (the capture lane's
+/// seed-demo thread) use [`SubprocessStdio::ToFiles`], which redirects stdout and
+/// stderr into their own files, each truncated fresh on every attempt. In both
+/// `ToFile`/`ToFiles` modes the in-memory `stdout`/`stderr` fields stay empty;
+/// because the streams go straight to disk there is no in-process pipe to drain,
+/// so a chatty child can never deadlock on a full pipe.
 #[derive(Debug, Clone)]
 pub enum SubprocessStdio {
     /// Pipe stdout and stderr and capture them into the returned String fields.
@@ -602,6 +607,14 @@ pub enum SubprocessStdio {
     /// Stream stdout and stderr (interleaved) into the file at this path,
     /// truncated fresh on every attempt.
     ToFile(PathBuf),
+    /// Stream stdout and stderr into their own separate files, each truncated
+    /// fresh on every attempt.
+    ToFiles {
+        /// Destination for the child's stdout.
+        stdout: PathBuf,
+        /// Destination for the child's stderr.
+        stderr: PathBuf,
+    },
 }
 
 /// Outcome of a supervised subprocess execution.
@@ -622,16 +635,33 @@ pub struct SupervisedSubprocess {
 /// How long to poll between `wait_timeout` checks while supervising a child.
 const SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+/// Open `path` for writing, creating it and truncating any existing contents —
+/// the per-attempt fresh-log contract shared by the capture / suite lanes.
+fn open_truncated_log(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+}
+
 /// Open `path` (create + truncate) and clone the handle so a child's stdout and
 /// stderr can both be redirected, interleaved, into the same log file. Mirrors
 /// the capture / suite lane's existing log-redirection contract.
 fn open_interleaved_log(path: &std::path::Path) -> std::io::Result<(std::fs::File, std::fs::File)> {
-    let out = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(path)?;
+    let out = open_truncated_log(path)?;
     let err = out.try_clone()?;
+    Ok((out, err))
+}
+
+/// Open two independent (create + truncate) log files so a child's stdout and
+/// stderr can be redirected into separate on-disk logs.
+fn open_separate_logs(
+    stdout: &std::path::Path,
+    stderr: &std::path::Path,
+) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    let out = open_truncated_log(stdout)?;
+    let err = open_truncated_log(stderr)?;
     Ok((out, err))
 }
 
@@ -719,25 +749,31 @@ pub fn supervise_subprocess(
         }
 
         let mut command = make_command();
-        match stdio {
-            SubprocessStdio::Capture => {
+        // Resolve the on-disk log handles (if any). `Capture` pipes both streams
+        // into the in-process buffers; `ToFile`/`ToFiles` redirect them straight
+        // to disk (interleaved into one file, or split across two).
+        let log_handles: Option<std::io::Result<(std::fs::File, std::fs::File)>> = match stdio {
+            SubprocessStdio::Capture => None,
+            SubprocessStdio::ToFile(path) => Some(open_interleaved_log(path)),
+            SubprocessStdio::ToFiles { stdout, stderr } => Some(open_separate_logs(stdout, stderr)),
+        };
+        match log_handles {
+            None => {
                 command.stdout(Stdio::piped()).stderr(Stdio::piped());
             }
-            SubprocessStdio::ToFile(path) => match open_interleaved_log(path) {
-                Ok((out, err)) => {
-                    command.stdout(Stdio::from(out)).stderr(Stdio::from(err));
-                }
-                Err(error) => {
-                    let message = format!("log open failed: {error}");
-                    attempts.push(AttemptEvidence {
-                        index,
-                        outcome: AttemptOutcomeKind::Fatal,
-                        detail: Some(message.clone()),
-                    });
-                    final_outcome = StepOutcome::Failed { reason: message };
-                    break;
-                }
-            },
+            Some(Ok((out, err))) => {
+                command.stdout(Stdio::from(out)).stderr(Stdio::from(err));
+            }
+            Some(Err(error)) => {
+                let message = format!("log open failed: {error}");
+                attempts.push(AttemptEvidence {
+                    index,
+                    outcome: AttemptOutcomeKind::Fatal,
+                    detail: Some(message.clone()),
+                });
+                final_outcome = StepOutcome::Failed { reason: message };
+                break;
+            }
         }
         let mut child = match command.spawn() {
             Ok(child) => child,

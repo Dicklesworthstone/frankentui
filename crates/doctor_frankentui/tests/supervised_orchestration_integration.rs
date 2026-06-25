@@ -372,3 +372,99 @@ fn subprocess_to_file_truncates_log_each_attempt() {
         "earlier attempts must be truncated, got: {logged:?}"
     );
 }
+
+#[test]
+fn subprocess_to_files_splits_streams_into_separate_logs() {
+    // `ToFiles` redirects stdout and stderr into their *own* on-disk logs (the
+    // contract the capture lane's seed-demo thread needs: `seed.stdout.log` and
+    // `seed.stderr.log` stay distinct) and leaves the in-memory buffers empty.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stdout_path = dir.path().join("seed.stdout.log");
+    let stderr_path = dir.path().join("seed.stderr.log");
+
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "capture",
+        "to_files",
+        budget(10_000, 1),
+        Backoff::none(),
+        &source.token(),
+        false,
+        &SubprocessStdio::ToFiles {
+            stdout: stdout_path.clone(),
+            stderr: stderr_path.clone(),
+        },
+        || {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("echo out-line; echo err-line 1>&2");
+            cmd
+        },
+    );
+
+    assert_eq!(run.record.final_outcome, StepOutcome::Succeeded);
+    assert_eq!(run.exit_code, Some(0));
+    assert!(
+        run.stdout.is_empty() && run.stderr.is_empty(),
+        "ToFiles must not populate the in-memory buffers, got stdout={:?} stderr={:?}",
+        run.stdout,
+        run.stderr
+    );
+
+    let out = std::fs::read_to_string(&stdout_path).expect("read stdout log");
+    let err = std::fs::read_to_string(&stderr_path).expect("read stderr log");
+    assert!(
+        out.contains("out-line") && !out.contains("err-line"),
+        "stdout log must hold only stdout, got: {out:?}"
+    );
+    assert!(
+        err.contains("err-line") && !err.contains("out-line"),
+        "stderr log must hold only stderr, got: {err:?}"
+    );
+}
+
+#[test]
+fn subprocess_to_files_truncates_each_log_per_attempt() {
+    // Each retry must restart from fresh (truncated) stdout/stderr logs so each
+    // file reflects only the final attempt, matching the seed-demo thread's
+    // create+truncate log setup.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stdout_path = dir.path().join("retry.stdout.log");
+    let stderr_path = dir.path().join("retry.stderr.log");
+    let counter = dir.path().join("attempts");
+    let counter_path = counter.to_string_lossy().into_owned();
+
+    let source = CancellationSource::new();
+    let run = supervise_subprocess(
+        "capture",
+        "to_files_retry",
+        budget(10_000, 3),
+        Backoff::fixed(10),
+        &source.token(),
+        true,
+        &SubprocessStdio::ToFiles {
+            stdout: stdout_path.clone(),
+            stderr: stderr_path.clone(),
+        },
+        || {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(format!(
+                "n=$(cat '{counter_path}' 2>/dev/null || echo 0); n=$((n+1)); \
+                 echo $n > '{counter_path}'; echo out-$n; echo err-$n 1>&2; [ $n -ge 2 ]"
+            ));
+            cmd
+        },
+    );
+
+    assert_eq!(run.record.final_outcome, StepOutcome::Succeeded);
+    assert_eq!(run.record.attempts_used, 2);
+    let out = std::fs::read_to_string(&stdout_path).expect("read stdout log");
+    let err = std::fs::read_to_string(&stderr_path).expect("read stderr log");
+    assert!(
+        out.contains("out-2") && !out.contains("out-1"),
+        "stdout log must hold only the final attempt, got: {out:?}"
+    );
+    assert!(
+        err.contains("err-2") && !err.contains("err-1"),
+        "stderr log must hold only the final attempt, got: {err:?}"
+    );
+}
