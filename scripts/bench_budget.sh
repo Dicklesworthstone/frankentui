@@ -333,13 +333,13 @@ run_benchmarks() {
             "ftui-text:width_bench"
             "ftui-runtime:telemetry_bench:telemetry"
         )
-    else
-        # Focused perf gates: parser throughput + web patch-pipeline frame-time harness.
-        benches+=(
-            "frankenterm-core:parser_patch_bench"
-            "frankenterm-web:renderer_bench"
-        )
     fi
+    # NOTE: frankenterm-core / frankenterm-web are no longer workspace members
+    # (see README "Web/WASM Backend"), so their parser_patch_bench / renderer_bench
+    # cannot be built here. In --quick mode CI validates the in-tree core render hot
+    # paths (cell/buffer/diff/present/pipeline) added above; the frankenterm and
+    # web/* budget entries below resolve to SKIP (empty result files), which never
+    # fails the gate.
 
     for bench_spec in "${benches[@]}"; do
         IFS=':' read -r pkg bench features <<< "$bench_spec"
