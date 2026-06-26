@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::alien_kernel_tests::{AlienUpliftArgs, run_alien_uplift};
 use crate::capture::{CaptureArgs, print_profiles, run_capture};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
@@ -76,6 +77,10 @@ pub enum Commands {
     /// Print built-in profile names.
     #[command(name = "list-profiles")]
     ListProfiles,
+
+    /// Run the alien-uplift E2E validation pipeline and emit a JSONL evidence ledger.
+    #[command(name = "alien-uplift")]
+    AlienUplift(AlienUpliftArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -96,6 +101,7 @@ pub fn run(cli: Cli) -> Result<()> {
             print_profiles();
             Ok(())
         }
+        Commands::AlienUplift(args) => run_alien_uplift(args),
     }
 }
 

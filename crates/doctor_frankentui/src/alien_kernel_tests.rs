@@ -43,6 +43,7 @@
 //! always yields the same `report_id` and `evidence_checksum`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -2274,6 +2275,331 @@ where
     }
 }
 
+// ── E2E alien-uplift pipeline (bd-3bxhj.10.11) ─────────────────────────────
+
+/// Schema version for the materialized alien-uplift pipeline artifacts.
+pub const ALIEN_UPLIFT_PIPELINE_SCHEMA_VERSION: &str = "alien-uplift-pipeline-v1";
+
+/// Per-kernel red-path coverage (adversarial / degradation / gate-fail checks).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedPathCoverage {
+    /// The kernel.
+    pub kernel: AlienKernel,
+    /// Number of adversarial/degradation checks exercising a fallback or
+    /// assumption-violation / gate-fail response.
+    pub red_path_checks: usize,
+    /// Whether every red-path check passed (the fallback behaved as specified).
+    pub passed: bool,
+}
+
+/// A materialized pipeline artifact (path + integrity).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlienUpliftArtifact {
+    /// Logical artifact name.
+    pub name: String,
+    /// Relative file name within the run directory.
+    pub file: String,
+    /// SHA-256 of the file content.
+    pub sha256: String,
+    /// Byte length of the file content.
+    pub bytes: u64,
+}
+
+/// Machine-readable summary of one pipeline run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlienUpliftPipelineSummary {
+    /// Pipeline-artifact schema version.
+    pub schema_version: String,
+    /// Underlying suite report id.
+    pub report_id: String,
+    /// Suite policy lane.
+    pub suite_policy_id: String,
+    /// Output checksum of the ledger.
+    pub evidence_checksum: String,
+    /// Total checks.
+    pub total_checks: usize,
+    /// Passing checks.
+    pub passed: usize,
+    /// Failing checks.
+    pub failed: usize,
+    /// Green-path checks (invariant / property / replay).
+    pub green_path_checks: usize,
+    /// Red-path checks (adversarial / degradation).
+    pub red_path_checks: usize,
+    /// Distinct kernels covered.
+    pub kernels_covered: usize,
+    /// Per-kernel red-path coverage.
+    pub red_path_coverage: Vec<RedPathCoverage>,
+    /// Whether every check passed.
+    pub all_checks_passed: bool,
+    /// Whether every kernel has at least one passing red-path check.
+    pub red_path_complete: bool,
+    /// Whether the pipeline gate passes (all checks pass AND red-path complete).
+    pub pipeline_passed: bool,
+    /// Replay command for the pipeline.
+    pub replay_command: String,
+}
+
+/// The outcome of running and materializing the pipeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlienUpliftPipelineOutcome {
+    /// Absolute run directory.
+    pub run_dir: String,
+    /// Absolute path to the JSONL evidence ledger.
+    pub ledger_path: String,
+    /// Absolute path to the pipeline summary JSON.
+    pub summary_path: String,
+    /// Absolute path to the artifact manifest JSON.
+    pub manifest_path: String,
+    /// Absolute path to the suite JSON-stats artifact.
+    pub stats_path: String,
+    /// The machine-readable summary.
+    pub summary: AlienUpliftPipelineSummary,
+    /// All generated artifacts (with integrity hashes).
+    pub artifacts: Vec<AlienUpliftArtifact>,
+}
+
+/// Configuration for the alien-uplift pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlienUpliftPipelineConfig {
+    /// The underlying suite configuration.
+    pub suite: AlienKernelTestConfig,
+    /// Run directory name under the run-root.
+    pub run_name: String,
+}
+
+impl Default for AlienUpliftPipelineConfig {
+    fn default() -> Self {
+        Self {
+            suite: AlienKernelTestConfig {
+                suite_policy_id: "alien-kernel-tests/e2e".to_string(),
+                seed_count: 5,
+            },
+            run_name: "alien-uplift".to_string(),
+        }
+    }
+}
+
+fn compute_red_path_coverage(report: &AlienKernelTestReport) -> (Vec<RedPathCoverage>, bool) {
+    let mut coverage = Vec::with_capacity(AlienKernel::ALL.len());
+    let mut complete = true;
+    for kernel in AlienKernel::ALL {
+        let red: Vec<&KernelCheckRecord> = report
+            .records_for(*kernel)
+            .into_iter()
+            .filter(|r| matches!(r.kind, CheckKind::Adversarial | CheckKind::Degradation))
+            .collect();
+        let count = red.len();
+        let passed = !red.is_empty() && red.iter().all(|r| r.verdict == CheckVerdict::Pass);
+        if !passed {
+            complete = false;
+        }
+        coverage.push(RedPathCoverage {
+            kernel: *kernel,
+            red_path_checks: count,
+            passed,
+        });
+    }
+    (coverage, complete)
+}
+
+/// Run the suite and materialize the full alien-uplift evidence pipeline under
+/// `run_root/<run_name>/`.
+///
+/// Writes a JSONL evidence ledger (one [`KernelCheckRecord`] per line, each with
+/// artifact-graph IDs and a replay command), a `pipeline_summary.json`, an
+/// `artifact_manifest.json`, and the suite JSON-stats artifact. Artifacts are
+/// always written (so red-path failures are triageable); the returned summary's
+/// `pipeline_passed` reflects the green-path + red-path gate.
+///
+/// # Errors
+/// Returns an error if a run directory or artifact cannot be created/serialized.
+pub fn run_alien_uplift_pipeline(
+    run_root: &Path,
+    config: &AlienUpliftPipelineConfig,
+) -> crate::error::Result<AlienUpliftPipelineOutcome> {
+    let suite = AlienKernelTestSuite::new(config.suite.clone());
+    let report = suite.run();
+
+    let (red_path_coverage, red_path_complete) = compute_red_path_coverage(&report);
+    let green_path_checks = report
+        .records
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.kind,
+                CheckKind::Invariant | CheckKind::Property | CheckKind::Replay
+            )
+        })
+        .count();
+    let red_path_checks = report.summary.adversarial_checks + report.summary.degradation_checks;
+    let all_checks_passed = report.summary.all_passed;
+    let pipeline_passed = all_checks_passed && red_path_complete;
+
+    let summary = AlienUpliftPipelineSummary {
+        schema_version: ALIEN_UPLIFT_PIPELINE_SCHEMA_VERSION.to_string(),
+        report_id: report.report_id.clone(),
+        suite_policy_id: report.suite_policy_id.clone(),
+        evidence_checksum: report.evidence_checksum.clone(),
+        total_checks: report.summary.total_checks,
+        passed: report.summary.passed,
+        failed: report.summary.failed,
+        green_path_checks,
+        red_path_checks,
+        kernels_covered: report.summary.kernels_covered,
+        red_path_coverage,
+        all_checks_passed,
+        red_path_complete,
+        pipeline_passed,
+        replay_command: report.replay_command.clone(),
+    };
+
+    // Build artifact contents.
+    let mut ledger_content = String::new();
+    for record in &report.records {
+        let line = serde_json::to_string(record)?;
+        ledger_content.push_str(&line);
+        ledger_content.push('\n');
+    }
+    let stats_content = report.exported_json_stats.content.clone();
+    let summary_content = serde_json::to_string_pretty(&summary)?;
+
+    let run_dir = run_root.join(&config.run_name);
+    crate::util::ensure_dir(&run_dir)?;
+
+    let ledger_file = "evidence_ledger.jsonl";
+    let stats_file = "alien_kernel_tests_stats.json";
+    let summary_file = "pipeline_summary.json";
+    let manifest_file = "artifact_manifest.json";
+
+    crate::util::write_string(&run_dir.join(ledger_file), &ledger_content)?;
+    crate::util::write_string(&run_dir.join(stats_file), &stats_content)?;
+    crate::util::write_string(&run_dir.join(summary_file), &summary_content)?;
+
+    let artifacts = vec![
+        artifact_of(ledger_file, &ledger_content),
+        artifact_of(stats_file, &stats_content),
+        artifact_of(summary_file, &summary_content),
+    ];
+
+    #[derive(Serialize)]
+    struct Manifest<'a> {
+        schema_version: &'a str,
+        run_name: &'a str,
+        report_id: &'a str,
+        pipeline_passed: bool,
+        artifacts: &'a [AlienUpliftArtifact],
+    }
+    let manifest_content = serde_json::to_string_pretty(&Manifest {
+        schema_version: ALIEN_UPLIFT_PIPELINE_SCHEMA_VERSION,
+        run_name: &config.run_name,
+        report_id: &report.report_id,
+        pipeline_passed,
+        artifacts: &artifacts,
+    })?;
+    crate::util::write_string(&run_dir.join(manifest_file), &manifest_content)?;
+
+    Ok(AlienUpliftPipelineOutcome {
+        run_dir: run_dir.display().to_string(),
+        ledger_path: run_dir.join(ledger_file).display().to_string(),
+        summary_path: run_dir.join(summary_file).display().to_string(),
+        manifest_path: run_dir.join(manifest_file).display().to_string(),
+        stats_path: run_dir.join(stats_file).display().to_string(),
+        summary,
+        artifacts,
+    })
+}
+
+fn artifact_of(file: &str, content: &str) -> AlienUpliftArtifact {
+    AlienUpliftArtifact {
+        name: file
+            .trim_end_matches(".json")
+            .trim_end_matches(".jsonl")
+            .to_string(),
+        file: file.to_string(),
+        sha256: sha256_hex(content.as_bytes()),
+        bytes: u64::try_from(content.len()).unwrap_or(u64::MAX),
+    }
+}
+
+/// CLI arguments for the `alien-uplift` E2E pipeline command.
+#[derive(Debug, clap::Args)]
+pub struct AlienUpliftArgs {
+    /// Run-root directory; artifacts land under `<run-root>/<run-name>/`.
+    #[arg(
+        long = "run-root",
+        default_value = "/tmp/doctor_frankentui/alien_uplift"
+    )]
+    pub run_root: PathBuf,
+    /// Run directory name.
+    #[arg(long = "run-name", default_value = "alien-uplift")]
+    pub run_name: String,
+    /// Suite policy lane id.
+    #[arg(long = "policy", default_value = "alien-kernel-tests/e2e")]
+    pub policy: String,
+    /// Seeds per seeded property sweep.
+    #[arg(long = "seed-count", default_value_t = 5)]
+    pub seed_count: u32,
+}
+
+/// Run the alien-uplift E2E pipeline command.
+///
+/// Materializes the evidence ledger + summary + manifest under the run-root and
+/// returns a non-zero exit (via [`crate::error::DoctorError::Exit`]) when the
+/// green-path or red-path gate fails — making it suitable as a
+/// release-candidate promotion gate.
+///
+/// # Errors
+/// Returns an error if artifacts cannot be written, or `DoctorError::Exit` when
+/// the pipeline gate fails.
+pub fn run_alien_uplift(args: AlienUpliftArgs) -> crate::error::Result<()> {
+    let config = AlienUpliftPipelineConfig {
+        suite: AlienKernelTestConfig {
+            suite_policy_id: args.policy,
+            seed_count: args.seed_count,
+        },
+        run_name: args.run_name,
+    };
+    let outcome = run_alien_uplift_pipeline(&args.run_root, &config)?;
+    let summary = &outcome.summary;
+
+    let integration = crate::util::OutputIntegration::detect();
+    if integration.should_emit_json() {
+        println!("{}", serde_json::to_string_pretty(summary)?);
+    } else {
+        let ui = crate::util::output_for(&integration);
+        ui.rule(Some("alien-uplift pipeline"));
+        ui.info(&format!("run dir: {}", outcome.run_dir));
+        ui.info(&format!(
+            "checks: {} passed / {} failed ({} kernels)",
+            summary.passed, summary.failed, summary.kernels_covered
+        ));
+        ui.info(&format!(
+            "green-path: {}  red-path: {} (complete: {})",
+            summary.green_path_checks, summary.red_path_checks, summary.red_path_complete
+        ));
+        ui.info(&format!("ledger: {}", outcome.ledger_path));
+        ui.info(&format!("manifest: {}", outcome.manifest_path));
+        if summary.pipeline_passed {
+            ui.success("alien-uplift gate PASSED");
+        } else {
+            ui.error("alien-uplift gate FAILED");
+        }
+    }
+
+    if summary.pipeline_passed {
+        Ok(())
+    } else {
+        Err(crate::error::DoctorError::exit(
+            1,
+            format!(
+                "alien-uplift pipeline gate failed: {} check(s) failed, red_path_complete={}",
+                summary.failed, summary.red_path_complete
+            ),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2471,6 +2797,102 @@ mod tests {
         .run();
         assert!(many.records.len() >= few.records.len());
         assert!(few.summary.all_passed && many.summary.all_passed);
+    }
+
+    // ── E2E pipeline (bd-3bxhj.10.11) ────────────────────────────────────
+
+    #[test]
+    fn pipeline_materializes_artifacts_and_passes_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome =
+            run_alien_uplift_pipeline(dir.path(), &AlienUpliftPipelineConfig::default()).unwrap();
+        assert!(outcome.summary.pipeline_passed, "{:#?}", outcome.summary);
+        assert!(outcome.summary.all_checks_passed);
+        assert!(outcome.summary.red_path_complete);
+        // Every materialized artifact exists with the declared byte length.
+        for artifact in &outcome.artifacts {
+            let path = std::path::Path::new(&outcome.run_dir).join(&artifact.file);
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(bytes.len() as u64, artifact.bytes, "{}", artifact.file);
+            assert_eq!(sha256_hex(&bytes), artifact.sha256, "{}", artifact.file);
+        }
+        assert!(std::path::Path::new(&outcome.manifest_path).exists());
+    }
+
+    #[test]
+    fn pipeline_red_path_covers_every_kernel() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome =
+            run_alien_uplift_pipeline(dir.path(), &AlienUpliftPipelineConfig::default()).unwrap();
+        assert_eq!(
+            outcome.summary.red_path_coverage.len(),
+            AlienKernel::ALL.len()
+        );
+        for coverage in &outcome.summary.red_path_coverage {
+            assert!(
+                coverage.red_path_checks >= 1,
+                "kernel {} has no red-path check",
+                coverage.kernel.as_str()
+            );
+            assert!(
+                coverage.passed,
+                "kernel {} red-path failed",
+                coverage.kernel.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_ledger_is_valid_jsonl_with_artifact_graph_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome =
+            run_alien_uplift_pipeline(dir.path(), &AlienUpliftPipelineConfig::default()).unwrap();
+        let ledger = std::fs::read_to_string(&outcome.ledger_path).unwrap();
+        let lines: Vec<&str> = ledger.lines().collect();
+        assert_eq!(lines.len(), outcome.summary.total_checks);
+        for line in lines {
+            let record: KernelCheckRecord = serde_json::from_str(line).unwrap();
+            // Artifact-graph IDs + replay command (AC#1).
+            assert!(!record.check_id.is_empty());
+            assert!(!record.proof_hash.is_empty());
+            assert!(!record.witness_hash.is_empty());
+            assert!(!record.posterior_hash.is_empty());
+            assert!(record.replay_command.contains(&record.check_id));
+        }
+    }
+
+    #[test]
+    fn pipeline_is_deterministic_across_runs() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a =
+            run_alien_uplift_pipeline(dir_a.path(), &AlienUpliftPipelineConfig::default()).unwrap();
+        let b =
+            run_alien_uplift_pipeline(dir_b.path(), &AlienUpliftPipelineConfig::default()).unwrap();
+        assert_eq!(a.summary.evidence_checksum, b.summary.evidence_checksum);
+        assert_eq!(a.summary.report_id, b.summary.report_id);
+        // Ledger bytes are identical (run-root path is not part of the ledger).
+        let ledger_a = std::fs::read_to_string(&a.ledger_path).unwrap();
+        let ledger_b = std::fs::read_to_string(&b.ledger_path).unwrap();
+        assert_eq!(ledger_a, ledger_b);
+    }
+
+    #[test]
+    fn pipeline_cli_command_succeeds_on_green_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_alien_uplift(AlienUpliftArgs {
+            run_root: dir.path().to_path_buf(),
+            run_name: "cli".to_string(),
+            policy: "alien-kernel-tests/e2e".to_string(),
+            seed_count: 4,
+        });
+        assert!(result.is_ok());
+        assert!(
+            dir.path()
+                .join("cli")
+                .join("evidence_ledger.jsonl")
+                .exists()
+        );
     }
 
     // ── Direct kernel property tests (proptest) ──────────────────────────
