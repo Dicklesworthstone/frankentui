@@ -165,6 +165,7 @@ pub mod corpus;
 pub mod coverage_prioritizer;
 pub mod doctor;
 pub mod drift_monitor;
+pub mod ecosystem_scan;
 pub mod effect_canonical;
 pub mod effect_translator;
 pub mod egraph_optimizer;
