@@ -208,6 +208,7 @@ pub mod style_semantics;
 pub mod style_translator;
 pub mod suite;
 pub mod supervised_orchestration;
+pub mod symptom_router;
 pub mod tape;
 pub mod test_budget_allocator;
 pub mod trace;
