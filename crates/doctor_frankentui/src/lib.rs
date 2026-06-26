@@ -189,6 +189,7 @@ pub mod milestone_policy;
 pub mod module_graph;
 pub mod paper_verification;
 pub mod performance_diff;
+pub mod posterior_core;
 pub mod profile;
 pub mod profile_orchestrator;
 pub mod proof_artifacts;
