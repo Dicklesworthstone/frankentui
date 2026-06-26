@@ -383,6 +383,14 @@ fi
 
 if $CAN_SMOKE; then
 
+    # Force a mouse-capable terminal for the PTY smoke runs. Mouse capture is
+    # capability-gated (derived from TERM): CI's `script` PTY runs with TERM
+    # unset/`dumb`, which suppresses the mouse-enable sequence even in
+    # alt-screen and made the mouse-capture-policy assertion (bd-iuvb.17.1)
+    # fail. A real terminal type lets the policy (alt=on, inline=off) actually
+    # manifest as ANSI so the assertion tests what it's meant to.
+    export TERM="xterm-256color"
+
     # ────────────────────────────────────────────────────────────────────────
     # Step 5: Alt-screen Smoke Test
     # ────────────────────────────────────────────────────────────────────────
