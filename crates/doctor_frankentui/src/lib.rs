@@ -192,6 +192,7 @@ pub mod performance_diff;
 pub mod profile;
 pub mod profile_orchestrator;
 pub mod proof_artifacts;
+pub mod recommendation_contract;
 pub mod redact;
 pub mod report;
 pub mod runmeta;
