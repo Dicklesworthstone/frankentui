@@ -158,6 +158,7 @@ pub mod certification_report;
 pub mod cli;
 pub mod code_emission;
 pub mod codegen_optimize;
+pub mod composition_matrix;
 pub mod composition_semantics;
 pub mod concolic_differential;
 pub mod controller_composition;
