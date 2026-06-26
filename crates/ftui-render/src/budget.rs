@@ -1419,27 +1419,36 @@ mod tests {
 
     #[test]
     fn budget_remaining_fraction() {
-        let budget = RenderBudget::new(Duration::from_millis(100));
+        let mut budget = RenderBudget::new(Duration::from_millis(100));
 
         // Initially should be close to 1.0
         let initial = budget.remaining_fraction();
         assert!(initial > 0.9);
 
-        thread::sleep(Duration::from_millis(50));
+        // Pin elapsed to ~50ms deterministically instead of `thread::sleep`,
+        // which overshoots under CI scheduling jitter and made this test flaky
+        // on contended runners (macOS CI). The few microseconds between setting
+        // `start` and reading are negligible against the 0.3..0.6 margins.
+        budget.start = Instant::now() - Duration::from_millis(50);
 
         // Should be around 0.5 now
         let later = budget.remaining_fraction();
-        assert!(later < 0.6);
-        assert!(later > 0.3);
+        assert!(
+            later < 0.6,
+            "expected remaining_fraction < 0.6, got {later}"
+        );
+        assert!(
+            later > 0.3,
+            "expected remaining_fraction > 0.3, got {later}"
+        );
     }
 
     #[test]
     fn should_degrade_when_cost_exceeds_remaining() {
-        // Use wider margins to avoid timing flakiness
-        let budget = RenderBudget::new(Duration::from_millis(100));
-
-        // Wait until ~half budget is consumed (~50ms remaining)
-        thread::sleep(Duration::from_millis(50));
+        // Pin elapsed to ~50ms deterministically (no `thread::sleep`, which is
+        // flaky under CI scheduling jitter), leaving ~50ms of the 100ms budget.
+        let mut budget = RenderBudget::new(Duration::from_millis(100));
+        budget.start = Instant::now() - Duration::from_millis(50);
 
         // Should degrade for expensive operations (80ms > ~50ms remaining)
         assert!(budget.should_degrade(Duration::from_millis(80)));
