@@ -170,6 +170,7 @@ pub mod ecosystem_scan;
 pub mod effect_canonical;
 pub mod effect_translator;
 pub mod egraph_optimizer;
+pub mod entry_header_compiler;
 pub mod error;
 pub mod explain;
 pub mod fixture_taxonomy;
