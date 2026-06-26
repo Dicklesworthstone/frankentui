@@ -317,19 +317,21 @@ impl ClusterMap {
             return self.total_bytes as usize;
         }
 
-        match self
+        // Lower bound: first entry whose `cell_start >= cell_col`. Zero-width
+        // clusters (combining marks, ZWSP/ZWJ) share a `cell_start` with the
+        // following cluster, so `cell_start` is non-decreasing but NOT unique.
+        // `binary_search_by_key` would return an arbitrary match among the
+        // duplicates; we must resolve to the FIRST cluster owning the column so
+        // that `byte → cell → byte` snaps to the cluster start (invariant #1).
+        let idx = self
             .entries
-            .binary_search_by_key(&(cell_col as u32), |e| e.cell_start)
-        {
-            Ok(idx) => self.entries[idx].byte_start as usize,
-            Err(idx) => {
-                // cell_col is a continuation cell — snap to containing cluster.
-                if idx > 0 {
-                    self.entries[idx - 1].byte_start as usize
-                } else {
-                    0
-                }
-            }
+            .partition_point(|e| (e.cell_start as usize) < cell_col);
+        if idx < self.entries.len() && self.entries[idx].cell_start as usize == cell_col {
+            self.entries[idx].byte_start as usize
+        } else {
+            // cell_col is a continuation cell — snap to the containing cluster.
+            // `idx > 0` holds because `entries[0].cell_start == 0 <= cell_col`.
+            self.entries[idx - 1].byte_start as usize
         }
     }
 
@@ -341,22 +343,23 @@ impl ClusterMap {
             return None;
         }
 
-        match self
+        // Lower bound over the (non-unique, due to zero-width clusters)
+        // `cell_start` key — resolve to the FIRST cluster owning the column.
+        // See `cell_to_byte` for why `binary_search_by_key` is unsafe here.
+        let idx = self
             .entries
-            .binary_search_by_key(&(cell_col as u32), |e| e.cell_start)
-        {
-            Ok(idx) => Some(&self.entries[idx]),
-            Err(idx) => {
-                if idx > 0 {
-                    let entry = &self.entries[idx - 1];
-                    if (cell_col as u32) < entry.cell_end() {
-                        Some(entry)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+            .partition_point(|e| (e.cell_start as usize) < cell_col);
+        if idx < self.entries.len() && self.entries[idx].cell_start as usize == cell_col {
+            Some(&self.entries[idx])
+        } else {
+            // Continuation cell — snap to the containing (previous) cluster if
+            // the column falls within its width. `idx > 0` because
+            // `entries[0].cell_start == 0 <= cell_col`.
+            let entry = &self.entries[idx - 1];
+            if (cell_col as u32) < entry.cell_end() {
+                Some(entry)
+            } else {
+                None
             }
         }
     }
@@ -554,6 +557,84 @@ mod tests {
         assert_eq!(map.get(2).unwrap().cell_start, 2); // '世'
         assert_eq!(map.get(3).unwrap().cell_start, 4); // '界'
         assert_eq!(map.get(4).unwrap().cell_start, 6); // '!'
+    }
+
+    #[test]
+    fn zero_width_clusters_round_trip_to_first_owner() {
+        // ZWSP (U+200B) is a zero-width grapheme cluster on its own. Two of them
+        // between real chars create *duplicate* `cell_start` values, which used
+        // to make the reverse lookups land on an arbitrary (often the LAST)
+        // cluster sharing a column via `binary_search_by_key`. Regression for
+        // the `fuzz_text_cluster_map` panic: byte -> cell -> byte must snap to
+        // the FIRST cluster owning the column (invariant #1), so the round-trip
+        // never overshoots (`back <= byte_start`).
+        let text = "a\u{200B}\u{200B}b";
+        let map = ClusterMap::from_text(text);
+
+        // The input must actually exercise zero-width / duplicate columns, else
+        // this regression guard would be vacuous.
+        assert!(
+            map.entries().iter().any(|e| e.cell_width == 0),
+            "expected at least one zero-width cluster"
+        );
+        let cell_starts: Vec<u32> = map.entries().iter().map(|e| e.cell_start).collect();
+        assert!(
+            cell_starts.windows(2).any(|w| w[0] == w[1]),
+            "expected duplicate cell_start columns"
+        );
+
+        // Round-trip invariant — exactly what the fuzz target asserts.
+        for e in map.entries() {
+            let cell = map.byte_to_cell(e.byte_start as usize);
+            let back = map.cell_to_byte(cell);
+            assert!(
+                back <= e.byte_start as usize,
+                "round-trip overshoot: byte {} -> cell {} -> byte {}",
+                e.byte_start,
+                cell,
+                back
+            );
+        }
+
+        // The shared column resolves to the FIRST (lowest-byte) owning cluster,
+        // and `cell_to_entry` agrees with `cell_to_byte`.
+        let first_at_col1 = map
+            .entries()
+            .iter()
+            .find(|e| e.cell_start == 1)
+            .expect("a cluster at cell column 1");
+        assert_eq!(map.cell_to_byte(1), first_at_col1.byte_start as usize);
+        assert_eq!(
+            map.cell_to_entry(1).map(|e| e.byte_start),
+            Some(first_at_col1.byte_start)
+        );
+    }
+
+    #[test]
+    fn fuzz_crash_control_chars_round_trip() {
+        // The exact minimized input that crashed `fuzz_text_cluster_map` in CI:
+        // bytes 0x32 0x03 0x0a = '2' + U+0003 (ETX, zero-width) + '\n' (width 1).
+        // The two clusters at byte 1 and byte 2 share cell column 1, so the old
+        // `binary_search_by_key` resolved cell 1 to the LAST cluster (byte 2),
+        // making `cell_to_byte(byte_to_cell(1)) == 2 > 1` and tripping the
+        // round-trip assertion. The lower-bound fix resolves cell 1 to byte 1.
+        let text = "2\u{03}\n";
+        let map = ClusterMap::from_text(text);
+
+        for e in map.entries() {
+            let cell = map.byte_to_cell(e.byte_start as usize);
+            let back = map.cell_to_byte(cell);
+            assert!(
+                back <= e.byte_start as usize,
+                "round-trip overshoot: byte {} -> cell {} -> byte {}",
+                e.byte_start,
+                cell,
+                back
+            );
+        }
+
+        // Cell column 1 is owned by the first (lowest-byte) cluster there.
+        assert_eq!(map.cell_to_byte(1), 1);
     }
 
     #[test]
