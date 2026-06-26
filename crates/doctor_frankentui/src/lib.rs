@@ -147,6 +147,7 @@
 pub mod abstract_interpretation;
 pub mod accessibility_diff;
 pub mod adversarial_fixtures;
+pub mod alien_kernel_tests;
 pub mod backend_capability;
 pub mod baseline_capture;
 pub mod benchmark_harness;
