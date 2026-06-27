@@ -72,13 +72,13 @@ enum ParserState {
     OscEscape,
     /// Ignoring oversized OSC sequence.
     OscIgnore,
-    /// Inside a control string — DCS (`ESC P`), SOS (`ESC X`), PM (`ESC ^`) or
-    /// APC (`ESC _`) — which we consume and discard until its String Terminator.
-    /// These carry terminal *responses* (XTGETTCAP / DECRQSS / status reports),
-    /// never key input; decoding their bytes as keys would inject garbage (e.g.
-    /// an XTGETTCAP reply that leaks into the input stream).
+    /// Inside a DCS (`ESC P …`) control string, which we consume and discard
+    /// until its String Terminator. DCS carries terminal query *responses*
+    /// (XTGETTCAP capability reports, DECRQSS status strings), not key input;
+    /// decoding its bytes as keys would inject garbage (e.g. an XTGETTCAP reply
+    /// that leaks into the input stream on a slow link).
     DcsIgnore,
-    /// After an ESC inside a control string — checking for the `ESC \` (ST)
+    /// After an ESC inside a DCS string — checking for the `ESC \` (ST)
     /// terminator.
     DcsEscape,
     /// Collecting UTF-8 multi-byte sequence.
@@ -387,13 +387,24 @@ impl InputParser {
                 self.buffer.clear();
                 None
             }
-            // Control-string introducers: DCS (P), SOS (X), PM (^), APC (_).
-            // These are terminal *responses* (XTGETTCAP/DECRQSS/status), never
-            // key input — consume and discard until the String Terminator.
-            // Without this, `ESC P …` would decode as `Alt+P` followed by the
-            // payload bytes as literal keystrokes (e.g. a leaked XTGETTCAP reply
-            // on a slow link injecting `1 + r 5 2 4 7 4 2 = 8 / 8 / 8` keys).
-            b'P' | b'X' | b'^' | b'_' => {
+            // DCS introducer (ESC P). DCS is how terminals return string-valued
+            // query responses — XTGETTCAP capability reports and DECRQSS status
+            // strings — so we consume and discard the whole `ESC P … ST` string
+            // rather than decoding it as keys. Without this, a leaked XTGETTCAP
+            // reply (`ESC P 1+r524742=8/8/8 ESC \`) would decode as `Alt+P`
+            // followed by its payload as literal keystrokes
+            // (`1 + r 5 2 4 7 4 2 = 8 / 8 / 8`, `Alt+\`).
+            //
+            // This shadows the legacy `Alt+Shift+P` encoding (which also sends
+            // `ESC P` under metaSendsEscape) — an unavoidable, standard ambiguity
+            // (DCS wins, exactly as `ESC [`/`ESC ]`/`ESC O` already shadow
+            // `Alt+[`/`Alt+]`/`Alt+Shift+O`). We deliberately do NOT intercept
+            // the sibling C1 string introducers SOS (`ESC X`), PM (`ESC ^`) or
+            // APC (`ESC _`): terminals essentially never send those as responses,
+            // so shadowing them would needlessly swallow `Alt+Shift+X`/`Alt+^`/
+            // `Alt+_` keypresses for no benefit. (8-bit C1 DCS `0x90` is likewise
+            // not handled — modern UTF-8 terminals use the 7-bit form above.)
+            b'P' => {
                 self.state = ParserState::DcsIgnore;
                 self.buffer.clear();
                 None
@@ -1068,11 +1079,11 @@ impl InputParser {
         }
     }
 
-    /// Ignore bytes inside a DCS/SOS/PM/APC control string until its terminator.
+    /// Ignore bytes inside a DCS (`ESC P …`) string until its terminator.
     ///
-    /// The content (e.g. an XTGETTCAP reply `1+r524742=8/8/8`) is discarded —
-    /// these strings never carry key input. Like [`Self::process_osc_ignore`],
-    /// a non-ESC/BEL control byte aborts the string and is reprocessed, so a
+    /// The content (e.g. an XTGETTCAP reply `1+r524742=8/8/8`) is discarded — a
+    /// DCS never carries key input. Like [`Self::process_osc_ignore`], a
+    /// non-ESC/BEL control byte aborts the string and is reprocessed, so a
     /// truncated/never-terminated string cannot permanently swallow real input.
     fn process_dcs_ignore(&mut self, byte: u8) -> Option<Event> {
         match byte {
@@ -1097,7 +1108,7 @@ impl InputParser {
         }
     }
 
-    /// After an ESC inside a control string: complete on `\` (ST) or recover.
+    /// After an ESC inside a DCS string: complete on `\` (ST) or recover.
     fn process_dcs_escape(&mut self, byte: u8) -> Option<Event> {
         if byte == b'\\' {
             // ST found — the control string is complete and discarded (no event).
@@ -2502,18 +2513,36 @@ mod tests {
     }
 
     #[test]
-    fn sos_pm_apc_strings_are_ignored() {
+    fn sos_pm_apc_introducers_stay_alt_keys() {
+        // We deliberately intercept ONLY DCS (ESC P), not the sibling C1 string
+        // introducers SOS/PM/APC — terminals never send those as responses, so
+        // they remain `Alt+Shift+X` / `Alt+^` / `Alt+_` keypresses.
         for &introducer in b"X^_" {
             let mut parser = InputParser::new();
-            let mut seq = vec![0x1b, introducer];
-            seq.extend_from_slice(b"junk\x1b\\");
-            let events = parser.parse(&seq);
+            let events = parser.parse(&[0x1b, introducer]);
             assert!(
-                events.is_empty(),
-                "ESC {} control string must be ignored, got: {events:?}",
+                matches!(
+                    events.as_slice(),
+                    [Event::Key(k)]
+                        if k.code == KeyCode::Char(introducer as char)
+                            && k.modifiers.contains(Modifiers::ALT)
+                ),
+                "ESC {} must stay an Alt key, got: {events:?}",
                 introducer as char
             );
         }
+    }
+
+    #[test]
+    fn dcs_esc_then_csi_recovers_to_arrow_key() {
+        let mut parser = InputParser::new();
+        // ESC inside the DCS payload, followed not by `\` (ST) but by a CSI
+        // (`[A` = Up): the string is cancelled and the CSI parses cleanly.
+        let events = parser.parse(b"\x1bP payload \x1b[A");
+        assert!(
+            matches!(events.as_slice(), [Event::Key(k)] if k.code == KeyCode::Up),
+            "ESC-mid-DCS then a CSI must recover and parse the arrow, got: {events:?}"
+        );
     }
 
     #[test]
