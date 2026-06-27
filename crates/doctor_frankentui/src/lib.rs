@@ -192,6 +192,7 @@ pub mod migration_config;
 pub mod migration_ir;
 pub mod milestone_policy;
 pub mod module_graph;
+pub mod optimization_model_tests;
 pub mod paper_verification;
 pub mod performance_diff;
 pub mod posterior_core;

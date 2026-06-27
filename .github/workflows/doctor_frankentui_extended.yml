@@ -104,6 +104,15 @@ jobs:
           python3 ./scripts/doctor_frankentui_no_fake_gate.py \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/no_fake_gate.log"
 
+      - name: Run doctor_frankentui optimization-model gate (bd-3bxhj.8.12)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed VOI-allocator + BOCPD/CUSUM drift-model unit/property gate.
+          # Must pass before the .8.13/.8.21 E2E adaptive-scheduling gauntlets.
+          cargo test -p doctor_frankentui --lib optimization_model_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/optimization_model_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
