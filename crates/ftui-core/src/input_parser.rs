@@ -72,6 +72,15 @@ enum ParserState {
     OscEscape,
     /// Ignoring oversized OSC sequence.
     OscIgnore,
+    /// Inside a control string — DCS (`ESC P`), SOS (`ESC X`), PM (`ESC ^`) or
+    /// APC (`ESC _`) — which we consume and discard until its String Terminator.
+    /// These carry terminal *responses* (XTGETTCAP / DECRQSS / status reports),
+    /// never key input; decoding their bytes as keys would inject garbage (e.g.
+    /// an XTGETTCAP reply that leaks into the input stream).
+    DcsIgnore,
+    /// After an ESC inside a control string — checking for the `ESC \` (ST)
+    /// terminator.
+    DcsEscape,
     /// Collecting UTF-8 multi-byte sequence.
     Utf8 {
         /// Bytes collected so far.
@@ -257,6 +266,8 @@ impl InputParser {
             ParserState::OscContent => self.process_osc_content(byte),
             ParserState::OscEscape => self.process_osc_escape(byte),
             ParserState::OscIgnore => self.process_osc_ignore(byte),
+            ParserState::DcsIgnore => self.process_dcs_ignore(byte),
+            ParserState::DcsEscape => self.process_dcs_escape(byte),
             ParserState::Utf8 {
                 collected,
                 expected,
@@ -373,6 +384,17 @@ impl InputParser {
             // OSC introducer
             b']' => {
                 self.state = ParserState::Osc;
+                self.buffer.clear();
+                None
+            }
+            // Control-string introducers: DCS (P), SOS (X), PM (^), APC (_).
+            // These are terminal *responses* (XTGETTCAP/DECRQSS/status), never
+            // key input — consume and discard until the String Terminator.
+            // Without this, `ESC P …` would decode as `Alt+P` followed by the
+            // payload bytes as literal keystrokes (e.g. a leaked XTGETTCAP reply
+            // on a slow link injecting `1 + r 5 2 4 7 4 2 = 8 / 8 / 8` keys).
+            b'P' | b'X' | b'^' | b'_' => {
+                self.state = ParserState::DcsIgnore;
                 self.buffer.clear();
                 None
             }
@@ -1043,6 +1065,53 @@ impl InputParser {
             }
             // Continue ignoring
             _ => None,
+        }
+    }
+
+    /// Ignore bytes inside a DCS/SOS/PM/APC control string until its terminator.
+    ///
+    /// The content (e.g. an XTGETTCAP reply `1+r524742=8/8/8`) is discarded —
+    /// these strings never carry key input. Like [`Self::process_osc_ignore`],
+    /// a non-ESC/BEL control byte aborts the string and is reprocessed, so a
+    /// truncated/never-terminated string cannot permanently swallow real input.
+    fn process_dcs_ignore(&mut self, byte: u8) -> Option<Event> {
+        match byte {
+            // BEL terminates (lenient: some terminals close strings with BEL).
+            0x07 => {
+                self.state = ParserState::Ground;
+                None
+            }
+            // ESC may begin the ST (ESC \) terminator.
+            0x1B => {
+                self.state = ParserState::DcsEscape;
+                None
+            }
+            // Abort on other control characters so a malformed string can't
+            // swallow subsequent legitimate input (matches OSC-ignore).
+            _ if byte < 0x20 => {
+                self.state = ParserState::Ground;
+                self.process_ground(byte)
+            }
+            // Consume DCS payload (hex, '=', '/', etc.).
+            _ => None,
+        }
+    }
+
+    /// After an ESC inside a control string: complete on `\` (ST) or recover.
+    fn process_dcs_escape(&mut self, byte: u8) -> Option<Event> {
+        if byte == b'\\' {
+            // ST found — the control string is complete and discarded (no event).
+            self.state = ParserState::Ground;
+            None
+        } else if byte == 0x1B {
+            // ESC ESC — treat the second ESC as the start of a new sequence.
+            self.state = ParserState::Escape;
+            None
+        } else {
+            // ESC followed by something else cancels the string; reprocess the
+            // byte as a fresh escape sequence (matches OSC-escape recovery).
+            self.state = ParserState::Escape;
+            self.process_escape(byte)
         }
     }
 
@@ -2393,6 +2462,71 @@ mod tests {
             events.first(),
             Some(Event::Clipboard(c)) if c.content == "hello"
         ));
+    }
+
+    // --- DCS / control-string handling (XTGETTCAP-reply leak guard) ---
+
+    #[test]
+    fn dcs_xtgettcap_reply_produces_no_events() {
+        let mut parser = InputParser::new();
+        // A leaked XTGETTCAP `RGB` reply (e.g. a truecolor probe whose answer
+        // arrives after the probe timed out on a slow ssh link) MUST be consumed
+        // silently — not decoded as `Alt+P` then the payload as literal keys.
+        let events = parser.parse(b"\x1bP1+r524742=8/8/8\x1b\\");
+        assert!(
+            events.is_empty(),
+            "a DCS reply must produce no events, got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn dcs_then_real_key_recovers_to_ground() {
+        let mut parser = InputParser::new();
+        // After an ST-terminated DCS the parser must be back in Ground so the
+        // following real keypress parses normally.
+        let events = parser.parse(b"\x1bP1+r524742=8/8/8\x1b\\a");
+        assert!(
+            matches!(events.as_slice(), [Event::Key(k)] if k.code == KeyCode::Char('a')),
+            "parser must recover to Ground after a DCS, got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn dcs_bel_terminated_is_ignored() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1bPsome-payload\x07b");
+        assert!(
+            matches!(events.as_slice(), [Event::Key(k)] if k.code == KeyCode::Char('b')),
+            "BEL-terminated DCS ignored, then key parses, got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn sos_pm_apc_strings_are_ignored() {
+        for &introducer in b"X^_" {
+            let mut parser = InputParser::new();
+            let mut seq = vec![0x1b, introducer];
+            seq.extend_from_slice(b"junk\x1b\\");
+            let events = parser.parse(&seq);
+            assert!(
+                events.is_empty(),
+                "ESC {} control string must be ignored, got: {events:?}",
+                introducer as char
+            );
+        }
+    }
+
+    #[test]
+    fn dcs_aborts_on_control_char_so_input_is_not_swallowed() {
+        let mut parser = InputParser::new();
+        // A never-terminated DCS followed by Enter (CR, a control byte): the
+        // control char must abort the string and be reprocessed, so a malformed
+        // string cannot swallow subsequent real input forever.
+        let events = parser.parse(b"\x1bPunterminated\r");
+        assert!(
+            !events.is_empty(),
+            "a control char must abort a stuck DCS and emit the key, got: {events:?}"
+        );
     }
 
     #[test]
