@@ -385,3 +385,85 @@ JSON plus the on-disk artifacts:
 Because each command writes deterministic artifacts under `--run-root`, a CI
 pipeline can run the stages in sequence, assert on the JSON at each step, and
 archive the run directory as the audit trail for the migration.
+
+---
+
+## 10. Incident response & rollback strategy
+
+When a migration that already passed the gates misbehaves in a production-like
+setting, the operational response is **pre-declared and deterministic** rather
+than improvised. The vocabulary lives in
+`crates/ftui-harness/src/rollout_scorecard.rs`: a `MigrationIncidentReport` is
+resolved by the `MigrationIncidentResponsePlaybook` into a
+`MigrationIncidentResponse` that bundles severity, the emergency hold, an
+artifact-driven rollback plan, rollback readiness, and a postmortem template.
+
+### 10.1 Incident classes
+
+Every incident is one of seven classes (`MigrationIncidentClass`). Each class
+fixes a default severity and the rollout `EmergencyHoldReason` it raises:
+
+| Class (`label`) | Default severity | Emergency hold reason |
+|-----------------|------------------|-----------------------|
+| `semantic-regression` | Sev2 | certification-regression |
+| `determinism-divergence` | Sev1 | determinism-divergence |
+| `performance-regression` | Sev3 | reliability-breach |
+| `capability-gap-escape` | Sev2 | certification-regression |
+| `security-breach` | Sev1 | security-incident |
+| `certification-false-pass` | Sev1 | certification-regression |
+| `rollback-failure` | Sev1 | reliability-breach |
+
+Observed `MigrationIncidentSignal`s can **escalate** severity: the effective
+severity is the worst of the class default and every signal's `escalates_to`.
+
+### 10.2 Severity levels
+
+| Severity | Ack deadline | Immediate rollback? | Rollback authority |
+|----------|--------------|---------------------|--------------------|
+| Sev1 (critical) | 15 min | yes | On-call |
+| Sev2 (high) | 60 min | yes | On-call |
+| Sev3 (moderate) | 240 min | no | Release owner |
+| Sev4 (low) | 1440 min | no | Release owner |
+
+Sev1/Sev2 empower the on-call operator to roll back **immediately**; any
+incident at Sev3 or worse blocks further promotion (`blocks_promotion`).
+
+### 10.3 Deterministic, artifact-driven rollback
+
+`MigrationRollbackPlan::default_for(class, stage)` emits an ordered spine; each
+artifact-bound step names the **artifact kind** it consumes, and `resolve()`
+binds it to an *immutable* (`sha256:`-digested) artifact. Among multiple
+candidates of a kind, resolution is deterministic (lexicographically smallest
+`artifact_id`). Steps and required kinds:
+
+1. `halt-promotion` — `release-gate-decision`
+2. `quarantine-version` — `source-snapshot`
+3. `restore-last-good` — `last-good-release`
+4. `verify-determinism` — `determinism-baseline`
+5. `reverify-certification` — `certification-report`
+6. *(security only)* `rotate-exposed-credentials` — `secret-rotation-runbook`
+6. *(rollback-failure only)* `escalate-manual-recovery` — `manual-recovery-runbook`
+7. `record-postmortem` — *(no artifact)*
+
+`MigrationRollbackPlan::readiness()` returns `Ready` only when every
+artifact-bound step resolved; otherwise `Blocked` with the
+`missing_artifact_kinds`. A mutable (non-`sha256:`) artifact does **not** count —
+the rollback must be reproducible from content-addressed evidence.
+
+### 10.4 Postmortem template
+
+`MigrationPostmortemTemplate::for_incident()` seeds canonical timeline prompts
+(detection → impact → root-cause → resolution), class-specific **prevention
+actions**, and a backlog-linkage surface. A postmortem is only complete once it
+`links_backlog()` (at least one `backlog_item_id`), tying the incident to
+tracked follow-up and prevention work.
+
+### 10.5 Machine output
+
+`MigrationIncidentResponse::to_json()` (schema `1.0.0`) is the deterministic
+evidence record for incident tooling and audits. It carries `incident_id`,
+`class`, `severity`, `ack_deadline_minutes`, `emergency_hold_reason`,
+`rollback_authority`, `requires_immediate_rollback`, `blocks_promotion`, the
+originating `signals`, the resolved `rollback` plan, `readiness`, and the
+`postmortem`. Identical reports serialize byte-for-byte identically, so the
+record can be diffed and replayed.

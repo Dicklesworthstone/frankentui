@@ -104,12 +104,16 @@ pub use time_travel_inspector::TimeTravelInspector;
 // Validation infrastructure re-exports.
 pub use benchmark_gate::{BenchmarkGate, GateResult, Measurement, MetricVerdict, Threshold};
 pub use rollout_scorecard::{
-    EmergencyHold, EmergencyHoldReason, MigrationReadinessDecision, MigrationReadinessEvidence,
-    MigrationReadinessRubric, MigrationReadinessVerdict, MigrationReleaseGateArtifact,
-    MigrationReleaseGateDecision, MigrationReleaseGateEvaluator, MigrationReleaseGateEvidence,
-    MigrationReleaseGateMode, MigrationReleaseGatePolicy, MigrationReleaseGateVerdict,
-    MigrationRolloutStage, MigrationStageGate, OperatorAuthority, RolloutEvidenceBundle,
-    RolloutScorecard, RolloutScorecardConfig, RolloutSummary, RolloutVerdict,
+    EmergencyHold, EmergencyHoldReason, MigrationIncidentClass, MigrationIncidentReport,
+    MigrationIncidentResponse, MigrationIncidentResponsePlaybook, MigrationIncidentSeverity,
+    MigrationIncidentSignal, MigrationPostmortemTemplate, MigrationReadinessDecision,
+    MigrationReadinessEvidence, MigrationReadinessRubric, MigrationReadinessVerdict,
+    MigrationReleaseGateArtifact, MigrationReleaseGateDecision, MigrationReleaseGateEvaluator,
+    MigrationReleaseGateEvidence, MigrationReleaseGateMode, MigrationReleaseGatePolicy,
+    MigrationReleaseGateVerdict, MigrationRollbackPlan, MigrationRollbackReadiness,
+    MigrationRollbackReadinessVerdict, MigrationRollbackStep, MigrationRolloutStage,
+    MigrationStageGate, OperatorAuthority, RolloutEvidenceBundle, RolloutScorecard,
+    RolloutScorecardConfig, RolloutSummary, RolloutVerdict,
 };
 pub use shadow_run::{ShadowRun, ShadowRunConfig, ShadowRunResult, ShadowVerdict};
 

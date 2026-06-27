@@ -1152,6 +1152,826 @@ fn compare_ratio_clause(
 }
 
 // ============================================================================
+// Migration incident response and rollback (bd-3bxhj.9.7)
+// ============================================================================
+
+/// Class of migration incident observed in production-like rollout.
+///
+/// Each class maps to a default severity, a rollout [`EmergencyHoldReason`],
+/// and a canonical rollback spine so that the operational response is
+/// deterministic rather than improvised during an incident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MigrationIncidentClass {
+    /// Migrated app behaves differently from the source under equivalent input.
+    SemanticRegression,
+    /// Deterministic replay, hashes, or stage evidence diverged after release.
+    DeterminismDivergence,
+    /// Generated app breached its p95/p99 performance budget in the field.
+    PerformanceRegression,
+    /// An unsupported source construct shipped without a stub or guard.
+    CapabilityGapEscape,
+    /// Sandbox, provenance, or secret-handling policy was violated.
+    SecurityBreach,
+    /// Certification reported pass but field evidence contradicts the verdict.
+    CertificationFalsePass,
+    /// A rollback attempt itself failed and manual recovery is required.
+    RollbackFailure,
+}
+
+impl MigrationIncidentClass {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SemanticRegression => "semantic-regression",
+            Self::DeterminismDivergence => "determinism-divergence",
+            Self::PerformanceRegression => "performance-regression",
+            Self::CapabilityGapEscape => "capability-gap-escape",
+            Self::SecurityBreach => "security-breach",
+            Self::CertificationFalsePass => "certification-false-pass",
+            Self::RollbackFailure => "rollback-failure",
+        }
+    }
+
+    /// All incident classes in declaration order.
+    pub const ALL: &'static [Self] = &[
+        Self::SemanticRegression,
+        Self::DeterminismDivergence,
+        Self::PerformanceRegression,
+        Self::CapabilityGapEscape,
+        Self::SecurityBreach,
+        Self::CertificationFalsePass,
+        Self::RollbackFailure,
+    ];
+
+    /// Default severity assigned before signal-driven escalation.
+    #[must_use]
+    pub const fn default_severity(self) -> MigrationIncidentSeverity {
+        match self {
+            Self::DeterminismDivergence
+            | Self::SecurityBreach
+            | Self::CertificationFalsePass
+            | Self::RollbackFailure => MigrationIncidentSeverity::Sev1,
+            Self::SemanticRegression | Self::CapabilityGapEscape => MigrationIncidentSeverity::Sev2,
+            Self::PerformanceRegression => MigrationIncidentSeverity::Sev3,
+        }
+    }
+
+    /// Rollout emergency-hold reason triggered by this incident class.
+    #[must_use]
+    pub const fn emergency_hold_reason(self) -> EmergencyHoldReason {
+        match self {
+            Self::SemanticRegression | Self::CapabilityGapEscape | Self::CertificationFalsePass => {
+                EmergencyHoldReason::CertificationRegression
+            }
+            Self::DeterminismDivergence => EmergencyHoldReason::DeterminismDivergence,
+            Self::SecurityBreach => EmergencyHoldReason::SecurityIncident,
+            Self::PerformanceRegression | Self::RollbackFailure => {
+                EmergencyHoldReason::ReliabilityBreach
+            }
+        }
+    }
+}
+
+/// Incident severity level. `Sev1` is the most severe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationIncidentSeverity {
+    /// Critical: data/safety/determinism integrity at risk; rollback now.
+    Sev1,
+    /// High: visible correctness regression; rollback before further promotion.
+    Sev2,
+    /// Moderate: degraded but bounded impact; release-owner review required.
+    Sev3,
+    /// Low: informational; track and remediate without emergency action.
+    Sev4,
+}
+
+impl MigrationIncidentSeverity {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Sev1 => "sev1",
+            Self::Sev2 => "sev2",
+            Self::Sev3 => "sev3",
+            Self::Sev4 => "sev4",
+        }
+    }
+
+    /// Escalation rank where a higher value is more severe.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Sev1 => 4,
+            Self::Sev2 => 3,
+            Self::Sev3 => 2,
+            Self::Sev4 => 1,
+        }
+    }
+
+    /// Acknowledgement deadline in minutes.
+    #[must_use]
+    pub const fn ack_deadline_minutes(self) -> u32 {
+        match self {
+            Self::Sev1 => 15,
+            Self::Sev2 => 60,
+            Self::Sev3 => 240,
+            Self::Sev4 => 1440,
+        }
+    }
+
+    /// Whether this severity demands an immediate rollback before triage.
+    #[must_use]
+    pub const fn requires_immediate_rollback(self) -> bool {
+        matches!(self, Self::Sev1 | Self::Sev2)
+    }
+
+    /// Operator authority empowered to execute the rollback at this severity.
+    #[must_use]
+    pub const fn rollback_authority(self) -> OperatorAuthority {
+        match self {
+            // High-severity incidents empower the on-call operator to act now.
+            Self::Sev1 | Self::Sev2 => OperatorAuthority::OnCall,
+            Self::Sev3 | Self::Sev4 => OperatorAuthority::ReleaseOwner,
+        }
+    }
+
+    /// Return the more severe of two severities.
+    #[must_use]
+    pub const fn escalate(self, other: Self) -> Self {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+/// Observed signal contributing to an incident, optionally escalating severity.
+#[derive(Debug, Clone)]
+pub struct MigrationIncidentSignal {
+    /// Machine-readable signal code, for example `p99-budget-breach`.
+    pub code: String,
+    /// Human-readable detail.
+    pub detail: String,
+    /// Severity this signal escalates the incident to, if any.
+    pub escalates_to: Option<MigrationIncidentSeverity>,
+}
+
+impl MigrationIncidentSignal {
+    /// Construct an informational signal that does not escalate severity.
+    #[must_use]
+    pub fn new(code: &str, detail: &str) -> Self {
+        Self {
+            code: code.to_string(),
+            detail: detail.to_string(),
+            escalates_to: None,
+        }
+    }
+
+    /// Attach a severity escalation to this signal.
+    #[must_use]
+    pub const fn escalates_to(mut self, severity: MigrationIncidentSeverity) -> Self {
+        self.escalates_to = Some(severity);
+        self
+    }
+
+    #[must_use]
+    fn to_json(&self) -> String {
+        let escalates = match self.escalates_to {
+            Some(severity) => format!("\"{}\"", severity.label()),
+            None => "null".to_string(),
+        };
+        format!(
+            concat!(
+                "{{",
+                "\"code\":{code},",
+                "\"detail\":{detail},",
+                "\"escalates_to\":{escalates}",
+                "}}"
+            ),
+            code = json_string(&self.code),
+            detail = json_string(&self.detail),
+            escalates = escalates,
+        )
+    }
+}
+
+/// Incident report consumed by the response playbook.
+#[derive(Debug, Clone)]
+pub struct MigrationIncidentReport {
+    /// Stable incident identifier.
+    pub incident_id: String,
+    /// Incident class.
+    pub class: MigrationIncidentClass,
+    /// Rollout stage where the incident surfaced.
+    pub detected_stage: MigrationRolloutStage,
+    /// Comparator id linking the incident to its baseline contract.
+    pub comparator_id: String,
+    /// Claim id linking the incident to the uplift/migration claim.
+    pub claim_id: String,
+    /// Observed signals, some of which may escalate severity.
+    pub signals: Vec<MigrationIncidentSignal>,
+    /// Immutable artifacts available for an artifact-driven rollback.
+    pub available_artifacts: Vec<MigrationReleaseGateArtifact>,
+}
+
+impl MigrationIncidentReport {
+    /// Construct a report with no signals or artifacts attached yet.
+    #[must_use]
+    pub fn new(
+        incident_id: &str,
+        class: MigrationIncidentClass,
+        detected_stage: MigrationRolloutStage,
+    ) -> Self {
+        Self {
+            incident_id: incident_id.to_string(),
+            class,
+            detected_stage,
+            comparator_id: "n/a".to_string(),
+            claim_id: "n/a".to_string(),
+            signals: Vec::new(),
+            available_artifacts: Vec::new(),
+        }
+    }
+
+    /// Set the baseline comparator id for traceability.
+    #[must_use]
+    pub fn comparator_id(mut self, comparator_id: &str) -> Self {
+        self.comparator_id = comparator_id.to_string();
+        self
+    }
+
+    /// Set the uplift/migration claim id for traceability.
+    #[must_use]
+    pub fn claim_id(mut self, claim_id: &str) -> Self {
+        self.claim_id = claim_id.to_string();
+        self
+    }
+
+    /// Attach an observed signal.
+    #[must_use]
+    pub fn signal(mut self, signal: MigrationIncidentSignal) -> Self {
+        self.signals.push(signal);
+        self
+    }
+
+    /// Attach an immutable rollback artifact.
+    #[must_use]
+    pub fn artifact(mut self, artifact: MigrationReleaseGateArtifact) -> Self {
+        self.available_artifacts.push(artifact);
+        self
+    }
+
+    /// Effective severity after folding in every signal escalation.
+    #[must_use]
+    pub fn effective_severity(&self) -> MigrationIncidentSeverity {
+        self.signals
+            .iter()
+            .filter_map(|signal| signal.escalates_to)
+            .fold(self.class.default_severity(), |acc, escalated| {
+                acc.escalate(escalated)
+            })
+    }
+}
+
+/// One ordered, artifact-anchored rollback step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationRollbackStep {
+    /// 1-based execution order.
+    pub order: usize,
+    /// Machine-readable action code.
+    pub action: &'static str,
+    /// Operator-facing description.
+    pub description: &'static str,
+    /// Artifact kind this step consumes, or empty when none is required.
+    pub required_artifact_kind: &'static str,
+    /// Resolved immutable artifact id, `None` until resolved or if missing.
+    pub artifact_id: Option<String>,
+}
+
+impl MigrationRollbackStep {
+    #[must_use]
+    const fn template(
+        order: usize,
+        action: &'static str,
+        description: &'static str,
+        required_artifact_kind: &'static str,
+    ) -> Self {
+        Self {
+            order,
+            action,
+            description,
+            required_artifact_kind,
+            artifact_id: None,
+        }
+    }
+
+    /// Whether this step has every artifact it requires.
+    #[must_use]
+    pub fn is_resolved(&self) -> bool {
+        self.required_artifact_kind.is_empty() || self.artifact_id.is_some()
+    }
+
+    #[must_use]
+    fn to_json(&self) -> String {
+        let artifact_id = match &self.artifact_id {
+            Some(id) => json_string(id),
+            None => "null".to_string(),
+        };
+        format!(
+            concat!(
+                "{{",
+                "\"order\":{order},",
+                "\"action\":{action},",
+                "\"description\":{description},",
+                "\"required_artifact_kind\":{kind},",
+                "\"artifact_id\":{artifact_id},",
+                "\"resolved\":{resolved}",
+                "}}"
+            ),
+            order = self.order,
+            action = json_string(self.action),
+            description = json_string(self.description),
+            kind = json_string(self.required_artifact_kind),
+            artifact_id = artifact_id,
+            resolved = self.is_resolved(),
+        )
+    }
+}
+
+/// Rollback readiness verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationRollbackReadinessVerdict {
+    /// Every artifact-bound rollback step resolved to an immutable artifact.
+    Ready,
+    /// At least one required artifact is missing or not immutable.
+    Blocked,
+}
+
+impl MigrationRollbackReadinessVerdict {
+    /// Stable machine-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+/// Result of checking whether a rollback plan can execute deterministically.
+#[derive(Debug, Clone)]
+pub struct MigrationRollbackReadiness {
+    /// Overall readiness verdict.
+    pub verdict: MigrationRollbackReadinessVerdict,
+    /// Number of rollback steps total.
+    pub total_steps: usize,
+    /// Number of rollback steps with their required artifact resolved.
+    pub resolved_steps: usize,
+    /// Artifact kinds that are required but missing or not immutable.
+    pub missing_artifact_kinds: Vec<&'static str>,
+}
+
+impl MigrationRollbackReadiness {
+    /// Whether the rollback can execute immediately.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.verdict == MigrationRollbackReadinessVerdict::Ready
+    }
+
+    #[must_use]
+    fn to_json(&self) -> String {
+        let missing = self
+            .missing_artifact_kinds
+            .iter()
+            .map(|kind| json_string(kind))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            concat!(
+                "{{",
+                "\"verdict\":\"{verdict}\",",
+                "\"total_steps\":{total},",
+                "\"resolved_steps\":{resolved},",
+                "\"missing_artifact_kinds\":[{missing}]",
+                "}}"
+            ),
+            verdict = self.verdict.label(),
+            total = self.total_steps,
+            resolved = self.resolved_steps,
+            missing = missing,
+        )
+    }
+}
+
+/// Deterministic, artifact-driven rollback plan for one incident class.
+#[derive(Debug, Clone)]
+pub struct MigrationRollbackPlan {
+    /// Incident class this plan rolls back.
+    pub incident_class: MigrationIncidentClass,
+    /// Rollout stage the rollback targets.
+    pub target_stage: MigrationRolloutStage,
+    /// Ordered rollback steps.
+    pub steps: Vec<MigrationRollbackStep>,
+}
+
+impl MigrationRollbackPlan {
+    /// Canonical rollback plan for an incident class and stage.
+    ///
+    /// The spine (steps 1–6) is shared by every class; security and
+    /// rollback-failure incidents append a class-specific recovery step.
+    /// Artifact ids are left unresolved until [`resolve`](Self::resolve).
+    #[must_use]
+    pub fn default_for(
+        incident_class: MigrationIncidentClass,
+        target_stage: MigrationRolloutStage,
+    ) -> Self {
+        let mut steps = vec![
+            MigrationRollbackStep::template(
+                1,
+                "halt-promotion",
+                "Freeze promotion and mark the affected migration version non-deployable.",
+                "release-gate-decision",
+            ),
+            MigrationRollbackStep::template(
+                2,
+                "quarantine-version",
+                "Quarantine the failing version using its locked source snapshot.",
+                "source-snapshot",
+            ),
+            MigrationRollbackStep::template(
+                3,
+                "restore-last-good",
+                "Restore the last-good migration release artifact.",
+                "last-good-release",
+            ),
+            MigrationRollbackStep::template(
+                4,
+                "verify-determinism",
+                "Re-verify determinism hashes against the recorded baseline.",
+                "determinism-baseline",
+            ),
+            MigrationRollbackStep::template(
+                5,
+                "reverify-certification",
+                "Re-run the certification smoke against the restored release.",
+                "certification-report",
+            ),
+        ];
+        match incident_class {
+            MigrationIncidentClass::SecurityBreach => {
+                steps.push(MigrationRollbackStep::template(
+                    6,
+                    "rotate-exposed-credentials",
+                    "Rotate any credentials or tokens exposed by the breach.",
+                    "secret-rotation-runbook",
+                ));
+            }
+            MigrationIncidentClass::RollbackFailure => {
+                steps.push(MigrationRollbackStep::template(
+                    6,
+                    "escalate-manual-recovery",
+                    "Escalate to maintainer-led manual recovery using the recovery runbook.",
+                    "manual-recovery-runbook",
+                ));
+            }
+            _ => {}
+        }
+        // Final, artifact-free step: always record the postmortem.
+        let order = steps.len() + 1;
+        steps.push(MigrationRollbackStep::template(
+            order,
+            "record-postmortem",
+            "Open a postmortem record linking the incident to backlog and prevention.",
+            "",
+        ));
+        Self {
+            incident_class,
+            target_stage,
+            steps,
+        }
+    }
+
+    /// Resolve each artifact-bound step against the available artifacts.
+    ///
+    /// Resolution is deterministic: among immutable artifacts of the required
+    /// kind, the lexicographically smallest `artifact_id` is selected.
+    #[must_use]
+    pub fn resolve(mut self, artifacts: &[MigrationReleaseGateArtifact]) -> Self {
+        for step in &mut self.steps {
+            if step.required_artifact_kind.is_empty() {
+                continue;
+            }
+            let mut candidates = artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact.kind == step.required_artifact_kind && artifact.is_immutable()
+                })
+                .map(|artifact| artifact.artifact_id.clone())
+                .collect::<Vec<_>>();
+            candidates.sort();
+            step.artifact_id = candidates.into_iter().next();
+        }
+        self
+    }
+
+    /// Compute rollback readiness for the (resolved) plan.
+    #[must_use]
+    pub fn readiness(&self) -> MigrationRollbackReadiness {
+        let resolved_steps = self.steps.iter().filter(|step| step.is_resolved()).count();
+        let mut missing_artifact_kinds = self
+            .steps
+            .iter()
+            .filter(|step| !step.is_resolved())
+            .map(|step| step.required_artifact_kind)
+            .collect::<Vec<_>>();
+        missing_artifact_kinds.sort_unstable();
+        missing_artifact_kinds.dedup();
+        let verdict = if missing_artifact_kinds.is_empty() {
+            MigrationRollbackReadinessVerdict::Ready
+        } else {
+            MigrationRollbackReadinessVerdict::Blocked
+        };
+        MigrationRollbackReadiness {
+            verdict,
+            total_steps: self.steps.len(),
+            resolved_steps,
+            missing_artifact_kinds,
+        }
+    }
+
+    #[must_use]
+    fn to_json(&self) -> String {
+        let steps = self
+            .steps
+            .iter()
+            .map(MigrationRollbackStep::to_json)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            concat!(
+                "{{",
+                "\"incident_class\":\"{class}\",",
+                "\"target_stage\":\"{stage}\",",
+                "\"steps\":[{steps}]",
+                "}}"
+            ),
+            class = self.incident_class.label(),
+            stage = self.target_stage.label(),
+            steps = steps,
+        )
+    }
+}
+
+/// Postmortem template linking an incident to backlog and prevention actions.
+#[derive(Debug, Clone)]
+pub struct MigrationPostmortemTemplate {
+    /// Incident this postmortem documents.
+    pub incident_id: String,
+    /// Incident class.
+    pub incident_class: MigrationIncidentClass,
+    /// Effective severity.
+    pub severity: MigrationIncidentSeverity,
+    /// Comparator id for traceability.
+    pub comparator_id: String,
+    /// Claim id for traceability.
+    pub claim_id: String,
+    /// Canonical timeline prompts the author must fill in.
+    pub timeline_prompts: Vec<&'static str>,
+    /// Backlog item ids linked to this incident.
+    pub backlog_item_ids: Vec<String>,
+    /// Prevention actions seeded for the incident class plus author additions.
+    pub prevention_actions: Vec<String>,
+}
+
+impl MigrationPostmortemTemplate {
+    /// Build a postmortem template for an incident report and severity.
+    ///
+    /// Prevention actions are seeded deterministically from the incident class.
+    #[must_use]
+    pub fn for_incident(
+        report: &MigrationIncidentReport,
+        severity: MigrationIncidentSeverity,
+    ) -> Self {
+        Self {
+            incident_id: report.incident_id.clone(),
+            incident_class: report.class,
+            severity,
+            comparator_id: report.comparator_id.clone(),
+            claim_id: report.claim_id.clone(),
+            timeline_prompts: vec![
+                "detection: how and when the incident was detected",
+                "impact: which migrations/versions were affected and for how long",
+                "root-cause: the verified causal chain, not the first symptom",
+                "resolution: the rollback executed and how recovery was verified",
+            ],
+            backlog_item_ids: Vec::new(),
+            prevention_actions: default_prevention_actions(report.class),
+        }
+    }
+
+    /// Link a backlog item id to this postmortem.
+    #[must_use]
+    pub fn backlog_item(mut self, backlog_item_id: &str) -> Self {
+        self.backlog_item_ids.push(backlog_item_id.to_string());
+        self
+    }
+
+    /// Add an extra prevention action.
+    #[must_use]
+    pub fn prevention_action(mut self, action: &str) -> Self {
+        self.prevention_actions.push(action.to_string());
+        self
+    }
+
+    /// Whether the postmortem links at least one backlog item.
+    #[must_use]
+    pub fn links_backlog(&self) -> bool {
+        !self.backlog_item_ids.is_empty()
+    }
+
+    #[must_use]
+    fn to_json(&self) -> String {
+        let prompts = self
+            .timeline_prompts
+            .iter()
+            .map(|prompt| json_string(prompt))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            concat!(
+                "{{",
+                "\"incident_id\":{incident_id},",
+                "\"incident_class\":\"{class}\",",
+                "\"severity\":\"{severity}\",",
+                "\"comparator_id\":{comparator_id},",
+                "\"claim_id\":{claim_id},",
+                "\"timeline_prompts\":[{prompts}],",
+                "\"backlog_item_ids\":[{backlog}],",
+                "\"prevention_actions\":[{prevention}],",
+                "\"links_backlog\":{links_backlog}",
+                "}}"
+            ),
+            incident_id = json_string(&self.incident_id),
+            class = self.incident_class.label(),
+            severity = self.severity.label(),
+            comparator_id = json_string(&self.comparator_id),
+            claim_id = json_string(&self.claim_id),
+            prompts = prompts,
+            backlog = json_string_array(&self.backlog_item_ids),
+            prevention = json_string_array(&self.prevention_actions),
+            links_backlog = self.links_backlog(),
+        )
+    }
+}
+
+/// Complete operational response to a migration incident.
+#[derive(Debug, Clone)]
+pub struct MigrationIncidentResponse {
+    /// Incident id.
+    pub incident_id: String,
+    /// Incident class.
+    pub class: MigrationIncidentClass,
+    /// Effective severity after signal escalation.
+    pub severity: MigrationIncidentSeverity,
+    /// Rollout emergency-hold reason this incident triggers.
+    pub emergency_hold_reason: EmergencyHoldReason,
+    /// Authority empowered to execute the rollback.
+    pub rollback_authority: OperatorAuthority,
+    /// Whether immediate rollback is required before triage.
+    pub requires_immediate_rollback: bool,
+    /// Observed signals that justified the effective severity.
+    pub signals: Vec<MigrationIncidentSignal>,
+    /// Resolved rollback plan.
+    pub rollback: MigrationRollbackPlan,
+    /// Rollback readiness.
+    pub readiness: MigrationRollbackReadiness,
+    /// Postmortem template.
+    pub postmortem: MigrationPostmortemTemplate,
+}
+
+impl MigrationIncidentResponse {
+    /// Whether the incident halts further promotion of the affected version.
+    ///
+    /// Any incident at `Sev3` or worse blocks promotion until resolved.
+    #[must_use]
+    pub fn blocks_promotion(&self) -> bool {
+        self.severity.rank() >= MigrationIncidentSeverity::Sev3.rank()
+    }
+
+    /// Serialize the full incident response as a deterministic evidence record.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let signals = self
+            .signals
+            .iter()
+            .map(MigrationIncidentSignal::to_json)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            concat!(
+                "{{",
+                "\"schema_version\":\"1.0.0\",",
+                "\"incident_id\":{incident_id},",
+                "\"class\":\"{class}\",",
+                "\"severity\":\"{severity}\",",
+                "\"ack_deadline_minutes\":{ack_deadline},",
+                "\"emergency_hold_reason\":\"{hold}\",",
+                "\"rollback_authority\":\"{authority}\",",
+                "\"requires_immediate_rollback\":{immediate},",
+                "\"blocks_promotion\":{blocks},",
+                "\"signals\":[{signals}],",
+                "\"rollback\":{rollback},",
+                "\"readiness\":{readiness},",
+                "\"postmortem\":{postmortem}",
+                "}}"
+            ),
+            incident_id = json_string(&self.incident_id),
+            class = self.class.label(),
+            severity = self.severity.label(),
+            ack_deadline = self.severity.ack_deadline_minutes(),
+            hold = self.emergency_hold_reason.label(),
+            authority = self.rollback_authority.label(),
+            immediate = self.requires_immediate_rollback,
+            blocks = self.blocks_promotion(),
+            signals = signals,
+            rollback = self.rollback.to_json(),
+            readiness = self.readiness.to_json(),
+            postmortem = self.postmortem.to_json(),
+        )
+    }
+}
+
+/// Deterministic playbook that resolves an incident report into a response.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MigrationIncidentResponsePlaybook;
+
+impl MigrationIncidentResponsePlaybook {
+    /// Construct the stateless playbook.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Resolve an incident report into a complete, deterministic response.
+    #[must_use]
+    pub fn resolve(&self, report: &MigrationIncidentReport) -> MigrationIncidentResponse {
+        let severity = report.effective_severity();
+        let rollback = MigrationRollbackPlan::default_for(report.class, report.detected_stage)
+            .resolve(&report.available_artifacts);
+        let readiness = rollback.readiness();
+        let postmortem = MigrationPostmortemTemplate::for_incident(report, severity);
+        MigrationIncidentResponse {
+            incident_id: report.incident_id.clone(),
+            class: report.class,
+            severity,
+            emergency_hold_reason: report.class.emergency_hold_reason(),
+            rollback_authority: severity.rollback_authority(),
+            requires_immediate_rollback: severity.requires_immediate_rollback(),
+            signals: report.signals.clone(),
+            rollback,
+            readiness,
+            postmortem,
+        }
+    }
+}
+
+/// Default prevention actions seeded by incident class.
+#[must_use]
+fn default_prevention_actions(class: MigrationIncidentClass) -> Vec<String> {
+    let actions: &[&str] = match class {
+        MigrationIncidentClass::SemanticRegression => &[
+            "add-metamorphic-oracle-case",
+            "expand-golden-isomorphism-corpus",
+        ],
+        MigrationIncidentClass::DeterminismDivergence => &[
+            "add-determinism-soak-fixture",
+            "pin-nondeterministic-input-source",
+        ],
+        MigrationIncidentClass::PerformanceRegression => &[
+            "add-tail-latency-budget-gate",
+            "capture-baseline-profile-artifact",
+        ],
+        MigrationIncidentClass::CapabilityGapEscape => &[
+            "add-capability-gap-guard",
+            "fail-closed-on-unsupported-construct",
+        ],
+        MigrationIncidentClass::SecurityBreach => {
+            &["tighten-sandbox-policy", "add-secret-redaction-fixture"]
+        }
+        MigrationIncidentClass::CertificationFalsePass => &[
+            "strengthen-certification-oracle",
+            "add-field-evidence-cross-check",
+        ],
+        MigrationIncidentClass::RollbackFailure => {
+            &["add-rollback-readiness-precheck", "rehearse-rollback-drill"]
+        }
+    };
+    actions.iter().map(|action| (*action).to_string()).collect()
+}
+
+// ============================================================================
 // Scorecard
 // ============================================================================
 
@@ -2041,5 +2861,359 @@ mod tests {
         assert!(text.contains("asupersync"));
         assert!(text.contains("structured"));
         assert!(text.contains("GO"));
+    }
+
+    // ------------------------------------------------------------------
+    // Migration incident response and rollback (bd-3bxhj.9.7)
+    // ------------------------------------------------------------------
+
+    /// Build the full set of immutable artifacts a rollback spine can consume.
+    fn rollback_artifact_set() -> Vec<MigrationReleaseGateArtifact> {
+        [
+            "release-gate-decision",
+            "source-snapshot",
+            "last-good-release",
+            "determinism-baseline",
+            "certification-report",
+            "secret-rotation-runbook",
+            "manual-recovery-runbook",
+        ]
+        .iter()
+        .map(|kind| release_gate_artifact(kind))
+        .collect()
+    }
+
+    #[test]
+    fn incident_class_maps_to_severity_and_hold_reason() {
+        assert_eq!(MigrationIncidentClass::ALL.len(), 7);
+        // Every class has a non-empty, unique label.
+        let mut labels: Vec<&str> = MigrationIncidentClass::ALL
+            .iter()
+            .map(|class| class.label())
+            .collect();
+        let count = labels.len();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), count, "labels must be unique");
+
+        assert_eq!(
+            MigrationIncidentClass::DeterminismDivergence.default_severity(),
+            MigrationIncidentSeverity::Sev1
+        );
+        assert_eq!(
+            MigrationIncidentClass::PerformanceRegression.default_severity(),
+            MigrationIncidentSeverity::Sev3
+        );
+        assert_eq!(
+            MigrationIncidentClass::SecurityBreach.emergency_hold_reason(),
+            EmergencyHoldReason::SecurityIncident
+        );
+        assert_eq!(
+            MigrationIncidentClass::DeterminismDivergence.emergency_hold_reason(),
+            EmergencyHoldReason::DeterminismDivergence
+        );
+    }
+
+    #[test]
+    fn severity_rank_escalation_and_response_metadata() {
+        // Rank is strictly decreasing from Sev1 to Sev4.
+        assert!(MigrationIncidentSeverity::Sev1.rank() > MigrationIncidentSeverity::Sev2.rank());
+        assert!(MigrationIncidentSeverity::Sev2.rank() > MigrationIncidentSeverity::Sev3.rank());
+        assert!(MigrationIncidentSeverity::Sev3.rank() > MigrationIncidentSeverity::Sev4.rank());
+        // escalate() returns the worse severity regardless of argument order.
+        assert_eq!(
+            MigrationIncidentSeverity::Sev3.escalate(MigrationIncidentSeverity::Sev1),
+            MigrationIncidentSeverity::Sev1
+        );
+        assert_eq!(
+            MigrationIncidentSeverity::Sev1.escalate(MigrationIncidentSeverity::Sev4),
+            MigrationIncidentSeverity::Sev1
+        );
+        // Higher severity has a tighter ack deadline.
+        assert!(
+            MigrationIncidentSeverity::Sev1.ack_deadline_minutes()
+                < MigrationIncidentSeverity::Sev4.ack_deadline_minutes()
+        );
+        assert!(MigrationIncidentSeverity::Sev1.requires_immediate_rollback());
+        assert!(!MigrationIncidentSeverity::Sev3.requires_immediate_rollback());
+        assert_eq!(
+            MigrationIncidentSeverity::Sev1.rollback_authority(),
+            OperatorAuthority::OnCall
+        );
+        assert_eq!(
+            MigrationIncidentSeverity::Sev4.rollback_authority(),
+            OperatorAuthority::ReleaseOwner
+        );
+    }
+
+    #[test]
+    fn signals_escalate_effective_severity() {
+        // Performance regression defaults to Sev3, but a Sev1 signal escalates.
+        let report = MigrationIncidentReport::new(
+            "INC-1",
+            MigrationIncidentClass::PerformanceRegression,
+            MigrationRolloutStage::Beta,
+        )
+        .signal(MigrationIncidentSignal::new(
+            "p95-breach",
+            "p95 over budget",
+        ))
+        .signal(
+            MigrationIncidentSignal::new("data-corruption", "rows lost")
+                .escalates_to(MigrationIncidentSeverity::Sev1),
+        );
+        assert_eq!(report.effective_severity(), MigrationIncidentSeverity::Sev1);
+
+        // With no escalating signals, the class default holds.
+        let plain = MigrationIncidentReport::new(
+            "INC-2",
+            MigrationIncidentClass::PerformanceRegression,
+            MigrationRolloutStage::Beta,
+        )
+        .signal(MigrationIncidentSignal::new(
+            "p95-breach",
+            "p95 over budget",
+        ));
+        assert_eq!(plain.effective_severity(), MigrationIncidentSeverity::Sev3);
+    }
+
+    #[test]
+    fn rollback_plan_has_spine_and_class_specific_steps() {
+        // Default class uses the six-step spine (5 artifact-bound + postmortem).
+        let plain = MigrationRollbackPlan::default_for(
+            MigrationIncidentClass::SemanticRegression,
+            MigrationRolloutStage::Beta,
+        );
+        assert_eq!(plain.steps.len(), 6);
+        let last = plain.steps.last().expect("non-empty plan");
+        assert_eq!(last.action, "record-postmortem");
+        assert!(last.required_artifact_kind.is_empty());
+        // The artifact-free step is always considered resolved.
+        assert!(last.is_resolved());
+
+        // Security breach inserts a credential-rotation step.
+        let security = MigrationRollbackPlan::default_for(
+            MigrationIncidentClass::SecurityBreach,
+            MigrationRolloutStage::Ga,
+        );
+        assert_eq!(security.steps.len(), 7);
+        assert!(
+            security
+                .steps
+                .iter()
+                .any(|step| step.action == "rotate-exposed-credentials")
+        );
+
+        // Rollback failure escalates to manual recovery.
+        let recovery = MigrationRollbackPlan::default_for(
+            MigrationIncidentClass::RollbackFailure,
+            MigrationRolloutStage::Ga,
+        );
+        assert!(
+            recovery
+                .steps
+                .iter()
+                .any(|step| step.action == "escalate-manual-recovery")
+        );
+
+        // Steps are ordered 1..=n with no gaps.
+        for (index, step) in plain.steps.iter().enumerate() {
+            assert_eq!(step.order, index + 1);
+        }
+    }
+
+    #[test]
+    fn rollback_ready_when_all_artifacts_present() {
+        let artifacts = rollback_artifact_set();
+        let plan = MigrationRollbackPlan::default_for(
+            MigrationIncidentClass::SecurityBreach,
+            MigrationRolloutStage::Ga,
+        )
+        .resolve(&artifacts);
+        let readiness = plan.readiness();
+        assert!(readiness.is_ready());
+        assert_eq!(readiness.verdict, MigrationRollbackReadinessVerdict::Ready);
+        assert!(readiness.missing_artifact_kinds.is_empty());
+        assert_eq!(readiness.resolved_steps, readiness.total_steps);
+    }
+
+    #[test]
+    fn rollback_blocked_when_required_artifact_missing() {
+        // Drop the determinism baseline artifact; the plan must be blocked.
+        let artifacts: Vec<MigrationReleaseGateArtifact> = rollback_artifact_set()
+            .into_iter()
+            .filter(|artifact| artifact.kind != "determinism-baseline")
+            .collect();
+        let plan = MigrationRollbackPlan::default_for(
+            MigrationIncidentClass::DeterminismDivergence,
+            MigrationRolloutStage::Beta,
+        )
+        .resolve(&artifacts);
+        let readiness = plan.readiness();
+        assert!(!readiness.is_ready());
+        assert_eq!(
+            readiness.verdict,
+            MigrationRollbackReadinessVerdict::Blocked
+        );
+        assert_eq!(
+            readiness.missing_artifact_kinds,
+            vec!["determinism-baseline"]
+        );
+    }
+
+    #[test]
+    fn rollback_ignores_mutable_artifacts() {
+        // A non-sha256 (mutable) artifact of the right kind must not resolve.
+        let mut artifacts = rollback_artifact_set();
+        artifacts.retain(|artifact| artifact.kind != "last-good-release");
+        artifacts.push(MigrationReleaseGateArtifact::new(
+            "last-good-release-mutable",
+            "last-good-release",
+            "md5:not-a-real-sha",
+            "artifacts/last-good.json",
+        ));
+        let plan = MigrationRollbackPlan::default_for(
+            MigrationIncidentClass::SemanticRegression,
+            MigrationRolloutStage::Beta,
+        )
+        .resolve(&artifacts);
+        let readiness = plan.readiness();
+        assert!(!readiness.is_ready());
+        assert!(
+            readiness
+                .missing_artifact_kinds
+                .contains(&"last-good-release")
+        );
+    }
+
+    #[test]
+    fn rollback_resolution_is_deterministic() {
+        // Two immutable artifacts of the same kind: the smaller id wins.
+        let mut artifacts = rollback_artifact_set();
+        artifacts.push(MigrationReleaseGateArtifact::new(
+            "aaa-source-snapshot",
+            "source-snapshot",
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "artifacts/aaa.json",
+        ));
+        let plan = MigrationRollbackPlan::default_for(
+            MigrationIncidentClass::SemanticRegression,
+            MigrationRolloutStage::Beta,
+        )
+        .resolve(&artifacts);
+        let step = plan
+            .steps
+            .iter()
+            .find(|step| step.required_artifact_kind == "source-snapshot")
+            .expect("source-snapshot step present");
+        assert_eq!(step.artifact_id.as_deref(), Some("aaa-source-snapshot"));
+    }
+
+    #[test]
+    fn postmortem_links_backlog_and_seeds_prevention() {
+        let report = MigrationIncidentReport::new(
+            "INC-9",
+            MigrationIncidentClass::CertificationFalsePass,
+            MigrationRolloutStage::Ga,
+        )
+        .comparator_id("cmp-cert-7")
+        .claim_id("claim-42");
+        let postmortem =
+            MigrationPostmortemTemplate::for_incident(&report, MigrationIncidentSeverity::Sev1);
+        assert!(!postmortem.links_backlog());
+        assert!(!postmortem.prevention_actions.is_empty());
+        assert!(!postmortem.timeline_prompts.is_empty());
+
+        let linked = postmortem
+            .backlog_item("br-555")
+            .prevention_action("add-cross-validator");
+        assert!(linked.links_backlog());
+        assert!(
+            linked
+                .prevention_actions
+                .iter()
+                .any(|action| action == "add-cross-validator")
+        );
+        let json = linked.to_json();
+        assert!(json.contains("\"claim_id\":\"claim-42\""));
+        assert!(json.contains("\"comparator_id\":\"cmp-cert-7\""));
+        assert!(json.contains("br-555"));
+        assert!(json.contains("\"links_backlog\":true"));
+    }
+
+    #[test]
+    fn playbook_resolves_complete_incident_response() {
+        let report = MigrationIncidentReport::new(
+            "INC-100",
+            MigrationIncidentClass::SecurityBreach,
+            MigrationRolloutStage::Ga,
+        )
+        .comparator_id("cmp-sec-1")
+        .claim_id("claim-sec")
+        .signal(MigrationIncidentSignal::new("sandbox-escape", "fs write"));
+        // Attach every rollback artifact (artifact() consumes self, so fold).
+        let report = rollback_artifact_set()
+            .into_iter()
+            .fold(report, MigrationIncidentReport::artifact);
+
+        let playbook = MigrationIncidentResponsePlaybook::new();
+        let response = playbook.resolve(&report);
+
+        assert_eq!(response.class, MigrationIncidentClass::SecurityBreach);
+        assert_eq!(response.severity, MigrationIncidentSeverity::Sev1);
+        assert_eq!(
+            response.emergency_hold_reason,
+            EmergencyHoldReason::SecurityIncident
+        );
+        assert_eq!(response.rollback_authority, OperatorAuthority::OnCall);
+        assert!(response.requires_immediate_rollback);
+        assert!(response.blocks_promotion());
+        assert!(response.readiness.is_ready());
+
+        let json = response.to_json();
+        assert!(json.contains("\"schema_version\":\"1.0.0\""));
+        assert!(json.contains("\"class\":\"security-breach\""));
+        assert!(json.contains("\"severity\":\"sev1\""));
+        assert!(json.contains("\"emergency_hold_reason\":\"security-incident\""));
+        assert!(json.contains("\"rollback_authority\":\"on-call\""));
+        assert!(json.contains("\"requires_immediate_rollback\":true"));
+        assert!(json.contains("rotate-exposed-credentials"));
+        // The originating signal is carried into the evidence record.
+        assert!(json.contains("sandbox-escape"));
+    }
+
+    #[test]
+    fn incident_response_is_deterministic() {
+        let build = || {
+            let report = MigrationIncidentReport::new(
+                "INC-200",
+                MigrationIncidentClass::DeterminismDivergence,
+                MigrationRolloutStage::Beta,
+            )
+            .comparator_id("cmp-det")
+            .claim_id("claim-det");
+            let report = rollback_artifact_set()
+                .into_iter()
+                .fold(report, MigrationIncidentReport::artifact);
+            MigrationIncidentResponsePlaybook::new()
+                .resolve(&report)
+                .to_json()
+        };
+        assert_eq!(build(), build());
+    }
+
+    #[test]
+    fn low_severity_incident_does_not_force_immediate_rollback() {
+        let report = MigrationIncidentReport::new(
+            "INC-300",
+            MigrationIncidentClass::PerformanceRegression,
+            MigrationRolloutStage::Alpha,
+        );
+        let response = MigrationIncidentResponsePlaybook::new().resolve(&report);
+        assert_eq!(response.severity, MigrationIncidentSeverity::Sev3);
+        assert!(!response.requires_immediate_rollback);
+        // Sev3 still blocks further promotion until resolved.
+        assert!(response.blocks_promotion());
+        assert_eq!(response.rollback_authority, OperatorAuthority::ReleaseOwner);
     }
 }
