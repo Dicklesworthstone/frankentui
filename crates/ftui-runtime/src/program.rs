@@ -5071,7 +5071,8 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
     where
         M::Message: Send + 'static,
     {
-        let capabilities = ftui_core::terminal_capabilities::TerminalCapabilities::with_overrides();
+        let mut capabilities =
+            ftui_core::terminal_capabilities::TerminalCapabilities::with_overrides();
         let mouse_capture = config.resolved_mouse_capture();
         let requested_features = BackendFeatures {
             mouse_capture,
@@ -5087,6 +5088,28 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
             intercept_signals: config.intercept_signals,
         };
         let backend = ftui_tty::TtyBackend::open(0, 0, options)?;
+
+        // Runtime truecolor recovery. If environment detection did NOT already
+        // establish 24-bit color — the classic case being an `ssh` hop, which
+        // forwards `TERM` but strips `COLORTERM`/`TERM_PROGRAM`, so a truecolor
+        // terminal (e.g. WezTerm/FrankenTerm) is mis-detected as 256-color —
+        // ask the terminal DIRECTLY via the XTGETTCAP `RGB` query now that the
+        // native session is live (raw mode). The query round-trips to the real
+        // terminal even across ssh, so it recovers what the env var could not.
+        // It runs ONLY in this degraded case (zero added latency when truecolor
+        // is already known), is bounded by a timeout, fail-open, and
+        // upgrade-only (a non-answer never downgrades a known-good profile).
+        if !capabilities.true_color {
+            let probe =
+                ftui_core::caps_probe::probe_capabilities(&ftui_core::caps_probe::ProbeConfig {
+                    timeout: std::time::Duration::from_millis(300),
+                    probe_da1: false,
+                    probe_da2: false,
+                    probe_background: false,
+                    probe_truecolor: true,
+                });
+            capabilities.refine_from_probe(&probe);
+        }
 
         let writer = TerminalWriter::with_diff_config(
             io::stdout(),

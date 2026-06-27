@@ -59,6 +59,16 @@ pub struct ProbeConfig {
     /// Opt-in because some terminals may show visual artifacts
     /// from the OSC 11 query.
     pub probe_background: bool,
+    /// Whether to probe 24-bit (true-color) support via the XTGETTCAP `RGB`
+    /// terminfo-capability query (`DCS + q 524742 ST`).
+    ///
+    /// This is the key probe for environments where `COLORTERM` is stripped on
+    /// the way to the app (the classic example: an `ssh` hop, which forwards
+    /// `TERM` but not `COLORTERM`/`TERM_PROGRAM`). The query round-trips to the
+    /// real terminal, so the app learns truecolor support directly from the
+    /// terminal rather than from a fragile environment variable. Fail-open: a
+    /// timeout or a negative answer leaves env-based detection untouched.
+    pub probe_truecolor: bool,
 }
 
 impl Default for ProbeConfig {
@@ -68,6 +78,7 @@ impl Default for ProbeConfig {
             probe_da1: true,
             probe_da2: true,
             probe_background: false,
+            probe_truecolor: true,
         }
     }
 }
@@ -102,6 +113,17 @@ pub struct ProbeResult {
     /// Determined by probing the background color via OSC 11 and
     /// computing perceived luminance.
     pub dark_background: Option<bool>,
+
+    /// Whether the terminal confirmed 24-bit (true-color) support via the
+    /// XTGETTCAP `RGB` query.
+    ///
+    /// - `Some(true)`  — terminal reported the `RGB` capability (truecolor).
+    /// - `Some(false)` — terminal explicitly reported `RGB` unsupported.
+    /// - `None`        — probe timed out / no XTGETTCAP support (fail-open).
+    ///
+    /// Authoritative even across an `ssh` hop, because the query reaches the
+    /// real terminal regardless of which environment variables survived.
+    pub true_color: Option<bool>,
 }
 
 /// Probe terminal capabilities at runtime.
@@ -147,11 +169,59 @@ fn probe_capabilities_unix(config: &ProbeConfig) -> ProbeResult {
         result.da2_version = Some(version);
     }
 
+    if config.probe_truecolor {
+        result.true_color = probe_truecolor(config.timeout);
+    }
+
     if config.probe_background {
         result.dark_background = probe_background_color(config.timeout);
     }
 
     result
+}
+
+// --- XTGETTCAP: 24-bit (true-color) capability ---
+//
+// Query:    DCS + q <hex(capname)> ST     e.g. ESC P + q 524742 ESC \  ("RGB")
+// Response (supported):     DCS 1 + r 524742 [= <hex value>] ST
+// Response (unsupported):   DCS 0 + r 524742 ST
+//
+// "RGB" is the terminfo boolean for direct/24-bit color. Modern terminals
+// (WezTerm/FrankenTerm, kitty, foot, Ghostty, recent xterm) answer XTGETTCAP;
+// older ones simply do not respond and we fail open. The query round-trips to
+// the real terminal even through an `ssh` PTY, which is exactly why this works
+// where `COLORTERM` does not.
+
+/// XTGETTCAP query for the `RGB` terminfo capability ("RGB" = 0x52 0x47 0x42).
+#[cfg(unix)]
+const TRUECOLOR_RGB_QUERY: &[u8] = b"\x1bP+q524742\x1b\\";
+
+#[cfg(unix)]
+fn probe_truecolor(timeout: Duration) -> Option<bool> {
+    let response = send_probe(TRUECOLOR_RGB_QUERY, timeout)?;
+    parse_xtgettcap_truecolor(&response)
+}
+
+/// Parse an XTGETTCAP response for the `RGB` capability.
+///
+/// Returns `Some(true)` on a positive (`1+r`) report for the `RGB` cap,
+/// `Some(false)` on an explicit negative (`0+r`) report, and `None` for any
+/// other / unrecognized payload (fail-open).
+fn parse_xtgettcap_truecolor(bytes: &[u8]) -> Option<bool> {
+    // Locate the DCS introducer (ESC P) and inspect the status nibble that
+    // follows: `1` = valid request (capability present), `0` = invalid.
+    let start = find_subsequence(bytes, b"\x1bP")?;
+    let payload = &bytes[start + 2..];
+    // Only trust a report that names the RGB cap we asked about (hex 524742),
+    // so an interleaved answer for a different cap cannot be misread.
+    let names_rgb = find_subsequence(payload, b"524742").is_some();
+    if payload.starts_with(b"1+r") && names_rgb {
+        Some(true)
+    } else if payload.starts_with(b"0+r") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 // --- DA1: Primary Device Attributes ---
@@ -428,6 +498,20 @@ fn is_response_complete(buf: &[u8]) -> bool {
 
     // OSC response: ESC ] ... BEL  or  ESC ] ... ESC \
     if buf[0] == 0x1b && buf[1] == b']' {
+        let last = buf[buf.len() - 1];
+        if last == 0x07 {
+            return true; // BEL terminator
+        }
+        if buf.len() >= 4 {
+            let second_last = buf[buf.len() - 2];
+            if second_last == 0x1b && last == b'\\' {
+                return true; // ST terminator
+            }
+        }
+    }
+
+    // DCS response: ESC P ... BEL  or  ESC P ... ESC \  (XTGETTCAP / DECRQSS).
+    if buf[0] == 0x1b && buf[1] == b'P' {
         let last = buf[buf.len() - 1];
         if last == 0x07 {
             return true; // BEL terminator
@@ -854,6 +938,17 @@ impl TerminalCapabilities {
             if attrs.contains(&22) && !self.colors_256 {
                 self.colors_256 = true;
             }
+        }
+
+        // A positive XTGETTCAP `RGB` report is authoritative truecolor evidence
+        // and is the whole point of runtime probing: it recovers 24-bit color
+        // when `COLORTERM` was stripped (e.g. over `ssh`). UPGRADE ONLY — never
+        // downgrade on a negative/absent report, because environment detection
+        // or the modern-terminal allowlist may legitimately know truecolor that
+        // a terminal's terminfo under-reports.
+        if result.true_color == Some(true) {
+            self.true_color = true;
+            self.colors_256 = true; // truecolor implies 256-color
         }
     }
 }
@@ -1441,6 +1536,7 @@ mod tests {
             probe_da1: false,
             probe_da2: false,
             probe_background: false,
+            probe_truecolor: false,
         };
         let result = probe_capabilities(&config);
         assert_eq!(result, ProbeResult::default());
@@ -1518,6 +1614,78 @@ mod tests {
         };
         caps.refine_from_probe(&result);
         assert!(caps.colors_256); // Still true.
+    }
+
+    // --- XTGETTCAP truecolor (RGB) probe ---
+
+    #[test]
+    fn response_complete_dcs_terminators() {
+        // XTGETTCAP reply terminated by ST (ESC \) or BEL.
+        assert!(is_response_complete(b"\x1bP1+r524742=8\x1b\\"));
+        assert!(is_response_complete(b"\x1bP0+r524742\x1b\\"));
+        assert!(is_response_complete(b"\x1bP1+r524742=8\x07"));
+        // Not complete without a terminator.
+        assert!(!is_response_complete(b"\x1bP1+r524742=8"));
+    }
+
+    #[test]
+    fn parse_xtgettcap_truecolor_positive() {
+        // ESC P 1 + r 524742 [= value] ESC \  -> RGB supported.
+        assert_eq!(
+            parse_xtgettcap_truecolor(b"\x1bP1+r524742=8\x1b\\"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_xtgettcap_truecolor(b"\x1bP1+r524742\x1b\\"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn parse_xtgettcap_truecolor_negative() {
+        assert_eq!(
+            parse_xtgettcap_truecolor(b"\x1bP0+r524742\x1b\\"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn parse_xtgettcap_truecolor_other_cap_or_garbage_is_inconclusive() {
+        // A positive report for a DIFFERENT cap (5463 = "Tc", not RGB=524742)
+        // must not be misread as an RGB confirmation.
+        assert_eq!(parse_xtgettcap_truecolor(b"\x1bP1+r5463=1\x1b\\"), None);
+        assert_eq!(parse_xtgettcap_truecolor(b"not a terminal reply"), None);
+    }
+
+    #[test]
+    fn refine_upgrades_truecolor_from_probe() {
+        let mut caps = TerminalCapabilities::basic();
+        assert!(!caps.true_color);
+        let result = ProbeResult {
+            true_color: Some(true),
+            ..ProbeResult::default()
+        };
+        caps.refine_from_probe(&result);
+        assert!(
+            caps.true_color,
+            "a positive RGB probe must upgrade to truecolor (the ssh/COLORTERM-stripped recovery)"
+        );
+        assert!(caps.colors_256, "truecolor implies 256-color");
+    }
+
+    #[test]
+    fn refine_does_not_downgrade_truecolor_on_negative_probe() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.true_color = true;
+        let result = ProbeResult {
+            true_color: Some(false),
+            ..ProbeResult::default()
+        };
+        caps.refine_from_probe(&result);
+        assert!(
+            caps.true_color,
+            "a negative/absent probe must NOT downgrade env-known truecolor (upgrade-only)"
+        );
     }
 
     // --- Non-Unix fallback ---
