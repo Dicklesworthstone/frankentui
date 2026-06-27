@@ -5099,7 +5099,13 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
         // It runs ONLY in this degraded case (zero added latency when truecolor
         // is already known), is bounded by a timeout, fail-open, and
         // upgrade-only (a non-answer never downgrades a known-good profile).
-        if !capabilities.true_color {
+        //
+        // The `colors_256` guard keeps the probe from re-enabling color the user
+        // explicitly disabled: `NO_COLOR` / a dumb terminal yield
+        // `true_color == false && colors_256 == false`, so the probe is skipped
+        // and the opt-out is honored. The ssh case (`TERM=xterm-256color` →
+        // `colors_256 == true`, `true_color == false`) still triggers it.
+        if !capabilities.true_color && capabilities.colors_256 {
             let probe =
                 ftui_core::caps_probe::probe_capabilities(&ftui_core::caps_probe::ProbeConfig {
                     timeout: std::time::Duration::from_millis(300),

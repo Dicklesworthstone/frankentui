@@ -205,17 +205,25 @@ fn probe_truecolor(timeout: Duration) -> Option<bool> {
 /// Parse an XTGETTCAP response for the `RGB` capability.
 ///
 /// Returns `Some(true)` on a positive (`1+r`) report for the `RGB` cap,
-/// `Some(false)` on an explicit negative (`0+r`) report, and `None` for any
-/// other / unrecognized payload (fail-open).
+/// `Some(false)` on an explicit negative (`0+r`) report for it, and `None` for
+/// any other / unrecognized payload (fail-open).
+///
+/// Unix-only: its sole non-test caller is the `#[cfg(unix)]` [`probe_truecolor`]
+/// (the probe reads `/dev/tty`, which is meaningless off-Unix), so the parser is
+/// gated to match and avoid an unused-fn `dead_code` break under `-D warnings`.
+#[cfg(unix)]
 fn parse_xtgettcap_truecolor(bytes: &[u8]) -> Option<bool> {
     // Locate the DCS introducer (ESC P) and inspect the status nibble that
     // follows: `1` = valid request (capability present), `0` = invalid.
     let start = find_subsequence(bytes, b"\x1bP")?;
     let payload = &bytes[start + 2..];
     // Only trust a report that names the RGB cap we asked about (hex 524742),
-    // so an interleaved answer for a different cap cannot be misread.
+    // so an interleaved answer for a different cap cannot be misread (applied to
+    // BOTH the positive and negative branches for consistency).
     let names_rgb = find_subsequence(payload, b"524742").is_some();
-    if payload.starts_with(b"1+r") && names_rgb {
+    if !names_rgb {
+        None
+    } else if payload.starts_with(b"1+r") {
         Some(true)
     } else if payload.starts_with(b"0+r") {
         Some(false)
@@ -1527,6 +1535,7 @@ mod tests {
         assert!(config.probe_da1);
         assert!(config.probe_da2);
         assert!(!config.probe_background);
+        assert!(config.probe_truecolor);
     }
 
     #[test]
@@ -1617,7 +1626,11 @@ mod tests {
     }
 
     // --- XTGETTCAP truecolor (RGB) probe ---
+    // (`is_response_complete` / `parse_xtgettcap_truecolor` are `#[cfg(unix)]`,
+    // so the tests that exercise them must be gated to match — otherwise the
+    // non-Unix `cargo test` build fails to compile.)
 
+    #[cfg(unix)]
     #[test]
     fn response_complete_dcs_terminators() {
         // XTGETTCAP reply terminated by ST (ESC \) or BEL.
@@ -1628,6 +1641,7 @@ mod tests {
         assert!(!is_response_complete(b"\x1bP1+r524742=8"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn parse_xtgettcap_truecolor_positive() {
         // ESC P 1 + r 524742 [= value] ESC \  -> RGB supported.
@@ -1641,6 +1655,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn parse_xtgettcap_truecolor_negative() {
         assert_eq!(
@@ -1649,6 +1664,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn parse_xtgettcap_truecolor_other_cap_or_garbage_is_inconclusive() {
         // A positive report for a DIFFERENT cap (5463 = "Tc", not RGB=524742)
