@@ -180,6 +180,7 @@ pub mod fixture_taxonomy;
 pub mod gap_triage;
 pub mod golden_isomorphism;
 pub mod governance_validator_tests;
+pub mod guarantee_layer;
 pub mod harness;
 pub mod import;
 pub mod intent_inference;
