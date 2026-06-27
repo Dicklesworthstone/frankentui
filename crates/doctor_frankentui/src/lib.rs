@@ -164,6 +164,7 @@ pub mod composition_semantics;
 pub mod concolic_differential;
 pub mod controller_composition;
 pub mod corpus;
+pub mod corpus_integrity_tests;
 pub mod coverage_prioritizer;
 pub mod doctor;
 pub mod drift_monitor;

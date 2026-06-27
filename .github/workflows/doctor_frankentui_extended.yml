@@ -113,6 +113,15 @@ jobs:
           cargo test -p doctor_frankentui --lib optimization_model_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/optimization_model_gate.log"
 
+      - name: Run doctor_frankentui corpus-integrity gate (bd-3bxhj.8.8)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed corpus fixture-metadata + coverage-scoring + benchmark-stats
+          # unit/property gate. Must pass before the .8.9 nightly-stress E2E scripts.
+          cargo test -p doctor_frankentui --lib corpus_integrity_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/corpus_integrity_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail

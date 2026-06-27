@@ -425,7 +425,10 @@ impl OptimizationValidationReport {
     /// Every diagnostic projected into the mandated failure-log schema.
     #[must_use]
     pub fn failure_logs(&self) -> Vec<OptimizationFailureLog> {
-        self.diagnostics.iter().map(OptimizationDiagnostic::failure_log).collect()
+        self.diagnostics
+            .iter()
+            .map(OptimizationDiagnostic::failure_log)
+            .collect()
     }
 }
 
@@ -467,7 +470,8 @@ pub fn evaluate_voi_fixture(fixture: &VoiFixture) -> VoiFixtureEvaluation {
             DetectionOutcome::Starved
         };
         let confidence = if allocation.voi_initial > EPS {
-            ((allocation.voi_initial - allocation.voi_final) / allocation.voi_initial).clamp(0.0, 1.0)
+            ((allocation.voi_initial - allocation.voi_final) / allocation.voi_initial)
+                .clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -673,9 +677,8 @@ fn voi_verdict(fixture: &VoiFixture, report: &TestBudgetReport) -> OutcomeVerdic
         }
     }
     if expected.expect_beats_round_robin && !report.baseline_comparison.voi_is_at_least_baseline {
-        mismatches.push(
-            "expected VOI to beat/match round-robin per unit, but it did not".to_string(),
-        );
+        mismatches
+            .push("expected VOI to beat/match round-robin per unit, but it did not".to_string());
     }
 
     OutcomeVerdict {
@@ -700,9 +703,7 @@ fn drift_verdict(fixture: &DriftFixture, report: &DriftMonitorReport) -> Outcome
         .collect();
     for metric_id in &expected.regressed_metrics {
         if !regressed.contains(metric_id.as_str()) {
-            mismatches.push(format!(
-                "expected regression on {metric_id}, none detected"
-            ));
+            mismatches.push(format!("expected regression on {metric_id}, none detected"));
         }
     }
     for metric_id in &expected.clean_metrics {
@@ -1066,8 +1067,8 @@ pub fn drift_two_step_fixture() -> DriftFixture {
     let mut values = vec![0.90, 0.91, 0.89, 0.90, 0.91, 0.89, 0.90, 0.91];
     values.extend([0.60; 10]);
     values.extend([0.30; 10]);
-    let series =
-        DriftMetricSeries::new("two_step", MetricDirection::HigherIsBetter).with_observations(values);
+    let series = DriftMetricSeries::new("two_step", MetricDirection::HigherIsBetter)
+        .with_observations(values);
     DriftFixture {
         label: "drift-two-step".to_string(),
         series: vec![series],
@@ -1165,7 +1166,10 @@ fn bocpd_threshold_set(config: &DriftMonitorConfig) -> String {
     let bocpd: BocpdConfig = config.bocpd;
     format!(
         "bocpd_hazard_lambda={:.6};bocpd_changepoint_threshold={:.6};bocpd_recent_window={};baseline_window={}",
-        bocpd.hazard_lambda, bocpd.changepoint_threshold, bocpd.recent_window, config.baseline_window
+        bocpd.hazard_lambda,
+        bocpd.changepoint_threshold,
+        bocpd.recent_window,
+        config.baseline_window
     )
 }
 
@@ -1525,7 +1529,10 @@ mod tests {
             "failing verdicts: {:?}",
             report.failing_verdicts()
         );
-        assert_eq!(report.summary.passing_verdicts, report.summary.total_verdicts);
+        assert_eq!(
+            report.summary.passing_verdicts,
+            report.summary.total_verdicts
+        );
     }
 
     #[test]
@@ -1558,7 +1565,10 @@ mod tests {
             summary.voi_diagnostics + summary.cusum_diagnostics + summary.bocpd_diagnostics,
             summary.total_diagnostics
         );
-        assert_eq!(summary.scheduled_count + summary.starved_count, summary.voi_diagnostics);
+        assert_eq!(
+            summary.scheduled_count + summary.starved_count,
+            summary.voi_diagnostics
+        );
         assert!(summary.regression_count >= 2);
         assert!(summary.improvement_count >= 1);
     }
