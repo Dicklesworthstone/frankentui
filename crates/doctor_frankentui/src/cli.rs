@@ -4,6 +4,7 @@ use crate::alien_kernel_tests::{AlienUpliftArgs, run_alien_uplift};
 use crate::capture::{CaptureArgs, print_profiles, run_capture};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
+use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::import::{ImportArgs, run_import};
 use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
@@ -81,6 +82,11 @@ pub enum Commands {
     /// Run the alien-uplift E2E validation pipeline and emit a JSONL evidence ledger.
     #[command(name = "alien-uplift")]
     AlienUplift(AlienUpliftArgs),
+
+    /// Run the graveyard-verify E2E gate (contract/guarantee/explainability
+    /// completeness + budget/assumption fallback integrity).
+    #[command(name = "graveyard-verify")]
+    GraveyardVerify(GraveyardVerifyArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -102,6 +108,7 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::AlienUplift(args) => run_alien_uplift(args),
+        Commands::GraveyardVerify(args) => run_graveyard_verify(args),
     }
 }
 

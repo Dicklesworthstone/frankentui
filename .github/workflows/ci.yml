@@ -1175,6 +1175,15 @@ jobs:
           cargo test -p doctor_frankentui --lib corpus_integrity_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/corpus_integrity_gate.log"
 
+      - name: Run doctor_frankentui graveyard-verify gate (bd-3bxhj.10.16)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed graveyard-verify completeness/reproducibility/fallback
+          # gate over contract/guarantee/explainability/risk/comparator dimensions.
+          cargo test -p doctor_frankentui --lib graveyard_verify -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_verify_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
@@ -1211,6 +1220,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_proof_artifacts_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/proof_artifacts" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/proof_artifacts_e2e.log"
+
+      - name: Run doctor_frankentui graveyard-verify E2E (bd-3bxhj.10.16)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_graveyard_verify_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/graveyard_verify" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_verify_e2e.log"
 
       - name: Build doctor_frankentui replay/triage summary
         if: always()

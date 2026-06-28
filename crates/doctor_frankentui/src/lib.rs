@@ -182,6 +182,7 @@ pub mod galaxy_brain_cards;
 pub mod gap_triage;
 pub mod golden_isomorphism;
 pub mod governance_validator_tests;
+pub mod graveyard_verify;
 pub mod guarantee_layer;
 pub mod harness;
 pub mod import;
