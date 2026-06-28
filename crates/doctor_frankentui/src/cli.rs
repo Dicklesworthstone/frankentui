@@ -11,6 +11,7 @@ use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
 use crate::suite::{SuiteArgs, run_suite};
 use crate::util::{OutputModeOverride, set_output_mode_override};
+use crate::voi_probe_planner::{VoiPlanArgs, run_voi_plan};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum MachineOutputMode {
@@ -93,6 +94,11 @@ pub enum Commands {
     /// verify) and apply the active-entry verify CI gate.
     #[command(name = "graveyardctl")]
     Graveyardctl(GraveyardctlArgs),
+
+    /// Run the value-of-information probe planner (estimate/schedule/allocate/
+    /// account) and apply the adaptive-evidence gate.
+    #[command(name = "voi-plan")]
+    VoiPlan(VoiPlanArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -116,6 +122,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::AlienUplift(args) => run_alien_uplift(args),
         Commands::GraveyardVerify(args) => run_graveyard_verify(args),
         Commands::Graveyardctl(args) => run_graveyardctl(args),
+        Commands::VoiPlan(args) => run_voi_plan(args),
     }
 }
 

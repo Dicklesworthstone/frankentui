@@ -141,6 +141,18 @@ jobs:
           cargo test -p doctor_frankentui --lib graveyardctl -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyardctl_gate.log"
 
+      - name: Run doctor_frankentui voi-plan gate (bd-3bxhj.10.24)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed value-of-information probe-planner gate: every selected
+          # probe must satisfy net = VOI*value_scale - cost >= 0, every skip must
+          # carry a reason, the adaptive test-budget allocator must schedule runs
+          # for selected probes, and any required conservative fallback must be
+          # surfaced (malformed/unjustified/silent-fallback cases fail closed).
+          cargo test -p doctor_frankentui --lib voi_probe_planner -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/voi_plan_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
@@ -189,6 +201,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_graveyardctl_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/graveyardctl" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyardctl_e2e.log"
+
+      - name: Run doctor_frankentui voi-plan E2E (bd-3bxhj.10.24)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_voi_plan_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/voi_plan" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/voi_plan_e2e.log"
 
       - name: Build doctor_frankentui replay/triage summary
         if: always()
