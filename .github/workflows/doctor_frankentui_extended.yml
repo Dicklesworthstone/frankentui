@@ -131,6 +131,16 @@ jobs:
           cargo test -p doctor_frankentui --lib graveyard_verify -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_verify_gate.log"
 
+      - name: Run doctor_frankentui graveyardctl verify gate (bd-3bxhj.10.32)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed graveyardctl active-entry verify gate: every actively-
+          # implemented alien entry must pass the contract linter + risk gate
+          # (incomplete/inconsistent entries fail closed).
+          cargo test -p doctor_frankentui --lib graveyardctl -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyardctl_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
@@ -173,6 +183,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_graveyard_verify_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/graveyard_verify" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_verify_e2e.log"
+
+      - name: Run doctor_frankentui graveyardctl E2E (bd-3bxhj.10.32)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_graveyardctl_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/graveyardctl" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyardctl_e2e.log"
 
       - name: Build doctor_frankentui replay/triage summary
         if: always()

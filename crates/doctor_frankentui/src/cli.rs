@@ -5,6 +5,7 @@ use crate::capture::{CaptureArgs, print_profiles, run_capture};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
+use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::import::{ImportArgs, run_import};
 use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
@@ -87,6 +88,11 @@ pub enum Commands {
     /// completeness + budget/assumption fallback integrity).
     #[command(name = "graveyard-verify")]
     GraveyardVerify(GraveyardVerifyArgs),
+
+    /// Run the graveyardctl executable workflow (index/score/pick/scaffold/
+    /// verify) and apply the active-entry verify CI gate.
+    #[command(name = "graveyardctl")]
+    Graveyardctl(GraveyardctlArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -109,6 +115,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Commands::AlienUplift(args) => run_alien_uplift(args),
         Commands::GraveyardVerify(args) => run_graveyard_verify(args),
+        Commands::Graveyardctl(args) => run_graveyardctl(args),
     }
 }
 
