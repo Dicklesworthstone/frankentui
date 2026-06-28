@@ -177,6 +177,7 @@ pub mod entry_header_compiler;
 pub mod error;
 pub mod explain;
 pub mod fixture_taxonomy;
+pub mod galaxy_brain_cards;
 pub mod gap_triage;
 pub mod golden_isomorphism;
 pub mod governance_validator_tests;
