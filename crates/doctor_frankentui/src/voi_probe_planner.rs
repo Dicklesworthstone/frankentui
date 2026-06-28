@@ -28,9 +28,10 @@
 //! - **account**: per `(claim_id, policy_id)` group, the planner reports a
 //!   posture (`collect_evidence`, `sufficient`, or `conservative_fallback`),
 //!   the group net value, and the **budget regret** (foregone net value of
-//!   beneficial probes that did not fit the budget). When uncertainty is high
-//!   *and* the budget is constrained, the group enters a **conservative
-//!   fallback** that is always surfaced (never silent).
+//!   beneficial probes that did not fit the budget). When a probe that would
+//!   resolve a genuine uncertainty cannot be afforded (it is *both*
+//!   high-uncertainty *and* resource-skipped), the group enters a
+//!   **conservative fallback** that is always surfaced (never silent).
 //!
 //! Acceptance criteria:
 //!
@@ -236,8 +237,9 @@ pub enum ProbePlanPosture {
     CollectEvidence,
     /// No probe clears the VOI floor; existing evidence is sufficient.
     Sufficient,
-    /// High uncertainty *and* a constrained budget: defer to a conservative
-    /// action rather than proceed under-evidenced.
+    /// A probe that would resolve a genuine uncertainty could not be afforded
+    /// (it is both high-uncertainty and resource-skipped): defer to a
+    /// conservative action rather than proceed under-evidenced.
     ConservativeFallback,
     /// No posture applies to this line (estimate / schedule / allocate lines).
     NotApplicable,
@@ -509,6 +511,9 @@ struct GroupOutcome {
     skipped: usize,
     high_uncertainty: bool,
     budget_constrained: bool,
+    /// A probe that was *both* high-uncertainty and resource-skipped (the actual
+    /// driver of a conservative fallback).
+    unaffordable_uncertainty: bool,
 }
 
 /// The full planning outcome.
@@ -780,10 +785,18 @@ impl VoiProbePlanner {
             let mut group_selected_cost = 0.0;
             let mut high_uncertainty = false;
             let mut budget_constrained = false;
+            // A conservative fallback fires only when the SAME probe is both
+            // high-uncertainty and resource-skipped — i.e. we could not afford to
+            // resolve a genuine uncertainty. A high-variance probe that was
+            // selected (and will run), or a low-variance probe that was
+            // budget-skipped, does not on its own justify deferring the decision.
+            let mut unaffordable_uncertainty = false;
             for &i in &idxs {
                 let s = &scored[i];
                 let p = &planned[i];
-                if s.candidate.posterior.variance() >= self.config.high_uncertainty_variance {
+                let uncertain =
+                    s.candidate.posterior.variance() >= self.config.high_uncertainty_variance;
+                if uncertain {
                     high_uncertainty = true;
                 }
                 match p.decision {
@@ -799,12 +812,15 @@ impl VoiProbePlanner {
                             SkipReason::BudgetExhausted | SkipReason::MaxProbesReached
                         ) {
                             budget_constrained = true;
+                            if uncertain {
+                                unaffordable_uncertainty = true;
+                            }
                         }
                     }
                     _ => {}
                 }
             }
-            let posture = if budget_constrained && high_uncertainty {
+            let posture = if unaffordable_uncertainty {
                 fallback_required = true;
                 ProbePlanPosture::ConservativeFallback
             } else if g_selected > 0 {
@@ -822,6 +838,7 @@ impl VoiProbePlanner {
                 skipped: g_skipped,
                 high_uncertainty,
                 budget_constrained,
+                unaffordable_uncertainty,
             });
         }
 
@@ -1008,13 +1025,14 @@ impl VoiProbePlanner {
             .map(|g| {
                 let probe_id = format!("group:{}:{}", g.claim_id, g.policy_id);
                 let detail = format!(
-                    "posture={} selected={} skipped={} group_net={} high_uncertainty={} budget_constrained={}",
+                    "posture={} selected={} skipped={} group_net={} high_uncertainty={} budget_constrained={} unaffordable_uncertainty={}",
                     g.posture.as_str(),
                     g.selected,
                     g.skipped,
                     fmt6(g.group_net_value),
                     g.high_uncertainty,
-                    g.budget_constrained
+                    g.budget_constrained,
+                    g.unaffordable_uncertainty
                 );
                 let remediation = if g.posture == ProbePlanPosture::ConservativeFallback {
                     vec![format!(
@@ -1882,6 +1900,51 @@ mod tests {
             fallback_line.posture,
             ProbePlanPosture::ConservativeFallback
         );
+    }
+
+    #[test]
+    fn fallback_not_triggered_when_uncertain_probe_was_selected() {
+        // Regression for the group-OR bug: a high-uncertainty probe that is
+        // SELECTED, plus a SEPARATE low-uncertainty probe that is budget-skipped,
+        // must NOT trigger a conservative fallback — the uncertainty that matters
+        // is being resolved, and only a confident probe was deferred.
+        let corpus = vec![
+            // High-uncertainty (Beta(2,2), variance 0.05), cheap ⇒ selected.
+            ProbeCandidate::new(
+                "probe.a.uncertain",
+                "claim.x",
+                "policy.x",
+                ProbeKind::TraceDepth,
+                BetaPosterior::new(2.0, 2.0),
+                0.2,
+                100.0,
+            ),
+            // Low-uncertainty (Beta(8,2), variance ~0.0145), eligible (net ≥ 0)
+            // but unaffordable after the first selection ⇒ budget-skipped.
+            ProbeCandidate::new(
+                "probe.b.confident",
+                "claim.x",
+                "policy.x",
+                ProbeKind::StressReplay,
+                BetaPosterior::new(8.0, 2.0),
+                0.35,
+                300.0,
+            ),
+        ];
+        let config = VoiPlannerConfig::default().with_budget(0.3);
+        let report = planner_with(config, corpus).run(None);
+        assert_eq!(report.summary.selected, 1);
+        assert_eq!(report.summary.skipped_budget, 1);
+        assert!(
+            !report.summary.conservative_fallback_required,
+            "the uncertain probe was selected — no fallback should fire"
+        );
+        let account = report
+            .ledger
+            .iter()
+            .find(|l| l.stage == VoiProbeStage::Account)
+            .expect("account line");
+        assert_eq!(account.posture, ProbePlanPosture::CollectEvidence);
     }
 
     #[test]
