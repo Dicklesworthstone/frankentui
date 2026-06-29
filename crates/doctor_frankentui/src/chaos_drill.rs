@@ -351,8 +351,12 @@ fn reverse_round_action(
     claim_id: &str,
 ) -> (String, String, bool) {
     let rollback = report.decision_log(claim_id).map(|l| l.rollback_decision);
-    let blocked = !report.gate_passes;
-    let action_path = if matches!(rollback, Some(RollbackDecision::RollbackTriggered)) {
+    let rolled_back = matches!(rollback, Some(RollbackDecision::RollbackTriggered));
+    // Per-claim block: this *specific* claim carries a blocking finding (not the
+    // report-global gate, which would mislabel a passing claim in a multi-claim
+    // request).
+    let blocked = report.blocked_claim_ids.iter().any(|c| c == claim_id);
+    let action_path = if rolled_back {
         "rollback".to_string()
     } else if blocked {
         "blocked".to_string()
@@ -360,9 +364,13 @@ fn reverse_round_action(
         "promote".to_string()
     };
     let rollback_verdict = rollback.map_or_else(|| "n/a".to_string(), |r| r.as_str().to_string());
-    let baseline_restored = report
-        .ledger_entry(claim_id)
-        .is_some_and(|e| !e.incumbent_baseline_id.is_empty());
+    // The incumbent baseline is "restored" only when a rollback actually
+    // triggers; a registered comparator id (present on every ledger entry) does
+    // not by itself mean a restoration occurred.
+    let baseline_restored = rolled_back
+        && report
+            .ledger_entry(claim_id)
+            .is_some_and(|e| !e.incumbent_baseline_id.is_empty());
     (action_path, rollback_verdict, baseline_restored)
 }
 
@@ -764,11 +772,20 @@ fn run_calibration_failure() -> ScenarioOutcome {
 
 fn run_optional_stopping() -> ScenarioOutcome {
     let claim_id = "chaos-optional-stopping";
-    // Optional-stopping perturbation: a long null-consistent stream (every
-    // observation at the null mean) peeked at 40 times. An anytime-valid
-    // e-process must NOT raise a false discovery (the wealth never crosses 1/α).
+    // Optional-stopping perturbation: a null-consistent stream whose empirical
+    // mean equals the null mean mu0 but that genuinely FLUCTUATES (alternating
+    // runs above and below mu0), peeked at 40 times. The e-process wealth wanders
+    // up and down as a test supermartingale; an anytime-valid e-process must NOT
+    // raise a false discovery (the wealth never crosses 1/alpha) despite the
+    // peeking. (A flat stream pinned at mu0 would leave the wealth at exactly 1
+    // and test nothing.)
     let config = EProcessConfig::default().with_alpha(0.05).with_mu0(0.1);
-    let observations = vec![0.1_f64; 40];
+    // Repeating [0.2, 0.2, 0.0, 0.0] (mean 0.1 = mu0) over 40 peeks.
+    let observations: Vec<f64> = [0.2_f64, 0.2, 0.0, 0.0]
+        .into_iter()
+        .cycle()
+        .take(40)
+        .collect();
     match run_eprocess(&config, &observations) {
         Ok(result) => {
             let action_path = if result.rejected {
@@ -784,9 +801,10 @@ fn run_optional_stopping() -> ScenarioOutcome {
                 rollback_verdict: "n/a".to_string(),
                 baseline_restored: false,
                 detail: format!(
-                    "optional-stopping over {} peeks holds (rejected={})",
+                    "optional-stopping over {} peeks holds (rejected={}, peak_wealth={:.4})",
                     observations.len(),
-                    result.rejected
+                    result.rejected,
+                    result.peak_wealth
                 ),
             }
         }
@@ -1380,6 +1398,10 @@ mod tests {
         let report = run_chaos_drill_report("chaos/test");
         let line = scenario_line(&report, "baseline_promote");
         assert_eq!(line.action_path, "promote");
+        // No rollback occurred, so no baseline was restored (a registered
+        // comparator id alone must not read as a restoration).
+        assert!(!line.baseline_restored);
+        assert_eq!(line.rollback_verdict, "no_rollback_needed");
     }
 
     #[test]

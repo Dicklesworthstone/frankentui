@@ -35,8 +35,11 @@
 //!   rationale (the gate fails closed if a violated guarantee is missing one).
 //! - **AC3**: certificates are reproducible and replay-identical (float-free
 //!   ledger → derives [`Eq`], stable ids).
-//! - **AC4**: no guarantee is surfaced `Valid` while any assumption is violated
-//!   (the gate fails closed otherwise).
+//! - **AC4**: no guarantee is surfaced `Valid` while any assumption is violated.
+//!   This is enforced *by construction* — `evaluate` cannot emit a `Valid`
+//!   verdict alongside a non-empty violation set — and re-checked at gate time by
+//!   an independent verdict-vs-violations clause that re-derives the verdict from
+//!   the recorded `ASM-*` ids (so a future divergence trips the gate).
 
 use std::collections::BTreeSet;
 
@@ -143,10 +146,13 @@ impl GuaranteeMechanism {
                 AssumptionKind::CoverageHolds,
                 AssumptionKind::Stationarity,
             ],
+            // An e-process is anytime-valid under the null *regardless* of drift
+            // (non-stationarity is the alternative it detects, not an assumption),
+            // so it requires only bounded per-step observations and a predictable
+            // betting fraction.
             Self::EProcess => vec![
                 AssumptionKind::BoundedObservations,
                 AssumptionKind::PredictableBetting,
-                AssumptionKind::Stationarity,
             ],
             Self::PacBayes => vec![
                 AssumptionKind::BoundedObservations,
@@ -154,22 +160,29 @@ impl GuaranteeMechanism {
                 AssumptionKind::IndependenceApprox,
             ],
             // e-BH is valid under ARBITRARY dependence, so the only assumption is
-            // e-value validity (non-negative, bounded calibration of the wealth).
-            Self::SequentialFdr => vec![AssumptionKind::BoundedObservations],
+            // e-value validity: each input is a non-negative e-value with
+            // `E_H0[e] <= 1`. e-values are NOT bounded in [0, 1] (a strong e-value
+            // is routinely far above 1), so this is distinct from bounded
+            // observations.
+            Self::SequentialFdr => vec![AssumptionKind::EValueValidity],
         }
     }
 }
 
 // ── Assumption catalog ───────────────────────────────────────────────────────
 
-/// The severity of an assumption: violating a hard assumption *invalidates* the
-/// guarantee; violating a soft assumption *degrades* it.
+/// The severity of an assumption. Both severities, when violated, force a
+/// conservative fallback (AC2 — no violated guarantee may be surfaced `Valid`);
+/// the distinction is diagnostic: a hard violation yields the strictly-worse
+/// `Invalid` verdict, a soft violation the `Degraded` verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssumptionSeverity {
-    /// Violation invalidates the guarantee entirely.
+    /// Violation invalidates the guarantee entirely (`Invalid` verdict).
     Hard,
-    /// Violation degrades the guarantee to advisory.
+    /// Violation degrades the guarantee (`Degraded` verdict); it still forces a
+    /// conservative fallback, but is recoverable once the soft observable returns
+    /// within threshold.
     Soft,
 }
 
@@ -204,11 +217,13 @@ pub enum AssumptionKind {
     ContaminationLimit,
     /// The independence approximation the bound relies on holds.
     IndependenceApprox,
+    /// Each input is a non-negative e-value with `E_H0[e] <= 1` (unbounded above).
+    EValueValidity,
 }
 
 impl AssumptionKind {
     /// All assumptions in canonical order.
-    pub const ALL: [AssumptionKind; 8] = [
+    pub const ALL: [AssumptionKind; 9] = [
         AssumptionKind::Exchangeability,
         AssumptionKind::SufficientCalibration,
         AssumptionKind::CoverageHolds,
@@ -217,6 +232,7 @@ impl AssumptionKind {
         AssumptionKind::Stationarity,
         AssumptionKind::ContaminationLimit,
         AssumptionKind::IndependenceApprox,
+        AssumptionKind::EValueValidity,
     ];
 
     /// The stable registry id (`ASM-*`).
@@ -231,6 +247,7 @@ impl AssumptionKind {
             Self::Stationarity => "ASM-STAT",
             Self::ContaminationLimit => "ASM-CONTAM",
             Self::IndependenceApprox => "ASM-INDEP",
+            Self::EValueValidity => "ASM-EVAL",
         }
     }
 
@@ -250,6 +267,7 @@ impl AssumptionKind {
             Self::Stationarity => "drift_magnitude <= max_drift within the window",
             Self::ContaminationLimit => "contamination_fraction <= max_contamination",
             Self::IndependenceApprox => "independence_score >= min_independence",
+            Self::EValueValidity => "every e-value is non-negative and E_H0[e] <= 1",
         }
     }
 
@@ -265,6 +283,7 @@ impl AssumptionKind {
             Self::Stationarity => "drift_magnitude",
             Self::ContaminationLimit => "contamination_fraction",
             Self::IndependenceApprox => "independence_score",
+            Self::EValueValidity => "evalue_validity",
         }
     }
 
@@ -276,7 +295,8 @@ impl AssumptionKind {
             Self::Exchangeability
             | Self::SufficientCalibration
             | Self::BoundedObservations
-            | Self::PredictableBetting => AssumptionSeverity::Hard,
+            | Self::PredictableBetting
+            | Self::EValueValidity => AssumptionSeverity::Hard,
             Self::CoverageHolds
             | Self::Stationarity
             | Self::ContaminationLimit
@@ -302,6 +322,8 @@ pub struct AssumptionThresholds {
     pub max_contamination: f64,
     /// Minimum tolerated independence score in `[0, 1]`.
     pub min_independence: f64,
+    /// Allowed slack above `1` for the calibrated e-value null expectation.
+    pub evalue_expectation_tolerance: f64,
 }
 
 impl Default for AssumptionThresholds {
@@ -313,6 +335,7 @@ impl Default for AssumptionThresholds {
             max_drift: 0.20,
             max_contamination: 0.10,
             min_independence: 0.70,
+            evalue_expectation_tolerance: 1e-6,
         }
     }
 }
@@ -344,6 +367,11 @@ pub struct AssumptionObservation {
     pub contamination_fraction: f64,
     /// Independence score in `[0, 1]` (1 = independent).
     pub independence_score: f64,
+    /// Minimum observed e-value (must be non-negative).
+    pub evalue_min: f64,
+    /// Calibrated `E_H0[e]` of the e-values (must be `<= 1`); e-values are
+    /// otherwise unbounded above.
+    pub evalue_null_expectation: f64,
 }
 
 impl AssumptionObservation {
@@ -361,6 +389,11 @@ impl AssumptionObservation {
             drift_magnitude: 0.03,
             contamination_fraction: 0.02,
             independence_score: 0.92,
+            // A strong, valid e-value corpus: non-negative, far above 1 in value
+            // (e.g. an e-BH input of 16/500), with a calibrated null expectation
+            // at or below 1.
+            evalue_min: 0.0,
+            evalue_null_expectation: 0.95,
         }
     }
 
@@ -418,6 +451,21 @@ impl AssumptionObservation {
     #[must_use]
     pub fn with_independence(mut self, score: f64) -> Self {
         self.independence_score = score;
+        self
+    }
+
+    /// Set the calibrated null expectation of the e-values (for an
+    /// invalid-e-value observation, where `E_H0[e] > 1`).
+    #[must_use]
+    pub fn with_evalue_null_expectation(mut self, expectation: f64) -> Self {
+        self.evalue_null_expectation = expectation;
+        self
+    }
+
+    /// Set the minimum observed e-value (for a negative-e-value observation).
+    #[must_use]
+    pub fn with_evalue_min(mut self, min: f64) -> Self {
+        self.evalue_min = min;
         self
     }
 }
@@ -565,6 +613,30 @@ fn check_assumption(
                 ),
             )
         }
+        AssumptionKind::EValueValidity => {
+            // e-values must be non-negative with a calibrated null expectation
+            // <= 1; they are NOT bounded above (unlike `BoundedObservations`).
+            let nonneg = observation.evalue_min >= -1e-9;
+            let bounded_expectation = observation.evalue_null_expectation
+                <= 1.0 + thresholds.evalue_expectation_tolerance;
+            let ok = nonneg && bounded_expectation;
+            (
+                ok,
+                format!(
+                    "e>={},E[e]={}",
+                    fmt6(observation.evalue_min),
+                    fmt6(observation.evalue_null_expectation)
+                ),
+                "e>=0,E[e]<=1".to_string(),
+                format!(
+                    "e-value min {:.4} {} 0 and E_H0[e] {:.4} {} 1",
+                    observation.evalue_min,
+                    if nonneg { ">=" } else { "<" },
+                    observation.evalue_null_expectation,
+                    if bounded_expectation { "<=" } else { ">" }
+                ),
+            )
+        }
     };
     AssumptionCheck {
         assumption_id: kind.id().to_string(),
@@ -577,6 +649,15 @@ fn check_assumption(
     }
 }
 
+/// Look up an assumption's severity from its stable `ASM-*` id, independently of
+/// the evaluate() path (used by the gate to re-derive the verdict).
+fn severity_of_id(id: &str) -> Option<AssumptionSeverity> {
+    AssumptionKind::ALL
+        .iter()
+        .find(|k| k.id() == id)
+        .map(|k| k.severity())
+}
+
 // ── Applicability verdict + certificate ──────────────────────────────────────
 
 /// The applicability verdict for a guarantee claim.
@@ -585,7 +666,8 @@ fn check_assumption(
 pub enum ApplicabilityVerdict {
     /// Every required assumption is satisfied; the guarantee holds.
     Valid,
-    /// Only soft assumptions are violated; the guarantee is downgraded.
+    /// Only soft assumptions are violated; the guarantee is downgraded (still
+    /// forces a conservative fallback, but is not fully invalidated).
     Degraded,
     /// A hard assumption is violated; the guarantee is invalid.
     Invalid,
@@ -872,6 +954,9 @@ pub struct GuaranteeAssumptionSummary {
     pub no_valid_with_violations: bool,
     /// Whether every downgraded certificate forces a surfaced fallback (AC2).
     pub violations_force_fallback: bool,
+    /// Whether every verdict matches an independent re-derivation from its
+    /// violated-assumption set (a falsifiable cross-check).
+    pub verdict_matches_violations: bool,
     /// Whether the gate passes.
     pub gate_passes: bool,
     /// Replay command.
@@ -1006,10 +1091,30 @@ pub fn run_guarantee_assumption_report(
             || (c.recommended_decision == MigrationDecision::ConservativeFallback
                 && !c.fallback_clause.is_empty())
     });
+    // Falsifiable cross-check: re-derive the verdict from the certificate's
+    // recorded `violated_assumptions` via an INDEPENDENT catalog severity lookup
+    // (by ASM-id string) and require it to match the recorded verdict. Unlike the
+    // other clauses this does not reduce to the evaluate() booleans, so a future
+    // divergence between the verdict and the violation set trips the gate.
+    let verdict_matches_violations = certificates.iter().all(|c| {
+        let any_hard = c
+            .violated_assumptions
+            .iter()
+            .any(|id| severity_of_id(id) == Some(AssumptionSeverity::Hard));
+        let expected = if any_hard {
+            ApplicabilityVerdict::Invalid
+        } else if c.violated_assumptions.is_empty() {
+            ApplicabilityVerdict::Valid
+        } else {
+            ApplicabilityVerdict::Degraded
+        };
+        expected == c.applicability_verdict
+    });
     let gate_passes = required_fields_complete
         && clauses_consistent
         && no_valid_with_violations
-        && violations_force_fallback;
+        && violations_force_fallback
+        && verdict_matches_violations;
 
     let summary = GuaranteeAssumptionSummary {
         schema_version: GUARANTEE_ASSUMPTION_REGISTRY_SCHEMA_VERSION.to_string(),
@@ -1027,6 +1132,7 @@ pub fn run_guarantee_assumption_report(
         clauses_consistent,
         no_valid_with_violations,
         violations_force_fallback,
+        verdict_matches_violations,
         gate_passes,
         replay_command: format!(
             "cargo test -p doctor_frankentui --lib guarantee_assumption_registry # report {report_id}"
@@ -1089,6 +1195,7 @@ mod tests {
     fn green_corpus_is_all_valid_and_gate_passes() {
         let report = run_default_guarantee_assumption_report("registry/test");
         assert!(report.gate_passes, "summary: {:?}", report.summary);
+        assert!(report.summary.verdict_matches_violations);
         assert_eq!(report.summary.total_claims, 4);
         assert_eq!(report.summary.valid, 4);
         assert_eq!(report.summary.degraded, 0);
@@ -1116,16 +1223,25 @@ mod tests {
             let required = m.required_assumptions();
             assert!(!required.is_empty(), "{} has no assumptions", m.as_str());
         }
-        // e-BH is valid under arbitrary dependence: only e-value validity.
+        // e-BH is valid under arbitrary dependence: only e-value validity (and
+        // e-values are NOT bounded in [0,1], so this is distinct from bounded
+        // observations).
         assert_eq!(
             GuaranteeMechanism::SequentialFdr.required_assumptions(),
-            vec![AssumptionKind::BoundedObservations]
+            vec![AssumptionKind::EValueValidity]
         );
         // Conformal requires exchangeability (the load-bearing assumption).
         assert!(
             GuaranteeMechanism::Conformal
                 .required_assumptions()
                 .contains(&AssumptionKind::Exchangeability)
+        );
+        // An e-process is anytime-valid regardless of drift: it does NOT require
+        // stationarity (drift is the alternative it detects, not an assumption).
+        assert!(
+            !GuaranteeMechanism::EProcess
+                .required_assumptions()
+                .contains(&AssumptionKind::Stationarity)
         );
     }
 
@@ -1186,10 +1302,48 @@ mod tests {
 
     #[test]
     fn drift_degrades_stationarity_dependent_guarantees() {
+        // Conformal exchangeability is broken by drift, so its stationarity
+        // assumption is the one that degrades. (An e-process, by contrast, is
+        // anytime-valid under drift and does not carry this assumption.)
         let observation = AssumptionObservation::fully_satisfied().with_drift(0.9);
-        let cert = registry().evaluate(GuaranteeMechanism::EProcess, "claim-drift", &observation);
+        let cert = registry().evaluate(GuaranteeMechanism::Conformal, "claim-drift", &observation);
         assert_eq!(cert.applicability_verdict, ApplicabilityVerdict::Degraded);
         assert!(cert.violated_assumptions.contains(&"ASM-STAT".to_string()));
+        // The same drifting observation does NOT degrade an e-process.
+        let eprocess =
+            registry().evaluate(GuaranteeMechanism::EProcess, "claim-drift-ep", &observation);
+        assert_eq!(eprocess.applicability_verdict, ApplicabilityVerdict::Valid);
+    }
+
+    #[test]
+    fn invalid_evalue_invalidates_sequential_fdr() {
+        // An e-value whose calibrated null expectation exceeds 1 is not a valid
+        // e-value, so sequential-FDR control is invalidated. Crucially, a LARGE
+        // e-value (max far above 1) with E[e] <= 1 stays Valid: e-values are not
+        // bounded in [0, 1].
+        let over = AssumptionObservation::fully_satisfied().with_evalue_null_expectation(1.5);
+        let cert = registry().evaluate(GuaranteeMechanism::SequentialFdr, "claim-bad-e", &over);
+        assert_eq!(cert.applicability_verdict, ApplicabilityVerdict::Invalid);
+        assert!(cert.violated_assumptions.contains(&"ASM-EVAL".to_string()));
+
+        let negative = AssumptionObservation::fully_satisfied().with_evalue_min(-0.5);
+        let neg_cert =
+            registry().evaluate(GuaranteeMechanism::SequentialFdr, "claim-neg-e", &negative);
+        assert_eq!(
+            neg_cert.applicability_verdict,
+            ApplicabilityVerdict::Invalid
+        );
+
+        // A strong, valid e-value corpus (large values, E[e] <= 1) stays Valid.
+        let strong = AssumptionObservation::fully_satisfied()
+            .with_observation_bounds(0.0, 500.0)
+            .with_evalue_null_expectation(0.8);
+        let strong_cert =
+            registry().evaluate(GuaranteeMechanism::SequentialFdr, "claim-strong-e", &strong);
+        assert_eq!(
+            strong_cert.applicability_verdict,
+            ApplicabilityVerdict::Valid
+        );
     }
 
     #[test]

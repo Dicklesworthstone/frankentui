@@ -99,6 +99,11 @@ pub const PORTFOLIO_SCHEDULER_PIPELINE_SCHEMA_VERSION: &str = "portfolio-schedul
 /// Numeric epsilon for loss / share comparisons.
 const EPS: f64 = 1e-9;
 
+/// Sentinel loss for a deferred milestone (no committed primitive). Rendered in
+/// the ledger so a defer reads as *maximal* risk, never as the `0.0` that a
+/// non-finite worst-case would otherwise normalize to.
+const UNDEFINED_LOSS: f64 = 1.0e9;
+
 /// The four primitive families the scheduler schedules over (a fixed,
 /// canonical-order subset of [`MathFamily`]). These are the bead's
 /// symbolic/search/probabilistic/formal-analysis families.
@@ -564,6 +569,10 @@ struct MilestoneGovernance {
     budget_remaining: f64,
     /// Whether the governor only downgraded (final worst-case <= optimal).
     monotone_ok: bool,
+    /// Whether the *committed* (post-governance) pick clears the milestone quality
+    /// bar. A safety downgrade can swap in a lower-mean candidate, so the bar is
+    /// re-checked on what is actually committed, not just the optimal pick.
+    final_quality_ok: bool,
     /// Whether the conservative event (if any) was surfaced with remediation.
     surfaced_ok: bool,
     explore_flagged: bool,
@@ -819,10 +828,21 @@ impl PortfolioScheduler {
             }
         }
 
+        // A malformed candidate (e.g. a directly-constructed negative-alpha
+        // posterior) produces nonsensical decomposition values; zero them so the
+        // ledger never publishes a negative "mean"/"variance" for an invalid row.
+        // The candidate still fails the gate via the `invalid` count.
+        let valid = invalid_reason.is_none();
+        let (mean, variance, voi) = if valid {
+            (mean, variance, voi)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
         Scored {
             candidate: candidate.clone(),
             milestone_index,
-            valid: invalid_reason.is_none(),
+            valid,
             invalid_reason,
             mean,
             variance,
@@ -877,8 +897,18 @@ impl PortfolioScheduler {
 
         let final_pick: Option<usize> = if trigger.is_conservative() {
             // Conservative strategy: the affordable, guarantee-applicable
-            // candidate with the lowest worst-case loss (minimax-safe), or defer.
-            self.conservative_choice(milestone_index, scored, budget_remaining)
+            // candidate with the lowest worst-case loss (minimax-safe), restricted
+            // to a genuine downgrade (worst-case <= the optimal pick's), or defer.
+            // Bounding by `optimal_worst_case` keeps the governor monotone even
+            // under a budget squeeze where the optimal pick is unaffordable: if the
+            // only affordable fallback is *riskier* than the (unaffordable)
+            // optimal, the milestone defers rather than committing a riskier pick.
+            self.conservative_choice(
+                milestone_index,
+                scored,
+                budget_remaining,
+                optimal_worst_case,
+            )
         } else {
             selection.optimal
         };
@@ -889,6 +919,10 @@ impl PortfolioScheduler {
         // A defer (no pick) cannot increase worst-case portfolio risk; treat its
         // worst case as the optimal one for the monotonicity check.
         let monotone_ok = final_worst_case <= optimal_worst_case + EPS;
+        // The committed pick must clear the milestone quality bar (a defer commits
+        // nothing, so it is vacuously ok).
+        let floor = quality_floor(self.milestones[milestone_index].quality_bar);
+        let final_quality_ok = final_pick.is_none_or(|i| scored[i].mean + EPS >= floor);
         // Conservative events must be surfaced with remediation; the surfacing is
         // produced in `full_ledger`, so here we record that a remediation exists.
         let surfaced_ok = !trigger.is_conservative()
@@ -907,6 +941,7 @@ impl PortfolioScheduler {
             committed_cost,
             budget_remaining: new_budget_remaining,
             monotone_ok,
+            final_quality_ok,
             surfaced_ok,
             explore_flagged,
         }
@@ -949,14 +984,16 @@ impl PortfolioScheduler {
     }
 
     /// The deterministic conservative pick: affordable, guarantee-applicable,
-    /// minimax-safe (lowest worst-case loss), preferring the formal-analysis
-    /// family, then lower cost, then lexicographic id. Returns `None` (defer)
-    /// when no affordable guarantee-applicable candidate exists.
+    /// minimax-safe (lowest worst-case loss), AND no riskier than the optimal pick
+    /// (worst-case <= `optimal_worst_case`), preferring the formal-analysis
+    /// family, then lower cost, then lexicographic id. Returns `None` (defer) when
+    /// no affordable, guarantee-applicable, non-riskier candidate exists.
     fn conservative_choice(
         &self,
         milestone_index: usize,
         scored: &[Scored],
         budget_remaining: f64,
+        optimal_worst_case: f64,
     ) -> Option<usize> {
         let mut best: Option<usize> = None;
         for (i, s) in scored.iter().enumerate() {
@@ -964,6 +1001,10 @@ impl PortfolioScheduler {
                 continue;
             }
             if s.candidate.cost > budget_remaining + EPS {
+                continue;
+            }
+            // Never commit a candidate riskier than the optimal pick; defer instead.
+            if s.worst_case_loss > optimal_worst_case + EPS {
                 continue;
             }
             best = Some(match best {
@@ -1140,7 +1181,7 @@ impl PortfolioScheduler {
         for (slot, family) in PORTFOLIO_FAMILIES.iter().enumerate() {
             let count = plan.family_counts[slot];
             let share = count as f64 / total;
-            let violation = plan.total_selected > 0 && share > self.config.max_family_share + EPS;
+            let violation = plan.total_selected >= 2 && share > self.config.max_family_share + EPS;
             let decision = if violation {
                 SchedulerDecision::DiversityViolation
             } else {
@@ -1148,7 +1189,7 @@ impl PortfolioScheduler {
             };
             // Clause: the violation flag matches the share-vs-cap arithmetic.
             let clause_consistent = violation
-                == (plan.total_selected > 0 && share > self.config.max_family_share + EPS);
+                == (plan.total_selected >= 2 && share > self.config.max_family_share + EPS);
             let mut remediation = Vec::new();
             let detail = if violation {
                 let remedy = self.diversity_remediation(*family, plan);
@@ -1240,8 +1281,10 @@ impl PortfolioScheduler {
                     0.0,
                     0.0,
                     0.0,
-                    0.0,
-                    gov.optimal_worst_case,
+                    // A defer commits no primitive, so its loss is undefined /
+                    // maximal — rendered as a sentinel so it never reads as 0 risk.
+                    UNDEFINED_LOSS,
+                    UNDEFINED_LOSS,
                     0.0,
                 ),
             };
@@ -1261,6 +1304,18 @@ impl PortfolioScheduler {
                     final_id, gov.final_worst_case
                 )
             };
+            // A committed pick below the milestone quality bar is a defect: surface
+            // it (the gate's `quality_bar_ok` already fails on it).
+            if !gov.final_quality_ok && gov.final_pick.is_some() {
+                let floor = quality_floor(milestone.quality_bar);
+                remediation.push(format!(
+                    "committed '{}' is below the {} quality bar (mean {:.6} < floor {:.2}); raise evidence or defer",
+                    final_id,
+                    milestone.quality_bar.as_str(),
+                    final_mean,
+                    floor
+                ));
+            }
             ledger.push(self.assemble(LineParts {
                 stage: ScheduleStage::Govern,
                 milestone_id: milestone.milestone_id.clone(),
@@ -1381,16 +1436,38 @@ impl PortfolioScheduler {
         let required_fields_complete = ledger.iter().all(required_fields_present);
         let clauses_consistent = ledger.iter().all(|l| l.clause_consistent);
 
-        // AC1: every milestone's pre-governance selection is the feasible argmin
-        // (or there was no feasible candidate, handled by govern as a defer).
-        let selection_optimal_ok = plan.selections.iter().all(|sel| {
-            sel.optimal.is_none_or(|i| {
-                plan.scored[i].feasible() && plan.scored[i].expected_loss <= sel.optimal_loss + EPS
-            })
+        // AC1: every milestone's pre-governance selection achieves the *minimum*
+        // feasible expected loss. This is recomputed INDEPENDENTLY here (a fresh
+        // min over the feasible losses) rather than compared against the stored
+        // `optimal_loss` (which is derived from `optimal` and would be tautological),
+        // so a wrong stored argmin trips the gate.
+        let selection_optimal_ok = (0..self.milestones.len()).all(|mi| {
+            let feasible_losses: Vec<f64> = plan
+                .scored
+                .iter()
+                .filter(|s| s.milestone_index == mi && s.feasible())
+                .map(|s| s.expected_loss)
+                .collect();
+            match plan.selections[mi].optimal {
+                Some(opt) => {
+                    let min_loss = feasible_losses
+                        .iter()
+                        .copied()
+                        .fold(f64::INFINITY, f64::min);
+                    plan.scored[opt].feasible()
+                        && (plan.scored[opt].expected_loss - min_loss).abs() <= EPS
+                }
+                // No feasible candidate ⇒ correctly no optimal pick.
+                None => feasible_losses.is_empty(),
+            }
         });
 
-        // Quality bar: every non-defer optimal selection clears its bar.
-        let quality_bar_ok = plan.selections.iter().all(|sel| sel.quality_ok);
+        // Quality bar: the *committed* (post-governance) pick of every milestone
+        // must clear its bar — not just the optimal pick, since a safety downgrade
+        // can swap in a lower-mean candidate. The pre-governance `quality_ok` is
+        // retained for the select-line remediation surface.
+        let quality_bar_ok = plan.selections.iter().all(|sel| sel.quality_ok)
+            && plan.governance.iter().all(|g| g.final_quality_ok);
 
         // AC2: branch diversity. `diversity_ok` is the gate clause (no family
         // exceeds the cap). `diversity_integrity_ok` requires every over-cap
@@ -1399,7 +1476,7 @@ impl PortfolioScheduler {
         let mut over_cap = 0usize;
         for &count in &plan.family_counts {
             let share = count as f64 / total;
-            if plan.total_selected > 0 && share > self.config.max_family_share + EPS {
+            if plan.total_selected >= 2 && share > self.config.max_family_share + EPS {
                 over_cap += 1;
             }
         }
@@ -2591,6 +2668,71 @@ mod tests {
         assert!(!line.remediation.is_empty());
         assert!(report.summary.budget_safe);
         assert_eq!(report.summary.final_selected, 2);
+    }
+
+    #[test]
+    fn conservative_downgrade_below_quality_bar_fails_the_gate() {
+        // A Gold (floor 0.80) milestone whose optimal pick (mean 0.92) is forced
+        // into a safety downgrade (drift). The conservative minimax pick is the
+        // lower-mean candidate (0.55), which is BELOW the bar. The gate must fail:
+        // the quality bar is checked on the COMMITTED pick, not the optimal one.
+        let milestones = vec![SchedulerMilestone::new(
+            "m.gold",
+            QualityBar::Gold,
+            RiskTier::Medium,
+            vec![
+                // High-mean optimal, but drifting -> triggers conservative mode.
+                cand("hi", "m.gold", MathFamily::Symbolic, 46.0, 4.0, 2.0).with_drift(0.8),
+                // Lower-mean, lower worst-case (more conservative Bayes action).
+                cand("lo", "m.gold", MathFamily::Probabilistic, 11.0, 9.0, 2.0),
+            ],
+        )];
+        let report = PortfolioScheduler::new(
+            "portfolio/test",
+            PortfolioSchedulerConfig::default(),
+            milestones,
+        )
+        .run(None);
+        let line = govern_line(&report, "m.gold");
+        assert_eq!(line.decision, SchedulerDecision::Conservative);
+        // The committed pick is the lower-mean candidate, below the Gold bar.
+        assert_eq!(line.primitive_id, "lo");
+        assert!(
+            !report.summary.quality_bar_ok,
+            "summary: {:?}",
+            report.summary
+        );
+        assert!(!report.gate_passes);
+        // The govern line surfaces the below-bar remediation.
+        assert!(
+            line.remediation.iter().any(|r| r.contains("quality bar")),
+            "remediation: {:?}",
+            line.remediation
+        );
+        // The governor stayed monotone (the downgrade is no riskier).
+        assert!(report.summary.safety_monotone_ok);
+    }
+
+    #[test]
+    fn single_selection_does_not_trip_the_diversity_cap() {
+        // One committed selection cannot be "over-concentrated": a single-milestone
+        // portfolio (100% one family) must NOT be flagged as a diversity violation.
+        let milestones = vec![SchedulerMilestone::new(
+            "m.solo",
+            QualityBar::Bronze,
+            RiskTier::Medium,
+            vec![cand("solo", "m.solo", MathFamily::Symbolic, 40.0, 4.0, 2.0)],
+        )];
+        let report = PortfolioScheduler::new(
+            "portfolio/test",
+            PortfolioSchedulerConfig::default(),
+            milestones,
+        )
+        .run(None);
+        assert_eq!(report.summary.final_selected, 1);
+        assert_eq!(report.summary.diversity_violations, 0);
+        assert!(report.summary.diversity_ok);
+        assert!(report.gate_passes, "summary: {:?}", report.summary);
     }
 
     #[test]
