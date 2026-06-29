@@ -1268,6 +1268,20 @@ jobs:
           cargo test -p doctor_frankentui --lib chaos_drill -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/chaos_drill_gate.log"
 
+      - name: Run doctor_frankentui guarantee-assumption registry gate (bd-3bxhj.10.42)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed guarantee-assumption registry gate: every formal guarantee
+          # (conformal / e-process / PAC-Bayes / sequential-FDR) references explicit
+          # typed assumption ids and a computed applicability verdict; an assumption
+          # violation forces a surfaced conservative fallback with logged rationale;
+          # no guarantee is surfaced 'valid' while any assumption is violated; and
+          # the float-free certificates replay byte-identically (inconsistent /
+          # silent-downgrade / valid-with-violation cases fail closed).
+          cargo test -p doctor_frankentui --lib guarantee_assumption_registry -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/guarantee_assumption_registry_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
