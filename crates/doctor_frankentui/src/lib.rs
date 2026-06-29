@@ -215,6 +215,7 @@ pub mod sandbox;
 pub mod seed;
 pub mod semantic_contract;
 pub mod semantic_diff;
+pub mod sequential_fdr;
 pub mod shadow_run;
 pub mod state_effects;
 pub mod state_event_translator;

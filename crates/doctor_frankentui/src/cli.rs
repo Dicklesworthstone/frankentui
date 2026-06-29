@@ -9,6 +9,7 @@ use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::import::{ImportArgs, run_import};
 use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
+use crate::sequential_fdr::{SequentialFdrArgs, run_sequential_fdr};
 use crate::suite::{SuiteArgs, run_suite};
 use crate::util::{OutputModeOverride, set_output_mode_override};
 use crate::voi_probe_planner::{VoiPlanArgs, run_voi_plan};
@@ -99,6 +100,11 @@ pub enum Commands {
     /// account) and apply the adaptive-evidence gate.
     #[command(name = "voi-plan")]
     VoiPlan(VoiPlanArgs),
+
+    /// Run the sequential multiple-testing controller (evalue/ebh/invest/govern)
+    /// with e-BH + alpha-investing wealth management and apply the FDR gate.
+    #[command(name = "sequential-fdr")]
+    SequentialFdr(SequentialFdrArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -123,6 +129,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::GraveyardVerify(args) => run_graveyard_verify(args),
         Commands::Graveyardctl(args) => run_graveyardctl(args),
         Commands::VoiPlan(args) => run_voi_plan(args),
+        Commands::SequentialFdr(args) => run_sequential_fdr(args),
     }
 }
 
