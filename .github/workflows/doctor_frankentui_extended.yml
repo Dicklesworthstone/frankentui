@@ -185,6 +185,21 @@ jobs:
           cargo test -p doctor_frankentui --lib portfolio_scheduler -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/portfolio_schedule_gate.log"
 
+      - name: Run doctor_frankentui portfolio-governance tests gate (bd-3bxhj.10.19)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed cross-kernel unit/property gate for the reverse-round
+          # one-lever governance loop and the expected-loss portfolio scheduler:
+          # green/red fixtures with explicit expected-outcome oracles, an auditable
+          # AC3 diagnostic envelope (run_id/claim_id/comparator_id/action_id/
+          # equation_id/posterior_hash/loss_components/fallback_reason), deterministic
+          # replay + stable decision hashes, loss monotonicity, branch-diversity
+          # enforcement, and deterministic fallback under high uncertainty. Must pass
+          # before the .10.20 chaos-drill / portfolio-fallback E2E gauntlet.
+          cargo test -p doctor_frankentui --lib portfolio_governance_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/portfolio_governance_tests_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
