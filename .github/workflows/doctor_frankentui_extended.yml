@@ -153,6 +153,21 @@ jobs:
           cargo test -p doctor_frankentui --lib voi_probe_planner -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/voi_plan_gate.log"
 
+      - name: Run doctor_frankentui sequential-fdr gate (bd-3bxhj.10.39)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed sequential multiple-testing gate: e-BH (primary; FDR<=alpha
+          # under arbitrary dependence) over concurrent gate families plus a
+          # per-family Foster-Stine alpha-investing wealth process. Every decision
+          # clause must match its arithmetic, the e-BH certified count must equal
+          # k*, the final certified set must be a subset of the e-BH set, every
+          # conservative event (wealth exhaustion / adversarial evidence) must be
+          # surfaced (never silent permissive), and fairness transfers must
+          # conserve total wealth (malformed/inconsistent/silent cases fail closed).
+          cargo test -p doctor_frankentui --lib sequential_fdr -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/sequential_fdr_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
@@ -207,6 +222,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_voi_plan_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/voi_plan" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/voi_plan_e2e.log"
+
+      - name: Run doctor_frankentui sequential-fdr E2E (bd-3bxhj.10.39)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_sequential_fdr_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/sequential_fdr" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/sequential_fdr_e2e.log"
 
       - name: Build doctor_frankentui replay/triage summary
         if: always()
