@@ -261,6 +261,22 @@ jobs:
           cargo test -p doctor_frankentui --lib degradation_policy -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/degradation_policy_gate.log"
 
+      - name: Run doctor_frankentui archetype-scoreboard gate (bd-3bxhj.10.33)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed archetype→project execution-map + decision-contract
+          # scoreboard gate: every selected (recommended) component carries a
+          # decision contract linked to a claim id + evidence id; the opportunity
+          # scoreboard (Impact*Confidence/Effort) recomputes deterministically from
+          # the profile artifacts and the prioritization gate selects only
+          # threshold-clearing, actionable components (re-derived independently by
+          # the gate); every degraded / low-confidence component engages the
+          # conservative fallback with an explicit trigger; and the float-free
+          # contracts replay byte-identically.
+          cargo test -p doctor_frankentui --lib archetype_scoreboard -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/archetype_scoreboard_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
