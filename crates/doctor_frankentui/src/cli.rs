@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::alien_kernel_tests::{AlienUpliftArgs, run_alien_uplift};
 use crate::capture::{CaptureArgs, print_profiles, run_capture};
+use crate::chaos_drill::{ChaosDrillArgs, run_chaos_drill};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
@@ -112,6 +113,13 @@ pub enum Commands {
     /// formal-guarantee constraints, and apply the portfolio gate.
     #[command(name = "portfolio-schedule")]
     PortfolioSchedule(PortfolioScheduleArgs),
+
+    /// Run the reverse-round chaos drill: inject drift, contradictory evidence,
+    /// budget exhaustion, calibration failure, and optional-stopping
+    /// perturbations across the governance kernels and apply the
+    /// safe-degradation gate.
+    #[command(name = "chaos-drill")]
+    ChaosDrill(ChaosDrillArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -138,6 +146,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::VoiPlan(args) => run_voi_plan(args),
         Commands::SequentialFdr(args) => run_sequential_fdr(args),
         Commands::PortfolioSchedule(args) => run_portfolio_schedule(args),
+        Commands::ChaosDrill(args) => run_chaos_drill(args),
     }
 }
 
