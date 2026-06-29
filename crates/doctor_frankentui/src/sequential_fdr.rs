@@ -2010,6 +2010,40 @@ mod tests {
     }
 
     #[test]
+    fn ebh_step_up_rescues_middle_ranks() {
+        // The subtle step-up property: a rank that FAILS its own cutoff
+        // K/(alpha*k) is still certified when a LATER rank passes. K=4,
+        // alpha=0.5 => K/alpha=8; cutoffs (8, 4, 8/3=2.667, 2). Sorted e-values
+        // [10, 3, 2.5, 2.1]: k=1 passes (10>=8), k=2 FAILS (3<4), k=3 FAILS
+        // (2.5<2.667), k=4 passes (2.1>=2). k* = max passing = 4, threshold =
+        // 8/4 = 2, so ALL FOUR certify even though ranks 2 and 3 failed their
+        // own cutoffs (rescued by the step-up).
+        let cfg = SequentialFdrConfig::default().with_alpha(0.5);
+        let corpus = vec![
+            FdrTest::with_evalue("q.a", GateFamily::Quality, 0, 10.0),
+            FdrTest::with_evalue("q.b", GateFamily::Quality, 1, 3.0),
+            FdrTest::with_evalue("q.c", GateFamily::Quality, 2, 2.5),
+            FdrTest::with_evalue("q.d", GateFamily::Quality, 3, 2.1),
+        ];
+        let report = controller_with(cfg, corpus).run(None);
+        assert_eq!(report.summary.ebh_k_star, 4, "step-up must reach k*=4");
+        assert_eq!(report.summary.ebh_certified, 4, "all four rescued");
+        assert_eq!(report.summary.ebh_threshold, fmt6(2.0));
+        assert!(report.summary.ebh_count_matches);
+        assert!(report.gate_passes);
+        // Confirm the middle ranks (which failed their own cutoffs) are certified.
+        for line in &report.ledger {
+            if line.stage == FdrStage::Ebh {
+                assert_eq!(
+                    line.decision,
+                    TestDecision::Certify,
+                    "every rank is certified via step-up: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ebh_clause_consistency_holds_for_every_line() {
         let report = run_sequential_fdr_report("sequential-fdr/test");
         let threshold: f64 = report.summary.ebh_threshold.parse().unwrap();
