@@ -418,6 +418,7 @@ fn run_baseline_promote() -> ScenarioOutcome {
         "graveyard-eq-baseline",
         ChecksumVerdict::Match,
         PercentileDeltas::improvement(0.10),
+        RollbackPolicy::AutomaticOnRegression,
     );
     let request = ReverseRoundRequest::new(
         registered_comparator(claim_id),
@@ -450,12 +451,14 @@ fn run_multi_lever() -> ScenarioOutcome {
         "graveyard-eq-100",
         ChecksumVerdict::Match,
         PercentileDeltas::improvement(0.08),
+        RollbackPolicy::AutomaticOnRegression,
     );
     let b = uplift_claim(
         "chaos-multi-b",
         "graveyard-eq-101",
         ChecksumVerdict::Match,
         PercentileDeltas::improvement(0.07),
+        RollbackPolicy::AutomaticOnRegression,
     );
     let mut registry = registered_comparator("chaos-multi-a");
     let _ = registry.register(BaselineComparator::new(
@@ -496,12 +499,16 @@ fn run_multi_lever() -> ScenarioOutcome {
 
 fn run_contradictory_evidence() -> ScenarioOutcome {
     let claim_id = "chaos-iso";
-    // Contradictory evidence: the lever's behavior changed (non-isomorphic).
+    // Contradictory evidence: the lever's behavior changed (non-isomorphic). The
+    // hold-no-rollback policy keeps the action a clean isomorphism-gate BLOCK
+    // (rollback suppressed / escalate) rather than an auto-rollback, so this
+    // scenario exercises the block path distinctly from `performance_drift`.
     let claim = uplift_claim(
         claim_id,
         "graveyard-eq-200",
         ChecksumVerdict::Mismatch,
         PercentileDeltas::improvement(0.05),
+        RollbackPolicy::HoldNoRollback,
     );
     let request = ReverseRoundRequest::new(
         registered_comparator(claim_id),
@@ -535,12 +542,14 @@ fn run_contradictory_evidence() -> ScenarioOutcome {
 
 fn run_performance_drift() -> ScenarioOutcome {
     let claim_id = "chaos-drift-perf";
-    // Synthetic drift: a real percentile regression beyond budget.
+    // Synthetic drift: a real percentile regression beyond budget. The
+    // automatic-on-regression policy must trigger a rollback to the incumbent.
     let claim = uplift_claim(
         claim_id,
         "graveyard-eq-300",
         ChecksumVerdict::Match,
         PercentileDeltas::new(0.6, 0.6, 0.6),
+        RollbackPolicy::AutomaticOnRegression,
     );
     let request = ReverseRoundRequest::new(
         registered_comparator(claim_id),
@@ -1306,6 +1315,17 @@ mod tests {
         let report = run_chaos_drill_report("chaos/test");
         let line = scenario_line(&report, "multi_lever_merge");
         assert_eq!(line.action_path, "blocked");
+        assert_eq!(line.kernel, ChaosKernel::ReverseRound);
+    }
+
+    #[test]
+    fn contradictory_evidence_is_blocked_not_rolled_back() {
+        // A non-isomorphic lever is blocked by the isomorphism gate; the
+        // hold-no-rollback policy escalates rather than auto-reverting.
+        let report = run_chaos_drill_report("chaos/test");
+        let line = scenario_line(&report, "contradictory_evidence");
+        assert_eq!(line.action_path, "blocked");
+        assert_eq!(line.fallback_reason, "isomorphism_violation");
         assert_eq!(line.kernel, ChaosKernel::ReverseRound);
     }
 
