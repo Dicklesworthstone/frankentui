@@ -202,6 +202,7 @@ pub mod module_graph;
 pub mod optimization_model_tests;
 pub mod paper_verification;
 pub mod performance_diff;
+pub mod portfolio_scheduler;
 pub mod posterior_core;
 pub mod profile;
 pub mod profile_orchestrator;

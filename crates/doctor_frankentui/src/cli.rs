@@ -7,6 +7,7 @@ use crate::error::Result;
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::import::{ImportArgs, run_import};
+use crate::portfolio_scheduler::{PortfolioScheduleArgs, run_portfolio_schedule};
 use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
 use crate::sequential_fdr::{SequentialFdrArgs, run_sequential_fdr};
@@ -105,6 +106,12 @@ pub enum Commands {
     /// with e-BH + alpha-investing wealth management and apply the FDR gate.
     #[command(name = "sequential-fdr")]
     SequentialFdr(SequentialFdrArgs),
+
+    /// Run the expected-loss portfolio scheduler (score/select/diversify/govern)
+    /// over alien primitives with branch-diversity, budget-safety, and
+    /// formal-guarantee constraints, and apply the portfolio gate.
+    #[command(name = "portfolio-schedule")]
+    PortfolioSchedule(PortfolioScheduleArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -130,6 +137,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::Graveyardctl(args) => run_graveyardctl(args),
         Commands::VoiPlan(args) => run_voi_plan(args),
         Commands::SequentialFdr(args) => run_sequential_fdr(args),
+        Commands::PortfolioSchedule(args) => run_portfolio_schedule(args),
     }
 }
 

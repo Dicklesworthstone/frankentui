@@ -1221,6 +1221,23 @@ jobs:
           cargo test -p doctor_frankentui --lib sequential_fdr -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/sequential_fdr_gate.log"
 
+      - name: Run doctor_frankentui portfolio-schedule gate (bd-3bxhj.10.18)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed expected-loss portfolio gate: per migration milestone,
+          # choose among candidate alien primitives (symbolic/search/probabilistic/
+          # formal-analysis) by reusing the decision-loss expected-loss solver,
+          # subject to branch-diversity, budget-safety, and formal-guarantee
+          # compatibility. Every pre-governance selection must be the feasible
+          # argmin, every committed pick must clear its quality bar, no family may
+          # breach the diversity cap, committed cost must stay within budget, every
+          # safety event (uncertainty/drift/budget risk) must be surfaced (never
+          # silent), and the governor must only downgrade to a safer (<=worst-case)
+          # selection (malformed/inconsistent/silent cases fail closed).
+          cargo test -p doctor_frankentui --lib portfolio_scheduler -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/portfolio_schedule_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
@@ -1281,6 +1298,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_sequential_fdr_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/sequential_fdr" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/sequential_fdr_e2e.log"
+
+      - name: Run doctor_frankentui portfolio-schedule E2E (bd-3bxhj.10.18)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_portfolio_schedule_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/portfolio_scheduler" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/portfolio_schedule_e2e.log"
 
       - name: Build doctor_frankentui replay/triage summary
         if: always()
