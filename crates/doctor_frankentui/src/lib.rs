@@ -207,6 +207,7 @@ pub mod milestone_policy;
 pub mod module_graph;
 pub mod one_lever_policy;
 pub mod opportunity_scorer;
+pub mod optimization_control_tests;
 pub mod optimization_model_tests;
 pub mod paper_verification;
 pub mod performance_diff;

@@ -1403,6 +1403,22 @@ jobs:
           cargo test -p doctor_frankentui --lib tier_escalator -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/tier_escalator_gate.log"
 
+      - name: Run doctor_frankentui optimization-control test harness (bd-3bxhj.8.20)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Cross-module unit/property test-evidence harness for the optimization
+          # control plane: projects every kernel (baseline percentiles + command
+          # fingerprint, profiler hotspot determinism, opportunity-matrix score
+          # math, golden-output isomorphism oracle, one-lever/rollback policy,
+          # re-profile backlog recalc) into one deterministic diagnostic envelope,
+          # checks each against an expected-outcome oracle (happy / malformed /
+          # missing-evidence / adversarial outlier), and asserts byte-stable replay
+          # via proptest. The envelope carries run_id / hotspot_id / score_terms /
+          # proof_id / lever_count / replay command.
+          cargo test -p doctor_frankentui --lib optimization_control_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/optimization_control_tests_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
