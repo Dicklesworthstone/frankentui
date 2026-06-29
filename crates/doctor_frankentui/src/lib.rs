@@ -237,6 +237,7 @@ pub mod supervised_orchestration;
 pub mod symptom_router;
 pub mod tape;
 pub mod test_budget_allocator;
+pub mod tier_escalator;
 pub mod trace;
 pub mod translation_planner;
 pub mod tsx_parser;

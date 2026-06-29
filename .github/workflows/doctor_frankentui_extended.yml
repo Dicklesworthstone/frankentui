@@ -335,6 +335,21 @@ jobs:
           cargo test -p doctor_frankentui --lib reprofile_loop -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/reprofile_loop_gate.log"
 
+      - name: Run doctor_frankentui tier-escalator gate (bd-3bxhj.8.22)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed tiered optimization round escalator gate: a tier
+          # (Round1 low-hanging / Round2 algorithmic / Round3 exotic) is eligible to
+          # enter only when every lower tier is exhausted — every Score>=2.0
+          # candidate applied or rejected-with-rationale (re-derived independently);
+          # advanced (Round2/3) candidates are activatable only with both a proof
+          # obligation and a complete rollback plan; every evaluation logs round_id,
+          # hotspot frontier, eligibility verdict, and transition reason; and the
+          # float-free ledger replays byte-identically.
+          cargo test -p doctor_frankentui --lib tier_escalator -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/tier_escalator_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
