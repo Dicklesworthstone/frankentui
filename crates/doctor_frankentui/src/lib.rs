@@ -167,6 +167,7 @@ pub mod concolic_differential;
 pub mod controller_composition;
 pub mod corpus;
 pub mod corpus_integrity_tests;
+pub mod counterfactual_audit;
 pub mod coverage_prioritizer;
 pub mod decision_loss_policy;
 pub mod degradation_policy;

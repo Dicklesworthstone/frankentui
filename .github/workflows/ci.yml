@@ -1330,6 +1330,22 @@ jobs:
           cargo test -p doctor_frankentui --lib archetype_scoreboard -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/archetype_scoreboard_gate.log"
 
+      - name: Run doctor_frankentui counterfactual-audit gate (bd-3bxhj.10.40)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed counterfactual decision-audit gate: every audited decision
+          # carries a minimal-flip counterfactual (the smallest evidence-distribution
+          # perturbation that flips the loss-policy action, solved by deterministic
+          # optimal transport honoring immutable-evidence + bounded-edit
+          # constraints) OR an explicit unsat proof when the action is dominant;
+          # fragile decisions (nearest flip below the threshold) carry a blocking
+          # policy clause and cannot promote silently; every artifact links a
+          # claim/policy/decision id + replay command; and the float-free contracts
+          # replay byte-identically.
+          cargo test -p doctor_frankentui --lib counterfactual_audit -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/counterfactual_audit_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
