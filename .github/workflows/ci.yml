@@ -1346,6 +1346,20 @@ jobs:
           cargo test -p doctor_frankentui --lib counterfactual_audit -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/counterfactual_audit_gate.log"
 
+      - name: Run doctor_frankentui opportunity-scorer gate (bd-3bxhj.8.16)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed opportunity-matrix scorer + Score>=2.0 enforcement gate:
+          # every optimization lever carries machine-readable score terms
+          # (Impact*Confidence/Effort) and evidence pointers; the gate blocks every
+          # below-threshold lever unless an explicit, fully-audited override
+          # artifact (author/approver/reason) authorizes it (re-derived
+          # independently by the gate); the priority queue is score-descending; and
+          # the float-free ledger replays byte-identically.
+          cargo test -p doctor_frankentui --lib opportunity_scorer -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/opportunity_scorer_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
