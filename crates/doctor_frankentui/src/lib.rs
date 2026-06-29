@@ -168,6 +168,7 @@ pub mod corpus;
 pub mod corpus_integrity_tests;
 pub mod coverage_prioritizer;
 pub mod decision_loss_policy;
+pub mod degradation_policy;
 pub mod doctor;
 pub mod drift_monitor;
 pub mod ecosystem_scan;

@@ -1298,6 +1298,22 @@ jobs:
           cargo test -p doctor_frankentui --lib hierarchical_fusion -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/hierarchical_fusion_gate.log"
 
+      - name: Run doctor_frankentui degradation-policy gate (bd-3bxhj.10.41)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed graceful-degradation policy gate: under any subset of
+          # missing (MCAR/MAR/MNAR) / delayed / contradictory evidence, the compiled
+          # final action is always at least as conservative as the action its
+          # residual risk requires (no catastrophic failure, re-derived independently
+          # by the gate); every degraded decision emits explicit reason codes, a
+          # positive uncertainty delta, and an operator-escalation clamp clause; the
+          # degraded-mode state machine has hysteresis + cooldown and never promotes
+          # back to normal without a satisfied recovery guard (no implicit
+          # auto-promotion); and the float-free contracts replay byte-identically.
+          cargo test -p doctor_frankentui --lib degradation_policy -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/degradation_policy_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
