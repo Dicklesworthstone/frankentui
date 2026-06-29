@@ -1419,6 +1419,24 @@ jobs:
           cargo test -p doctor_frankentui --lib optimization_control_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/optimization_control_tests_gate.log"
 
+      - name: Run doctor_frankentui tier-escalation test harness (bd-3bxhj.8.23)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed unit/property test-evidence harness for the tier-escalation
+          # policy + advanced-technique gating: a fixed fixture corpus exercises legal
+          # round transitions (Round1->2->3 once lower tiers exhaust), illegal
+          # transitions (a round jump while a lower tier has un-resolved Score>=2.0
+          # work -> blocked), skipped-tier overrides (a rejection-with-rationale
+          # exhausts a tier; a rejection-without-one is refused), and malformed
+          # evidence (an advanced candidate missing proof/rollback -> activation
+          # blocked; a non-finite score clamped to zero). Each per-candidate
+          # diagnostic logs round_id / candidate_id / score_snapshot / gate_result /
+          # replay command, is checked against an expected-outcome oracle, and the
+          # float-free report replays byte-identically (proptest determinism).
+          cargo test -p doctor_frankentui --lib tier_escalator_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/tier_escalator_tests_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
