@@ -321,6 +321,20 @@ jobs:
           cargo test -p doctor_frankentui --lib one_lever_policy -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/one_lever_policy_gate.log"
 
+      - name: Run doctor_frankentui reprofile-loop gate (bd-3bxhj.8.19)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed iterative re-profile + bottleneck-shift historian gate:
+          # every optimization round writes a before/after p50/p95/p99 delta report
+          # plus the bottleneck before/after (hotspot movement); the opportunity
+          # backlog is re-ranked against the latest profile each round; and an
+          # unstable measurement, a non-finite re-profile, or a primary-metric
+          # regression yields a conservative pause with a triage hint (never a
+          # silent continue). Float-free ledger replays byte-identically.
+          cargo test -p doctor_frankentui --lib reprofile_loop -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/reprofile_loop_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail

@@ -219,6 +219,7 @@ pub mod proof_artifacts;
 pub mod recommendation_contract;
 pub mod redact;
 pub mod report;
+pub mod reprofile_loop;
 pub mod reverse_round_governance;
 pub mod runmeta;
 pub mod sandbox;
