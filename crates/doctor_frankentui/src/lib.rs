@@ -188,6 +188,7 @@ pub mod graveyardctl;
 pub mod guarantee_assumption_registry;
 pub mod guarantee_layer;
 pub mod harness;
+pub mod hierarchical_fusion;
 pub mod import;
 pub mod intent_inference;
 pub mod ir_explainer;

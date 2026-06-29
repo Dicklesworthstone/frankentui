@@ -229,6 +229,22 @@ jobs:
           cargo test -p doctor_frankentui --lib guarantee_assumption_registry -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/guarantee_assumption_registry_gate.log"
 
+      - name: Run doctor_frankentui hierarchical-fusion gate (bd-3bxhj.10.38)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed hierarchical Bayesian fusion gate: per-claim conjugate
+          # posteriors (Beta-Binomial / Gamma-Poisson / Dirichlet-Multinomial)
+          # stay finite (checked pre-render so fmt6 cannot mask a NaN); correlated
+          # multi-channel evidence is dependence-deflated (factor <= 1, never
+          # inflated) with a recorded trace; every row emits an epsilon-contamination
+          # sensitivity band and a high-sensitivity decision is forced conservative;
+          # a posterior-predictive failure or a malformed (kernel/arity-mismatched)
+          # observation degrades to a conservative decision rather than silent
+          # approval; and the float-free certificates replay byte-identically.
+          cargo test -p doctor_frankentui --lib hierarchical_fusion -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/hierarchical_fusion_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
