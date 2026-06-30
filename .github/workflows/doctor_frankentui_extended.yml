@@ -384,6 +384,23 @@ jobs:
           cargo test -p doctor_frankentui --lib tier_escalator_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/tier_escalator_tests_gate.log"
 
+      - name: Run doctor_frankentui nightly continuous-evaluation gate (bd-3bxhj.8.7)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed nightly continuous-evaluation pipeline: the corpus is sharded
+          # deterministically (the assignment is re-derived from the fixture id);
+          # the VOI test-budget allocator gates which fixtures are worth a re-profile
+          # round (sub-floor fixtures are deferred); the drift monitor (BOCPD + CUSUM)
+          # screens every metric series and a drift regression is investigated before
+          # any optimization; every failure (drift regression / re-profile pause)
+          # emits a triage summary with a replay pointer and rollback-readiness; and
+          # each fixture contributes a time-series history point (percentiles, hotspot
+          # movement, optimization efficacy). The float-free ledger replays
+          # byte-identically (proptest determinism).
+          cargo test -p doctor_frankentui --lib nightly_evaluation -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/nightly_evaluation_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail

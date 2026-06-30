@@ -205,6 +205,7 @@ pub mod migration_config;
 pub mod migration_ir;
 pub mod milestone_policy;
 pub mod module_graph;
+pub mod nightly_evaluation;
 pub mod one_lever_policy;
 pub mod opportunity_scorer;
 pub mod optimization_control_tests;

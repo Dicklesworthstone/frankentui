@@ -8,6 +8,7 @@ use crate::error::Result;
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::import::{ImportArgs, run_import};
+use crate::nightly_evaluation::{NightlyEvalArgs, run_nightly_eval};
 use crate::portfolio_scheduler::{PortfolioScheduleArgs, run_portfolio_schedule};
 use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
@@ -120,6 +121,12 @@ pub enum Commands {
     /// safe-degradation gate.
     #[command(name = "chaos-drill")]
     ChaosDrill(ChaosDrillArgs),
+
+    /// Run the nightly continuous evaluation pipeline: deterministically shard a
+    /// fixture corpus, VOI-gate re-profile rounds, screen for drift, and emit a
+    /// triage + time-series evidence ledger with a fail-closed gate.
+    #[command(name = "nightly-eval")]
+    NightlyEval(NightlyEvalArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -147,6 +154,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::SequentialFdr(args) => run_sequential_fdr(args),
         Commands::PortfolioSchedule(args) => run_portfolio_schedule(args),
         Commands::ChaosDrill(args) => run_chaos_drill(args),
+        Commands::NightlyEval(args) => run_nightly_eval(args),
     }
 }
 
