@@ -1542,6 +1542,23 @@ jobs:
           cargo test -p doctor_frankentui --lib hazard_regime_model -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/hazard_regime_model_gate.log"
 
+      - name: Run doctor_frankentui alien-kernel unit/property harness (bd-3bxhj.10.27)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed cross-kernel unit/property test-evidence harness for the six
+          # alien-artifact kernels: posterior core (accept / sparse-degradation /
+          # extreme-stable), expected-loss solver (argmin correctness + deterministic
+          # decision id + non-negative runner-up margin), guarantee layer
+          # (calibrated bundle holds / coverage failure -> conservative fallback),
+          # VOI planner gate, survival/hazard + BOCPD regime gate, and galaxy-brain
+          # card determinism. Each diagnostic carries run_id / claim_id / equation_id /
+          # posterior_hash / loss_terms / guarantee_status / replay; the float-free
+          # report replays byte-identically (proptest) and the gate requires all six
+          # kernels covered with every expectation met.
+          cargo test -p doctor_frankentui --lib alien_kernel_unit_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/alien_kernel_unit_tests_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
