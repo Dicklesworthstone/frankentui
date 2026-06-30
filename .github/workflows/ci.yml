@@ -1468,6 +1468,35 @@ jobs:
           cargo test -p doctor_frankentui --lib adaptive_schedule -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/adaptive_schedule_gate.log"
 
+      - name: Run doctor_frankentui nightly-stress gate (bd-3bxhj.8.9)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed nightly-stress gate: the full optimization-aware flow over a
+          # mixed corpus with per-fixture lifecycle logging (stage timings, hotspot
+          # tables, score decisions, outcome classes), resume/retry that skips
+          # completed fixtures while preserving baseline/profile lineage and the
+          # determinism fingerprint, and behavior-preservation proofs — every
+          # optimized path carries a golden-output isomorphism proof and a behavior
+          # regression is detected and refused promotion (never silently optimized).
+          cargo test -p doctor_frankentui --lib nightly_stress -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/nightly_stress_gate.log"
+
+      - name: Run doctor_frankentui optimization-gauntlet gate (bd-3bxhj.8.21)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed optimization-gauntlet gate: the full
+          # baseline->profile->score->one-lever->isomorphism->reprofile->rollback
+          # loop across positive / red / drift scenarios. The positive path
+          # promotes; every red path (low score, multi-lever, checksum mismatch,
+          # unstable profiling, post-change regression) is refused; the regression
+          # rolls back + restores the incumbent; the drift path reorders the next
+          # candidates. Per-stage JSONL with upstream linkage + replay; the
+          # float-free ledger replays byte-identically.
+          cargo test -p doctor_frankentui --lib optimization_gauntlet -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/optimization_gauntlet_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
@@ -1546,6 +1575,18 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_adaptive_schedule_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/adaptive_schedule" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/adaptive_schedule_e2e.log"
+
+      - name: Run doctor_frankentui nightly-stress E2E (bd-3bxhj.8.9)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_nightly_stress_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/nightly_stress" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/nightly_stress_e2e.log"
+
+      - name: Run doctor_frankentui optimization-gauntlet E2E (bd-3bxhj.8.21)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_optimization_gauntlet_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/optimization_gauntlet" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/optimization_gauntlet_e2e.log"
 
       - name: Build doctor_frankentui replay/triage summary
         if: always()

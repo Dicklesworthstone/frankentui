@@ -10,6 +10,8 @@ use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::import::{ImportArgs, run_import};
 use crate::nightly_evaluation::{NightlyEvalArgs, run_nightly_eval};
+use crate::nightly_stress::{NightlyStressArgs, run_nightly_stress_command};
+use crate::optimization_gauntlet::{OptimizationGauntletArgs, run_optimization_gauntlet_command};
 use crate::portfolio_scheduler::{PortfolioScheduleArgs, run_portfolio_schedule};
 use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
@@ -135,6 +137,20 @@ pub enum Commands {
     /// gate.
     #[command(name = "adaptive-schedule")]
     AdaptiveSchedule(AdaptiveScheduleArgs),
+
+    /// Run the nightly stress pipeline over a mixed corpus: per-fixture lifecycle
+    /// logging with stage timings, hotspot tables, score decisions, and outcome
+    /// classes; resume/retry from a checkpoint; and behavior-preservation proofs
+    /// for optimized paths.
+    #[command(name = "nightly-stress")]
+    NightlyStress(NightlyStressArgs),
+
+    /// Run the E2E optimization gauntlet: execute the full
+    /// baseline->profile->score->one-lever->isomorphism->reprofile->rollback loop
+    /// across positive, red, and drift scenarios, and apply the fail-closed
+    /// promotion gate.
+    #[command(name = "optimization-gauntlet")]
+    OptimizationGauntlet(OptimizationGauntletArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -164,6 +180,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::ChaosDrill(args) => run_chaos_drill(args),
         Commands::NightlyEval(args) => run_nightly_eval(args),
         Commands::AdaptiveSchedule(args) => run_adaptive_schedule_command(args),
+        Commands::NightlyStress(args) => run_nightly_stress_command(args),
+        Commands::OptimizationGauntlet(args) => run_optimization_gauntlet_command(args),
     }
 }
 
