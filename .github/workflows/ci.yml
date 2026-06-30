@@ -1526,6 +1526,22 @@ jobs:
           cargo test -p doctor_frankentui --lib ci_outputs -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/ci_outputs_gate.log"
 
+      - name: Run doctor_frankentui hazard-regime gate (bd-3bxhj.10.25)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed survival/hazard + BOCPD regime gate: per-regime discrete-time
+          # hazard/survival with Beta-posterior credible intervals (calibrated
+          # uncertainty); the feedback stream is screened by the BOCPD drift monitor
+          # for a change-point + run length; a composite drift-risk maps to a
+          # conservatism level (normal/holdback/rollback) under tunable policy
+          # profiles. The gate requires calibrated intervals + replay traces, an
+          # auto-triggered holdback/rollback transition, a profile-tunable
+          # false-alarm/miss tradeoff, and a non-vacuous corpus (a stable + a
+          # rolled-back regime); the float-free ledger replays byte-identically.
+          cargo test -p doctor_frankentui --lib hazard_regime_model -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/hazard_regime_model_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail

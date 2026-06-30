@@ -10,6 +10,7 @@ use crate::error::Result;
 use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
+use crate::hazard_regime_model::{HazardRegimeArgs, run_hazard_regime_command};
 use crate::import::{ImportArgs, run_import};
 use crate::nightly_evaluation::{NightlyEvalArgs, run_nightly_eval};
 use crate::nightly_stress::{NightlyStressArgs, run_nightly_stress_command};
@@ -165,6 +166,13 @@ pub enum Commands {
     /// documented schema versions.
     #[command(name = "ci-outputs")]
     CiOutputs(CiOutputsArgs),
+
+    /// Run the survival/hazard + BOCPD regime model: per-regime hazard/survival
+    /// with calibrated credible intervals, a BOCPD change-point + run-length
+    /// tracker, and regime-aware policy hooks (normal/holdback/rollback) tunable by
+    /// policy profile.
+    #[command(name = "hazard-regime")]
+    HazardRegime(HazardRegimeArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -198,6 +206,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::OptimizationGauntlet(args) => run_optimization_gauntlet_command(args),
         Commands::FeedbackReport(args) => run_feedback_report(args),
         Commands::CiOutputs(args) => run_ci_outputs_command(args),
+        Commands::HazardRegime(args) => run_hazard_regime_command(args),
     }
 }
 
