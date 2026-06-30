@@ -6,6 +6,7 @@ use crate::capture::{CaptureArgs, print_profiles, run_capture};
 use crate::chaos_drill::{ChaosDrillArgs, run_chaos_drill};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
+use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::import::{ImportArgs, run_import};
@@ -151,6 +152,12 @@ pub enum Commands {
     /// promotion gate.
     #[command(name = "optimization-gauntlet")]
     OptimizationGauntlet(OptimizationGauntletArgs),
+
+    /// Ingest production migration feedback (quantitative + qualitative) under
+    /// privacy + provenance constraints and emit periodic prioritized action
+    /// reports for parity / translator-quality / UX investment.
+    #[command(name = "feedback-report")]
+    FeedbackReport(FeedbackReportArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -182,6 +189,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::AdaptiveSchedule(args) => run_adaptive_schedule_command(args),
         Commands::NightlyStress(args) => run_nightly_stress_command(args),
         Commands::OptimizationGauntlet(args) => run_optimization_gauntlet_command(args),
+        Commands::FeedbackReport(args) => run_feedback_report(args),
     }
 }
 

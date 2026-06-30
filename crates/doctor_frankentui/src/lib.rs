@@ -182,6 +182,7 @@ pub mod entry_header_compiler;
 pub mod error;
 pub mod explain;
 pub mod failure_mode_risk;
+pub mod feedback_ingestion;
 pub mod fixture_taxonomy;
 pub mod galaxy_brain_cards;
 pub mod gap_triage;

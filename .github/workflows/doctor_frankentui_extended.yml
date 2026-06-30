@@ -444,6 +444,21 @@ jobs:
           cargo test -p doctor_frankentui --lib optimization_gauntlet -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/optimization_gauntlet_gate.log"
 
+      - name: Run doctor_frankentui feedback-ingestion gate (bd-3bxhj.9.6)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed production feedback ingestion + continuous improvement loop:
+          # quantitative + qualitative signals are ingested under privacy + provenance
+          # constraints (anonymized operator refs, redacted free-text, mandatory
+          # migration_id/policy_id); inadmissible signals are rejected with a
+          # redaction reason and EXCLUDED from prioritization (no PII / unprovenanced
+          # signal influences a report); admissible signals are aggregated into
+          # periodic prioritized action reports (parity / translator-quality / UX).
+          # The float-free ledger replays byte-identically (proptest determinism).
+          cargo test -p doctor_frankentui --lib feedback_ingestion -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/feedback_ingestion_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
