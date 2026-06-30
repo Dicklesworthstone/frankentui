@@ -4,6 +4,7 @@ use crate::adaptive_schedule::{AdaptiveScheduleArgs, run_adaptive_schedule_comma
 use crate::alien_kernel_tests::{AlienUpliftArgs, run_alien_uplift};
 use crate::capture::{CaptureArgs, print_profiles, run_capture};
 use crate::chaos_drill::{ChaosDrillArgs, run_chaos_drill};
+use crate::ci_outputs::{CiOutputsArgs, run_ci_outputs_command};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
 use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
@@ -158,6 +159,12 @@ pub enum Commands {
     /// reports for parity / translator-quality / UX investment.
     #[command(name = "feedback-report")]
     FeedbackReport(FeedbackReportArgs),
+
+    /// Render CI- and IDE-friendly migration outputs (SARIF 2.1.0 + structured
+    /// JSON + markdown summary) with source/generated location mapping and
+    /// documented schema versions.
+    #[command(name = "ci-outputs")]
+    CiOutputs(CiOutputsArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -190,6 +197,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::NightlyStress(args) => run_nightly_stress_command(args),
         Commands::OptimizationGauntlet(args) => run_optimization_gauntlet_command(args),
         Commands::FeedbackReport(args) => run_feedback_report(args),
+        Commands::CiOutputs(args) => run_ci_outputs_command(args),
     }
 }
 

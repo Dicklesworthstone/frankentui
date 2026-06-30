@@ -459,6 +459,20 @@ jobs:
           cargo test -p doctor_frankentui --lib feedback_ingestion -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/feedback_ingestion_gate.log"
 
+      - name: Run doctor_frankentui ci-outputs gate (bd-3bxhj.7.7)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed CI/IDE-outputs gate: migration findings render to SARIF 2.1.0
+          # (valid JSON, every result carrying source + generated physicalLocations),
+          # structured JSON (summary + per-finding drilldown), and a markdown summary
+          # (counts table + drilldown). Every finding maps to BOTH a source and a
+          # generated file/line (navigation both directions); every emitted artifact
+          # carries a documented schema_version; the rendered artifacts replay
+          # byte-identically (proptest, incl. a SARIF-always-parses property).
+          cargo test -p doctor_frankentui --lib ci_outputs -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/ci_outputs_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail

@@ -159,6 +159,7 @@ pub mod capture;
 pub mod cegis_synthesis;
 pub mod certification_report;
 pub mod chaos_drill;
+pub mod ci_outputs;
 pub mod cli;
 pub mod code_emission;
 pub mod codegen_optimize;
