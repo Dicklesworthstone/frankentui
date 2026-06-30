@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::adaptive_schedule::{AdaptiveScheduleArgs, run_adaptive_schedule_command};
 use crate::alien_kernel_tests::{AlienUpliftArgs, run_alien_uplift};
 use crate::capture::{CaptureArgs, print_profiles, run_capture};
 use crate::chaos_drill::{ChaosDrillArgs, run_chaos_drill};
@@ -127,6 +128,13 @@ pub enum Commands {
     /// triage + time-series evidence ledger with a fail-closed gate.
     #[command(name = "nightly-eval")]
     NightlyEval(NightlyEvalArgs),
+
+    /// Run the adaptive-scheduling + drift-alert comparison: contrast the VOI
+    /// schedule against the static round-robin baseline on identical datasets,
+    /// screen for drift, re-rank the backlog, and apply the confidence-per-compute
+    /// gate.
+    #[command(name = "adaptive-schedule")]
+    AdaptiveSchedule(AdaptiveScheduleArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -155,6 +163,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::PortfolioSchedule(args) => run_portfolio_schedule(args),
         Commands::ChaosDrill(args) => run_chaos_drill(args),
         Commands::NightlyEval(args) => run_nightly_eval(args),
+        Commands::AdaptiveSchedule(args) => run_adaptive_schedule_command(args),
     }
 }
 

@@ -146,6 +146,7 @@
 
 pub mod abstract_interpretation;
 pub mod accessibility_diff;
+pub mod adaptive_schedule;
 pub mod adversarial_fixtures;
 pub mod alien_kernel_tests;
 pub mod archetype_scoreboard;
