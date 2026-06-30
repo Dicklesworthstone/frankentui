@@ -211,6 +211,7 @@ pub mod migration_config;
 pub mod migration_ir;
 pub mod milestone_policy;
 pub mod module_graph;
+pub mod multi_round_drill;
 pub mod nightly_evaluation;
 pub mod nightly_stress;
 pub mod one_lever_policy;

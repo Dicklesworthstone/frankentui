@@ -523,6 +523,21 @@ jobs:
           cargo test -p doctor_frankentui --lib formal_assurance_gauntlet -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/formal_assurance_gauntlet_gate.log"
 
+      - name: Run doctor_frankentui multi-round-drill gate (bd-3bxhj.8.24)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed E2E multi-round optimization drill: progress Round1 (low-
+          # hanging) -> Round2 (algorithmic) -> Round3 (exotic) with the tier
+          # escalator enforcing eligibility (a round proceeds only when every lower
+          # tier is exhausted — the transition evidence); every round carries
+          # baseline + profile + isomorphism-proof artifacts and a measured re-profile
+          # gain, and Round3 rehearses a ready one-lever rollback. The gate fails on
+          # an invalid tier jump, a missing proof/artifact, an unmeasured gain, or a
+          # rollback-readiness failure; the float-free ledger replays byte-identically.
+          cargo test -p doctor_frankentui --lib multi_round_drill -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/multi_round_drill_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
@@ -619,6 +634,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_formal_assurance_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/formal_assurance" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/formal_assurance_e2e.log"
+
+      - name: Run doctor_frankentui multi-round-drill E2E (bd-3bxhj.8.24)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_multi_round_drill_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/multi_round_drill" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/multi_round_drill_e2e.log"
 
       - name: Build doctor_frankentui replay/triage summary
         if: always()

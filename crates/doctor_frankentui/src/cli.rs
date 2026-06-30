@@ -13,6 +13,7 @@ use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::hazard_regime_model::{HazardRegimeArgs, run_hazard_regime_command};
 use crate::import::{ImportArgs, run_import};
+use crate::multi_round_drill::{MultiRoundDrillArgs, run_multi_round_drill_command};
 use crate::nightly_evaluation::{NightlyEvalArgs, run_nightly_eval};
 use crate::nightly_stress::{NightlyStressArgs, run_nightly_stress_command};
 use crate::optimization_gauntlet::{OptimizationGauntletArgs, run_optimization_gauntlet_command};
@@ -181,6 +182,12 @@ pub enum Commands {
     /// conservative-fallback gate.
     #[command(name = "formal-assurance")]
     FormalAssurance(FormalAssuranceArgs),
+
+    /// Run the E2E multi-round optimization drill: progress Round1 -> Round2 ->
+    /// Round3 with tier eligibility gates, per-round baseline/profile/proof
+    /// artifacts + re-profile deltas, and a Round3 rollback rehearsal.
+    #[command(name = "multi-round-drill")]
+    MultiRoundDrill(MultiRoundDrillArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -216,6 +223,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::CiOutputs(args) => run_ci_outputs_command(args),
         Commands::HazardRegime(args) => run_hazard_regime_command(args),
         Commands::FormalAssurance(args) => run_formal_assurance_command(args),
+        Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
     }
 }
 
