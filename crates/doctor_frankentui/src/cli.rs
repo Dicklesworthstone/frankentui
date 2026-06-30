@@ -8,6 +8,7 @@ use crate::ci_outputs::{CiOutputsArgs, run_ci_outputs_command};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
 use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
+use crate::formal_assurance_gauntlet::{FormalAssuranceArgs, run_formal_assurance_command};
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::hazard_regime_model::{HazardRegimeArgs, run_hazard_regime_command};
@@ -173,6 +174,13 @@ pub enum Commands {
     /// policy profile.
     #[command(name = "hazard-regime")]
     HazardRegime(HazardRegimeArgs),
+
+    /// Run the E2E formal-assurance gauntlet: optional-stopping e-process,
+    /// conformal coverage backtests + assumption checks, hazard/BOCPD drift
+    /// transitions, and galaxy-brain explainability replay, with a fail-closed
+    /// conservative-fallback gate.
+    #[command(name = "formal-assurance")]
+    FormalAssurance(FormalAssuranceArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -207,6 +215,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::FeedbackReport(args) => run_feedback_report(args),
         Commands::CiOutputs(args) => run_ci_outputs_command(args),
         Commands::HazardRegime(args) => run_hazard_regime_command(args),
+        Commands::FormalAssurance(args) => run_formal_assurance_command(args),
     }
 }
 

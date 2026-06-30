@@ -506,6 +506,23 @@ jobs:
           cargo test -p doctor_frankentui --lib alien_kernel_unit_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/alien_kernel_unit_tests_gate.log"
 
+      - name: Run doctor_frankentui formal-assurance gate (bd-3bxhj.10.28)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed E2E formal-assurance gauntlet across four areas: optional
+          # stopping (e-process holds on a null stream, rejects a degradation
+          # stream), coverage (conformal holds / breakdown -> fallback / insufficient
+          # calibration -> assumption violation + fallback), drift (steady -> normal,
+          # degrading -> hazard+BOCPD rollback), and explainability (galaxy card
+          # reconstructs the decision deterministically). Every scenario must reach
+          # its expected safe path, the calibration-breakdown + assumption-violation
+          # red paths must trigger a conservative fallback, every line carries
+          # guarantee assumptions / bound terms / a decision trace, and the
+          # float-free ledger replays byte-identically.
+          cargo test -p doctor_frankentui --lib formal_assurance_gauntlet -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/formal_assurance_gauntlet_gate.log"
+
       - name: Run doctor_frankentui unit + integration tests
         run: |
           set -euo pipefail
@@ -596,6 +613,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_optimization_gauntlet_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/optimization_gauntlet" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/optimization_gauntlet_e2e.log"
+
+      - name: Run doctor_frankentui formal-assurance E2E (bd-3bxhj.10.28)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_formal_assurance_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/formal_assurance" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/formal_assurance_e2e.log"
 
       - name: Build doctor_frankentui replay/triage summary
         if: always()
