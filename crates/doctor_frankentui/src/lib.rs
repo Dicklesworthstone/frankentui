@@ -232,6 +232,7 @@ pub mod redact;
 pub mod report;
 pub mod reprofile_loop;
 pub mod reverse_round_governance;
+pub mod rollout_gate_tests;
 pub mod runmeta;
 pub mod sandbox;
 pub mod seed;
