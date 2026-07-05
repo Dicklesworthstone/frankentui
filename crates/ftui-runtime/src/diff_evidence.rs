@@ -334,12 +334,8 @@ impl DiffEvidenceLedger {
 
     /// Clear all stored decisions and transitions.
     pub fn clear(&mut self) {
-        for slot in &mut self.decisions {
-            *slot = None;
-        }
-        for slot in &mut self.transitions {
-            *slot = None;
-        }
+        self.decisions.fill_with(|| None);
+        self.transitions.fill_with(|| None);
         self.decision_head = 0;
         self.transition_head = 0;
         self.decision_count = 0;

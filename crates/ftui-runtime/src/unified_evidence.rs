@@ -468,9 +468,7 @@ impl UnifiedEvidenceLedger {
 
     /// Clear all stored entries. Domain counters are preserved.
     pub fn clear(&mut self) {
-        for slot in &mut self.entries {
-            *slot = None;
-        }
+        self.entries.fill_with(|| None);
         self.head = 0;
         self.count = 0;
     }
