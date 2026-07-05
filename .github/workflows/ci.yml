@@ -1512,6 +1512,21 @@ jobs:
           cargo test -p doctor_frankentui --lib feedback_ingestion -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/feedback_ingestion_gate.log"
 
+      - name: Run doctor_frankentui flagship-migrations gate (bd-3bxhj.9.4)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed flagship example-migration evidence packs: three exemplars
+          # spanning low/medium/high complexity with explicit risk profiles
+          # (blast radius, rollout strategy, mitigation); every runnable demo's
+          # claims link demo_id -> claim_id/evidence_id/policy_id back into the
+          # certification report's evidence set, policy, and contract clauses
+          # (re-derived, not trusted); packs embed documented repro commands,
+          # baseline comparator gains, and rollback notes. The float-free ledger
+          # replays byte-identically (proptest determinism).
+          cargo test -p doctor_frankentui --lib flagship_migrations -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/flagship_migrations_gate.log"
+
       - name: Run doctor_frankentui ci-outputs gate (bd-3bxhj.7.7)
         run: |
           set -euo pipefail

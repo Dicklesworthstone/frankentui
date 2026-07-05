@@ -8,6 +8,7 @@ use crate::ci_outputs::{CiOutputsArgs, run_ci_outputs_command};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
 use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
+use crate::flagship_migrations::{FlagshipMigrationsArgs, run_flagship_migrations_command};
 use crate::formal_assurance_gauntlet::{FormalAssuranceArgs, run_formal_assurance_command};
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
@@ -188,6 +189,14 @@ pub enum Commands {
     /// artifacts + re-profile deltas, and a Round3 rollback rehearsal.
     #[command(name = "multi-round-drill")]
     MultiRoundDrill(MultiRoundDrillArgs),
+
+    /// Materialize the flagship OpenTUI->FrankenTUI migration evidence packs
+    /// (low/medium/high complexity with explicit risk profiles): source
+    /// snapshot, generated project, certification report, demo manifest with
+    /// claim/evidence/policy linkage, repro commands, baseline comparator, and
+    /// rollback notes, gated fail-closed on traceability.
+    #[command(name = "flagship-migrations")]
+    FlagshipMigrations(FlagshipMigrationsArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -224,6 +233,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::HazardRegime(args) => run_hazard_regime_command(args),
         Commands::FormalAssurance(args) => run_formal_assurance_command(args),
         Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
+        Commands::FlagshipMigrations(args) => run_flagship_migrations_command(args),
     }
 }
 

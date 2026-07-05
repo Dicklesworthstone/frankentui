@@ -186,6 +186,7 @@ pub mod explain;
 pub mod failure_mode_risk;
 pub mod feedback_ingestion;
 pub mod fixture_taxonomy;
+pub mod flagship_migrations;
 pub mod formal_assurance_gauntlet;
 pub mod galaxy_brain_cards;
 pub mod gap_triage;
