@@ -302,13 +302,18 @@ ftui = { path = "../frankentui/crates/ftui" }
 
 ### Crates.io (Published So Far)
 
-Currently available on crates.io:
-- `ftui-core`
-- `ftui-layout`
-- `ftui-i18n`
+All 17 library crates are published on crates.io (the `ftui` facade plus
+`ftui-core`, `ftui-render`, `ftui-style`, `ftui-text`, `ftui-layout`,
+`ftui-runtime`, `ftui-widgets`, `ftui-extras`, `ftui-backend`, `ftui-tty`,
+`ftui-web`, `ftui-harness`, `ftui-pty`, `ftui-a11y`, `ftui-i18n`,
+`ftui-simd`):
 
-The remaining crates are in the publish queue (render/runtime/widgets/etc.).
-Until those land, prefer workspace path dependencies for the full stack.
+```toml
+[dependencies]
+ftui = "0.5"
+```
+
+Only the demo/WASM showcase targets remain workspace-local.
 
 ---
 
