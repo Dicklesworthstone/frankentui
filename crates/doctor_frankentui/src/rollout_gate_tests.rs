@@ -702,7 +702,9 @@ pub fn run_rollout_gate_tests_with(fixtures: &[RolloutGateFixture]) -> RolloutGa
             "{ROLLOUT_GATE_TESTS_SCHEMA_VERSION}|{evidence_checksum}"
         )))
     );
-    let gate_passes = oracle_failures == 0;
+    // Non-vacuous: an empty corpus proves nothing and must fail closed —
+    // "zero oracle failures" over zero fixtures is absence of evidence.
+    let gate_passes = !results.is_empty() && oracle_failures == 0;
 
     RolloutGateTestReport {
         schema_version: ROLLOUT_GATE_TESTS_SCHEMA_VERSION.to_string(),
@@ -1073,6 +1075,15 @@ mod tests {
     }
 
     // ── AC4: the default matrix passes its own oracle (gate green) ────────────
+
+    #[test]
+    fn empty_corpus_fails_closed() {
+        // Zero oracle failures over zero fixtures is absence of evidence, not
+        // a green gate.
+        let report = run_rollout_gate_tests_with(&[]);
+        assert_eq!(report.total, 0);
+        assert!(!report.gate_passes, "empty corpus must not pass the gate");
+    }
 
     #[test]
     fn default_matrix_gate_passes() {

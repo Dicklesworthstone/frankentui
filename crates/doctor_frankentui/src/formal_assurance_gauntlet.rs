@@ -76,6 +76,18 @@ fn fmt6(x: f64) -> String {
     }
 }
 
+/// Render a conformal bound term. A non-finite quantile is a VACUOUS interval
+/// (the loosest possible bound) and must ledger as `"unbounded"` — routing it
+/// through [`fmt6`] would record `0.000000`, the tightest possible bound, in a
+/// formal-assurance evidence artifact.
+fn fmt_bound(x: f64) -> String {
+    if x.is_finite() {
+        fmt6(x)
+    } else {
+        "unbounded".to_string()
+    }
+}
+
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
 /// The formal-assurance area a scenario exercises.
@@ -400,7 +412,7 @@ fn run_scenario(kind: FormalScenario) -> ScenarioOutcome {
                         f.assumption_violations.clone()
                     },
                     bound_terms: vec![
-                        fmt6(f.conformal_quantile),
+                        fmt_bound(f.conformal_quantile),
                         fmt6(f.empirical_coverage.unwrap_or(0.0)),
                     ],
                     decision_trace: f.forecast_id.clone(),
@@ -441,7 +453,7 @@ fn run_scenario(kind: FormalScenario) -> ScenarioOutcome {
                         a
                     },
                     bound_terms: vec![
-                        fmt6(f.conformal_quantile),
+                        fmt_bound(f.conformal_quantile),
                         fmt6(f.empirical_coverage.unwrap_or(0.0)),
                     ],
                     decision_trace: f.forecast_id.clone(),
@@ -481,7 +493,10 @@ fn run_scenario(kind: FormalScenario) -> ScenarioOutcome {
                         }
                         a
                     },
-                    bound_terms: vec![fmt6(f.calibration_count as f64), fmt6(f.conformal_quantile)],
+                    bound_terms: vec![
+                        fmt6(f.calibration_count as f64),
+                        fmt_bound(f.conformal_quantile),
+                    ],
                     decision_trace: f.forecast_id.clone(),
                     fallback_triggered: f.fallback_recommended,
                     detail: format!(
@@ -1040,6 +1055,26 @@ mod tests {
         assert!(report.summary.fallback_integrity);
         assert!(report.summary.green_anchors);
         assert!(report.ledger.iter().all(required_fields_present));
+    }
+
+    #[test]
+    fn assumption_violation_bound_is_ledgered_as_unbounded() {
+        // The insufficient-calibration scenario yields an INFINITE conformal
+        // quantile (a vacuous interval). fmt6 would render it "0.000000" —
+        // the loosest bound masquerading as the tightest in a
+        // formal-assurance artifact.
+        let report = run_formal_assurance_gauntlet("fa/test");
+        let l = line(&report, "assumption_violation");
+        assert!(
+            l.bound_terms.iter().any(|t| t == "unbounded"),
+            "bound_terms: {:?}",
+            l.bound_terms
+        );
+        assert!(
+            !l.bound_terms.iter().any(|t| t == "0.000000"),
+            "vacuous bound rendered as a zero-radius interval: {:?}",
+            l.bound_terms
+        );
     }
 
     #[test]

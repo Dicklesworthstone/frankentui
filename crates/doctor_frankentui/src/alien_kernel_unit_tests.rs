@@ -849,12 +849,24 @@ pub struct AlienKernelValidationReport {
 }
 
 impl AlienKernelValidationReport {
-    /// Failure logs for any failing diagnostic (AC3).
+    /// Failure logs for any failing case (AC3).
+    ///
+    /// Covers diagnostics missing mandated fields AND every diagnostic from a
+    /// kernel whose oracle verdict mismatched: a kernel regression must yield
+    /// replayable failing-case entries in the AC3 artifact, not an empty list
+    /// (the constructors always populate the structural fields, so the
+    /// field-presence filter alone could never fire).
     #[must_use]
     pub fn failure_logs(&self) -> Vec<AlienKernelFailureLog> {
+        let failing_kernels: std::collections::BTreeSet<AlienKernel> = self
+            .verdicts
+            .iter()
+            .filter(|v| !v.matches_expected)
+            .map(|v| v.kernel)
+            .collect();
         self.diagnostics
             .iter()
-            .filter(|d| !d.has_required_fields())
+            .filter(|d| !d.has_required_fields() || failing_kernels.contains(&d.kernel))
             .map(AlienKernelDiagnostic::failure_log)
             .collect()
     }
@@ -991,6 +1003,31 @@ pub fn run_alien_kernel_validation(label: &str) -> AlienKernelValidationReport {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn oracle_mismatch_yields_replayable_failure_logs() {
+        let mut report = run_alien_kernel_validation("ak/test");
+        // Healthy run: nothing to log.
+        assert!(report.failure_logs().is_empty());
+        // A kernel regression (oracle mismatch) must surface that kernel's
+        // diagnostics as replayable AC3 failure-log entries.
+        let failing_kernel = report.verdicts[0].kernel;
+        report.verdicts[0].matches_expected = false;
+        let logs = report.failure_logs();
+        assert!(
+            !logs.is_empty(),
+            "kernel regression produced an empty AC3 failure-log artifact"
+        );
+        assert!(logs.iter().all(|l| !l.replay_cmd.is_empty()));
+        assert_eq!(
+            logs.len(),
+            report
+                .diagnostics
+                .iter()
+                .filter(|d| d.kernel == failing_kernel)
+                .count()
+        );
+    }
 
     #[test]
     fn posterior_fixtures_pass() {

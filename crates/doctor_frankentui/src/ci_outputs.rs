@@ -715,10 +715,10 @@ pub struct CiOutputsPipelineOutcome {
 
 fn artifact_of(file: &str, content: &str) -> CiOutputsArtifact {
     CiOutputsArtifact {
-        name: file
-            .rsplit_once('.')
-            .map_or(file, |(stem, _)| stem)
-            .to_string(),
+        // Keep the extension in the logical name (dot -> dash): stem-only
+        // naming collapsed `results.sarif` and `results.json` onto the same
+        // logical name "results", making the manifest ambiguous.
+        name: file.replace('.', "-"),
         file: file.to_string(),
         sha256: sha256_hex(content.as_bytes()),
         bytes: u64::try_from(content.len()).unwrap_or(u64::MAX),
@@ -859,6 +859,17 @@ pub fn run_ci_outputs_command(args: CiOutputsArgs) -> crate::error::Result<()> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn artifact_logical_names_are_unique_across_extensions() {
+        // Stem-only naming collapsed results.sarif and results.json onto the
+        // same logical name "results".
+        let sarif = artifact_of("results.sarif", "x");
+        let json = artifact_of("results.json", "y");
+        assert_eq!(sarif.name, "results-sarif");
+        assert_eq!(json.name, "results-json");
+        assert_ne!(sarif.name, json.name);
+    }
 
     #[test]
     fn default_report_passes_gate() {
