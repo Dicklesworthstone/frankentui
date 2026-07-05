@@ -23,7 +23,6 @@
 //! materialized (ledger + stats + summary + manifest) and exposed through the
 //! `feedback-report` CLI command.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -176,15 +175,18 @@ pub struct FeedbackSignal {
     pub policy_id: String,
 }
 
-/// Whether an operator reference is anonymized (a hash-like token, no raw PII).
+/// Whether an operator reference is anonymized: an `op-`-prefixed hex token.
+///
+/// Requiring the suffix to be pure hex (not merely alphanumeric-with-dashes)
+/// is what keeps human-readable references like `op-jane-doe-smith` out of the
+/// persisted admission ledger — a hash-like token contract, not a prefix check.
 fn is_anonymized(operator_ref: &str) -> bool {
-    operator_ref.starts_with("op-")
-        && operator_ref.len() >= 8
-        && !operator_ref.contains('@')
-        && !operator_ref.contains(' ')
+    operator_ref.len() >= 8
         && operator_ref
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            .strip_prefix("op-")
+            .is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_hexdigit())
+            })
 }
 
 // ── Admission (privacy + provenance) ───────────────────────────────────────────
@@ -402,7 +404,7 @@ impl FeedbackIngestion {
         };
         let action_reports: Vec<PeriodActionReport> = periods
             .iter()
-            .map(|&period| self.report_for_period(period, &admissions, signals))
+            .map(|&period| self.report_for_period(period, &admissions))
             .collect();
 
         let evidence_checksum = stable_hash(&EvidenceInput {
@@ -440,12 +442,7 @@ impl FeedbackIngestion {
         }
     }
 
-    fn report_for_period(
-        &self,
-        period: u32,
-        admissions: &[SignalAdmission],
-        signals: &[FeedbackSignal],
-    ) -> PeriodActionReport {
+    fn report_for_period(&self, period: u32, admissions: &[SignalAdmission]) -> PeriodActionReport {
         let mut ranked: Vec<CategoryPriority> = FeedbackCategory::ALL
             .iter()
             .map(|&category| {
@@ -457,23 +454,12 @@ impl FeedbackIngestion {
                     .iter()
                     .map(|a| a.severity.parse::<f64>().unwrap_or(0.0))
                     .sum();
-                // Sentiment counts come from the original signals (admitted only).
-                let admitted_ids: BTreeSet<&str> =
-                    rows.iter().map(|a| a.signal_id.as_str()).collect();
-                let (mut negative_count, mut positive_count) = (0usize, 0usize);
-                for s in signals.iter().filter(|s| {
-                    s.period == period
-                        && s.category == category
-                        && admitted_ids.contains(s.signal_id.as_str())
-                }) {
-                    if let SignalKind::Qualitative { sentiment, .. } = &s.kind {
-                        match sentiment {
-                            Sentiment::Negative => negative_count += 1,
-                            Sentiment::Positive => positive_count += 1,
-                            Sentiment::Neutral => {}
-                        }
-                    }
-                }
+                // Sentiment counts come from the admission rows themselves —
+                // never by re-joining the raw signal list — so a rejected
+                // signal cannot influence a report, not even via a signal_id
+                // collision with an admitted one (AC3).
+                let negative_count = rows.iter().filter(|a| a.sentiment == "negative").count();
+                let positive_count = rows.iter().filter(|a| a.sentiment == "positive").count();
                 let priority_score = W_SEVERITY * severity_sum + W_NEGATIVE * negative_count as f64
                     - W_POSITIVE * positive_count as f64;
                 CategoryPriority {
@@ -517,12 +503,9 @@ impl FeedbackIngestion {
         let required_fields_complete = admissions.iter().all(admission_has_required_fields);
         let admitted = admissions.iter().filter(|a| a.admitted).count();
         let rejected = admissions.len() - admitted;
-        // AC3: every rejected signal has a reason AND influences no report.
-        let admitted_ids: BTreeSet<&str> = admissions
-            .iter()
-            .filter(|a| a.admitted)
-            .map(|a| a.signal_id.as_str())
-            .collect();
+        // AC3: every rejected signal has a reason. Exclusion from reports is
+        // structural: `report_for_period` aggregates admitted admission rows
+        // only, so a rejected signal has no path into any report.
         let rejected_have_reason = admissions
             .iter()
             .filter(|a| !a.admitted)
@@ -553,7 +536,6 @@ impl FeedbackIngestion {
         let schema_covers_both = has_quantitative && has_qualitative;
         // Non-vacuous: at least one signal was rejected for a privacy/provenance reason.
         let rejection_exercised = rejected > 0;
-        let _ = admitted_ids;
         let gate_passes = required_fields_complete
             && privacy_enforced
             && provenance_complete
@@ -1184,10 +1166,48 @@ mod tests {
     #[test]
     fn anonymization_rule_rejects_pii_shapes() {
         assert!(is_anonymized("op-9f3a1c7d"));
+        assert!(is_anonymized("op-DEADBEEF")); // hex, any case
         assert!(!is_anonymized("jane.doe@example.com"));
         assert!(!is_anonymized("Jane Doe"));
         assert!(!is_anonymized("op-x")); // too short
         assert!(!is_anonymized("raw-token"));
+        // Human-readable names are NOT hash-like tokens, prefix or not.
+        assert!(!is_anonymized("op-jane-doe-smith"));
+        assert!(!is_anonymized("op-operator1")); // non-hex suffix
+    }
+
+    #[test]
+    fn rejected_signal_with_colliding_id_cannot_influence_reports() {
+        let mut signals = default_feedback_signals();
+        // A PII-bearing negative signal that reuses an ADMITTED signal's id in
+        // the same period + category. It must be rejected AND must not add its
+        // negative sentiment to the period's priority score.
+        signals.push(FeedbackSignal {
+            signal_id: "fb.p1.parity.q".to_string(),
+            period: 1,
+            category: FeedbackCategory::Parity,
+            kind: SignalKind::Qualitative {
+                sentiment: Sentiment::Negative,
+                text_redacted: true,
+            },
+            operator_ref: "jane.doe@example.com".to_string(),
+            migration_id: "mig-x".to_string(),
+            policy_id: "pol-parity".to_string(),
+        });
+        let report = run_feedback_ingestion("fb/test", &signals);
+        let p1 = report
+            .action_reports
+            .iter()
+            .find(|r| r.period == 1)
+            .unwrap();
+        let parity = p1
+            .ranked
+            .iter()
+            .find(|c| c.category == FeedbackCategory::Parity)
+            .unwrap();
+        // Only the one admitted negative parity signal counts.
+        assert_eq!(parity.negative_count, 1);
+        assert_eq!(parity.signal_count, 2);
     }
 
     #[test]
