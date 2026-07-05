@@ -3434,6 +3434,11 @@ struct SpawnTaskExecutor<M: Send + 'static> {
     result_sender: mpsc::Sender<M>,
     evidence_sink: Option<EvidenceSink>,
     handles: Vec<JoinHandle<()>>,
+    /// Backpressure bound on in-flight spawned threads (`0` = unbounded),
+    /// matching the EffectQueue / asupersync lanes.
+    max_queue_depth: usize,
+    /// Tasks shed by backpressure or post-shutdown rejection.
+    dropped: u64,
     closed: bool,
 }
 
@@ -3446,24 +3451,54 @@ impl<M: Send + 'static> SpawnTaskExecutor<M> {
     /// 1ms sleep to minimize shutdown latency while avoiding spin.
     const SHUTDOWN_POLL: Duration = Duration::from_millis(1);
 
-    fn new(result_sender: mpsc::Sender<M>, evidence_sink: Option<EvidenceSink>) -> Self {
+    fn new(
+        result_sender: mpsc::Sender<M>,
+        evidence_sink: Option<EvidenceSink>,
+        max_queue_depth: usize,
+    ) -> Self {
         Self {
             result_sender,
             evidence_sink,
             handles: Vec::new(),
+            max_queue_depth,
+            dropped: 0,
             closed: false,
         }
     }
 
     fn submit(&mut self, task: Box<dyn FnOnce() -> M + Send>) {
         if self.closed {
+            self.dropped += 1;
+            crate::effect_system::record_queue_drop("post_shutdown");
             tracing::debug!("rejecting spawned task submit after shutdown");
             return;
         }
+        // Join finished threads first so the in-flight depth used for
+        // backpressure reflects only tasks that are still running.
+        self.reap_finished();
+        // Backpressure: bound the number of in-flight spawned threads. The
+        // `with_max_queue_depth` contract promises drops + counters for every
+        // backend; this lane previously spawned unboundedly and counted
+        // nothing. `0` means unbounded.
+        if self.max_queue_depth > 0 && self.handles.len() >= self.max_queue_depth {
+            self.dropped += 1;
+            crate::effect_system::record_queue_drop("backpressure");
+            emit_task_executor_backpressure_evidence(
+                self.evidence_sink.as_ref(),
+                "spawned",
+                "drop",
+                self.handles.len(),
+                self.max_queue_depth,
+                self.dropped,
+            );
+            return;
+        }
+        crate::effect_system::record_queue_enqueue(self.handles.len() as u64 + 1);
         let sender = self.result_sender.clone();
         let evidence_sink = self.evidence_sink.clone();
         let handle = thread::spawn(move || {
             let _ = run_task_closure(task, "spawned", evidence_sink.as_ref(), &sender);
+            crate::effect_system::record_queue_processed();
         });
         self.handles.push(handle);
     }
@@ -3652,9 +3687,11 @@ impl<M: Send + 'static> TaskExecutor<M> {
         evidence_sink: Option<EvidenceSink>,
     ) -> io::Result<Self> {
         let executor = match config.backend {
-            TaskExecutorBackend::Spawned => {
-                Self::Spawned(SpawnTaskExecutor::new(result_sender, evidence_sink.clone()))
-            }
+            TaskExecutorBackend::Spawned => Self::Spawned(SpawnTaskExecutor::new(
+                result_sender,
+                evidence_sink.clone(),
+                config.max_queue_depth,
+            )),
             TaskExecutorBackend::EffectQueue => Self::Queued(EffectQueue::start(
                 config.clone(),
                 result_sender,
@@ -13105,6 +13142,31 @@ mod tests {
             !program.model().seen,
             "a task submitted after shutdown was executed"
         );
+    }
+
+    #[test]
+    fn spawned_executor_enforces_max_queue_depth_and_counts_drops() {
+        let (result_tx, _result_rx) = mpsc::channel::<u32>();
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let mut executor = SpawnTaskExecutor::new(result_tx, None, 1);
+
+        // First task occupies the single in-flight slot until gated.
+        executor.submit(Box::new(move || {
+            let _ = gate_rx.recv();
+            1
+        }));
+        assert_eq!(executor.handles.len(), 1);
+
+        // Second submit exceeds the bound: shed + counted, no thread spawned.
+        executor.submit(Box::new(|| 2));
+        assert_eq!(executor.dropped, 1, "backpressure drop not counted");
+        assert_eq!(executor.handles.len(), 1, "task spawned past the bound");
+
+        // Release the gate; post-shutdown submits are also counted drops.
+        gate_tx.send(()).expect("release gate");
+        executor.shutdown();
+        executor.submit(Box::new(|| 3));
+        assert_eq!(executor.dropped, 2, "post-shutdown drop not counted");
     }
 
     #[cfg(feature = "asupersync-executor")]
