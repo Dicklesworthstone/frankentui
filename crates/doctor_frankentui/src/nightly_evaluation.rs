@@ -788,7 +788,16 @@ impl NightlyEvaluation {
                     && !h.optimization_efficacy_pct.is_empty()
             });
         let shards_used: BTreeSet<usize> = ledger.iter().map(|l| l.shard_index).collect();
+        // Non-vacuity: an empty corpus proves nothing, and the nightly corpus
+        // must actually exercise the failure/triage red path — otherwise a
+        // drift monitor or re-profile kernel that regressed to never-fail
+        // would leave `failures_triaged` (an all-quantifier over failures)
+        // vacuously green.
+        let corpus_nonempty = !ledger.is_empty();
+        let red_path_exercised = failures >= 1;
         let gate_passes = required_fields_complete
+            && corpus_nonempty
+            && red_path_exercised
             && failures_triaged
             && sharding_deterministic
             && history_complete;
@@ -806,6 +815,8 @@ impl NightlyEvaluation {
             deferred,
             failures,
             required_fields_complete,
+            corpus_nonempty,
+            red_path_exercised,
             failures_triaged,
             sharding_deterministic,
             history_complete,
@@ -868,6 +879,11 @@ pub struct NightlyEvaluationSummary {
     pub failures: usize,
     /// Whether every ledger line has all mandated fields.
     pub required_fields_complete: bool,
+    /// Whether the corpus was non-empty (non-vacuity).
+    pub corpus_nonempty: bool,
+    /// Whether at least one failure was exercised (non-vacuity for AC2 — a
+    /// never-failing kernel must redden the gate, not green it).
+    pub red_path_exercised: bool,
     /// Whether every failure carries a triage hint + rollback-readiness (AC2).
     pub failures_triaged: bool,
     /// Whether every shard assignment is re-derivable from the fixture id (AC1).
@@ -1178,8 +1194,10 @@ pub fn run_nightly_eval(args: NightlyEvalArgs) -> crate::error::Result<()> {
         Err(crate::error::DoctorError::exit(
             1,
             format!(
-                "nightly-eval gate failed: required_fields_complete={}, failures_triaged={}, sharding_deterministic={}, history_complete={}",
+                "nightly-eval gate failed: required_fields_complete={}, corpus_nonempty={}, red_path_exercised={}, failures_triaged={}, sharding_deterministic={}, history_complete={}",
                 summary.required_fields_complete,
+                summary.corpus_nonempty,
+                summary.red_path_exercised,
                 summary.failures_triaged,
                 summary.sharding_deterministic,
                 summary.history_complete
@@ -1211,6 +1229,42 @@ mod tests {
         assert!(report.summary.history_complete);
         assert_eq!(report.summary.history_points, 6);
         assert!(report.ledger.iter().all(required_fields_present));
+    }
+
+    #[test]
+    fn empty_corpus_fails_closed() {
+        let report = run_nightly_evaluation("ne/test", NightlyEvaluationConfig::default(), &[]);
+        assert!(!report.summary.corpus_nonempty);
+        assert!(
+            !report.gate_passes,
+            "an empty corpus must not pass the gate"
+        );
+    }
+
+    #[test]
+    fn never_failing_corpus_fails_red_path_clause() {
+        // Strip the failing fixtures: with zero failures, `failures_triaged`
+        // quantifies over an empty set — the red-path non-vacuity clause must
+        // redden the gate instead of letting it pass vacuously (this is what
+        // catches a drift/re-profile kernel that regressed to never-fail).
+        let full = run_default_nightly_evaluation("ne/test");
+        let failing: BTreeSet<String> = full
+            .ledger
+            .iter()
+            .filter(|l| l.outcome_class.is_failure())
+            .map(|l| l.fixture_id.clone())
+            .collect();
+        assert!(!failing.is_empty());
+        let fixtures: Vec<NightlyFixture> = default_nightly_fixtures()
+            .into_iter()
+            .filter(|f| !failing.contains(&f.fixture_id))
+            .collect();
+        assert!(!fixtures.is_empty());
+        let report =
+            run_nightly_evaluation("ne/test", NightlyEvaluationConfig::default(), &fixtures);
+        assert_eq!(report.summary.failures, 0);
+        assert!(!report.summary.red_path_exercised);
+        assert!(!report.gate_passes);
     }
 
     #[test]
