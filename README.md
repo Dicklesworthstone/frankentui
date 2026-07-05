@@ -1219,7 +1219,7 @@ Inline mode uses synchronized output where supported. If you’re in a very old 
 | Widget ecosystem | ✅ 80+ direct widget implementations | Expanding |
 | Formal compatibility matrix | ⚠️ In progress | Yes |
 | Asupersync execution lane | ⚠️ Falls back to Structured | Migration infrastructure complete, executor pending |
-| crates.io publishing | ⚠️ 3 of 20 crates | Remaining in publish queue |
+| crates.io publishing | ✅ 17 of 20 crates (all libraries) | Showcase targets stay workspace-local |
 
 ---
 
