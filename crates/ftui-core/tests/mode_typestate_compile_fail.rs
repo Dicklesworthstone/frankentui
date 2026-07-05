@@ -153,8 +153,12 @@ fn cargo_toml(manifest_dir: &Path, file_name: &str) -> String {
         "ftui-core-compile-fail-{}",
         file_name.trim_end_matches(".rs").replace('_', "-")
     );
+    // The empty `[workspace]` table keeps the synthesized crate standalone
+    // even when the tempdir lands inside the frankentui workspace tree (e.g.
+    // remote builders that point TMPDIR at a directory under the repo root) —
+    // without it cargo refuses with "believes it's in a workspace".
     format!(
-        "[package]\nname = \"{crate_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nftui-core = {{ path = \"{path}\" }}\n",
+        "[package]\nname = \"{crate_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nftui-core = {{ path = \"{path}\" }}\n",
         crate_name = crate_name,
         path = toml_escape_path(manifest_dir),
     )
