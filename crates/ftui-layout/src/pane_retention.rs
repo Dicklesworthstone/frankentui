@@ -279,7 +279,12 @@ pub fn apply_to_version_store(
             && store.retention().estimated_total_retained_bytes > policy.budget.max_retained_bytes
         {
             let keep = store.version_count() - 1;
-            store.set_max_versions(keep);
+            if store.set_max_versions(keep) == 0 {
+                // No progress: the cursor pins every remaining version (the
+                // user has undone to/near the oldest state). Stop — classified
+                // below — rather than spinning forever.
+                break;
+            }
         }
     }
 
@@ -493,6 +498,20 @@ mod tests {
             redos += 1;
         }
         assert_eq!(redos, 20);
+    }
+
+    #[test]
+    fn version_store_byte_budget_terminates_when_cursor_pins_history() {
+        // Undone to cursor 0, every version is at/after the cursor, so the
+        // byte-budget loop can make no progress and must stop, not spin.
+        let mut store = build_store(12);
+        while store.undo() {}
+        let current_hash = store.current().state_hash().expect("hash");
+        let before = store.version_count();
+        let decision = apply_to_version_store(&mut store, &PaneRetentionPolicy::bounded(1, 0));
+        assert_eq!(store.version_count(), before);
+        assert_eq!(decision.units_pruned, 0);
+        assert_eq!(store.current().state_hash().expect("hash"), current_hash);
     }
 
     #[test]

@@ -656,7 +656,12 @@ impl KillerDemos {
             "replay_divergent"
         };
 
-        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // Round sub-millisecond executions up to 1ms so a zero-second budget
+        // deterministically fails `within_budget` (0 <= 0 would pass it) and
+        // the log never claims a demo took literally no time.
+        let duration_ms = u64::try_from(started.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
         let budget_ms = spec.max_duration_seconds.saturating_mul(1000);
         let within_budget = duration_ms <= budget_ms;
 
