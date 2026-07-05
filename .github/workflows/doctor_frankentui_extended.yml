@@ -489,6 +489,21 @@ jobs:
           cargo test -p doctor_frankentui --lib killer_demo -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/killer_demo_gate.log"
 
+      - name: Run doctor_frankentui galaxy-ux gate (bd-3bxhj.10.43)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed galaxy-brain L0-L3 UX contracts: progressive-disclosure
+          # views carry stable content ids + re-derivable hashes (diff
+          # stability); the decision sources hash identically before/after the
+          # full render + scripted-interaction pass (hard non-interference);
+          # every view has an ASCII screen-reader alternative, deterministic
+          # width/row truncation, and per-level render budgets that hold for the
+          # adversarial wide-card fixture; L3 ships Unicode/LaTeX/JSON copy-as
+          # exports that embed the content-addressed card id (traceability).
+          cargo test -p doctor_frankentui --lib galaxy_brain_ux -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/galaxy_brain_ux_gate.log"
+
       - name: Run doctor_frankentui ci-outputs gate (bd-3bxhj.7.7)
         run: |
           set -euo pipefail

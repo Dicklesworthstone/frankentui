@@ -189,6 +189,7 @@ pub mod fixture_taxonomy;
 pub mod flagship_migrations;
 pub mod formal_assurance_gauntlet;
 pub mod galaxy_brain_cards;
+pub mod galaxy_brain_ux;
 pub mod gap_triage;
 pub mod golden_isomorphism;
 pub mod governance_validator_tests;

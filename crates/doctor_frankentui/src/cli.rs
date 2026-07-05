@@ -10,6 +10,7 @@ use crate::error::Result;
 use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
 use crate::flagship_migrations::{FlagshipMigrationsArgs, run_flagship_migrations_command};
 use crate::formal_assurance_gauntlet::{FormalAssuranceArgs, run_formal_assurance_command};
+use crate::galaxy_brain_ux::{GalaxyUxArgs, run_galaxy_ux_command};
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::hazard_regime_model::{HazardRegimeArgs, run_hazard_regime_command};
@@ -205,6 +206,14 @@ pub enum Commands {
     /// fail closed on checksum drift, replay divergence, or budget overruns.
     #[command(name = "killer-demo")]
     KillerDemo(KillerDemoArgs),
+
+    /// Build the galaxy-brain L0-L3 progressive-disclosure views over the
+    /// default card deck, drive the scripted keyboard interaction session,
+    /// and apply the fail-closed UX-contract gate (determinism, hard
+    /// non-interference, accessibility, perf budgets, provenance, copy-as
+    /// exports).
+    #[command(name = "galaxy-ux")]
+    GalaxyUx(GalaxyUxArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -243,6 +252,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
         Commands::FlagshipMigrations(args) => run_flagship_migrations_command(args),
         Commands::KillerDemo(args) => run_killer_demo_command(args),
+        Commands::GalaxyUx(args) => run_galaxy_ux_command(args),
     }
 }
 
