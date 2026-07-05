@@ -205,6 +205,7 @@ pub mod ir_explainer;
 pub mod ir_normalize;
 pub mod ir_versioning;
 pub mod keyseq;
+pub mod killer_demo;
 pub mod lowering;
 pub mod mapping_atlas;
 pub mod metamorphic_oracle;

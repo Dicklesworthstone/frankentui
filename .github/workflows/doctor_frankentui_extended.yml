@@ -474,6 +474,21 @@ jobs:
           cargo test -p doctor_frankentui --lib flagship_migrations -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/flagship_migrations_gate.log"
 
+      - name: Run doctor_frankentui killer-demo gate (bd-3bxhj.10.34)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # CI execution hook for the killer-demo contract: sub-60s demo scenarios
+          # run the real in-process migration pipelines through three independent
+          # materializations (golden -> verify -> replay); demo.yaml contracts carry
+          # demo_id/claim_id/evidence_id/policy_id linkage + expected checksums and
+          # must round-trip through the strict schema parser; any checksum drift or
+          # replay divergence fails the build with per-artifact diagnostics and a
+          # replay command. Ledger logs demo_id, claim_id, checksum_verdict, and
+          # scenario_replay_status; the execution log adds measured durations.
+          cargo test -p doctor_frankentui --lib killer_demo -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/killer_demo_gate.log"
+
       - name: Run doctor_frankentui ci-outputs gate (bd-3bxhj.7.7)
         run: |
           set -euo pipefail

@@ -14,6 +14,7 @@ use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::hazard_regime_model::{HazardRegimeArgs, run_hazard_regime_command};
 use crate::import::{ImportArgs, run_import};
+use crate::killer_demo::{KillerDemoArgs, run_killer_demo_command};
 use crate::multi_round_drill::{MultiRoundDrillArgs, run_multi_round_drill_command};
 use crate::nightly_evaluation::{NightlyEvalArgs, run_nightly_eval};
 use crate::nightly_stress::{NightlyStressArgs, run_nightly_stress_command};
@@ -197,6 +198,13 @@ pub enum Commands {
     /// rollback notes, gated fail-closed on traceability.
     #[command(name = "flagship-migrations")]
     FlagshipMigrations(FlagshipMigrationsArgs),
+
+    /// Execute the killer-demo contract: run CI-executable sub-60s demo
+    /// scenarios (golden -> verify -> replay materializations), emit demo.yaml
+    /// contracts with claim/evidence/policy linkage and expected checksums, and
+    /// fail closed on checksum drift, replay divergence, or budget overruns.
+    #[command(name = "killer-demo")]
+    KillerDemo(KillerDemoArgs),
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -234,6 +242,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::FormalAssurance(args) => run_formal_assurance_command(args),
         Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
         Commands::FlagshipMigrations(args) => run_flagship_migrations_command(args),
+        Commands::KillerDemo(args) => run_killer_demo_command(args),
     }
 }
 
