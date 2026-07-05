@@ -66,6 +66,15 @@ use crate::evidence_sink::{EVIDENCE_SCHEMA_VERSION, EvidenceSink};
 use crate::terminal_writer::ScreenMode;
 
 /// FNV-1a 64-bit offset basis.
+/// Bound on retained cycle-time samples: percentiles are computed over the
+/// most recent window, and unbounded retention (one sample per applied
+/// resize) is a slow leak in long-lived sessions.
+const MAX_CYCLE_TIME_SAMPLES: usize = 1024;
+
+/// Bound on retained regime-transition evidence entries (one per regime
+/// flip, otherwise never truncated by the runtime).
+const MAX_TRANSITION_LOGS: usize = 256;
+
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 /// FNV-1a 64-bit prime.
 const FNV_PRIME: u64 = 0x100000001b3;
@@ -1074,6 +1083,30 @@ impl ResizeCoalescer {
         &self.transition_logs
     }
 
+    /// Record a coalesce cycle time, retaining only the most recent window.
+    ///
+    /// Unbounded retention is a slow leak in long-lived sessions (one entry
+    /// per applied resize); percentiles over the recent window are also the
+    /// more meaningful telemetry.
+    fn record_cycle_time(&mut self, coalesce_ms: f64) {
+        self.cycle_times.push(coalesce_ms);
+        let len = self.cycle_times.len();
+        if len > MAX_CYCLE_TIME_SAMPLES {
+            self.cycle_times.drain(..len - MAX_CYCLE_TIME_SAMPLES);
+        }
+    }
+
+    /// Append a regime-transition evidence entry, retaining only the most
+    /// recent window (one entry per regime flip, never truncated by the
+    /// runtime otherwise).
+    fn push_transition_log(&mut self, log: RegimeTransitionLog) {
+        self.transition_logs.push(log);
+        let len = self.transition_logs.len();
+        if len > MAX_TRANSITION_LOGS {
+            self.transition_logs.drain(..len - MAX_TRANSITION_LOGS);
+        }
+    }
+
     /// Clear decision logs.
     pub fn clear_logs(&mut self) {
         self.logs.clear();
@@ -1240,7 +1273,7 @@ impl ResizeCoalescer {
         let coalesce_ms = coalesce_time.as_secs_f64() * 1000.0;
 
         // Track cycle time for percentile calculation (bd-1rz0.7)
-        self.cycle_times.push(coalesce_ms);
+        self.record_cycle_time(coalesce_ms);
 
         self.window_start = None;
         self.last_applied = (width, height);
@@ -1379,7 +1412,7 @@ impl ResizeCoalescer {
             reason_code,
             confidence,
         });
-        self.transition_logs.push(RegimeTransitionLog {
+        self.push_transition_log(RegimeTransitionLog {
             timestamp: now,
             event_idx: self.event_count,
             from_regime,
@@ -1764,6 +1797,36 @@ impl TelemetryHooks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_diagnostics_are_bounded() {
+        let mut c = ResizeCoalescer::new(test_config(), (80, 24));
+        for i in 0..(MAX_CYCLE_TIME_SAMPLES + 500) {
+            c.record_cycle_time(i as f64);
+        }
+        assert_eq!(c.cycle_times.len(), MAX_CYCLE_TIME_SAMPLES);
+        // The retained window is the most recent samples.
+        assert_eq!(c.cycle_times[0], 500.0);
+        // Percentiles still work over the bounded window.
+        assert!(c.cycle_time_percentiles().is_some());
+
+        let now = Instant::now();
+        for i in 0..(MAX_TRANSITION_LOGS + 100) {
+            c.push_transition_log(RegimeTransitionLog {
+                timestamp: now,
+                event_idx: i as u64,
+                from_regime: Regime::Steady,
+                to_regime: Regime::Burst,
+                reason_code: TransitionReasonCode::HeuristicEnterBurstRate,
+                confidence: 1.0,
+                event_rate: 0.0,
+                p_burst: None,
+                cooldown_remaining: 0,
+            });
+        }
+        assert_eq!(c.transition_logs.len(), MAX_TRANSITION_LOGS);
+        assert_eq!(c.transition_logs[0].event_idx, 100);
+    }
 
     fn test_config() -> CoalescerConfig {
         CoalescerConfig {

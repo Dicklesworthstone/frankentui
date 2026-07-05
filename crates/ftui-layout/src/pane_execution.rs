@@ -223,8 +223,21 @@ impl PaneExecutionPolicy {
             return self.decision(fresh, reason, forced, profile);
         }
         let decisive = if fresh == PaneMemoryStrategy::Persistent {
-            // Entering persistent: clear the local-fraction threshold by the margin.
+            // Entering persistent: EVERY gate must clear by a margin, not just
+            // the local-fraction threshold. Leaving is decisive on any failed
+            // hard gate, so a marginless entry would let burst/op-count jitter
+            // right at a hard gate flip the strategy every window — the exact
+            // oscillation hysteresis exists to prevent. Hard-gate margins are
+            // proportional (10%).
+            let burst_margin = self.persistent_burst_ops_per_sec / 10;
+            let ops_margin = self.persistent_min_operations / 10;
             self.favors_persistent(profile, self.hysteresis_pct)
+                && profile.peak_ops_per_sec
+                    >= self
+                        .persistent_burst_ops_per_sec
+                        .saturating_add(burst_margin)
+                && profile.operation_count
+                    >= self.persistent_min_operations.saturating_add(ops_margin)
         } else {
             // Leaving persistent: a failed hard gate is decisive; otherwise the
             // local fraction must drop below the threshold by the margin.
@@ -454,6 +467,35 @@ mod tests {
             p.reselect(decisive_drop, PaneMemoryStrategy::Persistent)
                 .strategy,
             PaneMemoryStrategy::Checkpointed
+        );
+    }
+
+    #[test]
+    fn hard_gate_jitter_does_not_oscillate() {
+        // Burst rate jittering right at the hard gate (59 <-> 60/s) must not
+        // flip Persistent <-> Checkpointed every window: leaving on a failed
+        // hard gate is decisive, so re-entry must clear the gate by a margin
+        // (>= 66/s at the default 60/s threshold), not merely touch it.
+        let p = policy();
+        let below_gate = PaneWorkloadProfile::new(512, 512, 59, true);
+        let at_gate = PaneWorkloadProfile::new(512, 512, 60, true);
+        let clears_gate = PaneWorkloadProfile::new(512, 512, 66, true);
+
+        // Below the gate: leaving persistent is decisive.
+        assert_eq!(
+            p.reselect(below_gate, PaneMemoryStrategy::Persistent)
+                .strategy,
+            PaneMemoryStrategy::Checkpointed
+        );
+        // Back at (but not clearing) the gate: re-entry is refused — held.
+        let held = p.reselect(at_gate, PaneMemoryStrategy::Checkpointed);
+        assert_eq!(held.strategy, PaneMemoryStrategy::Checkpointed);
+        assert_eq!(held.reason, PaneStrategyReason::HysteresisHold);
+        // Clearing the gate by the 10% margin enters persistent.
+        assert_eq!(
+            p.reselect(clears_gate, PaneMemoryStrategy::Checkpointed)
+                .strategy,
+            PaneMemoryStrategy::Persistent
         );
     }
 
