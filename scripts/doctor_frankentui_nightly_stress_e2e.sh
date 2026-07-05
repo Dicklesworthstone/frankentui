@@ -140,10 +140,16 @@ echo "[nightly-stress-e2e] manifest integrity verified"
 # ── AC1: resume/retry — a second run skips completed fixtures, preserving lineage ─
 echo "[nightly-stress-e2e] running resume pass ..."
 run_cli "${RUN_NAME}" "--resume" || fail "resume run failed"
-RESUMED_TOTAL="$(jq -r '.total_fixtures' "${SUMMARY}")"
 RESUMED_COUNT="$(jq -r '.resumed' "${SUMMARY}")"
-[ "${RESUMED_COUNT}" = "${RESUMED_TOTAL}" ] \
-  || fail "resume skipped ${RESUMED_COUNT}/${RESUMED_TOTAL} fixtures (expected all)"
+OPTIMIZED_COUNT="$(jq -r '.optimized + .resumed' "${SUMMARY}")"
+# Only proven-optimized fixtures are checkpointed; the behavior regression and
+# the below-threshold stop RE-RUN on resume so their outcomes are re-detected.
+[ "${RESUMED_COUNT}" -ge 1 ] || fail "resume run skipped no fixtures (checkpoint not honored)"
+jq -e '.regressions >= 1' "${SUMMARY}" >/dev/null \
+  || fail "resume run laundered the behavior regression (expected it re-detected)"
+jq -e '.below_threshold >= 1' "${SUMMARY}" >/dev/null \
+  || fail "resume run laundered the below-threshold stop"
+[ "${OPTIMIZED_COUNT}" -ge 1 ] || fail "resume run lost the optimized fixtures"
 jq -e '.gate_passes == true' "${SUMMARY}" >/dev/null || fail "resume gate did not pass"
 jq -e '.resumed_from_checkpoint == true' "${MANIFEST}" >/dev/null || fail "resume run did not consume the checkpoint"
 # Lineage preserved across resume: baseline/profile ids unchanged per fixture.
@@ -152,7 +158,7 @@ while IFS= read -r fid; do
   b2="$(jq -r --arg f "${fid}" 'select(.fixture_id == $f) | .baseline_id' "${LEDGER}")"
   [ "${b1}" = "${b2}" ] || fail "fixture ${fid} lineage changed across resume (${b1} != ${b2})"
 done < <(jq -r '.fixture_id' "${LEDGER_RUN1}")
-echo "[nightly-stress-e2e] resume/retry verified (all fixtures resumed, lineage preserved)"
+echo "[nightly-stress-e2e] resume/retry verified (optimized fixtures resumed, red paths re-detected, lineage preserved)"
 
 # ── Determinism: an independent fresh run yields a byte-identical ledger ────
 run_cli "green_det" "" || fail "determinism run failed"

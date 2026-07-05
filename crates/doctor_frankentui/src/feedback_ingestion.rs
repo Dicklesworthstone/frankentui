@@ -182,11 +182,9 @@ pub struct FeedbackSignal {
 /// persisted admission ledger — a hash-like token contract, not a prefix check.
 fn is_anonymized(operator_ref: &str) -> bool {
     operator_ref.len() >= 8
-        && operator_ref
-            .strip_prefix("op-")
-            .is_some_and(|suffix| {
-                !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_hexdigit())
-            })
+        && operator_ref.strip_prefix("op-").is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_hexdigit())
+        })
 }
 
 // ── Admission (privacy + provenance) ───────────────────────────────────────────
