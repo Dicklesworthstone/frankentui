@@ -590,15 +590,34 @@ impl NightlyStress {
         &self.run_id
     }
 
-    /// The determinism fingerprint over the schema + the sorted fixture ids; a
-    /// resume is honored only when this matches the checkpoint.
+    /// The determinism fingerprint over the schema + the full canonical fixture
+    /// definitions; a resume is honored only when this matches the checkpoint.
+    ///
+    /// The fingerprint covers every field of every fixture (not just the ids),
+    /// so a checkpoint is discarded — and everything re-runs — whenever any
+    /// fixture's inputs change between runs.
     #[must_use]
     pub fn determinism_fingerprint(fixtures: &[StressFixture]) -> String {
-        let mut ids: Vec<&str> = fixtures.iter().map(|f| f.fixture_id.as_str()).collect();
-        ids.sort_unstable();
+        let mut canon: Vec<String> = fixtures
+            .iter()
+            .map(|f| {
+                format!(
+                    "{}|{}|{}|{}|{}|{:?}|{}|{}",
+                    f.fixture_id,
+                    f.stage_id,
+                    f.hotspot_id,
+                    fmt6(f.impact),
+                    fmt6(f.confidence),
+                    f.effort,
+                    f.behavior_preserved,
+                    f.has_rollback
+                )
+            })
+            .collect();
+        canon.sort_unstable();
         short_hash(&stable_hash(&format!(
             "{NIGHTLY_STRESS_SCHEMA_VERSION}|{}",
-            ids.join(",")
+            canon.join(",")
         )))
     }
 
@@ -665,10 +684,24 @@ impl NightlyStress {
             })
             .collect();
 
+        // A checkpoint may only mark fixtures whose outcome is safe to skip on a
+        // resume: proven-optimized work (or a prior resume of it). A detected
+        // behavior regression or a below-threshold stop must RE-RUN on resume so
+        // the red path is re-detected instead of being laundered into a green
+        // `resumed` entry with `behavior_preserved=true`.
         let checkpoint = NightlyStressCheckpoint {
             schema_version: NIGHTLY_STRESS_SCHEMA_VERSION.to_string(),
             determinism_fingerprint: fingerprint.clone(),
-            completed_fixture_ids: ordered.iter().map(|f| f.fixture_id.clone()).collect(),
+            completed_fixture_ids: ledger
+                .iter()
+                .filter(|l| {
+                    matches!(
+                        l.outcome_class,
+                        StressOutcome::Optimized | StressOutcome::Resumed
+                    )
+                })
+                .map(|l| l.fixture_id.clone())
+                .collect(),
         };
 
         let evidence_checksum = sha256_hex(render_ledger_jsonl(&ledger).as_bytes());
@@ -738,10 +771,17 @@ impl NightlyStress {
             .filter(|l| l.outcome_class == StressOutcome::BehaviorRegression)
             .count();
         let resumed = ledger.iter().filter(|l| l.resumed).count();
+        // Non-vacuous red path: the stress corpus must actually exercise (and,
+        // because regressions are never checkpointed, re-detect on every run
+        // including resumes) at least one behavior regression. Without this
+        // clause, an isomorphism oracle that regressed to always-allow would
+        // leave `optimized_proven`/`no_silent_regression` vacuously green.
+        let regression_exercised = regressions >= 1;
         let gate_passes = required_fields_complete
             && lineage_complete
             && optimized_proven
             && no_silent_regression
+            && regression_exercised
             && determinism_metadata_present;
 
         NightlyStressSummary {
@@ -760,6 +800,7 @@ impl NightlyStress {
             lineage_complete,
             optimized_proven,
             no_silent_regression,
+            regression_exercised,
             determinism_metadata_present,
             gate_passes,
             replay_command: format!(
@@ -817,6 +858,9 @@ pub struct NightlyStressSummary {
     pub optimized_proven: bool,
     /// Whether every behavior regression was refused promotion (AC3).
     pub no_silent_regression: bool,
+    /// Whether at least one behavior regression was exercised + re-detected
+    /// (non-vacuity for the AC3 clauses).
+    pub regression_exercised: bool,
     /// Whether the determinism fingerprint is present (AC1).
     pub determinism_metadata_present: bool,
     /// Whether the fail-closed gate passes.
@@ -1129,11 +1173,12 @@ pub fn run_nightly_stress_command(args: NightlyStressArgs) -> crate::error::Resu
         Err(crate::error::DoctorError::exit(
             1,
             format!(
-                "nightly-stress gate failed: required_fields_complete={}, lineage_complete={}, optimized_proven={}, no_silent_regression={}, determinism_metadata_present={}",
+                "nightly-stress gate failed: required_fields_complete={}, lineage_complete={}, optimized_proven={}, no_silent_regression={}, regression_exercised={}, determinism_metadata_present={}",
                 summary.required_fields_complete,
                 summary.lineage_complete,
                 summary.optimized_proven,
                 summary.no_silent_regression,
+                summary.regression_exercised,
                 summary.determinism_metadata_present
             ),
         ))
@@ -1290,8 +1335,9 @@ mod tests {
             let bytes = std::fs::read(&path).unwrap();
             assert_eq!(sha256_hex(&bytes), artifact.sha256);
         }
-        // Second run with resume: the prior checkpoint completed every fixture, so
-        // all are resumed.
+        // Second run with resume: only the proven-optimized fixtures were
+        // checkpointed; the behavior regression and the below-threshold stop
+        // re-run so their outcomes are re-detected, never laundered.
         let second = run_nightly_stress_pipeline(
             dir.path(),
             &NightlyStressPipelineConfig {
@@ -1302,7 +1348,54 @@ mod tests {
         .unwrap();
         assert!(second.summary.gate_passes);
         assert!(second.resumed_from_checkpoint);
-        assert_eq!(second.summary.resumed, second.summary.total_fixtures);
+        assert_eq!(second.summary.resumed, first.summary.optimized);
+        assert_eq!(second.summary.regressions, 1);
+        assert_eq!(second.summary.below_threshold, 1);
+    }
+
+    #[test]
+    fn regression_is_not_checkpointed_and_reruns_on_resume() {
+        let fixtures = default_stress_fixtures();
+        let fresh = run_nightly_stress("ns/test", &fixtures);
+        // Neither the regression nor the below-threshold stop is checkpointed.
+        assert!(
+            !fresh
+                .checkpoint
+                .completed_fixture_ids
+                .contains(&"sf.alloc".to_string())
+        );
+        assert!(
+            !fresh
+                .checkpoint
+                .completed_fixture_ids
+                .contains(&"sf.text".to_string())
+        );
+        // A resume from that checkpoint re-detects the regression.
+        let resumed = NightlyStress::new("ns/test").run(&fixtures, Some(&fresh.checkpoint));
+        let l = resumed
+            .ledger
+            .iter()
+            .find(|l| l.fixture_id == "sf.alloc")
+            .unwrap();
+        assert_eq!(l.outcome_class, StressOutcome::BehaviorRegression);
+        assert!(!l.behavior_preserved);
+        assert!(!l.replay_ready);
+        assert_eq!(resumed.summary.regressions, 1);
+        assert!(resumed.summary.regression_exercised);
+        assert!(resumed.gate_passes, "summary: {:?}", resumed.summary);
+    }
+
+    #[test]
+    fn fingerprint_covers_full_fixture_definitions() {
+        let mut fixtures = default_stress_fixtures();
+        let original = NightlyStress::determinism_fingerprint(&fixtures);
+        // Changing an input (not the id) must invalidate any prior checkpoint.
+        fixtures[0].impact += 1.0;
+        assert_ne!(original, NightlyStress::determinism_fingerprint(&fixtures));
+        // A flipped behavior-preservation flag must invalidate it too.
+        let mut flipped = default_stress_fixtures();
+        flipped[3].behavior_preserved = true;
+        assert_ne!(original, NightlyStress::determinism_fingerprint(&flipped));
     }
 
     #[test]
