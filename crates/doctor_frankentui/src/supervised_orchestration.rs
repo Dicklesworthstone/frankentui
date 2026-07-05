@@ -700,6 +700,13 @@ pub fn supervise_subprocess(
     use std::process::Stdio;
     use wait_timeout::ChildExt;
 
+    /// Join a pipe-reader thread and return whatever it drained. The child has
+    /// already exited (or been killed) when this is called, so the pipe is at
+    /// EOF and the join is prompt.
+    fn drain_reader(handle: Option<std::thread::JoinHandle<String>>) -> String {
+        handle.and_then(|h| h.join().ok()).unwrap_or_default()
+    }
+
     let clock = RealClock::start();
     let deadline = budget.deadline();
     let mut attempts: Vec<AttemptEvidence> = Vec::new();
@@ -712,6 +719,13 @@ pub fn supervise_subprocess(
     let mut last_stderr = String::new();
 
     'attempts: for index in 1..=budget.max_attempts {
+        // Evidence must reflect THIS attempt: without the reset, a timed-out
+        // or cancelled retry would report the previous attempt's exit code
+        // and captured output as its own.
+        last_exit = None;
+        last_stdout.clear();
+        last_stderr.clear();
+
         if token.is_cancelled() {
             cancel_reason = Some(CancelReason::Caller);
             attempts.push(AttemptEvidence {
@@ -801,12 +815,37 @@ pub fn supervise_subprocess(
             }
         };
 
+        // Capture mode: drain both pipes CONCURRENTLY while the child runs.
+        // Reading only after exit deadlocks any child that writes more than
+        // the OS pipe buffer (~64KB): it blocks on write(), never exits, and
+        // would be misreported as TimedOut with its output discarded.
+        let mut stdout_reader: Option<std::thread::JoinHandle<String>> = None;
+        let mut stderr_reader: Option<std::thread::JoinHandle<String>> = None;
+        if matches!(stdio, SubprocessStdio::Capture) {
+            if let Some(mut out) = child.stdout.take() {
+                stdout_reader = Some(std::thread::spawn(move || {
+                    let mut buf = String::new();
+                    let _ = out.read_to_string(&mut buf);
+                    buf
+                }));
+            }
+            if let Some(mut err) = child.stderr.take() {
+                stderr_reader = Some(std::thread::spawn(move || {
+                    let mut buf = String::new();
+                    let _ = err.read_to_string(&mut buf);
+                    buf
+                }));
+            }
+        }
+
         // Poll the child, honouring the global deadline and the cancel token.
         let exit_status = loop {
             let remaining = deadline.saturating_sub(clock.elapsed());
             if remaining.is_zero() {
                 let _ = child.kill();
                 let _ = child.wait();
+                last_stdout = drain_reader(stdout_reader.take());
+                last_stderr = drain_reader(stderr_reader.take());
                 cancel_reason = Some(CancelReason::Deadline);
                 attempts.push(AttemptEvidence {
                     index,
@@ -819,6 +858,8 @@ pub fn supervise_subprocess(
             if token.is_cancelled() {
                 let _ = child.kill();
                 let _ = child.wait();
+                last_stdout = drain_reader(stdout_reader.take());
+                last_stderr = drain_reader(stderr_reader.take());
                 cancel_reason = Some(CancelReason::Caller);
                 attempts.push(AttemptEvidence {
                     index,
@@ -837,6 +878,8 @@ pub fn supervise_subprocess(
                 Err(error) => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    last_stdout = drain_reader(stdout_reader.take());
+                    last_stderr = drain_reader(stderr_reader.take());
                     let message = format!("wait failed: {error}");
                     attempts.push(AttemptEvidence {
                         index,
@@ -849,19 +892,11 @@ pub fn supervise_subprocess(
             }
         };
 
-        // Drain captured output (best-effort). Only the capture mode pipes the
-        // child's streams; `ToFile` redirects them straight to disk, so the
+        // Collect the concurrently-drained output. Only the capture mode
+        // spawns readers; `ToFile`/`ToFiles`/`Null` leave these `None`, so the
         // in-memory buffers stay empty.
-        last_stdout.clear();
-        last_stderr.clear();
-        if matches!(stdio, SubprocessStdio::Capture) {
-            if let Some(mut out) = child.stdout.take() {
-                let _ = out.read_to_string(&mut last_stdout);
-            }
-            if let Some(mut err) = child.stderr.take() {
-                let _ = err.read_to_string(&mut last_stderr);
-            }
-        }
+        last_stdout = drain_reader(stdout_reader.take());
+        last_stderr = drain_reader(stderr_reader.take());
         // Signal-aware: a child killed by a signal reports `128 + signal` rather
         // than `None`, matching the capture / suite lane's `exit_status_code`.
         last_exit = Some(crate::util::exit_status_code(exit_status));
@@ -1293,5 +1328,74 @@ mod tests {
         let decision = record.to_decision_record("2026-06-22T00:00:00Z", "trace-1", "policy-1");
         assert!(!decision.fallback_active);
         assert!(decision.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn capture_mode_drains_large_output_without_deadlock() {
+        // Far more stdout than the ~64KB OS pipe buffer: without concurrent
+        // readers the child blocks on write(), never exits, and the step
+        // wedges until the deadline. It must succeed promptly with the full
+        // output captured.
+        let source = CancellationSource::new();
+        let supervised = supervise_subprocess(
+            "test",
+            "large-output",
+            budget(30_000, 1),
+            Backoff::none(),
+            &source.token(),
+            false,
+            &SubprocessStdio::Capture,
+            || {
+                let mut cmd = std::process::Command::new("sh");
+                cmd.arg("-c").arg("seq 1 100000");
+                cmd
+            },
+        );
+        assert_eq!(supervised.record.final_outcome, StepOutcome::Succeeded);
+        assert_eq!(supervised.exit_code, Some(0));
+        assert!(
+            supervised.stdout.len() > 500_000,
+            "captured only {} bytes",
+            supervised.stdout.len()
+        );
+        assert!(supervised.stdout.starts_with("1\n"));
+        assert!(supervised.stdout.ends_with("100000\n"));
+    }
+
+    #[test]
+    fn timed_out_retry_does_not_report_previous_attempts_evidence() {
+        // Attempt 1 exits nonzero fast (with output); attempt 2 sleeps past
+        // the global deadline. The final evidence must reflect the timed-out
+        // attempt (no exit code, no stale stdout), not attempt 1's.
+        let source = CancellationSource::new();
+        let mut calls = 0u32;
+        let supervised = supervise_subprocess(
+            "test",
+            "stale-evidence",
+            budget(1_500, 2),
+            Backoff::none(),
+            &source.token(),
+            true,
+            &SubprocessStdio::Capture,
+            move || {
+                calls += 1;
+                let mut cmd = std::process::Command::new("sh");
+                if calls == 1 {
+                    cmd.arg("-c").arg("echo attempt-one; exit 3");
+                } else {
+                    cmd.arg("-c").arg("exec sleep 30");
+                }
+                cmd
+            },
+        );
+        assert_eq!(supervised.record.final_outcome, StepOutcome::TimedOut);
+        assert_eq!(
+            supervised.exit_code, None,
+            "timed-out attempt reported a stale exit code"
+        );
+        assert!(
+            !supervised.stdout.contains("attempt-one"),
+            "timed-out attempt reported the previous attempt's stdout"
+        );
     }
 }
