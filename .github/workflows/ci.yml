@@ -1604,6 +1604,26 @@ jobs:
           cargo test -p doctor_frankentui --lib alien_kernel_unit_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/alien_kernel_unit_tests_gate.log"
 
+      - name: Run doctor_frankentui graveyard control-plane unit/property harness (bd-3bxhj.10.36)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed unit/property test-evidence harness for the graveyard
+          # control plane: symptom routing (Fast-Start determinism, tie-break
+          # stability, evidence-backed exception overrides, malformed-EV
+          # fail-closed), composition/interference gating (dangerous
+          # combinations, mitigation enforcement, multi-controller fast/slow
+          # split), entry-header/graduation schema (mandatory fields, Tbd
+          # escalation, effort-band bounds), and the graveyardctl /
+          # graveyard-verify gates (all-pass, incomplete, inconsistent,
+          # release gauntlet). Each diagnostic carries route_id /
+          # candidate_set_hash / composition_id / entry_header_hash /
+          # verify_status / violated_clause / replay_cmd; the float-free
+          # report replays byte-identically (proptest) and the gate requires
+          # all four components and all five acceptance categories covered.
+          cargo test -p doctor_frankentui --lib graveyard_control_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_control_tests_gate.log"
+
       - name: Run doctor_frankentui formal-assurance gate (bd-3bxhj.10.28)
         run: |
           set -euo pipefail

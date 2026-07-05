@@ -193,6 +193,7 @@ pub mod galaxy_brain_ux;
 pub mod gap_triage;
 pub mod golden_isomorphism;
 pub mod governance_validator_tests;
+pub mod graveyard_control_tests;
 pub mod graveyard_verify;
 pub mod graveyardctl;
 pub mod guarantee_assumption_registry;
