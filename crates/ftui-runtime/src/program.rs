@@ -5380,7 +5380,15 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             let _span = info_span!("ftui.program.shutdown").entered();
             self.model.on_shutdown()
         };
-        self.execute_cmd(shutdown_cmd)?;
+        // The shutdown sequence is error-isolated: a failing shutdown command
+        // (e.g. a Cmd::Log hitting EPIPE because the terminal already died)
+        // must not skip auto-save, strategy/executor shutdown, or the signal
+        // exit-code mapping. The first error is captured and surfaced after
+        // cleanup completes.
+        let mut shutdown_error: Option<io::Error> = None;
+        if let Err(error) = self.execute_cmd(shutdown_cmd) {
+            shutdown_error = Some(error);
+        }
 
         // Auto-save state on exit
         if self.persistence_config.auto_save {
@@ -5396,8 +5404,14 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         self.subscriptions.stop_all();
         self.task_executor.shutdown();
         self.reap_finished_tasks();
-        self.drain_shutdown_task_results()?;
+        if let Err(error) = self.drain_shutdown_task_results() {
+            shutdown_error.get_or_insert(error);
+        }
 
+        // A pending termination signal takes precedence over shutdown-step
+        // errors: the signal is what ended the loop (and often what broke the
+        // shutdown command in the first place), and callers rely on the
+        // SignalTerminationError contract for the 128+signal process exit.
         if let Some(signal) = termination_signal {
             clear_termination_signal();
             let err = io::Error::new(
@@ -5406,6 +5420,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             );
             debug_assert_eq!(signal_termination_from_error(&err), Some(signal));
             return Err(err);
+        }
+
+        if let Some(error) = shutdown_error {
+            return Err(error);
         }
 
         Ok(())
