@@ -297,13 +297,20 @@ fn snapshot(p99: f64, hot: &str) -> ProfileSnapshot {
     }
 }
 
-/// Run the re-profile stage; returns (p99_before, p99_after, gain_pct, continued).
+/// Run the re-profile stage; returns the KERNEL-reported
+/// `(p99_before, p99_after, gain_pct)` fixed-decimal strings plus whether the
+/// round continued.
+///
+/// The ledgered values are read from the reprofile_loop round entry — never
+/// recomputed from this module's own tier constants — so a kernel math
+/// regression shows up in the drill ledger (and fails `gains_measured`)
+/// instead of being papered over by locally-derived numbers.
 fn round_reprofile(
     tier: OptimizationTier,
     hotspot: &str,
     before: f64,
     after: f64,
-) -> (f64, f64, f64, bool) {
+) -> (String, String, String, bool) {
     let round = OptimizationRound {
         round_number: 1,
         change_id: format!("chg.{}", tier.as_str()),
@@ -322,15 +329,21 @@ fn round_reprofile(
         &[round],
         &ReprofileConfig::default(),
     );
-    let continued = report
-        .round(1)
-        .is_some_and(|e| matches!(e.verdict, RoundVerdict::Continue));
-    let gain = if before.abs() > EPS {
-        (before - after) / before * 100.0
-    } else {
-        0.0
-    };
-    (before, after, gain, continued)
+    match report.round(1) {
+        Some(entry) => {
+            // Drill convention: positive gain = improvement. The kernel's pct
+            // is delta/before with delta = after - before (negative =
+            // improvement for latency), so negate the kernel-reported value.
+            let kernel_pct = entry.p99_pct.parse::<f64>().unwrap_or(0.0);
+            (
+                entry.p99_before.clone(),
+                entry.p99_after.clone(),
+                fmt6(-kernel_pct),
+                matches!(entry.verdict, RoundVerdict::Continue),
+            )
+        }
+        None => (fmt6(0.0), fmt6(0.0), fmt6(0.0), false),
+    }
 }
 
 fn ready_rollback(round_number: usize) -> RollbackPlan {
@@ -342,16 +355,23 @@ fn ready_rollback(round_number: usize) -> RollbackPlan {
     )
 }
 
-/// Rehearse a one-lever rollback for the exotic round; returns (ready, rehearsed).
-fn round_rollback_rehearsal(round_number: usize) -> (bool, bool) {
-    let change =
-        OptimizationChange::new(format!("chg.r{round_number}"), ["lever.round3".to_string()])
-            .with_rollback(ready_rollback(round_number));
+/// Validate a round's rollback plan through the one-lever policy; returns
+/// (ready, rehearsed).
+///
+/// Every round's `rollback_ready` is derived from the kernel's card (a
+/// complete, validated rollback plan), not asserted as a literal; only the
+/// exotic round (Round3) additionally marks the rehearsal flag.
+fn round_rollback(tier: OptimizationTier, round_number: usize) -> (bool, bool) {
+    let change = OptimizationChange::new(
+        format!("chg.r{round_number}"),
+        [format!("lever.{}", tier.as_str())],
+    )
+    .with_rollback(ready_rollback(round_number));
     let report = run_one_lever_policy(&format!("drill/rollback/r{round_number}"), &[change]);
     let card = report.card(&format!("chg.r{round_number}"));
     let ready = card.is_some_and(|c| c.rollback_ready && c.accepted);
     // The rehearsal succeeds when a complete, validated rollback plan is attached.
-    (ready, ready)
+    (ready, ready && tier == OptimizationTier::Round3)
 }
 
 // ── Ledger ───────────────────────────────────────────────────────────────────
@@ -504,12 +524,9 @@ impl MultiRoundDrill {
         let (p99_before, p99_after, gain_pct, reprofile_continued) =
             round_reprofile(tier, &hotspot_id, before, after);
 
-        // Round 3 rehearses a rollback; earlier rounds carry a standard rollback.
-        let (rollback_ready, rollback_rehearsed) = if tier == OptimizationTier::Round3 {
-            round_rollback_rehearsal(round_number)
-        } else {
-            (true, false)
-        };
+        // Every round's rollback readiness comes from the one-lever kernel;
+        // only Round 3 additionally rehearses it.
+        let (rollback_ready, rollback_rehearsed) = round_rollback(tier, round_number);
 
         let outcome = if tier == OptimizationTier::Round3 {
             "promoted_with_rollback_rehearsal"
@@ -519,7 +536,7 @@ impl MultiRoundDrill {
 
         // Build the detail string before moving owned fields into the struct.
         let detail = format!(
-            "round {round_number} [{}] eligible={eligible} prior_exhausted={prior_tiers_exhausted} gain={gain_pct:.2}% proof={proof_id} rollback_ready={rollback_ready}",
+            "round {round_number} [{}] eligible={eligible} prior_exhausted={prior_tiers_exhausted} gain={gain_pct}% proof={proof_id} rollback_ready={rollback_ready}",
             tier.as_str()
         );
 
@@ -540,9 +557,9 @@ impl MultiRoundDrill {
             score,
             proof_id,
             behavior_preserved,
-            p99_before: fmt6(p99_before),
-            p99_after: fmt6(p99_after),
-            gain_pct: fmt6(gain_pct),
+            p99_before,
+            p99_after,
+            gain_pct,
             reprofile_continued,
             rollback_ready,
             rollback_rehearsed,
@@ -982,6 +999,23 @@ mod tests {
             .iter()
             .find(|l| l.round_number == n)
             .expect("round present")
+    }
+
+    #[test]
+    fn reprofile_values_flow_through_the_kernel_report() {
+        // The ledgered strings are the reprofile_loop entry's own fmt6
+        // renderings (with the drill's positive-gain sign convention), not
+        // locally recomputed floats — a kernel math regression must surface
+        // in the drill ledger.
+        let (before, after, gain, continued) =
+            round_reprofile(OptimizationTier::Round1, "hot.render", 120.0, 96.0);
+        assert!(continued);
+        assert_eq!(before, "120.000000");
+        assert_eq!(after, "96.000000");
+        assert_eq!(gain, "20.000000");
+        // Kernel-backed rollback readiness for every tier, rehearsal only on 3.
+        assert_eq!(round_rollback(OptimizationTier::Round1, 1), (true, false));
+        assert_eq!(round_rollback(OptimizationTier::Round3, 3), (true, true));
     }
 
     #[test]
