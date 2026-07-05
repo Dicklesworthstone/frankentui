@@ -320,7 +320,20 @@ pub fn apply_to_timeline(
         .retention_diagnostics()
         .estimated_total_retained_bytes;
     let units_before = timeline.entries.len();
-    let current_state_hash = timeline.entries.last().map_or(0, |entry| entry.after_hash);
+    // The current state is baseline + entries[..cursor], so the preserved hash
+    // must come from the cursor position — `entries.last()` is the head of the
+    // full history, which is NOT the current state after an undo.
+    let current_state_hash = if timeline.cursor == 0 {
+        timeline
+            .entries
+            .first()
+            .map_or(0, |entry| entry.before_hash)
+    } else {
+        timeline
+            .entries
+            .get(timeline.cursor - 1)
+            .map_or(0, |entry| entry.after_hash)
+    };
 
     if policy.conservative_debug {
         let outcome = if policy.budget.is_exceeded_by(bytes_before, units_before) {
@@ -351,7 +364,12 @@ pub fn apply_to_timeline(
                 > policy.budget.max_retained_bytes
         {
             let keep = timeline.entries.len() - 1;
-            timeline.set_max_entries(keep);
+            if timeline.set_max_entries(keep) == 0 {
+                // No progress: the baseline is missing/unreplayable, or the
+                // cursor pins every remaining entry. Stop (classified below)
+                // rather than spinning forever.
+                break;
+            }
         }
     }
 
@@ -424,6 +442,69 @@ mod tests {
             store.apply(op).expect("store apply");
         }
         store
+    }
+
+    #[test]
+    fn version_store_prune_after_undo_preserves_current() {
+        // 2 splits + 30 resizes = 32 ops -> 33 versions; undo back to cursor 2.
+        let mut store = build_store(30);
+        for _ in 0..30 {
+            assert!(store.undo());
+        }
+        let current_hash = store.current().state_hash().expect("hash");
+        let pruned = store.set_max_versions(8);
+        // Only versions strictly before the cursor may be pruned.
+        assert_eq!(pruned, 2);
+        assert_eq!(
+            store.current().state_hash().expect("hash"),
+            current_hash,
+            "pruning must never discard the current (undone-to) version"
+        );
+        // The redo tail survives intact.
+        let mut redos = 0;
+        while store.redo() {
+            redos += 1;
+        }
+        assert_eq!(redos, 30);
+    }
+
+    #[test]
+    fn timeline_prune_after_undo_preserves_current_state() {
+        let mut tree = PaneTree::singleton("root");
+        let mut timeline = PaneInteractionTimeline::default();
+        for (i, op) in workload(20).iter().enumerate() {
+            let id = i as u64;
+            timeline
+                .apply_and_record(&mut tree, id, id, op.clone())
+                .expect("apply");
+        }
+        for _ in 0..20 {
+            timeline.undo(&mut tree).expect("undo");
+        }
+        let current_hash = tree.state_hash();
+        let decision = apply_to_timeline(&mut timeline, &PaneRetentionPolicy::bounded(0, 4));
+        assert_eq!(
+            decision.current_state_hash, current_hash,
+            "preserved hash must be the cursor state, not the head of history"
+        );
+        // Cursor-pinned entries survive: redo back to the head still works.
+        let mut redos = 0;
+        while timeline.redo(&mut tree).expect("redo") {
+            redos += 1;
+        }
+        assert_eq!(redos, 20);
+    }
+
+    #[test]
+    fn timeline_byte_budget_terminates_when_pruning_cannot_progress() {
+        let mut timeline = build_timeline(10);
+        // A hand-assembled/deserialized timeline can lack a replayable
+        // baseline; the byte-budget loop must stop rather than spin forever.
+        timeline.baseline = None;
+        let before = timeline.entries.len();
+        let decision = apply_to_timeline(&mut timeline, &PaneRetentionPolicy::bounded(1, 0));
+        assert_eq!(timeline.entries.len(), before);
+        assert_eq!(decision.units_pruned, 0);
     }
 
     fn build_timeline(storm: u32) -> PaneInteractionTimeline {

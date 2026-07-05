@@ -697,10 +697,17 @@ impl PaneVersionStore {
         if self.max_versions == 0 || self.versions.len() <= self.max_versions {
             return;
         }
-        let drop_count = self.versions.len() - self.max_versions;
+        // Never prune at or after the cursor: the version `current()` points
+        // at (and everything the user can still redo into) must survive, even
+        // when the user has undone deep into history. Any excess beyond
+        // `max_versions` is tolerated until the cursor advances again.
+        let drop_count = (self.versions.len() - self.max_versions).min(self.cursor);
+        if drop_count == 0 {
+            return;
+        }
         let _ = self.versions.drain(0..drop_count);
         self.pruned += drop_count;
-        self.cursor = self.cursor.saturating_sub(drop_count);
+        self.cursor -= drop_count;
     }
 }
 

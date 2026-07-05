@@ -6372,7 +6372,18 @@ impl PaneInteractionTimeline {
             return;
         }
 
-        let prune_count = self.entries.len().saturating_sub(self.max_entries);
+        // Never prune past the cursor: the current state is baseline +
+        // entries[..cursor], so baking an entry beyond the cursor into the
+        // baseline would silently replace the user's (undone-to) state with a
+        // later one. Excess entries are tolerated until the cursor advances.
+        let prune_count = self
+            .entries
+            .len()
+            .saturating_sub(self.max_entries)
+            .min(self.cursor);
+        if prune_count == 0 {
+            return;
+        }
         let Some(baseline) = self.baseline.clone() else {
             return;
         };

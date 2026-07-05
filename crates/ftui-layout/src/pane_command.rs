@@ -772,11 +772,17 @@ fn resolve_close(tree: &PaneTree, ctx: PaneFocusContext) -> PaneCommandResolutio
         .filter(|&id| id != active)
         .or_else(|| focus_cyclic(tree, active, PaneFocusOrdinal::Previous))
         .filter(|&id| id != active);
-    structural(
+    let mut resolution = structural(
         ctx,
         vec![PaneOperation::CloseNode { target: active }],
         next_active,
-    )
+    );
+    // Closing the maximized pane must clear the maximize state — carrying it
+    // forward would leave a dangling id pointing at a removed node.
+    if ctx.maximized == Some(active) {
+        resolution.next_maximized = None;
+    }
+    resolution
 }
 
 fn resolve_move(
@@ -919,8 +925,11 @@ fn active_pane_share_pct(tree: &PaneTree, active: PaneId) -> Option<u16> {
     let PaneNodeKind::Split(split) = &tree.node(split_id)?.kind else {
         return None;
     };
-    let num = split.ratio.numerator();
-    let den = split.ratio.denominator();
+    // u64 arithmetic: `num + den` can overflow u32 (any nonzero pair is a
+    // valid PaneSplitRatio, e.g. u32::MAX:1), which would wrap into a
+    // division by zero in release builds.
+    let num = u64::from(split.ratio.numerator());
+    let den = u64::from(split.ratio.denominator());
     let first_share = num * 100 / (num + den);
     let share = if split.first == active {
         first_share
@@ -1206,6 +1215,66 @@ mod tests {
     fn solved(tree: &PaneTree) -> PaneLayout {
         tree.solve_layout(Rect::new(0, 0, 80, 24))
             .expect("layout solves")
+    }
+
+    #[test]
+    fn closing_the_maximized_pane_clears_maximize_state() {
+        let tree = nested();
+        let layout = solved(&tree);
+        let res = resolve(
+            &tree,
+            &layout,
+            PaneFocusContext {
+                active: Some(pid(4)),
+                maximized: Some(pid(4)),
+            },
+            PaneCommand::Close,
+        );
+        assert!(matches!(res.effect, PaneCommandEffect::Structural(_)));
+        assert_eq!(
+            res.next_maximized, None,
+            "a closed pane must not remain the maximize target"
+        );
+        // Closing a non-maximized pane keeps the maximize state.
+        let res2 = resolve(
+            &tree,
+            &layout,
+            PaneFocusContext {
+                active: Some(pid(4)),
+                maximized: Some(pid(2)),
+            },
+            PaneCommand::Close,
+        );
+        assert_eq!(res2.next_maximized, Some(pid(2)));
+    }
+
+    #[test]
+    fn share_pct_survives_extreme_ratios() {
+        // Any nonzero u32 pair is a valid ratio; u32 math would overflow (or
+        // divide by zero on wrap) for u32::MAX:1.
+        let snapshot = PaneTreeSnapshot {
+            schema_version: PANE_TREE_SCHEMA_VERSION,
+            root: pid(1),
+            next_id: pid(4),
+            nodes: vec![
+                PaneNodeRecord::split(
+                    pid(1),
+                    None,
+                    PaneSplit {
+                        axis: SplitAxis::Horizontal,
+                        ratio: PaneSplitRatio::new(u32::MAX, 1).unwrap(),
+                        first: pid(2),
+                        second: pid(3),
+                    },
+                ),
+                PaneNodeRecord::leaf(pid(2), Some(pid(1)), PaneLeaf::new("a")),
+                PaneNodeRecord::leaf(pid(3), Some(pid(1)), PaneLeaf::new("b")),
+            ],
+            extensions: BTreeMap::new(),
+        };
+        let tree = PaneTree::from_snapshot(snapshot).expect("valid tree");
+        assert_eq!(active_pane_share_pct(&tree, pid(2)), Some(99));
+        assert_eq!(active_pane_share_pct(&tree, pid(3)), Some(1));
     }
 
     #[test]

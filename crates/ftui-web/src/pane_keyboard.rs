@@ -57,8 +57,10 @@ pub fn key_to_pane_command(key: &KeyEvent, resize_units: u16) -> Option<PaneComm
         return None;
     }
     let m = key.modifiers;
-    // Never consume browser/OS-reserved chords.
-    if m.contains(Modifiers::CTRL) || m.contains(Modifiers::SUPER) {
+    // Never consume browser/OS-reserved chords. Alt is included: Alt+Arrow is
+    // browser Back/Forward on Windows/Linux, and this keymap binds only plain
+    // and Shift-qualified keys anyway.
+    if m.contains(Modifiers::CTRL) || m.contains(Modifiers::SUPER) || m.contains(Modifiers::ALT) {
         return None;
     }
     let shift = m.contains(Modifiers::SHIFT);
@@ -207,8 +209,11 @@ pub fn pane_accessibility_tree(tree: &PaneTree, focus: PaneFocusContext) -> Vec<
                     SplitAxis::Horizontal => PaneAriaOrientation::Vertical,
                     SplitAxis::Vertical => PaneAriaOrientation::Horizontal,
                 };
-                let num = split.ratio.numerator();
-                let den = split.ratio.denominator();
+                // u64 arithmetic: `num + den` can overflow u32 (any nonzero
+                // pair is a valid ratio), which would wrap into a division by
+                // zero in release builds — unwrap_or cannot catch a panic.
+                let num = u64::from(split.ratio.numerator());
+                let den = u64::from(split.ratio.denominator());
                 let first_share = u16::try_from(num * 100 / (num + den)).unwrap_or(50);
                 nodes.push(PaneAriaNode {
                     pane_id: record.id,
@@ -427,6 +432,24 @@ mod tests {
             modifiers,
             kind: KeyEventKind::Press,
         }
+    }
+
+    #[test]
+    fn alt_chords_are_never_bound() {
+        // Alt+Arrow is browser Back/Forward on Windows/Linux; the browser-safe
+        // keymap must ignore every Alt-qualified chord.
+        assert_eq!(
+            key_to_pane_command(&key(KeyCode::Left, Modifiers::ALT), 1),
+            None
+        );
+        assert_eq!(
+            key_to_pane_command(&key(KeyCode::Right, Modifiers::ALT), 1),
+            None
+        );
+        assert_eq!(
+            key_to_pane_command(&key(KeyCode::Left, Modifiers::SHIFT | Modifiers::ALT), 1),
+            None
+        );
     }
 
     /// Horizontal root: left(2) | vertical(top(4)/bottom(5)). Focus order [2,4,5].

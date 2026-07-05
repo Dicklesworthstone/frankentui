@@ -552,14 +552,30 @@ impl MigrationReadinessRubric {
             };
         }
 
+        // Fail closed on non-finite evidence: the fields are `pub f64`, so a
+        // directly-constructed/deserialized NaN would otherwise compare false
+        // against every `<` threshold and sail through the gate.
+        fn fails_min(value: f64, min: f64) -> bool {
+            !value.is_finite() || value < min
+        }
+
         let mut reasons = Vec::new();
-        if evidence.certification_pass_ratio < gate.min_certification_pass_ratio {
+        if fails_min(
+            evidence.certification_pass_ratio,
+            gate.min_certification_pass_ratio,
+        ) {
             reasons.push("certification-threshold");
         }
-        if evidence.corpus_coverage_ratio < gate.min_corpus_coverage_ratio {
+        if fails_min(
+            evidence.corpus_coverage_ratio,
+            gate.min_corpus_coverage_ratio,
+        ) {
             reasons.push("corpus-coverage-threshold");
         }
-        if evidence.reliability_pass_ratio < gate.min_reliability_pass_ratio {
+        if fails_min(
+            evidence.reliability_pass_ratio,
+            gate.min_reliability_pass_ratio,
+        ) {
             reasons.push("operational-reliability-threshold");
         }
         if evidence.deterministic_artifact_count < gate.min_deterministic_artifacts {
@@ -2029,7 +2045,9 @@ impl RolloutScorecard {
         }
         let total_frames: usize = self.shadow_results.iter().map(|r| r.frames_compared).sum();
         if total_frames == 0 {
-            return 1.0;
+            // Zero compared frames is absence of evidence, not a perfect match
+            // — a misconfigured/empty capture must not read as deterministic.
+            return 0.0;
         }
         let matched_frames: usize = self
             .shadow_results
@@ -2045,6 +2063,13 @@ impl RolloutScorecard {
     pub fn evaluate(&self) -> RolloutVerdict {
         // Check minimum scenario coverage
         if self.shadow_results.len() < self.config.min_shadow_scenarios {
+            return RolloutVerdict::Inconclusive;
+        }
+
+        // A scorecard whose scenarios compared zero frames carries no
+        // determinism evidence at all — it must not reach Go vacuously.
+        let total_frames: usize = self.shadow_results.iter().map(|r| r.frames_compared).sum();
+        if total_frames == 0 {
             return RolloutVerdict::Inconclusive;
         }
 
@@ -2434,6 +2459,33 @@ mod tests {
             decision.reasons.is_empty(),
             "passing evidence must not carry hold reasons"
         );
+    }
+
+    #[test]
+    fn readiness_rubric_fails_closed_on_non_finite_evidence() {
+        let rubric = MigrationReadinessRubric::opentui_default();
+        let mut evidence = MigrationReadinessEvidence::new(OperatorAuthority::ReleaseOwner)
+            .certification_pass_ratio(0.99)
+            .corpus_coverage_ratio(0.80)
+            .reliability_pass_ratio(0.99)
+            .deterministic_artifact_count(4)
+            .benchmark_gate_passed(true);
+        // The fields are pub f64: a NaN smuggled in via direct construction or
+        // deserialization must fail the gate, not sail past `<` comparisons.
+        evidence.certification_pass_ratio = f64::NAN;
+        let decision = rubric.evaluate(MigrationRolloutStage::Alpha, &evidence);
+        assert_eq!(decision.verdict, MigrationReadinessVerdict::Hold);
+        assert!(decision.reasons.contains(&"certification-threshold"));
+    }
+
+    #[test]
+    fn scorecard_with_zero_compared_frames_is_not_go() {
+        let mut scorecard =
+            RolloutScorecard::new(RolloutScorecardConfig::default().min_shadow_scenarios(1));
+        scorecard.add_shadow_result(make_shadow_result(ShadowVerdict::Match, 0));
+        // Zero compared frames is missing evidence, not proof of determinism.
+        assert_eq!(scorecard.aggregate_match_ratio(), 0.0);
+        assert_eq!(scorecard.evaluate(), RolloutVerdict::Inconclusive);
     }
 
     #[test]
