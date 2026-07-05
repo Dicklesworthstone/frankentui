@@ -118,28 +118,35 @@ pub struct QueueTelemetry {
     pub dropped: u64,
     /// Maximum queue depth observed.
     pub high_water: u64,
-    /// Current in-flight: enqueued - processed - dropped.
+    /// Current in-flight: enqueued - processed. Drops are NOT subtracted:
+    /// every drop path rejects a task *before* it is counted as enqueued, so
+    /// subtracting `dropped` would permanently understate the backlog by the
+    /// cumulative drop total.
     pub in_flight: u64,
 }
 
 /// Snapshot the current queue telemetry counters.
 ///
-/// This is a lock-free, best-effort snapshot: the three counters are loaded
-/// independently, so under concurrent enqueue/process/drop the derived
-/// `in_flight` may transiently disagree with any single instantaneous state.
-/// The skew is bounded and one-directional — `enqueued` is loaded first (the
-/// oldest value) and `processed`/`dropped` last (the newest), so `in_flight`
-/// can only *under*estimate the true backlog (floored at 0 by the saturating
-/// subtraction), never overestimate it. That is the safe bias for the consumers
-/// (load-governor pressure classification, backpressure), which read it
-/// per-frame and recover on the next interval; do not treat it as an exact,
-/// linearizable count.
+/// This is a lock-free, best-effort snapshot: the counters are loaded
+/// independently, so under concurrent enqueue/process the derived `in_flight`
+/// may transiently disagree with any single instantaneous state. The skew is
+/// bounded and one-directional — `enqueued` is loaded first (the oldest value)
+/// and `processed` last (the newest), so `in_flight` can only *under*estimate
+/// the true backlog (floored at 0 by the saturating subtraction), never
+/// overestimate it. That is the safe bias for the consumers (load-governor
+/// pressure classification, backpressure), which read it per-frame and recover
+/// on the next interval; do not treat it as an exact, linearizable count.
+///
+/// `dropped` is deliberately NOT subtracted from `in_flight`: drop paths
+/// reject a task before it is ever counted as enqueued, so subtracting it
+/// would double-penalize and permanently understate the backlog after any
+/// overload episode.
 #[must_use]
 pub fn queue_telemetry() -> QueueTelemetry {
     let enqueued = effects_queue_enqueued();
     let processed = effects_queue_processed();
     let dropped = effects_queue_dropped();
-    let in_flight = enqueued.saturating_sub(processed).saturating_sub(dropped);
+    let in_flight = enqueued.saturating_sub(processed);
     QueueTelemetry {
         enqueued,
         processed,
@@ -763,13 +770,14 @@ mod tests {
     #[test]
     fn queue_telemetry_snapshot_consistent() {
         let snap = queue_telemetry();
-        // in_flight = enqueued - processed - dropped, all saturating
+        // in_flight = enqueued - processed (saturating). Drops are rejected
+        // before being counted as enqueued, so they must NOT be subtracted —
+        // doing so would permanently understate the backlog after any
+        // overload episode.
         assert_eq!(
             snap.in_flight,
-            snap.enqueued
-                .saturating_sub(snap.processed)
-                .saturating_sub(snap.dropped),
-            "in_flight should be enqueued - processed - dropped"
+            snap.enqueued.saturating_sub(snap.processed),
+            "in_flight should be enqueued - processed"
         );
     }
 

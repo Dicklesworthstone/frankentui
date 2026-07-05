@@ -6203,8 +6203,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             budget_us,
             degradation: self.budget.degradation(),
             queue: crate::effect_system::queue_telemetry(),
-            resize_coalescing_active: resize_stats.has_pending
-                || !matches!(resize_stats.regime, crate::resize_coalescer::Regime::Steady),
+            // Only meaningful when the coalescer actually runs: in legacy
+            // Immediate mode `tick_at` never fires, so a single Burst entry
+            // would otherwise pin the governor at SoftOverload forever.
+            resize_coalescing_active: self.resize_behavior.uses_coalescer()
+                && (resize_stats.has_pending
+                    || !matches!(resize_stats.regime, crate::resize_coalescer::Regime::Steady)),
             strict_semantics_violation: false,
         })
     }
@@ -9115,7 +9119,9 @@ mod tests {
             budget_us: 16_000.0,
             degradation,
             queue: crate::effect_system::QueueTelemetry {
-                enqueued: in_flight.saturating_add(dropped),
+                // Invariant: in_flight = enqueued - processed (drops are
+                // rejected before ever being counted as enqueued).
+                enqueued: in_flight,
                 processed: 0,
                 dropped,
                 high_water: in_flight,
