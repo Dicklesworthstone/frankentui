@@ -419,6 +419,11 @@ pub struct Presenter<W: Write> {
     plan_scratch: cost_model::RowPlanScratch,
     /// Reusable buffer for change runs, avoiding per-frame allocation.
     runs_buf: Vec<ChangeRun>,
+    /// Width of the buffer being presented (0 = unknown). Used to invalidate
+    /// the tracked cursor column when output reaches the last column, where a
+    /// real autowrap terminal parks in wrap-pending state instead of
+    /// advancing — relative moves from the phantom column would be off by one.
+    presentation_width: u16,
 }
 
 impl<W: Write> Presenter<W> {
@@ -435,6 +440,7 @@ impl<W: Write> Presenter<W> {
             capabilities,
             plan_scratch: cost_model::RowPlanScratch::default(),
             runs_buf: Vec::new(),
+            presentation_width: 0,
         }
     }
 
@@ -489,6 +495,7 @@ impl<W: Write> Presenter<W> {
         pool: Option<&GraphemePool>,
         links: Option<&LinkRegistry>,
     ) -> io::Result<PresentStats> {
+        self.presentation_width = buffer.width();
         let bracket_supported = self.capabilities.use_sync_output();
 
         #[cfg(feature = "tracing")]
@@ -844,10 +851,27 @@ impl<W: Write> Presenter<W> {
             } else {
                 raw_width
             };
-            self.cursor_x = Some(cx.saturating_add(width as u16));
+            self.cursor_x = Self::advance_or_invalidate(cx, width as u16, self.presentation_width);
         }
 
         Ok(())
+    }
+
+    /// Advance the tracked cursor column, invalidating it when the advance
+    /// reaches or passes the presentation width.
+    ///
+    /// A real terminal with autowrap (DECAWM, which is never disabled) does
+    /// NOT advance past the last column — it parks in wrap-pending state at
+    /// `width - 1`. Trusting the phantom `width` column would make the next
+    /// same-row relative move (CUF/CUB) land one column off, so the next
+    /// positioning must be forced absolute (CUP/CHA).
+    fn advance_or_invalidate(cx: u16, width: u16, presentation_width: u16) -> Option<u16> {
+        let next = cx.saturating_add(width);
+        if presentation_width > 0 && next >= presentation_width {
+            None
+        } else {
+            Some(next)
+        }
     }
 
     /// Clear a continuation cell with a visually neutral blank.
@@ -863,7 +887,7 @@ impl<W: Write> Presenter<W> {
         self.emit_style_changes(&blank)?;
         self.emit_link_changes(&blank, links)?;
         self.writer.write_all(b" ")?;
-        self.cursor_x = Some(x.saturating_add(1));
+        self.cursor_x = Self::advance_or_invalidate(x, 1, self.presentation_width);
         Ok(())
     }
 
@@ -1239,7 +1263,16 @@ impl<W: Write> Presenter<W> {
         ansi::erase_display(&mut self.writer, ansi::EraseDisplayMode::All)?;
         ansi::cup(&mut self.writer, 0, 0)?;
         self.cursor_x = Some(0);
-        self.cursor_y = Some(0);
+        // The tracker stores viewport-relative rows; the physical home row is
+        // only representable when the viewport offset is 0. Otherwise the next
+        // positioning must be absolute — recording relative row 0 here would
+        // alias physical row `viewport_offset_y` and corrupt scrollback via a
+        // same-row CHA/CUF move.
+        self.cursor_y = if self.viewport_offset_y == 0 {
+            Some(0)
+        } else {
+            None
+        };
         self.writer.flush()
     }
 
@@ -1667,6 +1700,64 @@ mod tests {
 
         // Should contain erase display sequence
         assert!(output.windows(b"\x1b[2J".len()).any(|w| w == b"\x1b[2J"));
+    }
+
+    #[test]
+    fn cursor_advance_invalidates_at_last_column() {
+        // Reaching (or passing, for a wide cell) the presentation width parks
+        // a real autowrap terminal in wrap-pending state at width-1; the
+        // tracker must go unknown instead of holding a phantom column that
+        // would skew the next same-row relative move by one.
+        assert_eq!(
+            Presenter::<Vec<u8>>::advance_or_invalidate(119, 1, 120),
+            None
+        );
+        assert_eq!(
+            Presenter::<Vec<u8>>::advance_or_invalidate(118, 2, 120),
+            None
+        );
+        assert_eq!(
+            Presenter::<Vec<u8>>::advance_or_invalidate(100, 2, 120),
+            Some(102)
+        );
+        // Unknown presentation width (before the first present): keep advancing.
+        assert_eq!(
+            Presenter::<Vec<u8>>::advance_or_invalidate(119, 1, 0),
+            Some(120)
+        );
+    }
+
+    #[test]
+    fn move_after_end_of_row_emission_is_absolute() {
+        let mut presenter = test_presenter();
+        presenter.presentation_width = 120;
+        // As after a run that ended at the last column: column unknown.
+        presenter.cursor_x = None;
+        presenter.cursor_y = Some(20);
+        presenter.move_cursor_optimal(110, 20).unwrap();
+        let output = get_output(presenter);
+        let s = String::from_utf8_lossy(&output);
+        // Absolute CUP (row 21, col 111), never a relative CUB from a
+        // phantom column.
+        assert!(s.contains("\x1b[21;111H"), "output: {s:?}");
+        assert!(!s.ends_with('D'), "relative CUB emitted: {s:?}");
+    }
+
+    #[test]
+    fn clear_screen_with_viewport_offset_forces_absolute_next_move() {
+        let mut presenter = test_presenter();
+        presenter.set_viewport_offset_y(5);
+        presenter.clear_screen().unwrap();
+        // Physical row 0 is not representable in viewport-relative coords
+        // when the offset is nonzero.
+        assert_eq!(presenter.cursor_x, Some(0));
+        assert_eq!(presenter.cursor_y, None);
+        presenter.move_cursor_optimal(3, 0).unwrap();
+        let output = get_output(presenter);
+        let s = String::from_utf8_lossy(&output);
+        // Viewport row 0 = physical row 5 -> absolute CUP row 6, col 4; a
+        // same-row CHA/CUF here would have written onto physical row 0.
+        assert!(s.contains("\x1b[6;4H"), "output: {s:?}");
     }
 
     #[test]
