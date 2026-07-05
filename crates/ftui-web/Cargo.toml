@@ -1,6 +1,6 @@
 [package]
 name = "ftui-web"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "WASM backend implementation for FrankenTUI (host-driven, deterministic)."
@@ -19,11 +19,11 @@ input-parser = ["dep:serde", "dep:serde_json"]
 tracing = ["dep:tracing"]
 
 [dependencies]
-ftui-backend = { path = "../ftui-backend", version = "0.4.1" }
-ftui-core = { path = "../ftui-core", version = "0.4.1" }
-ftui-layout = { path = "../ftui-layout", version = "0.4.1" }
-ftui-render = { path = "../ftui-render", version = "0.4.1" }
-ftui-runtime = { path = "../ftui-runtime", version = "0.4.1", default-features = false }
+ftui-backend = { path = "../ftui-backend", version = "0.5.0" }
+ftui-core = { path = "../ftui-core", version = "0.5.0" }
+ftui-layout = { path = "../ftui-layout", version = "0.5.0" }
+ftui-render = { path = "../ftui-render", version = "0.5.0" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.5.0", default-features = false }
 serde = { version = "1.0.227", features = ["derive"], optional = true }
 serde_json = { version = "1.0.150", optional = true }
 tracing = { version = "0.1.41", optional = true }
@@ -32,7 +32,7 @@ tracing = { version = "0.1.41", optional = true }
 # Host-agnostic accessibility preferences + screen-reader pipeline, exercised by
 # the cross-browser a11y/IME E2E matrix (bd-2vr05.7.5). Dev-only: ftui-a11y does
 # not depend on ftui-web, so this stays acyclic.
-ftui-a11y = { path = "../ftui-a11y", version = "0.4.1" }
+ftui-a11y = { path = "../ftui-a11y", version = "0.5.0" }
 # Used only for small deterministic unit tests.
 criterion = { version = "0.8.2", features = ["html_reports"] }
 pretty_assertions = "1.4.1"

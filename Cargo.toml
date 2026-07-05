@@ -25,7 +25,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 repository = "https://github.com/Dicklesworthstone/frankentui"
 

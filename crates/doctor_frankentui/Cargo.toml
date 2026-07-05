@@ -1,6 +1,6 @@
 [package]
 name = "doctor_frankentui"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 publish = false
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
@@ -25,8 +25,8 @@ fastapi-output = { version = "0.3.0", default-features = false }
 sqlmodel-console = "0.2.0"
 sha2 = "0.11.0"
 regex-lite = "0.1.6"
-ftui-runtime = { path = "../ftui-runtime", version = "0.4.1", default-features = false }
-ftui-harness = { path = "../ftui-harness", version = "0.4.1" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.5.0", default-features = false }
+ftui-harness = { path = "../ftui-harness", version = "0.5.0" }
 
 [dev-dependencies]
 proptest = "1.7.0"

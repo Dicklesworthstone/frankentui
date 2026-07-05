@@ -1,6 +1,6 @@
 [package]
 name = "ftui-showcase-wasm"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 publish = false
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
@@ -13,9 +13,9 @@ readme = "../../README.md"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ftui-web = { path = "../ftui-web", version = "0.4.1", features = ["input-parser"] }
-ftui-demo-showcase = { path = "../ftui-demo-showcase", version = "0.4.1", default-features = false }
-ftui-layout = { path = "../ftui-layout", version = "0.4.1" }
+ftui-web = { path = "../ftui-web", version = "0.5.0", features = ["input-parser"] }
+ftui-demo-showcase = { path = "../ftui-demo-showcase", version = "0.5.0", default-features = false }
+ftui-layout = { path = "../ftui-layout", version = "0.5.0" }
 serde_json = "1.0.150"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
