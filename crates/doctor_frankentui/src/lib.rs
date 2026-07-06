@@ -151,6 +151,7 @@ pub mod adversarial_fixtures;
 pub mod alien_kernel_tests;
 pub mod alien_kernel_unit_tests;
 pub mod archetype_scoreboard;
+pub mod artifact_coding_tests;
 pub mod backend_capability;
 pub mod baseline_capture;
 pub mod benchmark_harness;

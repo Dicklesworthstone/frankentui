@@ -1641,6 +1641,29 @@ jobs:
           cargo test -p doctor_frankentui --lib graveyard_gauntlet -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_gauntlet_gate.log"
 
+      - name: Run doctor_frankentui artifact-coding unit/property harness (bd-3bxhj.10.44)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed cross-kernel unit/property test-evidence harness for the
+          # six artifact-coding layers: hierarchical conjugate fusion (extreme
+          # log-domain stability, dependence-monotone deflation, sparse
+          # shrinkage, robust huberization, contradiction/malformed fallbacks),
+          # sequential FDR (order-invariant e-BH certification, wealth
+          # conservation, adversarial clamps, exhaustion, fail-closed malformed
+          # evidence), counterfactual audits (minimal-flip optimality,
+          # deterministic tie-breaks, unsat proofs), degradation policy
+          # (missing/contradictory clamps, hysteresis + recovery guards),
+          # guarantee-assumption registry (validity/downgrade transitions,
+          # certificate integrity), and galaxy-brain UX (non-interference,
+          # hash re-derivation, order independence). Each diagnostic carries
+          # equation_id / assumption_id / guarantee_id / wealth_state /
+          # perturbation_norm / degradation_reason / replay; the all-String
+          # envelope replays byte-identically (proptest) and the gate requires
+          # all six kernels and all four acceptance categories covered.
+          cargo test -p doctor_frankentui --lib artifact_coding_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/artifact_coding_tests_gate.log"
+
       - name: Run doctor_frankentui formal-assurance gate (bd-3bxhj.10.28)
         run: |
           set -euo pipefail
