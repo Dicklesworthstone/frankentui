@@ -64,6 +64,7 @@ pub mod layout_reuse;
 pub mod optimization_policy;
 pub mod perf_evidence_ledger;
 pub mod presenter_equivalence;
+pub mod promotion_scorecard;
 pub mod proof_oracle;
 pub mod proptest_support;
 pub mod render_gauntlet;
