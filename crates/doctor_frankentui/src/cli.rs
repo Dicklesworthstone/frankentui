@@ -11,6 +11,7 @@ use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
 use crate::flagship_migrations::{FlagshipMigrationsArgs, run_flagship_migrations_command};
 use crate::formal_assurance_gauntlet::{FormalAssuranceArgs, run_formal_assurance_command};
 use crate::galaxy_brain_ux::{GalaxyUxArgs, run_galaxy_ux_command};
+use crate::graveyard_gauntlet::{GraveyardGauntletArgs, run_graveyard_gauntlet_command};
 use crate::graveyard_verify::{GraveyardVerifyArgs, run_graveyard_verify};
 use crate::graveyardctl::{GraveyardctlArgs, run_graveyardctl};
 use crate::hazard_regime_model::{HazardRegimeArgs, run_hazard_regime_command};
@@ -186,6 +187,14 @@ pub enum Commands {
     #[command(name = "formal-assurance")]
     FormalAssurance(FormalAssuranceArgs),
 
+    /// Run the E2E graveyard-executable gauntlet: the full
+    /// route -> rank -> contract -> verify -> demo -> release chain across
+    /// green and red campaigns (metadata/contract faults, composition risk,
+    /// demo divergence, optimization-policy violations), with machine-checkable
+    /// violated clauses, a failure-signature triage map, and a fail-closed gate.
+    #[command(name = "graveyard-gauntlet")]
+    GraveyardGauntlet(GraveyardGauntletArgs),
+
     /// Run the E2E multi-round optimization drill: progress Round1 -> Round2 ->
     /// Round3 with tier eligibility gates, per-round baseline/profile/proof
     /// artifacts + re-profile deltas, and a Round3 rollback rehearsal.
@@ -249,6 +258,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::CiOutputs(args) => run_ci_outputs_command(args),
         Commands::HazardRegime(args) => run_hazard_regime_command(args),
         Commands::FormalAssurance(args) => run_formal_assurance_command(args),
+        Commands::GraveyardGauntlet(args) => run_graveyard_gauntlet_command(args),
         Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
         Commands::FlagshipMigrations(args) => run_flagship_migrations_command(args),
         Commands::KillerDemo(args) => run_killer_demo_command(args),

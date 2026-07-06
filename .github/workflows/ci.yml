@@ -1624,6 +1624,23 @@ jobs:
           cargo test -p doctor_frankentui --lib graveyard_control_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_control_tests_gate.log"
 
+      - name: Run doctor_frankentui graveyard-gauntlet gate (bd-3bxhj.10.37)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed E2E graveyard-executable gauntlet: the full
+          # route -> rank -> contract -> verify -> demo -> release chain across
+          # eleven scenarios in five families (green promotion, metadata/contract
+          # faults, composition risk, demo/execution faults, optimization-policy
+          # violations). Every ledger line carries stage_id / route_id /
+          # ranking_hash / contract_id / verify_verdict / demo_id /
+          # release_policy_verdict / replay; red paths terminate at their
+          # expected stage with machine-checkable violated clauses plus a
+          # failure-signature -> root-cause triage map, and the float-free
+          # ledger replays byte-identically (proptest).
+          cargo test -p doctor_frankentui --lib graveyard_gauntlet -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_gauntlet_gate.log"
+
       - name: Run doctor_frankentui formal-assurance gate (bd-3bxhj.10.28)
         run: |
           set -euo pipefail
@@ -1752,6 +1769,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_formal_assurance_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/formal_assurance" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/formal_assurance_e2e.log"
+
+      - name: Run doctor_frankentui graveyard-gauntlet E2E (bd-3bxhj.10.37)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_graveyard_gauntlet_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/graveyard_gauntlet" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_gauntlet_e2e.log"
 
       - name: Run doctor_frankentui multi-round-drill E2E (bd-3bxhj.8.24)
         run: |
