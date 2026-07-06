@@ -223,6 +223,7 @@ pub mod multi_round_drill;
 pub mod nightly_evaluation;
 pub mod nightly_stress;
 pub mod one_lever_policy;
+pub mod operator_workflows;
 pub mod opportunity_scorer;
 pub mod optimization_control_tests;
 pub mod optimization_gauntlet;

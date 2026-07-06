@@ -1704,6 +1704,21 @@ jobs:
           cargo test -p doctor_frankentui --lib cli_explain_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/cli_explain_tests_gate.log"
 
+      - name: Run doctor_frankentui operator-workflows gate (bd-3bxhj.7.9)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed headless operator-workflow engine: dry-run planning,
+          # full migration, failure triage (red path with ranked remediation +
+          # recovery guidance), remediation rerun, certification signoff
+          # (checksum-verified accept + tamper refusal red path), and
+          # explainability audit playback (byte-identical verbose explain +
+          # galaxy-card scripted session). Every span logs command_span /
+          # operator_decision / artifact_refs / galaxy_card_ids / replay; the
+          # float-free ledger replays byte-identically (proptest).
+          cargo test -p doctor_frankentui --lib operator_workflows -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/operator_workflows_gate.log"
+
       - name: Run doctor_frankentui formal-assurance gate (bd-3bxhj.10.28)
         run: |
           set -euo pipefail
@@ -1844,6 +1859,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_deep_assurance_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/deep_assurance" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/deep_assurance_e2e.log"
+
+      - name: Run doctor_frankentui operator-workflows E2E (bd-3bxhj.7.9)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_operator_workflows_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/operator_workflows" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/operator_workflows_e2e.log"
 
       - name: Run doctor_frankentui multi-round-drill E2E (bd-3bxhj.8.24)
         run: |

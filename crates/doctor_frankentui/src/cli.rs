@@ -21,6 +21,7 @@ use crate::killer_demo::{KillerDemoArgs, run_killer_demo_command};
 use crate::multi_round_drill::{MultiRoundDrillArgs, run_multi_round_drill_command};
 use crate::nightly_evaluation::{NightlyEvalArgs, run_nightly_eval};
 use crate::nightly_stress::{NightlyStressArgs, run_nightly_stress_command};
+use crate::operator_workflows::{OperatorWorkflowsArgs, run_operator_workflows_command};
 use crate::optimization_gauntlet::{OptimizationGauntletArgs, run_optimization_gauntlet_command};
 use crate::portfolio_scheduler::{PortfolioScheduleArgs, run_portfolio_schedule};
 use crate::report::{ReportArgs, run_report};
@@ -204,6 +205,14 @@ pub enum Commands {
     #[command(name = "deep-assurance")]
     DeepAssurance(DeepAssuranceArgs),
 
+    /// Replay the six headless operator workflows (dry-run, full migration,
+    /// failure triage, remediation rerun, certification signoff,
+    /// explainability audit) over the real kernels, logging command spans,
+    /// operator decisions, artifact references, and galaxy-card ids, with a
+    /// fail-closed red-path gate.
+    #[command(name = "operator-workflows")]
+    OperatorWorkflows(OperatorWorkflowsArgs),
+
     /// Run the E2E multi-round optimization drill: progress Round1 -> Round2 ->
     /// Round3 with tier eligibility gates, per-round baseline/profile/proof
     /// artifacts + re-profile deltas, and a Round3 rollback rehearsal.
@@ -269,6 +278,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::FormalAssurance(args) => run_formal_assurance_command(args),
         Commands::GraveyardGauntlet(args) => run_graveyard_gauntlet_command(args),
         Commands::DeepAssurance(args) => run_deep_assurance_command(args),
+        Commands::OperatorWorkflows(args) => run_operator_workflows_command(args),
         Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
         Commands::FlagshipMigrations(args) => run_flagship_migrations_command(args),
         Commands::KillerDemo(args) => run_killer_demo_command(args),
