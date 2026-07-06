@@ -448,7 +448,7 @@ const ALT: ScreenMode = ScreenMode::AltScreen;
 
 fn mode_label(mode: ScreenMode) -> &'static str {
     match mode {
-        ScreenMode::Inline { .. } => "inline",
+        ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. } => "inline",
         ScreenMode::AltScreen => "alt",
     }
 }
@@ -750,23 +750,31 @@ fn cancellation_race_shutdown_bounded_and_well_formed() {
 // Terminal safety under active degradation
 // ============================================================================
 
-/// While the governor is maximally engaged (degradation storm + flood +
-/// ticks), the mode-specific present paths must stay distinct: inline mode
-/// performs DEC cursor save/restore gymnastics, alt-screen must never emit
-/// them. A collapse of the two paths under pressure — or a background thread
-/// injecting bytes — would break this.
+/// While the governor is maximally engaged (always-degraded classification +
+/// flood + ticks), the mode-specific present paths must stay distinct: inline
+/// mode performs DEC cursor save/restore gymnastics, alt-screen must never
+/// emit them. A collapse of the two paths under pressure — or a background
+/// thread injecting bytes — would break this.
+///
+/// This deliberately uses `ZeroWatermarks` (governor pinned at `Degraded`
+/// with a meetable frame budget) rather than `DegradationStorm`: the gauntlet
+/// pinned down that an unmeetable budget suppresses presentation entirely via
+/// the post-render present-skip path — zero bytes are emitted even with
+/// `allow_frame_skip = false` — so a storm run has no present path to compare.
+/// That suppression semantics is itself pinned by
+/// `unmeetable_budget_suppresses_presentation_but_preserves_input`.
 #[test]
-fn terminal_mode_safety_preserved_under_degradation_storm() {
+fn terminal_mode_safety_preserved_under_always_degraded_governor() {
     let inline = run_gauntlet(
         INLINE,
         LoadSpec::FloodWithTicks,
-        GovVariant::DegradationStorm,
+        GovVariant::ZeroWatermarks,
         None,
     );
-    assert_strict_semantics(&inline, BURST as u32, "inline degradation storm");
+    assert_strict_semantics(&inline, BURST as u32, "inline always-degraded flood");
     assert!(
         !inline.terminal_output.is_empty(),
-        "degradation storm with frame-skip forbidden must still present frames"
+        "an always-degraded governor with a meetable budget must still present frames"
     );
     assert!(
         contains_subslice(&inline.terminal_output, CURSOR_SAVE),
@@ -776,14 +784,43 @@ fn terminal_mode_safety_preserved_under_degradation_storm() {
     let alt = run_gauntlet(
         ALT,
         LoadSpec::FloodWithTicks,
-        GovVariant::DegradationStorm,
+        GovVariant::ZeroWatermarks,
         None,
     );
-    assert_strict_semantics(&alt, BURST as u32, "alt degradation storm");
+    assert_strict_semantics(&alt, BURST as u32, "alt always-degraded flood");
     assert!(
         !contains_subslice(&alt.terminal_output, CURSOR_SAVE),
         "alt-screen mode must not emit inline cursor-save gymnastics under load"
     );
+}
+
+/// Pinned discovery: when the frame budget is unmeetable, the runtime
+/// suppresses presentation entirely (the post-render present-skip fires every
+/// frame, regardless of `allow_frame_skip`). The user-visible contract under
+/// that extreme is exactly the strict floor this gauntlet enforces: zero
+/// presented bytes is an acceptable degraded-mode outcome, but dropped or
+/// reordered scripted input never is, and shutdown stays bounded.
+#[test]
+fn unmeetable_budget_suppresses_presentation_but_preserves_input() {
+    for mode in [INLINE, ALT] {
+        let outcome = run_gauntlet(
+            mode,
+            LoadSpec::EventBurst,
+            GovVariant::DegradationStorm,
+            None,
+        );
+        assert_strict_semantics(
+            &outcome,
+            BURST as u32,
+            &format!("unmeetable budget, mode {mode:?}"),
+        );
+        assert!(
+            outcome.terminal_output.is_empty(),
+            "an unmeetable budget suppresses presentation via the present-skip path; \
+             if this starts presenting, the degraded-mode contract changed and both \
+             this pin and the operator docs must be revisited (mode {mode:?})"
+        );
+    }
 }
 
 // ============================================================================
