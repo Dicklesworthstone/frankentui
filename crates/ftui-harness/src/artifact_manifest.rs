@@ -189,6 +189,7 @@ pub const REDACT_FIELDS: &[&str] = &[
     "secret",
     "password",
     "cookie",
+    "bearer",
 ];
 
 /// Check whether a field name should be redacted.
