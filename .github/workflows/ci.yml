@@ -2418,3 +2418,92 @@ jobs:
           name: pane-replay-artifacts
           path: target/pane-profiling/ci
           retention-days: 30
+
+  perf-rollout-gates:
+    name: Perf Rollout Gates (tail monitors / drills / scorecard)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perf-rollout-gates-${{ hashFiles('**/Cargo.lock') }}
+
+      # The three suites share one artifact contract (bd-cpwfc AC1): the
+      # tail-regime monitor self-test proves the alerting can fire
+      # (bd-zzfhe), the drill suite proves the rollout actions are
+      # executable with reproducible evidence (bd-lilcl), and the
+      # promotion scorecard proves go/no-go stays a policy decision
+      # (bd-cn7eq). CI consumes the same JSON reviewers read.
+      - name: Tail-regime monitor validation (bd-zzfhe)
+        run: |
+          set -euo pipefail
+          mkdir -p target/perf-rollout-gates
+          cargo test -p ftui-harness --test tail_regime_monitor_e2e -- --nocapture \
+            | tee target/perf-rollout-gates/tail_monitor.log
+          grep '^MONITOR_SELFTEST ' target/perf-rollout-gates/tail_monitor.log \
+            | head -1 | sed 's/^MONITOR_SELFTEST //' \
+            > target/perf-rollout-gates/monitor_selftest.json
+          python3 - <<'PY'
+          import json
+          with open('target/perf-rollout-gates/monitor_selftest.json', encoding='utf-8') as fh:
+              selftest = json.load(fh)
+          assert selftest.get('passed') is True, f"monitor self-test failed: {selftest}"
+          print(f"monitor self-test: {len(selftest.get('cases', []))} fixtures behaved as designed")
+          PY
+
+      - name: Rollout drill suite (bd-lilcl)
+        run: |
+          set -euo pipefail
+          cargo test -p ftui-harness --test perf_rollout_drills_e2e -- --nocapture \
+            | tee target/perf-rollout-gates/drills.log
+          grep '^DRILL_REPORT ' target/perf-rollout-gates/drills.log \
+            | sed 's/^DRILL_REPORT //' | sort -u \
+            > target/perf-rollout-gates/drill_reports.jsonl
+          python3 - <<'PY'
+          import json
+          reports = []
+          with open('target/perf-rollout-gates/drill_reports.jsonl', encoding='utf-8') as fh:
+              for line in fh:
+                  if line.strip():
+                      reports.append(json.loads(line))
+          kinds = {r['drill'] for r in reports}
+          assert kinds == {'shadow', 'canary', 'fallback', 'rollback', 'recovery'}, kinds
+          bad = [r['scenario'] for r in reports if not r.get('mechanism_ok')]
+          assert not bad, f"drill machinery misbehaved: {bad}"
+          print(f"rollout drills: {len(reports)} scenarios, all mechanisms ok")
+          PY
+
+      - name: Promotion scorecard policy tests (bd-cn7eq)
+        run: |
+          set -euo pipefail
+          cargo test -p ftui-harness --lib promotion_scorecard -- --nocapture \
+            | tee target/perf-rollout-gates/scorecard.log
+
+      - name: Runtime load non-interference gauntlet (bd-lu69j)
+        run: |
+          set -euo pipefail
+          cargo test -p ftui-runtime --test load_noninterference_gauntlet -- --nocapture \
+            | tee target/perf-rollout-gates/load_gauntlet.log
+          grep '{"gauntlet":"load_noninterference"' target/perf-rollout-gates/load_gauntlet.log \
+            > target/perf-rollout-gates/load_gauntlet_metrics.jsonl || true
+
+      - name: Upload perf rollout gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-rollout-gates
+          path: target/perf-rollout-gates
+          retention-days: 30
