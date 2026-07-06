@@ -255,8 +255,10 @@ which maps quantitative evidence to a rollout **stage**.
 ### Stages
 
 `Alpha` (internal trials) → `Beta` (supervised production-adjacent) → `Ga`
-(general availability for the declared support matrix). Stages are ordered and
-advanced one at a time.
+(general availability for the declared support matrix — see
+[`docs/opentui-import-support-matrix.md`](opentui-import-support-matrix.md)
+for the versioned feature-class commitments, fallback guidance, and
+non-goals). Stages are ordered and advanced one at a time.
 
 ### Default stage gates
 
