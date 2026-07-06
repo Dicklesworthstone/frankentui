@@ -508,6 +508,17 @@ impl Buffer {
         self.dirty_rows.iter().filter(|&&d| d).count()
     }
 
+    /// Indices of dirty rows in ascending order (the witness consumed by the
+    /// render-certificate narrow path).
+    #[must_use]
+    pub fn dirty_row_indices(&self) -> Vec<u16> {
+        self.dirty_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(y, &dirty)| dirty.then_some(y as u16))
+            .collect()
+    }
+
     /// Access the per-cell dirty bitmap (0 = clean, 1 = dirty).
     #[inline]
     #[allow(dead_code)]

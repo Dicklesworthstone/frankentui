@@ -76,6 +76,9 @@ use ftui_render::diff_strategy::{DiffStrategy, DiffStrategyConfig, DiffStrategyS
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
 use ftui_render::presenter::Presenter;
+use ftui_render::render_certificate::{
+    RenderCertificate, RenderCertificateInputs, RenderCertificateLevel, evaluate_render_certificate,
+};
 use ftui_render::sanitize::sanitize;
 use tracing::{debug_span, info, info_span, trace, warn};
 
@@ -316,6 +319,15 @@ pub struct RuntimeDiffConfig {
     /// Default: true
     pub dirty_rows_enabled: bool,
 
+    /// Emit explicit render certificates and route the DirtyRows strategy
+    /// through the certified diff path (skip-all on zero dirty rows,
+    /// narrow-to-dirty otherwise). Behavior-identical to the uncertified
+    /// dirty path; disabling only removes the certificate evidence and the
+    /// zero-dirty fast path.
+    ///
+    /// Default: true
+    pub certified_skips: bool,
+
     /// Dirty-span tracking configuration (thresholds + feature flags).
     ///
     /// Controls span merging, guard bands, and enable/disable behavior.
@@ -376,6 +388,7 @@ impl Default for RuntimeDiffConfig {
         Self {
             bayesian_enabled: true,
             dirty_rows_enabled: true,
+            certified_skips: true,
             dirty_span_config: DirtySpanConfig::default(),
             tile_diff_config: TileDiffConfig::default(),
             reset_on_resize: true,
@@ -544,6 +557,8 @@ pub struct TerminalWriter<W: Write> {
     evidence_sink: Option<EvidenceSink>,
     /// Run identifier for diff decision evidence.
     #[allow(dead_code)]
+    /// The explicit skip certificate for the most recent diff decision.
+    last_certificate: Option<RenderCertificate>,
     diff_evidence_run_id: String,
     /// Monotonic event index for diff decision evidence.
     #[allow(dead_code)]
@@ -692,6 +707,7 @@ impl<W: Write> TerminalWriter<W> {
             diff_evidence_run_id: default_diff_run_id(),
             diff_evidence_idx: 0,
             last_diff_strategy: None,
+            last_certificate: None,
             render_trace: None,
             timing_enabled: false,
             last_present_timings: None,
@@ -798,6 +814,14 @@ impl<W: Write> TerminalWriter<W> {
     /// Get the last diff strategy selected during present, if any.
     pub fn last_diff_strategy(&self) -> Option<DiffStrategy> {
         self.last_diff_strategy
+    }
+
+    /// The explicit render certificate behind the most recent diff decision
+    /// (`None` before the first present or when certified skips are
+    /// disabled).
+    #[must_use]
+    pub fn last_render_certificate(&self) -> Option<&RenderCertificate> {
+        self.last_certificate.as_ref()
     }
 
     /// Set the terminal size.
@@ -1338,6 +1362,16 @@ impl<W: Write> TerminalWriter<W> {
         if prev_dims.is_none() || prev_dims != Some((buffer.width(), buffer.height())) {
             self.full_redraw_probe = 0;
             self.last_diff_strategy = Some(DiffStrategy::FullRedraw);
+            self.last_certificate = Some(evaluate_render_certificate(
+                &RenderCertificateInputs {
+                    prev_available: prev_dims.is_some(),
+                    dims_changed: prev_dims.is_some(),
+                    full_redraw_due: false,
+                    dirty_row_count: buffer.dirty_row_count(),
+                    total_rows: buffer.height(),
+                },
+                Vec::new(),
+            ));
             return DiffDecision {
                 strategy: DiffStrategy::FullRedraw,
                 has_diff: false,
@@ -1347,6 +1381,16 @@ impl<W: Write> TerminalWriter<W> {
         if self.full_redraw_interval_due() {
             self.full_redraw_probe = 0;
             self.last_diff_strategy = Some(DiffStrategy::FullRedraw);
+            self.last_certificate = Some(evaluate_render_certificate(
+                &RenderCertificateInputs {
+                    prev_available: true,
+                    dims_changed: false,
+                    full_redraw_due: true,
+                    dirty_row_count: buffer.dirty_row_count(),
+                    total_rows: buffer.height(),
+                },
+                Vec::new(),
+            ));
             return DiffDecision {
                 strategy: DiffStrategy::FullRedraw,
                 has_diff: false,
@@ -1424,11 +1468,34 @@ impl<W: Write> TerminalWriter<W> {
             DiffStrategy::Full => {
                 let prev = self.prev_buffer.as_ref().expect("prev buffer must exist");
                 self.diff_scratch.compute_into(prev, buffer);
+                self.last_certificate = Some(RenderCertificate {
+                    level: RenderCertificateLevel::FullRequired,
+                    causes: vec!["strategy-selected-full"],
+                    dirty_rows: Vec::new(),
+                    fell_back: false,
+                });
                 has_diff = true;
             }
             DiffStrategy::DirtyRows => {
                 let prev = self.prev_buffer.as_ref().expect("prev buffer must exist");
-                self.diff_scratch.compute_dirty_into(prev, buffer);
+                if self.diff_config.certified_skips {
+                    let certificate = evaluate_render_certificate(
+                        &RenderCertificateInputs {
+                            prev_available: true,
+                            dims_changed: false,
+                            full_redraw_due: false,
+                            dirty_row_count: dirty_rows,
+                            total_rows: buffer.height(),
+                        },
+                        buffer.dirty_row_indices(),
+                    );
+                    self.diff_scratch
+                        .compute_certified_into(prev, buffer, certificate.to_hint());
+                    self.last_certificate = Some(certificate);
+                } else {
+                    self.diff_scratch.compute_dirty_into(prev, buffer);
+                    self.last_certificate = None;
+                }
                 has_diff = true;
             }
             DiffStrategy::FullRedraw => {}
@@ -1615,6 +1682,21 @@ impl<W: Write> TerminalWriter<W> {
                 );
                 let _ = sink.write_jsonl(&line);
             }
+        }
+
+        // Emit the explicit skip certificate alongside the diff decision so
+        // operators can see WHY work was skipped or performed (bd-6b9nr).
+        if let Some(ref certificate) = self.last_certificate
+            && let Some(ref sink) = self.evidence_sink
+        {
+            let line = format!(
+                r#"{{"event":"certificate_decision","run_id":"{}","event_idx":{},"strategy":"{:?}","certificate":{}}}"#,
+                self.diff_evidence_run_id,
+                self.diff_evidence_idx,
+                strategy,
+                certificate.to_evidence_json()
+            );
+            let _ = sink.write_jsonl(&line);
         }
 
         self.last_diff_strategy = Some(strategy);
@@ -6807,5 +6889,104 @@ mod tests {
                 "present_ui must not panic with oversized ui_height"
             );
         }
+    }
+
+    // ── Render-certificate integration (bd-6b9nr) ───────────────────────────
+
+    fn present_sequence(certified: bool) -> (Vec<u8>, Vec<String>) {
+        let config = RuntimeDiffConfig {
+            certified_skips: certified,
+            // Deterministic strategy behavior for the byte-equality comparison.
+            bayesian_enabled: false,
+            ..RuntimeDiffConfig::default()
+        };
+        let mut writer = TerminalWriter::with_diff_config(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 4 },
+            UiAnchor::Bottom,
+            full_caps(),
+            config,
+        );
+        writer.set_size(24, 12);
+
+        let mut certificates = Vec::new();
+        for frame in 0..4u16 {
+            let mut buffer = Buffer::new(24, 4);
+            if frame > 0 {
+                buffer.clear_dirty();
+            }
+            match frame {
+                // Frame 0: initial paint (all rows dirty by construction).
+                0 => {}
+                // Frame 1: identical content — zero dirty rows.
+                1 => {}
+                // Frame 2: sparse update on two rows.
+                2 => {
+                    buffer.set(3, 1, ftui_render::cell::Cell::from_char('X'));
+                    buffer.set(9, 3, ftui_render::cell::Cell::from_char('Y'));
+                }
+                // Frame 3: another sparse update.
+                _ => {
+                    buffer.set(3, 1, ftui_render::cell::Cell::from_char('Z'));
+                }
+            }
+            writer
+                .present_ui_owned(buffer, None, false)
+                .expect("present");
+            certificates.push(
+                writer
+                    .last_render_certificate()
+                    .map(|c| format!("{}:{:?}", c.level.label(), c.causes.clone()))
+                    .unwrap_or_else(|| "none".to_string()),
+            );
+        }
+        (writer.into_inner().expect("writer sink"), certificates)
+    }
+
+    #[test]
+    fn certified_path_is_byte_identical_to_legacy_dirty_path() {
+        let (certified_bytes, _) = present_sequence(true);
+        let (legacy_bytes, _) = present_sequence(false);
+        assert_eq!(
+            certified_bytes, legacy_bytes,
+            "certified diff path changed visible output"
+        );
+    }
+
+    #[test]
+    fn zero_dirty_frame_earns_a_skip_all_certificate() {
+        let (_, certificates) = present_sequence(true);
+        // Frame 1 re-presents identical content with zero dirty rows.
+        assert!(
+            certificates[1].starts_with("skip-all"),
+            "frame 1 certificate was {}",
+            certificates[1]
+        );
+        // Sparse frames narrow to their dirty rows.
+        assert!(
+            certificates[2].starts_with("narrow-to-dirty"),
+            "frame 2 certificate was {}",
+            certificates[2]
+        );
+    }
+
+    #[test]
+    fn certificates_name_full_work_causes() {
+        let (_, certificates) = present_sequence(true);
+        // Frame 0 has no previous buffer: full redraw with a named cause.
+        assert!(
+            certificates[0].contains("no-previous-frame"),
+            "frame 0 certificate was {}",
+            certificates[0]
+        );
+    }
+
+    #[test]
+    fn legacy_path_records_no_certificate() {
+        let (_, certificates) = present_sequence(false);
+        // The dirty-rows frames record None when certified skips are off
+        // (frame 0/resize paths still certify full work explicitly).
+        assert_eq!(certificates[2], "none");
+        assert_eq!(certificates[3], "none");
     }
 }

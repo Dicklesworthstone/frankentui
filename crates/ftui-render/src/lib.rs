@@ -36,6 +36,7 @@ pub mod grapheme_pool;
 pub mod headless;
 pub mod link_registry;
 pub mod presenter;
+pub mod render_certificate;
 
 pub mod quotient_filter;
 pub mod roaring_bitmap;
