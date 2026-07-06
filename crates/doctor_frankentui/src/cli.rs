@@ -24,6 +24,7 @@ use crate::nightly_stress::{NightlyStressArgs, run_nightly_stress_command};
 use crate::operator_workflows::{OperatorWorkflowsArgs, run_operator_workflows_command};
 use crate::optimization_gauntlet::{OptimizationGauntletArgs, run_optimization_gauntlet_command};
 use crate::portfolio_scheduler::{PortfolioScheduleArgs, run_portfolio_schedule};
+use crate::release_candidate_gate::{ReleaseCandidateArgs, run_release_candidate_command};
 use crate::report::{ReportArgs, run_report};
 use crate::seed::{SeedDemoArgs, run_seed_demo};
 use crate::sequential_fdr::{SequentialFdrArgs, run_sequential_fdr};
@@ -213,6 +214,13 @@ pub enum Commands {
     #[command(name = "operator-workflows")]
     OperatorWorkflows(OperatorWorkflowsArgs),
 
+    /// Run the fail-closed release-candidate gate: compose the operator,
+    /// formal-assurance, graveyard, deep-assurance, chaos, optimization, and
+    /// multi-round-drill gauntlets into one go/no-go RC decision with
+    /// rollback-readiness, behavior-regression, and drift clauses.
+    #[command(name = "release-candidate")]
+    ReleaseCandidate(ReleaseCandidateArgs),
+
     /// Run the E2E multi-round optimization drill: progress Round1 -> Round2 ->
     /// Round3 with tier eligibility gates, per-round baseline/profile/proof
     /// artifacts + re-profile deltas, and a Round3 rollback rehearsal.
@@ -279,6 +287,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::GraveyardGauntlet(args) => run_graveyard_gauntlet_command(args),
         Commands::DeepAssurance(args) => run_deep_assurance_command(args),
         Commands::OperatorWorkflows(args) => run_operator_workflows_command(args),
+        Commands::ReleaseCandidate(args) => run_release_candidate_command(args),
         Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
         Commands::FlagshipMigrations(args) => run_flagship_migrations_command(args),
         Commands::KillerDemo(args) => run_killer_demo_command(args),

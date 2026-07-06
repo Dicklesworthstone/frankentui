@@ -237,6 +237,7 @@ pub mod profile;
 pub mod profile_orchestrator;
 pub mod proof_artifacts;
 pub mod recommendation_contract;
+pub mod release_candidate_gate;
 pub mod redact;
 pub mod report;
 pub mod reprofile_loop;

@@ -1719,6 +1719,23 @@ jobs:
           cargo test -p doctor_frankentui --lib operator_workflows -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/operator_workflows_gate.log"
 
+      - name: Run doctor_frankentui release-candidate gate (bd-3bxhj.9.9)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # The fail-closed RC-convergence capstone: composes the operator
+          # certification workflows, formal-assurance gauntlet, graveyard
+          # verify + chain gauntlets, deep-assurance gauntlet, chaos drill,
+          # optimization gauntlet, and multi-round drill into one go/no-go
+          # decision. Release fails on missing rollback readiness (optimization
+          # rollback restored + Round3 rehearsal), missing behavior-regression
+          # proofs (red-path decisions + graveyard verify), or unresolved
+          # high-risk drift signals. Every ledger line carries the section
+          # span, sub-report id + evidence checksum, policy verdict,
+          # hotspot/score context, and the sub-report's replay command.
+          cargo test -p doctor_frankentui --lib release_candidate_gate -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/release_candidate_gate.log"
+
       - name: Run doctor_frankentui formal-assurance gate (bd-3bxhj.10.28)
         run: |
           set -euo pipefail
@@ -1865,6 +1882,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_operator_workflows_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/operator_workflows" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/operator_workflows_e2e.log"
+
+      - name: Run doctor_frankentui release-candidate E2E (bd-3bxhj.9.9)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_release_candidate_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/release_candidate" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/release_candidate_e2e.log"
 
       - name: Run doctor_frankentui multi-round-drill E2E (bd-3bxhj.8.24)
         run: |
