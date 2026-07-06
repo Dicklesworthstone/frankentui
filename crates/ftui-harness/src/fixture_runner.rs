@@ -160,6 +160,18 @@ fn apply_transition(
     cells_to_change
 }
 
+/// Copy the previous frame into the new buffer without mutating any cell
+/// (the zero-change path for declared no-change control fixtures).
+fn copy_frame(old: &Buffer, new: &mut Buffer, viewport: ViewportSpec) {
+    for y in 0..viewport.height {
+        for x in 0..viewport.width {
+            if let Some(cell) = old.get(x, y) {
+                new.set(x, y, *cell);
+            }
+        }
+    }
+}
+
 /// Simple FNV-1a hash of buffer cell content for determinism checks.
 fn buffer_checksum(buf: &Buffer, w: u16, h: u16) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -213,12 +225,12 @@ impl FixtureRunner {
         let mut total_cells_diffed: u64 = 0;
         let mut frame_checksums = Vec::with_capacity(frames as usize);
 
-        // Pick the primary transition pattern (use first, or Mixed for empty)
-        let pattern = spec
-            .transitions
-            .first()
-            .copied()
-            .unwrap_or(TransitionPattern::SparseUpdate);
+        // Pick the primary transition pattern. An EMPTY transition list is a
+        // declared no-change control fixture: it must apply ZERO mutations
+        // (defaulting it to SparseUpdate would silently turn negative
+        // controls into sparse-update workloads — the render gauntlet's
+        // NegativeControl gate caught exactly that, bd-40lhe).
+        let pattern = spec.transitions.first().copied();
 
         let run_start = Instant::now();
 
@@ -226,7 +238,12 @@ impl FixtureRunner {
         let warmup_count = (frames / 10).clamp(2, 20);
         for _ in 0..warmup_count {
             new.reset_for_frame();
-            apply_transition(&mut rng, pattern, &mut old, &mut new, vp);
+            match pattern {
+                Some(p) => {
+                    apply_transition(&mut rng, p, &mut old, &mut new, vp);
+                }
+                None => copy_frame(&old, &mut new, vp),
+            }
             diff.compute_dirty_into(&old, &new);
             ansi_sink.clear();
             let mut presenter = Presenter::new(&mut ansi_sink, caps);
@@ -240,7 +257,13 @@ impl FixtureRunner {
 
             // Measure cell mutation
             let mutate_start = Instant::now();
-            let cells_changed = apply_transition(&mut rng, pattern, &mut old, &mut new, vp);
+            let cells_changed = match pattern {
+                Some(p) => apply_transition(&mut rng, p, &mut old, &mut new, vp),
+                None => {
+                    copy_frame(&old, &mut new, vp);
+                    0
+                }
+            };
             let mutate_us = mutate_start.elapsed().as_nanos() as u64;
             capture.record_sample(Sample::latency_us("cell_mutation", mutate_us / 1000));
 

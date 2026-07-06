@@ -499,6 +499,18 @@ jobs:
       - name: Baseline benchmark capture (bd-3jlw5.1)
         run: cargo test -p ftui-demo-showcase --test baseline_capture -- --nocapture
 
+      - name: Render gauntlet — equivalence, replay, tail latency, certificates (bd-40lhe)
+        run: |
+          set -euo pipefail
+          # The standing render-perf safety net: repeated-run visible
+          # equivalence, seeded replay determinism, tail-percentile capture
+          # (with the pure compare_tail_latency regression comparator for
+          # stored baselines), certificate shadow-safety incl. deliberate
+          # stale-SkipDiff detection, adversarial challenge fixtures, and
+          # negative controls (which caught the empty-transitions ->
+          # SparseUpdate runner defect this gauntlet was built to catch).
+          cargo test -p ftui-harness --test render_gauntlet_e2e -- --nocapture
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
