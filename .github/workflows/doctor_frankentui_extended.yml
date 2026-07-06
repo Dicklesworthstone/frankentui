@@ -611,6 +611,28 @@ jobs:
           cargo test -p doctor_frankentui --lib artifact_coding_tests -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/artifact_coding_tests_gate.log"
 
+      - name: Run doctor_frankentui deep-assurance gate (bd-3bxhj.10.45)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed E2E deep-assurance gauntlet across six families:
+          # streaming conjugate fusion (posterior tightens, dependence
+          # deflates, sparse/drift windows degrade conservatively),
+          # interleaved sequential FDR under optional stopping (order-
+          # invariant certification, adversarial clamps, exhaustion,
+          # fail-closed malformed evidence), counterfactual/fragility drills
+          # (minimal flips, unsat proofs, mitigation policing), degradation
+          # campaigns + hysteresis recovery, mid-run guarantee faults
+          # (invalidate -> conservative fallback, control mechanisms
+          # unaffected), and galaxy-brain UX contracts (non-interference,
+          # budgets, visible truncation). The evidence pack carries
+          # posterior/wealth/guarantee/counterfactual/degradation/UX records
+          # on every line; red paths carry machine failure signatures; the
+          # float-free ledger replays byte-identically (proptest). Mandatory
+          # for release-candidate promotion.
+          cargo test -p doctor_frankentui --lib deep_assurance_gauntlet -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/deep_assurance_gauntlet_gate.log"
+
       - name: Run doctor_frankentui formal-assurance gate (bd-3bxhj.10.28)
         run: |
           set -euo pipefail
@@ -745,6 +767,12 @@ jobs:
           set -euo pipefail
           ./scripts/doctor_frankentui_graveyard_gauntlet_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/graveyard_gauntlet" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/graveyard_gauntlet_e2e.log"
+
+      - name: Run doctor_frankentui deep-assurance E2E (bd-3bxhj.10.45)
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_frankentui_deep_assurance_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/deep_assurance" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/deep_assurance_e2e.log"
 
       - name: Run doctor_frankentui multi-round-drill E2E (bd-3bxhj.8.24)
         run: |

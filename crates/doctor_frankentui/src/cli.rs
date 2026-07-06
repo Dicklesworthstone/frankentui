@@ -5,6 +5,7 @@ use crate::alien_kernel_tests::{AlienUpliftArgs, run_alien_uplift};
 use crate::capture::{CaptureArgs, print_profiles, run_capture};
 use crate::chaos_drill::{ChaosDrillArgs, run_chaos_drill};
 use crate::ci_outputs::{CiOutputsArgs, run_ci_outputs_command};
+use crate::deep_assurance_gauntlet::{DeepAssuranceArgs, run_deep_assurance_command};
 use crate::doctor::{DoctorArgs, run_doctor};
 use crate::error::Result;
 use crate::feedback_ingestion::{FeedbackReportArgs, run_feedback_report};
@@ -195,6 +196,14 @@ pub enum Commands {
     #[command(name = "graveyard-gauntlet")]
     GraveyardGauntlet(GraveyardGauntletArgs),
 
+    /// Run the E2E alien-artifact deep-assurance gauntlet: streaming
+    /// conjugate fusion, interleaved sequential FDR under optional stopping,
+    /// counterfactual/fragility drills, degradation + recovery campaigns,
+    /// mid-run guarantee faults, and galaxy-brain UX contracts, with a
+    /// fail-closed evidence-pack gate (mandatory for RC promotion).
+    #[command(name = "deep-assurance")]
+    DeepAssurance(DeepAssuranceArgs),
+
     /// Run the E2E multi-round optimization drill: progress Round1 -> Round2 ->
     /// Round3 with tier eligibility gates, per-round baseline/profile/proof
     /// artifacts + re-profile deltas, and a Round3 rollback rehearsal.
@@ -259,6 +268,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::HazardRegime(args) => run_hazard_regime_command(args),
         Commands::FormalAssurance(args) => run_formal_assurance_command(args),
         Commands::GraveyardGauntlet(args) => run_graveyard_gauntlet_command(args),
+        Commands::DeepAssurance(args) => run_deep_assurance_command(args),
         Commands::MultiRoundDrill(args) => run_multi_round_drill_command(args),
         Commands::FlagshipMigrations(args) => run_flagship_migrations_command(args),
         Commands::KillerDemo(args) => run_killer_demo_command(args),

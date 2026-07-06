@@ -174,6 +174,7 @@ pub mod corpus_integrity_tests;
 pub mod counterfactual_audit;
 pub mod coverage_prioritizer;
 pub mod decision_loss_policy;
+pub mod deep_assurance_gauntlet;
 pub mod degradation_policy;
 pub mod doctor;
 pub mod drift_monitor;
