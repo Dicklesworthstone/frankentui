@@ -72,6 +72,7 @@ pub mod resize_storm;
 pub mod rollout_runbook;
 pub mod rollout_scorecard;
 pub mod shadow_run;
+pub mod tail_regime_monitor;
 pub mod terminal_model;
 pub mod time_travel;
 pub mod time_travel_inspector;
