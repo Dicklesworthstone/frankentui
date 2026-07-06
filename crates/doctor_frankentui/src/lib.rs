@@ -163,6 +163,7 @@ pub mod certification_report;
 pub mod chaos_drill;
 pub mod ci_outputs;
 pub mod cli;
+pub mod cli_explain_tests;
 pub mod code_emission;
 pub mod codegen_optimize;
 pub mod composition_matrix;

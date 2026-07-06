@@ -1686,6 +1686,24 @@ jobs:
           cargo test -p doctor_frankentui --lib deep_assurance_gauntlet -- --nocapture \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/deep_assurance_gauntlet_gate.log"
 
+      - name: Run doctor_frankentui CLI/explain unit/property harness (bd-3bxhj.7.8)
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          # Fail-closed operator-UX drift gate ahead of the .7.9 E2E workflows:
+          # clap parsing (task-oriented names, legacy aliases, global --machine
+          # placement, precise error kinds for unknown/invalid/missing input),
+          # profile override-DSL resolution (comments/quotes/last-write-wins,
+          # typed getters, ProfileNotFound fail-closed), concise/verbose explain
+          # contracts with byte-identical re-renders and JSON round-trips,
+          # galaxy-brain Unicode/LaTeX/JSON export determinism, and
+          # certification remediation ranking (EV-descending with total-order
+          # tie-breaks, contiguous ranks, checksum reproducibility + tamper
+          # detection). Each diagnostic carries command_mode / profile_id /
+          # explain_level / card_schema_version / validation_outcome / replay.
+          cargo test -p doctor_frankentui --lib cli_explain_tests -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/cli_explain_tests_gate.log"
+
       - name: Run doctor_frankentui formal-assurance gate (bd-3bxhj.10.28)
         run: |
           set -euo pipefail
