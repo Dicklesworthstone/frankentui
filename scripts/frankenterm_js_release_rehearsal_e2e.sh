@@ -84,15 +84,24 @@ rehearse() {
             | sed "s/^{/{\"ts\":\"$RUN_TS\",/" > "$evidence_file"
         evidence_lines=$(wc -l < "$evidence_file" | tr -d ' ')
     fi
+    # Vacuity guard: a lane that ran zero tests (feature-gated out, wrong
+    # target, filtered away) must NEVER count as a passing rehearsal lane —
+    # silence is not evidence. Sum every libtest result line in the log.
+    local tests_ran
+    tests_ran=$(awk '/^test result:/ { for (i = 1; i <= NF; i++) if ($(i+1) == "passed;") sum += $i } END { print sum + 0 }' "$log")
     local status="pass"
     if [[ $exit_code -ne 0 ]]; then
         status="fail"
         FAILED=$((FAILED + 1))
+    elif [[ "$tests_ran" -eq 0 ]]; then
+        status="vacuous"
+        FAILED=$((FAILED + 1))
+        echo "    VACUOUS: lane ran zero tests (check features/target): $log"
     else
         PASSED=$((PASSED + 1))
     fi
-    printf "  %-42s %-4s (%s ms, %s evidence lines)\n" "$label" "$status" "$elapsed" "$evidence_lines"
-    RESULTS+=("{\"lane\":\"$label\",\"status\":\"$status\",\"elapsed_ms\":$elapsed,\"evidence_lines\":$evidence_lines,\"evidence_file\":\"${evidence_file}\",\"checklist_item\":\"$checklist\"}")
+    printf "  %-42s %-8s (%s ms, %s tests, %s evidence lines)\n" "$label" "$status" "$elapsed" "$tests_ran" "$evidence_lines"
+    RESULTS+=("{\"lane\":\"$label\",\"status\":\"$status\",\"elapsed_ms\":$elapsed,\"tests_ran\":$tests_ran,\"evidence_lines\":$evidence_lines,\"evidence_file\":\"${evidence_file}\",\"checklist_item\":\"$checklist\"}")
 }
 
 echo "============================================================"
@@ -124,8 +133,16 @@ rehearse "sdk_adapters_validation" "FTUI_SDK_ADAPTER_COMPAT" "compat_arms_green"
     -p ftui-web --test frankenterm_js_sdk_validation_e2e
 rehearse "markers_selection_search" "FTUI_ADVANCED_API_COMPAT" "compat_arms_green" \
     -p ftui-web --test frankenterm_js_markers_compat
-rehearse "security_reliability_attach" "FTUI_SECURITY_RELIABILITY_COMPAT" "compat_arms_green" \
-    -p ftui-extras --test frankenterm_js_security_reliability_compat
+# The security/reliability harness is a 3-arm design (bd-2vr05.11): flow
+# control (pty), OSC 8 link policy (render), OSC 52 clipboard policy
+# (extras — requires the `clipboard` feature, without which the arm
+# compiles to ZERO tests and would be vacuous).
+rehearse "security_flow_control" "FTUI_SECURITY_RELIABILITY_COMPAT" "compat_arms_green" \
+    -p ftui-pty --test frankenterm_js_security_reliability_compat
+rehearse "security_link_policy" "FTUI_SECURITY_RELIABILITY_COMPAT" "compat_arms_green" \
+    -p ftui-render --test frankenterm_js_security_reliability_compat
+rehearse "security_clipboard_policy" "FTUI_SECURITY_RELIABILITY_COMPAT" "compat_arms_green" \
+    -p ftui-extras --features clipboard --test frankenterm_js_security_reliability_compat
 rehearse "accessibility_ime" "-" "compat_arms_green" \
     -p ftui-web --features input-parser --test frankenterm_js_a11y_e2e
 rehearse "runtime_options_fallback" "FTUI_RUNTIME_OPTIONS_MATRIX" "compat_arms_green" \
