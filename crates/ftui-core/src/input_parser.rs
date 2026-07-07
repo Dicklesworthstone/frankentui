@@ -20,7 +20,7 @@
 //!
 //! The parser enforces length limits on all sequence types to prevent memory exhaustion:
 //! - CSI sequences: 256 bytes max
-//! - OSC sequences: 4KB max
+//! - OSC sequences: 100KB max (large enough for OSC 52 clipboard payloads)
 //! - Paste content: 1MB max
 
 use crate::event::{
@@ -87,6 +87,9 @@ enum ParserState {
         collected: u8,
         /// Total bytes expected.
         expected: u8,
+        /// Whether the sequence was Alt-prefixed (ESC + UTF-8 lead byte,
+        /// i.e. Alt+non-ASCII under metaSendsEscape).
+        alt: bool,
     },
     /// Collecting X10 mouse coordinates (3 bytes).
     MouseX10 { collected: u8, buffer: [u8; 3] },
@@ -195,13 +198,16 @@ impl InputParser {
                 self.state = ParserState::Ground;
                 Some(Event::Key(KeyEvent::new(KeyCode::Escape)))
             }
-            ParserState::Utf8 { .. } => {
+            ParserState::Utf8 { alt, .. } => {
                 // Incomplete UTF-8 sequence at timeout -> replacement char
+                // (Alt-flagged if the sequence was ESC-prefixed).
                 self.state = ParserState::Ground;
                 self.utf8_buffer = [0; 4];
-                Some(Event::Key(KeyEvent::new(KeyCode::Char(
-                    std::char::REPLACEMENT_CHARACTER,
-                ))))
+                let mods = if alt { Modifiers::ALT } else { Modifiers::NONE };
+                Some(Event::Key(
+                    KeyEvent::new(KeyCode::Char(std::char::REPLACEMENT_CHARACTER))
+                        .with_modifiers(mods),
+                ))
             }
             _ => None,
         }
@@ -271,7 +277,8 @@ impl InputParser {
             ParserState::Utf8 {
                 collected,
                 expected,
-            } => self.process_utf8(byte, collected, expected),
+                alt,
+            } => self.process_utf8(byte, collected, expected, alt),
             ParserState::MouseX10 { .. } => self.process_mouse_x10(byte),
         }
     }
@@ -339,6 +346,7 @@ impl InputParser {
                 self.state = ParserState::Utf8 {
                     collected: 1,
                     expected: 2,
+                    alt: false,
                 };
                 None
             }
@@ -347,6 +355,7 @@ impl InputParser {
                 self.state = ParserState::Utf8 {
                     collected: 1,
                     expected: 3,
+                    alt: false,
                 };
                 None
             }
@@ -355,6 +364,7 @@ impl InputParser {
                 self.state = ParserState::Utf8 {
                     collected: 1,
                     expected: 4,
+                    alt: false,
                 };
                 None
             }
@@ -445,7 +455,48 @@ impl InputParser {
                     KeyEvent::new(KeyCode::Backspace).with_modifiers(Modifiers::ALT),
                 ))
             }
-            // Invalid - return to ground
+            // Alt + non-ASCII (metaSendsEscape in a UTF-8 terminal sends
+            // ESC + the UTF-8 encoding of the character). Collect the
+            // sequence with the alt flag so it decodes as Alt+char instead
+            // of being dropped.
+            0xC2..=0xDF => {
+                self.utf8_buffer[0] = byte;
+                self.state = ParserState::Utf8 {
+                    collected: 1,
+                    expected: 2,
+                    alt: true,
+                };
+                None
+            }
+            0xE0..=0xEF => {
+                self.utf8_buffer[0] = byte;
+                self.state = ParserState::Utf8 {
+                    collected: 1,
+                    expected: 3,
+                    alt: true,
+                };
+                None
+            }
+            0xF0..=0xF4 => {
+                self.utf8_buffer[0] = byte;
+                self.state = ParserState::Utf8 {
+                    collected: 1,
+                    expected: 4,
+                    alt: true,
+                };
+                None
+            }
+            // Invalid UTF-8 lead bytes after ESC: emit Alt+replacement (the
+            // ground path emits a bare replacement char for these).
+            0xC0..=0xC1 | 0xF5..=0xFF => {
+                self.state = ParserState::Ground;
+                Some(Event::Key(
+                    KeyEvent::new(KeyCode::Char(std::char::REPLACEMENT_CHARACTER))
+                        .with_modifiers(Modifiers::ALT),
+                ))
+            }
+            // Invalid (bare UTF-8 continuation bytes 0x80-0xBF) - return to
+            // ground; ground ignores these bytes too.
             _ => {
                 self.state = ParserState::Ground;
                 None
@@ -487,11 +538,14 @@ impl InputParser {
                 self.state = ParserState::Ground;
                 self.parse_csi_sequence()
             }
-            // Invalid (0x00-0x1F, 0x7F-0xFF)
+            // Invalid (0x00-0x1F, 0x7F-0xFF): abort the sequence and reprocess
+            // the byte, matching process_csi_param/process_csi_ignore so that
+            // e.g. `ESC [ CR` still delivers Enter (anti-swallow contract,
+            // tests/repro/parser_swallow.rs).
             _ => {
                 self.state = ParserState::Ground;
                 self.buffer.clear();
-                None
+                self.process_ground(byte)
             }
         }
     }
@@ -505,8 +559,12 @@ impl InputParser {
             return None;
         }
 
-        // DoS protection
-        if self.buffer.len() >= MAX_CSI_LEN {
+        // DoS protection. Only parameter/intermediate accumulation is capped:
+        // a final byte (0x40-0x7E) arriving exactly at the cap must still
+        // terminate the sequence, otherwise it is swallowed here and the
+        // parser enters CsiIgnore, which then eats the next legitimate
+        // keystroke as a bogus ignore-terminator.
+        if self.buffer.len() >= MAX_CSI_LEN && !(0x40..=0x7E).contains(&byte) {
             self.state = ParserState::CsiIgnore;
             self.buffer.clear();
             return None;
@@ -577,10 +635,14 @@ impl InputParser {
                 return None;
             }
             (b"201", b'~') => {
-                self.in_paste = false;
-                let content = String::from_utf8_lossy(&self.paste_buffer).into_owned();
+                // Stray end-paste with no matching start: the in-paste path
+                // consumes its own terminator in `process_paste_byte`, so this
+                // arm is only reachable when `in_paste` is already false (e.g.
+                // the start marker was corrupted or eaten upstream). Discard it
+                // instead of emitting a spurious empty Paste event.
+                debug_assert!(!self.in_paste);
                 self.paste_buffer.clear();
-                return Some(Event::Paste(PasteEvent::bracketed(content)));
+                return None;
             }
 
             // SGR mouse protocol
@@ -626,7 +688,7 @@ impl InputParser {
     /// Parse CSI sequences ending in ~.
     fn parse_csi_tilde(&self, params: &[u8]) -> Option<Event> {
         let num = self.parse_first_param(params)?;
-        let mods = self.parse_modifier_param(params);
+        let (mods, kind) = self.parse_modifier_param(params);
 
         let code = match num {
             1 => KeyCode::Home,
@@ -646,7 +708,9 @@ impl InputParser {
             _ => return None,
         };
 
-        Some(Event::Key(KeyEvent::new(code).with_modifiers(mods)))
+        Some(Event::Key(
+            KeyEvent::new(code).with_modifiers(mods).with_kind(kind),
+        ))
     }
 
     /// Parse the first numeric parameter from CSI params.
@@ -656,20 +720,23 @@ impl InputParser {
         first.parse().ok()
     }
 
-    /// Parse modifier parameter (second param in CSI sequences).
-    fn parse_modifier_param(&self, params: &[u8]) -> Modifiers {
+    /// Parse the modifier parameter (second param in CSI sequences) plus the
+    /// optional kitty event-type sub-parameter.
+    ///
+    /// With the kitty keyboard enhancement "report event types" enabled, the
+    /// legacy functional-key encodings also carry `modifiers:event_type`
+    /// (e.g. `CSI 1;1:3 A` = Up release, `CSI 3;5:3 ~` = Ctrl+Delete
+    /// release). Parsing only `mods` here would fail on the colon form and
+    /// silently fall back to `Modifiers::NONE`, turning every key release
+    /// into a duplicate unmodified press.
+    fn parse_modifier_param(&self, params: &[u8]) -> (Modifiers, KeyEventKind) {
         let s = match std::str::from_utf8(params) {
             Ok(s) => s,
-            Err(_) => return Modifiers::NONE,
+            Err(_) => return (Modifiers::NONE, KeyEventKind::Press),
         };
 
-        let modifier_value: u32 = s
-            .split(';')
-            .nth(1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
-
-        Self::modifiers_from_xterm(modifier_value)
+        let mod_part = s.split(';').nth(1).unwrap_or("");
+        Self::kitty_modifiers_and_kind(mod_part)
     }
 
     /// Parse Kitty keyboard protocol CSI u sequences.
@@ -773,9 +840,10 @@ impl InputParser {
         mods
     }
 
-    /// Create a key event with modifiers from CSI params.
+    /// Create a key event with modifiers (and kitty event kind) from CSI params.
     fn key_with_modifiers(&self, code: KeyCode, params: &[u8]) -> KeyEvent {
-        KeyEvent::new(code).with_modifiers(self.parse_modifier_param(params))
+        let (mods, kind) = self.parse_modifier_param(params);
+        KeyEvent::new(code).with_modifiers(mods).with_kind(kind)
     }
 
     /// Parse SGR mouse protocol events.
@@ -1012,21 +1080,22 @@ impl InputParser {
             return self.process_ground(byte);
         }
 
-        // DoS protection
-        if self.buffer.len() >= MAX_OSC_LEN {
-            self.state = ParserState::OscIgnore;
-            self.buffer.clear();
-            return None;
-        }
-
         match byte {
-            // BEL terminates
+            // BEL terminates. Checked before the DoS cap (mirroring the ESC/ST
+            // path above): a terminator arriving exactly at the cap must still
+            // end the sequence instead of being dropped into OscIgnore, which
+            // would swallow all subsequent printable input.
             0x07 => {
                 self.state = ParserState::Ground;
                 self.parse_osc_sequence()
             }
-            // Continue collecting
+            // Continue collecting (content accumulation is capped)
             _ => {
+                if self.buffer.len() >= MAX_OSC_LEN {
+                    self.state = ParserState::OscIgnore;
+                    self.buffer.clear();
+                    return None;
+                }
                 self.buffer.push(byte);
                 None
             }
@@ -1209,7 +1278,9 @@ impl InputParser {
     }
 
     /// Process UTF-8 continuation bytes.
-    fn process_utf8(&mut self, byte: u8, collected: u8, expected: u8) -> Option<Event> {
+    fn process_utf8(&mut self, byte: u8, collected: u8, expected: u8, alt: bool) -> Option<Event> {
+        let alt_mods = if alt { Modifiers::ALT } else { Modifiers::NONE };
+
         // Check for valid continuation byte
         if (byte & 0xC0) != 0x80 {
             // Invalid - return to ground and re-process the unexpected byte.
@@ -1219,9 +1290,10 @@ impl InputParser {
             // Queue the replacement event for the next iteration of the parse loop
             self.pending_event = self.process_ground(byte);
 
-            return Some(Event::Key(KeyEvent::new(KeyCode::Char(
-                std::char::REPLACEMENT_CHARACTER,
-            ))));
+            return Some(Event::Key(
+                KeyEvent::new(KeyCode::Char(std::char::REPLACEMENT_CHARACTER))
+                    .with_modifiers(alt_mods),
+            ));
         }
 
         self.utf8_buffer[collected as usize] = byte;
@@ -1233,17 +1305,21 @@ impl InputParser {
             match std::str::from_utf8(&self.utf8_buffer[..expected as usize]) {
                 Ok(s) => {
                     let c = s.chars().next()?;
-                    Some(Event::Key(KeyEvent::new(KeyCode::Char(c))))
+                    Some(Event::Key(
+                        KeyEvent::new(KeyCode::Char(c)).with_modifiers(alt_mods),
+                    ))
                 }
-                Err(_) => Some(Event::Key(KeyEvent::new(KeyCode::Char(
-                    std::char::REPLACEMENT_CHARACTER,
-                )))),
+                Err(_) => Some(Event::Key(
+                    KeyEvent::new(KeyCode::Char(std::char::REPLACEMENT_CHARACTER))
+                        .with_modifiers(alt_mods),
+                )),
             }
         } else {
             // Need more bytes
             self.state = ParserState::Utf8 {
                 collected: new_collected,
                 expected,
+                alt,
             };
             None
         }
@@ -1276,22 +1352,23 @@ impl InputParser {
 
                 let (button, mods) = self.decode_mouse_button(cb);
 
-                // Check for release (button 3)
-                // Note: X10 release doesn't track which button was released,
-                // so we default to Left for the event kind, or rely on logic downstream.
-                // However, decode_mouse_button(3) returns Left.
-                // We check low 2 bits: 0=Btn1, 1=Btn2, 2=Btn3, 3=Release
-                let kind = if (cb & 3) == 3 {
-                    // Release event
-                    MouseEventKind::Up(MouseButton::Left)
-                } else if cb & 64 != 0 {
-                    // Scroll event (bit 6 set)
+                // Decode order matches the SGR path: the scroll bit (64) must
+                // be tested BEFORE the release bits, because scroll codes 66
+                // (left) and 67 (right) also have (cb & 3) == 2/3 and would
+                // otherwise decode as button events.
+                // Low 2 bits when not scrolling: 0=Btn1, 1=Btn2, 2=Btn3,
+                // 3=Release (X10 release doesn't say which button; Left).
+                let kind = if cb & 64 != 0 {
+                    // Scroll event (bit 6 set); direction in bits 0-1.
                     match cb & 3 {
                         0 => MouseEventKind::ScrollUp,
                         1 => MouseEventKind::ScrollDown,
-                        // X10 doesn't support left/right scroll usually
-                        _ => MouseEventKind::ScrollUp,
+                        2 => MouseEventKind::ScrollLeft,
+                        _ => MouseEventKind::ScrollRight,
                     }
+                } else if (cb & 3) == 3 {
+                    // Release event
+                    MouseEventKind::Up(MouseButton::Left)
                 } else {
                     // Press event
                     MouseEventKind::Down(button)
