@@ -1489,6 +1489,164 @@ mod tests {
     }
 
     #[test]
+    fn legacy_key_with_kitty_event_type_subparam_decodes_release_and_mods() {
+        // With kitty "report event types" active, legacy functional keys carry
+        // `modifiers:event_type`. CSI 1;1:3 A = Up RELEASE (no modifiers).
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[1;1:3A");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            Event::Key(k) if k.code == KeyCode::Up
+                && k.modifiers == Modifiers::NONE
+                && k.kind == KeyEventKind::Release
+        ));
+
+        // CSI 3;5:3 ~ = Ctrl+Delete RELEASE: Ctrl must survive the sub-param.
+        let events = parser.parse(b"\x1b[3;5:3~");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            Event::Key(k) if k.code == KeyCode::Delete
+                && k.modifiers == Modifiers::CTRL
+                && k.kind == KeyEventKind::Release
+        ));
+
+        // Plain legacy form is unchanged: CSI 1;5 A = Ctrl+Up press.
+        let events = parser.parse(b"\x1b[1;5A");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            Event::Key(k) if k.code == KeyCode::Up
+                && k.modifiers == Modifiers::CTRL
+                && k.kind == KeyEventKind::Press
+        ));
+    }
+
+    #[test]
+    fn csi_final_byte_at_exact_dos_boundary_terminates() {
+        // The real final byte arriving when the buffer holds exactly
+        // MAX_CSI_LEN params must terminate the sequence, not be dropped
+        // into CsiIgnore (which would then eat the next keystroke).
+        let mut parser = InputParser::new();
+        let mut seq = vec![0x1B, b'['];
+        seq.extend(std::iter::repeat_n(b'0', MAX_CSI_LEN));
+        seq.push(b'A'); // final byte exactly at the cap
+
+        let events = parser.parse(&seq);
+        // The oversized sequence itself yields at most a garbage-param event;
+        // the crucial part is the parser is back in Ground.
+        drop(events);
+        let events = parser.parse(b"a");
+        assert_eq!(events.len(), 1, "keystroke after boundary CSI swallowed");
+        assert!(matches!(events[0], Event::Key(k) if k.code == KeyCode::Char('a')));
+    }
+
+    #[test]
+    fn osc_bel_terminator_at_exact_dos_boundary_terminates() {
+        // BEL arriving when the OSC buffer is exactly at the cap must end the
+        // sequence; entering OscIgnore here would swallow all later printables.
+        let mut parser = InputParser::new();
+        let mut seq = vec![0x1B, b']'];
+        seq.extend(std::iter::repeat_n(b'x', MAX_OSC_LEN));
+        seq.push(0x07); // BEL exactly at the cap
+
+        let events = parser.parse(&seq);
+        drop(events);
+        let events = parser.parse(b"a");
+        assert_eq!(events.len(), 1, "keystroke after boundary OSC swallowed");
+        assert!(matches!(events[0], Event::Key(k) if k.code == KeyCode::Char('a')));
+    }
+
+    #[test]
+    fn stray_paste_terminator_is_ignored() {
+        // CSI 201~ without a preceding CSI 200~ must not emit an empty Paste.
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[201~");
+        assert_eq!(events.len(), 0, "stray end-paste produced {events:?}");
+
+        // Parser still works normally afterwards.
+        let events = parser.parse(b"\x1b[200~hi\x1b[201~");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Paste(p) if p.text == "hi"));
+    }
+
+    #[test]
+    fn x10_mouse_scroll_codes_not_misread_as_button_events() {
+        // X10 cb 64+3 = 67 (scroll-right in SGR terms) has (cb & 3) == 3 and
+        // must decode as a scroll event, not Up(Left). Encoded byte = cb + 32.
+        let mut parser = InputParser::new();
+        parser.set_expect_x10_mouse(true);
+
+        // ESC [ M (67+32) (0+33) (0+33)
+        let events = parser.parse(&[0x1B, b'[', b'M', 67 + 32, 33, 33]);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            Event::Mouse(m) if m.kind == MouseEventKind::ScrollRight && m.x == 0 && m.y == 0
+        ));
+
+        // Scroll-up (64) still decodes as scroll.
+        let events = parser.parse(&[0x1B, b'[', b'M', 64 + 32, 33, 33]);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            Event::Mouse(m) if m.kind == MouseEventKind::ScrollUp
+        ));
+
+        // Plain release (3) still decodes as Up(Left).
+        let events = parser.parse(&[0x1B, b'[', b'M', 3 + 32, 33, 33]);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            Event::Mouse(m) if m.kind == MouseEventKind::Up(MouseButton::Left)
+        ));
+    }
+
+    #[test]
+    fn csi_first_byte_control_char_is_reprocessed_not_swallowed() {
+        // ESC [ CR: the CR aborts the CSI and must still deliver Enter,
+        // matching the CsiParam/CsiIgnore anti-swallow behavior.
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[\r");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::Key(k) if k.code == KeyCode::Enter));
+    }
+
+    #[test]
+    fn alt_non_ascii_decodes_as_alt_char() {
+        // metaSendsEscape + UTF-8: Alt+é arrives as ESC 0xC3 0xA9.
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b\xc3\xa9");
+        assert_eq!(events.len(), 1, "Alt+\u{e9} dropped: {events:?}");
+        assert!(matches!(
+            events[0],
+            Event::Key(k) if k.code == KeyCode::Char('\u{e9}')
+                && k.modifiers == Modifiers::ALT
+        ));
+
+        // Split across feeds: state must persist.
+        let events1 = parser.parse(b"\x1b\xc3");
+        assert_eq!(events1.len(), 0);
+        let events2 = parser.parse(b"\xa9");
+        assert_eq!(events2.len(), 1);
+        assert!(matches!(
+            events2[0],
+            Event::Key(k) if k.code == KeyCode::Char('\u{e9}')
+                && k.modifiers == Modifiers::ALT
+        ));
+
+        // Plain UTF-8 (no ESC) stays unmodified.
+        let events = parser.parse(b"\xc3\xa9");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            Event::Key(k) if k.code == KeyCode::Char('\u{e9}')
+                && k.modifiers == Modifiers::NONE
+        ));
+    }
+
+    #[test]
     fn ascii_characters_parsed() {
         let mut parser = InputParser::new();
 
