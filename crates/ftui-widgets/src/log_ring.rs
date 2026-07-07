@@ -4,7 +4,8 @@
 //!
 //! [`LogRing`] provides memory-efficient storage for log lines that evicts
 //! oldest entries when full. It supports absolute indexing across the entire
-//! history (even for evicted items) and optional overflow file persistence.
+//! history: indices remain stable after eviction (evicted indices return
+//! `None`), so scroll positions and bookmarks never shift.
 //!
 //! # Example
 //!
