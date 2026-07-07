@@ -182,6 +182,36 @@ vs cell coordinates) are normalized away. This is enforced by
 Host adapters must not fork model behavior; any divergence is a bug, not an
 API affordance.
 
+### 6.1 Web host surface (bd-zpnp5 decision)
+
+**`ftui-web` is the canonical import path for the pane web adapters. The
+terminal-oriented `ftui::pane` facade deliberately does not re-export them.**
+
+Rationale:
+
+1. **Host symmetry over path unification.** Each host crate curates its own
+   pane surface (`ftui::pane::keyboard` for the terminal, `ftui_web::pane`
+   for the web); cross-host alignment is guaranteed behaviorally by §6 and
+   the `pane_cross_host_parity` suite, not by sharing an import path.
+2. **Independent release cadence.** The `ftui` facade's stability tiers are
+   versioned for terminal consumers; folding the web adapters in would couple
+   web-adapter churn to the terminal contract (and vice versa).
+3. **One canonical path per host.** Web consumers (all in-tree web E2E and
+   examples) already import `ftui-web` directly; adding a second valid path
+   through `ftui` would invite drift between the two.
+
+The curated web surface is `ftui_web::pane`:
+
+| Module | Re-exports | Mirrors (terminal side) |
+|--------|-----------|-------------------------|
+| `ftui_web::pane::pointer` | `PanePointerCaptureAdapter`, `PanePointerCaptureConfig`, dispatch/lifecycle/log types | `PaneTerminalAdapter` (ftui-runtime) |
+| `ftui_web::pane::keyboard` | `PaneWebKeyboardController`, `key_to_pane_command`, `pane_accessibility_tree`, ARIA node types | `ftui::pane::keyboard` |
+
+These re-exports carry the same pre-1.0 deprecation policy as §4: renames go
+through a deprecated alias for one minor release. The raw
+`ftui_web::pane_pointer_capture` / `ftui_web::pane_keyboard` module paths
+remain valid but the curated module is the documented entry point.
+
 ---
 
 ## 7. Explicitly out of scope (not covered)

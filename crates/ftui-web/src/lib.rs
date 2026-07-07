@@ -21,6 +21,36 @@ pub mod sdk_event_model;
 pub mod session_record;
 pub mod step_program;
 
+/// Curated web-host pane surface (bd-zpnp5).
+///
+/// **Decision:** `ftui-web` is the canonical import path for the pane web
+/// adapters; the terminal-oriented `ftui::pane` facade deliberately does NOT
+/// re-export them. Each host crate curates its own pane surface — this module
+/// mirrors the shape of `ftui::pane::keyboard` for the web host — and
+/// cross-host behavioral alignment is guaranteed by the parity contract
+/// (`docs/spec/pane-parity-contract-and-program.md`) plus the
+/// `pane_cross_host_parity` suite, not by a unified import path. Rationale
+/// and the supported-surface listing live in
+/// `docs/api/pane-stability-contract.md` (§ Web host surface).
+pub mod pane {
+    /// Pointer capture: browser pointer events → pane drag/resize semantics.
+    pub mod pointer {
+        pub use crate::pane_pointer_capture::{
+            PanePointerCaptureAdapter, PanePointerCaptureCommand, PanePointerCaptureConfig,
+            PanePointerDispatch, PanePointerIgnoredReason, PanePointerLifecyclePhase,
+            PanePointerLogEntry, PanePointerLogOutcome,
+        };
+    }
+
+    /// Browser-safe keyboard bindings + accessibility tree projection.
+    pub mod keyboard {
+        pub use crate::pane_keyboard::{
+            PaneAriaNode, PaneAriaOrientation, PaneAriaRole, PaneWebKeyOutcome,
+            PaneWebKeyboardController, key_to_pane_command, pane_accessibility_tree,
+        };
+    }
+}
+
 use core::time::Duration;
 use std::collections::VecDeque;
 
