@@ -38,8 +38,12 @@ pub enum WrapMode {
     /// Knuth-Plass optimal line breaking (minimizes total badness).
     ///
     /// Produces globally optimal break points at the cost of examining
-    /// the full paragraph. Falls back to word-wrap for single-word lines.
-    /// See [`wrap_optimal`] for the underlying algorithm.
+    /// the full paragraph. A single word wider than the target width is
+    /// emitted intact on an overfull line (with a flat penalty), never
+    /// broken mid-word. Whitespace is treated as paragraph glue: leading
+    /// indentation is dropped and lines are trailing-trimmed, so the
+    /// `preserve_indent` and `trim_trailing` options do not apply to this
+    /// mode. See [`wrap_optimal`] for the underlying algorithm.
     Optimal,
 }
 
@@ -51,8 +55,14 @@ pub struct WrapOptions {
     /// Wrapping mode.
     pub mode: WrapMode,
     /// Preserve leading whitespace on continued lines.
+    ///
+    /// Not applicable to [`WrapMode::Optimal`], which always treats
+    /// whitespace as paragraph glue (indentation is dropped).
     pub preserve_indent: bool,
     /// Trim trailing whitespace from wrapped lines.
+    ///
+    /// Not applicable to [`WrapMode::Optimal`], whose output is always
+    /// trailing-trimmed.
     pub trim_trailing: bool,
 }
 
@@ -110,19 +120,37 @@ pub fn wrap_text(text: &str, width: usize, mode: WrapMode) -> Vec<String> {
 }
 
 /// Wrap text with full options.
+///
+/// Every mode returns *lines*: embedded `\n` / `\r\n` always split, even in
+/// [`WrapMode::None`] and the degenerate `width == 0` case (where no
+/// width-based wrapping occurs and lines may exceed the width).
 #[must_use]
 pub fn wrap_with_options(text: &str, options: &WrapOptions) -> Vec<String> {
     if options.width == 0 {
-        return vec![text.to_string()];
+        return split_lines_unwrapped(text, options);
     }
 
     match options.mode {
-        WrapMode::None => vec![text.to_string()],
+        WrapMode::None => split_lines_unwrapped(text, options),
         WrapMode::Char => wrap_chars(text, options),
         WrapMode::Word => wrap_words(text, options, false),
         WrapMode::WordChar => wrap_words(text, options, true),
         WrapMode::Optimal => wrap_text_optimal(text, options.width),
     }
+}
+
+/// Split on explicit newlines without any width-based wrapping.
+///
+/// Used by [`WrapMode::None`] and the `width == 0` degenerate case so the
+/// "returns lines" contract holds in every mode: a caller rendering each
+/// element as one row must never receive an embedded control character.
+fn split_lines_unwrapped(text: &str, options: &WrapOptions) -> Vec<String> {
+    text.split('\n')
+        .map(|raw| {
+            let line = raw.strip_suffix('\r').unwrap_or(raw);
+            finalize_line(line, options)
+        })
+        .collect()
 }
 
 /// Wrap at grapheme boundaries (character wrap).
@@ -220,9 +248,19 @@ fn wrap_paragraph(
 
         // Word doesn't fit - need to wrap
         if !current_line.is_empty() {
-            lines.push(finalize_line(current_line, options));
-            current_line.clear();
-            *current_width = 0;
+            // A line holding only preserved indent must not be flushed as
+            // its own line — trim_trailing would turn it into a phantom
+            // blank line. The indent cannot fit together with the word, so
+            // drop it and start the word at column 0, like the
+            // non-preserving path.
+            if current_line.chars().all(is_breaking_whitespace) {
+                current_line.clear();
+                *current_width = 0;
+            } else {
+                lines.push(finalize_line(current_line, options));
+                current_line.clear();
+                *current_width = 0;
+            }
 
             // If the word causing the wrap is just whitespace:
             // - If preserve_indent is false, discard it (standard behavior).
@@ -382,7 +420,9 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
 ///
 /// Returns `None` for:
 /// - Non-ASCII characters (multi-byte UTF-8)
-/// - ASCII control characters (0x00-0x1F, 0x7F) which have display width 0
+/// - ASCII control characters (0x00-0x1F, 0x7F), whose display width does
+///   not equal their byte length (this project measures `\t`/`\n`/`\r` as
+///   width 1 and other controls as 0 — see `ftui_core::text_width`)
 ///
 /// # Example
 /// ```
@@ -584,9 +624,10 @@ pub fn word_segments(text: &str) -> impl Iterator<Item = &str> {
 //
 // ## Penalties
 //
-// - PENALTY_HYPHEN: cost for breaking at a hyphen (not yet used, reserved)
-// - PENALTY_FLAGGED: cost for consecutive flagged breaks
-// - PENALTY_FORCE_BREAK: large penalty for forcing a break mid-word
+// - PENALTY_FORCE_BREAK: flat cost for a line holding a single word wider
+//   than the target width. The word is emitted intact on an overfull line
+//   (never broken mid-word), so — like greedy Word mode — Optimal output
+//   lines may exceed `width`.
 //
 // ## DP Recurrence
 //
@@ -597,9 +638,8 @@ pub fn word_segments(text: &str) -> impl Iterator<Item = &str> {
 //
 // ## Tie-Breaking
 //
-// When two break sequences have equal cost, prefer:
-// 1. Fewer lines (later break)
-// 2. More balanced distribution (lower max badness)
+// When two break sequences have equal cost, prefer the later break
+// (fewer, fuller lines).
 
 /// Scale factor for badness computation. Matches TeX convention.
 const BADNESS_SCALE: u64 = 10_000;
@@ -607,12 +647,13 @@ const BADNESS_SCALE: u64 = 10_000;
 /// Badness value for infeasible lines (overflow).
 const BADNESS_INF: u64 = u64::MAX / 2;
 
-/// Penalty for forcing a mid-word character break.
+/// Penalty for a line holding a single word wider than the target width
+/// (the word is emitted intact on an overfull line, never broken mid-word).
 const PENALTY_FORCE_BREAK: u64 = 5000;
 
 /// Maximum lookahead (words per line) for DP pruning.
-/// Limits worst-case to O(n × MAX_LOOKAHEAD) instead of O(n²).
-/// Any line with more than this many words will use the greedy breakpoint.
+/// Limits worst-case to O(n × MAX_LOOKAHEAD) instead of O(n²) by only
+/// considering line starts within this many words of the break point.
 const KP_MAX_LOOKAHEAD: usize = 1024;
 
 /// Compute the badness of a line with the given slack.
@@ -703,12 +744,10 @@ fn kp_tokenize(text: &str) -> Vec<KpWord<'_>> {
                 content_start = byte_offset + seg.len();
                 content_end = content_start;
             } else {
-                words.push(KpWord {
-                    content: Cow::Borrowed(""),
-                    space: Cow::Borrowed(seg),
-                    content_width: 0,
-                    space_width: width,
-                });
+                // Leading whitespace: drop it, matching greedy Word-mode
+                // defaults. An empty-content token here would set as a
+                // spurious empty first line with maximal badness whenever
+                // the indent + first word exceed the width.
                 content_start = byte_offset + seg.len();
                 content_end = content_start;
             }
@@ -752,8 +791,14 @@ pub struct KpBreakResult {
 /// Given a paragraph of text and a target width, finds the set of line
 /// breaks that minimizes total badness (cubic slack penalty).
 ///
-/// Falls back to greedy word-wrap if the DP cost is prohibitive (very
-/// long paragraphs), controlled by `max_words`.
+/// Runtime is bounded to O(n × [`KP_MAX_LOOKAHEAD`]) by only considering
+/// line starts within the lookahead window of each break point; for
+/// pathological inputs (more than 1024 words on one line) this degrades
+/// gracefully rather than falling back to a different algorithm.
+///
+/// Whitespace is treated as paragraph glue: leading indentation is
+/// dropped and inter-word runs are re-emitted between words on the same
+/// line, matching greedy Word-mode defaults.
 ///
 /// # Arguments
 /// * `text` - The paragraph to wrap (no embedded newlines expected).
@@ -772,8 +817,10 @@ pub fn wrap_optimal(text: &str, width: usize) -> KpBreakResult {
 
     let words = kp_tokenize(text);
     if words.is_empty() {
+        // Whitespace-only paragraph: a single empty line, matching greedy
+        // Word-mode output (which skips leading whitespace and trims).
         return KpBreakResult {
-            lines: vec![text.to_string()],
+            lines: vec![String::new()],
             total_cost: 0,
             line_badness: vec![0],
         };
@@ -1344,6 +1391,66 @@ mod tests {
     fn wrap_none_mode() {
         let lines = wrap_text("hello world", 5, WrapMode::None);
         assert_eq!(lines, vec!["hello world"]);
+    }
+
+    #[test]
+    fn wrap_none_mode_splits_embedded_newlines() {
+        // Every mode returns LINES: None must still split on \n / \r\n,
+        // never hand back an embedded control character as row content.
+        assert_eq!(wrap_text("a\nb", 5, WrapMode::None), vec!["a", "b"]);
+        assert_eq!(wrap_text("a\r\nb", 5, WrapMode::None), vec!["a", "b"]);
+        // Degenerate width 0 behaves the same way.
+        assert_eq!(wrap_text("a\nb", 0, WrapMode::Word), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn wrap_optimal_drops_leading_whitespace_like_greedy() {
+        // Regression: leading whitespace used to become an empty-content
+        // token, producing a spurious empty first line with maximal badness
+        // (["", "foo"], cost 10000) — strictly worse than greedy.
+        let result = wrap_optimal("   foo", 4);
+        assert_eq!(result.lines, vec!["foo"]);
+        assert_eq!(result.total_cost, 0);
+
+        // At wider widths the indent must not glue onto the first line
+        // either; output matches greedy Word mode.
+        assert_eq!(
+            wrap_text_optimal("   foo bar baz", 10),
+            wrap_text("   foo bar baz", 10, WrapMode::Word)
+        );
+    }
+
+    #[test]
+    fn wrap_optimal_whitespace_only_is_single_empty_line() {
+        // Matches greedy Word-mode output for whitespace-only paragraphs.
+        assert_eq!(wrap_text_optimal("   ", 4), vec![""]);
+        assert_eq!(wrap_text("   ", 4, WrapMode::Word), vec![""]);
+    }
+
+    #[test]
+    fn wrap_preserve_indent_never_emits_phantom_blank_line() {
+        // Regression: when a preserved indent wrapped onto a fresh line and
+        // the following word did not fit after it, the indent-only line was
+        // flushed and trim_trailing erased it into a phantom blank line
+        // (["aaaa", "", "bb"]).
+        let lines = wrap_with_options(
+            "aaaa   bb",
+            &WrapOptions::new(4)
+                .mode(WrapMode::Word)
+                .preserve_indent(true),
+        );
+        assert_eq!(lines, vec!["aaaa", "bb"]);
+
+        // Also with trailing-whitespace preservation: no standalone
+        // whitespace-only line is manufactured.
+        let lines = wrap_with_options(
+            "aaaa   bb",
+            &WrapOptions::new(4)
+                .mode(WrapMode::Word)
+                .preserve_indent(true)
+                .trim_trailing(false),
+        );
+        assert_eq!(lines, vec!["aaaa", "bb"]);
     }
 
     // ==========================================================================
