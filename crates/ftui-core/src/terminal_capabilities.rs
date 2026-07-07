@@ -336,10 +336,13 @@ pub struct TerminalCapabilities {
     pub in_screen: bool,
     /// Running inside Zellij.
     pub in_zellij: bool,
-    /// Running inside a WezTerm mux-served session.
+    /// Running inside a WezTerm mux-served session (or any WezTerm window).
     ///
-    /// Detected via `WEZTERM_UNIX_SOCKET` and `WEZTERM_PANE`, which WezTerm
-    /// exports for pane processes and mux-attached clients.
+    /// Detected via `WEZTERM_UNIX_SOCKET` / `WEZTERM_PANE` /
+    /// `WEZTERM_EXECUTABLE`, and — conservatively — via WezTerm identity in
+    /// `TERM_PROGRAM` or `TERM`, because mux sessions do not always preserve
+    /// the `WEZTERM_*` markers across shell launch paths. This deliberately
+    /// fires for every WezTerm window, mux-served or not (fail-safe).
     pub in_wezterm_mux: bool,
 
     // Input features
@@ -403,7 +406,13 @@ impl TerminalCapabilities {
             TerminalProfile::WindowsConsole => Self::windows_console(),
             TerminalProfile::Kitty => Self::kitty(),
             TerminalProfile::LinuxConsole => Self::linux_console(),
-            TerminalProfile::Custom => Self::basic(),
+            TerminalProfile::Custom => {
+                // Same conservative capability set as basic(), but stamped
+                // with the requested profile so from_profile round-trips.
+                let mut caps = Self::basic();
+                caps.profile = TerminalProfile::Custom;
+                caps
+            }
             TerminalProfile::Detected => Self::detect(),
         }
     }
@@ -914,16 +923,22 @@ impl TerminalCapabilities {
     }
 
     fn detect_from_inputs(env: &DetectInputs) -> Self {
-        // Multiplexer detection
-        let in_tmux = env.in_tmux;
-        let in_screen = env.in_screen;
-        let in_zellij = env.in_zellij;
         let term = env.term.as_str();
         let term_program = env.term_program.as_str();
         let colorterm = env.colorterm.as_str();
         let term_lower = term.to_ascii_lowercase();
         let term_program_lower = term_program.to_ascii_lowercase();
         let colorterm_lower = colorterm.to_ascii_lowercase();
+
+        // Multiplexer detection. The $TMUX/$STY env vars do not survive
+        // ssh/sudo/container boundaries, but the mux's TERM value does
+        // (TERM=tmux-256color / screen-256color). Treat TERM identity as
+        // conservative mux evidence — the same fail-safe reasoning applied
+        // to WezTerm below — so use_scroll_region() etc. stay disabled
+        // inside a mux pane reached over ssh (doc invariant: mux wins).
+        let in_tmux = env.in_tmux || term_lower.starts_with("tmux");
+        let in_screen = env.in_screen || term_lower.starts_with("screen");
+        let in_zellij = env.in_zellij;
 
         // WezTerm mux sessions may not always preserve WEZTERM_* env markers
         // across shell launch paths. Treat explicit WezTerm identity itself as
@@ -987,12 +1002,16 @@ impl TerminalCapabilities {
         // Scroll region support (broadly available except dumb)
         let scroll_region = !is_dumb;
 
-        // Kitty keyboard protocol (kitty + other compatible terminals)
-        let kitty_keyboard = is_kitty
-            || KITTY_KEYBOARD_TERMINALS.iter().any(|t| {
-                let t_lower = t.to_ascii_lowercase();
-                term_program_lower.contains(&t_lower) || term_lower.contains(&t_lower)
-            });
+        // Kitty keyboard protocol (kitty + other compatible terminals).
+        // Gated on !is_dumb like every other capability: TERM=dumb with an
+        // inherited TERM_PROGRAM (e.g. Emacs shell inside kitty/iTerm2) must
+        // not receive CSI > u progressive-enhancement sequences.
+        let kitty_keyboard = !is_dumb
+            && (is_kitty
+                || KITTY_KEYBOARD_TERMINALS.iter().any(|t| {
+                    let t_lower = t.to_ascii_lowercase();
+                    term_program_lower.contains(&t_lower) || term_lower.contains(&t_lower)
+                }));
 
         // Focus events (available in most modern terminals)
         let focus_events = !is_dumb && (is_modern_terminal || is_kitty);

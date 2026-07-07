@@ -278,11 +278,24 @@ impl GraphemePool {
     }
 
     /// Clear all entries from the pool.
+    ///
+    /// Outstanding [`GraphemeId`]s are invalidated: every slot's generation
+    /// is bumped, so an ID held across `clear()` resolves to `None` exactly
+    /// like a freed slot. (Truncating the generation table instead would let
+    /// a pre-clear ID alias whatever is interned into the same slot next —
+    /// silent visual corruption.)
     pub fn clear(&mut self) {
-        self.slots.clear();
-        self.generations.clear();
         self.lookup.clear();
         self.free_list.clear();
+        for slot in &mut self.slots {
+            *slot = None;
+        }
+        for generation in &mut self.generations {
+            *generation = generation.wrapping_add(1) & GraphemeId::MAX_GENERATION;
+        }
+        // Descending push so reuse allocates from slot 0 upward, matching a
+        // fresh pool's allocation order.
+        self.free_list.extend((0..self.slots.len() as u32).rev());
     }
 
     /// Allocate a slot index, reusing from free list if possible.
@@ -345,7 +358,10 @@ impl GraphemePool {
                 // Take the slot to own the string (no clone needed)
                 if let Some(dead_slot) = slot_opt.take() {
                     keys_to_remove.push(dead_slot.text);
-                    self.generations[idx] = self.generations[idx].wrapping_add(1);
+                    // Mask like intern's reuse path so stored generations
+                    // stay within the ID-encodable range.
+                    self.generations[idx] =
+                        self.generations[idx].wrapping_add(1) & GraphemeId::MAX_GENERATION;
                     self.free_list.push(idx as u32);
                 }
             }
@@ -998,11 +1014,32 @@ mod tests {
         pool.intern("B", 1);
         pool.clear();
         assert!(pool.is_empty());
-        // After clear, free_list is also cleared, so slots start fresh
+        // After clear, allocation starts from slot 0 like a fresh pool.
         let id = pool.intern("C", 1);
         assert_eq!(id.slot(), 0);
         assert_eq!(pool.get(id), Some("C"));
         assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn id_held_across_clear_never_aliases_new_entry() {
+        // Regression: clear() used to truncate the generation table, so a
+        // pre-clear ID (slot 0, gen 0) matched the fresh slot-0/gen-0 entry
+        // interned afterwards and resolved to the WRONG grapheme.
+        let mut pool = GraphemePool::new();
+        let old_id = pool.intern("A", 1);
+        pool.clear();
+
+        let new_id = pool.intern("B", 1);
+        assert_eq!(old_id.slot(), new_id.slot(), "same slot reused");
+        assert_ne!(old_id.generation(), new_id.generation());
+        assert_eq!(pool.get(old_id), None, "stale ID must not resolve");
+        assert_eq!(pool.get(new_id), Some("B"));
+
+        // Stale IDs are also inert for refcount mutation.
+        pool.retain(old_id);
+        pool.release(old_id);
+        assert_eq!(pool.refcount(new_id), 1);
     }
 
     #[test]
