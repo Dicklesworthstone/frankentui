@@ -1864,6 +1864,12 @@ impl<W: Write> TerminalWriter<W> {
 
                     if decision.has_diff {
                         presenter.prepare_runs(&self.diff_scratch);
+                        // Clip to the visible terminal region, mirroring the
+                        // full-redraw branch: when the terminal is shorter
+                        // than ui_height, a below-the-fold run would emit a
+                        // CUP past the physical bottom row, which real
+                        // terminals clamp — corrupting the last visible row.
+                        presenter.clip_runs_below(visible_height);
                         // Emit
                         presenter.emit_diff_runs(buffer, Some(&self.pool), Some(&self.links))?;
 
@@ -3397,6 +3403,45 @@ mod tests {
             max_row <= 3,
             "cursor row {} exceeds terminal height",
             max_row
+        );
+    }
+
+    #[test]
+    fn inline_diff_frame_never_emits_below_the_fold() {
+        // Regression: the incremental-diff branch emitted every diff run
+        // unclipped. With ui_height > term_height, a change on a buffer row
+        // below the fold produced a CUP past the physical bottom row, which
+        // real terminals clamp — scribbling over the last visible row. The
+        // full-redraw branch already clipped; the diff branch must too.
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 20 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 10); // terminal shorter than the UI
+
+            // Frame 1: full redraw (clipped by the existing logic).
+            let buffer = Buffer::new(80, 20);
+            writer.present_ui(&buffer, None, true).unwrap();
+
+            // Frame 2: change ONLY a below-the-fold row (row 19).
+            let mut buffer2 = Buffer::new(80, 20);
+            buffer2.set(0, 19, ftui_render::cell::Cell::from_char('B'));
+            writer.present_ui(&buffer2, None, true).unwrap();
+        }
+
+        let max_row = max_cursor_row(&output);
+        assert!(
+            max_row <= 10,
+            "diff frame emitted cursor row {max_row} past the 10-row terminal"
+        );
+        // The below-the-fold glyph must not appear anywhere in the output.
+        assert!(
+            !output.windows(1).any(|w| w == b"B"),
+            "below-the-fold cell was emitted"
         );
     }
 

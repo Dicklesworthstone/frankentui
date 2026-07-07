@@ -204,6 +204,12 @@ impl Rect {
     /// Create a new rectangle that is the union of this rectangle and another.
     ///
     /// The result is the smallest rectangle that contains both.
+    ///
+    /// Note: a rectangle's *position* participates even when it is empty —
+    /// `Rect::new(100, 100, 0, 0).union(&r)` extends to x/y 100. When
+    /// accumulating a union over a collection, seed the fold with the first
+    /// element rather than `Rect::default()` (which would pin the result to
+    /// the origin).
     #[inline]
     pub fn union(&self, other: &Rect) -> Rect {
         let x = self.x.min(other.x);

@@ -127,6 +127,14 @@ mod cost_model {
 
     /// Cheapest cursor movement cost from (from_x, from_y) to (to_x, to_y).
     /// Returns 0 if already at the target position.
+    ///
+    /// Coordinates are viewport-relative. The CUP arm therefore estimates
+    /// the row field's digit count from the relative row, while emission
+    /// adds the presenter's viewport offset — in deep inline anchors the
+    /// physical row can carry more digits than estimated (~2 bytes per
+    /// cross-row move). This only skews sparse-vs-merged *planning*, never
+    /// the emitted coordinates, so the approximation is accepted instead of
+    /// threading the offset through the row DP.
     pub fn cheapest_move_cost(
         from_x: Option<u16>,
         from_y: Option<u16>,
@@ -595,6 +603,14 @@ impl<W: Write> Presenter<W> {
         pool: Option<&GraphemePool>,
         links: Option<&LinkRegistry>,
     ) -> io::Result<()> {
+        // Arm the wrap-pending safeguard for this externally driven entry
+        // point too (present_with_pool sets it on its own path). Without
+        // this, advance_or_invalidate never invalidates the tracked column
+        // at the last cell, and the drift-repair paths can issue relative
+        // moves from a phantom column that a real autowrap terminal (parked
+        // in wrap-pending state) never reached.
+        self.presentation_width = buffer.width();
+
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!("emit_diff");
         #[cfg(feature = "tracing")]
@@ -721,6 +737,16 @@ impl<W: Write> Presenter<W> {
     /// Helper for external callers to populate the runs buffer before calling `emit_diff_runs`.
     pub fn prepare_runs(&mut self, diff: &BufferDiff) {
         diff.runs_into(&mut self.runs_buf);
+    }
+
+    /// Drop prepared runs on rows at or below `max_rows`.
+    ///
+    /// Inline-mode callers use this when the physical terminal is shorter
+    /// than the UI buffer: rows below the fold must not be emitted at all —
+    /// a real terminal clamps the CUP row to its bottom line, so emitting
+    /// them scribbles over the last visible row.
+    pub fn clip_runs_below(&mut self, max_rows: u16) {
+        self.runs_buf.retain(|run| run.y < max_rows);
     }
 
     /// Finish a frame by restoring neutral SGR state and closing any open link.
@@ -1017,10 +1043,15 @@ impl<W: Write> Presenter<W> {
         if attrs_removed.contains(StyleFlags::DIM) && new.attrs.contains(StyleFlags::BOLD) {
             collateral |= StyleFlags::BOLD;
         }
+        // A flag that is both collateral (knocked out by the shared off-code
+        // 22) and newly added is emitted once by the attrs_added pass below;
+        // re-enabling it here too would duplicate the sequence (and bias the
+        // estimate toward the reset+reapply fallback).
+        let collateral_reenable = collateral & !attrs_added;
 
         let mut delta_len = 0u32;
         delta_len += Self::sgr_flags_off_len(attrs_removed);
-        delta_len += Self::sgr_flags_len(collateral);
+        delta_len += Self::sgr_flags_len(collateral_reenable);
         delta_len += Self::sgr_flags_len(attrs_added);
         if fg_changed {
             delta_len += if new.fg.a() == 0 {
@@ -1053,9 +1084,11 @@ impl<W: Write> Presenter<W> {
         // Handle attr removal: emit individual off codes
         if !attrs_removed.is_empty() {
             let collateral = ansi::sgr_flags_off(&mut self.writer, attrs_removed, new.attrs)?;
-            // Re-enable any collaterally disabled flags
-            if !collateral.is_empty() {
-                ansi::sgr_flags(&mut self.writer, collateral)?;
+            // Re-enable any collaterally disabled flags — except those the
+            // attrs_added pass below emits anyway.
+            let reenable = collateral & !attrs_added;
+            if !reenable.is_empty() {
+                ansi::sgr_flags(&mut self.writer, reenable)?;
             }
         }
 
@@ -2757,6 +2790,60 @@ mod tests {
             output_str.contains("\x1b[2m"),
             "Expected dim re-enable (2) in: {:?}",
             output_str
+        );
+    }
+
+    #[test]
+    fn sgr_delta_bold_to_dim_emits_dim_exactly_once() {
+        // Regression: Bold -> Dim made Dim both "collateral" of the shared
+        // off-code 22 AND "added", so it was emitted twice (\x1b[2m\x1b[2m)
+        // and double-counted in the delta estimate.
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(3, 1);
+
+        let attrs1 = CellAttrs::new(StyleFlags::BOLD, 0);
+        let attrs2 = CellAttrs::new(StyleFlags::DIM, 0);
+        buffer.set_raw(0, 0, Cell::from_char('A').with_attrs(attrs1));
+        buffer.set_raw(1, 0, Cell::from_char('B').with_attrs(attrs2));
+
+        let old = Buffer::new(3, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter.present(&buffer, &diff).unwrap();
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+
+        let dim_count = output_str.matches("\x1b[2m").count();
+        assert_eq!(
+            dim_count, 1,
+            "Dim must be enabled exactly once in: {output_str:?}"
+        );
+    }
+
+    #[test]
+    fn emit_diff_runs_arms_wrap_pending_safeguard() {
+        // Regression: the externally driven entry point (TerminalWriter's
+        // production path) never set presentation_width, so the tracked
+        // column was never invalidated at the last cell and drift-repair
+        // could issue relative moves from a phantom column.
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(10, 1);
+        for x in 0..10 {
+            buffer.set_raw(x, 0, Cell::from_char('x'));
+        }
+        let old = Buffer::new(10, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter.prepare_runs(&diff);
+        presenter.emit_diff_runs(&buffer, None, None).unwrap();
+
+        assert_eq!(
+            presenter.presentation_width, 10,
+            "emit_diff_runs must arm the wrap-pending safeguard"
+        );
+        assert_eq!(
+            presenter.cursor_x, None,
+            "tracked column must be invalidated after emitting through the last column"
         );
     }
 
