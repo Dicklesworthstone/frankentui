@@ -273,6 +273,13 @@ impl CapabilityOverride {
         self
     }
 
+    /// Override WezTerm mux detection.
+    #[must_use]
+    pub const fn in_wezterm_mux(mut self, value: Option<bool>) -> Self {
+        self.in_wezterm_mux = value;
+        self
+    }
+
     /// Override Kitty keyboard protocol support.
     #[must_use]
     pub const fn kitty_keyboard(mut self, value: Option<bool>) -> Self {
@@ -322,6 +329,7 @@ impl CapabilityOverride {
             && self.in_tmux.is_none()
             && self.in_screen.is_none()
             && self.in_zellij.is_none()
+            && self.in_wezterm_mux.is_none()
             && self.kitty_keyboard.is_none()
             && self.focus_events.is_none()
             && self.bracketed_paste.is_none()
@@ -364,6 +372,9 @@ impl CapabilityOverride {
         }
         if let Some(v) = self.in_zellij {
             caps.in_zellij = v;
+        }
+        if let Some(v) = self.in_wezterm_mux {
+            caps.in_wezterm_mux = v;
         }
         if let Some(v) = self.kitty_keyboard {
             caps.kitty_keyboard = v;
@@ -789,11 +800,48 @@ mod tests {
         let over = CapabilityOverride::new()
             .in_tmux(Some(true))
             .in_screen(Some(true))
-            .in_zellij(Some(true));
+            .in_zellij(Some(true))
+            .in_wezterm_mux(Some(true));
         let result = over.apply_to(base);
         assert!(result.in_tmux);
         assert!(result.in_screen);
         assert!(result.in_zellij);
+        assert!(result.in_wezterm_mux);
+    }
+
+    #[test]
+    fn modern_override_simulates_non_mux_even_under_wezterm() {
+        // Regression: CapabilityOverride had no in_wezterm_mux field, so
+        // modern() could not neutralize a WezTerm host — in_any_mux() stayed
+        // true and use_sync_output()/use_scroll_region()/use_clipboard()
+        // returned false, making override-based tests host-dependent.
+        let mut base = TerminalCapabilities::modern();
+        base.in_wezterm_mux = true; // simulate detection on a WezTerm host
+
+        let result = CapabilityOverride::modern().apply_to(base);
+        assert!(!result.in_wezterm_mux);
+        assert!(!result.in_any_mux());
+        assert!(result.use_sync_output());
+        assert!(result.use_scroll_region());
+        assert!(result.use_hyperlinks());
+        assert!(result.use_clipboard());
+    }
+
+    #[test]
+    fn dumb_override_clears_wezterm_mux() {
+        let mut base = TerminalCapabilities::modern();
+        base.in_wezterm_mux = true;
+        let result = CapabilityOverride::dumb().apply_to(base);
+        assert!(!result.in_wezterm_mux);
+    }
+
+    #[test]
+    fn is_empty_false_for_in_wezterm_mux() {
+        assert!(
+            !CapabilityOverride::new()
+                .in_wezterm_mux(Some(true))
+                .is_empty()
+        );
     }
 
     #[test]

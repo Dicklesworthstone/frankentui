@@ -164,19 +164,20 @@ impl PidState {
     }
 }
 
-/// Anytime-valid e-process for gating degradation decisions.
+/// E-process-style evidence accumulator for gating degradation decisions.
 ///
 /// # Mathematical Model
 ///
-/// The e-process is a nonnegative supermartingale under H₀ (system is healthy):
+/// Inspired by anytime-valid e-processes; the accumulator is
 ///
 /// ```text
-/// E_t = Π_{j=1..t} exp(λ * r_j − λ² * σ² / 2)
+/// E_t = Π_{j=1..t} exp(λ * r_j − λ² / 2)
 /// ```
 ///
 /// where:
-/// - `r_j` is the standardized residual at frame j: `(frame_time − target) / σ`
-/// - `σ` is the estimated standard deviation of frame times
+/// - `r_j` is the standardized residual at frame j: `(frame_time − target) / σ̂`
+/// - `σ̂` is an EMA of *absolute* deviation (≈ 0.8σ for Gaussian noise),
+///   measured against the already-updated EMA mean of frame times
 /// - `λ` is a tuning parameter controlling sensitivity (default: 0.5)
 ///
 /// # Decision Rule
@@ -188,10 +189,15 @@ impl PidState {
 ///
 /// # Properties
 ///
-/// 1. **Anytime-valid**: The test is valid at any stopping time, unlike
-///    fixed-sample tests. We can check after every frame without p-hacking.
-/// 2. **Bounded false positive rate**: P(E_t ever exceeds 1/α | H₀) ≤ α
-///    (Ville's inequality).
+/// 1. **Check-every-frame**: The gate can be evaluated after every frame;
+///    thresholds are tuned empirically rather than by fixed-sample theory.
+/// 2. **Heuristic threshold, not a formal α-bound**: because σ̂ is a
+///    mean-absolute-deviation EMA (biased low vs. true σ), residuals are
+///    inflated and `E_t` drifts upward slightly even under healthy jitter,
+///    so Ville's inequality `P(E_t > 1/α | H₀) ≤ α` does NOT formally hold.
+///    In practice this makes the gate a little more eager to degrade than
+///    the α suggests, which errs on the fail-safe side. Treat `alpha` as a
+///    tuning knob, not a guaranteed false-positive rate.
 /// 3. **Self-correcting**: After a burst passes, E_t decays back toward 1.0,
 ///    naturally enabling recovery.
 ///
@@ -348,6 +354,10 @@ pub struct BudgetControllerConfig {
     /// Default: 0.2 (20% of target).
     pub upgrade_threshold: f64,
     /// Cooldown frames between level changes.
+    ///
+    /// A value of `N` keeps transitions at least `N` frames apart. Since
+    /// decisions are made once per frame, `0` and `1` are equivalent (no
+    /// extra spacing beyond the per-frame cadence).
     pub cooldown_frames: u32,
     /// Minimum quality floor: the controller will never degrade past this level.
     ///
@@ -634,6 +644,23 @@ impl BudgetController {
     #[inline]
     pub fn level(&self) -> DegradationLevel {
         self.current_level
+    }
+
+    /// Synchronize the controller's level with an externally applied change.
+    ///
+    /// [`RenderBudget`] calls this whenever its degradation level is mutated
+    /// outside the controller's own decision (guardrail emergencies, the
+    /// conformal risk gate, manual `set_degradation`). Without it the
+    /// controller keeps reasoning from a stale level: believing it is at
+    /// `Full` it reports `AtFullQuality` and holds forever, so an externally
+    /// degraded UI never recovers, and its floor clamp computes from the
+    /// wrong base. Starts a cooldown window, since a transition just
+    /// happened.
+    pub fn sync_level(&mut self, level: DegradationLevel) {
+        if self.current_level != level {
+            self.current_level = level;
+            self.frames_since_change = 0;
+        }
     }
 
     /// Get the current e-process value (for diagnostics/logging).
@@ -1085,11 +1112,17 @@ impl RenderBudget {
 
     /// Degrade to the next level.
     ///
-    /// Logs a warning when degradation occurs.
+    /// Logs a warning when degradation occurs. An attached controller is
+    /// kept in sync so it reasons (and can later upgrade) from the actual
+    /// level. External callers may degrade past the controller's
+    /// `degradation_floor` — emergency paths (guardrails, risk gates)
+    /// deliberately outrank the visual-quality floor; the controller itself
+    /// never degrades further once at or past it.
     pub fn degrade(&mut self) {
         let from = self.degradation;
         self.degradation = self.degradation.next();
         self.frames_since_change = 0;
+        self.sync_controller_level();
 
         #[cfg(feature = "tracing")]
         if from != self.degradation {
@@ -1103,6 +1136,14 @@ impl RenderBudget {
         let _ = from; // Suppress unused warning when tracing is disabled
     }
 
+    /// Keep an attached controller's level in lockstep with the budget's.
+    #[inline]
+    fn sync_controller_level(&mut self) {
+        if let Some(controller) = self.controller.as_mut() {
+            controller.sync_level(self.degradation);
+        }
+    }
+
     /// Get the current degradation level.
     #[inline]
     pub fn degradation(&self) -> DegradationLevel {
@@ -1111,11 +1152,14 @@ impl RenderBudget {
 
     /// Set the degradation level directly.
     ///
-    /// Use with caution - prefer `degrade()` and `upgrade()` for gradual changes.
+    /// Use with caution - prefer `degrade()` and `upgrade()` for gradual
+    /// changes. An attached controller is kept in sync so recovery from an
+    /// externally forced level remains possible.
     pub fn set_degradation(&mut self, level: DegradationLevel) {
         if self.degradation != level {
             self.degradation = level;
             self.frames_since_change = 0;
+            self.sync_controller_level();
         }
     }
 
@@ -1164,6 +1208,7 @@ impl RenderBudget {
         let from = self.degradation;
         self.degradation = self.degradation.prev();
         self.frames_since_change = 0;
+        self.sync_controller_level();
 
         #[cfg(feature = "tracing")]
         if from != self.degradation {
@@ -1194,7 +1239,16 @@ impl RenderBudget {
     /// (degrade / upgrade / hold) is applied automatically. The simple
     /// threshold-based upgrade path is skipped in that case.
     pub fn next_frame(&mut self) {
-        let frame_time = self.last_frame_time.unwrap_or_else(|| self.start.elapsed());
+        // Consume the recorded time: each observation feeds the controller
+        // exactly once. Without take(), a frame that skips recording (e.g.
+        // the emergency drop-frame path) re-feeds the previous frame's
+        // duration, accumulating PID/e-process evidence from a measurement
+        // that never happened; the elapsed-time fallback below also becomes
+        // permanently dead after the first record_frame_time call.
+        let frame_time = self
+            .last_frame_time
+            .take()
+            .unwrap_or_else(|| self.start.elapsed());
 
         if self.controller.is_some() {
             // Measure how long the previous frame took
@@ -1260,7 +1314,12 @@ impl RenderBudget {
 
     /// Create a sub-budget for a specific phase.
     ///
-    /// The sub-budget shares the same start time but has a phase-specific total.
+    /// The sub-budget's clock starts now and its total is the phase
+    /// allocation clamped to the frame's remaining time, so the phase gets
+    /// its full allowance from the moment it begins. (Inheriting the frame's
+    /// start instant would count time spent in earlier phases against this
+    /// phase, leaving any phase entered later than its own allocation into
+    /// the frame born exhausted.)
     #[must_use]
     pub fn phase_budget(&self, phase: Phase) -> Self {
         let phase_total = match phase {
@@ -1270,7 +1329,7 @@ impl RenderBudget {
         };
         Self {
             total: phase_total.min(self.remaining()),
-            start: self.start,
+            start: Instant::now(),
             last_frame_time: self.last_frame_time,
             degradation: self.degradation,
             phase_budgets: self.phase_budgets,
@@ -4197,6 +4256,130 @@ mod tests {
                     "Full level should never upgrade"
                 );
             }
+        }
+
+        #[test]
+        fn controller_recovers_after_external_degradation() {
+            // Regression: external mutations (guardrail set_degradation,
+            // conformal-gate degrade) used to leave the controller believing
+            // it was still at Full, so it reported AtFullQuality and held
+            // forever — the UI stayed degraded permanently. The controller
+            // must track the budget's actual level and upgrade back out.
+            let mut budget = RenderBudget::new(Duration::from_millis(16)).with_controller(
+                BudgetControllerConfig {
+                    eprocess: EProcessConfig {
+                        warmup_frames: 0,
+                        ..Default::default()
+                    },
+                    cooldown_frames: 0,
+                    ..Default::default()
+                },
+            );
+
+            // Emergency path forces a jump (as program.rs guardrails do).
+            budget.set_degradation(DegradationLevel::EssentialOnly);
+            assert_eq!(
+                budget.controller().expect("controller attached").level(),
+                DegradationLevel::EssentialOnly,
+                "controller must observe the external level change"
+            );
+
+            // Load is healthy again: fast frames must upgrade back up.
+            for _ in 0..300 {
+                budget.record_frame_time(Duration::from_millis(2));
+                budget.next_frame();
+            }
+            assert!(
+                budget.degradation() < DegradationLevel::EssentialOnly,
+                "externally degraded budget must recover under healthy load, got {:?}",
+                budget.degradation()
+            );
+
+            // Telemetry and rendered level agree at every step.
+            assert_eq!(
+                budget.controller().expect("controller attached").level(),
+                budget.degradation(),
+                "controller and budget level must stay in lockstep"
+            );
+        }
+
+        #[test]
+        fn external_conformal_style_degrade_syncs_controller() {
+            let mut budget = RenderBudget::new(Duration::from_millis(16)).with_controller(
+                BudgetControllerConfig {
+                    eprocess: EProcessConfig {
+                        warmup_frames: 0,
+                        ..Default::default()
+                    },
+                    cooldown_frames: 0,
+                    ..Default::default()
+                },
+            );
+
+            // Conformal risk gate path calls degrade() directly.
+            budget.degrade();
+            assert_eq!(
+                budget.controller().expect("controller attached").level(),
+                budget.degradation()
+            );
+        }
+
+        #[test]
+        fn phase_budget_starts_with_full_phase_allocation() {
+            // Regression: phase sub-budgets inherited the frame's start
+            // instant, so a phase entered later than its own allocation into
+            // the frame was born exhausted.
+            let budget = RenderBudget::new(Duration::from_millis(1000));
+            std::thread::sleep(Duration::from_millis(20));
+
+            let sub = budget.phase_budget(Phase::Diff);
+            assert!(
+                !sub.exhausted(),
+                "phase budget must not be exhausted at phase start"
+            );
+            // The allocation is bounded by the frame's remaining time and is
+            // fully available at the moment the phase begins.
+            assert!(sub.remaining() > Duration::ZERO);
+            assert!(sub.remaining() <= sub.total());
+        }
+
+        #[test]
+        fn next_frame_consumes_recorded_time_once() {
+            // Regression: last_frame_time was never cleared, so a frame that
+            // skipped record_frame_time (emergency drop path) re-fed the
+            // previous frame's duration to the controller.
+            let mut budget = RenderBudget::new(Duration::from_millis(16)).with_controller(
+                BudgetControllerConfig {
+                    eprocess: EProcessConfig {
+                        warmup_frames: 0,
+                        ..Default::default()
+                    },
+                    cooldown_frames: 0,
+                    ..Default::default()
+                },
+            );
+
+            budget.record_frame_time(Duration::from_millis(40));
+            budget.next_frame();
+            let after_first = budget
+                .controller()
+                .expect("controller attached")
+                .telemetry()
+                .frame_time_ms;
+            assert!((after_first - 40.0).abs() < 1.0);
+
+            // No recording before the second call: the controller must see
+            // the (tiny) actual elapsed time, not the stale 40ms again.
+            budget.next_frame();
+            let after_second = budget
+                .controller()
+                .expect("controller attached")
+                .telemetry()
+                .frame_time_ms;
+            assert!(
+                after_second < 20.0,
+                "stale frame time re-fed to controller: {after_second}ms"
+            );
         }
 
         #[test]

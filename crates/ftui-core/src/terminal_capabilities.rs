@@ -1542,6 +1542,60 @@ mod tests {
     }
 
     #[test]
+    fn detect_dumb_disables_kitty_keyboard() {
+        // Regression: kitty_keyboard was the only capability not gated on
+        // is_dumb. TERM=dumb with an inherited TERM_PROGRAM (Emacs shell
+        // inside kitty/Ghostty/iTerm2) must not enable CSI > u sequences.
+        for term_program in ["kitty", "ghostty", "iTerm.app", "WezTerm"] {
+            let env = make_env("dumb", term_program, "truecolor");
+            let caps = TerminalCapabilities::detect_from_inputs(&env);
+            assert!(
+                !caps.kitty_keyboard,
+                "TERM=dumb + TERM_PROGRAM={term_program} must disable kitty keyboard"
+            );
+        }
+        // Sanity: without dumb, the same identity enables it.
+        let env = make_env("xterm-kitty", "kitty", "truecolor");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.kitty_keyboard);
+    }
+
+    #[test]
+    fn detect_term_identity_counts_as_mux_evidence() {
+        // Regression: $TMUX/$STY do not survive ssh/sudo boundaries but the
+        // mux TERM value does. TERM=tmux-*/screen-* must count as mux
+        // evidence so use_scroll_region() stays disabled inside the pane
+        // (doc invariant: mux detection wins).
+        let env = make_env("tmux-256color", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.in_tmux, "TERM=tmux-256color implies tmux");
+        assert!(caps.in_any_mux());
+        assert!(!caps.use_scroll_region());
+
+        let env = make_env("screen-256color", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.in_screen, "TERM=screen-256color implies screen");
+        assert!(caps.in_any_mux());
+        assert!(!caps.use_scroll_region());
+
+        // Plain xterm stays non-mux.
+        let env = make_env("xterm-256color", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(!caps.in_tmux);
+        assert!(!caps.in_screen);
+    }
+
+    #[test]
+    fn from_profile_custom_roundtrips() {
+        let caps = TerminalCapabilities::from_profile(TerminalProfile::Custom);
+        assert_eq!(caps.profile(), TerminalProfile::Custom);
+        // Capability set matches the conservative basic() profile.
+        let basic = TerminalCapabilities::basic();
+        assert_eq!(caps.true_color, basic.true_color);
+        assert_eq!(caps.scroll_region, basic.scroll_region);
+    }
+
+    #[test]
     fn detect_empty_term_is_dumb() {
         let env = make_env("", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
