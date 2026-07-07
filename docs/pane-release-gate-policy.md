@@ -17,6 +17,7 @@ A release is **blocked whenever any mandatory clause fails.**
 |------|------|----------|
 | `advisory` | pre-merge / local | structural completeness + no observed red suites (runtime artifacts reported but not required) |
 | `strict` | release / tag | everything in `advisory` **plus** every perf runtime artifact present **and** the differential certification reads `certified` |
+| `ga` | GA release / CI default | everything in `strict` **plus** every declared suite **observed green** via the cross-job test-summary aggregation (bd-nqxa5) — no `declared` placeholders survive |
 
 ```bash
 # pre-merge sanity (does not need the CI-only perf artifacts)
@@ -46,6 +47,7 @@ Exit code: `0` = GO, `1` = NO-GO, `2` = usage error.
 | `perf_suites` | advisory, strict | soak/replay suites not red |
 | `perf_runtime_artifacts` | **strict** | replay index + differential certification present in the run |
 | `perf_certified` | **strict** | differential certification `classification == "certified"` |
+| `suites_observed_green` | **ga** | every declared suite carries observed pass/fail counts and is `green` (aggregated via `scripts/pane_test_summary_aggregate.py`) |
 
 ### How suite green-ness is established
 
@@ -56,12 +58,32 @@ The release-evidence bundle records each authoritative suite. A suite is:
 - **`declared`** otherwise — it names the authoritative test but does not assert
   it ran.
 
-The gate **blocks on `red`** but treats `declared` as non-blocking, because in
-CI the unit/e2e/parity/a11y/logging suites run in their **own** jobs that fail
-the build independently if they fail. The pane gate's job is to add the
-**aggregate** go/no-go decision plus the perf **behavioral certification** that
-no single suite job covers. At release time, supply a `--test-summary` built
-from the suite jobs to make the bundle assert `green` end to end.
+In `advisory`/`strict` the gate **blocks on `red`** but treats `declared` as
+non-blocking, because in CI the unit/e2e/parity/a11y/logging suites also run
+in jobs that fail the build independently. In **`ga` mode** `declared` is
+itself blocking: the bundle must *prove* every suite green.
+
+### Cross-job test-summary aggregation (bd-nqxa5)
+
+`scripts/pane_test_summary_aggregate.py` turns per-suite cargo-test logs into
+mergeable summary fragments:
+
+```bash
+# per suite (in whichever job runs it): parse the log into a fragment
+python3 scripts/pane_test_summary_aggregate.py capture \
+  --crate ftui-layout --target pane_margin --log pane_margin.log \
+  --out fragments/ftui-layout__pane_margin.json
+
+# gate job: merge fragments (files, dirs, or downloaded artifacts) + verify
+python3 scripts/pane_test_summary_aggregate.py merge fragments/ --out pane_test_summary.json
+python3 scripts/pane_test_summary_aggregate.py check --summary pane_test_summary.json --require-all
+```
+
+`list` prints the declared suites from the same table the bundler uses (no
+drift); `check --require-all` fails if any declared suite is missing, red, or
+ran zero tests; `merge` refuses conflicting duplicates unless
+`--on-conflict=worst` (which keeps the redder record, so a flaky re-run can
+never launder a red suite). Fragments carry provenance under `_meta.sources`.
 
 ---
 
@@ -70,11 +92,15 @@ from the suite jobs to make the bundle assert `green` end to end.
 The `pane-perf-artifacts` job:
 
 1. produces the perf runtime artifacts (replay index + differential certification);
-2. collects + validates the release-evidence bundle (`bd-1w0w4.7`);
-3. runs `pane_release_gate.py selftest`, then `evaluate --mode strict` with the
+2. **observes every declared suite** (driven by `aggregate list`), captures +
+   merges the summaries, and verifies completeness (`check --require-all`);
+3. collects + validates the release-evidence bundle (`bd-1w0w4.7`) with
+   `--test-summary`, so every suite record is observed-green;
+4. runs `pane_release_gate.py selftest`, then `evaluate --mode ga` with the
    certification, writing `pane_release_gate.json` and **failing the job on
    NO-GO**;
-4. uploads the decision as the `pane-release-gate` artifact.
+5. uploads the decision (`pane-release-gate`) and the aggregated summary
+   (`pane-test-summary`) as artifacts.
 
 A semantic perf regression fails earlier at the certify step; the gate makes the
 aggregate decision explicit and machine-readable.

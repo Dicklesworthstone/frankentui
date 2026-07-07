@@ -86,6 +86,30 @@ def _dim_runtime_present(bundle: dict[str, Any], name: str) -> tuple[bool, str]:
     return (not missing, "runtime present" if not missing else f"missing: {missing}")
 
 
+def _all_suites_observed_green(bundle: dict[str, Any]) -> tuple[bool, str]:
+    """GA clause (bd-nqxa5): every declared suite must be OBSERVED green.
+
+    ``declared`` means the suite's results were never aggregated into the
+    bundle (they ran — and were gated — in some other CI job, but this bundle
+    cannot prove it). The GA gate consumes the cross-job aggregation from
+    ``pane_test_summary_aggregate.py`` via ``pane_release_evidence.py
+    --test-summary``, so a ``declared`` suite here means the aggregation is
+    incomplete and the bundle must not assert end-to-end green.
+    """
+    not_green = []
+    for name in ALL_DIMS:
+        for s in _dim(bundle, name).get("suites", []):
+            if s.get("status") != "green":
+                status = s.get("status", "absent")
+                not_green.append(f"{name}:{s.get('crate')}::{s.get('target')}={status}")
+    return (
+        not not_green,
+        "every suite observed green"
+        if not not_green
+        else f"not observed green: {', '.join(not_green)}",
+    )
+
+
 def _build_clauses() -> list[Clause]:
     def all_dims(bundle, _cert):
         present = list(bundle.get("dimensions", {}).keys())
@@ -143,6 +167,9 @@ def _build_clauses() -> list[Clause]:
                ("strict",), perf_runtime),
         Clause("perf_certified", "differential certification reads 'certified'",
                ("strict",), perf_certified),
+        Clause("suites_observed_green",
+               "every declared suite observed green via cross-job aggregation",
+               ("ga",), lambda bundle, _cert: _all_suites_observed_green(bundle)),
     ]
 
 
@@ -154,7 +181,9 @@ def evaluate(
     blocking_failures = []
     for c in clauses:
         passed, detail = c.check(bundle, cert)
-        required = mode in c.required_in
+        # "ga" is a strict superset: everything strict requires, plus the
+        # ga-only clauses (observed-green suite aggregation, bd-nqxa5).
+        required = mode in c.required_in or (mode == "ga" and "strict" in c.required_in)
         results.append(
             {
                 "clause": c.name,
@@ -281,6 +310,27 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
     if "perf_runtime_artifacts" not in evaluate(nort, certified, "strict")["blocking_failures"]:
         failures.append("missing perf runtime should block strict")
 
+    # ga: observed-green everywhere + certified => GO.
+    ga_ok = evaluate(green_bundle(), certified, "ga")
+    if ga_ok["verdict"] != "GO":
+        failures.append(f"ga fully-observed-green should GO, got {ga_ok['blocking_failures']}")
+
+    # ga: a 'declared' suite passes strict but must block ga (bd-nqxa5).
+    declared = green_bundle()
+    declared["dimensions"]["a11y"]["suites"][0] = {
+        "crate": "c", "target": "a11y", "status": "declared",
+    }
+    if evaluate(declared, certified, "strict")["verdict"] != "GO":
+        failures.append("declared suite should still pass strict")
+    ga_declared = evaluate(declared, certified, "ga")
+    if ga_declared["verdict"] != "NO-GO" or "suites_observed_green" not in ga_declared["blocking_failures"]:
+        failures.append("declared suite should block ga on suites_observed_green")
+
+    # ga inherits every strict requirement (no certification => NO-GO).
+    ga_nocert = evaluate(green_bundle(), None, "ga")
+    if "perf_certified" not in ga_nocert["blocking_failures"]:
+        failures.append("ga must inherit strict's perf_certified requirement")
+
     if failures:
         print("SELFTEST FAILED:")
         for f in failures:
@@ -297,7 +347,12 @@ def main(argv: list[str] | None = None) -> int:
     p_eval = sub.add_parser("evaluate", help="render the go/no-go verdict")
     p_eval.add_argument("--bundle", required=True, help="pane_release_evidence.json")
     p_eval.add_argument("--certification", help="differential_certification.json")
-    p_eval.add_argument("--mode", choices=("advisory", "strict"), default="advisory")
+    p_eval.add_argument(
+        "--mode",
+        choices=("advisory", "strict", "ga"),
+        default="advisory",
+        help="ga = strict + every suite observed green via cross-job aggregation",
+    )
     p_eval.add_argument("--out", help="write the decision JSON here")
     p_eval.add_argument("--json", action="store_true")
     p_eval.set_defaults(func=cmd_evaluate)

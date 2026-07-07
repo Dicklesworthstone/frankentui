@@ -2362,12 +2362,41 @@ jobs:
       - name: Pane soak + rollback E2E
         run: ./scripts/pane_soak_rollback.sh --out-dir target/pane-soak/ci
 
+      # bd-nqxa5: observe every declared release suite and aggregate the
+      # summaries so the evidence bundle asserts observed-green end-to-end
+      # instead of 'declared'. The suite list comes from the same DIMENSIONS
+      # table the bundler uses (`list`), so it cannot drift; `check
+      # --require-all` fails the job if any declared suite was not captured
+      # or not green. Fragments are also uploadable workflow artifacts, so
+      # other jobs can contribute summaries via `merge` (cross-job passing).
+      - name: Observe pane release suites + aggregate test summaries
+        run: |
+          set -euo pipefail
+          python3 scripts/pane_test_summary_aggregate.py selftest
+          mkdir -p target/pane-test-summaries/fragments target/pane-test-summaries/logs
+          while IFS=$'\t' read -r crate target; do
+            log="target/pane-test-summaries/logs/${crate}__${target}.log"
+            echo "::group::${crate}::${target}"
+            cargo test -p "$crate" --test "$target" -- --nocapture 2>&1 | tee "$log"
+            echo "::endgroup::"
+            python3 scripts/pane_test_summary_aggregate.py capture \
+              --crate "$crate" --target "$target" --log "$log" \
+              --out "target/pane-test-summaries/fragments/${crate}__${target}.json"
+          done < <(python3 scripts/pane_test_summary_aggregate.py list)
+          python3 scripts/pane_test_summary_aggregate.py merge \
+            target/pane-test-summaries/fragments \
+            --out target/pane-test-summaries/pane_test_summary.json
+          python3 scripts/pane_test_summary_aggregate.py check \
+            --summary target/pane-test-summaries/pane_test_summary.json \
+            --require-all
+
       # bd-1w0w4.7: tie the six release-evidence dimensions (unit/e2e/parity/
       # perf/a11y/logging) into one checksummed, schema-versioned bundle. The
       # static artifacts (compliance/traceability/parity contract/jsonl schema/
       # golden oracle) are checksummed from the tree; the perf runtime artifacts
-      # (replay index + differential certification) come from this run. The
-      # selftest guards the bundler's own contract.
+      # (replay index + differential certification) come from this run; the
+      # aggregated cross-job test summary (bd-nqxa5) turns every suite record
+      # observed-green. The selftest guards the bundler's own contract.
       - name: Pane release-evidence bundle (collect + validate)
         run: |
           python3 scripts/pane_release_evidence.py selftest
@@ -2375,25 +2404,34 @@ jobs:
           python3 scripts/pane_release_evidence.py collect \
             --out target/pane-release/pane_release_evidence.json \
             --results-dir target/pane-profiling/ci \
+            --test-summary target/pane-test-summaries/pane_test_summary.json \
             --strict --json
           python3 scripts/pane_release_evidence.py validate \
             --bundle target/pane-release/pane_release_evidence.json \
             --json
 
-      # bd-1w0w4.5: render the objective go/no-go verdict from the evidence
-      # bundle + the behavioral certification. Strict mode requires the perf
-      # runtime artifacts present and the differential certification 'certified';
-      # a NO-GO fails the job. Suite-level greenness is enforced by each suite's
-      # own job and is recorded 'declared' here unless a --test-summary is given.
-      - name: Pane release gate (strict go/no-go)
+      # bd-1w0w4.5 + bd-nqxa5: render the objective go/no-go verdict from the
+      # evidence bundle + the behavioral certification. GA mode = strict
+      # (runtime artifacts present, differential certification 'certified')
+      # PLUS every declared suite observed green via the aggregated
+      # test summary — no 'declared' placeholders survive the GA gate.
+      - name: Pane release gate (GA go/no-go)
         run: |
           python3 scripts/pane_release_gate.py selftest
           python3 scripts/pane_release_gate.py evaluate \
             --bundle target/pane-release/pane_release_evidence.json \
             --certification target/pane-profiling/ci/differential_certification.json \
-            --mode strict \
+            --mode ga \
             --out target/pane-release/pane_release_gate.json \
             --json
+
+      - name: Upload aggregated pane test summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pane-test-summary
+          path: target/pane-test-summaries
+          retention-days: 30
 
       - name: Upload pane release-evidence + gate
         if: always()
