@@ -256,7 +256,9 @@ impl RolloutDrillEngine {
     }
 
     /// Canary drill: widen exposure stage by stage, checking monitors at
-    /// each step; abort on the first hard failure.
+    /// each step. A hard failure aborts (revert exposure); a warning HOLDS —
+    /// exposure must not widen past a stage that needs review, so later
+    /// stages are not evaluated.
     #[must_use]
     pub fn run_canary_drill(
         &self,
@@ -266,6 +268,7 @@ impl RolloutDrillEngine {
     ) -> DrillReport {
         let mut steps = Vec::new();
         let mut aborted_at: Option<&'static str> = None;
+        let mut held_at: Option<&'static str> = None;
         for (stage_name, stage_series) in stages {
             let report = self.monitor.evaluate(baseline, stage_series);
             let verdict = report.overall;
@@ -289,13 +292,13 @@ impl RolloutDrillEngine {
                     break;
                 }
                 Verdict::Warn => {
+                    held_at = Some(stage_name);
                     steps.push(DrillStep {
                         action: "canary_hold".to_string(),
-                        observation: format!(
-                            "holding exposure at stage {stage_name} pending review"
-                        ),
+                        observation: format!("held_at_stage_{stage_name}"),
                         evidence_json: None,
                     });
+                    break;
                 }
                 Verdict::Pass => {}
             }
@@ -311,6 +314,12 @@ impl RolloutDrillEngine {
                  reduce exposure first, diagnose second — the evidence is preserved either way"
                     .to_string(),
             ]
+        } else if let Some(stage) = held_at {
+            vec![format!(
+                "canary held at stage {stage}: exposure stays at this stage until the warning \
+                 findings are reviewed; widening past a stage that needs review is never \
+                 automatic"
+            )]
         } else {
             vec![
                 "all canary stages within envelope: eligible for promotion scoring; attach the \
@@ -699,6 +708,49 @@ mod tests {
                 .steps
                 .iter()
                 .any(|s| s.action == "canary_stage_100pct")
+        );
+    }
+
+    #[test]
+    fn canary_holds_on_a_warning_and_stops_widening() {
+        let engine = RolloutDrillEngine::default();
+        let base = series(healthy());
+        // A warning-band candidate: p95/p99 land ~+12% over baseline (past
+        // the +10% warning margin, under the +25% hard gate), everything
+        // else within envelope.
+        let warn_stage: Vec<u64> = (0..60)
+            .map(|i| if i >= 55 { 122 } else { 100 + (i % 10) })
+            .collect();
+        let report = engine.run_canary_drill(
+            "t",
+            &base,
+            &[
+                ("10pct", series(healthy())),
+                ("50pct", series(warn_stage)),
+                ("100pct", series(healthy())),
+            ],
+        );
+        assert!(report.mechanism_ok);
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|s| s.observation == "held_at_stage_50pct"),
+            "a warning must hold exposure at the warning stage"
+        );
+        // Widening must stop: the 100pct stage is never evaluated.
+        assert!(
+            !report
+                .steps
+                .iter()
+                .any(|s| s.action == "canary_stage_100pct"),
+            "exposure must not widen past a stage that needs review"
+        );
+        assert!(
+            report
+                .operator_guidance
+                .iter()
+                .any(|g| g.contains("held at stage 50pct"))
         );
     }
 
