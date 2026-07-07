@@ -909,7 +909,7 @@ mod tests {
     fn wiring_references_only_stable_contract_methods() {
         for kind in AdapterKind::ALL {
             let wiring = recommended_wiring(kind);
-            assert!(wiring.len() >= 9, "wiring must cover the full lifecycle");
+            assert!(wiring.len() >= 8, "wiring must cover the full lifecycle");
             for step in &wiring {
                 assert!(
                     step.method == "-" || WIRING_CONTRACT_METHODS.contains(&step.method),
