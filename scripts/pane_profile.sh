@@ -628,6 +628,73 @@ PY
 
 run_core_harness
 
+# bd-77mdi: extra golden-corpus scenarios covering advanced pane workflows.
+# Each op-mix runs the same profiling harness with a deterministic operation
+# generator (structural churn: split/ratio/swap/close; mixed: ratio storm
+# with structural + normalize beats). Their manifests are certified against
+# scripts/pane_replay_golden.json via `pane_replay_artifacts.py certify
+# --manifest` so the certification corpus stays comprehensive as workflows
+# land.
+run_extra_harness() {
+    local mix="$1"
+    local scenario="timeline-${mix}-16x64"
+    local output_file="${OUT_DIR}/pane_extra_harness_${mix}.txt"
+    local harness_dir="${OUT_DIR}/pane_extra_harness_${mix}"
+    local harness_args=(
+        bench -p ftui-layout --bench pane_profile_harness --
+        --out-dir "${harness_dir}"
+        --scenario-name "${scenario}"
+        --leaf-count 16 --operations 32 --op-mix "${mix}"
+    )
+
+    if [[ "$TEST_MODE" == "true" ]]; then
+        harness_args+=(--iterations 64 --warmup-iterations 8)
+    else
+        harness_args+=(--iterations 64 --warmup-iterations 8)
+    fi
+
+    echo "==> pane_extra_harness (${scenario})"
+    "${CARGO_RUNNER[@]}" "${harness_args[@]}" 2>&1 | tee "$output_file"
+
+    mkdir -p "$harness_dir"
+    python3 - "$output_file" "$harness_dir" <<'PY'
+import json
+import pathlib
+import sys
+
+output_path = pathlib.Path(sys.argv[1])
+harness_dir = pathlib.Path(sys.argv[2])
+prefix_map = {
+    "HARNESS_MANIFEST_JSON=": "manifest.json",
+    "HARNESS_BASELINE_SNAPSHOT_JSON=": "baseline_snapshot.json",
+    "HARNESS_FINAL_SNAPSHOT_JSON=": "final_snapshot.json",
+    "HARNESS_RUN_LOG_JSON=": "run.log",
+}
+
+lines = output_path.read_text().splitlines()
+payloads = {}
+for line in lines:
+    for prefix, filename in prefix_map.items():
+        if line.startswith(prefix):
+            payloads[filename] = json.loads(line[len(prefix):])
+            break
+
+missing = [filename for filename in prefix_map.values() if filename not in payloads]
+if missing:
+    raise SystemExit(f"missing harness payloads: {', '.join(missing)}")
+
+for filename, payload in payloads.items():
+    path = harness_dir / filename
+    if filename == "run.log":
+        path.write_text("".join(f"{entry}\n" for entry in payload))
+    else:
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+}
+
+run_extra_harness structural
+run_extra_harness mixed
+
 run_bench \
     layout_bench \
     bench -p ftui-layout --bench layout_bench -- pane/core/ "${bench_args[@]}"

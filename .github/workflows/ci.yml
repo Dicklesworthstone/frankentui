@@ -2356,6 +2356,23 @@ jobs:
             --require-match \
             --json
 
+      # bd-77mdi: the golden corpus also pins the advanced-workflow scenarios
+      # (structural churn + mixed op storm). Certify each extra harness
+      # manifest directly so a semantic drift in split/close/swap/normalize
+      # replay fails the gate exactly like the primary ratio-storm scenario.
+      - name: Certify extra golden-corpus scenarios (advanced workflows)
+        run: |
+          set -euo pipefail
+          for mix in structural mixed; do
+            python3 scripts/pane_replay_artifacts.py certify \
+              --manifest "target/pane-profiling/ci/pane_extra_harness_${mix}/manifest.json" \
+              --golden scripts/pane_replay_golden.json \
+              --differential-matrix-passed true \
+              --require-match \
+              --out-dir "target/pane-profiling/ci/pane_extra_harness_${mix}" \
+              --json
+          done
+
       # bd-1pvzq.5: prove the user-visible optimized workflow stays safe under
       # sustained interaction and rolls back to the conservative path on a
       # monitor violation, with operator-grade JSONL + a self-contained bundle.

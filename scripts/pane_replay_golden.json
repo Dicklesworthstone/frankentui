@@ -1,13 +1,25 @@
 {
-  "schema": "ftui.pane.replay_golden",
-  "schema_version": 1,
   "_comment": "Golden replay/state-hash oracle for the pane perf gate (bd-1pvzq.3). Pins the deterministic baseline_hash and final_hash the pane_profile_harness produces for each scenario; a drift means the optimized pane execution no longer reproduces the certified state (a behavior regression, not a timing one). aggregate_hash is intentionally NOT pinned (it XOR-mixes over iterations and so depends on --iterations). Regenerate after an intended behavior change with: scripts/pane_replay_artifacts.py certify --index <bundle>/replay_artifact_index.json --golden scripts/pane_replay_golden.json --update-golden",
   "scenarios": {
+    "timeline-mixed-16x64": {
+      "baseline_hash": 121053316931204678,
+      "final_hash": 4943900339728593158,
+      "leaf_count": 16,
+      "operations_per_iteration": 32
+    },
     "timeline-ratios-32x2000": {
-      "leaf_count": 32,
-      "operations_per_iteration": 32,
       "baseline_hash": 5263138355849365358,
-      "final_hash": 15345778604597020665
+      "final_hash": 15345778604597020665,
+      "leaf_count": 32,
+      "operations_per_iteration": 32
+    },
+    "timeline-structural-16x64": {
+      "baseline_hash": 121053316931204678,
+      "final_hash": 10239826443723407281,
+      "leaf_count": 16,
+      "operations_per_iteration": 32
     }
-  }
+  },
+  "schema": "ftui.pane.replay_golden",
+  "schema_version": 1
 }

@@ -22,11 +22,16 @@ struct ScenarioSpec {
     operations_per_iteration: usize,
     iterations: usize,
     warmup_iterations: usize,
+    /// Deterministic operation mix (bd-77mdi): `ratios` (the original
+    /// SetSplitRatio storm), `structural` (split/ratio/swap/close churn), or
+    /// `mixed` (ratio storm with periodic structural + normalize beats).
+    op_mix: &'static str,
 }
 
 #[derive(Debug, Serialize)]
 struct HarnessManifest {
     scenario: String,
+    op_mix: String,
     benchmark_binary: String,
     leaf_count: usize,
     operations_per_iteration: usize,
@@ -92,6 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         operations_per_iteration: 32,
         iterations: 2_000,
         warmup_iterations: 200,
+        op_mix: "ratios",
     };
     let mut out_dir = default_out_dir()?;
 
@@ -122,6 +128,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--scenario-name" => {
                 let value = args.next().ok_or("missing value for --scenario-name")?;
                 spec.name = Box::leak(value.into_boxed_str());
+            }
+            "--op-mix" => {
+                let value = args.next().ok_or("missing value for --op-mix")?;
+                spec.op_mix = match value.as_str() {
+                    "ratios" => "ratios",
+                    "structural" => "structural",
+                    "mixed" => "mixed",
+                    other => {
+                        return Err(format!(
+                            "unknown --op-mix: {other} (want ratios|structural|mixed)"
+                        )
+                        .into());
+                    }
+                };
             }
             "-h" | "--help" => {
                 print_help();
@@ -170,6 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &split_ids,
             &ratios,
             spec.operations_per_iteration,
+            spec.op_mix,
         )?;
     log_lines.push(format!(
         "checkpoint_decision interval={} snapshot_cost_ns={} replay_step_cost_ns={} estimated_replay_depth_ns={}",
@@ -185,6 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &split_ids,
             &ratios,
             spec.operations_per_iteration,
+            spec.op_mix,
         )?;
         if warmup_idx == 0 {
             log_lines.push(format!(
@@ -208,6 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &split_ids,
             &ratios,
             spec.operations_per_iteration,
+            spec.op_mix,
         )?;
         let allocation_diagnostics = AllocationDiagnostics::from_stats(allocation_region.change());
         aggregate_hash ^= result.final_hash.rotate_left((iter_idx % 63) as u32);
@@ -277,6 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let manifest = HarnessManifest {
         scenario: spec.name.to_string(),
+        op_mix: spec.op_mix.to_string(),
         benchmark_binary: env::current_exe()?.display().to_string(),
         leaf_count: spec.leaf_count,
         operations_per_iteration: spec.operations_per_iteration,
@@ -334,23 +358,94 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Deterministic leaf ids of the CURRENT tree, in arena order.
+fn pane_leaf_ids(tree: &PaneTree) -> Vec<PaneId> {
+    tree.nodes()
+        .filter_map(|node| matches!(node.kind, PaneNodeKind::Leaf(_)).then_some(node.id))
+        .collect()
+}
+
+/// Build the idx-th operation for the given mix (bd-77mdi).
+///
+/// `ratios` mode reproduces the original SetSplitRatio storm byte-for-byte
+/// (baseline split ids stay valid because ratio ops never change topology).
+/// `structural` cycles split → ratio → swap → close so the tree churns
+/// through topology changes while staying bounded (net zero leaves per
+/// cycle). `mixed` is the ratio storm with a structural beat every 8th op
+/// and a NormalizeRatios beat every 16th. All targets are derived from the
+/// deterministic arena order of the current tree, so identical inputs
+/// produce identical operation sequences and hashes.
+fn nth_operation(
+    tree: &PaneTree,
+    idx: usize,
+    op_mix: &str,
+    baseline_split_ids: &[PaneId],
+    ratios: &[PaneSplitRatio],
+) -> PaneOperation {
+    let ratio = ratios[idx % ratios.len()];
+    let ratio_op = |tree: &PaneTree| -> PaneOperation {
+        // Prefer the current tree's first split so structural mixes stay
+        // valid after topology churn; the baseline ids serve the pure
+        // ratio storm unchanged.
+        let split = if op_mix == "ratios" {
+            baseline_split_ids[idx % baseline_split_ids.len()]
+        } else {
+            pane_split_ids(tree)[0]
+        };
+        PaneOperation::SetSplitRatio { split, ratio }
+    };
+    let structural_step = |tree: &PaneTree, phase: usize| -> PaneOperation {
+        let leaves = pane_leaf_ids(tree);
+        match phase {
+            0 => PaneOperation::SplitLeaf {
+                target: leaves[0],
+                axis: if idx % 8 < 4 {
+                    SplitAxis::Horizontal
+                } else {
+                    SplitAxis::Vertical
+                },
+                ratio,
+                placement: PanePlacement::ExistingFirst,
+                new_leaf: PaneLeaf::new(format!("churn-{idx}")),
+            },
+            1 => ratio_op(tree),
+            2 if leaves.len() >= 2 => PaneOperation::SwapNodes {
+                first: leaves[0],
+                second: leaves[leaves.len() - 1],
+            },
+            3 if leaves.len() >= 2 => PaneOperation::CloseNode {
+                target: leaves[leaves.len() - 1],
+            },
+            _ => ratio_op(tree),
+        }
+    };
+    match op_mix {
+        "structural" => structural_step(tree, idx % 4),
+        "mixed" => {
+            if idx % 16 == 15 {
+                PaneOperation::NormalizeRatios
+            } else if idx % 8 == 7 {
+                structural_step(tree, (idx / 8) % 4)
+            } else {
+                ratio_op(tree)
+            }
+        }
+        _ => ratio_op(tree),
+    }
+}
+
 fn execute_iteration(
     baseline: &PaneTree,
     split_ids: &[PaneId],
     ratios: &[PaneSplitRatio],
     operations_per_iteration: usize,
+    op_mix: &str,
 ) -> Result<IterationResult, Box<dyn std::error::Error>> {
     let mut tree = baseline.clone();
     let mut timeline = PaneInteractionTimeline::with_baseline(baseline);
     for idx in 0..operations_per_iteration {
-        let split = split_ids[idx % split_ids.len()];
-        let ratio = ratios[idx % ratios.len()];
-        timeline.apply_and_record(
-            &mut tree,
-            idx as u64,
-            80_000 + idx as u64,
-            PaneOperation::SetSplitRatio { split, ratio },
-        )?;
+        let operation = nth_operation(&tree, idx, op_mix, split_ids, ratios);
+        timeline.apply_and_record(&mut tree, idx as u64, 80_000 + idx as u64, operation)?;
     }
     let replay_diagnostics = timeline.replay_diagnostics();
     let retention_diagnostics = timeline.retention_diagnostics();
@@ -380,12 +475,19 @@ fn measure_checkpoint_decision_inputs(
     split_ids: &[PaneId],
     ratios: &[PaneSplitRatio],
     operations_per_iteration: usize,
+    op_mix: &str,
 ) -> Result<(u128, u128, PaneInteractionTimelineCheckpointDecision), Box<dyn std::error::Error>> {
     let snapshot_start = Instant::now();
     let _snapshot = baseline.to_snapshot();
     let snapshot_cost_ns = snapshot_start.elapsed().as_nanos();
 
-    let result = execute_iteration(baseline, split_ids, ratios, operations_per_iteration)?;
+    let result = execute_iteration(
+        baseline,
+        split_ids,
+        ratios,
+        operations_per_iteration,
+        op_mix,
+    )?;
     let replay_steps = result.replay_diagnostics.replay_depth.max(1) as u128;
     let replay_step_cost_ns = (result.replay_elapsed_ns / replay_steps).max(1);
     let decision =

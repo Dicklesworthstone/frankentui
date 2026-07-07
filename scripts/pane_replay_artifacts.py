@@ -662,15 +662,40 @@ def update_golden_from_index(
 
 
 def cmd_certify(args: argparse.Namespace) -> int:
-    index_path = Path(args.index).resolve()
-    if not index_path.is_file():
-        print(f"index not found: {index_path}", file=sys.stderr)
+    if bool(args.index) == bool(args.manifest):
+        print("exactly one of --index or --manifest is required", file=sys.stderr)
         return 1
-    try:
-        index = json.loads(index_path.read_text())
-    except json.JSONDecodeError as exc:
-        print(f"index is not valid JSON: {index_path}: {exc}", file=sys.stderr)
-        return 1
+    if args.manifest:
+        # Direct-manifest mode (bd-77mdi): certify an extra golden-corpus
+        # scenario from its harness manifest, synthesizing the index shape
+        # the certification core consumes.
+        manifest_path = Path(args.manifest).resolve()
+        if not manifest_path.is_file():
+            print(f"manifest not found: {manifest_path}", file=sys.stderr)
+            return 1
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except json.JSONDecodeError as exc:
+            print(f"manifest is not valid JSON: {manifest_path}: {exc}", file=sys.stderr)
+            return 1
+        index = {
+            "replay": {
+                field: manifest[field]
+                for field in REPLAY_SUMMARY_FIELDS
+                if field in manifest
+            }
+        }
+        index_path = manifest_path
+    else:
+        index_path = Path(args.index).resolve()
+        if not index_path.is_file():
+            print(f"index not found: {index_path}", file=sys.stderr)
+            return 1
+        try:
+            index = json.loads(index_path.read_text())
+        except json.JSONDecodeError as exc:
+            print(f"index is not valid JSON: {index_path}: {exc}", file=sys.stderr)
+            return 1
     golden_path = Path(args.golden).resolve()
 
     matrix_passed: Optional[bool] = None
@@ -693,6 +718,7 @@ def cmd_certify(args: argparse.Namespace) -> int:
     cert = build_certification(index, golden, matrix_passed=matrix_passed)
 
     out_dir = Path(args.out_dir).resolve() if args.out_dir else index_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
     cert_path = out_dir / DIFF_CERT_FILENAME
     cert_path.write_text(json.dumps(cert, indent=2, sort_keys=True) + "\n")
 
@@ -923,7 +949,12 @@ def build_parser() -> argparse.ArgumentParser:
         "certify",
         help="golden replay-oracle + differential certification of a bundle (bd-1pvzq.3)",
     )
-    certify.add_argument("--index", required=True, help="path to replay_artifact_index.json")
+    certify.add_argument("--index", help="path to replay_artifact_index.json")
+    certify.add_argument(
+        "--manifest",
+        help="certify a harness manifest.json directly (extra golden-corpus "
+        "scenarios, bd-77mdi) instead of a full bundle index",
+    )
     certify.add_argument("--golden", required=True, help="path to the golden replay oracle JSON")
     certify.add_argument(
         "--out-dir",
