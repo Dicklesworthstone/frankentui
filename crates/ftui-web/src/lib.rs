@@ -15,6 +15,7 @@
 pub mod input_parser;
 pub mod pane_keyboard;
 pub mod pane_pointer_capture;
+pub mod release_readiness;
 pub mod runtime_options;
 pub mod sdk_adapter;
 pub mod sdk_event_model;
