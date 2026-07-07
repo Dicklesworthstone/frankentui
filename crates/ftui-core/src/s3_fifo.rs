@@ -82,7 +82,10 @@ impl Location {
 pub struct S3FifoStats {
     /// Number of cache hits.
     pub hits: u64,
-    /// Number of cache misses.
+    /// Number of cache misses, counted when [`S3Fifo::insert`] sees a new
+    /// key. A [`S3Fifo::get`] on a missing key does NOT increment this
+    /// (callers pairing get-miss with insert would otherwise double-count);
+    /// track lookup misses at the call site if you need them.
     pub misses: u64,
     /// Current entries in the small queue.
     pub small_size: usize,
@@ -124,6 +127,9 @@ where
     }
 
     /// Look up a value by key, incrementing the frequency counter on hit.
+    ///
+    /// A miss returns `None` without touching the miss counter — misses are
+    /// counted by [`insert`](Self::insert) (see [`S3FifoStats::misses`]).
     pub fn get(&mut self, key: &K) -> Option<&V> {
         if let Some(loc) = self.index.get(key) {
             self.hits += 1;
