@@ -24,11 +24,11 @@ A release is **blocked whenever any mandatory clause fails.**
 python3 scripts/pane_release_gate.py evaluate \
   --bundle target/pane-release/pane_release_evidence.json --mode advisory --json
 
-# release decision (perf job)
+# release decision (perf job; CI runs `ga` = strict + observed-green suites)
 python3 scripts/pane_release_gate.py evaluate \
   --bundle target/pane-release/pane_release_evidence.json \
   --certification target/pane-profiling/ci/differential_certification.json \
-  --mode strict --out target/pane-release/pane_release_gate.json --json
+  --mode ga --out target/pane-release/pane_release_gate.json --json
 ```
 
 Exit code: `0` = GO, `1` = NO-GO, `2` = usage error.

@@ -355,13 +355,20 @@ impl AdapterLifecycle {
         let decided: Result<(AdapterPhase, AdapterOutcome), (&'static str, &'static str)> =
             match (action, self.phase) {
                 // ── Mount ────────────────────────────────────────────
-                (AdapterAction::Mount, AdapterPhase::Created | AdapterPhase::Detached) => {
+                (AdapterAction::Mount, AdapterPhase::Created) => {
                     Ok((AdapterPhase::Mounted, AdapterOutcome::Applied))
                 }
-                (AdapterAction::Mount, AdapterPhase::Mounted) if react => {
-                    Ok((AdapterPhase::Mounted, AdapterOutcome::StrictModeDeduped))
+                // Detached still has an INITIALIZED engine (attachClose only
+                // closed the transport), so a second `init` is a double
+                // mount, not a re-mount: React dedups it (mount already
+                // satisfied, phase unchanged), vanilla reports misuse.
+                (AdapterAction::Mount, AdapterPhase::Mounted | AdapterPhase::Detached) if react => {
+                    Ok((self.phase, AdapterOutcome::StrictModeDeduped))
                 }
-                (AdapterAction::Mount, AdapterPhase::Mounted | AdapterPhase::Attached) => Err((
+                (
+                    AdapterAction::Mount,
+                    AdapterPhase::Mounted | AdapterPhase::Attached | AdapterPhase::Detached,
+                ) => Err((
                     "adapter.double_mount",
                     "init was already called for this container; vanilla hosts must dispose \
                      before re-mounting (React hosts get StrictMode dedup instead)",
@@ -517,7 +524,8 @@ pub fn recommended_wiring(kind: AdapterKind) -> Vec<WiringStep> {
     push(
         "fitToContainer",
         "size the grid to the container before first paint; wire a ResizeObserver to \
-         call resize(cols, rows) afterwards",
+         keep it sized (fitToContainer again, or resize(cols, rows) when the host \
+         computes the grid itself)",
     );
     push(
         "attachConnect",
@@ -569,7 +577,7 @@ const VANILLA_EXAMPLE: &str = r#"// FrankenTermJS first-party vanilla adapter (b
 export function createFrankenTermAdapter(FrankenTermWeb, container, transportUrl) {
   // Step 1: pin the contract before any other call.
   const contract = FrankenTermWeb.apiContract();
-  if (contract.apiLine !== "frankenterm-web" || !String(contract.apiVersion).startsWith("1.")) {
+  if (contract.apiLine !== "frankenterm-js" || !String(contract.apiVersion).startsWith("1.")) {
     throw new Error(`unsupported FrankenTermWeb contract: ${contract.apiVersion}`);
   }
 
@@ -617,9 +625,11 @@ function handleTerminalEvent(event) {
 
 const REACT_EXAMPLE: &str = r#"// FrankenTermJS first-party React adapter — also the Next.js wiring
 // (bd-2vr05.9.3). Lifecycle contract: mount -> attach -> resize/input ->
-// detach -> dispose, driven from a single effect. StrictMode double-invokes
-// the effect in development; every step below is idempotent-or-deduped, so
-// the double run is harmless by construction.
+// detach -> dispose, driven from a single effect. React StrictMode runs
+// setup -> cleanup -> setup in development; because the cleanup below fully
+// tears down the engine, the second setup starts from a clean container.
+// (The adapter model additionally dedups repeated idempotent steps for
+// hosts that keep one adapter instance across effect runs.)
 // Generated in lockstep with ftui-web's sdk_adapter model; do not hand-edit.
 "use client";
 
@@ -637,7 +647,7 @@ export function FrankenTerm({ FrankenTermWeb, transportUrl, onEvent }) {
 
     // Step 1: pin the contract before any other call.
     const contract = FrankenTermWeb.apiContract();
-    if (contract.apiLine !== "frankenterm-web" || !String(contract.apiVersion).startsWith("1.")) {
+    if (contract.apiLine !== "frankenterm-js" || !String(contract.apiVersion).startsWith("1.")) {
       throw new Error(`unsupported FrankenTermWeb contract: ${contract.apiVersion}`);
     }
 
@@ -664,7 +674,8 @@ export function FrankenTerm({ FrankenTermWeb, transportUrl, onEvent }) {
     }, 16);
 
     // Effect cleanup IS the teardown: detach, then destroy. StrictMode runs
-    // mount+cleanup twice in development; the adapter model dedups repeats.
+    // cleanup between its two dev-mode setups, so each setup gets a fresh
+    // engine; the adapter model dedups repeats defensively.
     return () => {
       clearInterval(drainTimer);
       container.removeEventListener("keydown", onKeyDown);
@@ -842,6 +853,31 @@ mod tests {
             c.apply(&AdapterAction::Dispose)
                 .expect("dispose from attached");
         }
+    }
+
+    #[test]
+    fn mount_while_detached_is_a_double_mount_not_a_remount() {
+        // Detached keeps the engine initialized; a second init must never be
+        // silently accepted as a fresh mount.
+        let mut vanilla = lifecycle(AdapterKind::Vanilla);
+        vanilla.apply(&AdapterAction::Mount).expect("mount");
+        vanilla.apply(&AdapterAction::Attach).expect("attach");
+        vanilla.apply(&AdapterAction::Detach).expect("detach");
+        let misuse = vanilla
+            .apply(&AdapterAction::Mount)
+            .expect_err("init on a detached-but-initialized engine");
+        assert_eq!(misuse.code, "adapter.double_mount");
+        assert_eq!(vanilla.phase(), AdapterPhase::Detached, "phase unchanged");
+
+        let mut react = lifecycle(AdapterKind::React);
+        react.apply(&AdapterAction::Mount).expect("mount");
+        react.apply(&AdapterAction::Attach).expect("attach");
+        react.apply(&AdapterAction::Detach).expect("detach");
+        let event = react
+            .apply(&AdapterAction::Mount)
+            .expect("react dedups the repeat");
+        assert_eq!(event.outcome, AdapterOutcome::StrictModeDeduped);
+        assert_eq!(react.phase(), AdapterPhase::Detached, "dedup keeps phase");
     }
 
     #[test]

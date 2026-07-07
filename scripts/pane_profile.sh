@@ -647,11 +647,9 @@ run_extra_harness() {
         --leaf-count 16 --operations 32 --op-mix "${mix}"
     )
 
-    if [[ "$TEST_MODE" == "true" ]]; then
-        harness_args+=(--iterations 64 --warmup-iterations 8)
-    else
-        harness_args+=(--iterations 64 --warmup-iterations 8)
-    fi
+    # Extra corpus scenarios pin iteration-independent hashes, so a small
+    # fixed iteration count is correct in both test and full profiling mode.
+    harness_args+=(--iterations 64 --warmup-iterations 8)
 
     echo "==> pane_extra_harness (${scenario})"
     "${CARGO_RUNNER[@]}" "${harness_args[@]}" 2>&1 | tee "$output_file"

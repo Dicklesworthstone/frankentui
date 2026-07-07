@@ -1,4 +1,4 @@
-# ADR-007: No Continuous-Time FRP for the Animation System
+# ADR-011: No Continuous-Time FRP for the Animation System
 
 Status: **accepted (defer indefinitely)** — 2026-07-06, from graveyard §6.9
 (bd-16pal, EV score 1.5, below the adoption threshold).

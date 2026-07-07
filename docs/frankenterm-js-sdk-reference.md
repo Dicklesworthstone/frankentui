@@ -30,7 +30,7 @@ Pin the contract before any other call:
 
 ```js
 const contract = FrankenTermWeb.apiContract();
-if (contract.apiLine !== "frankenterm-web" || !String(contract.apiVersion).startsWith("1.")) {
+if (contract.apiLine !== "frankenterm-js" || !String(contract.apiVersion).startsWith("1.")) {
   throw new Error(`unsupported FrankenTermWeb contract: ${contract.apiVersion}`);
 }
 ```

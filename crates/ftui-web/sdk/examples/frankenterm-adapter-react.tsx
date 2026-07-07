@@ -1,8 +1,10 @@
 // FrankenTermJS first-party React adapter — also the Next.js wiring
 // (bd-2vr05.9.3). Lifecycle contract: mount -> attach -> resize/input ->
-// detach -> dispose, driven from a single effect. StrictMode double-invokes
-// the effect in development; every step below is idempotent-or-deduped, so
-// the double run is harmless by construction.
+// detach -> dispose, driven from a single effect. React StrictMode runs
+// setup -> cleanup -> setup in development; because the cleanup below fully
+// tears down the engine, the second setup starts from a clean container.
+// (The adapter model additionally dedups repeated idempotent steps for
+// hosts that keep one adapter instance across effect runs.)
 // Generated in lockstep with ftui-web's sdk_adapter model; do not hand-edit.
 "use client";
 
@@ -20,7 +22,7 @@ export function FrankenTerm({ FrankenTermWeb, transportUrl, onEvent }) {
 
     // Step 1: pin the contract before any other call.
     const contract = FrankenTermWeb.apiContract();
-    if (contract.apiLine !== "frankenterm-web" || !String(contract.apiVersion).startsWith("1.")) {
+    if (contract.apiLine !== "frankenterm-js" || !String(contract.apiVersion).startsWith("1.")) {
       throw new Error(`unsupported FrankenTermWeb contract: ${contract.apiVersion}`);
     }
 
@@ -47,7 +49,8 @@ export function FrankenTerm({ FrankenTermWeb, transportUrl, onEvent }) {
     }, 16);
 
     // Effect cleanup IS the teardown: detach, then destroy. StrictMode runs
-    // mount+cleanup twice in development; the adapter model dedups repeats.
+    // cleanup between its two dev-mode setups, so each setup gets a fresh
+    // engine; the adapter model dedups repeats defensively.
     return () => {
       clearInterval(drainTimer);
       container.removeEventListener("keydown", onKeyDown);

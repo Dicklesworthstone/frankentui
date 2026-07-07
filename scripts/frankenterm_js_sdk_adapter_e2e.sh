@@ -147,7 +147,8 @@ run_step "sdk_validation_tests" bash -c "
 run_step "sdk_adapter_unit_tests" bash -c "
     cd '$PROJECT_ROOT' &&
     cargo test -p ftui-web --lib sdk_adapter -- --nocapture \
-        > '$LOG_DIR/sdk_adapter_unit.raw.log' 2>&1
+        > '$LOG_DIR/sdk_adapter_unit.raw.log' 2>&1 &&
+    grep -Eq 'test result: ok\. [1-9][0-9]* passed' '$LOG_DIR/sdk_adapter_unit.raw.log'
 "
 
 if [[ -s "$COMPAT_LOG" ]]; then

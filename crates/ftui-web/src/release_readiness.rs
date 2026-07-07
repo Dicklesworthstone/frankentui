@@ -157,7 +157,7 @@ impl ParityScorecard {
                     id: "attach_transport",
                     surface: "websocket attach state machine + flow control + reconnect",
                     status: ParityStatus::Full,
-                    evidence: "ftui-web::frankenterm_js_security_reliability_compat",
+                    evidence: "ftui-pty::frankenterm_js_security_reliability_compat",
                     blocker_ids: vec![],
                     risks: vec![],
                 },
@@ -679,6 +679,32 @@ mod tests {
             blocked.iter().any(|a| a.id == "browser_delivery"),
             "browser delivery must be tracked as blocked while packaging is out-of-tree"
         );
+    }
+
+    /// Every evidence hook must point at a REAL integration-test target in
+    /// the workspace: a scorecard citing a nonexistent (or wrong-crate)
+    /// suite would make readiness claims nobody can verify.
+    #[test]
+    fn scorecard_evidence_targets_exist_in_the_workspace() {
+        let workspace_crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/ dir");
+        for area in ParityScorecard::canonical().areas {
+            let (krate, target) = area
+                .evidence
+                .split_once("::")
+                .expect("evidence is crate::target");
+            let path = workspace_crates
+                .join(krate)
+                .join("tests")
+                .join(format!("{target}.rs"));
+            assert!(
+                path.is_file(),
+                "area {}: evidence target does not exist: {}",
+                area.id,
+                path.display()
+            );
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@
 export function createFrankenTermAdapter(FrankenTermWeb, container, transportUrl) {
   // Step 1: pin the contract before any other call.
   const contract = FrankenTermWeb.apiContract();
-  if (contract.apiLine !== "frankenterm-web" || !String(contract.apiVersion).startsWith("1.")) {
+  if (contract.apiLine !== "frankenterm-js" || !String(contract.apiVersion).startsWith("1.")) {
     throw new Error(`unsupported FrankenTermWeb contract: ${contract.apiVersion}`);
   }
 

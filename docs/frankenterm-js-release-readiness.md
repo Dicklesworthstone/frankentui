@@ -12,8 +12,9 @@
 
 ## How a go/no-go decision is made
 
-1. Run the rehearsal script. It executes every compat/conformance lane, the
-   SDK validation suite, and the stress/soak campaign, then writes
+1. Run the rehearsal script. It executes every compat/conformance lane
+   (including all three security/reliability arms), the SDK validation
+   suite, and the stress/soak campaign, then writes
    `signoff_packet/` containing the four readiness artifacts, per-lane JSONL
    evidence, and `rehearsal_summary.json` (verdict `GO_FOR_SIGNOFF` only when
    every lane passed).

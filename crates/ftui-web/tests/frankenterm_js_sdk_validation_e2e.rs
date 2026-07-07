@@ -368,6 +368,14 @@ fn e2e_examples_are_lockstep_and_pin_the_contract() {
             example.contains("apiContract()"),
             "{label} example must pin the contract before other calls"
         );
+        // The contract identity is `apiLine: "frankenterm-js"` (Contract
+        // Identity section of docs/spec/frankenterm-web-api.md). An example
+        // pinning any other apiLine would reject every valid engine at
+        // runtime — this exact string is load-bearing.
+        assert!(
+            example.contains("contract.apiLine !== \"frankenterm-js\""),
+            "{label} example must pin the canonical apiLine \"frankenterm-js\""
+        );
         assert!(
             example.contains("startsWith(\"1.\")"),
             "{label} example must pin the 1.x api line"
