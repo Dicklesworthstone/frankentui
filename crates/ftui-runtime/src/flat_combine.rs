@@ -1,15 +1,23 @@
-//! Flat combining for batched operation dispatch under contention.
+//! Caller-driven flat combining for batched operation dispatch.
 //!
 //! When multiple event sources (timers, background tasks, input) post
-//! operations concurrently, flat combining batches them into a single
-//! pass. One thread becomes the "combiner" and executes ALL pending
-//! operations while holding the state lock, keeping data hot in L1
-//! cache and reducing lock acquisition overhead.
+//! operations concurrently, submitters enqueue them under a short queue
+//! lock and whichever thread calls [`FlatCombiner::combine`] acts as the
+//! combiner: it drains the queue and executes ALL pending operations in
+//! one pass while holding the state lock, keeping data hot in L1 cache.
+//!
+//! Unlike classic flat combining, there is no combiner election and
+//! submitters do not wait for results: operations are fire-and-forget,
+//! and nothing runs until some thread explicitly polls `combine()` (or
+//! `combine_with`). Operations still queued when the `FlatCombiner` is
+//! dropped are discarded, and the publication queue is unbounded — the
+//! polling cadence is the backpressure.
 //!
 //! # When to Use
 //!
-//! Use flat combining instead of a bare `Mutex` when:
+//! Use this instead of a bare `Mutex` when:
 //! - Multiple threads/tasks post operations to shared state
+//! - A natural polling point exists (e.g., once per frame/tick)
 //! - Operations are short (the combiner shouldn't hold the lock too long)
 //! - Batching is beneficial (e.g., coalescing events, reducing redraws)
 //!
@@ -79,24 +87,25 @@ pub struct FlatCombiner<S> {
     generation: AtomicU64,
     /// Performance statistics.
     stats: Mutex<CombinerStats>,
-    /// Owner thread when `combine_with` is actively running a user callback.
-    combine_with_owner: Mutex<Option<ThreadId>>,
+    /// Owner thread while a combine pass (`combine` or `combine_with`) is
+    /// actively executing user callbacks under the state lock.
+    combine_owner: Mutex<Option<ThreadId>>,
 }
 
 type BoxedOp<S> = Box<dyn FnOnce(&mut S) + Send>;
 
-struct CombineWithOwnerGuard<'a> {
+struct CombineOwnerGuard<'a> {
     owner: &'a Mutex<Option<ThreadId>>,
 }
 
-impl Drop for CombineWithOwnerGuard<'_> {
+impl Drop for CombineOwnerGuard<'_> {
     fn drop(&mut self) {
         let mut owner = self.owner.lock().unwrap_or_else(|e| e.into_inner());
         *owner = None;
     }
 }
 
-impl<'a> CombineWithOwnerGuard<'a> {
+impl<'a> CombineOwnerGuard<'a> {
     fn new(owner: &'a Mutex<Option<ThreadId>>) -> Self {
         let current = std::thread::current().id();
         let mut owner_guard = owner.lock().unwrap_or_else(|e| e.into_inner());
@@ -114,21 +123,33 @@ impl<S> FlatCombiner<S> {
             queue: Mutex::new(Vec::new()),
             generation: AtomicU64::new(0),
             stats: Mutex::new(CombinerStats::default()),
-            combine_with_owner: Mutex::new(None),
+            combine_owner: Mutex::new(None),
         }
     }
 
-    fn assert_not_reentrant_from_combine_with(&self, operation: &str) {
+    fn assert_not_reentrant(&self, operation: &str) {
         let current = std::thread::current().id();
-        let owner = self
-            .combine_with_owner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let owner = self.combine_owner.lock().unwrap_or_else(|e| e.into_inner());
         if owner
             .as_ref()
             .is_some_and(|thread_id| *thread_id == current)
         {
-            panic!("FlatCombiner::{operation} cannot be called reentrantly from combine_with");
+            panic!("FlatCombiner::{operation} cannot be called reentrantly from a combine pass");
+        }
+    }
+
+    /// Lock the publication queue, recording a contention event when the
+    /// lock is currently held by another thread.
+    fn lock_queue(&self) -> std::sync::MutexGuard<'_, Vec<BoxedOp<S>>> {
+        match self.queue.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if let Ok(mut stats) = self.stats.lock() {
+                    stats.contention_events += 1;
+                }
+                self.queue.lock().unwrap_or_else(|e| e.into_inner())
+            }
         }
     }
 
@@ -137,14 +158,14 @@ impl<S> FlatCombiner<S> {
     /// Bypasses the publication queue. Use this when you need a return
     /// value or when contention is not expected.
     pub fn execute<R>(&self, op: impl FnOnce(&mut S) -> R) -> R {
-        self.assert_not_reentrant_from_combine_with("execute");
+        self.assert_not_reentrant("execute");
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         op(&mut state)
     }
 
     /// Read from the shared state without mutation.
     pub fn with_state<R>(&self, f: impl FnOnce(&S) -> R) -> R {
-        self.assert_not_reentrant_from_combine_with("with_state");
+        self.assert_not_reentrant("with_state");
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         f(&state)
     }
@@ -153,14 +174,16 @@ impl<S> FlatCombiner<S> {
     ///
     /// The operation will be executed during the next [`combine`](Self::combine)
     /// call. Operations are executed in submission order within each batch.
+    /// Submitting from inside a combine pass is allowed; the operation lands
+    /// in the next batch.
     pub fn submit(&self, op: impl FnOnce(&mut S) + Send + 'static) {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.lock_queue();
         queue.push(Box::new(op));
     }
 
     /// Submit multiple operations at once (avoids repeated lock acquisitions).
     pub fn submit_batch(&self, ops: impl IntoIterator<Item = BoxedOp<S>>) {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.lock_queue();
         queue.extend(ops);
     }
 
@@ -170,8 +193,16 @@ impl<S> FlatCombiner<S> {
     /// the data hot in L1 cache. Returns the number of operations executed.
     ///
     /// Returns 0 if no operations are pending.
+    ///
+    /// Reentrant calls back into [`execute`](Self::execute),
+    /// [`with_state`](Self::with_state), [`combine`](Self::combine), or
+    /// [`combine_with`](Self::combine_with) from inside an operation are
+    /// rejected with a panic instead of deadlocking on the state mutex
+    /// ([`submit`](Self::submit) is fine). If an operation panics, the
+    /// remaining operations of the drained batch are dropped and the
+    /// generation/stats are not updated.
     pub fn combine(&self) -> usize {
-        self.assert_not_reentrant_from_combine_with("combine");
+        self.assert_not_reentrant("combine");
         // Drain the queue (short lock)
         let ops: Vec<BoxedOp<S>> = {
             let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -187,6 +218,7 @@ impl<S> FlatCombiner<S> {
         // Execute all operations (holds state lock for entire batch)
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let _owner_guard = CombineOwnerGuard::new(&self.combine_owner);
             for op in ops {
                 op(&mut state);
             }
@@ -208,14 +240,19 @@ impl<S> FlatCombiner<S> {
     /// The `around` function receives a mutable reference to the state
     /// and a closure that executes all pending operations. This allows
     /// wrapping the batch with setup/teardown logic (e.g., marking a
-    /// dirty flag, snapshotting state).
+    /// dirty flag, snapshotting state). The batch is applied exactly once:
+    /// if `around` returns without invoking the closure, the pending
+    /// operations are executed immediately after it returns (still under
+    /// the state lock) — they are never silently dropped.
     ///
     /// Reentrant calls back into [`execute`](Self::execute),
     /// [`with_state`](Self::with_state), [`combine`](Self::combine), or
     /// [`combine_with`](Self::combine_with) from inside `around` are rejected
-    /// with a panic instead of deadlocking on the state mutex.
+    /// with a panic instead of deadlocking on the state mutex. If `around`
+    /// or an operation panics, any not-yet-executed drained operations are
+    /// dropped and the generation/stats are not updated.
     pub fn combine_with<R>(&self, around: impl FnOnce(&mut S, &dyn Fn(&mut S)) -> R) -> (usize, R) {
-        self.assert_not_reentrant_from_combine_with("combine_with");
+        self.assert_not_reentrant("combine_with");
         let ops: Vec<BoxedOp<S>> = {
             let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *queue)
@@ -223,7 +260,7 @@ impl<S> FlatCombiner<S> {
 
         let count = ops.len();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let _owner_guard = CombineWithOwnerGuard::new(&self.combine_with_owner);
+        let _owner_guard = CombineOwnerGuard::new(&self.combine_owner);
 
         // We need to move ops into the closure, but the Fn trait requires
         // shared reference. Use a Cell-like approach with RefCell.
@@ -237,6 +274,10 @@ impl<S> FlatCombiner<S> {
         };
 
         let result = around(&mut state, &apply);
+        // Exactly-once guarantee: if `around` never called `apply`, run the
+        // drained batch now instead of dropping it (idempotent: `apply`
+        // consumes the ops on first invocation).
+        apply(&mut state);
 
         if count > 0 {
             self.generation.fetch_add(1, Ordering::Release);
@@ -552,10 +593,86 @@ mod tests {
 
     #[test]
     fn poison_recovery() {
+        // A panicking operation poisons the state mutex mid-combine; every
+        // subsequent entry point must recover via `into_inner` and keep
+        // working.
         let fc = FlatCombiner::new(0u64);
-        // Even after a panic in an operation, the combiner should recover
+        fc.submit(|_| panic!("op panics"));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fc.combine()));
+        assert!(result.is_err(), "panic must propagate out of combine");
+        assert_eq!(fc.generation(), 0, "aborted pass must not bump generation");
+
+        fc.execute(|s| *s += 1);
         fc.submit(|s| *s += 1);
-        fc.combine();
+        assert_eq!(fc.combine(), 1);
+        assert_eq!(fc.with_state(|s| *s), 2);
+        assert_eq!(fc.generation(), 1);
+    }
+
+    #[test]
+    fn combine_panics_on_reentrant_call_from_op_instead_of_deadlocking() {
+        let fc = Arc::new(FlatCombiner::new(0u64));
+        let fc2 = Arc::clone(&fc);
+        fc.submit(move |_| {
+            let _ = fc2.with_state(|s| *s);
+        });
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fc.combine()));
+        assert!(result.is_err(), "reentrant with_state must panic, not hang");
+    }
+
+    #[test]
+    fn submit_from_inside_combine_op_lands_in_next_batch() {
+        let fc = Arc::new(FlatCombiner::new(0u64));
+        let fc2 = Arc::clone(&fc);
+        fc.submit(move |s| {
+            *s += 1;
+            fc2.submit(|s| *s += 10);
+        });
+
+        assert_eq!(fc.combine(), 1);
+        assert_eq!(fc.with_state(|s| *s), 1);
+        assert_eq!(fc.pending_count(), 1);
+        assert_eq!(fc.combine(), 1);
+        assert_eq!(fc.with_state(|s| *s), 11);
+    }
+
+    #[test]
+    fn combine_with_executes_batch_even_if_apply_not_called() {
+        let fc = FlatCombiner::new(0u64);
+        fc.submit(|s| *s += 5);
+
+        let (count, ()) = fc.combine_with(|_, _apply| ());
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            fc.with_state(|s| *s),
+            5,
+            "batch must be applied even when `around` skips `apply`"
+        );
+        assert_eq!(fc.generation(), 1);
+    }
+
+    #[test]
+    fn contention_events_recorded_when_queue_is_held() {
+        let fc = Arc::new(FlatCombiner::new(0u64));
+
+        // Hold the publication queue so the submitter thread's try_lock
+        // fails deterministically.
+        let queue_guard = fc.queue.lock().unwrap();
+        let fc2 = Arc::clone(&fc);
+        let submitter = std::thread::spawn(move || fc2.submit(|s| *s += 1));
+
+        // The submitter records the contention event before blocking on the
+        // queue lock, so this loop terminates without releasing the queue.
+        while fc.stats().contention_events == 0 {
+            std::thread::yield_now();
+        }
+        drop(queue_guard);
+        submitter.join().unwrap();
+
+        assert!(fc.stats().contention_events >= 1);
+        assert_eq!(fc.combine(), 1);
         assert_eq!(fc.with_state(|s| *s), 1);
     }
 

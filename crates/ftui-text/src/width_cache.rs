@@ -853,7 +853,12 @@ impl CountMinSketch {
     }
 
     /// Increment the count for a key.
-    pub fn increment(&mut self, hash: u64) {
+    ///
+    /// Returns `true` if this increment triggered the periodic aging reset
+    /// (all counters halved). Callers pairing the sketch with a
+    /// [`Doorkeeper`] must clear the doorkeeper when this returns `true`,
+    /// so the one-hit-wonder filter restarts with the new epoch.
+    pub fn increment(&mut self, hash: u64) -> bool {
         for row in 0..self.depth {
             let idx = self.index(hash, row);
             self.counters[row][idx] = self.counters[row][idx].saturating_add(1).min(CMS_MAX_COUNT);
@@ -862,7 +867,9 @@ impl CountMinSketch {
 
         if self.total_increments >= self.reset_interval {
             self.halve();
+            return true;
         }
+        false
     }
 
     /// Estimate the frequency of a key (minimum across all rows).
@@ -1073,10 +1080,13 @@ impl TinyLfuWidthCache {
         let hash = hash_text(text);
         let fp = fingerprint_hash(text);
 
-        // Record frequency via doorkeeper → CMS pipeline.
+        // Record frequency via doorkeeper → CMS pipeline. When the CMS ages
+        // (halves), the doorkeeper epoch ends with it: clear the filter so
+        // one-hit wonders are filtered afresh instead of the bitset
+        // saturating permanently.
         let seen = self.doorkeeper.check_and_set(hash);
-        if seen {
-            self.sketch.increment(hash);
+        if seen && self.sketch.increment(hash) {
+            self.doorkeeper.clear();
         }
 
         // Check main cache first (larger, higher value).
@@ -1288,6 +1298,10 @@ impl S3FifoWidthCache {
     }
 
     /// Check if a key is in the cache.
+    ///
+    /// Keys on the 64-bit hash only (like [`WidthCache::contains`]): the
+    /// fingerprint is not verified here, so a colliding string reports
+    /// `true` even though `get_or_compute` would treat it as a miss.
     pub fn contains(&self, text: &str) -> bool {
         let hash = hash_text(text);
         self.cache.contains_key(&hash)
@@ -1663,6 +1677,17 @@ mod tinylfu_tests {
     }
 
     #[test]
+    fn unit_cms_increment_reports_halving() {
+        let mut cms = CountMinSketch::new(64, 2, 4);
+        let h = hash_text("k");
+        assert!(!cms.increment(h));
+        assert!(!cms.increment(h));
+        assert!(!cms.increment(h));
+        assert!(cms.increment(h), "4th increment hits reset_interval=4");
+        assert!(!cms.increment(h), "increment count restarts after halving");
+    }
+
+    #[test]
     fn unit_cms_monotone() {
         let mut cms = CountMinSketch::with_defaults();
         let h = hash_text("key");
@@ -1949,6 +1974,35 @@ mod tinylfu_impl_tests {
             hot_survivors >= 5,
             "Expected most hot items to survive, got {}/9",
             hot_survivors
+        );
+    }
+
+    #[test]
+    fn doorkeeper_clears_when_cms_ages() {
+        // The doorkeeper epoch is tied to CMS aging: when the sketch halves,
+        // the doorkeeper must be cleared so one-hit-wonder filtering restarts
+        // instead of the bitset saturating permanently.
+        let mut cache = TinyLfuWidthCache::new(100);
+        let h = hash_text("hot");
+
+        // First access seeds the doorkeeper without touching the CMS.
+        cache.get_or_compute("hot");
+        assert!(cache.doorkeeper.contains(h));
+        assert_eq!(cache.sketch.total_increments(), 0);
+
+        // Every subsequent access increments the CMS once. Drive exactly to
+        // the reset interval: the aging access must also clear the doorkeeper.
+        for _ in 0..CMS_DEFAULT_RESET_INTERVAL {
+            cache.get_or_compute("hot");
+        }
+        assert_eq!(
+            cache.sketch.total_increments(),
+            0,
+            "CMS should have aged (halved) at the reset interval"
+        );
+        assert!(
+            !cache.doorkeeper.contains(h),
+            "doorkeeper must be cleared when the CMS epoch rolls over"
         );
     }
 

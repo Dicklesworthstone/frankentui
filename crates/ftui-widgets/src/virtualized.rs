@@ -231,15 +231,15 @@ impl<T> Virtualized<T> {
             ItemHeight::Fixed(_) => viewport_height as usize,
             ItemHeight::Variable(cache) => {
                 // Sum heights until we fill or exceed viewport
+                let len = self.len();
+                let start = self.scroll_offset.min(len.saturating_sub(1));
                 let mut count = 0;
                 let mut total_height = 0u16;
-                let start = self.scroll_offset.min(self.len().saturating_sub(1));
-                while start + count < self.len() {
+                while start + count < len {
                     let next = cache.get(start + count);
-                    let proposed = total_height.saturating_add(next);
 
                     // Always include the item
-                    total_height = proposed;
+                    total_height = total_height.saturating_add(next);
                     count += 1;
 
                     // Stop if we've filled the viewport
@@ -247,11 +247,41 @@ impl<T> Virtualized<T> {
                         break;
                     }
                 }
+                if total_height < viewport_height && start > 0 {
+                    // The tail from `start` cannot fill the viewport (e.g.
+                    // after scroll_to_bottom's lazy sentinel, or an offset
+                    // near the end). Anchor to the bottom like the Fixed arm:
+                    // count the trailing items that fit, so the clamped start
+                    // below shows a full last screenful instead of blank rows.
+                    count = 0;
+                    total_height = 0;
+                    while count < len {
+                        let next = cache.get(len - 1 - count);
+                        total_height = total_height.saturating_add(next);
+                        count += 1;
+                        if total_height >= viewport_height {
+                            break;
+                        }
+                    }
+                }
                 count
             }
             ItemHeight::VariableFenwick(tracker) => {
                 // O(log n) using Fenwick tree
-                tracker.visible_count(self.scroll_offset, viewport_height)
+                let len = self.len();
+                let start = self.scroll_offset.min(len.saturating_sub(1));
+                let total = tracker.total_height();
+                let suffix = total.saturating_sub(tracker.offset_of_item(start));
+                if suffix < u32::from(viewport_height) {
+                    // Same bottom anchoring as the Variable arm, in O(log n):
+                    // when the last screenful is shown, its first (possibly
+                    // partially visible) item contains offset total-viewport.
+                    let anchor = total.saturating_sub(u32::from(viewport_height));
+                    len.saturating_sub(tracker.find_item_at_offset(anchor))
+                        .max(1)
+                } else {
+                    tracker.visible_count(start, viewport_height).max(1)
+                }
             }
         };
 
@@ -1586,6 +1616,60 @@ mod tests {
         let range = virt.visible_range(5);
         // Includes the partially visible third item.
         assert_eq!(range, 0..3);
+    }
+
+    #[test]
+    fn test_visible_range_variable_bottom_anchor_after_lazy_scroll_to_bottom() {
+        let mut virt: Virtualized<i32> =
+            Virtualized::new(100).with_item_height(ItemHeight::Variable(HeightCache::new(2, 64)));
+        for i in 0..20 {
+            virt.push(i);
+        }
+        // Viewport unknown (visible_count = 0): scroll_to_bottom stores the
+        // lazy sentinel. The last screenful is 5 items of height 2.
+        virt.scroll_to_bottom();
+        assert_eq!(virt.visible_range(10), 15..20);
+    }
+
+    #[test]
+    fn test_visible_range_fenwick_bottom_anchor_after_lazy_scroll_to_bottom() {
+        let mut virt: Virtualized<i32> = Virtualized::new(100).with_variable_heights_fenwick(2, 20);
+        for i in 0..20 {
+            virt.push(i);
+        }
+        // Regression: this used to return the empty range 20..20 because the
+        // unclamped sentinel offset reached the tracker as start_idx == len.
+        virt.scroll_to_bottom();
+        assert_eq!(virt.visible_range(10), 15..20);
+    }
+
+    #[test]
+    fn test_visible_range_fenwick_bottom_anchor_counts_partial_top_item() {
+        // Heights [3,2,5,1,4]: the last 5 rows are exactly items 3 (h=1) and
+        // 4 (h=4); a 6-row viewport additionally clips into item 2.
+        let tracker = VariableHeightsFenwick::from_heights(&[3, 2, 5, 1, 4], 1);
+        let mut virt: Virtualized<i32> =
+            Virtualized::new(10).with_item_height(ItemHeight::VariableFenwick(tracker));
+        for i in 0..5 {
+            virt.push(i);
+        }
+        virt.scroll_to_bottom();
+        assert_eq!(virt.visible_range(5), 3..5);
+        virt.scroll_to_bottom();
+        assert_eq!(virt.visible_range(6), 2..5);
+    }
+
+    #[test]
+    fn test_visible_range_variable_near_end_clamps_like_fixed() {
+        // Scrolling to the last item must not leave blank rows below it,
+        // matching the Fixed arm's max_offset clamping.
+        let mut virt: Virtualized<i32> =
+            Virtualized::new(100).with_item_height(ItemHeight::Variable(HeightCache::new(2, 64)));
+        for i in 0..20 {
+            virt.push(i);
+        }
+        virt.scroll_to(18);
+        assert_eq!(virt.visible_range(10), 15..20);
     }
 
     #[test]
