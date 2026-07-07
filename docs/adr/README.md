@@ -19,6 +19,7 @@ Current ADRs:
 - [ADR-004](ADR-004-windows-v1-scope.md) Windows v1 Scope
 - [ADR-005](ADR-005-one-writer-rule.md) One-Writer Rule Enforcement
 - [ADR-006](ADR-006-untrusted-output-policy.md) Untrusted Output Policy
+- [ADR-007](ADR-007-no-continuous-time-frp.md) No Continuous-Time FRP for Animations
 - [ADR-007](ADR-007-sdk-modularization.md) SDK Modularization
 - [ADR-008](ADR-008-terminal-backend-strategy.md) Terminal Backend Strategy (v2+)
 - [ADR-009](ADR-009-webgpu-renderer-architecture.md) FrankenTerm WebGPU Renderer Architecture
