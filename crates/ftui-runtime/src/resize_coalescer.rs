@@ -948,7 +948,7 @@ impl ResizeCoalescer {
         if self.regime == Regime::Burst {
             let rate = self.calculate_event_rate(now);
             if rate >= self.config.burst_exit_rate {
-                self.cooldown_remaining = self.config.cooldown_frames;
+                self.cooldown_remaining = self.config.cooldown_frames.max(1);
             } else if self.cooldown_remaining > 0 {
                 self.cooldown_remaining -= 1;
                 if self.cooldown_remaining == 0 {
@@ -1372,7 +1372,7 @@ impl ResizeCoalescer {
             match self.regime {
                 Regime::Steady => {
                     if rate >= self.config.burst_enter_rate {
-                        self.cooldown_remaining = self.config.cooldown_frames;
+                        self.cooldown_remaining = self.config.cooldown_frames.max(1);
                         let confidence = (rate / self.config.burst_enter_rate).clamp(0.0, 1.0);
                         self.record_regime_transition(
                             now,
@@ -1386,7 +1386,7 @@ impl ResizeCoalescer {
                 }
                 Regime::Burst => {
                     if rate >= self.config.burst_exit_rate {
-                        self.cooldown_remaining = self.config.cooldown_frames;
+                        self.cooldown_remaining = self.config.cooldown_frames.max(1);
                     }
                 }
             }
@@ -2228,13 +2228,51 @@ mod tests {
         c.tick_at(base + Duration::from_millis(500));
         c.tick_at(base + Duration::from_millis(600));
 
-        // After cooldown frames, should exit
-        c.tick_at(base + Duration::from_millis(700));
-        c.tick_at(base + Duration::from_millis(800));
-        c.tick_at(base + Duration::from_millis(900));
+        // Cooldown holds while the rate window still reports the storm.
+        assert_eq!(c.regime(), Regime::Burst);
 
-        // Should have exited burst
-        // Note: This depends on rate calculation window
+        // The event-rate window clears after a >1s quiet gap; the cooldown
+        // then decrements per tick and Burst exits.
+        for i in 0..6 {
+            c.tick_at(base + Duration::from_millis(1300 + 100 * i));
+        }
+
+        // Should have exited burst (this pins the cooldown exit path —
+        // with cooldown_frames armed to at least 1, Burst always has an
+        // exit once the rate decays).
+        assert_eq!(c.stats().regime, Regime::Steady);
+    }
+
+    #[test]
+    fn cooldown_frames_zero_cannot_dead_end_burst() {
+        // Regression: cooldown_frames = 0 armed cooldown_remaining = 0 on
+        // Burst entry; the only Burst->Steady exit required
+        // cooldown_remaining > 0, so the regime pinned at Burst forever and
+        // the load governor latched Stressed for the session. Arming now
+        // clamps to >= 1 frame.
+        let mut c = ResizeCoalescer::new(
+            CoalescerConfig {
+                cooldown_frames: 0,
+                ..Default::default()
+            },
+            (80, 24),
+        );
+        let base = Instant::now();
+        // Storm: enter Burst.
+        for i in 0..10 {
+            let _ =
+                c.handle_resize_at(100 + i, 40, base + Duration::from_millis(10 * u64::from(i)));
+        }
+        assert_eq!(c.stats().regime, Regime::Burst);
+        // Storm over: quiet ticks must eventually exit Burst.
+        for i in 1..=20 {
+            c.tick_at(base + Duration::from_millis(100 + 200 * i));
+        }
+        assert_eq!(
+            c.stats().regime,
+            Regime::Steady,
+            "Burst must always have an exit path"
+        );
     }
 
     #[test]

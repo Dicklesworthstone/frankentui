@@ -5993,7 +5993,21 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let verdict = self.guardrails.check_frame(memory_bytes, 0);
 
         if verdict.should_drop_frame() {
-            // Emergency shed: skip this frame entirely to prevent OOM
+            // Emergency shed: skip this frame entirely to prevent OOM.
+            // CRUCIALLY, remediate: two of the sensor's components are
+            // retained CAPACITY that never shrinks on its own (bumpalo keeps
+            // its largest chunk across reset(); the grapheme pool's Vec never
+            // shrinks). Without releasing them the verdict is permanent and
+            // the UI freezes forever — dropping frames cannot move the
+            // sensor. Rebuilding the arena frees the retained chunk so the
+            // next frame re-measures honestly.
+            self.frame_arena = FrameArena::default();
+            self.writer.gc(None);
+            tracing::warn!(
+                target: "ftui.guardrails",
+                memory_bytes,
+                "emergency frame drop: memory guardrail tripped; arena rebuilt"
+            );
             return Ok(());
         }
 

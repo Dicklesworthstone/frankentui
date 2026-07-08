@@ -123,6 +123,41 @@ impl MemoryBudgetConfig {
             emergency_limit_bytes: 128 * 1024 * 1024,
         }
     }
+
+    /// Return a normalized copy with sane, monotone thresholds.
+    ///
+    /// User-supplied configs (via `ProgramConfig`) can be zero-initialized
+    /// or inverted; the classifier uses `>=` comparisons, so an all-zero
+    /// config would classify EVERY frame as Emergency (blank screen from
+    /// startup) and inverted watermarks silently misclassify. Zero limits
+    /// fall back to the defaults; hard/emergency are raised to keep
+    /// soft <= hard <= emergency.
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        let defaults = Self::default();
+        let soft = if self.soft_limit_bytes == 0 {
+            defaults.soft_limit_bytes
+        } else {
+            self.soft_limit_bytes
+        };
+        let hard = if self.hard_limit_bytes == 0 {
+            defaults.hard_limit_bytes
+        } else {
+            self.hard_limit_bytes
+        }
+        .max(soft);
+        let emergency = if self.emergency_limit_bytes == 0 {
+            defaults.emergency_limit_bytes
+        } else {
+            self.emergency_limit_bytes
+        }
+        .max(hard);
+        Self {
+            soft_limit_bytes: soft,
+            hard_limit_bytes: hard,
+            emergency_limit_bytes: emergency,
+        }
+    }
 }
 
 /// Memory budget tracker.
@@ -147,7 +182,10 @@ impl MemoryBudget {
     #[must_use]
     pub fn new(config: MemoryBudgetConfig) -> Self {
         Self {
-            config,
+            // Normalize at the boundary: the classifier's >= comparisons
+            // must never see zero or inverted thresholds (see
+            // MemoryBudgetConfig::normalized).
+            config: config.normalized(),
             peak_bytes: 0,
             current_bytes: 0,
             soft_violations: 0,
@@ -743,6 +781,29 @@ pub fn buffer_memory_bytes(width: u16, height: u16) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn zero_and_inverted_configs_are_normalized() {
+        // Regression: an all-zero config classified EVERY frame Emergency
+        // (>= comparisons) — blank screen from startup; inverted watermarks
+        // silently misclassified. new() now normalizes.
+        let zero = MemoryBudget::new(MemoryBudgetConfig {
+            soft_limit_bytes: 0,
+            hard_limit_bytes: 0,
+            emergency_limit_bytes: 0,
+        });
+        assert!(zero.config.soft_limit_bytes > 0);
+        assert!(zero.config.soft_limit_bytes <= zero.config.hard_limit_bytes);
+        assert!(zero.config.hard_limit_bytes <= zero.config.emergency_limit_bytes);
+
+        let inverted = MemoryBudget::new(MemoryBudgetConfig {
+            soft_limit_bytes: 32 * 1024 * 1024,
+            hard_limit_bytes: 8 * 1024 * 1024,
+            emergency_limit_bytes: 16 * 1024 * 1024,
+        });
+        assert!(inverted.config.soft_limit_bytes <= inverted.config.hard_limit_bytes);
+        assert!(inverted.config.hard_limit_bytes <= inverted.config.emergency_limit_bytes);
+    }
+
     // ---- MemoryBudget ----
 
     #[test]
@@ -817,6 +878,10 @@ mod tests {
 
     #[test]
     fn memory_usage_fraction_zero_limit() {
+        // The constructor normalizes zero limits to defaults (an all-zero
+        // config used to classify every frame Emergency), so a zero-limit
+        // budget is no longer constructible via new(); 100 bytes against
+        // the default 8 MiB soft limit is a tiny fraction.
         let config = MemoryBudgetConfig {
             soft_limit_bytes: 0,
             hard_limit_bytes: 0,
@@ -824,7 +889,8 @@ mod tests {
         };
         let mut mb = MemoryBudget::new(config);
         mb.check(100);
-        assert!((mb.usage_fraction() - 1.0).abs() < f64::EPSILON);
+        assert!(mb.usage_fraction() > 0.0);
+        assert!(mb.usage_fraction() < 0.001);
     }
 
     #[test]
