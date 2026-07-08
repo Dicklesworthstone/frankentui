@@ -124,6 +124,11 @@ impl FrameArena {
     ///
     /// Returns a mutable reference to the arena-allocated value.
     /// The returned reference is valid until the next [`reset()`](Self::reset).
+    ///
+    /// NOTE: destructors are NEVER run for bump allocations — neither on
+    /// `reset()` nor on arena drop (pinned by test). Allocating a `Drop`
+    /// type (Rc, String, Vec, file handles…) leaks whatever the destructor
+    /// would have released; use arena allocation for plain data only.
     pub fn alloc<T>(&self, val: T) -> &mut T {
         self.bump.alloc(val)
     }
@@ -155,6 +160,14 @@ impl FrameArena {
     }
 
     /// Returns the total bytes allocated in the arena (across all chunks).
+    ///
+    /// IMPORTANT: after [`reset()`](Self::reset) this reports the RETAINED
+    /// chunk capacity (bumpalo keeps its largest chunk for reuse), not live
+    /// allocation usage — it never decreases on its own. Treating it as a
+    /// "current usage" signal creates ratchet-and-stick behavior: this
+    /// exact misreading made the frame guardrails' emergency verdict
+    /// permanent (fixed by rebuilding the arena on the drop path). To
+    /// actually release memory, drop and recreate the arena.
     pub fn allocated_bytes(&self) -> usize {
         self.bump.allocated_bytes()
     }
