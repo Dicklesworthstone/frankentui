@@ -530,7 +530,9 @@ impl GpuContext {
             Err(_) => return Err(wgpu::BufferAsyncError),
         }
 
-        let data = slice.get_mapped_range();
+        let data = slice
+            .get_mapped_range()
+            .map_err(|_| wgpu::BufferAsyncError)?;
         let pixels: &[u32] = bytemuck::cast_slice(&data);
         for (dst, src) in out.iter_mut().zip(pixels.iter()) {
             *dst = PackedRgba(*src);
