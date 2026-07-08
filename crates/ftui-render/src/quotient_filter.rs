@@ -256,24 +256,29 @@ impl QuotientFilter {
                 None => break, // End of cluster
                 Some((q, _r)) => {
                     let canonical = q as usize;
-                    // Check if this element is displaced from its canonical slot
-                    // (i.e., it was shifted past the now-deleted slot)
-                    let should_shift = if canonical <= pos {
-                        // canonical <= pos < current (wrapping considered)
-                        current > pos || current < canonical
+                    // Standard backward-shift rule: the element may fill the
+                    // gap iff its canonical slot is NOT cyclically inside
+                    // (pos, current] — moving it must never place it before
+                    // its canonical slot in probe order. Crucially, when an
+                    // element must stay (e.g. it sits in its canonical
+                    // slot), the scan CONTINUES to the end of the cluster:
+                    // a later element with an earlier canonical slot may
+                    // still need the gap. Breaking here (as this code once
+                    // did) strands such elements past a hole, producing
+                    // false negatives — a violation of the filter's
+                    // no-false-negatives contract.
+                    let canonical_in_gap_interval = if pos <= current {
+                        canonical > pos && canonical <= current
                     } else {
-                        // canonical > pos, so shift only if current wrapped
-                        current > pos && current < canonical
+                        canonical > pos || canonical <= current
                     };
 
-                    if !should_shift {
-                        break;
+                    if !canonical_in_gap_interval {
+                        // Move this element back to the gap
+                        self.slots[pos] = self.slots[current];
+                        self.slots[current] = None;
+                        pos = current;
                     }
-
-                    // Move this element back to the gap
-                    self.slots[pos] = self.slots[current];
-                    self.slots[current] = None;
-                    pos = current;
                 }
             }
             current = (current + 1) % self.capacity;
@@ -354,6 +359,33 @@ mod tests {
         assert_eq!(qf.len(), 0);
         assert_eq!(qf.capacity(), 1024);
         assert!(!qf.contains(&42u64));
+    }
+
+    #[test]
+    fn remove_never_creates_false_negatives_in_clusters() {
+        // Regression: backward-shift deletion used to BREAK at the first
+        // non-shiftable element (e.g. one sitting in its canonical slot),
+        // stranding later cluster members behind the new hole — contains()
+        // then hit None at their canonical slot and returned false for
+        // present members. The scan must continue to the cluster end.
+        // Small table (q=4 -> 16 slots) forces heavy clustering.
+        for base in (0u64..2000).step_by(97) {
+            let mut qf = QuotientFilter::new(QuotientFilterConfig { q: 4, r: 16 });
+            let items: Vec<u64> = (base..base + 12).collect();
+            for item in &items {
+                qf.insert(item);
+            }
+            // Delete every other item; all remaining must stay findable.
+            for item in items.iter().step_by(2) {
+                qf.remove(item);
+            }
+            for item in items.iter().skip(1).step_by(2) {
+                assert!(
+                    qf.contains(item),
+                    "false negative for {item} after cluster deletions (base {base})"
+                );
+            }
+        }
     }
 
     #[test]
