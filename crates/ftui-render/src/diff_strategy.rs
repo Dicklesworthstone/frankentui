@@ -169,7 +169,7 @@ pub struct DiffStrategyConfig {
 
     /// Minimum cells changed to update posterior.
     /// Prevents noise from near-zero observations.
-    /// Default: 0
+    /// Default: 1 (so `observe(0, 0)` is a no-op, pausing decay on empty frames)
     pub min_observation_cells: usize,
 
     /// Hysteresis ratio required to switch strategies.
@@ -634,11 +634,25 @@ impl DiffStrategySelector {
             p = 0.0;
         }
 
-        // Compute expected costs
-        let cost_full =
-            self.config.c_row * h + self.config.c_scan * d * w + self.config.c_emit * p * n;
+        // Compute expected costs.
+        //
+        // The posterior p is trained by observe() as changes-per-SCANNED-cell
+        // (DirtyRows observations scan the dirty region, not the screen), so
+        // the expected-emission term must multiply p by each path's own
+        // scanned-cell count, never by total cells. Using p·N here inflated
+        // the emit estimate by N/scanned for concentrated workloads (e.g. a
+        // half-screen log pane rewriting its rows had density ≈ 1.0 within
+        // its 6000 scanned cells; p·N priced 12000 emitted cells) and locked
+        // the selector into FullRedraw at 2x wire bytes, with the periodic
+        // probe re-observing density ≈ 1.0 and flipping straight back.
+        // Changes can only occur inside the scanned/dirty region (dirty rows
+        // ⊇ changed rows), so p·scanned is both consistent with training and
+        // a sound upper bound on emitted cells.
+        let cost_full = self.config.c_row * h
+            + self.config.c_scan * d * w
+            + self.config.c_emit * p * (d * w).min(n);
 
-        let cost_dirty = self.config.c_scan * scan_cells + self.config.c_emit * p * n;
+        let cost_dirty = self.config.c_scan * scan_cells + self.config.c_emit * p * scan_cells;
 
         let cost_redraw = self.config.c_emit * n;
 
@@ -1015,6 +1029,28 @@ mod tests {
             DiffStrategy::FullRedraw,
             "Uncertainty guard should avoid FullRedraw under high variance"
         );
+    }
+
+    #[test]
+    fn concentrated_half_screen_workload_stays_dirty_rows() {
+        // Regression: p is trained as changes-per-SCANNED-cell, but the emit
+        // term used p * total_cells. A half-screen pane rewriting all its
+        // rows (density within the dirty region ~= 1.0) priced 2x the real
+        // emission and locked the selector into FullRedraw at double the
+        // wire bytes — sticky, because the periodic probe re-observed
+        // density ~= 1.0 and flipped straight back.
+        let mut sel = DiffStrategySelector::new(DiffStrategyConfig::default());
+
+        // Steady workload: 200x60 terminal, 30 fully-changing rows/frame.
+        for _ in 0..10 {
+            let strategy = sel.select_with_scan_estimate(200, 60, 30, 6000);
+            assert_ne!(
+                strategy,
+                DiffStrategy::FullRedraw,
+                "half-screen concentrated workload must not full-redraw                  (6000 scanned + 6000 emitted < 12000 emitted)"
+            );
+            sel.observe(6000, 6000);
+        }
     }
 
     #[test]
