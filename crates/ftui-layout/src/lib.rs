@@ -1238,7 +1238,14 @@ pub fn round_layout_stable(targets: &[f64], total: u16, prev: PreviousAllocation
         .iter()
         .enumerate()
         .map(|(i, &r)| {
-            let remainder = r - (floors[i] as f64);
+            // Sanitize non-finite targets (NaN/inf): NaN.max(0.0) already
+            // floors to 0 above; a NaN remainder here would poison the sort.
+            let raw_remainder = r - (floors[i] as f64);
+            let remainder = if raw_remainder.is_finite() {
+                raw_remainder
+            } else {
+                0.0
+            };
             let ceil_val = floors[i].saturating_add(1);
             // Temporal stability: did previous allocation use ceil?
             let prev_used_ceil = prev
@@ -1248,10 +1255,13 @@ pub fn round_layout_stable(targets: &[f64], total: u16, prev: PreviousAllocation
         })
         .collect();
 
-    // Sort by: remainder descending, then temporal preference, then index ascending
+    // Sort by: remainder descending, then temporal preference, then index ascending.
+    // total_cmp keeps the comparator a TOTAL order: the previous
+    // partial_cmp().unwrap_or(Equal) made NaN compare Equal to everything
+    // while real values still ordered — an intransitive comparator that
+    // std's sort is documented to panic on.
     priority.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        b.1.total_cmp(&a.1)
             .then_with(|| {
                 // Prefer items where prev used ceil (true > false)
                 b.2.cmp(&a.2)
@@ -1361,6 +1371,30 @@ fn redistribute_overflow(floors: &[u16], total: u16) -> Sizes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_layout_stable_nan_targets_do_not_panic_the_sort() {
+        // Regression: NaN remainders made the priority comparator
+        // intransitive (NaN Equal to everything while real values still
+        // ordered); std's sort is documented to panic on non-total orders.
+        // Large-ish N to engage the driftsort merge paths.
+        let mut targets: Vec<f64> = (0..64).map(|i| (i as f64) * 0.37 + 0.1).collect();
+        targets[7] = f64::NAN;
+        targets[23] = f64::INFINITY;
+        targets[41] = f64::NEG_INFINITY;
+
+        // The invariant under test is "no panic": the sort must stay a
+        // total order in the presence of non-finite remainders.
+        let sizes = round_layout_stable(&targets, 120, None);
+        assert_eq!(sizes.len(), 64);
+
+        // And with only-NaN targets, all floors are 0 and the deficit path
+        // still distributes exactly the requested total.
+        let nan_targets = [f64::NAN; 8];
+        let sizes = round_layout_stable(&nan_targets, 40, None);
+        let sum: u64 = sizes.iter().map(|&x| u64::from(x)).sum();
+        assert_eq!(sum, 40);
+    }
 
     #[test]
     fn fixed_split() {
