@@ -234,6 +234,13 @@ fn sgr_single_flag_off_seq(bits: u8) -> Option<&'static [u8]> {
 /// but should remain enabled according to `flags_to_keep`).
 ///
 /// Returns the set of flags that need to be re-enabled due to shared off codes.
+///
+/// Note: disabling BOLD|DIM together emits the shared off-code 22 twice
+/// (one CSI per flag; 5 redundant bytes). This is deliberate: the
+/// presenter's `sgr_flags_off_len` estimator prices per-flag, and the
+/// reset-vs-delta decision depends on the estimator matching emission
+/// byte-for-byte — deduping here without changing the estimator in
+/// lockstep would skew that decision.
 pub fn sgr_flags_off<W: Write>(
     w: &mut W,
     flags_to_disable: StyleFlags,
@@ -615,8 +622,9 @@ pub fn sync_end<W: Write>(w: &mut W) -> io::Result<()> {
 
 /// Open an OSC 8 hyperlink.
 ///
-/// Format: `OSC 8 ; params ; uri ST`
-/// Uses ST (String Terminator) = `ESC \`
+/// Format: `OSC 8 ; params ; uri BEL`
+/// Terminated with BEL (`\x07`), which terminals accept interchangeably
+/// with ST and which is what this emitter (and `hyperlink_end`) writes.
 pub fn hyperlink_start<W: Write>(w: &mut W, url: &str) -> io::Result<()> {
     if !osc8_field_is_safe(url) {
         return Ok(());
@@ -636,7 +644,17 @@ pub fn hyperlink_end<W: Write>(w: &mut W) -> io::Result<()> {
 /// The ID allows grouping multiple link spans.
 /// Format: `OSC 8 ; id=ID ; uri ST` (or BEL)
 pub fn hyperlink_start_with_id<W: Write>(w: &mut W, id: &str, url: &str) -> io::Result<()> {
-    if !osc8_field_is_safe(url) || !osc8_field_is_safe(id) || id.contains(';') {
+    // The OSC 8 params field is a COLON-separated key=value list, so a `:`
+    // (or `=`) inside the id would inject additional parameters — e.g.
+    // id "a:hover=1" parses as id=a plus hover=1, silently changing the
+    // link-grouping id. Suppress such ids like the other unsafe fields
+    // (no sequence breakout is possible either way; controls are rejected).
+    if !osc8_field_is_safe(url)
+        || !osc8_field_is_safe(id)
+        || id.contains(';')
+        || id.contains(':')
+        || id.contains('=')
+    {
         return Ok(());
     }
     write!(w, "\x1b]8;id={id};{url}\x07")
@@ -1156,6 +1174,23 @@ mod tests {
             link_id.ends_with(b"\x07"),
             "hyperlink_start_with_id not terminated with BEL"
         );
+    }
+
+    #[test]
+    fn hyperlink_id_with_param_separators_is_suppressed() {
+        // Regression: the OSC 8 params field is colon-separated key=value;
+        // ':' or '=' in the id injected extra parameters (id "a:hover=1"
+        // parsed as id=a + hover=1). Such ids are suppressed like other
+        // unsafe fields.
+        for bad_id in ["a:hover=1", "x:y", "k=v"] {
+            let mut buf = Vec::new();
+            hyperlink_start_with_id(&mut buf, bad_id, "https://example.com").unwrap();
+            assert!(buf.is_empty(), "id {bad_id:?} must be suppressed");
+        }
+        // Plain ids still emit.
+        let mut buf = Vec::new();
+        hyperlink_start_with_id(&mut buf, "group-1", "https://example.com").unwrap();
+        assert_eq!(buf, b"\x1b]8;id=group-1;https://example.com\x07");
     }
 
     // ---- sgr_flags_off tests ----
