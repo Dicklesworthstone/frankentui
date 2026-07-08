@@ -541,7 +541,14 @@ pub fn ansi16_to_rgb(color: Ansi16) -> Rgb {
     ANSI16_PALETTE[color.as_u8() as usize]
 }
 
-/// Convert an RGB color to the nearest ANSI 256-color index.
+/// Convert an RGB color to a near-optimal ANSI 256-color index.
+///
+/// Exactly gray inputs (`r == g == b`) compare the 6×6×6 cube candidate
+/// against the grayscale ramp and pick the closer; non-gray inputs map
+/// straight to the cube. For *near*-gray inputs (e.g. `(128,128,129)`)
+/// a grayscale-ramp entry can occasionally be marginally closer than the
+/// returned cube entry — accepted for O(1) mapping without a 240-entry
+/// search.
 #[must_use]
 pub fn rgb_to_256(r: u8, g: u8, b: u8) -> u8 {
     let cube_idx = 16 + 36 * cube_index(r) + 6 * cube_index(g) + cube_index(b);

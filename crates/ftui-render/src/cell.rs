@@ -73,7 +73,10 @@ impl GraphemeId {
         Self(
             (slot & Self::MAX_SLOT)
                 | (((generation as u32) & 0x7FF) << 16)
-                | ((width as u32) << 27),
+                // Mask like the sibling fields: an unmasked width >= 16
+                // would set the reserved bit 31 (the CellContent type
+                // discriminator) in release builds.
+                | (((width as u32) & 0x0F) << 27),
         )
     }
 
@@ -618,7 +621,13 @@ impl CellAttrs {
     /// Sentinel value for "no hyperlink".
     pub const LINK_ID_NONE: u32 = 0;
     /// Maximum link ID (24-bit range).
-    pub const LINK_ID_MAX: u32 = 0x00FF_FFFE;
+    ///
+    /// Matches `LinkRegistry`'s MAX_LINK_ID: the registry allocates ids up
+    /// to and including 0x00FF_FFFF (0 is the only sentinel), so the full
+    /// 24-bit range minus zero is valid here. The previous 0x00FF_FFFE
+    /// value debug-panicked on the registry's last legitimately allocated
+    /// id while release builds accepted it — a profile-divergent contract.
+    pub const LINK_ID_MAX: u32 = 0x00FF_FFFF;
 
     /// Create attributes from flags and a hyperlink ID.
     #[inline]
@@ -1778,9 +1787,10 @@ mod tests {
         let a = CellAttrs::new(all_flags, CellAttrs::LINK_ID_MAX);
         assert_eq!(a.flags(), all_flags);
         assert_eq!(a.link_id(), CellAttrs::LINK_ID_MAX);
-        // Verify no bit overlap
+        // Verify no bit overlap: all 8 flag bits set alongside the full
+        // 24-bit link id (matches LinkRegistry's MAX_LINK_ID).
         assert_eq!(a.flags().bits(), 0xFF);
-        assert_eq!(a.link_id(), 0x00FF_FFFE);
+        assert_eq!(a.link_id(), 0x00FF_FFFF);
     }
 
     #[test]
