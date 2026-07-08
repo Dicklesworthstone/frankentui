@@ -700,6 +700,9 @@ impl TerminalSession {
 
     /// Show the cursor.
     pub fn show_cursor(&self) -> io::Result<()> {
+        if self.headless {
+            return Ok(());
+        }
         crossterm::execute!(io::stdout(), crossterm::cursor::Show)
     }
 
@@ -718,6 +721,9 @@ impl TerminalSession {
             return Ok(());
         }
         let start = web_time::Instant::now();
+        if self.headless {
+            return Ok(());
+        }
         let result = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
         let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
         IO_WRITE_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
@@ -730,6 +736,9 @@ impl TerminalSession {
 
     /// Hide the cursor.
     pub fn hide_cursor(&self) -> io::Result<()> {
+        if self.headless {
+            return Ok(());
+        }
         crossterm::execute!(io::stdout(), crossterm::cursor::Hide)
     }
 
@@ -748,6 +757,9 @@ impl TerminalSession {
             return Ok(());
         }
         let start = web_time::Instant::now();
+        if self.headless {
+            return Ok(());
+        }
         let result = crossterm::execute!(io::stdout(), crossterm::cursor::Hide);
         let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
         IO_WRITE_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
@@ -779,6 +791,15 @@ impl TerminalSession {
         let caps = TerminalCapabilities::with_overrides();
         let mouse_supported = caps.mouse_sgr;
         let enabled = enabled && mouse_supported;
+
+        // Honor the headless contract: track state, never write to the
+        // real stdout (tests that toggle mouse capture must not flip SGR
+        // mouse reporting in the developer's live terminal).
+        if self.headless {
+            self.mouse_enabled = enabled;
+            self.options.mouse_capture = enabled;
+            return Ok(());
+        }
 
         if enabled == self.mouse_enabled {
             self.options.mouse_capture = enabled;
@@ -834,6 +855,13 @@ impl TerminalSession {
         let caps = TerminalCapabilities::with_overrides();
         let mouse_supported = caps.mouse_sgr;
         let enabled = enabled && mouse_supported;
+
+        // Headless contract: track state, never write to real stdout.
+        if self.headless {
+            self.mouse_enabled = enabled;
+            self.options.mouse_capture = enabled;
+            return Ok(());
+        }
 
         if enabled == self.mouse_enabled {
             self.options.mouse_capture = enabled;
@@ -966,8 +994,14 @@ impl TerminalSession {
         let mut stdout = io::stdout();
         let caps = TerminalCapabilities::with_overrides();
 
-        // Reset scroll region (critical for inline mode recovery)
+        // Reset scroll region (critical for inline mode recovery). DECSTBM —
+        // including the parameterless reset — homes the cursor to (1,1) on
+        // real terminals, which would discard the writer's deliberate final
+        // cursor placement in inline mode (shell prompt at top-left over
+        // scrollback). Bracket with DECSC/DECRC to preserve the cursor.
+        let _ = stdout.write_all(b"\x1b7");
         let _ = stdout.write_all(RESET_SCROLL_REGION);
+        let _ = stdout.write_all(b"\x1b8");
         // Reset style so shell prompt does not inherit UI SGR state.
         let _ = stdout.write_all(RESET_STYLE);
         // Ensure synchronized output is disabled (prevent frozen terminal on panic)
@@ -1056,7 +1090,11 @@ fn install_panic_hook() {
     HOOK.get_or_init(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if !panic_cleanup_suppressed() {
+            // Only touch the terminal while a session is actually live:
+            // after the last session dropped cleanly, a later panic (e.g.
+            // while emitting machine-readable output to a redirected
+            // stdout) must not spray teardown escapes into the stream.
+            if !panic_cleanup_suppressed() && TERMINAL_SESSION_ACTIVE.load(Ordering::SeqCst) {
                 best_effort_cleanup();
             }
             previous(info);
@@ -1076,7 +1114,11 @@ fn best_effort_cleanup() {
     let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
 
+    // DECSC/DECRC bracket: DECSTBM reset homes the cursor on real
+    // terminals; preserve whatever position the writer left it at.
+    let _ = stdout.write_all(b"\x1b7");
     let _ = stdout.write_all(RESET_SCROLL_REGION);
+    let _ = stdout.write_all(b"\x1b8");
     let _ = stdout.write_all(RESET_STYLE);
     // Ensure synchronized output is disabled (prevent frozen terminal on panic)
     let _ = stdout.write_all(SYNC_END);

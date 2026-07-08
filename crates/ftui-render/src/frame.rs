@@ -538,11 +538,17 @@ impl<'a> Frame<'a> {
     ///
     /// The hit grid allows widgets to register clickable regions.
     pub fn with_hit_grid(width: u16, height: u16, pool: &'a mut GraphemePool) -> Self {
+        // Build the buffer first and size the grid from its (>=1-clamped)
+        // dimensions, so a degenerate 0 dimension cannot produce a drawable
+        // buffer paired with an empty grid that accepts registrations but
+        // never reports hits.
+        let buffer = Buffer::new(width, height);
+        let hit_grid = HitGrid::new(buffer.width(), buffer.height());
         Self {
-            buffer: Buffer::new(width, height),
+            buffer,
             pool,
             links: None,
-            hit_grid: Some(HitGrid::new(width, height)),
+            hit_grid: Some(hit_grid),
             hit_owner_stack: Vec::new(),
             widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),

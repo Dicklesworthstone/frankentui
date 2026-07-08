@@ -22,9 +22,12 @@
 //!
 //! # Failure Modes
 //!
-//! - If bucket overflow occurs, falls back to linear scan (logged)
-//! - If z-order gaps are large, memory is proportional to max z not widget count
-//!   (mitigated by z-rank normalization on rebuild)
+//! - Buckets are unbounded `Vec`s: pathological overlap degrades queries to
+//!   a per-bucket linear scan but never loses entries (there is no separate
+//!   fallback path).
+//! - `HitId::default()` (id 0) is reserved as the removed-entry sentinel;
+//!   [`SpatialHitIndex::register`] rejects it.
+//! - Re-registering an existing id replaces the previous entry.
 
 use crate::frame::{HitData, HitId, HitRegion};
 use ahash::AHashMap;
@@ -283,8 +286,11 @@ impl SpatialHitIndex {
     /// Create a new spatial hit index for the given screen dimensions.
     pub fn new(width: u16, height: u16, config: SpatialHitConfig) -> Self {
         let cell_size = config.cell_size.max(1);
-        let grid_width = (width.saturating_add(cell_size - 1)) / cell_size;
-        let grid_height = (height.saturating_add(cell_size - 1)) / cell_size;
+        // Ceiling division in u32: the previous `saturating_add(cell-1)`
+        // destroyed the ceiling for width/height >= 65529, producing a grid
+        // one column/row short and out-of-bounds bucket indices.
+        let grid_width = u32::from(width).div_ceil(u32::from(cell_size)) as u16;
+        let grid_height = u32::from(height).div_ceil(u32::from(cell_size)) as u16;
         let bucket_count = grid_width as usize * grid_height as usize;
 
         Self {
@@ -325,6 +331,23 @@ impl SpatialHitIndex {
         data: HitData,
         z_order: u16,
     ) {
+        // `HitId::default()` (id 0) is this index's removed-entry sentinel:
+        // hit_test skips it and rebuild_buckets compacts it away, so
+        // registering it would create a permanently unhittable entry.
+        // Reject it explicitly instead of corrupting silently (documented
+        // in the module's failure modes).
+        if id == HitId::default() {
+            return;
+        }
+
+        // Re-registering an id replaces the old entry. Without this, the
+        // stale entry stayed live in the buckets (a ghost hitbox), and
+        // rebuild_buckets would even resurrect it into id_to_entry after a
+        // remove().
+        if self.id_to_entry.contains_key(&id) {
+            self.remove(id);
+        }
+
         // Create entry
         let entry_idx = self.entries.len() as u32;
         let entry = HitEntry::new(id, rect, region, data, z_order, self.next_order);
@@ -557,11 +580,14 @@ impl SpatialHitIndex {
     // -----------------------------------------------------------------------
 
     /// Calculate bucket index for a point.
+    ///
+    /// Clamped to the grid like [`bucket_range`](Self::bucket_range), so a
+    /// point inside screen bounds can never index past the bucket vec.
     #[inline]
     fn bucket_index(&self, x: u16, y: u16) -> usize {
         let cell_size = self.config.cell_size;
-        let bx = x / cell_size;
-        let by = y / cell_size;
+        let bx = (x / cell_size).min(self.grid_width.saturating_sub(1));
+        let by = (y / cell_size).min(self.grid_height.saturating_sub(1));
         by as usize * self.grid_width as usize + bx as usize
     }
 
@@ -668,6 +694,75 @@ mod tests {
 
     fn index() -> SpatialHitIndex {
         SpatialHitIndex::with_defaults(80, 24)
+    }
+
+    // --- Regressions (exploration-audit round 7) ---
+
+    #[test]
+    fn u16_max_dimensions_do_not_panic_or_miss_hits() {
+        // Regression: saturating_add destroyed the ceiling division for
+        // width >= 65529, making the bucket grid one column short —
+        // hit_test near the right edge indexed out of bounds (1-row grids)
+        // or read the wrong bucket and returned None inside a widget.
+        let mut idx = SpatialHitIndex::with_defaults(u16::MAX, 8);
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(65520, 0, 15, 8),
+            HitRegion::Button,
+            0,
+        );
+        assert!(
+            idx.hit_test(65530, 5).is_some(),
+            "hit inside the widget at extreme x must resolve"
+        );
+
+        let mut idx = SpatialHitIndex::with_defaults(u16::MAX, 24);
+        idx.register_simple(
+            HitId::new(2),
+            Rect::new(65520, 0, 15, 8),
+            HitRegion::Button,
+            0,
+        );
+        assert_eq!(
+            idx.hit_test(65530, 0).map(|(id, _, _)| id),
+            Some(HitId::new(2))
+        );
+    }
+
+    #[test]
+    fn reregistering_id_replaces_old_entry() {
+        // Regression: re-registering an id left the old entry live in the
+        // buckets (ghost hitbox), and rebuild_buckets resurrected it into
+        // id_to_entry after remove().
+        let mut idx = index();
+        idx.register_simple(HitId::new(1), Rect::new(0, 0, 5, 5), HitRegion::Button, 7);
+        idx.register_simple(HitId::new(1), Rect::new(20, 10, 5, 5), HitRegion::Button, 9);
+        assert_eq!(idx.len(), 1);
+        assert!(
+            idx.hit_test(2, 2).is_none(),
+            "old location must not be a ghost hitbox"
+        );
+        let hit = idx.hit_test(22, 12).expect("new location must hit");
+        assert_eq!(hit.2, 9, "data must come from the replacement entry");
+
+        // remove() must kill the entry for good — no resurrection.
+        assert!(idx.remove(HitId::new(1)));
+        assert!(idx.hit_test(22, 12).is_none());
+        assert!(idx.hit_test(2, 2).is_none());
+        assert_eq!(idx.len(), 0);
+    }
+
+    #[test]
+    fn hit_id_zero_is_rejected_not_silently_unhittable() {
+        let mut idx = index();
+        idx.register_simple(
+            HitId::default(),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Button,
+            7,
+        );
+        assert_eq!(idx.len(), 0, "sentinel id must not create an entry");
+        assert!(idx.hit_test(5, 5).is_none());
     }
 
     // --- Basic functionality ---

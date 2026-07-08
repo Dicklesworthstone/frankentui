@@ -316,9 +316,14 @@ impl<M: Send + 'static> SubscriptionManager<M> {
             let sub_id_for_thread = id;
 
             let thread = thread::spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    sub.run(sender, signal);
-                }));
+                // Recoverable boundary: a panicking subscription is recorded
+                // and the program continues. Suppress the terminal panic
+                // hook so it doesn't tear down live terminal state mid-run.
+                let result = ftui_core::terminal_session::with_panic_cleanup_suppressed(|| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        sub.run(sender, signal);
+                    }))
+                });
                 if let Err(payload) = result {
                     panicked_flag.store(true, std::sync::atomic::Ordering::Release);
                     crate::effect_system::record_dynamics_sub_panic();

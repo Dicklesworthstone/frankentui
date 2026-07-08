@@ -2395,16 +2395,18 @@ impl<W: Write> TerminalWriter<W> {
             self.in_sync_block = false;
         }
 
+        // Reset scroll region BEFORE restoring the cursor: DECSTBM reset
+        // homes the cursor to (1,1) on real terminals, so emitting it after
+        // CURSOR_RESTORE would discard the deliberate final placement.
+        if self.scroll_region_active {
+            let _ = writer.write_all(b"\x1b[r");
+            self.scroll_region_active = false;
+        }
+
         // Restore cursor if saved
         if self.cursor_saved {
             let _ = writer.write_all(CURSOR_RESTORE);
             self.cursor_saved = false;
-        }
-
-        // Reset scroll region if active
-        if self.scroll_region_active {
-            let _ = writer.write_all(b"\x1b[r");
-            self.scroll_region_active = false;
         }
 
         // Show cursor

@@ -3832,7 +3832,15 @@ fn run_task_closure<M: Send + 'static>(
     result_sender: &mpsc::Sender<M>,
 ) -> bool {
     let start = Instant::now();
-    match panic::catch_unwind(AssertUnwindSafe(task)) {
+    // This is a RECOVERABLE panic boundary — the program keeps running.
+    // Suppress the terminal panic hook: without this, a panicking task
+    // triggers best_effort_cleanup mid-run (scroll-region reset, alt-screen
+    // leave, raw-mode exit) and the still-live UI renders onto a cooked,
+    // echoing main screen.
+    let caught = ftui_core::terminal_session::with_panic_cleanup_suppressed(|| {
+        panic::catch_unwind(AssertUnwindSafe(task))
+    });
+    match caught {
         Ok(msg) => {
             let duration_us = start.elapsed().as_micros() as u64;
             tracing::debug!(
