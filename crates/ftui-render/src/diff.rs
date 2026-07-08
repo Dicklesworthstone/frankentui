@@ -1366,12 +1366,21 @@ impl BufferDiff {
     /// Only rows marked dirty in `new` are compared cell-by-cell.
     /// Clean rows are skipped entirely (O(1) per clean row).
     ///
-    /// This is sound provided the dirty tracking invariant holds:
-    /// for all y, if any cell in row y changed, then `new.is_row_dirty(y)`.
+    /// # Soundness precondition
     ///
-    /// Falls back to full comparison for rows marked dirty, so false positives
-    /// (marking a row dirty when it didn't actually change) are safe — they
-    /// only cost the per-cell scan for that row.
+    /// `new`'s content at the time of its last `clear_dirty()` /
+    /// `reset_for_frame()` must have been identical to `old`. The dirty
+    /// state (rows, spans, per-cell bits) records *mutations since that
+    /// point*, and this path narrows the scan not just to dirty rows but to
+    /// the recorded dirty spans/tiles *within* them — so any old-vs-new
+    /// difference that is not also a recorded mutation is silently missed.
+    /// The row-level invariant alone ("changed rows are dirty") is NOT
+    /// sufficient. The production writer satisfies the precondition by
+    /// diffing consecutive frames of one buffer lineage whose baseline was
+    /// fully dirty.
+    ///
+    /// False positives (marking a row/span dirty when it didn't actually
+    /// change) are safe — they only cost the per-cell scan for that region.
     pub fn compute_dirty(old: &Buffer, new: &Buffer) -> Self {
         let mut diff = Self::new();
         diff.compute_dirty_into(old, new);
@@ -1379,6 +1388,10 @@ impl BufferDiff {
     }
 
     /// Compute the dirty-row diff into an existing buffer to reuse allocation.
+    ///
+    /// Same soundness precondition as [`compute_dirty`](Self::compute_dirty):
+    /// `new`'s dirty state must have been cleared while its content was
+    /// identical to `old`.
     pub fn compute_dirty_into(&mut self, old: &Buffer, new: &Buffer) {
         compute_dirty_changes(
             old,
@@ -1407,7 +1420,11 @@ impl BufferDiff {
     ///
     /// Issuing `SkipDiff` when buffers differ produces stale frames.
     /// The certificate evaluator must guarantee correctness — this method
-    /// trusts the hint without verification.
+    /// trusts the hint without verification. The `FullDiff` arm delegates to
+    /// [`compute_dirty_into`](Self::compute_dirty_into) and inherits its
+    /// baseline-equals-`old` precondition. `NarrowToRows` rows are processed
+    /// in ascending unique order (the method sorts/dedups defensively) so
+    /// the change list keeps the sorted-unique invariant `runs()` requires.
     ///
     /// # Tracing
     ///
@@ -1437,14 +1454,26 @@ impl BufferDiff {
 
                 let w = old.width();
                 let h = old.height();
-                debug_assert_eq!(w, new.width());
-                debug_assert_eq!(h, new.height());
+                // Hard assert for parity with the full/dirty paths: a
+                // dimension mismatch here would scan `new` with `old`'s
+                // stride and produce coordinates matching neither buffer.
+                assert_eq!(w, new.width(), "diff dimension mismatch");
+                assert_eq!(h, new.height(), "diff dimension mismatch");
 
                 let old_cells = old.cells();
                 let new_cells = new.cells();
                 let stride = w as usize;
 
-                for &row in rows {
+                // Defensive sort+dedup: `runs()` and downstream accounting
+                // (change counts fed to the strategy selector) rely on the
+                // change list being (y, x)-sorted and duplicate-free. The
+                // production witness (dirty_row_indices) is already
+                // ascending/unique, so this is a no-op there.
+                let mut sorted_rows: Vec<u16> = rows.clone();
+                sorted_rows.sort_unstable();
+                sorted_rows.dedup();
+
+                for &row in &sorted_rows {
                     if row >= h {
                         continue;
                     }
@@ -1469,7 +1498,7 @@ impl BufferDiff {
                 tracing::debug!(
                     event = "diff_narrow_certified",
                     hint = "narrow_to_rows",
-                    rows_checked = rows.len(),
+                    rows_checked = sorted_rows.len(),
                     changes = self.changes.len(),
                 );
             }
@@ -1488,6 +1517,9 @@ impl BufferDiff {
                 self.changes.push((x, y));
             }
         }
+        // Tile diagnostics describe the previous dirty pass, not this full
+        // refill — drop them so telemetry can't attribute stale stats here.
+        self.last_tile_stats = None;
     }
 
     /// Number of changed cells.
@@ -1617,6 +1649,7 @@ impl BufferDiff {
     /// Clear the diff, removing all recorded changes.
     pub fn clear(&mut self) {
         self.changes.clear();
+        self.last_tile_stats = None;
     }
 }
 
@@ -5092,6 +5125,50 @@ mod span_edge_cases {
             diff.is_empty(),
             "narrowing to clean rows should produce zero changes"
         );
+    }
+
+    #[test]
+    fn certified_narrow_unsorted_duplicate_rows_yield_sorted_unique_changes() {
+        // Regression: unsorted/duplicate hint rows produced duplicated,
+        // out-of-order changes — breaking the sorted-unique invariant that
+        // runs() relies on and double-counting changes fed to the diff
+        // strategy selector.
+        let old = Buffer::new(10, 5);
+        let mut new = Buffer::new(10, 5);
+        new.set(2, 1, Cell::from_char('A'));
+        new.set(5, 3, Cell::from_char('B'));
+
+        let mut diff = BufferDiff::new();
+        diff.compute_certified_into(&old, &new, DiffSkipHint::NarrowToRows(vec![3, 1, 3, 3]));
+
+        assert_eq!(
+            diff.changes(),
+            &[(2, 1), (5, 3)],
+            "changes must be (y,x)-sorted and duplicate-free"
+        );
+        let runs = diff.runs();
+        assert_eq!(runs.len(), 2, "each change coalesces into exactly one run");
+    }
+
+    #[test]
+    fn fill_full_and_clear_drop_stale_tile_stats() {
+        // Regression: tile diagnostics from an earlier dirty pass survived
+        // a full refill / clear and could be misattributed by telemetry.
+        let old = Buffer::new(8, 2);
+        let mut new = Buffer::new(8, 2);
+        new.clear_dirty();
+        new.set(3, 0, Cell::from_char('x'));
+
+        let mut diff = BufferDiff::new();
+        diff.compute_dirty_into(&old, &new);
+        // (Whether stats are recorded depends on tile config; the invariant
+        // under test is only that refill/clear never KEEPS old stats.)
+        diff.fill_full(8, 2);
+        assert!(diff.last_tile_stats().is_none(), "fill_full kept stats");
+
+        diff.compute_dirty_into(&old, &new);
+        diff.clear();
+        assert!(diff.last_tile_stats().is_none(), "clear kept stats");
     }
 
     #[test]

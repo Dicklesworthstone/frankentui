@@ -604,14 +604,26 @@ impl Buffer {
         self.dirty_span_config
     }
 
-    /// Update dirty-span configuration (clears existing spans when changed).
+    /// Update dirty-span configuration.
+    ///
+    /// Existing span records were built under the old config, so they are
+    /// replaced conservatively: every currently dirty row goes to full-row
+    /// dirty. Merely clearing the spans (and the full-row overflow flag)
+    /// would break the span soundness invariant — the diff scans only the
+    /// recorded spans of a dirty row, so pre-existing mutations (including a
+    /// fresh buffer's implicit all-dirty state) would silently stop being
+    /// diffed once new mutations record narrower spans.
     pub fn set_dirty_span_config(&mut self, config: DirtySpanConfig) {
         if self.dirty_span_config == config {
             return;
         }
         self.dirty_span_config = config;
-        for row in &mut self.dirty_spans {
-            row.clear();
+        for (y, row) in self.dirty_spans.iter_mut().enumerate() {
+            if self.dirty_rows.get(y).copied().unwrap_or(false) {
+                row.set_full();
+            } else {
+                row.clear();
+            }
         }
         self.dirty_span_overflows = 0;
     }
@@ -1010,9 +1022,41 @@ impl Buffer {
             self.cells[idx] = cell;
             self.mark_dirty_span(y, span.x0, span.x1);
             if !raw_wide_head {
-                self.cleanup_orphaned_tails(x.saturating_add(1), y);
+                // The orphan sweep's premise ("a continuation at x+1 cannot
+                // be owned by x") only holds for non-continuation writes.
+                // When the written cell is itself a continuation, x belongs
+                // to a head on its left whose further tails (x+1, ...) are
+                // legitimate — sweeping from x+1 would corrupt a width>2
+                // glyph (e.g. rewriting the first tail of a width-3 glyph
+                // used to clear its second tail). Sweep only beyond the
+                // owning head's extent.
+                let sweep_from = if cell.is_continuation() {
+                    self.continuation_owner_extent(x, y)
+                        .unwrap_or_else(|| x.saturating_add(1))
+                } else {
+                    x.saturating_add(1)
+                };
+                self.cleanup_orphaned_tails(sweep_from, y);
             }
         }
+    }
+
+    /// Find the exclusive end column of the glyph owning the continuation at
+    /// `x`, scanning left at most `GraphemeId::MAX_WIDTH` cells. Returns
+    /// `None` when the continuation is orphaned (no owning head).
+    fn continuation_owner_extent(&self, x: u16, y: u16) -> Option<u16> {
+        let limit = x.saturating_sub(GraphemeId::MAX_WIDTH as u16);
+        let mut back_x = x;
+        while back_x > limit {
+            back_x -= 1;
+            let idx = self.index(back_x, y)?;
+            let cell = self.cells[idx];
+            if !cell.is_continuation() {
+                let end = back_x.saturating_add(cell.content.width() as u16);
+                return (end > x).then_some(end);
+            }
+        }
+        None
     }
 
     /// Fill a rectangular region with the given cell.
@@ -1375,14 +1419,22 @@ impl Buffer {
 
                     // Check for clipping.
                     // 1. Source clipping: tail extends beyond the source copy region.
-                    // 2. Destination clipping: tail extends beyond the effective scissor.
+                    // 2. Destination clipping: tail extends beyond the effective
+                    //    scissor on the right, OR the head lands left of it while
+                    //    a tail would land inside (an outer scissor narrower on
+                    //    the left). Both halves matter: `set` rejects wide writes
+                    //    atomically, so without the left check the in-clip tail
+                    //    cell would silently keep its stale content.
                     let src_clipped = width > 1 && dx.saturating_add(width as u16) > src_rect.width;
-                    let dst_clipped = target_right > clip.right();
+                    let dst_clipped = target_right > clip.right()
+                        || (width > 1 && target_x < clip.left() && target_right > clip.left());
 
                     if src_clipped || dst_clipped {
                         // Write default cells to all valid positions in the span to ensure
                         // previous content is cleared. `set` is atomic for wide chars,
                         // so we must write single-width default cells individually.
+                        // (`set` clips each single-width write to the scissor, so
+                        // starting at the head position is safe on the left edge.)
                         let valid_width = (clip.right().saturating_sub(target_x)).min(width as u16);
                         for i in 0..valid_width {
                             self.set(target_x + i, target_y, Cell::default());
@@ -1605,6 +1657,11 @@ impl DoubleBuffer {
     /// Both buffers are replaced with fresh allocations and the index is
     /// reset. Callers should force a full redraw when this returns `true`.
     pub fn resize(&mut self, width: u16, height: u16) -> bool {
+        // Compare against the same ≥1 clamp Buffer::new applies, so a caller
+        // repeatedly passing a degenerate 0 dimension doesn't reallocate both
+        // buffers (and force a full redraw) every frame.
+        let width = width.max(1);
+        let height = height.max(1);
         if self.buffers[0].width() == width && self.buffers[0].height() == height {
             return false;
         }
@@ -1613,10 +1670,11 @@ impl DoubleBuffer {
         true
     }
 
-    /// Check whether both buffers have the given dimensions.
+    /// Check whether both buffers have the given dimensions (after the same
+    /// ≥1 clamp `Buffer::new` applies).
     #[inline]
     pub fn dimensions_match(&self, width: u16, height: u16) -> bool {
-        self.buffers[0].width() == width && self.buffers[0].height() == height
+        self.buffers[0].width() == width.max(1) && self.buffers[0].height() == height.max(1)
     }
 }
 
@@ -1808,7 +1866,7 @@ impl AdaptiveDoubleBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cell::PackedRgba;
+    use crate::cell::{CellContent, PackedRgba};
 
     #[test]
     fn set_composites_background() {
@@ -3543,6 +3601,70 @@ mod tests {
         let stats = buf.dirty_span_stats();
         assert_eq!(stats.total_spans, 0);
         assert_eq!(stats.span_coverage_cells, 0);
+    }
+
+    #[test]
+    fn set_dirty_span_config_keeps_dirty_rows_full() {
+        // Regression: changing the span config used to clear() every span
+        // row — including the full-row overflow flag — without re-marking
+        // dirty rows as full. A pre-existing mutation (or a fresh buffer's
+        // implicit all-dirty state) then stopped being covered by any span,
+        // and the diff (which scans only the recorded spans of a dirty row
+        // once new spans exist) silently missed it: a permanent ghost cell.
+        let mut buf = Buffer::new(10, 2);
+        buf.clear_dirty();
+        buf.set(7, 0, Cell::from_char('B')); // pre-config mutation, row 0 dirty
+
+        buf.set_dirty_span_config(DirtySpanConfig::default().with_merge_gap(3));
+
+        // Row 0 was dirty: it must be conservatively full, not span-less.
+        let row = buf.dirty_span_row(0).expect("row 0 must have span state");
+        assert!(
+            row.is_full(),
+            "dirty row must go full-row on config change, got spans {:?}",
+            row.spans()
+        );
+        // Row 1 was clean: no span state required.
+        assert!(!buf.is_row_dirty(1));
+
+        // New mutations after the change still record spans without
+        // narrowing away the pre-config mutation (full-row wins).
+        buf.set(2, 0, Cell::from_char('A'));
+        let row = buf.dirty_span_row(0).unwrap();
+        assert!(row.is_full(), "full-row flag must survive later marks");
+    }
+
+    #[test]
+    fn set_raw_rewriting_tail_preserves_other_tails_of_wide_glyph() {
+        // Regression: set_raw of a continuation cell ran the orphan sweep
+        // from x+1, whose "cannot be owned by x" premise is false for
+        // continuation writes — rewriting the first tail of a width-3 glyph
+        // cleared its second (legitimate) tail.
+        let mut buf = Buffer::new(10, 1);
+        // Manually assemble a width-3 glyph at x=2 (doc-endorsed pattern);
+        // width is carried by the GraphemeId's embedded width bits.
+        let head = Cell::new(CellContent::from_grapheme(GraphemeId::new(0, 0, 3)));
+        buf.set_raw(2, 0, head);
+        buf.set_raw(3, 0, Cell::CONTINUATION);
+        buf.set_raw(4, 0, Cell::CONTINUATION);
+        assert!(buf.get(4, 0).unwrap().is_continuation());
+
+        // Content no-op: rewrite the first tail in place.
+        buf.set_raw(3, 0, Cell::CONTINUATION);
+        assert!(
+            buf.get(4, 0).unwrap().is_continuation(),
+            "second tail of the width-3 glyph must survive a tail rewrite"
+        );
+
+        // The sweep still clears tails beyond the owning head's extent:
+        // rebuild as width-2 over the width-3 remains.
+        let head2 = Cell::new(CellContent::from_grapheme(GraphemeId::new(1, 0, 2)));
+        buf.set_raw(2, 0, head2);
+        buf.set_raw(3, 0, Cell::CONTINUATION);
+        assert!(
+            !buf.get(4, 0).unwrap().is_continuation(),
+            "stale tail beyond a narrower rebuilt glyph must be swept"
+        );
     }
 
     #[test]

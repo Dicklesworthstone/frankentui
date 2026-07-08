@@ -14,7 +14,11 @@
 //!   entirely;
 //! - `NarrowToDirty` — the diff scan is narrowed to exactly the dirty rows
 //!   (soundness inherited from the buffer's dirty-tracking invariant:
-//!   dirty rows ⊇ changed rows).
+//!   dirty rows ⊇ changed rows, which in turn requires that the buffer's
+//!   dirty state was cleared while its content was identical to the diff's
+//!   `old` baseline — see `BufferDiff::compute_dirty`'s precondition; the
+//!   production writer guarantees this by diffing consecutive frames of one
+//!   buffer lineage).
 //!
 //! The decision tree is deliberately conservative and fail-open: any
 //! condition that cannot be proven falls back to `FullRequired`. Every

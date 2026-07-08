@@ -212,6 +212,13 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
                 if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
                     return i + 2;
                 }
+                // 8-bit ST (U+009C, UTF-8 C2 9C) also terminates: real
+                // terminals accept it, so a C1-ST-terminated OSC is properly
+                // terminated — treating it as content would swallow all
+                // following legitimate text to end of input.
+                if b == 0xC2 && i + 1 < bytes.len() && bytes[i + 1] == 0x9C {
+                    return i + 2;
+                }
                 // Lone ESC (not followed by \): abort OSC and let the main loop
                 // re-process this ESC as a potential new escape sequence.
                 if b == 0x1B {
@@ -231,6 +238,10 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
                 let b = bytes[i];
                 // ST (ESC \) terminates
                 if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                    return i + 2;
+                }
+                // 8-bit ST (U+009C) terminates, as in the OSC arm above.
+                if b == 0xC2 && i + 1 < bytes.len() && bytes[i + 1] == 0x9C {
                     return i + 2;
                 }
                 // Lone ESC (not followed by \): abort and let the main loop
@@ -492,6 +503,30 @@ mod tests {
         let input = "Click \x1b]8;;https://evil.com\x07here\x1b]8;;\x07 please";
         let result = sanitize(input);
         assert_eq!(result.as_ref(), "Click here please");
+    }
+
+    #[test]
+    fn osc_terminated_by_c1_st_does_not_swallow_following_text() {
+        // Regression: the OSC skipper only knew BEL and ESC-\ terminators.
+        // The 8-bit ST (U+009C) — which real terminals accept — was consumed
+        // as content, so everything after a C1-ST-terminated OSC was
+        // swallowed to end of input.
+        let input = "Before\x1b]0;title\u{009C}hello world";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "Beforehello world");
+    }
+
+    #[test]
+    fn dcs_pm_apc_terminated_by_c1_st_do_not_swallow_following_text() {
+        for intro in ['P', '^', '_'] {
+            let input = format!("Before\x1b{intro}payload\u{009C}after");
+            let result = sanitize(&input);
+            assert_eq!(
+                result.as_ref(),
+                "Beforeafter",
+                "introducer {intro:?}: text after C1 ST swallowed"
+            );
+        }
     }
 
     // ============== Slow Path: DCS/PM/APC ==============
