@@ -319,7 +319,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
                 // Recoverable boundary: a panicking subscription is recorded
                 // and the program continues. Suppress the terminal panic
                 // hook so it doesn't tear down live terminal state mid-run.
-                let result = ftui_core::terminal_session::with_panic_cleanup_suppressed(|| {
+                let result = ftui_core::with_panic_cleanup_suppressed(|| {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         sub.run(sender, signal);
                     }))

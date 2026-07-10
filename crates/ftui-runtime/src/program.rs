@@ -3837,9 +3837,8 @@ fn run_task_closure<M: Send + 'static>(
     // triggers best_effort_cleanup mid-run (scroll-region reset, alt-screen
     // leave, raw-mode exit) and the still-live UI renders onto a cooked,
     // echoing main screen.
-    let caught = ftui_core::terminal_session::with_panic_cleanup_suppressed(|| {
-        panic::catch_unwind(AssertUnwindSafe(task))
-    });
+    let caught =
+        ftui_core::with_panic_cleanup_suppressed(|| panic::catch_unwind(AssertUnwindSafe(task)));
     match caught {
         Ok(msg) => {
             let duration_us = start.elapsed().as_micros() as u64;

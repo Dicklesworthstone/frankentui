@@ -149,6 +149,9 @@ jobs:
       - name: Test ftui-widgets features
         run: cargo check -p ftui-widgets --features debug-overlay
 
+      - name: Test native runtime without crossterm
+        run: cargo check -p ftui-runtime --lib --no-default-features --features native-backend
+
       - name: Test no default features
         run: cargo check --workspace --no-default-features
 
