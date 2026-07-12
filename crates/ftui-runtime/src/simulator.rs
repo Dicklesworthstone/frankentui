@@ -21,12 +21,35 @@
 
 use crate::program::{Cmd, Model};
 use crate::state_persistence::StateRegistry;
+use crate::subscription::SubId;
 use ftui_core::event::Event;
 use ftui_render::buffer::Buffer;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Deterministic simulator operation error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SimulatorError {
+    /// The simulator is no longer accepting updates.
+    NotRunning,
+    /// A message targeted a subscription the model does not currently declare.
+    InactiveSubscription(SubId),
+}
+
+impl std::fmt::Display for SimulatorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRunning => write!(f, "simulator is not running"),
+            Self::InactiveSubscription(id) => {
+                write!(f, "subscription {id} is not active")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SimulatorError {}
 
 /// Record of a command that was executed during simulation.
 #[derive(Debug, Clone)]
@@ -49,6 +72,10 @@ pub enum CmdRecord {
     Task,
     /// Mouse capture toggle (no-op in simulator).
     MouseCapture(bool),
+    /// Error delivered to `Model::on_error`.
+    Error(String),
+    /// One-shot model/runtime shutdown.
+    Shutdown,
 }
 
 /// Deterministic simulator for [`Model`] testing.
@@ -66,10 +93,24 @@ pub struct ProgramSimulator<M: Model> {
     command_log: Vec<CmdRecord>,
     /// Whether the simulated program is still running.
     running: bool,
+    /// Whether `Model::init` has already run.
+    initialized: bool,
+    /// Whether `Model::on_shutdown` has already run.
+    shutdown_complete: bool,
+    /// Whether an error hook is currently executing.
+    handling_error: bool,
     /// Current tick rate (if any).
     tick_rate: Option<Duration>,
+    /// Deterministic monotonic simulator time.
+    now: Duration,
+    /// Next scheduled tick at the injected simulator clock.
+    next_tick_at: Option<Duration>,
+    /// Declarative subscription IDs from the last reconciliation.
+    active_subscriptions: Vec<SubId>,
     /// Log messages emitted via Cmd::Log.
     logs: Vec<String>,
+    /// Errors delivered through `Model::on_error`.
+    errors: Vec<String>,
     /// Optional state registry for persistence integration.
     state_registry: Option<Arc<StateRegistry>>,
 }
@@ -85,8 +126,15 @@ impl<M: Model> ProgramSimulator<M> {
             frames: Vec::new(),
             command_log: Vec::new(),
             running: true,
+            initialized: false,
+            shutdown_complete: false,
+            handling_error: false,
             tick_rate: None,
+            now: Duration::ZERO,
+            next_tick_at: None,
+            active_subscriptions: Vec::new(),
             logs: Vec::new(),
+            errors: Vec::new(),
             state_registry: None,
         }
     }
@@ -101,12 +149,17 @@ impl<M: Model> ProgramSimulator<M> {
         sim
     }
 
-    /// Initialize the model by calling `Model::init()` and executing returned commands.
+    /// Initialize the model once and execute its startup commands.
     ///
     /// Should be called once before injecting events or capturing frames.
     pub fn init(&mut self) {
+        if self.initialized || self.shutdown_complete {
+            return;
+        }
+        self.initialized = true;
         let cmd = self.model.init();
         self.execute_cmd(cmd);
+        self.poll_subscriptions();
     }
 
     /// Inject terminal events into the model.
@@ -121,6 +174,7 @@ impl<M: Model> ProgramSimulator<M> {
             let msg = M::Message::from(event.clone());
             let cmd = self.model.update(msg);
             self.execute_cmd(cmd);
+            self.poll_subscriptions();
         }
     }
 
@@ -142,6 +196,148 @@ impl<M: Model> ProgramSimulator<M> {
         }
         let cmd = self.model.update(msg);
         self.execute_cmd(cmd);
+        self.poll_subscriptions();
+    }
+
+    /// Current deterministic monotonic simulator time.
+    #[inline]
+    pub fn now(&self) -> Duration {
+        self.now
+    }
+
+    /// Advance deterministic time and deliver every scheduled tick now due.
+    ///
+    /// Positive tick intervals are delivered at their exact deadlines. A zero
+    /// interval remains manually driven to avoid an unbounded loop.
+    pub fn advance_time(&mut self, delta: Duration) -> usize {
+        let target = self.now.saturating_add(delta);
+        let mut delivered = 0_usize;
+
+        while self.running {
+            let Some(due) = self.next_tick_at else {
+                break;
+            };
+            if due > target {
+                break;
+            }
+
+            self.now = due;
+            self.next_tick_at = self
+                .tick_rate
+                .filter(|rate| !rate.is_zero())
+                .and_then(|rate| due.checked_add(rate));
+            self.send(M::Message::from(Event::Tick));
+            delivered = delivered.saturating_add(1);
+        }
+
+        self.now = target;
+        delivered
+    }
+
+    /// Deliver one tick immediately without advancing deterministic time.
+    pub fn tick(&mut self) {
+        if self.running {
+            self.send(M::Message::from(Event::Tick));
+        }
+    }
+
+    /// Reconcile the model's declarative subscriptions without starting
+    /// background threads.
+    ///
+    /// Tests explicitly deliver subscription messages with
+    /// [`deliver_subscription`](Self::deliver_subscription), keeping ordering
+    /// and time fully deterministic.
+    pub fn poll_subscriptions(&mut self) -> &[SubId] {
+        if self.shutdown_complete {
+            self.active_subscriptions.clear();
+            return &self.active_subscriptions;
+        }
+
+        let mut ids: Vec<_> = self
+            .model
+            .subscriptions()
+            .into_iter()
+            .map(|subscription| subscription.id())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        self.active_subscriptions = ids;
+        &self.active_subscriptions
+    }
+
+    /// IDs of subscriptions active at the last deterministic reconciliation.
+    #[inline]
+    pub fn active_subscription_ids(&self) -> &[SubId] {
+        &self.active_subscriptions
+    }
+
+    /// Deliver one message from an active declarative subscription.
+    pub fn deliver_subscription(
+        &mut self,
+        id: SubId,
+        msg: M::Message,
+    ) -> Result<(), SimulatorError> {
+        if !self.running {
+            return Err(SimulatorError::NotRunning);
+        }
+        if !self.active_subscriptions.contains(&id) {
+            let error = SimulatorError::InactiveSubscription(id);
+            self.report_error(error.to_string());
+            return Err(error);
+        }
+
+        let cmd = self.model.update(msg);
+        self.execute_cmd(cmd);
+        self.poll_subscriptions();
+        Ok(())
+    }
+
+    /// Inject a runtime error through `Model::on_error`.
+    pub fn report_error(&mut self, error: impl Into<String>) {
+        let error = error.into();
+        self.errors.push(error.clone());
+        self.command_log.push(CmdRecord::Error(error.clone()));
+
+        if self.handling_error || self.shutdown_complete {
+            return;
+        }
+
+        self.handling_error = true;
+        let cmd = self.model.on_error(&error);
+        self.execute_lifecycle_cmd(cmd);
+        self.handling_error = false;
+        self.poll_subscriptions();
+    }
+
+    /// Cancel the simulated runtime and complete shutdown exactly once.
+    pub fn cancel(&mut self) {
+        self.running = false;
+        self.shutdown();
+    }
+
+    /// Run `Model::on_shutdown` and clear simulated subscriptions exactly once.
+    pub fn shutdown(&mut self) {
+        if self.shutdown_complete {
+            return;
+        }
+        self.shutdown_complete = true;
+        self.running = false;
+        self.command_log.push(CmdRecord::Shutdown);
+        let cmd = self.model.on_shutdown();
+        self.execute_lifecycle_cmd(cmd);
+        self.active_subscriptions.clear();
+    }
+
+    /// Whether the one-shot shutdown contract has completed.
+    #[inline]
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown_complete
+    }
+
+    /// Errors delivered through `Model::on_error`.
+    #[inline]
+    pub fn errors(&self) -> &[String] {
+        &self.errors
     }
 
     /// Capture the current frame at the given dimensions.
@@ -224,6 +420,13 @@ impl<M: Model> ProgramSimulator<M> {
         self.logs.clear();
     }
 
+    /// Execute a lifecycle command after normal message dispatch has stopped.
+    fn execute_lifecycle_cmd(&mut self, cmd: Cmd<M::Message>) {
+        let was_running = std::mem::replace(&mut self.running, true);
+        self.execute_cmd(cmd);
+        self.running = was_running && self.running;
+    }
+
     /// Execute a command without IO.
     ///
     /// Cmd::Msg recurses through update; Cmd::Log records the text;
@@ -265,6 +468,11 @@ impl<M: Model> ProgramSimulator<M> {
             }
             Cmd::Tick(duration) => {
                 self.tick_rate = Some(duration);
+                self.next_tick_at = if duration.is_zero() {
+                    None
+                } else {
+                    self.now.checked_add(duration)
+                };
                 self.command_log.push(CmdRecord::Tick(duration));
             }
             Cmd::Log(text) => {
@@ -276,18 +484,41 @@ impl<M: Model> ProgramSimulator<M> {
             }
             Cmd::Task(_, f) => {
                 self.command_log.push(CmdRecord::Task);
-                let msg = f();
-                let cmd = self.model.update(msg);
-                self.execute_cmd(cmd);
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+                    Ok(msg) => {
+                        let cmd = self.model.update(msg);
+                        self.execute_cmd(cmd);
+                    }
+                    Err(payload) => {
+                        let error = if let Some(message) = payload.downcast_ref::<&str>() {
+                            (*message).to_owned()
+                        } else if let Some(message) = payload.downcast_ref::<String>() {
+                            message.clone()
+                        } else {
+                            "background task panicked with a non-string payload".to_owned()
+                        };
+                        self.report_error(format!("background task failed: {error}"));
+                    }
+                }
             }
             Cmd::SaveState => {
-                if let Some(registry) = &self.state_registry {
-                    let _ = registry.flush();
+                let error = self
+                    .state_registry
+                    .as_ref()
+                    .and_then(|registry| registry.flush().err())
+                    .map(|error| format!("state save failed: {error}"));
+                if let Some(error) = error {
+                    self.report_error(error);
                 }
             }
             Cmd::RestoreState => {
-                if let Some(registry) = &self.state_registry {
-                    let _ = registry.load();
+                let error = self
+                    .state_registry
+                    .as_ref()
+                    .and_then(|registry| registry.load().err())
+                    .map(|error| format!("state restore failed: {error}"));
+                if let Some(error) = error {
+                    self.report_error(error);
                 }
             }
             Cmd::SetTickStrategy(_) => {
@@ -697,6 +928,19 @@ mod tests {
         sim.execute_cmd(Cmd::tick(Duration::from_millis(100)));
 
         assert_eq!(sim.tick_rate(), Some(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn deterministic_clock_stops_when_next_deadline_would_overflow() {
+        let mut sim = ProgramSimulator::new(Counter {
+            value: 0,
+            initialized: false,
+        });
+        sim.execute_cmd(Cmd::tick(Duration::MAX));
+
+        assert_eq!(sim.advance_time(Duration::MAX), 1);
+        assert_eq!(sim.now(), Duration::MAX);
+        assert_eq!(sim.advance_time(Duration::ZERO), 0);
     }
 
     #[test]
@@ -1474,13 +1718,11 @@ mod tests {
         });
         sim.init();
         sim.send(ShutMsg::Quit);
-
-        // Manually call on_shutdown to verify the contract
-        // (ProgramSimulator doesn't auto-call it; the real runtime does)
-        let shutdown_cmd = sim.model_mut().on_shutdown();
-        sim.execute_cmd(shutdown_cmd);
+        sim.shutdown();
+        sim.shutdown();
 
         assert!(sim.model().shutdown_called, "on_shutdown must be called");
+        assert!(sim.is_shutdown(), "shutdown state must be observable");
         assert_eq!(
             sim.model().final_log.as_deref(),
             Some("shutdown-complete"),

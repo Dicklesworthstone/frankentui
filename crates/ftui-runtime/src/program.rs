@@ -189,10 +189,12 @@ pub trait Model: Sized {
         Cmd::none()
     }
 
-    /// Called when an unrecoverable error occurs during the runtime loop.
+    /// Called when a runtime, command, or background subscription error occurs.
     ///
     /// Return commands for error recovery or graceful degradation. The
-    /// `error` string contains the error description.
+    /// `error` string contains the error description. Fatal runtime and
+    /// command errors still terminate after this hook runs; isolated
+    /// subscription failures may recover and keep the program running.
     ///
     /// # Migration rationale
     ///
@@ -4691,6 +4693,8 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     backend_features: BackendFeatures,
     /// Whether the program is running.
     running: bool,
+    /// Whether the model shutdown hook and runtime teardown have completed.
+    shutdown_complete: bool,
     /// Current tick rate (if any).
     tick_rate: Option<Duration>,
     /// Total commands actually executed by the runtime.
@@ -4896,6 +4900,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             events,
             backend_features: initial_features,
             running: true,
+            shutdown_complete: false,
             tick_rate: None,
             executed_cmd_count: 0,
             last_tick: Instant::now(),
@@ -5027,6 +5032,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             events,
             backend_features,
             running: true,
+            shutdown_complete: false,
             tick_rate: None,
             executed_cmd_count: 0,
             last_tick: Instant::now(),
@@ -5182,7 +5188,15 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     /// 3. Frame rendering
     /// 4. Shutdown (terminal cleanup)
     pub fn run(&mut self) -> io::Result<()> {
-        self.run_event_loop()
+        if self.shutdown_complete {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "program lifecycle has already completed",
+            ));
+        }
+
+        let run_result = self.run_event_loop();
+        self.complete_lifecycle(run_result)
     }
 
     #[inline]
@@ -5207,7 +5221,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     }
 
     /// The inner event loop, separated for proper cleanup handling.
-    fn run_event_loop(&mut self) -> io::Result<()> {
+    fn run_event_loop(&mut self) -> io::Result<Option<i32>> {
         // Auto-load state on start
         if self.persistence_config.auto_load {
             self.load_state();
@@ -5224,9 +5238,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         if self.running && termination_signal.is_none() {
             // Reconcile initial subscriptions
             self.reconcile_subscriptions();
+            self.process_subscription_failures(false)?;
 
             // Initial render
-            self.render_frame()?;
+            if self.running {
+                self.render_frame()?;
+            }
         }
 
         // Main loop
@@ -5268,6 +5285,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
             // Process subscription messages
             self.process_subscription_messages()?;
+            self.process_subscription_failures(false)?;
             if !self.running {
                 break;
             }
@@ -5420,57 +5438,105 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             }
         }
 
+        Ok(termination_signal)
+    }
+
+    /// Complete the model/runtime lifecycle after every event-loop exit path.
+    fn complete_lifecycle(&mut self, run_result: io::Result<Option<i32>>) -> io::Result<()> {
+        let (loop_signal, primary_error) = match run_result {
+            Ok(signal) => (signal, None),
+            Err(error) => (None, Some(error)),
+        };
+        let termination_signal = loop_signal.or_else(|| self.observed_termination_signal());
+
+        // The event loop is over. Lifecycle commands may run model updates,
+        // but they must never restart normal event processing.
+        self.running = false;
+
+        let mut hook_error = None;
+        if let Some(error) = primary_error.as_ref()
+            && let Err(error) = self.invoke_error_hook(&error.to_string(), true)
+        {
+            hook_error = Some(error);
+        }
+
+        if let Err(error) = self.process_subscription_failures(true) {
+            hook_error.get_or_insert(error);
+        }
+
+        let shutdown_error = self.shutdown_once().err();
+
+        // A pending termination signal takes precedence over lifecycle-step
+        // errors: it is what ended the loop, and callers rely on the
+        // SignalTerminationError contract for the 128+signal process exit.
+        if let Some(signal) = termination_signal {
+            clear_termination_signal();
+            let error = io::Error::new(
+                io::ErrorKind::Interrupted,
+                SignalTerminationError { signal },
+            );
+            debug_assert_eq!(signal_termination_from_error(&error), Some(signal));
+            return Err(error);
+        }
+
+        if let Some(error) = primary_error {
+            return Err(error);
+        }
+
+        if let Some(error) = hook_error {
+            return Err(error);
+        }
+
+        if let Some(error) = shutdown_error {
+            // A failing cleanup command is still a command error. Report it
+            // after the one-shot shutdown hook without attempting teardown a
+            // second time.
+            let _ = self.invoke_error_hook(&error.to_string(), true);
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    /// Run model shutdown and runtime teardown at most once.
+    fn shutdown_once(&mut self) -> io::Result<()> {
+        if self.shutdown_complete {
+            return Ok(());
+        }
+        self.shutdown_complete = true;
+
         let shutdown_cmd = {
             let _span = info_span!("ftui.program.shutdown").entered();
             self.model.on_shutdown()
         };
         // The shutdown sequence is error-isolated: a failing shutdown command
-        // (e.g. a Cmd::Log hitting EPIPE because the terminal already died)
-        // must not skip auto-save, strategy/executor shutdown, or the signal
-        // exit-code mapping. The first error is captured and surfaced after
-        // cleanup completes.
-        let mut shutdown_error: Option<io::Error> = None;
-        if let Err(error) = self.execute_cmd(shutdown_cmd) {
-            shutdown_error = Some(error);
-        }
+        // must not skip auto-save, strategy/executor shutdown, or signal exit
+        // mapping. The first error is captured and surfaced after cleanup.
+        let mut shutdown_error = self.execute_lifecycle_cmd(shutdown_cmd).err();
 
-        // Auto-save state on exit
         if self.persistence_config.auto_save {
             self.save_state();
         }
 
-        // Shut down tick strategy (gives strategies a chance to persist state)
         if let Some(ref mut strategy) = self.tick_strategy {
             strategy.shutdown();
         }
 
-        // Stop all subscriptions on exit
         self.subscriptions.stop_all();
+        if let Err(error) = self.process_subscription_failures(true) {
+            shutdown_error.get_or_insert(error);
+        }
+
         self.task_executor.shutdown();
         self.reap_finished_tasks();
         if let Err(error) = self.drain_shutdown_task_results() {
             shutdown_error.get_or_insert(error);
         }
 
-        // A pending termination signal takes precedence over shutdown-step
-        // errors: the signal is what ended the loop (and often what broke the
-        // shutdown command in the first place), and callers rely on the
-        // SignalTerminationError contract for the 128+signal process exit.
-        if let Some(signal) = termination_signal {
-            clear_termination_signal();
-            let err = io::Error::new(
-                io::ErrorKind::Interrupted,
-                SignalTerminationError { signal },
-            );
-            debug_assert_eq!(signal_termination_from_error(&err), Some(signal));
-            return Err(err);
+        match shutdown_error {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
-
-        if let Some(error) = shutdown_error {
-            return Err(error);
-        }
-
-        Ok(())
     }
 
     /// Drain ready events while bounding zero-timeout polling work.
@@ -5744,6 +5810,48 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         current.record("stopped", stopped);
     }
 
+    /// Report newly observed subscription failures through `Model::on_error`.
+    fn process_subscription_failures(&mut self, during_lifecycle: bool) -> io::Result<()> {
+        let mut first_error = None;
+        for failure in self.subscriptions.drain_failures() {
+            let error = format!("subscription {} failed: {}", failure.id, failure.error);
+            if let Err(error) = self.invoke_error_hook(&error, during_lifecycle) {
+                first_error.get_or_insert(error);
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Invoke the model error hook and execute its recovery command.
+    fn invoke_error_hook(&mut self, error: &str, during_lifecycle: bool) -> io::Result<()> {
+        let cmd = {
+            let _span = info_span!("ftui.program.error", error).entered();
+            self.model.on_error(error)
+        };
+        if during_lifecycle {
+            self.execute_lifecycle_cmd(cmd)
+        } else {
+            self.execute_cmd(cmd)
+        }
+    }
+
+    /// Execute a lifecycle command even after the normal loop stopped.
+    ///
+    /// `Cmd::Batch` and `Cmd::Sequence` use the running flag as their halt
+    /// boundary, so temporarily reopening dispatch is required for cleanup
+    /// batches. An explicit `Cmd::Quit` inside the lifecycle command still
+    /// halts the remaining commands.
+    fn execute_lifecycle_cmd(&mut self, cmd: Cmd<M::Message>) -> io::Result<()> {
+        let was_running = std::mem::replace(&mut self.running, true);
+        let result = self.execute_cmd(cmd);
+        self.running = was_running && self.running;
+        result
+    }
+
     /// Process pending messages from subscriptions.
     fn process_subscription_messages(&mut self) -> io::Result<()> {
         let messages = self.subscriptions.drain_messages();
@@ -5970,7 +6078,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 cmd
             };
             self.mark_dirty();
-            self.execute_cmd(cmd)?;
+            self.execute_lifecycle_cmd(cmd)?;
         }
         Ok(())
     }
@@ -11167,6 +11275,7 @@ mod tests {
             events,
             backend_features: initial_features,
             running: true,
+            shutdown_complete: false,
             tick_rate: None,
             executed_cmd_count: 0,
             last_tick: Instant::now(),

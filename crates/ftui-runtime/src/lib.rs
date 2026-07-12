@@ -135,7 +135,7 @@ pub use render_trace::{
     RenderTraceConfig, RenderTraceContext, RenderTraceFrame, RenderTraceRecorder,
 };
 pub use retry::{BackoffStrategy, RetryPolicy, task_with_retry, task_with_timeout};
-pub use simulator::ProgramSimulator;
+pub use simulator::{ProgramSimulator, SimulatorError};
 pub use string_model::{StringModel, StringModelAdapter};
 pub use subscription::{Every, StopSignal, SubId, Subscription};
 pub use terminal_writer::{ScreenMode, TerminalWriter, UiAnchor, inline_active_widgets};

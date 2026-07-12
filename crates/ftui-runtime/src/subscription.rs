@@ -113,6 +113,13 @@ pub(crate) struct RunningSubscription {
     panicked: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// A background subscription failure waiting to be reported to the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubscriptionFailure {
+    pub(crate) id: SubId,
+    pub(crate) error: String,
+}
+
 const SUBSCRIPTION_STOP_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 /// Poll interval for bounded subscription thread joins (bd-1f2aw).
 ///
@@ -235,15 +242,20 @@ pub(crate) struct SubscriptionManager<M: Send + 'static> {
     active: Vec<RunningSubscription>,
     sender: mpsc::Sender<M>,
     receiver: mpsc::Receiver<M>,
+    failure_sender: mpsc::Sender<SubscriptionFailure>,
+    failure_receiver: mpsc::Receiver<SubscriptionFailure>,
 }
 
 impl<M: Send + 'static> SubscriptionManager<M> {
     pub(crate) fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
+        let (failure_sender, failure_receiver) = mpsc::channel();
         Self {
             active: Vec::new(),
             sender,
             receiver,
+            failure_sender,
+            failure_receiver,
         }
     }
 
@@ -314,6 +326,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
             let panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let panicked_flag = panicked.clone();
             let sub_id_for_thread = id;
+            let failure_sender = self.failure_sender.clone();
 
             let thread = thread::spawn(move || {
                 // Recoverable boundary: a panicking subscription is recorded
@@ -338,6 +351,10 @@ impl<M: Send + 'static> SubscriptionManager<M> {
                         "subscription",
                         &format!("sub_id={sub_id_for_thread}: {panic_msg}"),
                     );
+                    let _ = failure_sender.send(SubscriptionFailure {
+                        id: sub_id_for_thread,
+                        error: panic_msg,
+                    });
                 }
             });
 
@@ -370,6 +387,15 @@ impl<M: Send + 'static> SubscriptionManager<M> {
             messages.push(msg);
         }
         messages
+    }
+
+    /// Drain subscription failures that have not yet been reported to the model.
+    pub(crate) fn drain_failures(&self) -> Vec<SubscriptionFailure> {
+        let mut failures = Vec::new();
+        while let Ok(failure) = self.failure_receiver.try_recv() {
+            failures.push(failure);
+        }
+        failures
     }
 
     /// Return the number of active subscriptions.
