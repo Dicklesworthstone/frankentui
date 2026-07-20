@@ -372,19 +372,14 @@ impl Widget for Paragraph<'_> {
                     continue;
                 }
 
-                // Calculate actual draw position
-                let draw_x;
-                let local_scroll;
-
-                if line_rel_start < scroll_x {
+                // Calculate actual draw position.
+                let (draw_x, local_scroll) = if line_rel_start < scroll_x {
                     // Partially scrolled out left
-                    draw_x = text_area.x;
-                    local_scroll = scroll_x - line_rel_start;
+                    (text_area.x, scroll_x - line_rel_start)
                 } else {
                     // Start is visible
-                    draw_x = text_area.x.saturating_add(line_rel_start - scroll_x);
-                    local_scroll = 0;
-                }
+                    (text_area.x.saturating_add(line_rel_start - scroll_x), 0)
+                };
 
                 if draw_x >= text_area.right() {
                     // Fully clipped to the right
