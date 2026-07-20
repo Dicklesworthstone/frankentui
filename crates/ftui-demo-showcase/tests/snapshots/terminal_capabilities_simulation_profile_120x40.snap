@@ -1,6 +1,6 @@
 ╭──────────────────────────────────────────── Terminal Capability Explorer ────────────────────────────────────────────╮
 │Detected: xterm-256color | Simulated: xterm-256color | View: Simulation                                               │
-│Color depth: 256 | Mux: no | Sync output: no                                                                          │
+│Color depth: ansi256 | Mux: no | Sync output: no                                                                      │
 │Scroll region: yes | Hyperlinks: no | Clipboard: no | overrides: none                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ Detected vs Simulated ─────────────────────────────────────────────╮╭ Profile Simulation ────────────────────────────╮
