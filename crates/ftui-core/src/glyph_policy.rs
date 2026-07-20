@@ -166,6 +166,14 @@ where
         return GlyphMode::Ascii;
     }
 
+    // Environment detection deliberately stamps capabilities as `Detected`
+    // rather than a predefined profile. Preserve the Linux console's safe
+    // ASCII default even when its identity therefore cannot be read from
+    // `caps.profile()`.
+    if get_env("TERM").is_some_and(|term| term.trim().eq_ignore_ascii_case("linux")) {
+        return GlyphMode::Ascii;
+    }
+
     match caps.profile() {
         TerminalProfile::Dumb | TerminalProfile::Vt100 | TerminalProfile::LinuxConsole => {
             GlyphMode::Ascii

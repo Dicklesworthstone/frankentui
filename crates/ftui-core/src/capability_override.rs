@@ -169,10 +169,14 @@ impl CapabilityOverride {
     }
 
     /// Create an override that simulates running inside tmux.
+    ///
+    /// The transport overlay preserves the base terminal's color depth. Use
+    /// [`TerminalCapabilities::tmux`](crate::terminal_capabilities::TerminalCapabilities::tmux)
+    /// when a concrete 256-color tmux profile is required.
     #[must_use]
     pub const fn tmux() -> Self {
         Self {
-            color_depth: Some(ColorDepth::Ansi256),
+            color_depth: None,
             unicode_box_drawing: None,
             unicode_emoji: None,
             double_width: None,
@@ -742,9 +746,9 @@ mod tests {
     }
 
     #[test]
-    fn tmux_sets_bracketed_paste_and_color_depth() {
+    fn tmux_preserves_color_depth_and_sets_bracketed_paste() {
         let over = CapabilityOverride::tmux();
-        assert_eq!(over.color_depth, Some(ColorDepth::Ansi256));
+        assert_eq!(over.color_depth, None);
         assert_eq!(over.bracketed_paste, Some(true));
         assert_eq!(over.mouse_sgr, Some(true));
         assert_eq!(over.scroll_region, Some(true));
@@ -1092,9 +1096,9 @@ mod tests {
     // ── tmux None fields ──────────────────────────────────────────────
 
     #[test]
-    fn tmux_sets_depth_and_leaves_unrelated_fields_unset() {
+    fn tmux_leaves_depth_and_unrelated_fields_unset() {
         let over = CapabilityOverride::tmux();
-        assert_eq!(over.color_depth, Some(ColorDepth::Ansi256));
+        assert_eq!(over.color_depth, None);
         assert!(over.unicode_box_drawing.is_none());
         assert!(over.unicode_emoji.is_none());
         assert!(over.double_width.is_none());

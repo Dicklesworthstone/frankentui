@@ -486,7 +486,11 @@ fn capability_sim_override_tmux_simulation() {
         !result.kitty_keyboard,
         "OVER-1: tmux disables kitty keyboard"
     );
-    assert_eq!(result.color_depth, ColorDepth::Ansi256);
+    assert_eq!(
+        result.color_depth,
+        ColorDepth::TrueColor,
+        "OVER-1: tmux overlay preserves the base color depth"
+    );
     assert!(result.bracketed_paste, "OVER-1: tmux keeps bracketed paste");
 
     logger.log_invariant("OVER-1", true, "tmux_simulation");
@@ -795,8 +799,8 @@ fn capability_sim_linux_console_quirks() {
     assert_eq!(caps.color_depth, ColorDepth::Ansi16);
     assert!(caps.has_color(), "QUIRK-1: linux console has ANSI color");
     assert!(
-        caps.double_width,
-        "QUIRK-1: linux console supports double-width glyphs"
+        !caps.double_width,
+        "QUIRK-1: linux console rejects double-width glyphs"
     );
     assert!(
         caps.scroll_region,

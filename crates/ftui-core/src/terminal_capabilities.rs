@@ -810,7 +810,7 @@ impl TerminalCapabilities {
 
     /// Linux console (framebuffer console).
     ///
-    /// Linux console with ANSI 16-color and basic glyph support.
+    /// Linux console with ANSI 16-color and basic single-width glyph support.
     #[must_use]
     pub const fn linux_console() -> Self {
         Self {
@@ -818,7 +818,7 @@ impl TerminalCapabilities {
             color_depth: ColorDepth::Ansi16,
             unicode_box_drawing: true,
             unicode_emoji: false,
-            double_width: true,
+            double_width: false,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -1125,7 +1125,7 @@ impl TerminalCapabilities {
         // Unicode glyph support (assume available in modern terminals)
         let unicode_box_drawing = !is_dumb;
         let unicode_emoji = !is_dumb && (is_modern_terminal || is_kitty);
-        let double_width = !is_dumb;
+        let double_width = !is_dumb && term != "linux";
 
         Self {
             profile: TerminalProfile::Detected,
@@ -2166,6 +2166,13 @@ mod tests {
             detected, expected,
             "the predefined Linux console profile must match TERM=linux detection"
         );
+
+        let policy = crate::glyph_policy::GlyphPolicy::from_env_with(
+            |key| (key == "TERM").then(|| "linux".to_string()),
+            &detected,
+        );
+        assert_eq!(policy.mode, crate::glyph_policy::GlyphMode::Ascii);
+        assert!(!policy.double_width);
     }
 
     #[test]
@@ -2544,7 +2551,7 @@ mod tests {
         let caps = TerminalCapabilities::linux_console();
         assert_eq!(caps.profile(), TerminalProfile::LinuxConsole);
         assert_eq!(caps.color_depth, ColorDepth::Ansi16);
-        assert!(caps.double_width);
+        assert!(!caps.double_width);
         assert!(caps.scroll_region);
     }
 
