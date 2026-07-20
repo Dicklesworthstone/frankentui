@@ -287,9 +287,7 @@ impl GraphemePool {
     pub fn clear(&mut self) {
         self.lookup.clear();
         self.free_list.clear();
-        for slot in &mut self.slots {
-            *slot = None;
-        }
+        self.slots.fill(None);
         for generation in &mut self.generations {
             *generation = generation.wrapping_add(1) & GraphemeId::MAX_GENERATION;
         }

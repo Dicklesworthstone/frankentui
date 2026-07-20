@@ -607,9 +607,7 @@ impl VirtualTerminal {
     /// ```
     pub fn clear(&mut self) {
         let blank = self.styled_blank();
-        for cell in &mut self.grid {
-            *cell = blank.clone();
-        }
+        self.grid.fill(blank);
     }
 
     /// Clear the scrollback buffer.
@@ -1619,24 +1617,18 @@ impl VirtualTerminal {
                 let count = self.width.saturating_sub(self.cursor_x);
                 self.fixup_wide_erase_row(self.cursor_y, self.cursor_x, count);
                 let start = self.idx(self.cursor_x, self.cursor_y);
-                for cell in &mut self.grid[start..] {
-                    *cell = blank.clone();
-                }
+                self.grid[start..].fill(blank.clone());
             }
             1 => {
                 // Erase from start to cursor (inclusive)
                 let count = self.cursor_x + 1;
                 self.fixup_wide_erase_row(self.cursor_y, 0, count);
                 let end = self.idx(self.cursor_x, self.cursor_y) + 1;
-                for cell in &mut self.grid[..end] {
-                    *cell = blank.clone();
-                }
+                self.grid[..end].fill(blank.clone());
             }
             2 | 3 => {
                 // Erase entire display (3 also clears scrollback)
-                for cell in &mut self.grid {
-                    *cell = blank.clone();
-                }
+                self.grid.fill(blank.clone());
                 if mode == 3 {
                     self.scrollback.clear();
                 }
@@ -1656,25 +1648,19 @@ impl VirtualTerminal {
                 self.fixup_wide_erase_row(y, self.cursor_x, count);
                 let start = row_start + usize::from(self.cursor_x);
                 let end = row_start + usize::from(self.width);
-                for cell in &mut self.grid[start..end] {
-                    *cell = blank.clone();
-                }
+                self.grid[start..end].fill(blank.clone());
             }
             1 => {
                 // Erase from start to cursor (inclusive)
                 let count = self.cursor_x + 1;
                 self.fixup_wide_erase_row(y, 0, count);
                 let end = row_start + usize::from(count);
-                for cell in &mut self.grid[row_start..end] {
-                    *cell = blank.clone();
-                }
+                self.grid[row_start..end].fill(blank.clone());
             }
             2 => {
                 // Erase entire line (no boundary fixup needed — whole row)
                 let end = row_start + usize::from(self.width);
-                for cell in &mut self.grid[row_start..end] {
-                    *cell = blank.clone();
-                }
+                self.grid[row_start..end].fill(blank.clone());
             }
             _ => {}
         }

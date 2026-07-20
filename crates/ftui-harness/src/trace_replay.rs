@@ -366,9 +366,7 @@ pub fn minimize_failing_trace(
     let mut preserved_attempts = 0usize;
     let mut ledger = Vec::new();
     let mut posteriors = [BetaPosterior::new(1.0, 1.0); VOI_BUCKETS];
-    for posterior in &mut posteriors {
-        *posterior = BetaPosterior::new(options.alpha_prior, options.beta_prior);
-    }
+    posteriors.fill(BetaPosterior::new(options.alpha_prior, options.beta_prior));
 
     let mut scratch_path = std::env::temp_dir();
     let scratch_id = format!(

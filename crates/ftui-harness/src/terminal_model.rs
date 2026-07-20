@@ -439,25 +439,19 @@ impl TerminalModel {
                 // Erase from cursor to end of screen
                 self.erase_line(EraseMode::ToEnd);
                 for y in (self.cursor_y + 1) as usize..self.height as usize {
-                    for cell in &mut self.grid[y] {
-                        *cell = ModelCell::default();
-                    }
+                    self.grid[y].fill(ModelCell::default());
                 }
             }
             EraseMode::ToStart => {
                 // Erase from start of screen to cursor
                 for y in 0..self.cursor_y as usize {
-                    for cell in &mut self.grid[y] {
-                        *cell = ModelCell::default();
-                    }
+                    self.grid[y].fill(ModelCell::default());
                 }
                 self.erase_line(EraseMode::ToStart);
             }
             EraseMode::All => {
                 for row in &mut self.grid {
-                    for cell in row {
-                        *cell = ModelCell::default();
-                    }
+                    row.fill(ModelCell::default());
                 }
             }
         }

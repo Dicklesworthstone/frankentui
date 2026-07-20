@@ -721,9 +721,7 @@ impl TerminalModel {
             }
             2 | 3 => {
                 // Erase entire screen
-                for cell in &mut self.cells {
-                    *cell = ModelCell::default();
-                }
+                self.cells.fill(ModelCell::default());
             }
             _ => {}
         }

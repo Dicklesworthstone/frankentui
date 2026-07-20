@@ -446,9 +446,7 @@ impl Grid {
         if y < self.height {
             let start = (y as usize) * (self.width as usize);
             let end = start + (self.width as usize);
-            for cell in &mut self.cells[start..end] {
-                *cell = Cell::default();
-            }
+            self.cells[start..end].fill(Cell::default());
             self.set_line_flag(y, LineFlag::HardNewline);
         }
     }
@@ -512,9 +510,7 @@ impl Grid {
             .resize(self.height as usize, LineFlag::HardNewline);
 
         // Clear bottom lines
-        for cell in &mut self.cells[shift_count..] {
-            *cell = Cell::default();
-        }
+        self.cells[shift_count..].fill(Cell::default());
 
         scrolled_off
     }
@@ -533,9 +529,7 @@ impl Grid {
         self.cells.copy_within(0..(height - n) * width, n * width);
 
         // Clear top lines
-        for cell in &mut self.cells[0..n * width] {
-            *cell = Cell::default();
-        }
+        self.cells[0..n * width].fill(Cell::default());
 
         // Shift line flags down: truncate bottom, insert default at top
         self.line_flags.truncate(height.saturating_sub(n));
