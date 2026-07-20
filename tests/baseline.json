@@ -2,11 +2,12 @@
   "_comment": "Performance baseline for FrankenTUI CI regression gate (bd-3fc.4).",
   "_format": "Criterion entries map a logical benchmark to a criterion name, with p50/p95/p99/p999 budgets in nanoseconds and an slo_metric for slo.yaml validation.",
   "_threshold": "Regression alert if observed mean exceeds baseline p99 by threshold_pct.",
-  "_updated": "2026-02-25",
+  "_updated": "2026-07-20",
+  "_presenter_color_depth": "truecolor",
 
   "frame_render": {
     "description": "Full frame render pipeline (diff + present, 80x24 @ 5% change)",
-    "criterion_name": "pipeline/diff_and_present/full/80x24@5%",
+    "criterion_name": "pipeline/truecolor/diff_and_present/full/80x24@5%",
     "bench_file": "presenter_bench",
     "crate": "ftui-render",
     "slo_metric": "render_frame_p99_us",
@@ -84,7 +85,7 @@
 
   "ansi_emit": {
     "description": "ANSI emission (Presenter::present, 80x24 @ 5% change)",
-    "criterion_name": "present/sparse_5pct/present/80x24",
+    "criterion_name": "present/truecolor/sparse_5pct/present/80x24",
     "bench_file": "presenter_bench",
     "crate": "ftui-render",
     "slo_metric": "ansi_present_p99_us",

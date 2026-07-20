@@ -124,8 +124,16 @@ fn is_dumb_terminal(term: &str, windows_terminal: bool) -> bool {
     term == "dumb" || (term.is_empty() && !windows_terminal)
 }
 
+fn colorterm_declares_true_color(colorterm: &str) -> bool {
+    matches!(colorterm, "truecolor" | "24bit")
+}
+
 fn term_declares_true_color(term: &str) -> bool {
-    term.ends_with("-direct") || term.ends_with("-truecolor") || term.ends_with("24bit")
+    let direct_color = term.rsplit_once("-direct").is_some_and(|(base, suffix)| {
+        !base.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    });
+
+    direct_color || term.ends_with("-truecolor") || term == "24bit" || term.ends_with("-24bit")
 }
 
 /// Maximum color fidelity the terminal may receive.
@@ -157,7 +165,7 @@ impl ColorDepth {
     ///
     /// `NO_COLOR` presence wins over every terminal signal. `TERM=dumb`,
     /// `TERM=vt100`, and a missing/empty `TERM` are monochrome. Direct-color
-    /// TERM variants (`*-direct`, `*-truecolor`, and `*24bit`) receive
+    /// TERM variants (`*-direct[digits]`, `*-truecolor`, and `*-24bit`) receive
     /// truecolor. Plain xterm and other non-dumb terminals conservatively
     /// receive ANSI16.
     #[must_use]
@@ -186,8 +194,9 @@ impl ColorDepth {
     ) -> Self {
         if no_color || is_dumb || term == "vt100" {
             Self::Mono
-        } else if colorterm.contains("truecolor")
-            || colorterm.contains("24bit")
+        } else if term == "linux" {
+            Self::Ansi16
+        } else if colorterm_declares_true_color(colorterm)
             || term_declares_true_color(term)
             || inferred_true_color
         {
@@ -1407,8 +1416,20 @@ mod tests {
             (None, None, Some("xterm-256color"), ColorDepth::Ansi256),
             (None, Some("24bit"), Some("xterm"), ColorDepth::TrueColor),
             (None, None, Some(" XTERM-DIRECT "), ColorDepth::TrueColor),
+            (None, None, Some("xterm-direct2"), ColorDepth::TrueColor),
+            (None, None, Some("xterm-direct16"), ColorDepth::TrueColor),
+            (None, None, Some("xterm-direct256"), ColorDepth::TrueColor),
             (None, None, Some("xterm-truecolor"), ColorDepth::TrueColor),
             (None, None, Some("xterm-24bit"), ColorDepth::TrueColor),
+            (None, None, Some("xterm-no24bit"), ColorDepth::Ansi16),
+            (
+                None,
+                Some("nottruecolor"),
+                Some("xterm"),
+                ColorDepth::Ansi16,
+            ),
+            (None, Some("no24bit"), Some("xterm"), ColorDepth::Ansi16),
+            (None, Some("truecolor"), Some("linux"), ColorDepth::Ansi16),
         ];
 
         for (no_color, colorterm, term, expected) in cases {
@@ -2148,9 +2169,30 @@ mod tests {
     }
 
     #[test]
+    fn detect_linux_console_caps_color_despite_conflicting_positive_signals() {
+        let expected = TerminalCapabilities::linux_console().color_depth;
+
+        for (term_program, colorterm) in [
+            ("WezTerm", "truecolor"),
+            ("kitty", "24bit"),
+            ("Ghostty", ""),
+        ] {
+            let env = make_env(" linux ", term_program, colorterm);
+            let detected = TerminalCapabilities::detect_from_inputs(&env).color_depth;
+            let explicit = ColorDepth::detect_from_env(None, Some(colorterm), Some(" linux "));
+
+            assert_eq!(detected, expected, "TERM_PROGRAM={term_program:?}");
+            assert_eq!(explicit, expected, "COLORTERM={colorterm:?}");
+        }
+    }
+
+    #[test]
     fn detect_direct_color_term_variants() {
         for term in [
             "xterm-direct",
+            "xterm-direct2",
+            "xterm-direct16",
+            "xterm-direct256",
             "xterm-truecolor",
             "xterm-24bit",
             " XTERM-DIRECT ",
@@ -2160,6 +2202,37 @@ mod tests {
             assert_eq!(caps.color_depth, ColorDepth::TrueColor, "TERM={term:?}");
             assert!(caps.bracketed_paste, "TERM={term:?}");
             assert!(caps.mouse_sgr, "TERM={term:?}");
+        }
+    }
+
+    #[test]
+    fn direct_color_detection_rejects_negated_and_partial_tokens() {
+        for term in [
+            "xterm-indirect",
+            "xterm-direct-color",
+            "xterm-no24bit",
+            "xterm-24bit-disabled",
+        ] {
+            let env = make_env(term, "", "");
+            let detected = TerminalCapabilities::detect_from_inputs(&env).color_depth;
+            let explicit = ColorDepth::detect_from_env(None, None, Some(term));
+
+            assert_eq!(detected, ColorDepth::Ansi16, "TERM={term:?}");
+            assert_eq!(explicit, detected, "TERM={term:?}");
+        }
+
+        for colorterm in [
+            "nottruecolor",
+            "truecolor-disabled",
+            "no24bit",
+            "24bit-disabled",
+        ] {
+            let env = make_env("xterm", "", colorterm);
+            let detected = TerminalCapabilities::detect_from_inputs(&env).color_depth;
+            let explicit = ColorDepth::detect_from_env(None, Some(colorterm), Some("xterm"));
+
+            assert_eq!(detected, ColorDepth::Ansi16, "COLORTERM={colorterm:?}");
+            assert_eq!(explicit, detected, "COLORTERM={colorterm:?}");
         }
     }
 
@@ -2178,7 +2251,12 @@ mod tests {
             (false, "", "xterm"),
             (false, "", "xterm-256color"),
             (false, "", " XTERM-DIRECT "),
+            (false, "", "xterm-direct2"),
+            (false, "", "xterm-direct16"),
+            (false, "", "xterm-direct256"),
             (false, "24BIT", "xterm"),
+            (false, "no24bit", "xterm"),
+            (false, "truecolor", "linux"),
             (false, "truecolor", " VT100 "),
             (false, "truecolor", " DUMB "),
             (true, "truecolor", "xterm-direct"),

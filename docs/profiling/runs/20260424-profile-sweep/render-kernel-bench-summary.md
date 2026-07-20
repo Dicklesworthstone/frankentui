@@ -7,14 +7,14 @@ without retaining transfer/build console output.
 
 ## Presenter Pipeline
 
-Command: `cargo bench -p ftui-render --bench presenter_bench -- pipeline/diff_and_present --noplot`
+Command: `cargo bench -p ftui-render --bench presenter_bench -- pipeline/truecolor/diff_and_present --noplot`
 
 | Case | Median | Range | Throughput median |
 |---|---:|---:|---:|
-| `pipeline/diff_and_present/full/80x24@5%` | 18.251 us | 17.692-18.948 us | 105.20 Melem/s |
-| `pipeline/diff_and_present/full/80x24@50%` | 39.951 us | 39.850-40.115 us | 48.059 Melem/s |
-| `pipeline/diff_and_present/full/200x60@5%` | 76.683 us | 76.249-77.165 us | 156.49 Melem/s |
-| `pipeline/diff_and_present/full/200x60@50%` | 87.115 us | 86.717-87.575 us | 137.75 Melem/s |
+| `pipeline/truecolor/diff_and_present/full/80x24@5%` | 18.251 us | 17.692-18.948 us | 105.20 Melem/s |
+| `pipeline/truecolor/diff_and_present/full/80x24@50%` | 39.951 us | 39.850-40.115 us | 48.059 Melem/s |
+| `pipeline/truecolor/diff_and_present/full/200x60@5%` | 76.683 us | 76.249-77.165 us | 156.49 Melem/s |
+| `pipeline/truecolor/diff_and_present/full/200x60@50%` | 87.115 us | 86.717-87.575 us | 137.75 Melem/s |
 
 ## Diff Span Sparse Stats
 

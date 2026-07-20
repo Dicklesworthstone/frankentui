@@ -18,7 +18,7 @@ use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::headless::HeadlessTerm;
-use ftui_render::presenter::{Presenter, TerminalCapabilities};
+use ftui_render::presenter::{ColorDepth, Presenter, TerminalCapabilities};
 
 // ============================================================================
 // Helper: render a buffer through the presenter pipeline into a HeadlessTerm
@@ -26,9 +26,17 @@ use ftui_render::presenter::{Presenter, TerminalCapabilities};
 
 /// Render `next` buffer (diffed against `prev`) through the presenter,
 /// feed the ANSI output into a HeadlessTerm, and return it.
+fn truecolor_capabilities() -> TerminalCapabilities {
+    let capabilities = TerminalCapabilities::builder()
+        .color_depth(ColorDepth::TrueColor)
+        .build();
+    assert_eq!(capabilities.color_depth, ColorDepth::TrueColor);
+    capabilities
+}
+
 fn present_into_headless(prev: &Buffer, next: &Buffer) -> HeadlessTerm {
     let diff = BufferDiff::compute(prev, next);
-    let caps = TerminalCapabilities::default();
+    let caps = truecolor_capabilities();
     let output = {
         let mut sink = Vec::new();
         let mut presenter = Presenter::new(&mut sink, caps);

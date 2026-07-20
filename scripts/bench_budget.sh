@@ -50,12 +50,12 @@ declare -A BUDGETS=(
     ["diff/full_100pct/compute/80x24"]=1000000 # <1ms
 
     # Presenter operations
-    ["present/sparse_5pct/present/80x24"]=500000   # <500us
-    ["present/heavy_50pct/present/80x24"]=2000000  # <2ms
-    ["present/full_100pct/present/80x24"]=5000000  # <5ms
+    ["present/truecolor/sparse_5pct/present/80x24"]=500000   # <500us
+    ["present/truecolor/heavy_50pct/present/80x24"]=2000000  # <2ms
+    ["present/truecolor/full_100pct/present/80x24"]=5000000  # <5ms
 
     # Full pipeline
-    ["pipeline/diff_and_present/full/80x24@5%"]=1000000  # <1ms
+    ["pipeline/truecolor/diff_and_present/full/80x24@5%"]=1000000  # <1ms
 
     # Widget rendering
     ["widget/block/bordered/80x24"]=100000     # <100us

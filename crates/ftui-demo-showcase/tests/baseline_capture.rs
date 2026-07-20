@@ -257,6 +257,19 @@ fn baseline_path() -> std::path::PathBuf {
     std::path::Path::new(manifest_dir).join("tests/baseline_results.json")
 }
 
+fn validate_baseline_color_depth(baseline: &Value) -> Result<(), String> {
+    let expected = BASELINE_COLOR_DEPTH.as_str();
+    match baseline.get("terminal_color_depth").and_then(Value::as_str) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(format!(
+            "baseline terminal_color_depth mismatch: expected {expected}, found {actual}"
+        )),
+        None => Err(format!(
+            "baseline missing terminal_color_depth provenance (expected {expected})"
+        )),
+    }
+}
+
 /// Simple timestamp without chrono dependency.
 fn timestamp() -> String {
     use std::time::SystemTime;
@@ -308,6 +321,7 @@ fn verify_no_regression() {
 
     let baseline_content = std::fs::read_to_string(&path).expect("failed to read baseline");
     let baseline: Value = serde_json::from_str(&baseline_content).expect("invalid JSON");
+    validate_baseline_color_depth(&baseline).unwrap_or_else(|message| panic!("{message}"));
 
     let frame = capture_frame_pipeline();
     let diff = capture_diff_engine();
@@ -333,6 +347,30 @@ fn verify_no_regression() {
     } else {
         eprintln!("No regressions detected.");
     }
+}
+
+#[test]
+fn baseline_color_depth_provenance_accepts_expected_depth() {
+    let baseline = json!({"terminal_color_depth": "truecolor"});
+
+    assert_eq!(validate_baseline_color_depth(&baseline), Ok(()));
+}
+
+#[test]
+fn baseline_color_depth_provenance_rejects_missing_and_mismatched_depth() {
+    let missing = json!({});
+    let mismatched = json!({"terminal_color_depth": "ansi256"});
+
+    assert!(
+        validate_baseline_color_depth(&missing)
+            .expect_err("missing provenance must fail closed")
+            .contains("missing terminal_color_depth provenance")
+    );
+    assert!(
+        validate_baseline_color_depth(&mismatched)
+            .expect_err("mismatched provenance must fail closed")
+            .contains("expected truecolor, found ansi256")
+    );
 }
 
 /// Recursively find p99_us fields and compare baseline vs current.
