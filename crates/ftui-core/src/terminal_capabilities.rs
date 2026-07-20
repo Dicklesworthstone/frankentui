@@ -30,11 +30,10 @@
 //! For custom configurations, use [`CapabilityProfileBuilder`]:
 //!
 //! ```
-//! use ftui_core::terminal_capabilities::CapabilityProfileBuilder;
+//! use ftui_core::terminal_capabilities::{CapabilityProfileBuilder, ColorDepth};
 //!
 //! let custom = CapabilityProfileBuilder::new()
-//!     .colors_256(true)
-//!     .true_color(true)
+//!     .color_depth(ColorDepth::TrueColor)
 //!     .mouse_sgr(true)
 //!     .build();
 //! ```
@@ -116,6 +115,97 @@
 
 use std::env;
 use std::str::FromStr;
+
+/// Maximum color fidelity the terminal may receive.
+///
+/// This is a single ordered capability rather than independent booleans so
+/// impossible states such as "truecolor but not 256-color" cannot exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(u8)]
+pub enum ColorDepth {
+    /// Do not emit foreground or background color sequences.
+    #[default]
+    Mono,
+    /// Standard 16-color ANSI palette.
+    Ansi16,
+    /// Extended 256-color ANSI palette.
+    Ansi256,
+    /// Full 24-bit RGB color.
+    TrueColor,
+}
+
+impl ColorDepth {
+    /// Detect color depth using the canonical terminal capability detector.
+    #[must_use]
+    pub fn detect() -> Self {
+        TerminalCapabilities::detect().color_depth
+    }
+
+    /// Detect color depth from explicit environment values.
+    ///
+    /// `NO_COLOR` presence wins over every terminal signal. `TERM=dumb`,
+    /// `TERM=vt100`, and a missing/empty `TERM` are monochrome. Plain xterm
+    /// and other non-dumb terminals conservatively receive ANSI16.
+    #[must_use]
+    pub fn detect_from_env(
+        no_color: Option<&str>,
+        colorterm: Option<&str>,
+        term: Option<&str>,
+    ) -> Self {
+        if no_color.is_some() {
+            return Self::Mono;
+        }
+
+        let term = term.unwrap_or_default().trim().to_ascii_lowercase();
+        if term.is_empty() || term == "dumb" || term == "vt100" {
+            return Self::Mono;
+        }
+
+        let colorterm = colorterm.unwrap_or_default().trim().to_ascii_lowercase();
+        if colorterm.contains("truecolor") || colorterm.contains("24bit") {
+            Self::TrueColor
+        } else if term.contains("256color") || term.contains("256") {
+            Self::Ansi256
+        } else {
+            Self::Ansi16
+        }
+    }
+
+    /// Stable identifier used in diagnostics and evidence logs.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mono => "mono",
+            Self::Ansi16 => "ansi16",
+            Self::Ansi256 => "ansi256",
+            Self::TrueColor => "truecolor",
+        }
+    }
+
+    /// Whether any color sequences may be emitted.
+    #[must_use]
+    pub const fn supports_color(self) -> bool {
+        !matches!(self, Self::Mono)
+    }
+
+    /// Whether the terminal supports at least the 256-color palette.
+    #[must_use]
+    pub const fn supports_256_colors(self) -> bool {
+        matches!(self, Self::Ansi256 | Self::TrueColor)
+    }
+
+    /// Whether the terminal supports 24-bit RGB color.
+    #[must_use]
+    pub const fn supports_true_color(self) -> bool {
+        matches!(self, Self::TrueColor)
+    }
+}
+
+impl std::fmt::Display for ColorDepth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Clone)]
 struct DetectInputs {
@@ -308,10 +398,8 @@ pub struct TerminalCapabilities {
     profile: TerminalProfile,
 
     // Color support
-    /// True color (24-bit RGB) support.
-    pub true_color: bool,
-    /// 256-color palette support.
-    pub colors_256: bool,
+    /// Maximum supported color fidelity.
+    pub color_depth: ColorDepth,
 
     // Glyph support
     /// Unicode box-drawing support.
@@ -427,8 +515,7 @@ impl TerminalCapabilities {
     pub const fn modern() -> Self {
         Self {
             profile: TerminalProfile::Modern,
-            true_color: true,
-            colors_256: true,
+            color_depth: ColorDepth::TrueColor,
             unicode_box_drawing: true,
             unicode_emoji: true,
             double_width: true,
@@ -455,8 +542,7 @@ impl TerminalCapabilities {
     pub const fn xterm_256color() -> Self {
         Self {
             profile: TerminalProfile::Xterm256Color,
-            true_color: false,
-            colors_256: true,
+            color_depth: ColorDepth::Ansi256,
             unicode_box_drawing: true,
             unicode_emoji: true,
             double_width: true,
@@ -482,8 +568,7 @@ impl TerminalCapabilities {
     pub const fn xterm() -> Self {
         Self {
             profile: TerminalProfile::Xterm,
-            true_color: false,
-            colors_256: false,
+            color_depth: ColorDepth::Ansi16,
             unicode_box_drawing: true,
             unicode_emoji: false,
             double_width: true,
@@ -509,8 +594,7 @@ impl TerminalCapabilities {
     pub const fn vt100() -> Self {
         Self {
             profile: TerminalProfile::Vt100,
-            true_color: false,
-            colors_256: false,
+            color_depth: ColorDepth::Mono,
             unicode_box_drawing: false,
             unicode_emoji: false,
             double_width: false,
@@ -536,8 +620,7 @@ impl TerminalCapabilities {
     pub const fn dumb() -> Self {
         Self {
             profile: TerminalProfile::Dumb,
-            true_color: false,
-            colors_256: false,
+            color_depth: ColorDepth::Mono,
             unicode_box_drawing: false,
             unicode_emoji: false,
             double_width: false,
@@ -564,8 +647,7 @@ impl TerminalCapabilities {
     pub const fn screen() -> Self {
         Self {
             profile: TerminalProfile::Screen,
-            true_color: false,
-            colors_256: true,
+            color_depth: ColorDepth::Ansi256,
             unicode_box_drawing: true,
             unicode_emoji: true,
             double_width: true,
@@ -592,8 +674,7 @@ impl TerminalCapabilities {
     pub const fn tmux() -> Self {
         Self {
             profile: TerminalProfile::Tmux,
-            true_color: false,
-            colors_256: true,
+            color_depth: ColorDepth::Ansi256,
             unicode_box_drawing: true,
             unicode_emoji: true,
             double_width: true,
@@ -619,8 +700,7 @@ impl TerminalCapabilities {
     pub const fn zellij() -> Self {
         Self {
             profile: TerminalProfile::Zellij,
-            true_color: true,
-            colors_256: true,
+            color_depth: ColorDepth::TrueColor,
             unicode_box_drawing: true,
             unicode_emoji: true,
             double_width: true,
@@ -646,8 +726,7 @@ impl TerminalCapabilities {
     pub const fn windows_console() -> Self {
         Self {
             profile: TerminalProfile::WindowsConsole,
-            true_color: true,
-            colors_256: true,
+            color_depth: ColorDepth::TrueColor,
             unicode_box_drawing: true,
             unicode_emoji: true,
             double_width: true,
@@ -673,8 +752,7 @@ impl TerminalCapabilities {
     pub const fn kitty() -> Self {
         Self {
             profile: TerminalProfile::Kitty,
-            true_color: true,
-            colors_256: true,
+            color_depth: ColorDepth::TrueColor,
             unicode_box_drawing: true,
             unicode_emoji: true,
             double_width: true,
@@ -700,8 +778,7 @@ impl TerminalCapabilities {
     pub const fn linux_console() -> Self {
         Self {
             profile: TerminalProfile::LinuxConsole,
-            true_color: false,
-            colors_256: false,
+            color_depth: ColorDepth::Mono,
             unicode_box_drawing: true,
             unicode_emoji: false,
             double_width: false,
@@ -740,17 +817,15 @@ impl TerminalCapabilities {
 /// # Example
 ///
 /// ```
-/// use ftui_core::terminal_capabilities::CapabilityProfileBuilder;
+/// use ftui_core::terminal_capabilities::{CapabilityProfileBuilder, ColorDepth};
 ///
 /// let profile = CapabilityProfileBuilder::new()
-///     .colors_256(true)
-///     .true_color(true)
+///     .color_depth(ColorDepth::TrueColor)
 ///     .mouse_sgr(true)
 ///     .bracketed_paste(true)
 ///     .build();
 ///
-/// assert!(profile.colors_256);
-/// assert!(profile.true_color);
+/// assert_eq!(profile.color_depth, ColorDepth::TrueColor);
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]
@@ -770,8 +845,7 @@ impl CapabilityProfileBuilder {
         Self {
             caps: TerminalCapabilities {
                 profile: TerminalProfile::Custom,
-                true_color: false,
-                colors_256: false,
+                color_depth: ColorDepth::Mono,
                 unicode_box_drawing: false,
                 unicode_emoji: false,
                 double_width: false,
@@ -806,15 +880,9 @@ impl CapabilityProfileBuilder {
 
     // ── Color Capabilities ─────────────────────────────────────────────
 
-    /// Set true color (24-bit RGB) support.
-    pub const fn true_color(mut self, enabled: bool) -> Self {
-        self.caps.true_color = enabled;
-        self
-    }
-
-    /// Set 256-color palette support.
-    pub const fn colors_256(mut self, enabled: bool) -> Self {
-        self.caps.colors_256 = enabled;
+    /// Set maximum color fidelity.
+    pub const fn color_depth(mut self, depth: ColorDepth) -> Self {
+        self.caps.color_depth = depth;
         self
     }
 
@@ -970,18 +1038,19 @@ impl TerminalCapabilities {
             term_program_lower.contains(&t_lower) || term_lower.contains(&t_lower)
         }) || is_windows_terminal;
 
-        // True color detection
-        let true_color = !env.no_color
-            && !is_dumb
-            && (colorterm_lower.contains("truecolor")
-                || colorterm_lower.contains("24bit")
-                || is_modern_terminal
-                || is_kitty);
-
-        // 256-color detection
-        let colors_256 = !env.no_color
-            && !is_dumb
-            && (true_color || term_lower.contains("256color") || term_lower.contains("256"));
+        let color_depth = if env.no_color || is_dumb || term_lower == "vt100" {
+            ColorDepth::Mono
+        } else if colorterm_lower.contains("truecolor")
+            || colorterm_lower.contains("24bit")
+            || is_modern_terminal
+            || is_kitty
+        {
+            ColorDepth::TrueColor
+        } else if term_lower.contains("256color") || term_lower.contains("256") {
+            ColorDepth::Ansi256
+        } else {
+            ColorDepth::Ansi16
+        };
 
         // Keep WezTerm inference conservative: any explicit WezTerm marker
         // should disable risky capabilities even if terminal identity is mixed.
@@ -1032,8 +1101,7 @@ impl TerminalCapabilities {
 
         Self {
             profile: TerminalProfile::Detected,
-            true_color,
-            colors_256,
+            color_depth,
             unicode_box_drawing,
             unicode_emoji,
             double_width,
@@ -1060,8 +1128,7 @@ impl TerminalCapabilities {
     pub const fn basic() -> Self {
         Self {
             profile: TerminalProfile::Dumb,
-            true_color: false,
-            colors_256: false,
+            color_depth: ColorDepth::Mono,
             unicode_box_drawing: false,
             unicode_emoji: false,
             double_width: false,
@@ -1093,19 +1160,19 @@ impl TerminalCapabilities {
     #[must_use]
     #[inline]
     pub const fn has_color(&self) -> bool {
-        self.true_color || self.colors_256
+        self.color_depth.supports_color()
     }
 
-    /// Get the maximum color depth as a string identifier.
+    /// Whether the terminal supports at least the 256-color palette.
     #[must_use]
-    pub const fn color_depth(&self) -> &'static str {
-        if self.true_color {
-            "truecolor"
-        } else if self.colors_256 {
-            "256"
-        } else {
-            "mono"
-        }
+    pub const fn supports_256_colors(&self) -> bool {
+        self.color_depth.supports_256_colors()
+    }
+
+    /// Whether the terminal supports 24-bit RGB color.
+    #[must_use]
+    pub const fn supports_true_color(&self) -> bool {
+        self.color_depth.supports_true_color()
     }
 
     // --- Mux-aware feature policies ---
@@ -1194,11 +1261,11 @@ impl TerminalCapabilities {
 /// use ftui_core::terminal_capabilities::{TerminalCapabilities, SharedCapabilities};
 ///
 /// let shared = SharedCapabilities::new(TerminalCapabilities::modern());
-/// assert!(shared.load().true_color);
+/// assert!(shared.load().supports_true_color());
 ///
 /// // Update from main thread (e.g., after re-detection).
 /// shared.store(TerminalCapabilities::dumb());
-/// assert!(!shared.load().true_color);
+/// assert!(!shared.load().supports_true_color());
 /// ```
 pub struct SharedCapabilities {
     inner: crate::read_optimized::ArcSwapStore<TerminalCapabilities>,
@@ -1241,8 +1308,7 @@ mod tests {
     #[test]
     fn basic_is_minimal() {
         let caps = TerminalCapabilities::basic();
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.sync_output);
         assert!(!caps.osc8_hyperlinks);
         assert!(!caps.scroll_region);
@@ -1289,24 +1355,46 @@ mod tests {
         let mut caps = TerminalCapabilities::basic();
         assert!(!caps.has_color());
 
-        caps.colors_256 = true;
+        caps.color_depth = ColorDepth::Ansi16;
         assert!(caps.has_color());
 
-        caps.colors_256 = false;
-        caps.true_color = true;
+        caps.color_depth = ColorDepth::TrueColor;
         assert!(caps.has_color());
     }
 
     #[test]
-    fn color_depth_strings() {
+    fn color_depth_identifiers() {
         let mut caps = TerminalCapabilities::basic();
-        assert_eq!(caps.color_depth(), "mono");
+        assert_eq!(caps.color_depth.as_str(), "mono");
 
-        caps.colors_256 = true;
-        assert_eq!(caps.color_depth(), "256");
+        caps.color_depth = ColorDepth::Ansi16;
+        assert_eq!(caps.color_depth.as_str(), "ansi16");
 
-        caps.true_color = true;
-        assert_eq!(caps.color_depth(), "truecolor");
+        caps.color_depth = ColorDepth::Ansi256;
+        assert_eq!(caps.color_depth.as_str(), "ansi256");
+
+        caps.color_depth = ColorDepth::TrueColor;
+        assert_eq!(caps.color_depth.as_str(), "truecolor");
+    }
+
+    #[test]
+    fn explicit_color_depth_detection_contract() {
+        let cases = [
+            (Some(""), Some("truecolor"), Some("xterm"), ColorDepth::Mono),
+            (None, Some("truecolor"), Some("dumb"), ColorDepth::Mono),
+            (None, Some("truecolor"), Some("vt100"), ColorDepth::Mono),
+            (None, None, Some("xterm"), ColorDepth::Ansi16),
+            (None, None, Some("xterm-256color"), ColorDepth::Ansi256),
+            (None, Some("24bit"), Some("xterm"), ColorDepth::TrueColor),
+        ];
+
+        for (no_color, colorterm, term, expected) in cases {
+            assert_eq!(
+                ColorDepth::detect_from_env(no_color, colorterm, term),
+                expected,
+                "NO_COLOR={no_color:?} COLORTERM={colorterm:?} TERM={term:?}"
+            );
+        }
     }
 
     #[test]
@@ -1333,8 +1421,7 @@ mod tests {
         };
 
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color, "WT_SESSION implies true color by default");
-        assert!(caps.colors_256, "truecolor implies 256-color");
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(
             caps.osc8_hyperlinks,
             "WT_SESSION implies OSC 8 hyperlink support by default"
@@ -1352,8 +1439,7 @@ mod tests {
         let mut env = make_env("", "", "");
         env.wt_session = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color, "WT_SESSION implies true color");
-        assert!(caps.colors_256, "WT_SESSION implies 256-color");
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.osc8_hyperlinks, "WT_SESSION implies OSC 8 support");
     }
 
@@ -1375,8 +1461,7 @@ mod tests {
         };
 
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color, "NO_COLOR must disable true color");
-        assert!(!caps.colors_256, "NO_COLOR must disable 256-color");
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(
             !caps.osc8_hyperlinks,
             "NO_COLOR must disable OSC 8 hyperlinks"
@@ -1520,8 +1605,7 @@ mod tests {
     fn detect_dumb_terminal() {
         let env = make_env("dumb", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.sync_output);
         assert!(!caps.osc8_hyperlinks);
         assert!(!caps.scroll_region);
@@ -1534,8 +1618,7 @@ mod tests {
     fn detect_dumb_overrides_truecolor_env() {
         let env = make_env("dumb", "WezTerm", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color, "dumb should override COLORTERM");
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.bracketed_paste);
         assert!(!caps.mouse_sgr);
         assert!(!caps.osc8_hyperlinks);
@@ -1591,7 +1674,7 @@ mod tests {
         assert_eq!(caps.profile(), TerminalProfile::Custom);
         // Capability set matches the conservative basic() profile.
         let basic = TerminalCapabilities::basic();
-        assert_eq!(caps.true_color, basic.true_color);
+        assert_eq!(caps.color_depth, basic.color_depth);
         assert_eq!(caps.scroll_region, basic.scroll_region);
     }
 
@@ -1599,7 +1682,7 @@ mod tests {
     fn detect_empty_term_is_dumb() {
         let env = make_env("", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.bracketed_paste);
     }
 
@@ -1607,8 +1690,7 @@ mod tests {
     fn detect_xterm_256color() {
         let env = make_env("xterm-256color", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.colors_256, "xterm-256color implies 256 color");
-        assert!(!caps.true_color, "256color alone does not imply truecolor");
+        assert_eq!(caps.color_depth, ColorDepth::Ansi256);
         assert!(caps.bracketed_paste);
         assert!(caps.mouse_sgr);
         assert!(caps.scroll_region);
@@ -1618,15 +1700,14 @@ mod tests {
     fn detect_colorterm_truecolor() {
         let env = make_env("xterm-256color", "", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color, "COLORTERM=truecolor enables truecolor");
-        assert!(caps.colors_256, "truecolor implies 256-color");
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     }
 
     #[test]
     fn detect_colorterm_24bit() {
         let env = make_env("xterm-256color", "", "24bit");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color, "COLORTERM=24bit enables truecolor");
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     }
 
     #[test]
@@ -1634,7 +1715,7 @@ mod tests {
         let mut env = make_env("xterm-kitty", "", "");
         env.kitty_window_id = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color, "Kitty supports truecolor");
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(
             caps.kitty_keyboard,
             "Kitty supports kitty keyboard protocol"
@@ -1646,7 +1727,7 @@ mod tests {
     fn detect_kitty_by_term() {
         let env = make_env("xterm-kitty", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color, "kitty TERM implies truecolor");
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.kitty_keyboard);
     }
 
@@ -1654,7 +1735,7 @@ mod tests {
     fn detect_wezterm() {
         let env = make_env("xterm-256color", "WezTerm", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(
             caps.in_wezterm_mux,
             "WezTerm identity is treated as conservative mux evidence"
@@ -1847,7 +1928,7 @@ mod tests {
     fn detect_iterm2_from_term_program() {
         let env = make_env("xterm-256color", "iTerm.app", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color, "iTerm2 implies truecolor");
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.osc8_hyperlinks, "iTerm2 supports OSC 8 hyperlinks");
     }
 
@@ -1855,7 +1936,7 @@ mod tests {
     fn detect_alacritty() {
         let env = make_env("alacritty", "Alacritty", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.sync_output);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.kitty_keyboard);
@@ -1866,7 +1947,7 @@ mod tests {
     fn detect_ghostty() {
         let env = make_env("xterm-ghostty", "Ghostty", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.sync_output);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.kitty_keyboard);
@@ -1877,7 +1958,7 @@ mod tests {
     fn detect_iterm() {
         let env = make_env("xterm-256color", "iTerm.app", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.kitty_keyboard);
         assert!(caps.focus_events);
@@ -1887,7 +1968,7 @@ mod tests {
     fn detect_vscode_terminal() {
         let env = make_env("xterm-256color", "vscode", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.focus_events);
     }
@@ -1901,7 +1982,7 @@ mod tests {
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(caps.in_tmux);
         assert!(caps.in_any_mux());
-        assert!(caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Ansi256);
         assert!(!caps.osc52_clipboard, "clipboard disabled in tmux");
     }
 
@@ -1935,7 +2016,7 @@ mod tests {
         env.in_tmux = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         // Feature detection still works
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(!caps.sync_output);
         // But policies disable features in mux
         assert!(!caps.use_sync_output());
@@ -1950,8 +2031,7 @@ mod tests {
         let mut env = make_env("xterm-256color", "WezTerm", "truecolor");
         env.no_color = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.osc8_hyperlinks);
         // But non-color features still work
         assert!(!caps.sync_output);
@@ -1966,9 +2046,10 @@ mod tests {
         let env = make_env("xterm", "SomeUnknownTerminal", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(
-            !caps.true_color,
+            !caps.supports_true_color(),
             "unknown terminal should not assume truecolor"
         );
+        assert_eq!(caps.color_depth, ColorDepth::Ansi16);
         assert!(!caps.osc8_hyperlinks);
         // But basic features still work
         assert!(caps.bracketed_paste);
@@ -1996,7 +2077,7 @@ mod tests {
     fn detect_rio() {
         let env = make_env("xterm-256color", "Rio", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.kitty_keyboard);
         assert!(caps.focus_events);
@@ -2006,7 +2087,7 @@ mod tests {
     fn detect_contour() {
         let env = make_env("xterm-256color", "Contour", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.sync_output);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.focus_events);
@@ -2023,7 +2104,7 @@ mod tests {
     fn detect_hyper() {
         let env = make_env("xterm-256color", "Hyper", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.focus_events);
     }
@@ -2032,8 +2113,7 @@ mod tests {
     fn detect_linux_console() {
         let env = make_env("linux", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color, "linux console doesn't support truecolor");
-        assert!(!caps.colors_256, "linux console doesn't support 256 colors");
+        assert_eq!(caps.color_depth, ColorDepth::Ansi16);
         // But basic features work
         assert!(caps.bracketed_paste);
         assert!(caps.mouse_sgr);
@@ -2044,18 +2124,23 @@ mod tests {
     fn detect_xterm_direct() {
         let env = make_env("xterm", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color, "plain xterm has no truecolor");
-        assert!(!caps.colors_256, "plain xterm has no 256color");
+        assert_eq!(caps.color_depth, ColorDepth::Ansi16);
         assert!(caps.bracketed_paste);
         assert!(caps.mouse_sgr);
+    }
+
+    #[test]
+    fn detect_vt100_is_monochrome() {
+        let env = make_env("vt100", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
     }
 
     #[test]
     fn detect_screen_256color() {
         let env = make_env("screen-256color", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.colors_256, "screen-256color has 256 colors");
-        assert!(!caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::Ansi256);
     }
 
     // ====== Only TERM_PROGRAM without COLORTERM ======
@@ -2065,7 +2150,7 @@ mod tests {
         let env = make_env("xterm-256color", "WezTerm", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         // Modern terminal detection still works via TERM_PROGRAM
-        assert!(caps.true_color, "WezTerm is modern, implies truecolor");
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(!caps.sync_output);
         assert!(caps.osc8_hyperlinks);
     }
@@ -2076,7 +2161,7 @@ mod tests {
         let env = make_env("alacritty", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         // TERM contains "alacritty" which matches lowercase of MODERN_TERMINALS
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.osc8_hyperlinks);
     }
 
@@ -2087,7 +2172,7 @@ mod tests {
         let env = make_env("xterm-kitty", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(caps.kitty_keyboard);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.sync_output);
     }
 
@@ -2097,7 +2182,7 @@ mod tests {
         env.kitty_window_id = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(caps.kitty_keyboard);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     }
 
     // ====== Policy edge cases ======
@@ -2134,8 +2219,7 @@ mod tests {
         env.no_color = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         // Visual features disabled
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.osc8_hyperlinks);
         // Non-visual features preserved
         assert!(!caps.sync_output);
@@ -2151,8 +2235,7 @@ mod tests {
     fn colorterm_yes_not_truecolor() {
         let env = make_env("xterm-256color", "", "yes");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color, "COLORTERM=yes is not truecolor");
-        assert!(caps.colors_256, "TERM=xterm-256color implies 256");
+        assert_eq!(caps.color_depth, ColorDepth::Ansi256);
     }
 
     // ====== Capability Profiles (bd-k4lj.2) ======
@@ -2202,8 +2285,7 @@ mod tests {
         let caps = TerminalCapabilities::modern();
         assert_eq!(caps.profile(), TerminalProfile::Modern);
         assert_eq!(caps.profile_name(), Some("modern"));
-        assert!(caps.true_color);
-        assert!(caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.sync_output);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.scroll_region);
@@ -2219,8 +2301,7 @@ mod tests {
     fn profile_xterm_256color() {
         let caps = TerminalCapabilities::xterm_256color();
         assert_eq!(caps.profile(), TerminalProfile::Xterm256Color);
-        assert!(!caps.true_color);
-        assert!(caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Ansi256);
         assert!(!caps.sync_output);
         assert!(!caps.osc8_hyperlinks);
         assert!(caps.scroll_region);
@@ -2232,8 +2313,7 @@ mod tests {
     fn profile_xterm_basic() {
         let caps = TerminalCapabilities::xterm();
         assert_eq!(caps.profile(), TerminalProfile::Xterm);
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Ansi16);
         assert!(caps.scroll_region);
     }
 
@@ -2241,8 +2321,7 @@ mod tests {
     fn profile_vt100_minimal() {
         let caps = TerminalCapabilities::vt100();
         assert_eq!(caps.profile(), TerminalProfile::Vt100);
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(caps.scroll_region);
         assert!(!caps.bracketed_paste);
         assert!(!caps.mouse_sgr);
@@ -2252,8 +2331,7 @@ mod tests {
     fn profile_dumb_no_features() {
         let caps = TerminalCapabilities::dumb();
         assert_eq!(caps.profile(), TerminalProfile::Dumb);
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.scroll_region);
         assert!(!caps.bracketed_paste);
         assert!(!caps.mouse_sgr);
@@ -2292,7 +2370,7 @@ mod tests {
         assert!(caps.in_zellij);
         assert!(caps.in_any_mux());
         // Zellij has true color and focus events
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.focus_events);
         // But no passthrough wrap needed
         assert!(!caps.needs_passthrough_wrap());
@@ -2302,7 +2380,7 @@ mod tests {
     fn profile_kitty_full_features() {
         let caps = TerminalCapabilities::kitty();
         assert_eq!(caps.profile(), TerminalProfile::Kitty);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.sync_output);
         assert!(caps.kitty_keyboard);
         assert!(caps.osc8_hyperlinks);
@@ -2312,7 +2390,7 @@ mod tests {
     fn profile_windows_console() {
         let caps = TerminalCapabilities::windows_console();
         assert_eq!(caps.profile(), TerminalProfile::WindowsConsole);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.osc8_hyperlinks);
         assert!(caps.focus_events);
     }
@@ -2321,8 +2399,7 @@ mod tests {
     fn profile_linux_console() {
         let caps = TerminalCapabilities::linux_console();
         assert_eq!(caps.profile(), TerminalProfile::LinuxConsole);
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(caps.scroll_region);
     }
 
@@ -2365,21 +2442,18 @@ mod tests {
     fn builder_starts_empty() {
         let caps = CapabilityProfileBuilder::new().build();
         assert_eq!(caps.profile(), TerminalProfile::Custom);
-        assert!(!caps.true_color);
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.sync_output);
         assert!(!caps.scroll_region);
         assert!(!caps.mouse_sgr);
     }
 
     #[test]
-    fn builder_set_colors() {
+    fn builder_sets_one_canonical_color_depth() {
         let caps = CapabilityProfileBuilder::new()
-            .true_color(true)
-            .colors_256(true)
+            .color_depth(ColorDepth::TrueColor)
             .build();
-        assert!(caps.true_color);
-        assert!(caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     }
 
     #[test]
@@ -2434,8 +2508,7 @@ mod tests {
             .sync_output(false) // Override one setting
             .build();
         // Should have modern features except sync_output
-        assert!(caps.true_color);
-        assert!(caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(!caps.sync_output); // Overridden
         assert!(caps.osc8_hyperlinks);
         // But profile becomes Custom
@@ -2445,16 +2518,16 @@ mod tests {
     #[test]
     fn builder_chain_multiple() {
         let caps = TerminalCapabilities::builder()
-            .colors_256(true)
+            .color_depth(ColorDepth::Ansi256)
             .bracketed_paste(true)
             .mouse_sgr(true)
             .scroll_region(true)
             .build();
-        assert!(caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Ansi256);
         assert!(caps.bracketed_paste);
         assert!(caps.mouse_sgr);
         assert!(caps.scroll_region);
-        assert!(!caps.true_color);
+        assert!(!caps.supports_true_color());
         assert!(!caps.sync_output);
     }
 
@@ -2568,7 +2641,7 @@ mod tests {
 
             // Feature DETECTION still works
             assert!(
-                caps.true_color,
+                caps.supports_true_color(),
                 "{mux_name}: true_color detection should work"
             );
             assert!(
@@ -2762,7 +2835,7 @@ mod tests {
     #[test]
     fn shared_caps_load_returns_initial() {
         let shared = SharedCapabilities::new(TerminalCapabilities::modern());
-        assert!(shared.load().true_color);
+        assert_eq!(shared.load().color_depth, ColorDepth::TrueColor);
         assert!(shared.load().sync_output);
     }
 
@@ -2771,7 +2844,7 @@ mod tests {
         let shared = SharedCapabilities::new(TerminalCapabilities::modern());
         shared.store(TerminalCapabilities::dumb());
         let loaded = shared.load();
-        assert!(!loaded.true_color);
+        assert_eq!(loaded.color_depth, ColorDepth::Mono);
         assert!(!loaded.sync_output);
     }
 
@@ -2793,7 +2866,7 @@ mod tests {
                         let caps = s.load();
                         // Must be a valid TerminalCapabilities (no torn reads).
                         let _ = caps.use_sync_output();
-                        let _ = caps.true_color;
+                        let _ = caps.color_depth;
                     }
                 })
             })
@@ -2980,8 +3053,7 @@ mod proptests {
             let caps = TerminalCapabilities::detect_from_inputs(&env);
 
             if no_color {
-                prop_assert!(!caps.true_color, "NO_COLOR disables true_color");
-                prop_assert!(!caps.colors_256, "NO_COLOR disables colors_256");
+                prop_assert_eq!(caps.color_depth, ColorDepth::Mono);
                 prop_assert!(!caps.osc8_hyperlinks, "NO_COLOR disables hyperlinks");
             }
 

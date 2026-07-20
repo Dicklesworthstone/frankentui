@@ -13,7 +13,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, CellAttrs, CellContent};
 use ftui_render::diff::BufferDiff;
@@ -426,8 +426,7 @@ impl RenderTraceEnv {
 #[derive(Debug, Clone)]
 struct RenderTraceCapabilities {
     profile: String,
-    true_color: bool,
-    colors_256: bool,
+    color_depth: ColorDepth,
     sync_output: bool,
     osc8_hyperlinks: bool,
     scroll_region: bool,
@@ -445,8 +444,7 @@ impl RenderTraceCapabilities {
     fn from_caps(caps: &TerminalCapabilities) -> Self {
         Self {
             profile: caps.profile().as_str().to_string(),
-            true_color: caps.true_color,
-            colors_256: caps.colors_256,
+            color_depth: caps.color_depth,
             sync_output: caps.sync_output,
             osc8_hyperlinks: caps.osc8_hyperlinks,
             scroll_region: caps.scroll_region,
@@ -464,11 +462,10 @@ impl RenderTraceCapabilities {
     fn to_json(&self) -> String {
         format!(
             concat!(
-                r#"{{"profile":"{}","true_color":{},"colors_256":{},"sync_output":{},"osc8_hyperlinks":{},"scroll_region":{},"in_tmux":{},"in_screen":{},"in_zellij":{},"kitty_keyboard":{},"focus_events":{},"bracketed_paste":{},"mouse_sgr":{},"osc52_clipboard":{}}}"#
+                r#"{{"profile":"{}","color_depth":"{}","sync_output":{},"osc8_hyperlinks":{},"scroll_region":{},"in_tmux":{},"in_screen":{},"in_zellij":{},"kitty_keyboard":{},"focus_events":{},"bracketed_paste":{},"mouse_sgr":{},"osc52_clipboard":{}}}"#
             ),
             json_escape(&self.profile),
-            self.true_color,
-            self.colors_256,
+            self.color_depth.as_str(),
             self.sync_output,
             self.osc8_hyperlinks,
             self.scroll_region,
@@ -1265,8 +1262,7 @@ mod tests {
             },
             capabilities: RenderTraceCapabilities {
                 profile: "kitty".to_string(),
-                true_color: true,
-                colors_256: true,
+                color_depth: ColorDepth::TrueColor,
                 sync_output: true,
                 osc8_hyperlinks: false,
                 scroll_region: true,
@@ -1336,8 +1332,7 @@ mod tests {
     fn capabilities_to_json_format() {
         let caps = RenderTraceCapabilities {
             profile: "xterm".to_string(),
-            true_color: false,
-            colors_256: true,
+            color_depth: ColorDepth::Ansi256,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -1352,7 +1347,7 @@ mod tests {
         };
         let json = caps.to_json();
         assert!(json.contains("\"profile\":\"xterm\""));
-        assert!(json.contains("\"true_color\":false"));
+        assert!(json.contains("\"color_depth\":\"ansi256\""));
         assert!(json.contains("\"in_tmux\":true"));
     }
 

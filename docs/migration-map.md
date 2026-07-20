@@ -64,7 +64,7 @@ scratch against ftui's own constraints (16-byte cells, one-writer rule, forbid u
 | `Segment` (styled text unit) | `Segment` in `ftui-text` | `Cow<str>` + optional `Style`. Same concept, ftui-specific Style type. |
 | `Text` (multi-line styled) | `Text` in `ftui-text` | Collection of `Line`s. ftui adds explicit wrap/truncate modes. |
 | `style.rs` (57 KB) | `Style` in `ftui-style` (compact) | ftui uses Option-wrapped fields for inheritance. `merge()` cascades child over parent. |
-| `color.rs` (53 KB) | `Color` enum + `ColorProfile` + downgrade pipeline | ftui provides TrueColor -> 256 -> 16 -> Mono. `PackedRgba` handles the renderer path. |
+| `color.rs` (53 KB) | `Color` enum + canonical `ColorDepth` downgrade pipeline | ftui provides TrueColor -> 256 -> 16 -> Mono. `PackedRgba` handles the renderer path. |
 | `theme.rs` (38 KB) | `Theme` + `ResolvedTheme` in `ftui-style` | Semantic color slots. Builder pattern. Themes resolve to concrete colors at render time. |
 | `console.rs` (112 KB) | Not ported | ftui has no "console" abstraction. Output is always through `TerminalWriter`. |
 | `measure.rs` | Width cache in `ftui-text` | LRU cache for display width measurements. Default 1000 entries. |

@@ -37,22 +37,21 @@
 //!
 //! ```
 //! use ftui_core::capability_override::{with_capability_override, CapabilityOverride};
-//! use ftui_core::terminal_capabilities::TerminalCapabilities;
+//! use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 //!
 //! // Simulate a dumb terminal
 //! let override_cfg = CapabilityOverride::new()
-//!     .true_color(Some(false))
-//!     .colors_256(Some(false))
+//!     .color_depth(Some(ColorDepth::Mono))
 //!     .mouse_sgr(Some(false));
 //!
 //! with_capability_override(override_cfg, || {
 //!     let caps = TerminalCapabilities::with_overrides();
-//!     assert!(!caps.true_color);
+//!     assert_eq!(caps.color_depth, ColorDepth::Mono);
 //!     assert!(!caps.mouse_sgr);
 //! });
 //! ```
 
-use crate::terminal_capabilities::TerminalCapabilities;
+use crate::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use std::cell::RefCell;
 
 // ============================================================================
@@ -68,8 +67,7 @@ use std::cell::RefCell;
 #[derive(Debug, Clone, Default)]
 pub struct CapabilityOverride {
     // Color
-    pub true_color: Option<bool>,
-    pub colors_256: Option<bool>,
+    pub color_depth: Option<ColorDepth>,
 
     // Glyph support
     pub unicode_box_drawing: Option<bool>,
@@ -102,8 +100,7 @@ impl CapabilityOverride {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            true_color: None,
-            colors_256: None,
+            color_depth: None,
             unicode_box_drawing: None,
             unicode_emoji: None,
             double_width: None,
@@ -126,8 +123,7 @@ impl CapabilityOverride {
     #[must_use]
     pub const fn dumb() -> Self {
         Self {
-            true_color: Some(false),
-            colors_256: Some(false),
+            color_depth: Some(ColorDepth::Mono),
             unicode_box_drawing: Some(false),
             unicode_emoji: Some(false),
             double_width: Some(false),
@@ -150,8 +146,7 @@ impl CapabilityOverride {
     #[must_use]
     pub const fn modern() -> Self {
         Self {
-            true_color: Some(true),
-            colors_256: Some(true),
+            color_depth: Some(ColorDepth::TrueColor),
             unicode_box_drawing: Some(true),
             unicode_emoji: Some(true),
             double_width: Some(true),
@@ -174,8 +169,7 @@ impl CapabilityOverride {
     #[must_use]
     pub const fn tmux() -> Self {
         Self {
-            true_color: None,
-            colors_256: Some(true),
+            color_depth: Some(ColorDepth::Ansi256),
             unicode_box_drawing: None,
             unicode_emoji: None,
             double_width: None,
@@ -196,17 +190,10 @@ impl CapabilityOverride {
 
     // ── Builder Methods ────────────────────────────────────────────────
 
-    /// Override true color support.
+    /// Override maximum color fidelity.
     #[must_use]
-    pub const fn true_color(mut self, value: Option<bool>) -> Self {
-        self.true_color = value;
-        self
-    }
-
-    /// Override 256-color support.
-    #[must_use]
-    pub const fn colors_256(mut self, value: Option<bool>) -> Self {
-        self.colors_256 = value;
+    pub const fn color_depth(mut self, value: Option<ColorDepth>) -> Self {
+        self.color_depth = value;
         self
     }
 
@@ -318,8 +305,7 @@ impl CapabilityOverride {
     /// Check if any capability is overridden.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.true_color.is_none()
-            && self.colors_256.is_none()
+        self.color_depth.is_none()
             && self.unicode_box_drawing.is_none()
             && self.unicode_emoji.is_none()
             && self.double_width.is_none()
@@ -340,11 +326,8 @@ impl CapabilityOverride {
     /// Apply this override on top of base capabilities.
     #[must_use]
     pub fn apply_to(&self, mut caps: TerminalCapabilities) -> TerminalCapabilities {
-        if let Some(v) = self.true_color {
-            caps.true_color = v;
-        }
-        if let Some(v) = self.colors_256 {
-            caps.colors_256 = v;
+        if let Some(v) = self.color_depth {
+            caps.color_depth = v;
         }
         if let Some(v) = self.unicode_box_drawing {
             caps.unicode_box_drawing = v;
@@ -455,11 +438,11 @@ pub fn push_override(over: CapabilityOverride) -> OverrideGuard {
 ///
 /// ```
 /// use ftui_core::capability_override::{with_capability_override, CapabilityOverride};
-/// use ftui_core::terminal_capabilities::TerminalCapabilities;
+/// use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 ///
 /// with_capability_override(CapabilityOverride::dumb(), || {
 ///     let caps = TerminalCapabilities::with_overrides();
-///     assert!(!caps.true_color);
+///     assert_eq!(caps.color_depth, ColorDepth::Mono);
 /// });
 /// ```
 pub fn with_capability_override<F, R>(over: CapabilityOverride, f: F) -> R
@@ -550,8 +533,7 @@ mod tests {
     fn override_dumb_disables_all() {
         let over = CapabilityOverride::dumb();
         assert!(!over.is_empty());
-        assert_eq!(over.true_color, Some(false));
-        assert_eq!(over.colors_256, Some(false));
+        assert_eq!(over.color_depth, Some(ColorDepth::Mono));
         assert_eq!(over.sync_output, Some(false));
         assert_eq!(over.mouse_sgr, Some(false));
     }
@@ -559,8 +541,7 @@ mod tests {
     #[test]
     fn override_modern_enables_all() {
         let over = CapabilityOverride::modern();
-        assert_eq!(over.true_color, Some(true));
-        assert_eq!(over.colors_256, Some(true));
+        assert_eq!(over.color_depth, Some(ColorDepth::TrueColor));
         assert_eq!(over.sync_output, Some(true));
         assert_eq!(over.kitty_keyboard, Some(true));
         // But mux flags are false
@@ -578,13 +559,11 @@ mod tests {
     #[test]
     fn override_builder_chain() {
         let over = CapabilityOverride::new()
-            .true_color(Some(true))
-            .colors_256(Some(true))
+            .color_depth(Some(ColorDepth::TrueColor))
             .unicode_box_drawing(Some(false))
             .mouse_sgr(Some(false));
 
-        assert_eq!(over.true_color, Some(true));
-        assert_eq!(over.colors_256, Some(true));
+        assert_eq!(over.color_depth, Some(ColorDepth::TrueColor));
         assert_eq!(over.unicode_box_drawing, Some(false));
         assert_eq!(over.mouse_sgr, Some(false));
         assert!(over.sync_output.is_none());
@@ -594,13 +573,11 @@ mod tests {
     fn apply_to_overrides_caps() {
         let base = TerminalCapabilities::dumb();
         let over = CapabilityOverride::new()
-            .true_color(Some(true))
-            .colors_256(Some(true))
+            .color_depth(Some(ColorDepth::TrueColor))
             .unicode_box_drawing(Some(true));
 
         let result = over.apply_to(base);
-        assert!(result.true_color);
-        assert!(result.colors_256);
+        assert_eq!(result.color_depth, ColorDepth::TrueColor);
         assert!(result.unicode_box_drawing);
         // Unchanged fields remain from base
         assert!(!result.mouse_sgr);
@@ -612,7 +589,7 @@ mod tests {
         let over = CapabilityOverride::new(); // All None
 
         let result = over.apply_to(base);
-        assert_eq!(result.true_color, base.true_color);
+        assert_eq!(result.color_depth, base.color_depth);
         assert_eq!(result.mouse_sgr, base.mouse_sgr);
     }
 
@@ -639,25 +616,26 @@ mod tests {
         {
             let _outer = push_override(
                 CapabilityOverride::new()
-                    .true_color(Some(true))
+                    .color_depth(Some(ColorDepth::TrueColor))
                     .mouse_sgr(Some(true)),
             );
             assert_eq!(override_depth(), 1);
 
             {
-                let _inner = push_override(CapabilityOverride::new().true_color(Some(false)));
+                let _inner =
+                    push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::Mono)));
                 assert_eq!(override_depth(), 2);
 
                 // Inner override takes precedence
                 let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-                assert!(!caps.true_color); // Inner: false
+                assert_eq!(caps.color_depth, ColorDepth::Mono);
                 assert!(caps.mouse_sgr); // Outer: true
             }
 
             // Inner dropped, outer still active
             assert_eq!(override_depth(), 1);
             let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-            assert!(caps.true_color); // Outer: true
+            assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         }
 
         assert_eq!(override_depth(), 0);
@@ -670,7 +648,7 @@ mod tests {
         let result = with_capability_override(CapabilityOverride::modern(), || {
             assert!(has_active_overrides());
             let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-            caps.true_color
+            caps.supports_true_color()
         });
 
         assert!(result);
@@ -681,13 +659,16 @@ mod tests {
     fn with_capability_override_nested() {
         clear_all_overrides();
 
-        with_capability_override(CapabilityOverride::new().true_color(Some(true)), || {
-            with_capability_override(CapabilityOverride::new().mouse_sgr(Some(false)), || {
-                let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-                assert!(caps.true_color);
-                assert!(!caps.mouse_sgr);
-            });
-        });
+        with_capability_override(
+            CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor)),
+            || {
+                with_capability_override(CapabilityOverride::new().mouse_sgr(Some(false)), || {
+                    let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
+                    assert_eq!(caps.color_depth, ColorDepth::TrueColor);
+                    assert!(!caps.mouse_sgr);
+                });
+            },
+        );
     }
 
     #[test]
@@ -696,8 +677,7 @@ mod tests {
 
         with_capability_override(CapabilityOverride::dumb(), || {
             let caps = TerminalCapabilities::with_overrides();
-            assert!(!caps.true_color);
-            assert!(!caps.colors_256);
+            assert_eq!(caps.color_depth, ColorDepth::Mono);
             assert!(!caps.unicode_box_drawing);
             assert!(!caps.unicode_emoji);
             assert!(!caps.double_width);
@@ -722,7 +702,7 @@ mod tests {
 
     #[test]
     fn is_empty_false_for_single_override() {
-        let over = CapabilityOverride::new().true_color(Some(true));
+        let over = CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor));
         assert!(!over.is_empty());
     }
 
@@ -759,9 +739,9 @@ mod tests {
     }
 
     #[test]
-    fn tmux_sets_bracketed_paste_and_colors() {
+    fn tmux_sets_bracketed_paste_and_color_depth() {
         let over = CapabilityOverride::tmux();
-        assert_eq!(over.colors_256, Some(true));
+        assert_eq!(over.color_depth, Some(ColorDepth::Ansi256));
         assert_eq!(over.bracketed_paste, Some(true));
         assert_eq!(over.mouse_sgr, Some(true));
         assert_eq!(over.scroll_region, Some(true));
@@ -864,13 +844,12 @@ mod tests {
         clear_all_overrides();
         let base = TerminalCapabilities::dumb();
 
-        let _g1 = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let _g1 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor)));
         let _g2 = push_override(CapabilityOverride::new().mouse_sgr(Some(true)));
 
         let caps = current_capabilities_with_base(base);
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.mouse_sgr);
-        assert!(!caps.colors_256); // Not overridden, remains dumb
 
         clear_all_overrides();
     }
@@ -878,18 +857,22 @@ mod tests {
     #[test]
     fn override_clone() {
         let over = CapabilityOverride::new()
-            .true_color(Some(true))
+            .color_depth(Some(ColorDepth::TrueColor))
             .in_tmux(Some(false));
         let cloned = over.clone();
-        assert_eq!(over.true_color, cloned.true_color);
+        assert_eq!(over.color_depth, cloned.color_depth);
         assert_eq!(over.in_tmux, cloned.in_tmux);
     }
 
     // ── is_empty per-field ────────────────────────────────────────────
 
     #[test]
-    fn is_empty_false_for_colors_256() {
-        assert!(!CapabilityOverride::new().colors_256(Some(true)).is_empty());
+    fn is_empty_false_for_color_depth() {
+        assert!(
+            !CapabilityOverride::new()
+                .color_depth(Some(ColorDepth::Ansi256))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1064,8 +1047,7 @@ mod tests {
     fn dumb_override_disables_all_on_modern_base() {
         let base = TerminalCapabilities::modern();
         let result = CapabilityOverride::dumb().apply_to(base);
-        assert!(!result.true_color);
-        assert!(!result.colors_256);
+        assert_eq!(result.color_depth, ColorDepth::Mono);
         assert!(!result.unicode_box_drawing);
         assert!(!result.unicode_emoji);
         assert!(!result.double_width);
@@ -1086,8 +1068,7 @@ mod tests {
     fn modern_override_enables_features_on_dumb_base() {
         let base = TerminalCapabilities::dumb();
         let result = CapabilityOverride::modern().apply_to(base);
-        assert!(result.true_color);
-        assert!(result.colors_256);
+        assert_eq!(result.color_depth, ColorDepth::TrueColor);
         assert!(result.unicode_box_drawing);
         assert!(result.unicode_emoji);
         assert!(result.double_width);
@@ -1108,9 +1089,9 @@ mod tests {
     // ── tmux None fields ──────────────────────────────────────────────
 
     #[test]
-    fn tmux_none_fields_passthrough() {
+    fn tmux_sets_depth_and_leaves_unrelated_fields_unset() {
         let over = CapabilityOverride::tmux();
-        assert!(over.true_color.is_none());
+        assert_eq!(over.color_depth, Some(ColorDepth::Ansi256));
         assert!(over.unicode_box_drawing.is_none());
         assert!(over.unicode_emoji.is_none());
         assert!(over.double_width.is_none());
@@ -1122,14 +1103,14 @@ mod tests {
     fn builder_in_tmux_individually() {
         let over = CapabilityOverride::new().in_tmux(Some(true));
         assert_eq!(over.in_tmux, Some(true));
-        assert!(over.true_color.is_none()); // other fields unchanged
+        assert!(over.color_depth.is_none()); // other fields unchanged
     }
 
     #[test]
     fn builder_sync_output_individually() {
         let over = CapabilityOverride::new().sync_output(Some(false));
         assert_eq!(over.sync_output, Some(false));
-        assert!(over.colors_256.is_none());
+        assert!(over.color_depth.is_none());
     }
 
     // ── builder overwrite to None ─────────────────────────────────────
@@ -1137,16 +1118,16 @@ mod tests {
     #[test]
     fn builder_overwrite_field_to_none() {
         let over = CapabilityOverride::new()
-            .true_color(Some(true))
-            .true_color(None);
-        assert!(over.true_color.is_none());
+            .color_depth(Some(ColorDepth::TrueColor))
+            .color_depth(None);
+        assert!(over.color_depth.is_none());
         assert!(over.is_empty());
     }
 
     #[test]
     fn builder_overwrite_dumb_field_to_none() {
-        let over = CapabilityOverride::dumb().true_color(None);
-        assert!(over.true_color.is_none());
+        let over = CapabilityOverride::dumb().color_depth(None);
+        assert!(over.color_depth.is_none());
         assert!(!over.is_empty()); // other fields still set
     }
 
@@ -1190,13 +1171,13 @@ mod tests {
     fn three_level_nesting_innermost_wins() {
         clear_all_overrides();
 
-        let _l1 = push_override(CapabilityOverride::new().true_color(Some(true)));
-        let _l2 = push_override(CapabilityOverride::new().true_color(Some(false)));
-        let _l3 = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let _l1 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor)));
+        let _l2 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::Mono)));
+        let _l3 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor)));
 
         assert_eq!(override_depth(), 3);
         let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-        assert!(caps.true_color); // l3 wins
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
 
         clear_all_overrides();
     }
@@ -1205,14 +1186,13 @@ mod tests {
     fn three_level_nesting_partial_overrides() {
         clear_all_overrides();
 
-        let _l1 = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let _l1 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor)));
         let _l2 = push_override(CapabilityOverride::new().mouse_sgr(Some(true)));
-        let _l3 = push_override(CapabilityOverride::new().colors_256(Some(true)));
+        let _l3 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::Ansi256)));
 
         let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-        assert!(caps.true_color); // l1
+        assert_eq!(caps.color_depth, ColorDepth::Ansi256); // l3 wins
         assert!(caps.mouse_sgr); // l2
-        assert!(caps.colors_256); // l3
         assert!(!caps.sync_output); // base dumb
 
         clear_all_overrides();
@@ -1225,12 +1205,11 @@ mod tests {
         clear_all_overrides();
 
         let base = TerminalCapabilities::dumb();
-        let _g = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let _g = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor)));
 
         // with_overrides_from uses current_capabilities_with_base
         let caps = base.with_overrides_from(base);
-        assert!(caps.true_color);
-        assert!(!caps.colors_256); // base dumb
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
 
         clear_all_overrides();
     }
@@ -1242,7 +1221,7 @@ mod tests {
         let base = TerminalCapabilities::modern();
         let caps = base.with_overrides_from(base);
         // No overrides active, should equal base
-        assert_eq!(caps.true_color, base.true_color);
+        assert_eq!(caps.color_depth, base.color_depth);
         assert_eq!(caps.mouse_sgr, base.mouse_sgr);
     }
 
@@ -1269,10 +1248,10 @@ mod tests {
 
     #[test]
     fn debug_format_contains_field_names() {
-        let over = CapabilityOverride::new().true_color(Some(true));
+        let over = CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor));
         let dbg = format!("{over:?}");
-        assert!(dbg.contains("true_color"));
-        assert!(dbg.contains("Some(true)"));
+        assert!(dbg.contains("color_depth"));
+        assert!(dbg.contains("TrueColor"));
     }
 
     #[test]
@@ -1299,7 +1278,7 @@ mod tests {
         assert!(has_active_overrides());
 
         let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
 
         clear_all_overrides();
     }
@@ -1313,7 +1292,7 @@ mod tests {
         // Force a known state via dumb override
         let _g = push_override(CapabilityOverride::dumb());
         let caps = current_capabilities();
-        assert!(!caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.mouse_sgr);
 
         clear_all_overrides();
@@ -1327,7 +1306,7 @@ mod tests {
 
         let _g = push_override(CapabilityOverride::modern());
         let caps = TerminalCapabilities::with_overrides();
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.kitty_keyboard);
         assert!(!caps.in_tmux); // modern disables mux
 
@@ -1340,14 +1319,14 @@ mod tests {
     fn second_guard_dropped_first_still_active() {
         clear_all_overrides();
 
-        let g1 = push_override(CapabilityOverride::new().true_color(Some(true)));
-        let g2 = push_override(CapabilityOverride::new().true_color(Some(false)));
+        let g1 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor)));
+        let g2 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::Mono)));
 
         // Drop g2 first (LIFO order)
         drop(g2);
         assert_eq!(override_depth(), 1);
         let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-        assert!(caps.true_color); // g1 still active
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
 
         drop(g1);
         assert_eq!(override_depth(), 0);
@@ -1371,7 +1350,7 @@ mod tests {
 
         let (a, b) = with_capability_override(CapabilityOverride::modern(), || {
             let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
-            (caps.true_color, caps.mouse_sgr)
+            (caps.supports_true_color(), caps.mouse_sgr)
         });
         assert!(a);
         assert!(b);
@@ -1383,13 +1362,13 @@ mod tests {
     fn apply_to_disables_on_modern_base() {
         let base = TerminalCapabilities::modern();
         let result = CapabilityOverride::new()
-            .true_color(Some(false))
+            .color_depth(Some(ColorDepth::Ansi256))
             .kitty_keyboard(Some(false))
             .apply_to(base);
-        assert!(!result.true_color);
+        assert_eq!(result.color_depth, ColorDepth::Ansi256);
         assert!(!result.kitty_keyboard);
         // Others still modern
-        assert!(result.colors_256);
+        assert!(result.supports_256_colors());
         assert!(result.unicode_box_drawing);
     }
 
@@ -1401,8 +1380,7 @@ mod tests {
 
         let base = TerminalCapabilities::modern();
         let caps = current_capabilities_with_base(base);
-        assert_eq!(caps.true_color, base.true_color);
-        assert_eq!(caps.colors_256, base.colors_256);
+        assert_eq!(caps.color_depth, base.color_depth);
         assert_eq!(caps.unicode_box_drawing, base.unicode_box_drawing);
         assert_eq!(caps.unicode_emoji, base.unicode_emoji);
         assert_eq!(caps.double_width, base.double_width);

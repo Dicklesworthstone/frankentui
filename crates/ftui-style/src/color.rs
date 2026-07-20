@@ -1,114 +1,9 @@
-//! Color types, profiles, and downgrade utilities.
+//! Color types and downgrade utilities.
 
 use std::collections::HashMap;
 
+pub use ftui_render::ColorDepth;
 use ftui_render::cell::PackedRgba;
-
-/// Terminal color profile used for downgrade decisions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ColorProfile {
-    /// No color output.
-    Mono,
-    /// Standard 16 ANSI colors.
-    Ansi16,
-    /// Extended 256-color palette.
-    Ansi256,
-    /// Full 24-bit RGB color.
-    TrueColor,
-}
-
-impl ColorProfile {
-    /// Auto-detect the best available color profile from environment variables.
-    ///
-    /// Detection priority:
-    /// 1. `NO_COLOR` set → [`Mono`](ColorProfile::Mono)
-    /// 2. `COLORTERM=truecolor` or `COLORTERM=24bit` → [`TrueColor`](ColorProfile::TrueColor)
-    /// 3. `TERM` contains "256" → [`Ansi256`](ColorProfile::Ansi256)
-    /// 4. Otherwise → [`Ansi16`](ColorProfile::Ansi16)
-    ///
-    /// # Example
-    /// ```
-    /// use ftui_style::ColorProfile;
-    ///
-    /// let profile = ColorProfile::detect();
-    /// if profile.supports_true_color() {
-    ///     println!("Full 24-bit color available!");
-    /// }
-    /// ```
-    #[must_use]
-    pub fn detect() -> Self {
-        Self::detect_from_env(
-            std::env::var("NO_COLOR").ok().as_deref(),
-            std::env::var("COLORTERM").ok().as_deref(),
-            std::env::var("TERM").ok().as_deref(),
-        )
-    }
-
-    /// Detect color profile from provided environment values (for testing).
-    ///
-    /// Pass `Some("")` for empty env vars or `None` for unset.
-    #[must_use]
-    pub fn detect_from_env(
-        no_color: Option<&str>,
-        colorterm: Option<&str>,
-        term: Option<&str>,
-    ) -> Self {
-        // NO_COLOR takes precedence (presence, not value, matters)
-        if no_color.is_some() {
-            return Self::Mono;
-        }
-
-        // COLORTERM=truecolor or 24bit indicates true color
-        if let Some(ct) = colorterm
-            && (ct == "truecolor" || ct == "24bit")
-        {
-            return Self::TrueColor;
-        }
-
-        // TERM containing "256" indicates 256-color
-        if let Some(t) = term
-            && t.contains("256")
-        {
-            return Self::Ansi256;
-        }
-
-        Self::Ansi16
-    }
-
-    /// Choose the best available profile from detection flags.
-    ///
-    /// `no_color` should reflect explicit user intent (e.g. NO_COLOR).
-    #[must_use]
-    pub const fn from_flags(true_color: bool, colors_256: bool, no_color: bool) -> Self {
-        if no_color {
-            Self::Mono
-        } else if true_color {
-            Self::TrueColor
-        } else if colors_256 {
-            Self::Ansi256
-        } else {
-            Self::Ansi16
-        }
-    }
-
-    /// Check if this profile supports 24-bit true color.
-    #[must_use]
-    pub const fn supports_true_color(self) -> bool {
-        matches!(self, Self::TrueColor)
-    }
-
-    /// Check if this profile supports 256 colors or more.
-    #[must_use]
-    pub const fn supports_256_colors(self) -> bool {
-        matches!(self, Self::TrueColor | Self::Ansi256)
-    }
-
-    /// Check if this profile supports any color (not monochrome).
-    #[must_use]
-    pub const fn supports_color(self) -> bool {
-        !matches!(self, Self::Mono)
-    }
-}
 
 // =============================================================================
 // WCAG Contrast Validation
@@ -404,19 +299,19 @@ impl Color {
 
     /// Downgrade this color to fit the given color profile.
     #[must_use]
-    pub fn downgrade(self, profile: ColorProfile) -> Self {
+    pub fn downgrade(self, profile: ColorDepth) -> Self {
         match profile {
-            ColorProfile::TrueColor => self,
-            ColorProfile::Ansi256 => match self {
+            ColorDepth::TrueColor => self,
+            ColorDepth::Ansi256 => match self {
                 Self::Rgb(rgb) => Self::Ansi256(rgb_to_256(rgb.r, rgb.g, rgb.b)),
                 _ => self,
             },
-            ColorProfile::Ansi16 => match self {
+            ColorDepth::Ansi16 => match self {
                 Self::Rgb(rgb) => Self::Ansi16(rgb_to_ansi16(rgb.r, rgb.g, rgb.b)),
                 Self::Ansi256(idx) => Self::Ansi16(rgb_to_ansi16_from_ansi256(idx)),
                 _ => self,
             },
-            ColorProfile::Mono => match self {
+            ColorDepth::Mono => match self {
                 Self::Rgb(rgb) => Self::Mono(rgb_to_mono(rgb.r, rgb.g, rgb.b)),
                 Self::Ansi256(idx) => {
                     let rgb = ansi256_to_rgb(idx);
@@ -454,7 +349,7 @@ pub struct CacheStats {
 /// Simple hash cache for downgrade results (bounded; clears on overflow).
 #[derive(Debug)]
 pub struct ColorCache {
-    profile: ColorProfile,
+    profile: ColorDepth,
     max_entries: usize,
     map: HashMap<u32, Color>,
     hits: u64,
@@ -464,13 +359,13 @@ pub struct ColorCache {
 impl ColorCache {
     /// Create a new cache with default capacity (4096 entries).
     #[must_use]
-    pub fn new(profile: ColorProfile) -> Self {
+    pub fn new(profile: ColorDepth) -> Self {
         Self::with_capacity(profile, 4096)
     }
 
     /// Create a new cache with the given maximum entry count.
     #[must_use]
-    pub fn with_capacity(profile: ColorProfile, max_entries: usize) -> Self {
+    pub fn with_capacity(profile: ColorDepth, max_entries: usize) -> Self {
         let max_entries = max_entries.max(1);
         Self {
             profile,
@@ -661,103 +556,83 @@ fn weighted_distance(a: Rgb, b: Rgb) -> u64 {
 mod tests {
     use super::*;
 
-    // --- ColorProfile tests ---
+    // --- ColorDepth tests ---
 
     #[test]
     fn truecolor_passthrough() {
         let color = Color::rgb(12, 34, 56);
-        assert_eq!(color.downgrade(ColorProfile::TrueColor), color);
-    }
-
-    #[test]
-    fn profile_from_flags_prefers_mono() {
-        assert_eq!(
-            ColorProfile::from_flags(true, true, true),
-            ColorProfile::Mono
-        );
-        assert_eq!(
-            ColorProfile::from_flags(true, false, false),
-            ColorProfile::TrueColor
-        );
-        assert_eq!(
-            ColorProfile::from_flags(false, true, false),
-            ColorProfile::Ansi256
-        );
-        assert_eq!(
-            ColorProfile::from_flags(false, false, false),
-            ColorProfile::Ansi16
-        );
+        assert_eq!(color.downgrade(ColorDepth::TrueColor), color);
     }
 
     #[test]
     fn supports_true_color() {
-        assert!(ColorProfile::TrueColor.supports_true_color());
-        assert!(!ColorProfile::Ansi256.supports_true_color());
-        assert!(!ColorProfile::Ansi16.supports_true_color());
-        assert!(!ColorProfile::Mono.supports_true_color());
+        assert!(ColorDepth::TrueColor.supports_true_color());
+        assert!(!ColorDepth::Ansi256.supports_true_color());
+        assert!(!ColorDepth::Ansi16.supports_true_color());
+        assert!(!ColorDepth::Mono.supports_true_color());
     }
 
     #[test]
     fn supports_256_colors() {
-        assert!(ColorProfile::TrueColor.supports_256_colors());
-        assert!(ColorProfile::Ansi256.supports_256_colors());
-        assert!(!ColorProfile::Ansi16.supports_256_colors());
-        assert!(!ColorProfile::Mono.supports_256_colors());
+        assert!(ColorDepth::TrueColor.supports_256_colors());
+        assert!(ColorDepth::Ansi256.supports_256_colors());
+        assert!(!ColorDepth::Ansi16.supports_256_colors());
+        assert!(!ColorDepth::Mono.supports_256_colors());
     }
 
     #[test]
     fn supports_color() {
-        assert!(ColorProfile::TrueColor.supports_color());
-        assert!(ColorProfile::Ansi256.supports_color());
-        assert!(ColorProfile::Ansi16.supports_color());
-        assert!(!ColorProfile::Mono.supports_color());
+        assert!(ColorDepth::TrueColor.supports_color());
+        assert!(ColorDepth::Ansi256.supports_color());
+        assert!(ColorDepth::Ansi16.supports_color());
+        assert!(!ColorDepth::Mono.supports_color());
     }
 
-    // --- ColorProfile::detect_from_env tests ---
+    // --- ColorDepth::detect_from_env tests ---
 
     #[test]
     fn detect_no_color_gives_mono() {
         // NO_COLOR presence (any value) should force Mono
         assert_eq!(
-            ColorProfile::detect_from_env(Some("1"), None, None),
-            ColorProfile::Mono
+            ColorDepth::detect_from_env(Some("1"), None, None),
+            ColorDepth::Mono
         );
         assert_eq!(
-            ColorProfile::detect_from_env(Some(""), None, None),
-            ColorProfile::Mono
+            ColorDepth::detect_from_env(Some(""), None, None),
+            ColorDepth::Mono
         );
         // NO_COLOR takes precedence over COLORTERM
         assert_eq!(
-            ColorProfile::detect_from_env(Some("1"), Some("truecolor"), Some("xterm-256color")),
-            ColorProfile::Mono
+            ColorDepth::detect_from_env(Some("1"), Some("truecolor"), Some("xterm-256color")),
+            ColorDepth::Mono
         );
     }
 
     #[test]
     fn detect_colorterm_truecolor() {
         assert_eq!(
-            ColorProfile::detect_from_env(None, Some("truecolor"), None),
-            ColorProfile::TrueColor
+            ColorDepth::detect_from_env(None, Some("truecolor"), Some("xterm")),
+            ColorDepth::TrueColor
         );
     }
 
     #[test]
     fn detect_colorterm_24bit() {
         assert_eq!(
-            ColorProfile::detect_from_env(None, Some("24bit"), None),
-            ColorProfile::TrueColor
+            ColorDepth::detect_from_env(None, Some("24bit"), Some("xterm")),
+            ColorDepth::TrueColor
         );
     }
 
     #[test]
     fn detect_term_256color() {
         assert_eq!(
-            ColorProfile::detect_from_env(None, None, Some("xterm-256color")),
-            ColorProfile::Ansi256
+            ColorDepth::detect_from_env(None, None, Some("xterm-256color")),
+            ColorDepth::Ansi256
         );
         assert_eq!(
-            ColorProfile::detect_from_env(None, None, Some("screen-256color")),
-            ColorProfile::Ansi256
+            ColorDepth::detect_from_env(None, None, Some("screen-256color")),
+            ColorDepth::Ansi256
         );
     }
 
@@ -765,24 +640,28 @@ mod tests {
     fn detect_colorterm_unknown_falls_to_term() {
         // COLORTERM=yes is not truecolor, so fall back to TERM
         assert_eq!(
-            ColorProfile::detect_from_env(None, Some("yes"), Some("xterm-256color")),
-            ColorProfile::Ansi256
+            ColorDepth::detect_from_env(None, Some("yes"), Some("xterm-256color")),
+            ColorDepth::Ansi256
         );
     }
 
     #[test]
-    fn detect_defaults_to_ansi16() {
+    fn detect_conservative_fallbacks() {
         assert_eq!(
-            ColorProfile::detect_from_env(None, None, None),
-            ColorProfile::Ansi16
+            ColorDepth::detect_from_env(None, None, None),
+            ColorDepth::Mono
         );
         assert_eq!(
-            ColorProfile::detect_from_env(None, None, Some("xterm")),
-            ColorProfile::Ansi16
+            ColorDepth::detect_from_env(None, None, Some("xterm")),
+            ColorDepth::Ansi16
         );
         assert_eq!(
-            ColorProfile::detect_from_env(None, Some(""), Some("dumb")),
-            ColorProfile::Ansi16
+            ColorDepth::detect_from_env(None, Some(""), Some("dumb")),
+            ColorDepth::Mono
+        );
+        assert_eq!(
+            ColorDepth::detect_from_env(None, Some("truecolor"), Some("vt100")),
+            ColorDepth::Mono
         );
     }
 
@@ -1049,56 +928,56 @@ mod tests {
     #[test]
     fn downgrade_rgb_to_ansi256() {
         let color = Color::rgb(255, 0, 0);
-        let downgraded = color.downgrade(ColorProfile::Ansi256);
+        let downgraded = color.downgrade(ColorDepth::Ansi256);
         assert!(matches!(downgraded, Color::Ansi256(_)));
     }
 
     #[test]
     fn downgrade_rgb_to_ansi16() {
         let color = Color::rgb(255, 0, 0);
-        let downgraded = color.downgrade(ColorProfile::Ansi16);
+        let downgraded = color.downgrade(ColorDepth::Ansi16);
         assert!(matches!(downgraded, Color::Ansi16(_)));
     }
 
     #[test]
     fn downgrade_rgb_to_mono() {
         let color = Color::rgb(255, 255, 255);
-        let downgraded = color.downgrade(ColorProfile::Mono);
+        let downgraded = color.downgrade(ColorDepth::Mono);
         assert_eq!(downgraded, Color::Mono(MonoColor::White));
     }
 
     #[test]
     fn downgrade_ansi256_to_ansi16() {
         let color = Color::Ansi256(196);
-        let downgraded = color.downgrade(ColorProfile::Ansi16);
+        let downgraded = color.downgrade(ColorDepth::Ansi16);
         assert!(matches!(downgraded, Color::Ansi16(_)));
     }
 
     #[test]
     fn downgrade_ansi256_to_mono() {
         let color = Color::Ansi256(232); // dark gray
-        let downgraded = color.downgrade(ColorProfile::Mono);
+        let downgraded = color.downgrade(ColorDepth::Mono);
         assert_eq!(downgraded, Color::Mono(MonoColor::Black));
     }
 
     #[test]
     fn downgrade_ansi16_to_mono() {
         let color = Color::Ansi16(Ansi16::BrightWhite);
-        let downgraded = color.downgrade(ColorProfile::Mono);
+        let downgraded = color.downgrade(ColorDepth::Mono);
         assert_eq!(downgraded, Color::Mono(MonoColor::White));
     }
 
     #[test]
     fn downgrade_mono_stays_mono() {
         let color = Color::Mono(MonoColor::Black);
-        assert_eq!(color.downgrade(ColorProfile::Mono), color);
+        assert_eq!(color.downgrade(ColorDepth::Mono), color);
     }
 
     #[test]
     fn downgrade_ansi16_stays_at_ansi256() {
         let color = Color::Ansi16(Ansi16::Red);
         // Ansi16 should pass through at Ansi256 level
-        assert_eq!(color.downgrade(ColorProfile::Ansi256), color);
+        assert_eq!(color.downgrade(ColorDepth::Ansi256), color);
     }
 
     // --- Color::to_rgb tests ---
@@ -1135,7 +1014,7 @@ mod tests {
 
     #[test]
     fn cache_tracks_hits() {
-        let mut cache = ColorCache::with_capacity(ColorProfile::Ansi16, 8);
+        let mut cache = ColorCache::with_capacity(ColorDepth::Ansi16, 8);
         let rgb = Rgb::new(10, 20, 30);
         let _ = cache.downgrade_rgb(rgb);
         let _ = cache.downgrade_rgb(rgb);
@@ -1147,7 +1026,7 @@ mod tests {
 
     #[test]
     fn cache_clears_on_overflow() {
-        let mut cache = ColorCache::with_capacity(ColorProfile::Ansi16, 2);
+        let mut cache = ColorCache::with_capacity(ColorDepth::Ansi16, 2);
         let _ = cache.downgrade_rgb(Rgb::new(1, 0, 0));
         let _ = cache.downgrade_rgb(Rgb::new(2, 0, 0));
         assert_eq!(cache.stats().size, 2);
@@ -1158,7 +1037,7 @@ mod tests {
 
     #[test]
     fn cache_downgrade_packed() {
-        let mut cache = ColorCache::with_capacity(ColorProfile::Ansi16, 8);
+        let mut cache = ColorCache::with_capacity(ColorDepth::Ansi16, 8);
         let packed = PackedRgba::rgb(255, 0, 0);
         let result = cache.downgrade_packed(packed);
         assert!(matches!(result, Color::Ansi16(_)));
@@ -1166,13 +1045,13 @@ mod tests {
 
     #[test]
     fn cache_default_capacity() {
-        let cache = ColorCache::new(ColorProfile::TrueColor);
+        let cache = ColorCache::new(ColorDepth::TrueColor);
         assert_eq!(cache.stats().capacity, 4096);
     }
 
     #[test]
     fn cache_minimum_capacity_is_one() {
-        let cache = ColorCache::with_capacity(ColorProfile::Ansi16, 0);
+        let cache = ColorCache::with_capacity(ColorDepth::Ansi16, 0);
         assert_eq!(cache.stats().capacity, 1);
     }
 }
@@ -1197,19 +1076,19 @@ mod downgrade_edge_cases {
         let black = Color::rgb(0, 0, 0);
 
         // White through all stages
-        let w256 = white.downgrade(ColorProfile::Ansi256);
+        let w256 = white.downgrade(ColorDepth::Ansi256);
         assert!(matches!(w256, Color::Ansi256(231))); // Pure white in cube
-        let w16 = w256.downgrade(ColorProfile::Ansi16);
+        let w16 = w256.downgrade(ColorDepth::Ansi16);
         assert!(matches!(w16, Color::Ansi16(Ansi16::BrightWhite)));
-        let wmono = w16.downgrade(ColorProfile::Mono);
+        let wmono = w16.downgrade(ColorDepth::Mono);
         assert_eq!(wmono, Color::Mono(MonoColor::White));
 
         // Black through all stages
-        let b256 = black.downgrade(ColorProfile::Ansi256);
+        let b256 = black.downgrade(ColorDepth::Ansi256);
         assert!(matches!(b256, Color::Ansi256(16))); // Pure black
-        let b16 = b256.downgrade(ColorProfile::Ansi16);
+        let b16 = b256.downgrade(ColorDepth::Ansi16);
         assert!(matches!(b16, Color::Ansi16(Ansi16::Black)));
-        let bmono = b16.downgrade(ColorProfile::Mono);
+        let bmono = b16.downgrade(ColorDepth::Mono);
         assert_eq!(bmono, Color::Mono(MonoColor::Black));
     }
 
@@ -1218,13 +1097,13 @@ mod downgrade_edge_cases {
         // Red should stay "reddish" through the pipeline
         let red = Color::rgb(255, 0, 0);
 
-        let r256 = red.downgrade(ColorProfile::Ansi256);
+        let r256 = red.downgrade(ColorDepth::Ansi256);
         let Color::Ansi256(idx) = r256 else {
             panic!("Expected Ansi256");
         };
         assert_eq!(idx, 196); // Pure red in 256-color
 
-        let r16 = r256.downgrade(ColorProfile::Ansi16);
+        let r16 = r256.downgrade(ColorDepth::Ansi16);
         let Color::Ansi16(ansi) = r16 else {
             panic!("Expected Ansi16");
         };
@@ -1416,16 +1295,16 @@ mod downgrade_edge_cases {
     fn downgrade_at_same_level_is_identity() {
         // Downgrading to the same level should not change the color
         let ansi16 = Color::Ansi16(Ansi16::Red);
-        assert_eq!(ansi16.downgrade(ColorProfile::Ansi16), ansi16);
+        assert_eq!(ansi16.downgrade(ColorDepth::Ansi16), ansi16);
 
         let ansi256 = Color::Ansi256(100);
-        assert_eq!(ansi256.downgrade(ColorProfile::Ansi256), ansi256);
+        assert_eq!(ansi256.downgrade(ColorDepth::Ansi256), ansi256);
 
         let mono = Color::Mono(MonoColor::Black);
-        assert_eq!(mono.downgrade(ColorProfile::Mono), mono);
+        assert_eq!(mono.downgrade(ColorDepth::Mono), mono);
 
         let rgb = Color::rgb(1, 2, 3);
-        assert_eq!(rgb.downgrade(ColorProfile::TrueColor), rgb);
+        assert_eq!(rgb.downgrade(ColorDepth::TrueColor), rgb);
     }
 
     #[test]
@@ -1433,7 +1312,7 @@ mod downgrade_edge_cases {
         // Ansi16 should not change when downgraded to Ansi256
         // (it's already "lower fidelity")
         let color = Color::Ansi16(Ansi16::Cyan);
-        assert_eq!(color.downgrade(ColorProfile::Ansi256), color);
+        assert_eq!(color.downgrade(ColorDepth::Ansi256), color);
     }
 
     #[test]
@@ -1442,15 +1321,15 @@ mod downgrade_edge_cases {
         let black = Color::Mono(MonoColor::Black);
         let white = Color::Mono(MonoColor::White);
 
-        assert_eq!(black.downgrade(ColorProfile::TrueColor), black);
-        assert_eq!(black.downgrade(ColorProfile::Ansi256), black);
-        assert_eq!(black.downgrade(ColorProfile::Ansi16), black);
-        assert_eq!(black.downgrade(ColorProfile::Mono), black);
+        assert_eq!(black.downgrade(ColorDepth::TrueColor), black);
+        assert_eq!(black.downgrade(ColorDepth::Ansi256), black);
+        assert_eq!(black.downgrade(ColorDepth::Ansi16), black);
+        assert_eq!(black.downgrade(ColorDepth::Mono), black);
 
-        assert_eq!(white.downgrade(ColorProfile::TrueColor), white);
-        assert_eq!(white.downgrade(ColorProfile::Ansi256), white);
-        assert_eq!(white.downgrade(ColorProfile::Ansi16), white);
-        assert_eq!(white.downgrade(ColorProfile::Mono), white);
+        assert_eq!(white.downgrade(ColorDepth::TrueColor), white);
+        assert_eq!(white.downgrade(ColorDepth::Ansi256), white);
+        assert_eq!(white.downgrade(ColorDepth::Ansi16), white);
+        assert_eq!(white.downgrade(ColorDepth::Mono), white);
     }
 
     // =========================================================================

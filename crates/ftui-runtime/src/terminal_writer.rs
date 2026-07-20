@@ -68,7 +68,7 @@ use crate::render_trace::{
     RenderTraceFrame, RenderTraceRecorder, build_diff_runs_payload, build_full_buffer_payload,
 };
 use ftui_core::inline_mode::InlineStrategy;
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_render::buffer::{Buffer, DirtySpanConfig, DirtySpanStats};
 use ftui_render::counting_writer::CountingWriter;
 use ftui_render::diff::{BufferDiff, TileDiffConfig, TileDiffFallback, TileDiffStats};
@@ -2483,7 +2483,7 @@ mod tests {
 
     fn full_caps() -> TerminalCapabilities {
         let mut caps = TerminalCapabilities::basic();
-        caps.true_color = true;
+        caps.color_depth = ColorDepth::TrueColor;
         caps.sync_output = true;
         caps
     }
@@ -4951,7 +4951,7 @@ mod tests {
     fn capabilities_accessor() {
         let caps = full_caps();
         let writer = TerminalWriter::new(Vec::new(), ScreenMode::AltScreen, UiAnchor::Bottom, caps);
-        assert!(writer.capabilities().true_color);
+        assert!(writer.capabilities().supports_true_color());
         assert!(writer.capabilities().sync_output);
     }
 

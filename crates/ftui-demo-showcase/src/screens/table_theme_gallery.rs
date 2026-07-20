@@ -12,7 +12,7 @@ use ftui_extras::markdown::{MarkdownRenderer, MarkdownTheme};
 use ftui_layout::{Constraint, Flex, LayoutSizeHint};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
-use ftui_style::{ColorProfile, Style, TablePresetId, TableTheme, TableThemeSpec};
+use ftui_style::{ColorDepth, Style, TablePresetId, TableTheme, TableThemeSpec};
 use ftui_text::{Line, Span, Text, WrapMode};
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -53,9 +53,7 @@ impl PresetSpec {
     fn theme(self) -> TableTheme {
         match self.kind {
             PresetKind::Preset(id) => TableTheme::preset(id),
-            PresetKind::TerminalClassicAnsi => {
-                TableTheme::terminal_classic_for(ColorProfile::Ansi16)
-            }
+            PresetKind::TerminalClassicAnsi => TableTheme::terminal_classic_for(ColorDepth::Ansi16),
             PresetKind::TerminalClassicAuto => TableTheme::terminal_classic(),
         }
     }

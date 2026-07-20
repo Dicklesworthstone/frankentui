@@ -40,7 +40,7 @@
 //! ```
 
 use ftui_core::geometry::Rect;
-use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities, TerminalProfile};
 use ftui_harness::golden::compute_text_checksum;
 use ftui_harness::{
     MatchMode, ProfileCompareMode, buffer_to_text, profile_matrix_text_with_options,
@@ -399,12 +399,11 @@ fn run_conformance_matrix(logger: &mut ConformanceLogger) -> ConformanceResults 
 
     for &(profile, emulator_name) in EMULATOR_PROFILES {
         let caps = TerminalCapabilities::from_profile(profile);
-        let color_depth = if caps.true_color {
-            "true_color"
-        } else if caps.colors_256 {
-            "256"
-        } else {
-            "16"
+        let color_depth = match caps.color_depth {
+            ColorDepth::TrueColor => "true_color",
+            ColorDepth::Ansi256 => "256",
+            ColorDepth::Ansi16 => "16",
+            ColorDepth::Mono => "mono",
         };
         let unicode = if caps.unicode_box_drawing {
             "full"
@@ -704,12 +703,11 @@ fn conformance_matrix_color_depth_axis() {
 
     for &(profile, expected_depth) in depth_expectations {
         let caps = TerminalCapabilities::from_profile(profile);
-        let actual_depth = if caps.true_color {
-            "true_color"
-        } else if caps.colors_256 {
-            "256"
-        } else {
-            "16"
+        let actual_depth = match caps.color_depth {
+            ColorDepth::TrueColor => "true_color",
+            ColorDepth::Ansi256 => "256",
+            ColorDepth::Ansi16 => "16",
+            ColorDepth::Mono => "mono",
         };
         assert_eq!(
             actual_depth, expected_depth,

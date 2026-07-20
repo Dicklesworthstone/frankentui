@@ -23,8 +23,8 @@
 
 use ftui_render::cell::PackedRgba;
 use ftui_style::color::{
-    Color, ColorCache, ColorProfile, MonoColor, Rgb, ansi256_to_rgb, best_text_color,
-    contrast_ratio, relative_luminance, rgb_to_256, rgb_to_mono,
+    Color, ColorCache, ColorDepth, MonoColor, Rgb, ansi256_to_rgb, best_text_color, contrast_ratio,
+    relative_luminance, rgb_to_256, rgb_to_mono,
 };
 use ftui_style::table_theme::Gradient;
 use proptest::prelude::*;
@@ -52,12 +52,12 @@ fn color_strategy() -> impl Strategy<Value = Color> {
     ]
 }
 
-fn profile_strategy() -> impl Strategy<Value = ColorProfile> {
+fn profile_strategy() -> impl Strategy<Value = ColorDepth> {
     prop_oneof![
-        Just(ColorProfile::TrueColor),
-        Just(ColorProfile::Ansi256),
-        Just(ColorProfile::Ansi16),
-        Just(ColorProfile::Mono),
+        Just(ColorDepth::TrueColor),
+        Just(ColorDepth::Ansi256),
+        Just(ColorDepth::Ansi16),
+        Just(ColorDepth::Mono),
     ]
 }
 
@@ -190,7 +190,7 @@ proptest! {
 proptest! {
     #[test]
     fn downgrade_mono_from_any_profile(color in color_strategy()) {
-        let mono = color.downgrade(ColorProfile::Mono);
+        let mono = color.downgrade(ColorDepth::Mono);
         prop_assert!(
             matches!(mono, Color::Mono(_)),
             "Downgrade to Mono should produce Mono, got {:?}",
@@ -418,7 +418,7 @@ proptest! {
     #[test]
     fn downgrade_truecolor_identity(color in color_strategy()) {
         prop_assert_eq!(
-            color.downgrade(ColorProfile::TrueColor),
+            color.downgrade(ColorDepth::TrueColor),
             color,
             "Downgrade to TrueColor should be identity for {:?}",
             color

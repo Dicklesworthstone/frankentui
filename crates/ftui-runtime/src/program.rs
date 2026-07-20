@@ -899,7 +899,7 @@ impl PaneCapabilityMatrix {
 
         let bracketed_paste = caps.bracketed_paste;
         let unicode_box_drawing = caps.unicode_box_drawing;
-        let true_color = caps.true_color;
+        let true_color = caps.supports_true_color();
 
         let degraded =
             !mouse_sgr || !mouse_drag_reliable || !mouse_button_discrimination || !focus_events;
@@ -5150,12 +5150,9 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
         // is already known), is bounded by a timeout, fail-open, and
         // upgrade-only (a non-answer never downgrades a known-good profile).
         //
-        // The `colors_256` guard keeps the probe from re-enabling color the user
-        // explicitly disabled: `NO_COLOR` / a dumb terminal yield
-        // `true_color == false && colors_256 == false`, so the probe is skipped
-        // and the opt-out is honored. The ssh case (`TERM=xterm-256color` →
-        // `colors_256 == true`, `true_color == false`) still triggers it.
-        if !capabilities.true_color && capabilities.colors_256 {
+        // Restrict probing to the degraded 256-color case so explicit
+        // monochrome policy (`NO_COLOR`, dumb/vt100) can never be upgraded.
+        if capabilities.color_depth == ftui_core::terminal_capabilities::ColorDepth::Ansi256 {
             let probe =
                 ftui_core::caps_probe::probe_capabilities(&ftui_core::caps_probe::ProbeConfig {
                     timeout: std::time::Duration::from_millis(300),
@@ -8277,7 +8274,7 @@ mod tests {
                 );
                 (
                     caps.mouse_sgr,
-                    caps.true_color,
+                    caps.supports_true_color(),
                     caps.in_tmux,
                     tree.state_hash(),
                 )

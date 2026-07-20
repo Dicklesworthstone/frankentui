@@ -45,7 +45,7 @@ use crate::grapheme_pool::GraphemePool;
 use crate::link_registry::LinkRegistry;
 use crate::sanitize::sanitize;
 
-pub use ftui_core::terminal_capabilities::TerminalCapabilities;
+pub use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 
 /// Size of the internal write buffer (64KB).
 const BUFFER_CAPACITY: usize = 64 * 1024;
@@ -399,6 +399,15 @@ impl CellStyle {
             attrs: cell.attrs.flags(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolvedColor {
+    Suppressed,
+    Default,
+    Ansi16(u8),
+    Ansi256(u8),
+    TrueColor(u8, u8, u8),
 }
 
 /// State-tracked ANSI presenter.
@@ -926,7 +935,10 @@ impl<W: Write> Presenter<W> {
         let new_style = CellStyle::from_cell(cell);
 
         // Check if style changed
-        if self.current_style == Some(new_style) {
+        if self
+            .current_style
+            .is_some_and(|current| self.styles_equivalent(current, new_style))
+        {
             return Ok(());
         }
 
@@ -947,16 +959,66 @@ impl<W: Write> Presenter<W> {
     /// Full style apply (reset + set all properties). Used when previous state is unknown.
     fn emit_style_full(&mut self, style: CellStyle) -> io::Result<()> {
         ansi::sgr_reset(&mut self.writer)?;
-        if style.fg.a() > 0 {
-            ansi::sgr_fg_packed(&mut self.writer, style.fg)?;
+        let fg = self.resolve_color(style.fg);
+        if !matches!(fg, ResolvedColor::Default | ResolvedColor::Suppressed) {
+            self.emit_foreground(fg)?;
         }
-        if style.bg.a() > 0 {
-            ansi::sgr_bg_packed(&mut self.writer, style.bg)?;
+        let bg = self.resolve_color(style.bg);
+        if !matches!(bg, ResolvedColor::Default | ResolvedColor::Suppressed) {
+            self.emit_background(bg)?;
         }
         if !style.attrs.is_empty() {
             ansi::sgr_flags(&mut self.writer, style.attrs)?;
         }
         Ok(())
+    }
+
+    #[inline]
+    fn resolve_color(&self, color: PackedRgba) -> ResolvedColor {
+        if self.capabilities.color_depth == ColorDepth::Mono {
+            return ResolvedColor::Suppressed;
+        }
+        if color.a() == 0 {
+            return ResolvedColor::Default;
+        }
+
+        match self.capabilities.color_depth {
+            ColorDepth::Mono => ResolvedColor::Suppressed,
+            ColorDepth::Ansi16 => {
+                ResolvedColor::Ansi16(ansi::rgb_to_ansi16(color.r(), color.g(), color.b()))
+            }
+            ColorDepth::Ansi256 => {
+                ResolvedColor::Ansi256(ansi::rgb_to_ansi256(color.r(), color.g(), color.b()))
+            }
+            ColorDepth::TrueColor => ResolvedColor::TrueColor(color.r(), color.g(), color.b()),
+        }
+    }
+
+    #[inline]
+    fn styles_equivalent(&self, left: CellStyle, right: CellStyle) -> bool {
+        left.attrs == right.attrs
+            && self.resolve_color(left.fg) == self.resolve_color(right.fg)
+            && self.resolve_color(left.bg) == self.resolve_color(right.bg)
+    }
+
+    fn emit_foreground(&mut self, color: ResolvedColor) -> io::Result<()> {
+        match color {
+            ResolvedColor::Suppressed => Ok(()),
+            ResolvedColor::Default => ansi::sgr_fg_default(&mut self.writer),
+            ResolvedColor::Ansi16(index) => ansi::sgr_fg_16(&mut self.writer, index),
+            ResolvedColor::Ansi256(index) => ansi::sgr_fg_256(&mut self.writer, index),
+            ResolvedColor::TrueColor(r, g, b) => ansi::sgr_fg_rgb(&mut self.writer, r, g, b),
+        }
+    }
+
+    fn emit_background(&mut self, color: ResolvedColor) -> io::Result<()> {
+        match color {
+            ResolvedColor::Suppressed => Ok(()),
+            ResolvedColor::Default => ansi::sgr_bg_default(&mut self.writer),
+            ResolvedColor::Ansi16(index) => ansi::sgr_bg_16(&mut self.writer, index),
+            ResolvedColor::Ansi256(index) => ansi::sgr_bg_256(&mut self.writer, index),
+            ResolvedColor::TrueColor(r, g, b) => ansi::sgr_bg_rgb(&mut self.writer, r, g, b),
+        }
     }
 
     #[inline]
@@ -1009,8 +1071,20 @@ impl<W: Write> Presenter<W> {
     }
 
     #[inline]
-    fn sgr_rgb_len(color: PackedRgba) -> u32 {
-        10 + Self::dec_len_u8(color.r()) + Self::dec_len_u8(color.g()) + Self::dec_len_u8(color.b())
+    fn sgr_truecolor_len(r: u8, g: u8, b: u8) -> u32 {
+        10 + Self::dec_len_u8(r) + Self::dec_len_u8(g) + Self::dec_len_u8(b)
+    }
+
+    #[inline]
+    fn sgr_color_len(color: ResolvedColor, background: bool) -> u32 {
+        match color {
+            ResolvedColor::Suppressed => 0,
+            ResolvedColor::Default => 5,
+            ResolvedColor::Ansi16(index) if background && index >= 8 => 6,
+            ResolvedColor::Ansi16(_) => 5,
+            ResolvedColor::Ansi256(index) => 8 + Self::dec_len_u8(index),
+            ResolvedColor::TrueColor(r, g, b) => Self::sgr_truecolor_len(r, g, b),
+        }
     }
 
     /// Emit minimal SGR delta between old and new styles.
@@ -1020,18 +1094,22 @@ impl<W: Write> Presenter<W> {
     fn emit_style_delta(&mut self, old: CellStyle, new: CellStyle) -> io::Result<()> {
         let attrs_removed = old.attrs & !new.attrs;
         let attrs_added = new.attrs & !old.attrs;
-        let fg_changed = old.fg != new.fg;
-        let bg_changed = old.bg != new.bg;
+        let old_fg = self.resolve_color(old.fg);
+        let new_fg = self.resolve_color(new.fg);
+        let old_bg = self.resolve_color(old.bg);
+        let new_bg = self.resolve_color(new.bg);
+        let fg_changed = old_fg != new_fg;
+        let bg_changed = old_bg != new_bg;
 
         // Hot path for VFX-style workloads: attributes are unchanged and only
         // colors vary. In this case, delta emission is always no worse than a
         // reset+reapply baseline, so skip cost estimation and flag diff logic.
         if old.attrs == new.attrs {
             if fg_changed {
-                ansi::sgr_fg_packed(&mut self.writer, new.fg)?;
+                self.emit_foreground(new_fg)?;
             }
             if bg_changed {
-                ansi::sgr_bg_packed(&mut self.writer, new.bg)?;
+                self.emit_background(new_bg)?;
             }
             return Ok(());
         }
@@ -1054,26 +1132,18 @@ impl<W: Write> Presenter<W> {
         delta_len += Self::sgr_flags_len(collateral_reenable);
         delta_len += Self::sgr_flags_len(attrs_added);
         if fg_changed {
-            delta_len += if new.fg.a() == 0 {
-                5
-            } else {
-                Self::sgr_rgb_len(new.fg)
-            };
+            delta_len += Self::sgr_color_len(new_fg, false);
         }
         if bg_changed {
-            delta_len += if new.bg.a() == 0 {
-                5
-            } else {
-                Self::sgr_rgb_len(new.bg)
-            };
+            delta_len += Self::sgr_color_len(new_bg, true);
         }
 
         let mut baseline_len = 4u32;
-        if new.fg.a() > 0 {
-            baseline_len += Self::sgr_rgb_len(new.fg);
+        if !matches!(new_fg, ResolvedColor::Default | ResolvedColor::Suppressed) {
+            baseline_len += Self::sgr_color_len(new_fg, false);
         }
-        if new.bg.a() > 0 {
-            baseline_len += Self::sgr_rgb_len(new.bg);
+        if !matches!(new_bg, ResolvedColor::Default | ResolvedColor::Suppressed) {
+            baseline_len += Self::sgr_color_len(new_bg, true);
         }
         baseline_len += Self::sgr_flags_len(new.attrs);
 
@@ -1099,12 +1169,12 @@ impl<W: Write> Presenter<W> {
 
         // Handle fg color change
         if fg_changed {
-            ansi::sgr_fg_packed(&mut self.writer, new.fg)?;
+            self.emit_foreground(new_fg)?;
         }
 
         // Handle bg color change
         if bg_changed {
-            ansi::sgr_bg_packed(&mut self.writer, new.bg)?;
+            self.emit_background(new_bg)?;
         }
 
         Ok(())
@@ -1367,24 +1437,79 @@ mod tests {
     use crate::link_registry::LinkRegistry;
 
     fn test_presenter() -> Presenter<Vec<u8>> {
-        let caps = TerminalCapabilities::basic();
+        let mut caps = TerminalCapabilities::basic();
+        caps.color_depth = ColorDepth::TrueColor;
         Presenter::new(Vec::new(), caps)
     }
 
     fn test_presenter_with_sync() -> Presenter<Vec<u8>> {
         let mut caps = TerminalCapabilities::basic();
+        caps.color_depth = ColorDepth::TrueColor;
         caps.sync_output = true;
         Presenter::new(Vec::new(), caps)
     }
 
     fn test_presenter_with_hyperlinks() -> Presenter<Vec<u8>> {
         let mut caps = TerminalCapabilities::basic();
+        caps.color_depth = ColorDepth::TrueColor;
         caps.osc8_hyperlinks = true;
         Presenter::new(Vec::new(), caps)
     }
 
     fn get_output(presenter: Presenter<Vec<u8>>) -> Vec<u8> {
         presenter.into_inner().unwrap()
+    }
+
+    fn presenter_for_color_depth(depth: ColorDepth) -> Presenter<Vec<u8>> {
+        let mut caps = TerminalCapabilities::basic();
+        caps.color_depth = depth;
+        Presenter::new(Vec::new(), caps)
+    }
+
+    #[test]
+    fn style_emission_respects_each_color_depth() {
+        let style = CellStyle {
+            fg: PackedRgba::rgb(255, 0, 0),
+            bg: PackedRgba::rgb(0, 0, 255),
+            attrs: StyleFlags::empty(),
+        };
+
+        let mut truecolor = presenter_for_color_depth(ColorDepth::TrueColor);
+        truecolor.emit_style_full(style).unwrap();
+        assert_eq!(
+            get_output(truecolor),
+            b"\x1b[0m\x1b[38;2;255;0;0m\x1b[48;2;0;0;255m"
+        );
+
+        let mut ansi256 = presenter_for_color_depth(ColorDepth::Ansi256);
+        ansi256.emit_style_full(style).unwrap();
+        assert_eq!(get_output(ansi256), b"\x1b[0m\x1b[38;5;196m\x1b[48;5;21m");
+
+        let mut ansi16 = presenter_for_color_depth(ColorDepth::Ansi16);
+        ansi16.emit_style_full(style).unwrap();
+        assert_eq!(get_output(ansi16), b"\x1b[0m\x1b[91m\x1b[44m");
+
+        let mut mono = presenter_for_color_depth(ColorDepth::Mono);
+        mono.emit_style_full(style).unwrap();
+        assert_eq!(get_output(mono), b"\x1b[0m");
+    }
+
+    #[test]
+    fn downgraded_equivalent_colors_do_not_reemit_style() {
+        let mut presenter = presenter_for_color_depth(ColorDepth::Ansi16);
+        let first = CellStyle {
+            fg: PackedRgba::rgb(255, 0, 0),
+            bg: PackedRgba::TRANSPARENT,
+            attrs: StyleFlags::empty(),
+        };
+        let equivalent = CellStyle {
+            fg: PackedRgba::rgb(254, 1, 1),
+            ..first
+        };
+
+        presenter.current_style = Some(first);
+        presenter.emit_style_delta(first, equivalent).unwrap();
+        assert!(get_output(presenter).is_empty());
     }
 
     fn legacy_plan_row(
@@ -2936,10 +3061,7 @@ mod tests {
         for (old_style, new_style) in &transitions {
             // Measure delta cost
             let delta_buf = {
-                let mut delta_presenter = {
-                    let caps = TerminalCapabilities::basic();
-                    Presenter::new(Vec::new(), caps)
-                };
+                let mut delta_presenter = presenter_for_color_depth(ColorDepth::TrueColor);
                 delta_presenter.current_style = Some(*old_style);
                 delta_presenter
                     .emit_style_delta(*old_style, *new_style)
@@ -2949,10 +3071,7 @@ mod tests {
 
             // Measure reset+apply cost
             let reset_buf = {
-                let mut reset_presenter = {
-                    let caps = TerminalCapabilities::basic();
-                    Presenter::new(Vec::new(), caps)
-                };
+                let mut reset_presenter = presenter_for_color_depth(ColorDepth::TrueColor);
                 reset_presenter.emit_style_full(*new_style).unwrap();
                 reset_presenter.into_inner().unwrap()
             };
@@ -3022,19 +3141,13 @@ mod tests {
             let new_style = random_style(&mut next_u64);
 
             // Measure delta cost
-            let mut delta_p = {
-                let caps = TerminalCapabilities::basic();
-                Presenter::new(Vec::new(), caps)
-            };
+            let mut delta_p = presenter_for_color_depth(ColorDepth::TrueColor);
             delta_p.current_style = Some(old_style);
             delta_p.emit_style_delta(old_style, new_style).unwrap();
             let delta_out = delta_p.into_inner().unwrap();
 
             // Measure reset+apply cost
-            let mut reset_p = {
-                let caps = TerminalCapabilities::basic();
-                Presenter::new(Vec::new(), caps)
-            };
+            let mut reset_p = presenter_for_color_depth(ColorDepth::TrueColor);
             reset_p.emit_style_full(new_style).unwrap();
             let reset_out = reset_p.into_inner().unwrap();
 
@@ -4241,20 +4354,17 @@ mod tests {
     }
 
     #[test]
-    fn sgr_rgb_len_matches_actual() {
-        let color = PackedRgba::rgb(0, 0, 0);
-        let estimated = Presenter::<Vec<u8>>::sgr_rgb_len(color);
-        // "\x1b[38;2;0;0;0m" = 2(CSI) + "38;2;" + "0;0;0" + "m" but sgr_rgb_len
+    fn sgr_truecolor_len_matches_actual() {
+        let estimated = Presenter::<Vec<u8>>::sgr_truecolor_len(0, 0, 0);
+        // "\x1b[38;2;0;0;0m" = 2(CSI) + "38;2;" + "0;0;0" + "m" but the estimate
         // is used for cost comparison, not exact output. Just check > 0.
         assert!(estimated > 0);
     }
 
     #[test]
-    fn sgr_rgb_len_large_values() {
-        let color = PackedRgba::rgb(255, 255, 255);
-        let small_color = PackedRgba::rgb(0, 0, 0);
-        let large_len = Presenter::<Vec<u8>>::sgr_rgb_len(color);
-        let small_len = Presenter::<Vec<u8>>::sgr_rgb_len(small_color);
+    fn sgr_truecolor_len_large_values() {
+        let large_len = Presenter::<Vec<u8>>::sgr_truecolor_len(255, 255, 255);
+        let small_len = Presenter::<Vec<u8>>::sgr_truecolor_len(0, 0, 0);
         // 255,255,255 has more digits than 0,0,0
         assert!(large_len > small_len);
     }

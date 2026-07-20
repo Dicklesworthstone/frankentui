@@ -967,7 +967,7 @@ mod tests {
     fn presenter_capabilities_are_modern() {
         let p = WebPresenter::new();
         let caps = p.capabilities();
-        assert!(caps.true_color);
+        assert!(caps.supports_true_color());
     }
 
     #[test]

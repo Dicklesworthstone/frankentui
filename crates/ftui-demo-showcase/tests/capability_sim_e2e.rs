@@ -36,7 +36,7 @@ use ftui_core::capability_override::{
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_core::terminal_capabilities::{
-    CapabilityProfileBuilder, TerminalCapabilities, TerminalProfile,
+    CapabilityProfileBuilder, ColorDepth, TerminalCapabilities, TerminalProfile,
 };
 use ftui_demo_showcase::screens::Screen;
 use ftui_demo_showcase::screens::terminal_capabilities::TerminalCapabilitiesScreen;
@@ -113,8 +113,7 @@ fn profile_accuracy_modern() {
     let caps = TerminalCapabilities::from_profile(TerminalProfile::Modern);
 
     assert_eq!(caps.profile(), TerminalProfile::Modern);
-    assert!(caps.true_color);
-    assert!(caps.colors_256);
+    assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     assert!(caps.sync_output);
     assert!(caps.osc8_hyperlinks);
     assert!(caps.scroll_region);
@@ -135,8 +134,7 @@ fn profile_accuracy_xterm_256color() {
     let caps = TerminalCapabilities::from_profile(TerminalProfile::Xterm256Color);
 
     assert_eq!(caps.profile(), TerminalProfile::Xterm256Color);
-    assert!(!caps.true_color, "xterm-256 has no truecolor");
-    assert!(caps.colors_256);
+    assert_eq!(caps.color_depth, ColorDepth::Ansi256);
     assert!(!caps.sync_output, "xterm-256 has no sync");
     assert!(!caps.osc8_hyperlinks);
     assert!(caps.scroll_region);
@@ -157,8 +155,7 @@ fn profile_accuracy_vt100() {
     let caps = TerminalCapabilities::from_profile(TerminalProfile::Vt100);
 
     assert_eq!(caps.profile(), TerminalProfile::Vt100);
-    assert!(!caps.true_color);
-    assert!(!caps.colors_256);
+    assert_eq!(caps.color_depth, ColorDepth::Mono);
     assert!(!caps.sync_output);
     assert!(!caps.osc8_hyperlinks);
     assert!(caps.scroll_region, "vt100 supports scroll regions");
@@ -175,8 +172,7 @@ fn profile_accuracy_dumb() {
     let caps = TerminalCapabilities::from_profile(TerminalProfile::Dumb);
 
     assert_eq!(caps.profile(), TerminalProfile::Dumb);
-    assert!(!caps.true_color);
-    assert!(!caps.colors_256);
+    assert_eq!(caps.color_depth, ColorDepth::Mono);
     assert!(!caps.sync_output);
     assert!(!caps.osc8_hyperlinks);
     assert!(!caps.scroll_region);
@@ -249,8 +245,7 @@ fn profile_accuracy_kitty() {
     let caps = TerminalCapabilities::from_profile(TerminalProfile::Kitty);
 
     assert_eq!(caps.profile(), TerminalProfile::Kitty);
-    assert!(caps.true_color);
-    assert!(caps.colors_256);
+    assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     assert!(caps.kitty_keyboard, "Kitty should have keyboard protocol");
     assert!(caps.focus_events);
     assert!(!caps.in_tmux);
@@ -294,8 +289,7 @@ fn override_with_closure() {
     with_capability_override(CapabilityOverride::dumb(), || {
         assert!(has_active_overrides());
         let caps = TerminalCapabilities::with_overrides();
-        assert!(!caps.true_color, "dumb override disables truecolor");
-        assert!(!caps.colors_256, "dumb override disables 256 colors");
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
     });
 
     assert!(
@@ -313,13 +307,12 @@ fn override_stacking() {
 
     // Stack: disable truecolor
     let mut partial = CapabilityOverride::new();
-    partial.true_color = Some(false);
+    partial.color_depth = Some(ColorDepth::Ansi256);
 
     let _guard = push_override(partial);
     let caps = base.with_overrides_from(base);
 
-    // true_color overridden to false, but colors_256 should remain from base
-    assert!(!caps.true_color, "override should disable truecolor");
+    assert_eq!(caps.color_depth, ColorDepth::Ansi256);
 
     clear_all_overrides();
 
@@ -451,16 +444,16 @@ fn degradation_hyperlinks_disabled_in_muxes() {
 fn degradation_color_fallback_hierarchy() {
     // Verify the color support hierarchy: truecolor > 256 > 16
     let modern = TerminalCapabilities::modern();
-    assert!(modern.true_color && modern.colors_256);
+    assert_eq!(modern.color_depth, ColorDepth::TrueColor);
 
     let xterm256 = TerminalCapabilities::xterm_256color();
-    assert!(!xterm256.true_color && xterm256.colors_256);
+    assert_eq!(xterm256.color_depth, ColorDepth::Ansi256);
 
     let xterm = TerminalCapabilities::xterm();
-    assert!(!xterm.true_color && !xterm.colors_256);
+    assert_eq!(xterm.color_depth, ColorDepth::Ansi16);
 
     let dumb = TerminalCapabilities::dumb();
-    assert!(!dumb.true_color && !dumb.colors_256);
+    assert_eq!(dumb.color_depth, ColorDepth::Mono);
 
     log_jsonl("degradation_color", "hierarchy_correct", true, "");
 }
@@ -518,14 +511,14 @@ fn quirk_windows_console() {
         "quirk_windows",
         "no_mux_no_passthrough",
         true,
-        &format!("truecolor={} 256={}", win.true_color, win.colors_256),
+        &format!("color_depth={}", win.color_depth),
     );
 }
 
 #[test]
 fn quirk_linux_console() {
     let linux = TerminalCapabilities::from_profile(TerminalProfile::LinuxConsole);
-    assert!(!linux.true_color, "Linux console has no truecolor");
+    assert_eq!(linux.color_depth, ColorDepth::Mono);
     assert!(!linux.osc8_hyperlinks);
     assert!(!linux.osc52_clipboard);
     assert!(!linux.kitty_keyboard);
@@ -842,13 +835,11 @@ fn profile_from_str_aliases() {
 #[test]
 fn builder_custom_profile() {
     let caps = TerminalCapabilities::builder()
-        .colors_256(true)
-        .true_color(false)
+        .color_depth(ColorDepth::Ansi256)
         .mouse_sgr(true)
         .build();
 
-    assert!(caps.colors_256);
-    assert!(!caps.true_color);
+    assert_eq!(caps.color_depth, ColorDepth::Ansi256);
     assert!(caps.mouse_sgr);
     assert!(!caps.sync_output, "builder defaults are off");
 
@@ -858,11 +849,10 @@ fn builder_custom_profile() {
 #[test]
 fn builder_from_profile_override() {
     let caps = CapabilityProfileBuilder::from_profile(TerminalProfile::Modern)
-        .true_color(false) // Override one field
+        .color_depth(ColorDepth::Ansi256)
         .build();
 
-    assert!(!caps.true_color, "overridden field");
-    assert!(caps.colors_256, "non-overridden field from Modern");
+    assert_eq!(caps.color_depth, ColorDepth::Ansi256);
     assert!(caps.sync_output, "non-overridden field from Modern");
 
     log_jsonl("builder_profile_override", "selective_override", true, "");
@@ -886,11 +876,7 @@ fn edge_case_override_apply_to_dumb() {
     let modern_override = CapabilityOverride::modern();
     let result = modern_override.apply_to(dumb);
 
-    assert!(
-        result.true_color,
-        "override should enable truecolor on dumb"
-    );
-    assert!(result.colors_256);
+    assert_eq!(result.color_depth, ColorDepth::TrueColor);
     assert!(result.sync_output);
 
     log_jsonl("edge_override_on_dumb", "applies_correctly", true, "");

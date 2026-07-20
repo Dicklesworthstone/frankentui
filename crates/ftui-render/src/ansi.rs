@@ -323,6 +323,106 @@ fn write_csi_u32_suffix<W: Write>(w: &mut W, value: u32, suffix: u8) -> io::Resu
     w.write_all(&buf[..3 + len])
 }
 
+const ANSI16_RGB: [(u8, u8, u8); 16] = [
+    (0, 0, 0),
+    (205, 0, 0),
+    (0, 205, 0),
+    (205, 205, 0),
+    (0, 0, 238),
+    (205, 0, 205),
+    (0, 205, 205),
+    (229, 229, 229),
+    (127, 127, 127),
+    (255, 0, 0),
+    (0, 255, 0),
+    (255, 255, 0),
+    (92, 92, 255),
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 255, 255),
+];
+
+#[inline]
+const fn ansi_cube_index(value: u8) -> u8 {
+    if value < 48 {
+        0
+    } else if value < 115 {
+        1
+    } else {
+        (value - 35) / 40
+    }
+}
+
+#[inline]
+const fn ansi256_rgb(index: u8) -> (u8, u8, u8) {
+    if index < 16 {
+        return ANSI16_RGB[index as usize];
+    }
+    if index >= 232 {
+        let gray = 8 + 10 * (index - 232);
+        return (gray, gray, gray);
+    }
+
+    let index = index - 16;
+    let r = index / 36;
+    let g = (index / 6) % 6;
+    let b = index % 6;
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    (LEVELS[r as usize], LEVELS[g as usize], LEVELS[b as usize])
+}
+
+#[inline]
+fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> u64 {
+    let dr = i32::from(a.0) - i32::from(b.0);
+    let dg = i32::from(a.1) - i32::from(b.1);
+    let db = i32::from(a.2) - i32::from(b.2);
+    2126 * (dr * dr) as u64 + 7152 * (dg * dg) as u64 + 722 * (db * db) as u64
+}
+
+/// Convert RGB to a deterministic ANSI 256-color palette index.
+///
+/// Non-gray colors map to the nearest 6x6x6 cube cell in constant time. Exact
+/// grays compare that cube cell with the grayscale ramp and keep the closer
+/// candidate.
+#[must_use]
+pub fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
+    let cube = 16 + 36 * ansi_cube_index(r) + 6 * ansi_cube_index(g) + ansi_cube_index(b);
+
+    if r != g || g != b {
+        return cube;
+    }
+    if r < 8 {
+        return 16;
+    }
+    if r > 246 {
+        return 231;
+    }
+
+    let gray = 232 + ((r - 8) / 10).min(23);
+    let target = (r, g, b);
+    if color_distance(target, ansi256_rgb(cube)) <= color_distance(target, ansi256_rgb(gray)) {
+        cube
+    } else {
+        gray
+    }
+}
+
+/// Convert RGB to the deterministic nearest ANSI 16-color palette index.
+#[must_use]
+pub fn rgb_to_ansi16(r: u8, g: u8, b: u8) -> u8 {
+    let target = (r, g, b);
+    let mut best_index = 0;
+    let mut best_distance = u64::MAX;
+    for (index, candidate) in ANSI16_RGB.iter().copied().enumerate() {
+        let distance = color_distance(target, candidate);
+        if distance < best_distance {
+            best_index = index as u8;
+            best_distance = distance;
+        }
+    }
+    best_index
+}
+
 /// Write SGR sequence for true color foreground: `CSI 38;2;r;g;b m`
 pub fn sgr_fg_rgb<W: Write>(w: &mut W, r: u8, g: u8, b: u8) -> io::Result<()> {
     write_sgr_rgb_seq(w, SGR_FG_RGB_PREFIX, r, g, b)
@@ -819,6 +919,15 @@ mod tests {
     #[test]
     fn sgr_bg_256_bytes() {
         assert_eq!(to_bytes(|w| sgr_bg_256(w, 232)), b"\x1b[48;5;232m");
+    }
+
+    #[test]
+    fn rgb_palette_downgrade_is_deterministic() {
+        assert_eq!(rgb_to_ansi256(255, 0, 0), 196);
+        assert_eq!(rgb_to_ansi256(0, 0, 255), 21);
+        assert_eq!(rgb_to_ansi256(128, 128, 128), 244);
+        assert_eq!(rgb_to_ansi16(255, 0, 0), 9);
+        assert_eq!(rgb_to_ansi16(0, 0, 255), 4);
     }
 
     #[test]

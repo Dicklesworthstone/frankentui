@@ -2,7 +2,7 @@
 
 //! TableTheme core types and preset definitions.
 
-use crate::color::{Ansi16, Color, ColorProfile};
+use crate::color::{Ansi16, Color, ColorDepth};
 use crate::{Style, StyleFlags};
 use ftui_render::cell::PackedRgba;
 use std::hash::{Hash, Hasher};
@@ -1496,12 +1496,12 @@ impl TableTheme {
     /// ANSI-16 baseline with richer palettes on 256/truecolor terminals.
     #[must_use]
     pub fn terminal_classic() -> Self {
-        Self::terminal_classic_for(ColorProfile::detect())
+        Self::terminal_classic_for(ColorDepth::detect())
     }
 
     /// ANSI-16 baseline with richer palettes on 256/truecolor terminals.
     #[must_use]
-    pub fn terminal_classic_for(profile: ColorProfile) -> Self {
+    pub fn terminal_classic_for(profile: ColorDepth) -> Self {
         let border = classic_color(profile, (160, 160, 160), Ansi16::BrightBlack);
         let header_fg = classic_color(profile, (245, 245, 245), Ansi16::BrightWhite);
         let header_bg = classic_color(profile, (0, 90, 140), Ansi16::Blue);
@@ -1808,9 +1808,9 @@ impl Default for TableTheme {
 }
 
 #[inline]
-fn classic_color(profile: ColorProfile, rgb: (u8, u8, u8), ansi16: Ansi16) -> PackedRgba {
+fn classic_color(profile: ColorDepth, rgb: (u8, u8, u8), ansi16: Ansi16) -> PackedRgba {
     let color = match profile {
-        ColorProfile::Ansi16 => Color::Ansi16(ansi16),
+        ColorDepth::Ansi16 => Color::Ansi16(ansi16),
         _ => Color::rgb(rgb.0, rgb.1, rgb.2).downgrade(profile),
     };
     let rgb = color.to_rgb();
@@ -2313,7 +2313,7 @@ mod tests {
 
     #[test]
     fn terminal_classic_keeps_profile() {
-        let theme = TableTheme::terminal_classic_for(ColorProfile::Ansi16);
+        let theme = TableTheme::terminal_classic_for(ColorDepth::Ansi16);
         assert_eq!(theme.preset_id, Some(TablePresetId::TerminalClassic));
         assert!(theme.column_gap > 0);
     }
@@ -2377,7 +2377,7 @@ mod tests {
         for preset in presets {
             let theme = match preset {
                 TablePresetId::TerminalClassic => {
-                    TableTheme::terminal_classic_for(ColorProfile::Ansi16)
+                    TableTheme::terminal_classic_for(ColorDepth::Ansi16)
                 }
                 _ => TableTheme::preset(preset),
             };

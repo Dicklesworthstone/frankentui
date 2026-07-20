@@ -37,7 +37,7 @@ use ftui_core::capability_override::{
     CapabilityOverride, clear_all_overrides, has_active_overrides, override_depth, push_override,
     with_capability_override,
 };
-use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities, TerminalProfile};
 use std::io::Write;
 
 // ============================================================================
@@ -124,8 +124,8 @@ impl CapSimLogger {
 fn caps_summary(caps: &TerminalCapabilities) -> String {
     format!(
         "tc={},256={},sync={},hyper={},scroll={},mux={},kitty={},focus={},paste={},mouse={},clip={}",
-        caps.true_color as u8,
-        caps.colors_256 as u8,
+        caps.supports_true_color() as u8,
+        caps.supports_256_colors() as u8,
         caps.sync_output as u8,
         caps.osc8_hyperlinks as u8,
         caps.scroll_region as u8,
@@ -162,8 +162,7 @@ fn capability_sim_profile_modern() {
     let mut logger = CapSimLogger::new("profile_modern");
     let caps = TerminalCapabilities::modern();
 
-    assert!(caps.true_color, "PROF-1: modern should have true color");
-    assert!(caps.colors_256, "PROF-1: modern should have 256 colors");
+    assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     assert!(caps.sync_output, "PROF-1: modern should have sync output");
     assert!(
         caps.osc8_hyperlinks,
@@ -196,8 +195,7 @@ fn capability_sim_profile_xterm_256color() {
     let mut logger = CapSimLogger::new("profile_xterm256");
     let caps = TerminalCapabilities::xterm_256color();
 
-    assert!(!caps.true_color, "PROF-1: xterm256 no true color");
-    assert!(caps.colors_256, "PROF-1: xterm256 has 256 colors");
+    assert_eq!(caps.color_depth, ColorDepth::Ansi256);
     assert!(!caps.sync_output, "PROF-1: xterm256 no sync output");
     assert!(!caps.osc8_hyperlinks, "PROF-1: xterm256 no hyperlinks");
     assert!(caps.scroll_region, "PROF-1: xterm256 has scroll region");
@@ -215,8 +213,7 @@ fn capability_sim_profile_xterm_16() {
     let mut logger = CapSimLogger::new("profile_xterm16");
     let caps = TerminalCapabilities::xterm();
 
-    assert!(!caps.true_color, "PROF-1: xterm no true color");
-    assert!(!caps.colors_256, "PROF-1: xterm no 256 colors");
+    assert_eq!(caps.color_depth, ColorDepth::Ansi16);
     assert!(caps.scroll_region, "PROF-1: xterm has scroll region");
     assert!(caps.bracketed_paste, "PROF-1: xterm has bracketed paste");
     assert!(caps.mouse_sgr, "PROF-1: xterm has mouse sgr");
@@ -233,8 +230,7 @@ fn capability_sim_profile_vt100() {
     let mut logger = CapSimLogger::new("profile_vt100");
     let caps = TerminalCapabilities::vt100();
 
-    assert!(!caps.true_color, "PROF-1: vt100 no true color");
-    assert!(!caps.colors_256, "PROF-1: vt100 no 256 colors");
+    assert_eq!(caps.color_depth, ColorDepth::Mono);
     assert!(!caps.has_color(), "PROF-1: vt100 has no color at all");
     assert!(caps.scroll_region, "PROF-1: vt100 has scroll region");
     assert!(!caps.bracketed_paste, "PROF-1: vt100 no bracketed paste");
@@ -251,8 +247,7 @@ fn capability_sim_profile_dumb() {
     let caps = TerminalCapabilities::dumb();
 
     // Dumb terminal: absolutely nothing
-    assert!(!caps.true_color);
-    assert!(!caps.colors_256);
+    assert_eq!(caps.color_depth, ColorDepth::Mono);
     assert!(!caps.sync_output);
     assert!(!caps.osc8_hyperlinks);
     assert!(!caps.scroll_region);
@@ -263,7 +258,7 @@ fn capability_sim_profile_dumb() {
     assert!(!caps.osc52_clipboard);
     assert!(!caps.in_any_mux());
     assert!(!caps.has_color());
-    assert_eq!(caps.color_depth(), "mono");
+    assert_eq!(caps.color_depth.as_str(), "mono");
 
     logger.log_profile("dumb", &caps_summary(&caps));
     logger.log_invariant("PROF-1", true, "dumb_nothing_enabled");
@@ -276,8 +271,7 @@ fn capability_sim_profile_kitty() {
     let caps = TerminalCapabilities::kitty();
 
     // Kitty should match Modern's features
-    assert!(caps.true_color);
-    assert!(caps.colors_256);
+    assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     assert!(caps.sync_output);
     assert!(caps.osc8_hyperlinks);
     assert!(caps.kitty_keyboard);
@@ -341,9 +335,9 @@ fn capability_sim_color_depth_ordering() {
     let xterm256 = TerminalCapabilities::xterm_256color();
     let modern = TerminalCapabilities::modern();
 
-    assert_eq!(dumb.color_depth(), "mono");
-    assert_eq!(xterm256.color_depth(), "256");
-    assert_eq!(modern.color_depth(), "truecolor");
+    assert_eq!(dumb.color_depth, ColorDepth::Mono);
+    assert_eq!(xterm256.color_depth, ColorDepth::Ansi256);
+    assert_eq!(modern.color_depth, ColorDepth::TrueColor);
 
     // has_color() should be false for mono
     assert!(!dumb.has_color());
@@ -360,26 +354,19 @@ fn capability_sim_color_depth_all_profiles() {
 
     for profile in &ALL_PROFILES {
         let caps = TerminalCapabilities::from_profile(*profile);
-        let depth = caps.color_depth();
+        let depth = caps.color_depth.as_str();
 
         // Verify depth is valid
         assert!(
-            ["mono", "256", "truecolor"].contains(&depth),
+            ["mono", "ansi16", "ansi256", "truecolor"].contains(&depth),
             "PROF-1: {profile:?} has invalid color_depth: {depth}"
         );
 
-        // Verify depth consistency with flags
-        match depth {
-            "truecolor" => assert!(
-                caps.true_color,
-                "{profile:?}: truecolor but true_color=false"
-            ),
-            "256" => {
-                assert!(!caps.true_color, "{profile:?}: 256 but true_color=true");
-                assert!(caps.colors_256, "{profile:?}: 256 but colors_256=false");
-            }
-            "mono" => assert!(!caps.has_color(), "{profile:?}: mono but has_color()=true"),
-            _ => unreachable!(),
+        match caps.color_depth {
+            ColorDepth::TrueColor => assert!(caps.supports_true_color()),
+            ColorDepth::Ansi256 => assert!(caps.supports_256_colors()),
+            ColorDepth::Ansi16 => assert!(caps.has_color()),
+            ColorDepth::Mono => assert!(!caps.has_color()),
         }
 
         logger.log_profile(&format!("{profile:?}"), &format!("depth={depth}"));
@@ -398,15 +385,10 @@ fn capability_sim_override_apply_single() {
     let mut logger = CapSimLogger::new("override_single");
 
     let base = TerminalCapabilities::modern();
-    let override_cfg = CapabilityOverride::new().true_color(Some(false));
+    let override_cfg = CapabilityOverride::new().color_depth(Some(ColorDepth::Ansi256));
     let result = override_cfg.apply_to(base);
 
-    assert!(
-        !result.true_color,
-        "OVER-1: override should disable true color"
-    );
-    // Other fields should remain from base
-    assert!(result.colors_256, "OVER-1: unoverridden field preserved");
+    assert_eq!(result.color_depth, ColorDepth::Ansi256);
     assert!(result.sync_output, "OVER-1: unoverridden field preserved");
 
     logger.log_invariant("OVER-1", true, "single_override");
@@ -420,28 +402,19 @@ fn capability_sim_override_stacking_precedence() {
     let base = TerminalCapabilities::dumb();
 
     // First override: enable true color
-    let over1 = CapabilityOverride::new().true_color(Some(true));
+    let over1 = CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor));
     let after1 = over1.apply_to(base);
-    assert!(
-        after1.true_color,
-        "OVER-1: first override enables true color"
-    );
+    assert_eq!(after1.color_depth, ColorDepth::TrueColor);
 
     // Second override: disable it again
-    let over2 = CapabilityOverride::new().true_color(Some(false));
+    let over2 = CapabilityOverride::new().color_depth(Some(ColorDepth::Ansi256));
     let after2 = over2.apply_to(after1);
-    assert!(
-        !after2.true_color,
-        "OVER-1: second override should win (inner over outer)"
-    );
+    assert_eq!(after2.color_depth, ColorDepth::Ansi256);
 
     // Third override: None (no change)
     let over3 = CapabilityOverride::new(); // all None
     let after3 = over3.apply_to(after2);
-    assert!(
-        !after3.true_color,
-        "OVER-1: None override preserves previous value"
-    );
+    assert_eq!(after3.color_depth, ColorDepth::Ansi256);
 
     logger.log_invariant("OVER-1", true, "stacking_precedence");
     logger.log_complete(true, 3);
@@ -455,8 +428,7 @@ fn capability_sim_override_dumb_disables_all() {
     let dumb_override = CapabilityOverride::dumb();
     let result = dumb_override.apply_to(base);
 
-    assert!(!result.true_color);
-    assert!(!result.colors_256);
+    assert_eq!(result.color_depth, ColorDepth::Mono);
     assert!(!result.sync_output);
     assert!(!result.osc8_hyperlinks);
     assert!(!result.scroll_region);
@@ -481,8 +453,7 @@ fn capability_sim_override_modern_enables_all() {
     let modern_override = CapabilityOverride::modern();
     let result = modern_override.apply_to(base);
 
-    assert!(result.true_color);
-    assert!(result.colors_256);
+    assert_eq!(result.color_depth, ColorDepth::TrueColor);
     assert!(result.sync_output);
     assert!(result.osc8_hyperlinks);
     assert!(result.scroll_region);
@@ -515,13 +486,8 @@ fn capability_sim_override_tmux_simulation() {
         !result.kitty_keyboard,
         "OVER-1: tmux disables kitty keyboard"
     );
-    assert!(result.colors_256, "OVER-1: tmux enables 256 colors");
+    assert_eq!(result.color_depth, ColorDepth::Ansi256);
     assert!(result.bracketed_paste, "OVER-1: tmux keeps bracketed paste");
-    // true_color is None in tmux override, so inherits from base (modern = true)
-    assert!(
-        result.true_color,
-        "OVER-1: tmux inherits true_color from base"
-    );
 
     logger.log_invariant("OVER-1", true, "tmux_simulation");
     logger.log_complete(true, 7);
@@ -587,15 +553,17 @@ fn capability_sim_override_nested_guards() {
     clear_all_overrides();
 
     {
-        let _g1 = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let _g1 = push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::TrueColor)));
         assert_eq!(override_depth(), 1);
 
         {
-            let _g2 = push_override(CapabilityOverride::new().true_color(Some(false)));
+            let _g2 =
+                push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::Ansi256)));
             assert_eq!(override_depth(), 2);
 
             {
-                let _g3 = push_override(CapabilityOverride::new().colors_256(Some(true)));
+                let _g3 =
+                    push_override(CapabilityOverride::new().color_depth(Some(ColorDepth::Ansi16)));
                 assert_eq!(override_depth(), 3, "OVER-2: three nested overrides");
             }
             assert_eq!(override_depth(), 2, "OVER-2: back to 2 after inner drop");
@@ -758,10 +726,9 @@ fn capability_sim_tmux_disables_advanced_features() {
     assert!(!caps.kitty_keyboard, "QUIRK-1: tmux no kitty keyboard");
     assert!(!caps.focus_events, "QUIRK-1: tmux no focus events");
     assert!(!caps.osc52_clipboard, "QUIRK-1: tmux no clipboard");
-    assert!(!caps.true_color, "QUIRK-1: tmux no true color by default");
+    assert_eq!(caps.color_depth, ColorDepth::Ansi256);
 
     // tmux does support some features
-    assert!(caps.colors_256, "QUIRK-1: tmux has 256 colors");
     assert!(caps.scroll_region, "QUIRK-1: tmux has scroll region (raw)");
     assert!(caps.bracketed_paste, "QUIRK-1: tmux has bracketed paste");
     assert!(caps.mouse_sgr, "QUIRK-1: tmux has mouse sgr");
@@ -779,8 +746,7 @@ fn capability_sim_screen_quirks() {
     assert!(caps.in_screen);
     assert!(!caps.sync_output, "QUIRK-1: screen no sync output");
     assert!(!caps.osc8_hyperlinks, "QUIRK-1: screen no hyperlinks");
-    assert!(!caps.true_color, "QUIRK-1: screen no true color");
-    assert!(caps.colors_256, "QUIRK-1: screen has 256 colors");
+    assert_eq!(caps.color_depth, ColorDepth::Ansi256);
 
     logger.log_invariant("QUIRK-1", true, "screen_quirks");
     logger.log_complete(true, 5);
@@ -794,7 +760,7 @@ fn capability_sim_zellij_quirks() {
 
     // Zellij is more capable than tmux/screen
     assert!(caps.in_zellij);
-    assert!(caps.true_color, "QUIRK-1: zellij supports true color");
+    assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     assert!(caps.focus_events, "QUIRK-1: zellij supports focus events");
     assert!(!caps.sync_output, "QUIRK-1: zellij still no sync output");
     assert!(!caps.osc8_hyperlinks, "QUIRK-1: zellij no hyperlinks");
@@ -810,7 +776,7 @@ fn capability_sim_windows_console_quirks() {
 
     let caps = TerminalCapabilities::windows_console();
 
-    assert!(caps.true_color, "QUIRK-1: windows has true color");
+    assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     assert!(caps.osc8_hyperlinks, "QUIRK-1: windows has hyperlinks");
     assert!(caps.focus_events, "QUIRK-1: windows has focus events");
     assert!(!caps.sync_output, "QUIRK-1: windows no sync output");
@@ -826,8 +792,7 @@ fn capability_sim_linux_console_quirks() {
 
     let caps = TerminalCapabilities::linux_console();
 
-    assert!(!caps.true_color, "QUIRK-1: linux console no true color");
-    assert!(!caps.colors_256, "QUIRK-1: linux console no 256 colors");
+    assert_eq!(caps.color_depth, ColorDepth::Mono);
     assert!(!caps.has_color(), "QUIRK-1: linux console no color");
     assert!(
         caps.scroll_region,
@@ -937,10 +902,10 @@ fn capability_sim_cross_profile_feature_hierarchy() {
 
 fn count_features(caps: &TerminalCapabilities) -> u32 {
     let mut count = 0u32;
-    if caps.true_color {
+    if caps.supports_true_color() {
         count += 1;
     }
-    if caps.colors_256 {
+    if caps.supports_256_colors() {
         count += 1;
     }
     if caps.sync_output {
@@ -999,10 +964,10 @@ fn capability_sim_mux_feature_subset() {
 
 fn count_effective_features(caps: &TerminalCapabilities) -> u32 {
     let mut count = 0u32;
-    if caps.true_color {
+    if caps.supports_true_color() {
         count += 1;
     }
-    if caps.colors_256 {
+    if caps.supports_256_colors() {
         count += 1;
     }
     if caps.use_sync_output() {
@@ -1041,14 +1006,12 @@ fn capability_sim_builder_custom_profile() {
     let mut logger = CapSimLogger::new("builder_custom");
 
     let caps = TerminalCapabilities::builder()
-        .colors_256(true)
-        .true_color(true)
+        .color_depth(ColorDepth::TrueColor)
         .mouse_sgr(true)
         .bracketed_paste(true)
         .build();
 
-    assert!(caps.true_color);
-    assert!(caps.colors_256);
+    assert_eq!(caps.color_depth, ColorDepth::TrueColor);
     assert!(caps.mouse_sgr);
     assert!(caps.bracketed_paste);
     // Everything else should be default (false)
@@ -1071,17 +1034,14 @@ fn capability_sim_override_on_each_profile() {
 
     // Apply a selective override on each base profile
     let override_cfg = CapabilityOverride::new()
-        .true_color(Some(true))
+        .color_depth(Some(ColorDepth::TrueColor))
         .mouse_sgr(Some(false));
 
     for profile in &ALL_PROFILES {
         let base = TerminalCapabilities::from_profile(*profile);
         let result = override_cfg.apply_to(base);
 
-        assert!(
-            result.true_color,
-            "Override should enable true_color on {profile:?}"
-        );
+        assert_eq!(result.color_depth, ColorDepth::TrueColor);
         assert!(
             !result.mouse_sgr,
             "Override should disable mouse_sgr on {profile:?}"
@@ -1092,11 +1052,6 @@ fn capability_sim_override_on_each_profile() {
             result.sync_output, base.sync_output,
             "Non-overridden sync_output should match base for {profile:?}"
         );
-        assert_eq!(
-            result.colors_256, base.colors_256,
-            "Non-overridden colors_256 should match base for {profile:?}"
-        );
-
         logger.log_invariant("OVER-1", true, &format!("override_on_{profile:?}"));
     }
 
@@ -1164,7 +1119,7 @@ fn capability_sim_suite_summary() {
     let upgraded = CapabilityOverride::modern().apply_to(base);
     let downgraded = CapabilityOverride::dumb().apply_to(upgraded);
     // downgraded should match dumb except profile field
-    assert!(!downgraded.true_color);
+    assert_eq!(downgraded.color_depth, ColorDepth::Mono);
     assert!(!downgraded.has_color());
     total_checks += 2;
 

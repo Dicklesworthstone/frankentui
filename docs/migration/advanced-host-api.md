@@ -183,7 +183,7 @@ explicit and distinct from range errors:
 
 | Capability source | Gates |
 |-------------------|-------|
-| `OptionCapabilityProfile { dom, canvas, webgl, webgpu, true_color, max_scrollback_lines }` | `rendererType` (must be advertised) and `scrollback` (≤ host budget) |
+| `OptionCapabilityProfile { dom, canvas, webgl, webgpu, color_depth, max_scrollback_lines }` | `rendererType` (must be advertised) and `scrollback` (≤ host budget) |
 | `HookCapabilities { csi, osc, esc, dcs }` | parser hook classes (disabled class ⇒ `CapabilityDisabled`) |
 
 Capability gating applies **only to otherwise schema-valid values**, so a single

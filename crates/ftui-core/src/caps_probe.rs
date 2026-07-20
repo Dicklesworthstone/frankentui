@@ -36,7 +36,7 @@
 use std::collections::HashMap;
 use web_time::{Duration, Instant};
 
-use crate::terminal_capabilities::TerminalCapabilities;
+use crate::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 
 /// Maximum bytes to read in a single probe response.
 #[cfg(unix)]
@@ -740,8 +740,7 @@ impl CapabilityProber {
         for &cap in &self.confirmed {
             match cap {
                 ProbeableCapability::TrueColor => {
-                    caps.true_color = true;
-                    caps.colors_256 = true;
+                    caps.color_depth = ColorDepth::TrueColor;
                 }
                 ProbeableCapability::SynchronizedOutput => {
                     caps.sync_output = true;
@@ -791,7 +790,7 @@ impl CapabilityProber {
         caps: &TerminalCapabilities,
     ) -> bool {
         match cap {
-            ProbeableCapability::TrueColor => caps.true_color,
+            ProbeableCapability::TrueColor => caps.supports_true_color(),
             ProbeableCapability::SynchronizedOutput => caps.sync_output,
             ProbeableCapability::Hyperlinks => caps.osc8_hyperlinks,
             ProbeableCapability::KittyKeyboard => caps.kitty_keyboard,
@@ -942,9 +941,10 @@ impl TerminalCapabilities {
 
         // DA1 attributes can confirm feature support.
         if let Some(ref attrs) = result.da1_attributes {
-            // Attribute 22 indicates ANSI color support.
-            if attrs.contains(&22) && !self.colors_256 {
-                self.colors_256 = true;
+            // Attribute 22 confirms basic ANSI color support. It does not
+            // distinguish 256-color or truecolor terminals.
+            if attrs.contains(&22) && self.color_depth == ColorDepth::Mono {
+                self.color_depth = ColorDepth::Ansi16;
             }
         }
 
@@ -955,8 +955,7 @@ impl TerminalCapabilities {
         // or the modern-terminal allowlist may legitimately know truecolor that
         // a terminal's terminfo under-reports.
         if result.true_color == Some(true) {
-            self.true_color = true;
-            self.colors_256 = true; // truecolor implies 256-color
+            self.color_depth = ColorDepth::TrueColor;
         }
     }
 }
@@ -1601,20 +1600,20 @@ mod tests {
     #[test]
     fn refine_upgrades_color_from_da1() {
         let mut caps = TerminalCapabilities::basic();
-        assert!(!caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
 
         let result = ProbeResult {
             da1_attributes: Some(vec![1, 6, 22]),
             ..ProbeResult::default()
         };
         caps.refine_from_probe(&result);
-        assert!(caps.colors_256);
+        assert_eq!(caps.color_depth, ColorDepth::Ansi16);
     }
 
     #[test]
     fn refine_does_not_downgrade_color() {
         let mut caps = TerminalCapabilities::basic();
-        caps.colors_256 = true;
+        caps.color_depth = ColorDepth::Ansi256;
 
         // DA1 without attribute 22 should NOT downgrade.
         let result = ProbeResult {
@@ -1622,7 +1621,7 @@ mod tests {
             ..ProbeResult::default()
         };
         caps.refine_from_probe(&result);
-        assert!(caps.colors_256); // Still true.
+        assert_eq!(caps.color_depth, ColorDepth::Ansi256);
     }
 
     // --- XTGETTCAP truecolor (RGB) probe ---
@@ -1676,30 +1675,32 @@ mod tests {
     #[test]
     fn refine_upgrades_truecolor_from_probe() {
         let mut caps = TerminalCapabilities::basic();
-        assert!(!caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         let result = ProbeResult {
             true_color: Some(true),
             ..ProbeResult::default()
         };
         caps.refine_from_probe(&result);
-        assert!(
-            caps.true_color,
+        assert_eq!(
+            caps.color_depth,
+            ColorDepth::TrueColor,
             "a positive RGB probe must upgrade to truecolor (the ssh/COLORTERM-stripped recovery)"
         );
-        assert!(caps.colors_256, "truecolor implies 256-color");
+        assert!(caps.supports_256_colors(), "truecolor implies 256-color");
     }
 
     #[test]
     fn refine_does_not_downgrade_truecolor_on_negative_probe() {
         let mut caps = TerminalCapabilities::basic();
-        caps.true_color = true;
+        caps.color_depth = ColorDepth::TrueColor;
         let result = ProbeResult {
             true_color: Some(false),
             ..ProbeResult::default()
         };
         caps.refine_from_probe(&result);
-        assert!(
-            caps.true_color,
+        assert_eq!(
+            caps.color_depth,
+            ColorDepth::TrueColor,
             "a negative/absent probe must NOT downgrade env-known truecolor (upgrade-only)"
         );
     }
@@ -1934,14 +1935,14 @@ mod tests {
         prober.confirm(ProbeableCapability::Hyperlinks);
 
         let mut caps = TerminalCapabilities::basic();
-        assert!(!caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
         assert!(!caps.sync_output);
         assert!(!caps.osc8_hyperlinks);
 
         prober.apply_upgrades(&mut caps);
 
-        assert!(caps.true_color);
-        assert!(caps.colors_256); // Also upgraded with truecolor.
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
+        assert!(caps.supports_256_colors());
         assert!(caps.sync_output);
         assert!(caps.osc8_hyperlinks);
     }
@@ -1952,13 +1953,13 @@ mod tests {
         // Don't confirm anything.
 
         let mut caps = TerminalCapabilities::basic();
-        caps.true_color = true;
+        caps.color_depth = ColorDepth::TrueColor;
         caps.sync_output = true;
 
         prober.apply_upgrades(&mut caps);
 
         // Still enabled — upgrades only.
-        assert!(caps.true_color);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.sync_output);
     }
 
@@ -1967,7 +1968,7 @@ mod tests {
         let mut prober = CapabilityProber::new(Duration::from_millis(200));
 
         let mut caps = TerminalCapabilities::basic();
-        caps.true_color = true;
+        caps.color_depth = ColorDepth::TrueColor;
         caps.osc8_hyperlinks = true;
         caps.focus_events = true;
 
@@ -2232,7 +2233,7 @@ mod tests {
     fn unit_build_ledgers_with_env_detection() {
         let prober = CapabilityProber::new(Duration::from_millis(200));
         let mut caps = TerminalCapabilities::basic();
-        caps.true_color = true;
+        caps.color_depth = ColorDepth::TrueColor;
 
         let ledgers = prober.build_ledgers(&caps);
         let tc_ledger = ledgers
@@ -2877,7 +2878,7 @@ mod recorded_harness_tests {
         fixture.feed(&mut prober);
 
         let mut caps = TerminalCapabilities::basic();
-        caps.true_color = true; // env says true
+        caps.color_depth = ColorDepth::TrueColor; // env says true
         caps.osc8_hyperlinks = true;
 
         let ledgers = prober.build_ledgers(&caps);

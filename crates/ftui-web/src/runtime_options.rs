@@ -46,6 +46,7 @@
 //! the accessibility preference policies follow.
 
 use core::fmt;
+use ftui_core::terminal_capabilities::ColorDepth;
 
 /// Hard ceiling on scrollback retention, independent of the host's advertised
 /// budget. Guards against absurd payloads even when a host reports a very large
@@ -741,9 +742,9 @@ pub struct OptionCapabilityProfile {
     pub webgl: bool,
     /// Whether the WebGPU renderer is available.
     pub webgpu: bool,
-    /// Whether 24-bit colour is supported (informational; theme colours stay
-    /// host-downgraded rather than gated).
-    pub true_color: bool,
+    /// Maximum color fidelity (informational; theme colors stay host-downgraded
+    /// rather than gated).
+    pub color_depth: ColorDepth,
     /// Maximum scrollback the host will retain in memory.
     pub max_scrollback_lines: u32,
 }
@@ -757,7 +758,7 @@ impl OptionCapabilityProfile {
             canvas: true,
             webgl: false,
             webgpu: false,
-            true_color: false,
+            color_depth: ColorDepth::Ansi16,
             max_scrollback_lines: 10_000,
         }
     }
@@ -770,7 +771,7 @@ impl OptionCapabilityProfile {
             canvas: true,
             webgl: true,
             webgpu: true,
-            true_color: true,
+            color_depth: ColorDepth::TrueColor,
             max_scrollback_lines: SCROLLBACK_HARD_MAX,
         }
     }

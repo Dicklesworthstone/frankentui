@@ -33,6 +33,7 @@
 //! target.
 #![cfg(feature = "input-parser")]
 
+use ftui_core::terminal_capabilities::ColorDepth;
 use ftui_web::runtime_options::{
     CursorStyle, OptionCapabilityProfile, RendererType, RuntimeOptionPatch, RuntimeOptions,
     ThemeColor, ThemePalette,
@@ -58,7 +59,7 @@ const ENGINES: &[EngineProfile] = &[
             canvas: true,
             webgl: true,
             webgpu: true,
-            true_color: true,
+            color_depth: ColorDepth::TrueColor,
             max_scrollback_lines: 1_000_000,
         },
     },
@@ -70,7 +71,7 @@ const ENGINES: &[EngineProfile] = &[
             canvas: true,
             webgl: true,
             webgpu: false,
-            true_color: true,
+            color_depth: ColorDepth::TrueColor,
             max_scrollback_lines: 100_000,
         },
     },
@@ -82,7 +83,7 @@ const ENGINES: &[EngineProfile] = &[
             canvas: true,
             webgl: false,
             webgpu: false,
-            true_color: false,
+            color_depth: ColorDepth::Ansi256,
             max_scrollback_lines: 5_000,
         },
     },
@@ -94,7 +95,7 @@ const ENGINES: &[EngineProfile] = &[
             canvas: false,
             webgl: false,
             webgpu: false,
-            true_color: false,
+            color_depth: ColorDepth::Ansi16,
             max_scrollback_lines: 1_000,
         },
     },

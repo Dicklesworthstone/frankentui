@@ -675,21 +675,44 @@ impl TerminalCapabilitiesScreen {
         vec![
             CapabilityRow {
                 name: "True color (24-bit)",
-                detected: caps.true_color,
-                effective: caps.true_color,
+                detected: caps.supports_true_color(),
+                effective: caps.supports_true_color(),
                 fallback: Self::fallback_text(
-                    caps.true_color,
-                    if caps.colors_256 { "256-color" } else { "mono" },
+                    caps.supports_true_color(),
+                    if caps.supports_256_colors() {
+                        "256-color"
+                    } else if caps.has_color() {
+                        "ANSI 16-color"
+                    } else {
+                        "mono"
+                    },
                 ),
-                reason: Self::reason_for(caps, caps.true_color, caps.true_color, false),
+                reason: Self::reason_for(
+                    caps,
+                    caps.supports_true_color(),
+                    caps.supports_true_color(),
+                    false,
+                ),
                 probeable: Some(ProbeableCapability::TrueColor),
             },
             CapabilityRow {
                 name: "256-color palette",
-                detected: caps.colors_256,
-                effective: caps.colors_256,
-                fallback: Self::fallback_text(caps.colors_256, "mono"),
-                reason: Self::reason_for(caps, caps.colors_256, caps.colors_256, false),
+                detected: caps.supports_256_colors(),
+                effective: caps.supports_256_colors(),
+                fallback: Self::fallback_text(
+                    caps.supports_256_colors(),
+                    if caps.has_color() {
+                        "ANSI 16-color"
+                    } else {
+                        "mono"
+                    },
+                ),
+                reason: Self::reason_for(
+                    caps,
+                    caps.supports_256_colors(),
+                    caps.supports_256_colors(),
+                    false,
+                ),
                 probeable: None,
             },
             CapabilityRow {
@@ -767,13 +790,13 @@ impl TerminalCapabilitiesScreen {
         vec![
             ComparisonRow {
                 name: "True color (24-bit)",
-                detected: detected.true_color,
-                simulated: simulated.true_color,
+                detected: detected.supports_true_color(),
+                simulated: simulated.supports_true_color(),
             },
             ComparisonRow {
                 name: "256-color palette",
-                detected: detected.colors_256,
-                simulated: simulated.colors_256,
+                detected: detected.supports_256_colors(),
+                simulated: simulated.supports_256_colors(),
             },
             ComparisonRow {
                 name: "Synchronized output",
@@ -1002,7 +1025,7 @@ impl TerminalCapabilitiesScreen {
             profile_line,
             format!(
                 "Color depth: {} | Mux: {} | Sync output: {}",
-                active.color_depth(),
+                active.color_depth,
                 mux_state,
                 yes_no(active.use_sync_output())
             ),
@@ -1402,7 +1425,7 @@ impl TerminalCapabilitiesScreen {
 
         let mut footer_lines = vec![format!(
             "Preview: color={} sync={} mux={}",
-            caps.color_depth(),
+            caps.color_depth,
             yes_no(caps.use_sync_output()),
             yes_no(caps.in_any_mux())
         )];

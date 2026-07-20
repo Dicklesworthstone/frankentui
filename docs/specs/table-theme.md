@@ -255,12 +255,12 @@ let renderer = MarkdownRenderer::new(md_theme).table_effect_phase(0.25);
 
 ### 3) Preset Selection Guidance
 ```rust
-use ftui_style::{ColorProfile, TableTheme};
+use ftui_style::{ColorDepth, TableTheme};
 
-let theme = TableTheme::terminal_classic_for(ColorProfile::Ansi16);
+let theme = TableTheme::terminal_classic_for(ColorDepth::Ansi16);
 ```
-- `TableTheme::terminal_classic_for(ColorProfile::Ansi16)` for ANSI-only terminals.
-- `TableTheme::terminal_classic_for(ColorProfile::Ansi256)` when you want ANSI-safe colors but a bit more range.
+- `TableTheme::terminal_classic_for(ColorDepth::Ansi16)` for ANSI-only terminals.
+- `TableTheme::terminal_classic_for(ColorDepth::Ansi256)` when you want ANSI-safe colors but a bit more range.
 - `TableTheme::graphite()` for dense data and maximum legibility.
 - `TableTheme::midnight()` for dark terminals; `TableTheme::paper()` for light themes.
 - `TableTheme::aurora()` or `TableTheme::neon()` when you want visual emphasis.

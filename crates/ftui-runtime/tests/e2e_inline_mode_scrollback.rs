@@ -13,7 +13,7 @@
 //! Run:
 //!   cargo test -p ftui-runtime --test e2e_inline_mode_scrollback
 
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_render::buffer::Buffer;
 use ftui_runtime::{ScreenMode, TerminalWriter, UiAnchor, inline_active_widgets};
 
@@ -27,7 +27,7 @@ fn basic_caps() -> TerminalCapabilities {
 
 fn full_caps() -> TerminalCapabilities {
     let mut caps = TerminalCapabilities::basic();
-    caps.true_color = true;
+    caps.color_depth = ColorDepth::TrueColor;
     caps.sync_output = true;
     caps
 }

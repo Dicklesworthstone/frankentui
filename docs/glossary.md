@@ -93,7 +93,7 @@ This glossary defines terms used throughout FrankenTUI's codebase and documentat
 | Term | Definition |
 |------|------------|
 | **PackedRgba** | 4-byte packed color with RGB + alpha channel. Supports Porter-Duff compositing. |
-| **ColorProfile** | Terminal color capability: `Mono`, `Ansi16`, `Ansi256`, or `TrueColor`. |
+| **ColorDepth** | Canonical terminal color capability: `Mono`, `Ansi16`, `Ansi256`, or `TrueColor`. |
 | **Color Downgrade** | Pipeline to convert colors to lower capability: TrueColor → 256 → 16 → Mono. |
 | **StyleFlags** | 16-bit bitmask for text attributes (bold, italic, underline, etc.). |
 

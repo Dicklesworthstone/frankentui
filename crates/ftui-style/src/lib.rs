@@ -38,7 +38,7 @@ pub use color::{
     Ansi16,
     Color,
     ColorCache,
-    ColorProfile,
+    ColorDepth,
     MonoColor,
     Rgb,
     // WCAG constants
@@ -120,9 +120,9 @@ mod tests {
     }
 
     #[test]
-    fn color_profile_defaults_to_ansi16() {
-        let profile = ColorProfile::detect_from_env(None, None, None);
-        assert_eq!(profile, ColorProfile::Ansi16);
+    fn missing_term_defaults_to_monochrome() {
+        let depth = ColorDepth::detect_from_env(None, None, None);
+        assert_eq!(depth, ColorDepth::Mono);
     }
 
     #[test]

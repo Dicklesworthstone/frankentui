@@ -24,7 +24,7 @@
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::diff::BufferDiff;
-use ftui_render::presenter::{Presenter, TerminalCapabilities};
+use ftui_render::presenter::{ColorDepth, Presenter, TerminalCapabilities};
 
 use ftui_harness::flicker_detection::analyze_stream_with_id;
 
@@ -84,7 +84,7 @@ fn caps_no_sync() -> TerminalCapabilities {
 fn caps_truecolor_synced() -> TerminalCapabilities {
     let mut caps = TerminalCapabilities::basic();
     caps.sync_output = true;
-    caps.true_color = true;
+    caps.color_depth = ColorDepth::TrueColor;
     caps
 }
 

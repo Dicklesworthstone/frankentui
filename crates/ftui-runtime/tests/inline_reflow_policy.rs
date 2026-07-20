@@ -35,7 +35,7 @@
 use std::collections::BTreeMap;
 
 use ftui_core::inline_mode::InlineStrategy;
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_runtime::{ScreenMode, TerminalWriter, UiAnchor};
@@ -62,7 +62,7 @@ fn basic_caps() -> TerminalCapabilities {
 
 fn modern_caps() -> TerminalCapabilities {
     let mut caps = TerminalCapabilities::basic();
-    caps.true_color = true;
+    caps.color_depth = ColorDepth::TrueColor;
     caps.sync_output = true;
     caps.scroll_region = true;
     caps

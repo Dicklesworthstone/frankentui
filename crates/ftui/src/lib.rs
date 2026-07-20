@@ -32,7 +32,7 @@ pub use ftui_core::event::{
     ClipboardEvent, ClipboardSource, Event, KeyCode, KeyEvent, KeyEventKind, Modifiers,
     MouseButton, MouseEvent, MouseEventKind, PasteEvent,
 };
-pub use ftui_core::terminal_capabilities::TerminalCapabilities;
+pub use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 pub use ftui_core::terminal_session::{SessionOptions, TerminalSession};
 
@@ -49,8 +49,8 @@ pub use ftui_render::presenter::Presenter;
 // --- Style re-exports ------------------------------------------------------
 
 pub use ftui_style::{
-    AdaptiveColor, Ansi16, Color, ColorCache, ColorProfile, MonoColor, ResolvedTheme, Rgb, Style,
-    StyleFlags, StyleId, StyleSheet, TablePresetId, TableTheme, Theme, ThemeBuilder,
+    AdaptiveColor, Ansi16, Color, ColorCache, MonoColor, ResolvedTheme, Rgb, Style, StyleFlags,
+    StyleId, StyleSheet, TablePresetId, TableTheme, Theme, ThemeBuilder,
 };
 
 // --- Runtime re-exports (feature-gated for wasm32 compatibility) ----------
