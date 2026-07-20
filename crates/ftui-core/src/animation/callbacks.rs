@@ -225,9 +225,7 @@ impl<A: Animation> Animation for Callbacks<A> {
         self.inner.reset();
         self.state.started_fired = false;
         self.state.completed_fired = false;
-        for fired in &mut self.state.thresholds_fired {
-            *fired = false;
-        }
+        self.state.thresholds_fired.fill(false);
         self.events.clear();
     }
 
