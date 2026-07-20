@@ -222,8 +222,11 @@ If performance changes are introduced as part of reflow work:
 - **Opportunity matrix**: only implement changes with Score ≥ 2.0 (Impact×Confidence/Effort).
 - **Isomorphism proof**: prove ordering/tie-breaking/seed stability and record golden checksums.
 
-### 3.12 Render-Trace + Checksum Format (v1)
+### 3.12 Render-Trace + Checksum Format (v2)
 This format powers deterministic replay + checksum verification for render regressions.
+
+Version 2 replaces the v1 `true_color`/`colors_256` boolean pair with one
+canonical `color_depth` value: `mono`, `ansi16`, `ansi256`, or `truecolor`.
 
 #### Files
 - `trace.jsonl`: one JSON object per line, strict key order (for deterministic diffs).
@@ -235,11 +238,11 @@ This format powers deterministic replay + checksum verification for render regre
 3. **Summary** (`event="trace_summary"`): final counters and checksum chain.
 
 #### Required Header Fields
-- `schema_version` (e.g., `"render-trace-v1"`)
+- `schema_version` (`"render-trace-v2"`)
 - `run_id` (stable UUID/slug)
 - `seed` (or `null`)
 - `env` (os, arch, test_module)
-- `capabilities` (terminal features)
+- `capabilities` (terminal profile, canonical `color_depth`, and terminal features)
 - `policies` (diff/bocpd/conformal toggles + key params)
 - `start_ts_ms` (optional; excluded from checksums)
 

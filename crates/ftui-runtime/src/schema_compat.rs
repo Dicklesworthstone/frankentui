@@ -11,7 +11,7 @@
 //! | Kind           | Current Version        | Format   |
 //! |----------------|------------------------|----------|
 //! | Evidence       | `ftui-evidence-v2`     | JSONL    |
-//! | RenderTrace    | `render-trace-v1`      | JSONL    |
+//! | RenderTrace    | `render-trace-v2`      | JSONL    |
 //! | EventTrace     | `event-trace-v1`       | JSONL.gz |
 //! | GoldenTrace    | `golden-trace-v1`      | JSONL    |
 //! | Telemetry      | `1.0.0`                | OTLP     |
@@ -78,7 +78,7 @@ impl SchemaKind {
     pub const fn current_version(self) -> &'static str {
         match self {
             Self::Evidence => "ftui-evidence-v2",
-            Self::RenderTrace => "render-trace-v1",
+            Self::RenderTrace => crate::render_trace::RENDER_TRACE_SCHEMA_VERSION,
             Self::EventTrace => "event-trace-v1",
             Self::GoldenTrace => "golden-trace-v1",
             Self::Telemetry => "1.0.0",
@@ -630,11 +630,14 @@ mod tests {
 
     #[test]
     fn render_trace_forward_compat() {
-        let result = classify_schema_compat(SchemaKind::RenderTrace, "render-trace-v0");
+        let result = classify_schema_compat(SchemaKind::RenderTrace, "render-trace-v1");
         assert!(result.is_compatible());
         assert!(matches!(
             result.compatibility,
-            Compatibility::Forward { .. }
+            Compatibility::Forward {
+                reader_version: 2,
+                writer_version: 1
+            }
         ));
     }
 

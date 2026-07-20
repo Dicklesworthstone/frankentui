@@ -114,6 +114,7 @@
 //! - Must be bounded with timeouts
 
 use std::env;
+use std::ffi::OsString;
 use std::str::FromStr;
 
 fn normalize_terminal_env_value(value: &str) -> String {
@@ -262,19 +263,33 @@ struct DetectInputs {
 
 impl DetectInputs {
     fn from_env() -> Self {
+        Self::from_env_with(env::var_os)
+    }
+
+    fn from_env_with<F>(get_env: F) -> Self
+    where
+        F: Fn(&str) -> Option<OsString>,
+    {
+        let text = |key| {
+            get_env(key)
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_default()
+        };
+        let utf8_present = |key| get_env(key).is_some_and(|value| value.into_string().is_ok());
+
         Self {
-            no_color: env::var("NO_COLOR").is_ok(),
-            term: env::var("TERM").unwrap_or_default(),
-            term_program: env::var("TERM_PROGRAM").unwrap_or_default(),
-            colorterm: env::var("COLORTERM").unwrap_or_default(),
-            in_tmux: env::var("TMUX").is_ok(),
-            in_screen: env::var("STY").is_ok(),
-            in_zellij: env::var("ZELLIJ").is_ok(),
-            wezterm_unix_socket: env::var("WEZTERM_UNIX_SOCKET").is_ok(),
-            wezterm_pane: env::var("WEZTERM_PANE").is_ok(),
-            wezterm_executable: env::var("WEZTERM_EXECUTABLE").is_ok(),
-            kitty_window_id: env::var("KITTY_WINDOW_ID").is_ok(),
-            wt_session: env::var("WT_SESSION").is_ok(),
+            no_color: get_env("NO_COLOR").is_some(),
+            term: text("TERM"),
+            term_program: text("TERM_PROGRAM"),
+            colorterm: text("COLORTERM"),
+            in_tmux: utf8_present("TMUX"),
+            in_screen: utf8_present("STY"),
+            in_zellij: utf8_present("ZELLIJ"),
+            wezterm_unix_socket: utf8_present("WEZTERM_UNIX_SOCKET"),
+            wezterm_pane: utf8_present("WEZTERM_PANE"),
+            wezterm_executable: utf8_present("WEZTERM_EXECUTABLE"),
+            kitty_window_id: utf8_present("KITTY_WINDOW_ID"),
+            wt_session: utf8_present("WT_SESSION"),
         }
     }
 }
@@ -1510,6 +1525,26 @@ mod tests {
             !caps.osc8_hyperlinks,
             "NO_COLOR must disable OSC 8 hyperlinks"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_no_color_presence_disables_color_without_global_env_mutation() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let non_utf8 = OsString::from_vec(vec![0xff]);
+        let env = DetectInputs::from_env_with(|key| match key {
+            "NO_COLOR" => Some(non_utf8.clone()),
+            "TERM" => Some(OsString::from("xterm-direct")),
+            "TERM_PROGRAM" => Some(OsString::from("WezTerm")),
+            "COLORTERM" => Some(OsString::from("truecolor")),
+            _ => None,
+        });
+
+        assert!(env.no_color, "NO_COLOR is a presence-only contract");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert_eq!(caps.color_depth, ColorDepth::Mono);
+        assert!(!caps.osc8_hyperlinks);
     }
 
     // --- Mux-aware policy tests ---

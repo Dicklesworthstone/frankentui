@@ -123,14 +123,14 @@ fn evidence_garbage_incompat() {
 // ============================================================================
 
 #[test]
-fn render_trace_v0_forward() {
-    let result = classify_schema_compat(SchemaKind::RenderTrace, "render-trace-v0");
+fn render_trace_v1_forward() {
+    let result = classify_schema_compat(SchemaKind::RenderTrace, "render-trace-v1");
     assert!(result.is_compatible());
 }
 
 #[test]
-fn render_trace_v2_backward() {
-    let result = classify_schema_compat(SchemaKind::RenderTrace, "render-trace-v2");
+fn render_trace_v3_backward() {
+    let result = classify_schema_compat(SchemaKind::RenderTrace, "render-trace-v3");
     assert!(!result.is_compatible());
 }
 

@@ -149,7 +149,7 @@ Artifacts:
   - optional payload references (diff runs / full buffers)
 
 Note:
-- `render-trace-v1` (ftui today) is a useful reference implementation of JSONL trace emission + replay.
+- `render-trace-v2` (ftui today) is a useful reference implementation of JSONL trace emission + replay.
   FrankenTerm's `golden-trace-v1` is intended to be compatible in spirit (streamable JSONL + sidecar payloads),
   but is a distinct schema.
 

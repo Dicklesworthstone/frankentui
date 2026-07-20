@@ -185,9 +185,9 @@ Rules:
 - payload formats are versioned by `payload_kind`.
 
 Existing reference implementation (ftui today):
-- `crates/ftui-runtime/src/render_trace.rs` (`schema_version="render-trace-v1"`)
+- `crates/ftui-runtime/src/render_trace.rs` (`schema_version="render-trace-v2"`)
 
-`golden-trace-v1` may supersede `render-trace-v1` for FrankenTerm, but the payload
+`golden-trace-v1` may supersede `render-trace-v2` for FrankenTerm, but the payload
 mechanics (JSONL + sidecar payload directory) should remain compatible.
 
 ---

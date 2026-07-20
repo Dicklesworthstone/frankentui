@@ -132,7 +132,8 @@ pub use program::{
     pane_terminal_target_from_hit, register_pane_terminal_splitter_hits,
 };
 pub use render_trace::{
-    RenderTraceConfig, RenderTraceContext, RenderTraceFrame, RenderTraceRecorder,
+    RENDER_TRACE_SCHEMA_VERSION, RenderTraceConfig, RenderTraceContext, RenderTraceFrame,
+    RenderTraceRecorder,
 };
 pub use retry::{BackoffStrategy, RetryPolicy, task_with_retry, task_with_timeout};
 pub use simulator::{ProgramSimulator, SimulatorError};

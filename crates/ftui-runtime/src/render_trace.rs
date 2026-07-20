@@ -2,7 +2,7 @@
 
 //! Render-trace recorder for deterministic replay (bd-3e1t.4.13).
 //!
-//! Emits JSONL records following the render-trace v1 schema in
+//! Emits JSONL records following the render-trace v2 schema in
 //! `docs/spec/state-machines.md`:
 //! - header (event="trace_header")
 //! - frame (event="frame")
@@ -22,6 +22,9 @@ use ftui_render::grapheme_pool::GraphemePool;
 use crate::conformal_predictor::ConformalConfig;
 use crate::resize_coalescer::CoalescerConfig;
 use crate::terminal_writer::RuntimeDiffConfig;
+
+/// Current render-trace JSONL wire schema.
+pub const RENDER_TRACE_SCHEMA_VERSION: &str = "render-trace-v2";
 
 /// Configuration for render-trace recording.
 #[derive(Debug, Clone)]
@@ -315,9 +318,10 @@ impl RenderTraceHeader {
         let start_ts = opt_u64(self.start_ts_ms);
         format!(
             concat!(
-                r#"{{"event":"trace_header","schema_version":"render-trace-v1","#,
+                r#"{{"event":"trace_header","schema_version":"{}","#,
                 r#""run_id":"{}","seed":{},"env":{},"capabilities":{},"policies":{},"start_ts_ms":{}}}"#
             ),
+            RENDER_TRACE_SCHEMA_VERSION,
             json_escape(&self.run_id),
             seed,
             self.env.to_json(),
@@ -460,18 +464,11 @@ impl RenderTraceCapabilities {
     }
 
     fn to_json(&self) -> String {
-        // `true_color` and `colors_256` are immutable render-trace-v1 wire
-        // fields. Keep them derived from the canonical depth while exposing
-        // the additive depth identifier to newer readers.
-        let true_color = self.color_depth.supports_true_color();
-        let colors_256 = self.color_depth.supports_256_colors();
         format!(
             concat!(
-                r#"{{"profile":"{}","true_color":{},"colors_256":{},"color_depth":"{}","sync_output":{},"osc8_hyperlinks":{},"scroll_region":{},"in_tmux":{},"in_screen":{},"in_zellij":{},"kitty_keyboard":{},"focus_events":{},"bracketed_paste":{},"mouse_sgr":{},"osc52_clipboard":{}}}"#
+                r#"{{"profile":"{}","color_depth":"{}","sync_output":{},"osc8_hyperlinks":{},"scroll_region":{},"in_tmux":{},"in_screen":{},"in_zellij":{},"kitty_keyboard":{},"focus_events":{},"bracketed_paste":{},"mouse_sgr":{},"osc52_clipboard":{}}}"#
             ),
             json_escape(&self.profile),
-            true_color,
-            colors_256,
             self.color_depth.as_str(),
             self.sync_output,
             self.osc8_hyperlinks,
@@ -874,6 +871,7 @@ mod tests {
 
         let text = std::fs::read_to_string(path).expect("read");
         assert!(text.contains("\"event\":\"trace_header\""));
+        assert!(text.contains(RENDER_TRACE_SCHEMA_VERSION));
         assert!(text.contains("\"event\":\"frame\""));
         assert!(text.contains("\"event\":\"trace_summary\""));
     }
@@ -1302,7 +1300,7 @@ mod tests {
         let line = header.to_jsonl();
         assert_eq!(
             line,
-            r#"{"event":"trace_header","schema_version":"render-trace-v1","run_id":"test-run","seed":42,"env":{"os":"linux","arch":"x86_64","test_module":"my_test"},"capabilities":{"profile":"kitty","true_color":true,"colors_256":true,"color_depth":"truecolor","sync_output":true,"osc8_hyperlinks":false,"scroll_region":true,"in_tmux":false,"in_screen":false,"in_zellij":false,"kitty_keyboard":true,"focus_events":true,"bracketed_paste":true,"mouse_sgr":true,"osc52_clipboard":false},"policies":{"diff":{"bayesian":true,"dirty_rows":true,"dirty_spans":false,"guard_band":2,"merge_gap":4},"bocpd":{"enabled":true,"steady_delay_ms":100,"burst_delay_ms":16},"conformal":{"enabled":false,"alpha":null,"min_samples":null,"window_size":null}},"start_ts_ms":null}"#
+            r#"{"event":"trace_header","schema_version":"render-trace-v2","run_id":"test-run","seed":42,"env":{"os":"linux","arch":"x86_64","test_module":"my_test"},"capabilities":{"profile":"kitty","color_depth":"truecolor","sync_output":true,"osc8_hyperlinks":false,"scroll_region":true,"in_tmux":false,"in_screen":false,"in_zellij":false,"kitty_keyboard":true,"focus_events":true,"bracketed_paste":true,"mouse_sgr":true,"osc52_clipboard":false},"policies":{"diff":{"bayesian":true,"dirty_rows":true,"dirty_spans":false,"guard_band":2,"merge_gap":4},"bocpd":{"enabled":true,"steady_delay_ms":100,"burst_delay_ms":16},"conformal":{"enabled":false,"alpha":null,"min_samples":null,"window_size":null}},"start_ts_ms":null}"#
         );
     }
 
@@ -1335,7 +1333,7 @@ mod tests {
     // --- Capabilities JSONL ---
 
     #[test]
-    fn capabilities_to_json_preserves_v1_color_fields() {
+    fn capabilities_to_json_uses_v2_color_depth_contract() {
         let caps = RenderTraceCapabilities {
             profile: "xterm".to_string(),
             color_depth: ColorDepth::Ansi256,
@@ -1354,12 +1352,12 @@ mod tests {
         let json = caps.to_json();
         assert_eq!(
             json,
-            r#"{"profile":"xterm","true_color":false,"colors_256":true,"color_depth":"ansi256","sync_output":false,"osc8_hyperlinks":false,"scroll_region":true,"in_tmux":true,"in_screen":false,"in_zellij":false,"kitty_keyboard":false,"focus_events":false,"bracketed_paste":true,"mouse_sgr":false,"osc52_clipboard":false}"#
+            r#"{"profile":"xterm","color_depth":"ansi256","sync_output":false,"osc8_hyperlinks":false,"scroll_region":true,"in_tmux":true,"in_screen":false,"in_zellij":false,"kitty_keyboard":false,"focus_events":false,"bracketed_paste":true,"mouse_sgr":false,"osc52_clipboard":false}"#
         );
     }
 
     #[test]
-    fn capabilities_v1_color_fields_are_derived_from_depth() {
+    fn capabilities_v2_serializes_every_canonical_color_depth() {
         let mut caps = RenderTraceCapabilities {
             profile: "custom".to_string(),
             color_depth: ColorDepth::Mono,
@@ -1376,29 +1374,20 @@ mod tests {
             osc52_clipboard: false,
         };
 
-        for (depth, legacy_fields) in [
-            (
-                ColorDepth::Mono,
-                r#""true_color":false,"colors_256":false,"color_depth":"mono""#,
-            ),
-            (
-                ColorDepth::Ansi16,
-                r#""true_color":false,"colors_256":false,"color_depth":"ansi16""#,
-            ),
-            (
-                ColorDepth::Ansi256,
-                r#""true_color":false,"colors_256":true,"color_depth":"ansi256""#,
-            ),
-            (
-                ColorDepth::TrueColor,
-                r#""true_color":true,"colors_256":true,"color_depth":"truecolor""#,
-            ),
+        for (depth, identifier) in [
+            (ColorDepth::Mono, "mono"),
+            (ColorDepth::Ansi16, "ansi16"),
+            (ColorDepth::Ansi256, "ansi256"),
+            (ColorDepth::TrueColor, "truecolor"),
         ] {
             caps.color_depth = depth;
+            let json = caps.to_json();
             assert!(
-                caps.to_json().contains(legacy_fields),
-                "legacy render-trace-v1 fields must agree with {depth}"
+                json.contains(&format!(r#""color_depth":"{identifier}""#)),
+                "render-trace-v2 must serialize {depth} canonically"
             );
+            assert!(!json.contains("true_color"));
+            assert!(!json.contains("colors_256"));
         }
     }
 

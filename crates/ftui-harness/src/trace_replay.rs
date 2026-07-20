@@ -2,7 +2,7 @@
 
 //! Render-trace replay harness.
 //!
-//! Replays render-trace v1 JSONL logs into a deterministic buffer model,
+//! Replays render-trace JSONL logs accepted by the current v2 reader into a deterministic buffer model,
 //! verifies per-frame checksums, and reports mismatches with clear diagnostics.
 //!
 //! Designed for CI use: non-interactive, bounded, and deterministic.
@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+
+use ftui_runtime::schema_compat::{SchemaKind, classify_schema_compat};
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
@@ -582,6 +584,7 @@ pub fn replay_trace(path: impl AsRef<Path>) -> io::Result<ReplaySummary> {
     let mut grid = TraceGrid::new(0, 0);
     let mut frames = 0usize;
     let mut last_checksum = None;
+    let mut saw_header = false;
 
     for (line_idx, line) in reader.lines().enumerate() {
         let line = line?;
@@ -601,6 +604,48 @@ pub fn replay_trace(path: impl AsRef<Path>) -> io::Result<ReplaySummary> {
                 format!("missing event at line {}", line_idx + 1),
             ));
         };
+
+        if !saw_header && event != "trace_header" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "trace_header must be the first record (line {})",
+                    line_idx + 1
+                ),
+            ));
+        }
+        if event == "trace_header" {
+            if saw_header {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("duplicate trace_header at line {}", line_idx + 1),
+                ));
+            }
+            let schema_version = value
+                .get("schema_version")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "trace_header missing schema_version at line {}",
+                            line_idx + 1
+                        ),
+                    )
+                })?;
+            let compatibility = classify_schema_compat(SchemaKind::RenderTrace, schema_version);
+            if !compatibility.is_compatible() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "incompatible render trace schema_version at line {}: {compatibility}",
+                        line_idx + 1
+                    ),
+                ));
+            }
+            saw_header = true;
+            continue;
+        }
         if event != "frame" {
             continue;
         }
@@ -663,6 +708,12 @@ pub fn replay_trace(path: impl AsRef<Path>) -> io::Result<ReplaySummary> {
         last_checksum = Some(actual_checksum);
     }
 
+    if !saw_header {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing trace_header record",
+        ));
+    }
     if frames == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1547,6 +1598,13 @@ mod tests {
         )
     }
 
+    fn header_line() -> String {
+        format!(
+            "{{\"event\":\"trace_header\",\"schema_version\":\"{}\"}}",
+            ftui_runtime::RENDER_TRACE_SCHEMA_VERSION
+        )
+    }
+
     fn write_lines(path: &Path, lines: &[String]) {
         let mut file = File::create(path).expect("create trace file");
         for line in lines {
@@ -1560,7 +1618,7 @@ mod tests {
         let input = dir.join("input.jsonl");
         let output = dir.join("output.min.jsonl");
         let checksum = TraceGrid::new(1, 1).checksum();
-        let mut lines = vec!["{\"event\":\"meta\",\"version\":1}".to_string()];
+        let mut lines = vec![header_line()];
         for frame_idx in 0..20 {
             lines.push(frame_line(frame_idx, 1, 1, checksum));
         }
@@ -1604,6 +1662,7 @@ mod tests {
         let out_b = dir.join("b.min.jsonl");
         let checksum = TraceGrid::new(1, 1).checksum();
         let lines = vec![
+            header_line(),
             frame_line(0, 1, 1, checksum),
             frame_line(1, 1, 1, checksum),
             frame_line(2, 1, 1, checksum),

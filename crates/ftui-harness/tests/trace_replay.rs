@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ftui_harness::determinism::{JsonValue, TestJsonlLogger};
 use ftui_harness::trace_replay::replay_trace;
+use ftui_runtime::RENDER_TRACE_SCHEMA_VERSION;
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
@@ -126,6 +127,13 @@ fn logger() -> &'static TestJsonlLogger {
     })
 }
 
+fn write_trace_header(writer: &mut impl Write) -> std::io::Result<()> {
+    writeln!(
+        writer,
+        r#"{{"event":"trace_header","schema_version":"{RENDER_TRACE_SCHEMA_VERSION}","run_id":"test","seed":0}}"#
+    )
+}
+
 #[test]
 fn replay_trace_success_and_mismatch() {
     let base_dir = unique_temp_dir();
@@ -209,11 +217,7 @@ fn replay_trace_success_and_mismatch() {
 
     let trace_path = base_dir.join("trace.jsonl");
     let mut trace = fs::File::create(&trace_path).expect("create trace");
-    writeln!(
-        trace,
-        r#"{{"event":"trace_header","schema_version":"render-trace-v1","run_id":"test","seed":0}}"#
-    )
-    .unwrap();
+    write_trace_header(&mut trace).unwrap();
     writeln!(
         trace,
         r#"{{"event":"frame","frame_idx":0,"cols":2,"rows":2,"payload_kind":"diff_runs_v1","payload_path":"frames/frame_0000.bin","checksum":"{:016x}"}}"#,
@@ -243,6 +247,7 @@ fn replay_trace_success_and_mismatch() {
 
     let bad_trace = base_dir.join("trace_bad.jsonl");
     let mut trace_bad = fs::File::create(&bad_trace).expect("create bad trace");
+    write_trace_header(&mut trace_bad).unwrap();
     writeln!(
         trace_bad,
         r#"{{"event":"frame","frame_idx":0,"cols":2,"rows":2,"payload_kind":"diff_runs_v1","payload_path":"frames/frame_0000.bin","checksum":"{:016x}"}}"#,
@@ -319,11 +324,7 @@ fn replay_full_buffer_payload() {
 
     let trace_path = base_dir.join("trace.jsonl");
     let mut trace = fs::File::create(&trace_path).expect("create trace");
-    writeln!(
-        trace,
-        r#"{{"event":"trace_header","schema_version":"render-trace-v1","run_id":"test","seed":0}}"#
-    )
-    .unwrap();
+    write_trace_header(&mut trace).unwrap();
     writeln!(
         trace,
         r#"{{"event":"frame","frame_idx":0,"cols":2,"rows":1,"payload_kind":"full_buffer_v1","payload_path":"frames/frame_0000.bin","checksum":"{:016x}"}}"#,
@@ -343,15 +344,53 @@ fn replay_no_frames_fails() {
 
     let trace_path = base_dir.join("trace.jsonl");
     let mut trace = fs::File::create(&trace_path).expect("create trace");
-    writeln!(
-        trace,
-        r#"{{"event":"trace_header","schema_version":"render-trace-v1","run_id":"test","seed":0}}"#
-    )
-    .unwrap();
+    write_trace_header(&mut trace).unwrap();
 
     let err = replay_trace(&trace_path).expect_err("no frames");
     assert!(
         err.to_string().contains("no frame records found"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn replay_newer_render_trace_schema_fails() {
+    let base_dir = unique_temp_dir();
+    fs::create_dir_all(&base_dir).expect("create temp dir");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(
+        trace,
+        r#"{{"event":"trace_header","schema_version":"render-trace-v3"}}"#
+    )
+    .unwrap();
+
+    let err = replay_trace(&trace_path).expect_err("newer schema must require migration");
+    assert!(
+        err.to_string()
+            .contains("incompatible render trace schema_version"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn replay_frame_before_header_fails() {
+    let base_dir = unique_temp_dir();
+    fs::create_dir_all(&base_dir).expect("create temp dir");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(
+        trace,
+        r#"{{"event":"frame","frame_idx":0,"cols":1,"rows":1,"payload_kind":"none","checksum":"0000000000000000"}}"#
+    )
+    .unwrap();
+
+    let err = replay_trace(&trace_path).expect_err("header must be first");
+    assert!(
+        err.to_string()
+            .contains("trace_header must be the first record"),
         "unexpected error: {err}"
     );
 }
@@ -395,6 +434,7 @@ fn replay_unsupported_payload_kind_fails() {
 
     let trace_path = base_dir.join("trace.jsonl");
     let mut trace = fs::File::create(&trace_path).expect("create trace");
+    write_trace_header(&mut trace).unwrap();
     writeln!(
         trace,
         r#"{{"event":"frame","frame_idx":0,"cols":2,"rows":2,"payload_kind":"unknown_v9","payload_path":"nope.bin","checksum":"0000000000000000"}}"#
@@ -420,6 +460,7 @@ fn replay_none_payload_kind() {
 
     let trace_path = base_dir.join("trace.jsonl");
     let mut trace = fs::File::create(&trace_path).expect("create trace");
+    write_trace_header(&mut trace).unwrap();
     writeln!(
         trace,
         r#"{{"event":"frame","frame_idx":0,"cols":1,"rows":1,"payload_kind":"none","checksum":"{:016x}"}}"#,
@@ -443,11 +484,7 @@ fn replay_skips_blank_lines() {
     let trace_path = base_dir.join("trace.jsonl");
     let mut trace = fs::File::create(&trace_path).expect("create trace");
     writeln!(trace).unwrap(); // blank line
-    writeln!(
-        trace,
-        r#"{{"event":"trace_header","schema_version":"render-trace-v1"}}"#
-    )
-    .unwrap();
+    write_trace_header(&mut trace).unwrap();
     writeln!(trace, "   ").unwrap(); // whitespace-only line
     writeln!(
         trace,
@@ -486,6 +523,7 @@ fn replay_grapheme_cell_in_full_buffer() {
 
     let trace_path = base_dir.join("trace.jsonl");
     let mut trace = fs::File::create(&trace_path).expect("create trace");
+    write_trace_header(&mut trace).unwrap();
     writeln!(
         trace,
         r#"{{"event":"frame","frame_idx":0,"cols":2,"rows":1,"payload_kind":"full_buffer_v1","payload_path":"frames/frame_0000.bin","checksum":"{:016x}"}}"#,
@@ -533,6 +571,7 @@ fn replay_resize_between_frames() {
 
     let trace_path = base_dir.join("trace.jsonl");
     let mut trace = fs::File::create(&trace_path).expect("create trace");
+    write_trace_header(&mut trace).unwrap();
     writeln!(
         trace,
         r#"{{"event":"frame","frame_idx":0,"cols":1,"rows":1,"payload_kind":"full_buffer_v1","payload_path":"frames/frame_0000.bin","checksum":"{:016x}"}}"#,
@@ -764,7 +803,7 @@ mod frankenlab_replay {
         });
 
         let mut trace = format!(
-            "{{\"event\":\"trace_header\",\"schema_version\":\"render-trace-v1\",\"run_id\":\"{}\",\"seed\":{}}}\n",
+            "{{\"event\":\"trace_header\",\"schema_version\":\"{RENDER_TRACE_SCHEMA_VERSION}\",\"run_id\":\"{}\",\"seed\":{}}}\n",
             run.result.run_id, run.result.seed
         );
         let mut payloads = Vec::new();
