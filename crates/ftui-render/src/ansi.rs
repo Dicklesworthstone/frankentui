@@ -392,7 +392,7 @@ pub fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
         return cube;
     }
     if r < 8 {
-        return 16;
+        return if r <= 4 { 16 } else { 232 };
     }
     if r > 246 {
         return 231;
@@ -929,6 +929,24 @@ mod tests {
         assert_eq!(rgb_to_ansi256(17, 17, 17), 233);
         assert_eq!(rgb_to_ansi16(255, 0, 0), 9);
         assert_eq!(rgb_to_ansi16(0, 0, 255), 4);
+    }
+
+    #[test]
+    fn grayscale_downgrade_is_nearest_extended_palette_entry() {
+        for value in 0..=u8::MAX {
+            let target = (value, value, value);
+            let selected = rgb_to_ansi256(value, value, value);
+            let selected_distance = color_distance(target, ansi256_rgb(selected));
+            let nearest_distance = (16..=u8::MAX)
+                .map(|index| color_distance(target, ansi256_rgb(index)))
+                .min()
+                .unwrap();
+
+            assert_eq!(
+                selected_distance, nearest_distance,
+                "gray {value} mapped to index {selected}"
+            );
+        }
     }
 
     #[test]

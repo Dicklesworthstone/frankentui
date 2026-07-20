@@ -1079,11 +1079,13 @@ mod downgrade_edge_cases {
     #[test]
     fn rgb_to_256_grayscale_boundaries() {
         // Test exact boundary values for grayscale detection
-        // r < 8 -> 16 (black)
+        // Values through the midpoint between 0 and 8 use cube black.
         assert_eq!(rgb_to_256(0, 0, 0), 16);
-        assert_eq!(rgb_to_256(7, 7, 7), 16);
+        assert_eq!(rgb_to_256(4, 4, 4), 16);
 
-        // r >= 8 -> grayscale ramp starts
+        // Values above that midpoint use the grayscale ramp.
+        assert_eq!(rgb_to_256(5, 5, 5), 232);
+        assert_eq!(rgb_to_256(7, 7, 7), 232);
         assert_eq!(rgb_to_256(8, 8, 8), 232);
         assert_eq!(rgb_to_256(17, 17, 17), 233);
 

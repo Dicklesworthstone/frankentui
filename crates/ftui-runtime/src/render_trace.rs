@@ -460,6 +460,9 @@ impl RenderTraceCapabilities {
     }
 
     fn to_json(&self) -> String {
+        // `true_color` and `colors_256` are immutable render-trace-v1 wire
+        // fields. Keep them derived from the canonical depth while exposing
+        // the additive depth identifier to newer readers.
         let true_color = self.color_depth.supports_true_color();
         let colors_256 = self.color_depth.supports_256_colors();
         format!(
