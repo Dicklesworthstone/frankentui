@@ -60,10 +60,13 @@ use std::cell::RefCell;
 
 /// Override specification for terminal capabilities.
 ///
-/// Each field is `Option<bool>`:
+/// Boolean fields use `Option<bool>`:
 /// - `Some(true)` - Force capability ON
 /// - `Some(false)` - Force capability OFF
 /// - `None` - Don't override (use base or previous override)
+///
+/// `color_depth` uses `Option<ColorDepth>` with the same `None` inheritance
+/// semantics.
 #[derive(Debug, Clone, Default)]
 pub struct CapabilityOverride {
     // Color

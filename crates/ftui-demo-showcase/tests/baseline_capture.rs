@@ -14,7 +14,7 @@
 //!   CAPTURE_BASELINE=1 cargo test -p ftui-demo-showcase --test baseline_capture -- --nocapture
 
 use ftui_core::geometry::Rect;
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 const WARMUP_ITERS: u64 = 50;
 const MEASURE_ITERS: u64 = 500;
+const BASELINE_COLOR_DEPTH: ColorDepth = ColorDepth::TrueColor;
 
 /// Compute percentile from sorted array of durations.
 fn percentile(sorted: &[Duration], p: f64) -> Duration {
@@ -113,7 +114,9 @@ fn capture_frame_pipeline() -> Value {
         // Full pipeline: diff + present
         let (old, new) = make_pair(w, h, 25.0);
         let diff = BufferDiff::compute(&old, &new);
-        let caps = TerminalCapabilities::default();
+        let caps = TerminalCapabilities::builder()
+            .color_depth(BASELINE_COLOR_DEPTH)
+            .build();
 
         let pipeline = measure(|| {
             let mut sink = Vec::with_capacity(cells as usize * 4);
@@ -273,6 +276,7 @@ fn capture_baselines() {
     let baselines = json!({
         "version": "1.0.0",
         "generated_at": timestamp(),
+        "terminal_color_depth": BASELINE_COLOR_DEPTH.as_str(),
         "warmup_iters": WARMUP_ITERS,
         "measure_iters": MEASURE_ITERS,
         "hot_paths": {

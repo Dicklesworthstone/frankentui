@@ -15,7 +15,7 @@ use std::alloc::System;
 use std::time::Instant;
 
 use ftui_core::event::Event;
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_demo_showcase::app::{AppModel, ScreenId};
 use ftui_demo_showcase::screens;
 use ftui_render::arena::FrameArena;
@@ -29,6 +29,8 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+
+const PROFILE_COLOR_DEPTH: ColorDepth = ColorDepth::TrueColor;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ArenaMode {
@@ -183,7 +185,9 @@ impl PipelineHarness {
             scratch: Buffer::new(cols, rows),
             diff: BufferDiff::new(),
             sink: Vec::with_capacity((cols as usize * rows as usize).max(4096) * 8),
-            caps: TerminalCapabilities::default(),
+            caps: TerminalCapabilities::builder()
+                .color_depth(PROFILE_COLOR_DEPTH)
+                .build(),
         }
     }
 
@@ -338,13 +342,14 @@ fn main() {
 
     if !args.json {
         eprintln!(
-            "Profile sweep: {} screens x {} sizes x {} cycles = {} renders (render_mode={}, arena_mode={})",
+            "Profile sweep: {} screens x {} sizes x {} cycles = {} renders (render_mode={}, arena_mode={}, color_depth={})",
             screen_ids.len(),
             sizes.len(),
             args.cycles,
             total_frames,
             args.render_mode.as_str(),
-            args.arena_mode.as_str()
+            args.arena_mode.as_str(),
+            PROFILE_COLOR_DEPTH.as_str()
         );
     }
 
@@ -479,6 +484,7 @@ fn main() {
         let summary = serde_json::json!({
             "arena_mode": args.arena_mode.as_str(),
             "render_mode": args.render_mode.as_str(),
+            "color_depth": PROFILE_COLOR_DEPTH.as_str(),
             "cycles": args.cycles,
             "screen_count": screen_ids.len(),
             "sizes": sizes.iter().map(|(w, h)| serde_json::json!({"cols": w, "rows": h})).collect::<Vec<_>>(),
@@ -526,10 +532,11 @@ fn main() {
         println!("{summary}");
     } else {
         let mut summary = format!(
-            "\nDone in {:.2}s ({:.1} renders/sec) | mode={} | frame_us p50={} p95={} p99={} max={} | allocs/frame p50={} p95={} p99={} max={} | arena_peak_bytes={}",
+            "\nDone in {:.2}s ({:.1} renders/sec) | mode={} | color_depth={} | frame_us p50={} p95={} p99={} max={} | allocs/frame p50={} p95={} p99={} max={} | arena_peak_bytes={}",
             elapsed_secs,
             renders_per_sec,
             args.render_mode.as_str(),
+            PROFILE_COLOR_DEPTH.as_str(),
             p50_us,
             p95_us,
             p99_us,

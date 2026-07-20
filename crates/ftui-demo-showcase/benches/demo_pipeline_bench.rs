@@ -8,7 +8,7 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ftui_core::event::Event;
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_demo_showcase::app::{AppModel, ScreenId};
 use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
@@ -17,6 +17,8 @@ use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::presenter::Presenter;
 use ftui_runtime::{Cmd, Model};
 use std::hint::black_box;
+
+const BENCHMARK_COLOR_DEPTH: ColorDepth = ColorDepth::TrueColor;
 
 struct PipelineHarness {
     current: Buffer,
@@ -35,7 +37,9 @@ impl PipelineHarness {
             scratch: Buffer::new(cols, rows),
             diff: BufferDiff::new(),
             sink: Vec::with_capacity((cols as usize * rows as usize).max(4096) * 8),
-            caps: TerminalCapabilities::default(),
+            caps: TerminalCapabilities::builder()
+                .color_depth(BENCHMARK_COLOR_DEPTH)
+                .build(),
         }
     }
 
@@ -73,7 +77,7 @@ fn benchmark_screens() -> &'static [(ScreenId, &'static str)] {
 }
 
 fn bench_demo_pipeline(c: &mut Criterion) {
-    let mut group = c.benchmark_group("demo_pipeline/reused_buffer");
+    let mut group = c.benchmark_group("demo_pipeline/truecolor/reused_buffer");
 
     for &(cols, rows) in &[(80, 24), (120, 40)] {
         let cells = cols as u64 * rows as u64;

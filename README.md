@@ -2699,7 +2699,7 @@ Color downgrade is automatic based on terminal capability detection:
 
 ```
 TrueColor RGB(128, 0, 255)
-  → Ansi256: find nearest palette entry (Euclidean distance in RGB space)
+  → Ansi256: find nearest palette entry (weighted RGB distance)
   → Ansi16: map to closest basic color
   → Mono: drop color entirely, keep bold/underline for emphasis
 ```

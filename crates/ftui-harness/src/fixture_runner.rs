@@ -34,7 +34,7 @@ use std::time::Instant;
 use crate::baseline_capture::{BaselineCapture, BaselineRecord, Sample};
 use crate::fixture_suite::{FixtureSpec, SuitePartition, TransitionPattern, ViewportSpec};
 
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::PackedRgba;
 use ftui_render::diff::BufferDiff;
@@ -197,6 +197,8 @@ fn buffer_checksum(buf: &Buffer, w: u16, h: u16) -> u64 {
 /// Executes fixture specifications and produces baseline measurements.
 pub struct FixtureRunner;
 
+const FIXTURE_COLOR_DEPTH: ColorDepth = ColorDepth::TrueColor;
+
 impl FixtureRunner {
     /// Execute a fixture spec and return a complete run result.
     ///
@@ -212,9 +214,13 @@ impl FixtureRunner {
         let frames = spec.frame_count;
         let mut rng = Rng::new(seed);
 
-        let mut capture = BaselineCapture::new(&spec.id, spec.family).with_seed(seed);
+        let mut capture = BaselineCapture::new(&spec.id, spec.family)
+            .with_seed(seed)
+            .with_terminal_color_depth(FIXTURE_COLOR_DEPTH);
 
-        let caps = TerminalCapabilities::default();
+        let caps = TerminalCapabilities::builder()
+            .color_depth(FIXTURE_COLOR_DEPTH)
+            .build();
 
         let mut old = Buffer::new(vp.width, vp.height);
         let mut new = Buffer::new(vp.width, vp.height);
@@ -506,6 +512,16 @@ mod tests {
         let result = FixtureRunner::run(spec);
 
         assert_eq!(result.frames_executed, spec.frame_count);
+        assert_eq!(
+            result.record.environment.terminal_color_depth,
+            Some(ColorDepth::TrueColor)
+        );
+        assert!(
+            result
+                .record
+                .to_json()
+                .contains("\"terminal_color_depth\": \"truecolor\"")
+        );
         assert!(
             result.record.metrics.len() >= 4,
             "expected multiple metrics"

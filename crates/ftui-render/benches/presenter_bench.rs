@@ -7,12 +7,20 @@
 //! from I/O.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::diff::BufferDiff;
 use ftui_render::presenter::Presenter;
 use std::hint::black_box;
+
+const BENCHMARK_COLOR_DEPTH: ColorDepth = ColorDepth::TrueColor;
+
+fn benchmark_capabilities() -> TerminalCapabilities {
+    TerminalCapabilities::builder()
+        .color_depth(BENCHMARK_COLOR_DEPTH)
+        .build()
+}
 
 /// Create a pair of buffers where `pct` percent of cells have changed,
 /// with varied styles to exercise the presenter's state tracking.
@@ -60,8 +68,8 @@ fn present_to_vec(
 }
 
 fn bench_present_sparse(c: &mut Criterion) {
-    let mut group = c.benchmark_group("present/sparse_5pct");
-    let caps = TerminalCapabilities::default();
+    let mut group = c.benchmark_group("present/truecolor/sparse_5pct");
+    let caps = benchmark_capabilities();
 
     for (w, h) in [(80, 24), (120, 40), (200, 60)] {
         let (old, new) = make_styled_pair(w, h, 5.0);
@@ -79,8 +87,8 @@ fn bench_present_sparse(c: &mut Criterion) {
 }
 
 fn bench_present_heavy(c: &mut Criterion) {
-    let mut group = c.benchmark_group("present/heavy_50pct");
-    let caps = TerminalCapabilities::default();
+    let mut group = c.benchmark_group("present/truecolor/heavy_50pct");
+    let caps = benchmark_capabilities();
 
     for (w, h) in [(80, 24), (120, 40), (200, 60)] {
         let (old, new) = make_styled_pair(w, h, 50.0);
@@ -98,8 +106,8 @@ fn bench_present_heavy(c: &mut Criterion) {
 }
 
 fn bench_present_full(c: &mut Criterion) {
-    let mut group = c.benchmark_group("present/full_100pct");
-    let caps = TerminalCapabilities::default();
+    let mut group = c.benchmark_group("present/truecolor/full_100pct");
+    let caps = benchmark_capabilities();
 
     for (w, h) in [(80, 24), (200, 60)] {
         let (old, new) = make_styled_pair(w, h, 100.0);
@@ -118,8 +126,8 @@ fn bench_present_full(c: &mut Criterion) {
 
 /// Measure the full pipeline: diff + present (the hot path in real usage).
 fn bench_pipeline(c: &mut Criterion) {
-    let mut group = c.benchmark_group("pipeline/diff_and_present");
-    let caps = TerminalCapabilities::default();
+    let mut group = c.benchmark_group("pipeline/truecolor/diff_and_present");
+    let caps = benchmark_capabilities();
 
     for (w, h, pct) in [
         (80, 24, 5.0),

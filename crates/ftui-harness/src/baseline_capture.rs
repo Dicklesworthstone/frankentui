@@ -38,6 +38,8 @@
 
 use std::collections::BTreeMap;
 
+use ftui_core::terminal_capabilities::ColorDepth;
+
 /// A raw measurement sample.
 #[derive(Debug, Clone)]
 pub struct Sample {
@@ -202,6 +204,8 @@ pub struct EnvironmentFingerprint {
     pub rustc_version: String,
     /// Cargo profile (debug/release).
     pub profile: String,
+    /// Effective terminal color depth for presenter workloads.
+    pub terminal_color_depth: Option<ColorDepth>,
     /// Target triple.
     pub target: String,
     /// Feature flags enabled.
@@ -228,6 +232,7 @@ impl EnvironmentFingerprint {
             } else {
                 "release".to_string()
             },
+            terminal_color_depth: None,
             target: std::env::consts::ARCH.to_string(),
             features: Vec::new(),
             cpu_model: String::new(),
@@ -277,6 +282,10 @@ impl BaselineRecord {
     /// Serialize to JSON for storage as a baseline artifact.
     #[must_use]
     pub fn to_json(&self) -> String {
+        let terminal_color_depth = self.environment.terminal_color_depth.map_or_else(
+            || "null".to_string(),
+            |depth| format!(r#""{}""#, depth.as_str()),
+        );
         let metrics_json: Vec<String> = self
             .metrics
             .iter()
@@ -334,6 +343,7 @@ impl BaselineRecord {
   "stable": {},
   "environment": {{
     "profile": "{}",
+    "terminal_color_depth": {},
     "target": "{}",
     "cpu_count": {},
     "os": "{}"
@@ -348,6 +358,7 @@ impl BaselineRecord {
             self.seed,
             self.stable,
             self.environment.profile,
+            terminal_color_depth,
             self.environment.target,
             self.environment.cpu_count,
             self.environment.os,
@@ -389,6 +400,13 @@ impl BaselineCapture {
     #[must_use]
     pub fn with_environment(mut self, env: EnvironmentFingerprint) -> Self {
         self.environment = env;
+        self
+    }
+
+    /// Record the effective terminal color depth for presenter measurements.
+    #[must_use]
+    pub fn with_terminal_color_depth(mut self, depth: ColorDepth) -> Self {
+        self.environment.terminal_color_depth = Some(depth);
         self
     }
 
@@ -634,6 +652,7 @@ mod tests {
         assert!(json.contains("\"fixture\": \"json_test\""));
         assert!(json.contains("\"family\": \"render\""));
         assert!(json.contains("\"seed\": 42"));
+        assert!(json.contains("\"terminal_color_depth\": null"));
         assert!(json.contains("\"metric\": \"diff\""));
         assert!(json.contains("\"p50\":"));
         assert!(json.contains("\"p95\":"));
