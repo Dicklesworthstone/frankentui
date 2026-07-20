@@ -8,7 +8,7 @@
 
 #![cfg(unix)]
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ftui_pty::{PtyConfig, spawn_command};
 use portable_pty::CommandBuilder;
@@ -116,6 +116,35 @@ fn next_mermaid_log_path(label: &str) -> String {
     path.to_string_lossy().to_string()
 }
 
+fn wait_for_mermaid_prepare(log_path: &str, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_content = String::new();
+
+    loop {
+        match std::fs::read_to_string(log_path) {
+            Ok(content) => {
+                if content.contains("\"event\":\"mermaid_prepare\"") {
+                    return Ok(());
+                }
+                last_content = content;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!(
+                    "read Mermaid readiness log FTUI_MERMAID_LOG_PATH={log_path}: {err}"
+                ));
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for initial mermaid_prepare event in FTUI_MERMAID_LOG_PATH={log_path}; last_content={last_content:?}"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn run_mermaid_showcase_with_init(
     demo_bin: &str,
     seed: u64,
@@ -139,8 +168,10 @@ fn run_mermaid_showcase_with_init(
     let mut session =
         spawn_command(config, cmd).map_err(|err| format!("spawn mermaid showcase: {err}"))?;
 
-    // Allow the program to enter raw mode; early keystrokes can be drained during initialization.
-    std::thread::sleep(Duration::from_millis(250));
+    // The first prepare record proves the runtime has entered its render loop.
+    // A fixed sleep is racy under loaded batch runs: input sent before terminal
+    // initialization completes can be drained before the event loop sees it.
+    wait_for_mermaid_prepare(log_path, Duration::from_secs(10))?;
 
     // Toggle init directives so the engine must parse/apply them.
     session
