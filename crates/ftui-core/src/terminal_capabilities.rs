@@ -263,7 +263,7 @@ struct DetectInputs {
 
 impl DetectInputs {
     fn from_env() -> Self {
-        Self::from_env_with(env::var_os)
+        Self::from_env_with(|key| env::var_os(key))
     }
 
     fn from_env_with<F>(get_env: F) -> Self
