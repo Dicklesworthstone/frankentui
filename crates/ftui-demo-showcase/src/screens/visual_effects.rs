@@ -3928,7 +3928,7 @@ fn effect_seed(effect: EffectType) -> u64 {
 
 fn rand_simple() -> f64 {
     let old = RAND_STATE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
             Some(s.wrapping_mul(6364136223846793005).wrapping_add(1))
         })
         .unwrap();
