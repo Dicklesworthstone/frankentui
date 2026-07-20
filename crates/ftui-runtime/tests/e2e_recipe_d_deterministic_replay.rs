@@ -183,7 +183,7 @@ impl Model for RecipeDModel {
         render_line(frame, 0, &tab_line);
 
         // Line 1: editor text
-        let editor = format!(">{}", &self.text);
+        let editor = format!(">{}", self.text);
         render_line(frame, 1, &editor);
 
         // Line 2: scroll position

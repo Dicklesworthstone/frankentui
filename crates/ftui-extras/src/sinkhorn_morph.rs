@@ -638,8 +638,10 @@ mod tests {
             let x = i as u16 % w;
             let y = i as u16 / w;
             if x < w && y < h {
-                let mut cell = Cell::default();
-                cell.content = CellContent::from_char(ch);
+                let cell = Cell {
+                    content: CellContent::from_char(ch),
+                    ..Cell::default()
+                };
                 buf.set(x, y, cell);
             }
         }
