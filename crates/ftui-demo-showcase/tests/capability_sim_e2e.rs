@@ -518,7 +518,8 @@ fn quirk_windows_console() {
 #[test]
 fn quirk_linux_console() {
     let linux = TerminalCapabilities::from_profile(TerminalProfile::LinuxConsole);
-    assert_eq!(linux.color_depth, ColorDepth::Mono);
+    assert_eq!(linux.color_depth, ColorDepth::Ansi16);
+    assert!(linux.double_width);
     assert!(!linux.osc8_hyperlinks);
     assert!(!linux.osc52_clipboard);
     assert!(!linux.kitty_keyboard);

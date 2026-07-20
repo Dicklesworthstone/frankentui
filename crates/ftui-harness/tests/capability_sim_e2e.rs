@@ -792,8 +792,12 @@ fn capability_sim_linux_console_quirks() {
 
     let caps = TerminalCapabilities::linux_console();
 
-    assert_eq!(caps.color_depth, ColorDepth::Mono);
-    assert!(!caps.has_color(), "QUIRK-1: linux console no color");
+    assert_eq!(caps.color_depth, ColorDepth::Ansi16);
+    assert!(caps.has_color(), "QUIRK-1: linux console has ANSI color");
+    assert!(
+        caps.double_width,
+        "QUIRK-1: linux console supports double-width glyphs"
+    );
     assert!(
         caps.scroll_region,
         "QUIRK-1: linux console has scroll region"
@@ -801,8 +805,8 @@ fn capability_sim_linux_console_quirks() {
     assert!(caps.bracketed_paste, "QUIRK-1: linux console has paste");
     assert!(caps.mouse_sgr, "QUIRK-1: linux console has mouse");
 
-    logger.log_invariant("QUIRK-1", true, "linux_console_no_color");
-    logger.log_complete(true, 6);
+    logger.log_invariant("QUIRK-1", true, "linux_console_ansi16");
+    logger.log_complete(true, 7);
 }
 
 // ============================================================================

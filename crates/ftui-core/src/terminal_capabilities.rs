@@ -299,7 +299,7 @@ pub enum TerminalProfile {
     WindowsConsole,
     /// Kitty terminal
     Kitty,
-    /// Linux console (no colors, basic features)
+    /// Linux console (16 colors, basic features)
     LinuxConsole,
     /// Custom profile (user-defined)
     Custom,
@@ -773,15 +773,15 @@ impl TerminalCapabilities {
 
     /// Linux console (framebuffer console).
     ///
-    /// Linux console with no colors and basic features.
+    /// Linux console with ANSI 16-color and basic glyph support.
     #[must_use]
     pub const fn linux_console() -> Self {
         Self {
             profile: TerminalProfile::LinuxConsole,
-            color_depth: ColorDepth::Mono,
+            color_depth: ColorDepth::Ansi16,
             unicode_box_drawing: true,
             unicode_emoji: false,
-            double_width: false,
+            double_width: true,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -2112,12 +2112,14 @@ mod tests {
     #[test]
     fn detect_linux_console() {
         let env = make_env("linux", "", "");
-        let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert_eq!(caps.color_depth, ColorDepth::Ansi16);
-        // But basic features work
-        assert!(caps.bracketed_paste);
-        assert!(caps.mouse_sgr);
-        assert!(caps.scroll_region);
+        let detected = TerminalCapabilities::detect_from_inputs(&env);
+        let mut expected = TerminalCapabilities::linux_console();
+        expected.profile = TerminalProfile::Detected;
+
+        assert_eq!(
+            detected, expected,
+            "the predefined Linux console profile must match TERM=linux detection"
+        );
     }
 
     #[test]
@@ -2399,7 +2401,8 @@ mod tests {
     fn profile_linux_console() {
         let caps = TerminalCapabilities::linux_console();
         assert_eq!(caps.profile(), TerminalProfile::LinuxConsole);
-        assert_eq!(caps.color_depth, ColorDepth::Mono);
+        assert_eq!(caps.color_depth, ColorDepth::Ansi16);
+        assert!(caps.double_width);
         assert!(caps.scroll_region);
     }
 
