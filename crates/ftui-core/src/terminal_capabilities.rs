@@ -116,6 +116,18 @@
 use std::env;
 use std::str::FromStr;
 
+fn normalize_terminal_env_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn is_dumb_terminal(term: &str, windows_terminal: bool) -> bool {
+    term == "dumb" || (term.is_empty() && !windows_terminal)
+}
+
+fn term_declares_true_color(term: &str) -> bool {
+    term.ends_with("-direct") || term.ends_with("-truecolor") || term.ends_with("24bit")
+}
+
 /// Maximum color fidelity the terminal may receive.
 ///
 /// This is a single ordered capability rather than independent booleans so
@@ -144,25 +156,41 @@ impl ColorDepth {
     /// Detect color depth from explicit environment values.
     ///
     /// `NO_COLOR` presence wins over every terminal signal. `TERM=dumb`,
-    /// `TERM=vt100`, and a missing/empty `TERM` are monochrome. Plain xterm
-    /// and other non-dumb terminals conservatively receive ANSI16.
+    /// `TERM=vt100`, and a missing/empty `TERM` are monochrome. Direct-color
+    /// TERM variants (`*-direct`, `*-truecolor`, and `*24bit`) receive
+    /// truecolor. Plain xterm and other non-dumb terminals conservatively
+    /// receive ANSI16.
     #[must_use]
     pub fn detect_from_env(
         no_color: Option<&str>,
         colorterm: Option<&str>,
         term: Option<&str>,
     ) -> Self {
-        if no_color.is_some() {
-            return Self::Mono;
-        }
+        let term = normalize_terminal_env_value(term.unwrap_or_default());
+        let colorterm = normalize_terminal_env_value(colorterm.unwrap_or_default());
+        Self::detect_normalized(
+            no_color.is_some(),
+            is_dumb_terminal(&term, false),
+            &colorterm,
+            &term,
+            false,
+        )
+    }
 
-        let term = term.unwrap_or_default().trim().to_ascii_lowercase();
-        if term.is_empty() || term == "dumb" || term == "vt100" {
-            return Self::Mono;
-        }
-
-        let colorterm = colorterm.unwrap_or_default().trim().to_ascii_lowercase();
-        if colorterm.contains("truecolor") || colorterm.contains("24bit") {
+    fn detect_normalized(
+        no_color: bool,
+        is_dumb: bool,
+        colorterm: &str,
+        term: &str,
+        inferred_true_color: bool,
+    ) -> Self {
+        if no_color || is_dumb || term == "vt100" {
+            Self::Mono
+        } else if colorterm.contains("truecolor")
+            || colorterm.contains("24bit")
+            || term_declares_true_color(term)
+            || inferred_true_color
+        {
             Self::TrueColor
         } else if term.contains("256color") || term.contains("256") {
             Self::Ansi256
@@ -991,12 +1019,9 @@ impl TerminalCapabilities {
     }
 
     fn detect_from_inputs(env: &DetectInputs) -> Self {
-        let term = env.term.as_str();
-        let term_program = env.term_program.as_str();
-        let colorterm = env.colorterm.as_str();
-        let term_lower = term.to_ascii_lowercase();
-        let term_program_lower = term_program.to_ascii_lowercase();
-        let colorterm_lower = colorterm.to_ascii_lowercase();
+        let term = normalize_terminal_env_value(&env.term);
+        let term_program = normalize_terminal_env_value(&env.term_program);
+        let colorterm = normalize_terminal_env_value(&env.colorterm);
 
         // Multiplexer detection. The $TMUX/$STY env vars do not survive
         // ssh/sudo/container boundaries, but the mux's TERM value does
@@ -1004,15 +1029,15 @@ impl TerminalCapabilities {
         // conservative mux evidence — the same fail-safe reasoning applied
         // to WezTerm below — so use_scroll_region() etc. stay disabled
         // inside a mux pane reached over ssh (doc invariant: mux wins).
-        let in_tmux = env.in_tmux || term_lower.starts_with("tmux");
-        let in_screen = env.in_screen || term_lower.starts_with("screen");
+        let in_tmux = env.in_tmux || term.starts_with("tmux");
+        let in_screen = env.in_screen || term.starts_with("screen");
         let in_zellij = env.in_zellij;
 
         // WezTerm mux sessions may not always preserve WEZTERM_* env markers
         // across shell launch paths. Treat explicit WezTerm identity itself as
         // conservative mux evidence so policy remains fail-safe.
-        let term_program_is_wezterm = term_program_lower.contains("wezterm");
-        let term_is_wezterm = term_lower.contains("wezterm");
+        let term_program_is_wezterm = term_program.contains("wezterm");
+        let term_is_wezterm = term.contains("wezterm");
         let in_wezterm_mux = term_program_is_wezterm
             || term_is_wezterm
             || env.wezterm_unix_socket
@@ -1027,30 +1052,24 @@ impl TerminalCapabilities {
         //
         // NOTE: Windows Terminal often omits TERM; treat it as non-dumb when
         // WT_SESSION is present so we don't incorrectly disable features.
-        let is_dumb = term == "dumb" || (term.is_empty() && !is_windows_terminal);
+        let is_dumb = is_dumb_terminal(&term, is_windows_terminal);
 
         // Kitty detection
-        let is_kitty = env.kitty_window_id || term_lower.contains("kitty");
+        let is_kitty = env.kitty_window_id || term.contains("kitty");
 
         // Check if running in a modern terminal
         let is_modern_terminal = MODERN_TERMINALS.iter().any(|t| {
             let t_lower = t.to_ascii_lowercase();
-            term_program_lower.contains(&t_lower) || term_lower.contains(&t_lower)
+            term_program.contains(&t_lower) || term.contains(&t_lower)
         }) || is_windows_terminal;
 
-        let color_depth = if env.no_color || is_dumb || term_lower == "vt100" {
-            ColorDepth::Mono
-        } else if colorterm_lower.contains("truecolor")
-            || colorterm_lower.contains("24bit")
-            || is_modern_terminal
-            || is_kitty
-        {
-            ColorDepth::TrueColor
-        } else if term_lower.contains("256color") || term_lower.contains("256") {
-            ColorDepth::Ansi256
-        } else {
-            ColorDepth::Ansi16
-        };
+        let color_depth = ColorDepth::detect_normalized(
+            env.no_color,
+            is_dumb,
+            &colorterm,
+            &term,
+            is_modern_terminal || is_kitty,
+        );
 
         // Keep WezTerm inference conservative: any explicit WezTerm marker
         // should disable risky capabilities even if terminal identity is mixed.
@@ -1062,7 +1081,7 @@ impl TerminalCapabilities {
             && (is_kitty
                 || SYNC_OUTPUT_TERMINALS.iter().any(|t| {
                     let t_lower = t.to_ascii_lowercase();
-                    term_program_lower.contains(&t_lower)
+                    term_program.contains(&t_lower)
                 }));
 
         // OSC 8 hyperlinks detection
@@ -1079,7 +1098,7 @@ impl TerminalCapabilities {
             && (is_kitty
                 || KITTY_KEYBOARD_TERMINALS.iter().any(|t| {
                     let t_lower = t.to_ascii_lowercase();
-                    term_program_lower.contains(&t_lower) || term_lower.contains(&t_lower)
+                    term_program.contains(&t_lower) || term.contains(&t_lower)
                 }));
 
         // Focus events (available in most modern terminals)
@@ -1382,10 +1401,14 @@ mod tests {
         let cases = [
             (Some(""), Some("truecolor"), Some("xterm"), ColorDepth::Mono),
             (None, Some("truecolor"), Some("dumb"), ColorDepth::Mono),
+            (None, Some("truecolor"), Some(" DUMB "), ColorDepth::Mono),
             (None, Some("truecolor"), Some("vt100"), ColorDepth::Mono),
             (None, None, Some("xterm"), ColorDepth::Ansi16),
             (None, None, Some("xterm-256color"), ColorDepth::Ansi256),
             (None, Some("24bit"), Some("xterm"), ColorDepth::TrueColor),
+            (None, None, Some(" XTERM-DIRECT "), ColorDepth::TrueColor),
+            (None, None, Some("xterm-truecolor"), ColorDepth::TrueColor),
+            (None, None, Some("xterm-24bit"), ColorDepth::TrueColor),
         ];
 
         for (no_color, colorterm, term, expected) in cases {
@@ -1603,15 +1626,17 @@ mod tests {
 
     #[test]
     fn detect_dumb_terminal() {
-        let env = make_env("dumb", "", "");
-        let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert_eq!(caps.color_depth, ColorDepth::Mono);
-        assert!(!caps.sync_output);
-        assert!(!caps.osc8_hyperlinks);
-        assert!(!caps.scroll_region);
-        assert!(!caps.focus_events);
-        assert!(!caps.bracketed_paste);
-        assert!(!caps.mouse_sgr);
+        for term in ["dumb", "DUMB", " dumb "] {
+            let env = make_env(term, " WezTerm ", " TRUECOLOR ");
+            let caps = TerminalCapabilities::detect_from_inputs(&env);
+            assert_eq!(caps.color_depth, ColorDepth::Mono, "TERM={term:?}");
+            assert!(!caps.sync_output, "TERM={term:?}");
+            assert!(!caps.osc8_hyperlinks, "TERM={term:?}");
+            assert!(!caps.scroll_region, "TERM={term:?}");
+            assert!(!caps.focus_events, "TERM={term:?}");
+            assert!(!caps.bracketed_paste, "TERM={term:?}");
+            assert!(!caps.mouse_sgr, "TERM={term:?}");
+        }
     }
 
     #[test]
@@ -2123,12 +2148,51 @@ mod tests {
     }
 
     #[test]
-    fn detect_xterm_direct() {
+    fn detect_direct_color_term_variants() {
+        for term in [
+            "xterm-direct",
+            "xterm-truecolor",
+            "xterm-24bit",
+            " XTERM-DIRECT ",
+        ] {
+            let env = make_env(term, "", "");
+            let caps = TerminalCapabilities::detect_from_inputs(&env);
+            assert_eq!(caps.color_depth, ColorDepth::TrueColor, "TERM={term:?}");
+            assert!(caps.bracketed_paste, "TERM={term:?}");
+            assert!(caps.mouse_sgr, "TERM={term:?}");
+        }
+    }
+
+    #[test]
+    fn detect_plain_xterm_is_ansi16() {
         let env = make_env("xterm", "", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert_eq!(caps.color_depth, ColorDepth::Ansi16);
         assert!(caps.bracketed_paste);
         assert!(caps.mouse_sgr);
+    }
+
+    #[test]
+    fn explicit_and_full_color_detection_agree() {
+        for (no_color, colorterm, term) in [
+            (false, "", "xterm"),
+            (false, "", "xterm-256color"),
+            (false, "", " XTERM-DIRECT "),
+            (false, "24BIT", "xterm"),
+            (false, "truecolor", " VT100 "),
+            (false, "truecolor", " DUMB "),
+            (true, "truecolor", "xterm-direct"),
+        ] {
+            let mut env = make_env(term, "", colorterm);
+            env.no_color = no_color;
+            let detected = TerminalCapabilities::detect_from_inputs(&env).color_depth;
+            let explicit =
+                ColorDepth::detect_from_env(no_color.then_some(""), Some(colorterm), Some(term));
+            assert_eq!(
+                detected, explicit,
+                "NO_COLOR={no_color} COLORTERM={colorterm:?} TERM={term:?}"
+            );
+        }
     }
 
     #[test]

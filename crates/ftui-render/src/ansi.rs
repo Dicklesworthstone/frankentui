@@ -398,7 +398,7 @@ pub fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
         return 231;
     }
 
-    let gray = 232 + ((r - 8) / 10).min(23);
+    let gray = 232 + ((r - 8 + 5) / 10).min(23);
     let target = (r, g, b);
     if color_distance(target, ansi256_rgb(cube)) <= color_distance(target, ansi256_rgb(gray)) {
         cube
@@ -926,6 +926,7 @@ mod tests {
         assert_eq!(rgb_to_ansi256(255, 0, 0), 196);
         assert_eq!(rgb_to_ansi256(0, 0, 255), 21);
         assert_eq!(rgb_to_ansi256(128, 128, 128), 244);
+        assert_eq!(rgb_to_ansi256(17, 17, 17), 233);
         assert_eq!(rgb_to_ansi16(255, 0, 0), 9);
         assert_eq!(rgb_to_ansi16(0, 0, 255), 4);
     }

@@ -446,46 +446,7 @@ pub fn ansi16_to_rgb(color: Ansi16) -> Rgb {
 /// search.
 #[must_use]
 pub fn rgb_to_256(r: u8, g: u8, b: u8) -> u8 {
-    let cube_idx = 16 + 36 * cube_index(r) + 6 * cube_index(g) + cube_index(b);
-
-    if r == g && g == b {
-        if r < 8 {
-            return 16;
-        }
-        if r > 246 {
-            return 231;
-        }
-        let gray_idx = 232 + ((r - 8) / 10).min(23);
-
-        // Compare distance of cube_idx vs gray_idx
-        let target = Rgb::new(r, g, b);
-        let cube_dist = weighted_distance(target, ansi256_to_rgb(cube_idx));
-        let gray_dist = weighted_distance(target, ansi256_to_rgb(gray_idx));
-
-        if cube_dist <= gray_dist {
-            return cube_idx;
-        } else {
-            return gray_idx;
-        }
-    }
-
-    cube_idx
-}
-
-/// Map an 8-bit channel value to the nearest ANSI 256-color 6×6×6 cube index.
-///
-/// The cube levels are `[0, 95, 135, 175, 215, 255]`, which are **not**
-/// uniformly spaced.  This function uses the midpoints between adjacent
-/// levels (48, 115, 155, 195, 235) so each channel maps to the closest
-/// cube entry rather than an equal-width bin.
-fn cube_index(v: u8) -> u8 {
-    if v < 48 {
-        0
-    } else if v < 115 {
-        1
-    } else {
-        (v - 35) / 40
-    }
+    ftui_render::ansi::rgb_to_ansi256(r, g, b)
 }
 
 /// Convert an ANSI 256-color index to its RGB representation.
@@ -1124,6 +1085,7 @@ mod downgrade_edge_cases {
 
         // r >= 8 -> grayscale ramp starts
         assert_eq!(rgb_to_256(8, 8, 8), 232);
+        assert_eq!(rgb_to_256(17, 17, 17), 233);
 
         // r > 246 -> 231 (white in cube, nearest neighbor for values
         // closer to 255 than to 238, the last grayscale ramp entry)
@@ -1177,25 +1139,6 @@ mod downgrade_edge_cases {
             "Non-gray {} should use cube",
             idx
         );
-    }
-
-    // =========================================================================
-    // cube_index edge cases
-    // =========================================================================
-
-    #[test]
-    fn cube_index_boundaries() {
-        // cube_index uses thresholds: 0-47->0, 48-114->1, 115+->computed
-        // Test the boundary values (using super:: to access private fn)
-        assert_eq!(super::cube_index(0), 0);
-        assert_eq!(super::cube_index(47), 0);
-        assert_eq!(super::cube_index(48), 1);
-        assert_eq!(super::cube_index(114), 1);
-        assert_eq!(super::cube_index(115), 2);
-        assert_eq!(super::cube_index(155), 3);
-        assert_eq!(super::cube_index(195), 4);
-        assert_eq!(super::cube_index(235), 5);
-        assert_eq!(super::cube_index(255), 5);
     }
 
     // =========================================================================
