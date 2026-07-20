@@ -387,7 +387,7 @@ jobs:
           toolchain: nightly
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -450,7 +450,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -543,7 +543,7 @@ jobs:
           toolchain: nightly
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
@@ -711,7 +711,7 @@ jobs:
           toolchain: nightly
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
@@ -1113,7 +1113,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -2158,7 +2158,7 @@ jobs:
           toolchain: nightly
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
@@ -2312,7 +2312,7 @@ jobs:
           toolchain: nightly
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
