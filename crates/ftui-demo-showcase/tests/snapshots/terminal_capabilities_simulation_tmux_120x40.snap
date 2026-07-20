@@ -20,7 +20,7 @@
 │                                                                    ││P: cycle profiles | R: reset to detected        │
 │                                                                    ││                                                │
 │                                                                    ││                                                │
-│                                                                    ││Preview: color=256 sync=no mux=yes              │
+│                                                                    ││Preview: color=ansi256 sync=no mux=yes          │
 │                                                                    │╰────────────────────────────────────────────────╯
 │                                                                    │╭ Fallback Policy ───────────────────────────────╮
 │                                                                    ││Sync output: no (terminal lacks support)        │
