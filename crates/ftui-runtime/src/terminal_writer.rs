@@ -68,7 +68,9 @@ use crate::render_trace::{
     RenderTraceFrame, RenderTraceRecorder, build_diff_runs_payload, build_full_buffer_payload,
 };
 use ftui_core::inline_mode::InlineStrategy;
-use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
+#[cfg(test)]
+use ftui_core::terminal_capabilities::ColorDepth;
+use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::{Buffer, DirtySpanConfig, DirtySpanStats};
 use ftui_render::counting_writer::CountingWriter;
 use ftui_render::diff::{BufferDiff, TileDiffConfig, TileDiffFallback, TileDiffStats};
