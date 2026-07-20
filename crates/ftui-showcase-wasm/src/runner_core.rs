@@ -1192,7 +1192,7 @@ fn hash_flat_patch_batch(spans: &[u32], cells: &[u32]) -> Option<String> {
 
     let mut word_idx = 0usize;
     let mut cell_bytes = [0u8; 16];
-    for span in spans.chunks_exact(2) {
+    for span in spans.as_chunks::<2>().0 {
         let offset = span[0];
         let len = span[1] as usize;
         let cell_count = u64::try_from(len).unwrap_or(u64::MAX);

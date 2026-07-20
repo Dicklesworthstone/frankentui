@@ -676,7 +676,7 @@ fn decode_hex_stream(hex: &str) -> Result<Vec<u8>, String> {
     }
 
     let mut out = Vec::with_capacity(compact.len() / 2);
-    for pair in compact.chunks_exact(2) {
+    for pair in compact.as_chunks::<2>().0 {
         let high = nibble(pair[0]).ok_or_else(|| format!("invalid hex byte: {}", pair[0]))?;
         let low = nibble(pair[1]).ok_or_else(|| format!("invalid hex byte: {}", pair[1]))?;
         out.push((high << 4) | low);
