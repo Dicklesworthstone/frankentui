@@ -78,7 +78,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["registry"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.7.0"
-serial_test = "3.5.0"
+serial_test = "4.0.1"
 
 [[bench]]
 name = "action_timeline_bench"
