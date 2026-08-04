@@ -21,8 +21,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_
 
 [dependencies]
 ahash = "0.8"
-bitflags = "2.13.0"
-memchr = "2.8.1"
+bitflags = "2.13.1"
+memchr = "2.8.3"
 smallvec = "1.15.1"
 unicode-segmentation = "1.13.3"
 web-time = "1.1.0"
@@ -38,8 +38,8 @@ tracing = { version = "0.1.41", optional = true }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 ftui-core = { path = "../ftui-core", version = "0.5.0" }
 proptest = "1.7.0"
-serde = { version = "1.0.227", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 
 [[bench]]
 name = "cell_bench"

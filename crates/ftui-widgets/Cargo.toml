@@ -20,7 +20,7 @@ tracing = ["dep:tracing", "ftui-render/tracing"]
 
 [dependencies]
 ahash = "0.8"
-bitflags = "2.13.0"
+bitflags = "2.13.1"
 ftui-a11y = { path = "../ftui-a11y", version = "0.5.0" }
 ftui-core = { path = "../ftui-core", version = "0.5.0" }
 ftui-layout = { path = "../ftui-layout", version = "0.5.0" }
@@ -29,8 +29,8 @@ ftui-style = { path = "../ftui-style", version = "0.5.0" }
 ftui-runtime = { path = "../ftui-runtime", version = "0.5.0" }
 ftui-text = { path = "../ftui-text", version = "0.5.0", features = ["markup"] }
 web-time = "1.1.0"
-regex = { version = "1.12.3", optional = true }
-serde = { version = "1.0.227", features = ["derive"], optional = true }
+regex = { version = "1.13.1", optional = true }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
 tracing = { version = "0.1.41", optional = true }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
@@ -38,8 +38,8 @@ unicode-width = "0.2.2"
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.7.0"
-serde = { version = "1.0.227", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["registry"] }
 

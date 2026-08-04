@@ -41,8 +41,8 @@ ftui-extras = { path = "../ftui-extras", version = "0.5.0", features = [
     "theme",
     "visual-fx",
 ] }
-serde_json = "1.0.150"
-serde = { version = "1.0.227", features = ["derive"] }
+serde_json = "1.0.151"
+serde = { version = "1.0.229", features = ["derive"] }
 stats_alloc = "0.1.10"
 unicode-width = "0.2.2"
 unicode-segmentation = "1.13.3"

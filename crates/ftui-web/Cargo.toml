@@ -24,8 +24,8 @@ ftui-core = { path = "../ftui-core", version = "0.5.0" }
 ftui-layout = { path = "../ftui-layout", version = "0.5.0" }
 ftui-render = { path = "../ftui-render", version = "0.5.0" }
 ftui-runtime = { path = "../ftui-runtime", version = "0.5.0", default-features = false }
-serde = { version = "1.0.227", features = ["derive"], optional = true }
-serde_json = { version = "1.0.150", optional = true }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+serde_json = { version = "1.0.151", optional = true }
 tracing = { version = "0.1.41", optional = true }
 
 [dev-dependencies]
@@ -37,9 +37,9 @@ ftui-a11y = { path = "../ftui-a11y", version = "0.5.0" }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 pretty_assertions = "1.4.1"
 # JSONL evidence validation in SDK adapter/contract tests (bd-2vr05.9.3/.9.6).
-serde_json = "1.0.150"
+serde_json = "1.0.151"
 tracing-subscriber = { version = "0.3.20", features = ["registry"] }
-wasm-bindgen-test = "0.3.73"
+wasm-bindgen-test = "0.3.76"
 
 [[bench]]
 name = "pane_pointer_bench"

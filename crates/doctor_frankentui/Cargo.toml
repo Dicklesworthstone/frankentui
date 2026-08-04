@@ -11,18 +11,18 @@ documentation = "https://docs.rs/doctor_frankentui"
 readme = "../../README.md"
 
 [dependencies]
-clap = { version = "4.5.60", features = ["derive"] }
-serde = { version = "1.0.227", features = ["derive"] }
-serde_json = "1.0.150"
-thiserror = "2.0.12"
+clap = { version = "4.6.4", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.19"
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
 wait-timeout = "0.2.1"
 pathdiff = "0.2.3"
 v_htmlescape = "0.17.0"
-which = "8.0.3"
+which = "8.0.5"
 fastapi-output = { version = "0.3.0", default-features = false }
-sqlmodel-console = "0.2.0"
+sqlmodel-console = "0.3.0"
 sha2 = "0.11.0"
 regex-lite = "0.1.6"
 ftui-runtime = { path = "../ftui-runtime", version = "0.5.0", default-features = false }
