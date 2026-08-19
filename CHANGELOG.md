@@ -6,6 +6,118 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
+Scope window: [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.0) (2026-04-12) through HEAD on 2026-08-19 ([`69642d35f56b18a6125ba329b469f7c106d34c59`](https://github.com/Dicklesworthstone/frankentui/commit/69642d35f56b18a6125ba329b469f7c106d34c59)). `Kind` below: GitHub Release vs plain git tag. **v0.4.0 is a tag only** — there is no GitHub Release at that tag. v0.3.1, v0.4.1, and v0.5.0 are published Releases.
+
+## Version Timeline
+
+| Version | Kind | Date | Summary |
+|---------|------|------|---------|
+| [Unreleased](https://github.com/Dicklesworthstone/frankentui/compare/v0.5.0...main) | HEAD | 2026-08-19 | Color depth, perf-rollout, janitor docs-reorg |
+| [v0.5.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0) | Release | 2026-07-05 | OpenTUI-import closeout + alien-governance |
+| [v0.4.1](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.4.1) | Release | 2026-06-13 | Allocation-reduction skill-loop |
+| [v0.4.0](https://github.com/Dicklesworthstone/frankentui/tree/v0.4.0) | Tag | 2026-04-24 | Load governor + WebGPU context-loss (no GitHub Release) |
+| [v0.3.1](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.1) | Release | 2026-04-12 | crates.io publish-order patch |
+| [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.0) | Release | 2026-04-12 | ftui-a11y + render pipeline (previous changelog ceiling) |
+
+---
+
+## [Unreleased] -- development on `main` since [v0.5.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0) (as of 2026-08-19)
+
+Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.5.0...main>
+
+111 non-merge commits after the v0.5.0 tag.
+
+### Janitor docs-reorg (2026-08-19)
+
+- Untracked skill-loop scratch and ignored the workspace pattern ([`ce4b228164f442838438bf65d28c47be80c2a2e3`](https://github.com/Dicklesworthstone/frankentui/commit/ce4b228164f442838438bf65d28c47be80c2a2e3)).
+- Relocated remaining root reports: `ACCESSIBILITY.md` → [`docs/ACCESSIBILITY.md`](https://github.com/Dicklesworthstone/frankentui/blob/main/docs/ACCESSIBILITY.md); `UPGRADE_LOG.md` → [`docs/planning/UPGRADE_LOG.md`](https://github.com/Dicklesworthstone/frankentui/blob/main/docs/planning/UPGRADE_LOG.md) ([`69642d35f56b18a6125ba329b469f7c106d34c59`](https://github.com/Dicklesworthstone/frankentui/commit/69642d35f56b18a6125ba329b469f7c106d34c59)).
+
+### Representative commits
+
+- [`69642d35f56b18a6125ba329b469f7c106d34c59`](https://github.com/Dicklesworthstone/frankentui/commit/69642d35f56b18a6125ba329b469f7c106d34c59) — janitor relocate remaining root reports.
+- [`ce4b228164f442838438bf65d28c47be80c2a2e3`](https://github.com/Dicklesworthstone/frankentui/commit/ce4b228164f442838438bf65d28c47be80c2a2e3) — untrack skill-loop scratch.
+
+### Color depth as a first-class capability
+
+- Terminal depth is first-class rather than an env-var afterthought ([`ef5efdea137c51ea61fe091688b1bf66b7bf60fd`](https://github.com/Dicklesworthstone/frankentui/commit/ef5efdea137c51ea61fe091688b1bf66b7bf60fd)).
+- Capability and trace contracts made truthful ([`7cd1ef0c9a30629c6784cfa10bad756b7a1c22ff`](https://github.com/Dicklesworthstone/frankentui/commit/7cd1ef0c9a30629c6784cfa10bad756b7a1c22ff)).
+- WezTerm mux sessions detected in terminal-capability probing ([`20b0d78fa820ee6c1ef802d40fc040aba6ae697c`](https://github.com/Dicklesworthstone/frankentui/commit/20b0d78fa820ee6c1ef802d40fc040aba6ae697c)).
+
+### Render, perf-rollout, and FrankenTermJS
+
+- Certificate-driven render work elimination in the production diff path ([`9ae7f03eaf4d7ac5fb0722de78f19bae89ef78a1`](https://github.com/Dicklesworthstone/frankentui/commit/9ae7f03eaf4d7ac5fb0722de78f19bae89ef78a1)).
+- Perf-rollout: executable shadow/canary/fallback/rollback/recovery drills ([`1a0869b453316025f2bd60d8176e12c6ae442d8e`](https://github.com/Dicklesworthstone/frankentui/commit/1a0869b453316025f2bd60d8176e12c6ae442d8e)); promotion scorecard and go/no-go gates ([`5f5b7f82ee16a634a04770aa320dcc4b39b8c6ed`](https://github.com/Dicklesworthstone/frankentui/commit/5f5b7f82ee16a634a04770aa320dcc4b39b8c6ed)).
+- FrankenTermJS release-readiness program: scorecard, matrix, rollout, stress campaign, rehearsal ([`d3dcbca004a7bf7bcf69585ff0c5e98ff8387bd5`](https://github.com/Dicklesworthstone/frankentui/commit/d3dcbca004a7bf7bcf69585ff0c5e98ff8387bd5)).
+- Workspace crates modernized, including asupersync 0.3.9 ([`2747ec6d9f44e43becc50ddad38361d148cfd077`](https://github.com/Dicklesworthstone/frankentui/commit/2747ec6d9f44e43becc50ddad38361d148cfd077)); parallel rustc front-end (`-Z threads=4`) ([`052f1ecee072110657af3be10455d165d898aa91`](https://github.com/Dicklesworthstone/frankentui/commit/052f1ecee072110657af3be10455d165d898aa91)).
+
+---
+
+## [v0.5.0] -- 2026-07-05 (GitHub Release)
+
+> GitHub Release: <https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0>
+> Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.4.1...v0.5.0>
+> 175 non-merge commits since v0.4.1.
+
+OpenTUI-import epic closeout (bd-3bxhj family): alien-governance formal guarantees, doctor killer-demo contract, flagship example migrations, and render/runtime correctness.
+
+### Alien governance and doctor contracts
+
+- Sequential multiple-testing control with e-BH + alpha-investing ([`7fc0945cdaa809a88178dbdf6898c9fef49d2e0a`](https://github.com/Dicklesworthstone/frankentui/commit/7fc0945cdaa809a88178dbdf6898c9fef49d2e0a)).
+- Conformal + e-process + PAC-Bayes formal guarantee layer ([`b51156541162567a76bb95dc884bb23bf4c6033d`](https://github.com/Dicklesworthstone/frankentui/commit/b51156541162567a76bb95dc884bb23bf4c6033d)).
+- Doctor: CI-executable killer-demo contract ([`4487e85d761bfe75ffcd386cdc641b80ee380b6e`](https://github.com/Dicklesworthstone/frankentui/commit/4487e85d761bfe75ffcd386cdc641b80ee380b6e)); cross-validator governance diagnostic harness ([`de701ef4615160bdffa4979223a9c88b2c4f1f9a`](https://github.com/Dicklesworthstone/frankentui/commit/de701ef4615160bdffa4979223a9c88b2c4f1f9a)).
+- OpenTUI rollout: flagship example migrations with before/after evidence packs ([`36b27cb10b8c7a4251fc43a405041e69c4d767a7`](https://github.com/Dicklesworthstone/frankentui/commit/36b27cb10b8c7a4251fc43a405041e69c4d767a7)).
+
+### Render, input, and capabilities
+
+- Presenter cursor desync at last column + viewport `clear_screen` + wide-cell fill residue ([`49e55c750dd29654eab7357be1e3ad5c59225b4a`](https://github.com/Dicklesworthstone/frankentui/commit/49e55c750dd29654eab7357be1e3ad5c59225b4a)).
+- Runtime XTGETTCAP truecolor probe — auto-recover 24-bit color when env detection is degraded ([`9fb84adb4b22750768fe3abc91c9c677ae554048`](https://github.com/Dicklesworthstone/frankentui/commit/9fb84adb4b22750768fe3abc91c9c677ae554048)).
+- Workspace bump to 0.5.0 ([`b922db6976e8cc370ab6e3e625f059b005750642`](https://github.com/Dicklesworthstone/frankentui/commit/b922db6976e8cc370ab6e3e625f059b005750642)).
+
+---
+
+## [v0.4.1] -- 2026-06-13 (GitHub Release)
+
+> GitHub Release: <https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.4.1>
+> Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.4.0...v0.4.1>
+> 187 non-merge commits since v0.4.0.
+
+Allocation-reduction skill-loop across markdown, dashboard, table gallery, and extras; load-governor Unsafe state made actually terminal.
+
+- Load-governor `Unsafe` state is terminal ([`9e71e3d67df91a28dac726e60a6b32e6c7e7f4ca`](https://github.com/Dicklesworthstone/frankentui/commit/9e71e3d67df91a28dac726e60a6b32e6c7e7f4ca)); subscription reconcile started/stopped counts corrected ([`b95541769fe8d496036d7d8d9814dd9cf1af31c3`](https://github.com/Dicklesworthstone/frankentui/commit/b95541769fe8d496036d7d8d9814dd9cf1af31c3)).
+- Flex constraints stack-inlined with SmallVec ([`1d9a40b7d78c8e5bb2bebbe3b7ca3c9c4b3eba78`](https://github.com/Dicklesworthstone/frankentui/commit/1d9a40b7d78c8e5bb2bebbe3b7ca3c9c4b3eba78)); branch-free sparse-mode pixel setter in extras ([`ae75a8fd8d96a59bd91f8f89726f4f2e7c5d19ab`](https://github.com/Dicklesworthstone/frankentui/commit/ae75a8fd8d96a59bd91f8f89726f4f2e7c5d19ab)).
+- Justify spaces via render-hint instead of re-slicing source text ([`04ff79fcb48e67a157a120a3872f2e236ee9a9ef`](https://github.com/Dicklesworthstone/frankentui/commit/04ff79fcb48e67a157a120a3872f2e236ee9a9ef)).
+- Workspace bump to 0.4.1 ([`436e917a9d42fa3c1778c9bdf4d25363739cb843`](https://github.com/Dicklesworthstone/frankentui/commit/436e917a9d42fa3c1778c9bdf4d25363739cb843)).
+
+---
+
+## [v0.4.0] -- 2026-04-24 (Tag only — no GitHub Release)
+
+> Git tag `v0.4.0` exists; **no GitHub Release was published for this tag.**
+> Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.3.1...v0.4.0>
+> 34 non-merge commits since v0.3.1.
+
+Load governor, WebGPU context-loss handling, markdown math cache, asupersync 0.3.x.
+
+- `LoadGovernorConfig` for adaptive render degradation ([`54373939f853d1d6547d3b702255989e5104c1eb`](https://github.com/Dicklesworthstone/frankentui/commit/54373939f853d1d6547d3b702255989e5104c1eb)).
+- WebGPU context loss + render stall interruptions ([`a2e4c5dd71391315af61d15ad59675968f6bd42f`](https://github.com/Dicklesworthstone/frankentui/commit/a2e4c5dd71391315af61d15ad59675968f6bd42f)).
+- Latex-math cache + shared `MarkdownRenderer` across per-frame renders ([`30e138224c6a74be4884511c0b3bfe987f55ae23`](https://github.com/Dicklesworthstone/frankentui/commit/30e138224c6a74be4884511c0b3bfe987f55ae23)).
+- Pane resize history coalesced by gesture ([`d5b0e9db6f698729dd68d0fe49bed84366e680f2`](https://github.com/Dicklesworthstone/frankentui/commit/d5b0e9db6f698729dd68d0fe49bed84366e680f2)).
+- asupersync 0.2.9 → 0.3.0 → 0.3.1 ([`5f78cfa08016b968b49c16d245234285154917d9`](https://github.com/Dicklesworthstone/frankentui/commit/5f78cfa08016b968b49c16d245234285154917d9)).
+- Workspace bump to 0.4.0 ([`c8a0384671d82013d8f4953c31ec1e20fd04ef6a`](https://github.com/Dicklesworthstone/frankentui/commit/c8a0384671d82013d8f4953c31ec1e20fd04ef6a)).
+
+---
+
+## [v0.3.1] -- 2026-04-12 (GitHub Release)
+
+> GitHub Release: <https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.1>
+> Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.3.0...v0.3.1>
+> 2 non-merge commits since v0.3.0.
+
+Patch release fixing crates.io publish ordering: removes version specifiers from dev-dependencies on `ftui-harness` in `ftui-layout` and `ftui-runtime` so layered crates.io publish no longer hits circular resolution. All 16 publishable crates publish cleanly in dependency order. Feature changelog remains v0.3.0.
+
+- Remove version specifier from dev-deps on `ftui-harness` ([`1efb7cad2817a413031923950e33960c65c40441`](https://github.com/Dicklesworthstone/frankentui/commit/1efb7cad2817a413031923950e33960c65c40441)).
+- Workspace bump to 0.3.1 ([`095c4f90a407650b77a640d915fb2b9468d7f8f3`](https://github.com/Dicklesworthstone/frankentui/commit/095c4f90a407650b77a640d915fb2b9468d7f8f3)).
+
 ---
 
 ## [0.3.0] (2026-04-12)

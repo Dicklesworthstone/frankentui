@@ -1268,6 +1268,8 @@ The runtime supports three execution lanes (Legacy, Structured, Asupersync) with
 
 ## Key Docs
 
+- `docs/ACCESSIBILITY.md` — accessibility tree / proxy notes (relocated from repo root)
+- `docs/planning/UPGRADE_LOG.md` — upgrade history (relocated from repo root)
 - `docs/operational-playbook.md`
 - `docs/risk-register.md`
 - `docs/glossary.md`
