@@ -203,3 +203,8 @@ check_output.txt
 # Patch artifacts (failed merges / quilt / git am)
 *.orig
 *.rej
+
+# Skill-loop / repo-janitor scratch
+.skill-loop-progress.md
+.skill-loop-progress-*.md
+
