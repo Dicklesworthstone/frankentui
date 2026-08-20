@@ -27,6 +27,15 @@ Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.5.0...main>
 
 111 non-merge commits after the v0.5.0 tag.
 
+### Delivered capability
+
+- Terminal color depth as a first-class capability.
+- `ACCESSIBILITY.md` and `UPGRADE_LOG.md` relocated under `docs/`.
+
+### Closed workstreams
+
+- Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/frankentui/blob/main/.beads/issues.jsonl).
+
 ### Janitor docs-reorg (2026-08-19)
 
 - Untracked skill-loop scratch and ignored the workspace pattern ([`ce4b228164f442838438bf65d28c47be80c2a2e3`](https://github.com/Dicklesworthstone/frankentui/commit/ce4b228164f442838438bf65d28c47be80c2a2e3)).
