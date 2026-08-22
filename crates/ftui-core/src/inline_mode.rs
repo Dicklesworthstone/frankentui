@@ -288,7 +288,7 @@ impl<W: Write> InlineRenderer<W> {
                 // Keep overlay logging single-line so wraps/newlines never scribble
                 // into the UI region below.
                 let safe_line =
-                    Self::sanitize_overlay_log_line(text, usize::from(self.config.term_width));
+                    sanitize_overlay_log_line(text, usize::from(self.config.term_width));
                 if !safe_line.is_empty() {
                     self.writer.write_all(safe_line.as_bytes())?;
                 }
@@ -536,47 +536,6 @@ impl<W: Write> InlineRenderer<W> {
         char::from_u32(codepoint).map(|c| (c, expected_len))
     }
 
-    fn sanitize_overlay_log_line(text: &str, max_cols: usize) -> String {
-        if max_cols == 0 {
-            return String::new();
-        }
-
-        let mut out = String::new();
-        let mut used_cols = 0usize;
-
-        for ch in text.chars() {
-            if ch == '\n' || ch == '\r' {
-                break;
-            }
-
-            // Skip ASCII control characters so logs cannot inject cursor motion.
-            if ch.is_control() {
-                continue;
-            }
-
-            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if ch_width == 0 {
-                // Keep combining marks only when they can attach to prior text.
-                if !out.is_empty() {
-                    out.push(ch);
-                }
-                continue;
-            }
-
-            if used_cols.saturating_add(ch_width) > max_cols {
-                break;
-            }
-
-            out.push(ch);
-            used_cols += ch_width;
-            if used_cols == max_cols {
-                break;
-            }
-        }
-
-        out
-    }
-
     /// Internal cleanup - guaranteed to run on drop.
     fn cleanup_internal(&mut self) -> io::Result<()> {
         let sync_output_enabled = self.sync_output_enabled();
@@ -603,6 +562,55 @@ impl<W: Write> InlineRenderer<W> {
 
         self.writer.flush()
     }
+}
+
+/// Reduce arbitrary (already escape-sanitized or raw) text to at most one
+/// display line: everything from the first `\n`/`\r` onward is dropped,
+/// remaining control characters are skipped, and the result is truncated to
+/// `max_cols` terminal columns using Unicode display width.
+///
+/// Used by overlay-style inline logging ([`InlineRenderer::write_log`] and
+/// `TerminalWriter::write_log`) where emitting a newline would scroll (and
+/// corrupt) the displayed UI.
+pub fn sanitize_overlay_log_line(text: &str, max_cols: usize) -> String {
+    if max_cols == 0 {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    let mut used_cols = 0usize;
+
+    for ch in text.chars() {
+        if ch == '\n' || ch == '\r' {
+            break;
+        }
+
+        // Skip ASCII control characters so logs cannot inject cursor motion.
+        if ch.is_control() {
+            continue;
+        }
+
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if ch_width == 0 {
+            // Keep combining marks only when they can attach to prior text.
+            if !out.is_empty() {
+                out.push(ch);
+            }
+            continue;
+        }
+
+        if used_cols.saturating_add(ch_width) > max_cols {
+            break;
+        }
+
+        out.push(ch);
+        used_cols += ch_width;
+        if used_cols == max_cols {
+            break;
+        }
+    }
+
+    out
 }
 
 impl<W: Write> Drop for InlineRenderer<W> {

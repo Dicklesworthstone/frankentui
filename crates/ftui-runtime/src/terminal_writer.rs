@@ -21,7 +21,10 @@
 //! 1. Cursor is saved before any UI operation
 //! 2. UI region is cleared and redrawn
 //! 3. Cursor is restored after UI operation
-//! 4. Log writes go above the UI region
+//! 4. Log writes go above the UI region: with an active scroll region they
+//!    accumulate into scrollback; in the overlay fallback exactly one
+//!    width-clamped line is rewritten per call (an unqualified LF would
+//!    scroll the whole screen and displace the UI)
 //! 5. Terminal state is restored on drop
 //!
 //! # Usage
@@ -67,7 +70,7 @@ use crate::evidence_telemetry::{DiffDecisionSnapshot, set_diff_snapshot};
 use crate::render_trace::{
     RenderTraceFrame, RenderTraceRecorder, build_diff_runs_payload, build_full_buffer_payload,
 };
-use ftui_core::inline_mode::InlineStrategy;
+use ftui_core::inline_mode::{InlineStrategy, sanitize_overlay_log_line};
 #[cfg(test)]
 use ftui_core::terminal_capabilities::ColorDepth;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
@@ -837,6 +840,10 @@ impl<W: Write> TerminalWriter<W> {
         }
         // Clear prev_buffer to force full redraw after resize
         self.prev_buffer = None;
+        // Old-geometry coordinates are meaningless after a resize: drop the
+        // displayed-region cache so neither log positioning nor
+        // clear_inline_region_diff acts on rows that no longer exist.
+        self.last_inline_region = None;
         self.spare_buffer = None;
         self.clone_buf = None;
         self.reset_diff_on_resize();
@@ -2108,11 +2115,25 @@ impl<W: Write> TerminalWriter<W> {
         BufferDiff::full(buffer.width(), buffer.height())
     }
 
-    /// Write log output (goes to scrollback region in inline mode).
+    /// Write log output (goes to the log region in inline mode).
     ///
-    /// In inline mode, this writes to the log region (above UI for bottom-anchored,
-    /// below UI for top-anchored). The cursor is explicitly positioned in the log
-    /// region before writing to prevent UI corruption.
+    /// Behavior depends on how the UI is anchored on screen:
+    ///
+    /// - **Scroll region active** (ScrollRegion/Hybrid strategies): the cursor
+    ///   is parked at the bottom margin of the DECSTBM log region and the text
+    ///   is written verbatim (after escape-stripping). Each LF scrolls only
+    ///   the log region, so lines accumulate upward into scrollback while the
+    ///   UI stays put.
+    ///
+    /// - **Overlay fallback** (OverlayRedraw strategy, or any transient state
+    ///   without an active region): an unqualified LF would scroll the whole
+    ///   screen and displace or corrupt the displayed UI, so logs NEVER emit
+    ///   one. Instead exactly one width-clamped line is erased-and-rewritten,
+    ///   referenced against the *displayed* region (`last_inline_region`) so
+    ///   height changes between presents cannot land the line inside on-screen
+    ///   UI. Older lines remain visible above until displaced by present
+    ///   repaints; accumulation into scrollback requires the scroll-region
+    ///   path.
     ///
     /// If the UI consumes the entire terminal height, there is no log region
     /// available and the write becomes a no-op.
@@ -2125,36 +2146,10 @@ impl<W: Write> TerminalWriter<W> {
         let sanitized = sanitize(text);
         let text = sanitized.as_ref();
         match self.screen_mode {
-            ScreenMode::Inline { ui_height } => {
-                if !self.position_cursor_for_log(ui_height)? {
-                    return Ok(());
-                }
-                // Invalidate state if we are not using a scroll region, as the log write
-                // might scroll the terminal and shift/corrupt the UI region.
-                if !self.scroll_region_active {
-                    self.prev_buffer = None;
-                    self.last_inline_region = None;
-                    self.reset_diff_strategy();
-                }
-
-                self.writer().write_all(text.as_bytes())?;
-                self.writer().flush()
-            }
+            ScreenMode::Inline { ui_height } => self.write_log_inline(ui_height, text),
             ScreenMode::InlineAuto { .. } => {
-                // InlineAuto: use effective_ui_height for positioning.
                 let ui_height = self.effective_ui_height();
-                if !self.position_cursor_for_log(ui_height)? {
-                    return Ok(());
-                }
-                // Invalidate state if we are not using a scroll region.
-                if !self.scroll_region_active {
-                    self.prev_buffer = None;
-                    self.last_inline_region = None;
-                    self.reset_diff_strategy();
-                }
-
-                self.writer().write_all(text.as_bytes())?;
-                self.writer().flush()
+                self.write_log_inline(ui_height, text)
             }
             ScreenMode::AltScreen => {
                 // AltScreen: no scrollback, logs are typically handled differently
@@ -2164,12 +2159,84 @@ impl<W: Write> TerminalWriter<W> {
         }
     }
 
-    /// Position cursor at the bottom of the log region for writing.
+    /// Shared inline log-write path for [`ScreenMode::Inline`] and
+    /// [`ScreenMode::InlineAuto`].
     ///
-    /// For bottom-anchored UI: log region is above the UI (rows 1 to term_height - ui_height).
-    /// For top-anchored UI: log region is below the UI (rows ui_height + 1 to term_height).
+    /// `ui_height` is the *effective* (pending) UI height; the physically
+    /// displayed region may differ until the next `present_ui`, which is why
+    /// the overlay arm anchors against `last_inline_region`.
+    fn write_log_inline(&mut self, ui_height: u16, text: &str) -> io::Result<()> {
+        let visible_height = ui_height.min(self.term_height);
+        if visible_height >= self.term_height {
+            // No log region available when UI fills the terminal
+            return Ok(());
+        }
+
+        if self.scroll_region_active {
+            // A DECSTBM region matching the current effective height is
+            // active: parking at its bottom margin lets every LF scroll the
+            // log region alone, accumulating lines into scrollback.
+            if !self.position_cursor_for_log(visible_height)? {
+                return Ok(());
+            }
+            self.writer().write_all(text.as_bytes())?;
+            return self.writer().flush();
+        }
+
+        // Overlay discipline: never emit an unscoped LF (it would scroll the
+        // whole screen and push UI rows around). Erase-and-rewrite exactly
+        // one width-clamped line instead.
+        let log_row = match self.ui_anchor {
+            UiAnchor::Bottom => {
+                // One row above the uppermost of the displayed/pending UI
+                // regions (0-indexed start doubles as the 1-indexed row
+                // directly above that region).
+                let pending_start = self.ui_start_row();
+                let anchor = self
+                    .last_inline_region
+                    .map_or(pending_start, |displayed| displayed.start.min(pending_start));
+                if anchor == 0 {
+                    // No free row above the UI.
+                    return Ok(());
+                }
+                anchor
+            }
+            UiAnchor::Top => {
+                // Log region sits below the top-anchored UI; the screen's
+                // bottom row is always inside it and safe because this path
+                // never emits LF.
+                self.term_height
+            }
+        };
+
+        let line = sanitize_overlay_log_line(text, usize::from(self.term_width));
+        if line.is_empty() {
+            return Ok(());
+        }
+
+        // Bound the cursor disturbance to this write so an interleaved
+        // present (or none) always finds the cursor where it left it.
+        self.writer().write_all(CURSOR_SAVE)?;
+        let write_result = write!(self.writer(), "\x1b[{log_row};1H")
+            .and_then(|()| self.writer().write_all(ERASE_LINE))
+            .and_then(|()| self.writer().write_all(line.as_bytes()));
+        let restore_result = self.writer().write_all(CURSOR_RESTORE);
+
+        // Restoration failures must not be swallowed by a successful body
+        // write: the cursor contract outranks the log payload.
+        write_result?;
+        restore_result?;
+        self.writer().flush()
+    }
+
+    /// Position cursor at the bottom margin of the active DECSTBM log region.
     ///
-    /// Positions at the bottom row of the log region so newlines cause scrolling.
+    /// Only meaningful while a scroll region is active (see
+    /// [`TerminalWriter::write_log`]): for bottom-anchored UI the region spans
+    /// rows 1..=term_height - ui_height, for top-anchored UI rows
+    /// ui_height + 1..=term_height. Parking at the region's bottom margin
+    /// makes each subsequent LF scroll only that region, leaving the UI
+    /// untouched while log lines accumulate into scrollback.
     fn position_cursor_for_log(&mut self, ui_height: u16) -> io::Result<bool> {
         let visible_height = ui_height.min(self.term_height);
         if visible_height >= self.term_height {
@@ -3351,12 +3418,17 @@ mod tests {
             writer.present_ui(&buffer, None, true).unwrap();
         }
 
-        // Should have cursor save before each UI present
+        // Should have cursor save before each UI present. Overlay log
+        // writes add their own balanced SAVE/RESTORE pair, so only a floor
+        // is asserted here; balance itself is covered by the overlay tests.
         let save_count = output
             .windows(CURSOR_SAVE.len())
             .filter(|w| *w == CURSOR_SAVE)
             .count();
-        assert_eq!(save_count, 2, "Should have saved cursor twice");
+        assert!(
+            save_count >= 2,
+            "Should have saved cursor at least twice (once per present)"
+        );
 
         // Should have cursor restore after each UI present
         let restore_count = output
@@ -4711,9 +4783,12 @@ mod tests {
     }
 
     #[test]
-    fn log_write_without_scroll_region_resets_diff_strategy() {
-        // When log writes occur without scroll region protection,
-        // the diff strategy posterior should be reset to priors.
+    fn log_write_without_scroll_region_preserves_diff_strategy() {
+        // Overlay log writes never scroll the screen (single erased-and-
+        // rewritten line, no unqualified LF), so the displayed UI baseline
+        // stays valid and the diff strategy posterior must be PRESERVED —
+        // the old reset-to-priors behavior compensated for log-induced
+        // scrolling that no longer happens.
         let mut output = Vec::new();
         {
             let config = RuntimeDiffConfig::default();
@@ -4731,22 +4806,24 @@ mod tests {
             buffer.set_raw(0, 0, Cell::from_char('X'));
             writer.present_ui(&buffer, None, false).unwrap();
 
-            // Posterior should have been updated from initial priors
-            let (_alpha_before, _) = writer.diff_strategy().posterior_params();
-
             // Present another frame
             buffer.set_raw(1, 1, Cell::from_char('Y'));
             writer.present_ui(&buffer, None, false).unwrap();
 
-            // Log write without scroll region should reset
+            let (alpha_before, beta_before) = writer.diff_strategy().posterior_params();
+
+            // Log write without scroll region must not disturb diff state
             assert!(!writer.scroll_region_active());
             writer.write_log("log message\n").unwrap();
 
-            // After reset, posterior should be back to priors
             let (alpha_after, beta_after) = writer.diff_strategy().posterior_params();
             assert!(
-                (alpha_after - 1.0).abs() < 0.01 && (beta_after - 19.0).abs() < 0.01,
-                "posterior should reset to priors after log write: alpha={}, beta={}",
+                (alpha_after - alpha_before).abs() < 0.01
+                    && (beta_after - beta_before).abs() < 0.01,
+                "posterior should be preserved across overlay log write: \
+                 before=({}, {}), after=({}, {})",
+                alpha_before,
+                beta_before,
                 alpha_after,
                 beta_after
             );
@@ -4797,6 +4874,184 @@ mod tests {
         }
     }
 
+    // --- Overlay log discipline regressions (bd-th0p6 / bd-le0q8) ---
+
+    /// CONTRACT: without a scroll region, write_log must never emit an
+    /// unqualified LF (it would scroll the whole screen and displace the UI)
+    /// and must erase the line before rewriting it so shorter lines cannot
+    /// leave remnants of longer predecessors.
+    #[test]
+    fn overlay_write_log_emits_single_erased_line_no_lf() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+            writer.write_log("first line\n").unwrap();
+        }
+
+        assert!(
+            !output.contains(&b'\n'),
+            "overlay write_log must never emit a raw LF byte"
+        );
+        assert!(
+            contains_bytes(&output, ERASE_LINE),
+            "overlay write_log must erase the log row before writing"
+        );
+        assert!(
+            contains_bytes(&output, b"first line"),
+            "the (single-line) log payload must be emitted"
+        );
+    }
+
+    /// CONTRACT: multi-line payloads collapse to their first display line in
+    /// overlay mode — subsequent lines must never scribble toward the UI.
+    #[test]
+    fn overlay_write_log_drops_lines_after_first() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+            writer.write_log("only me\nhidden tail\n").unwrap();
+        }
+
+        let text = String::from_utf8_lossy(&output);
+        assert!(text.contains("only me"), "first line must be emitted");
+        assert!(
+            !text.contains("hidden tail"),
+            "second line must be dropped in overlay mode"
+        );
+    }
+
+    /// CONTRACT (bd-th0p6 top-anchor): with a top-anchored UI and no scroll
+    /// region, log writes park on the screen's bottom row but never emit LF,
+    /// so nothing can push UI rows into scrollback.
+    #[test]
+    fn overlay_top_anchor_write_log_never_scrolls() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Top,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+            writer.write_log("top anchored\n").unwrap();
+        }
+
+        assert!(
+            !output.contains(&b'\n'),
+            "top-anchor overlay logs must not emit LF (screen-scroll hazard)"
+        );
+        assert!(
+            contains_bytes(&output, b"\x1b[24;1H"),
+            "log should target the screen's bottom row (below the UI)"
+        );
+        assert!(contains_bytes(&output, b"top anchored"));
+    }
+
+    /// CONTRACT (bd-th0p6): log payloads are clamped to the terminal width so
+    /// they cannot wrap into the first UI row.
+    #[test]
+    fn overlay_write_log_clamps_to_terminal_width() {
+        let long_line = "x".repeat(100);
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+            writer.write_log(&long_line).unwrap();
+        }
+
+        let emitted_xs = output.iter().filter(|&&b| b == b'x').count();
+        assert_eq!(
+            emitted_xs, 80,
+            "exactly term_width columns of the log line must be emitted"
+        );
+    }
+
+    /// never inside it — instead of using the pending effective height.
+    #[test]
+    fn inline_auto_shrink_positions_log_against_displayed_region() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::InlineAuto {
+                    min_height: 1,
+                    max_height: 8,
+                },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+
+            // Measure to the max: display an 8-row UI (rows 17-24,
+            // region start 16, 0-indexed).
+            writer.set_auto_ui_height(8);
+            let buffer = Buffer::new(80, 8);
+            writer.present_ui(&buffer, None, false).unwrap();
+
+            // Remeasure drops the pending effective height to min=1 while
+            // rows 17-24 are still physically on screen.
+            writer.clear_auto_ui_height();
+
+            // A Cmd::Log before the next present must land ABOVE row 17.
+            writer.write_log("mid-flight\n").unwrap();
+        }
+
+        // The overlay log write emits exactly SAVE + CUP + EL + payload, a
+        // contiguous pattern no present path produces (presents emit more
+        // bytes between SAVE and any CUP). Asserting on that whole pattern
+        // scopes the check to the log write alone.
+        assert!(
+            contains_bytes(&output, b"\x1b7\x1b[16;1H\x1b[2K"),
+            "log must anchor one row above the displayed region start"
+        );
+        for row in 17..=24 {
+            assert!(
+                !contains_bytes(&output, format!("\x1b7\x1b[{row};1H").as_bytes()),
+                "log must not position inside displayed UI row {row}"
+            );
+        }
+        assert!(contains_bytes(&output, b"mid-flight"));
+    }
+
+    /// CONTRACT: set_size invalidates the displayed-region cache — old
+    /// geometry must not steer log positioning or shrink-erasure afterward.
+    #[test]
+    fn set_size_clears_last_inline_region() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        let buffer = Buffer::new(80, 5);
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert!(writer.last_inline_region.is_some());
+
+        writer.set_size(80, 30);
+        assert!(
+            writer.last_inline_region.is_none(),
+            "resize must invalidate the displayed-region cache"
+        );
+    }
     #[test]
     fn strategy_selection_config_flags_applied() {
         // Verify that RuntimeDiffConfig flags are correctly stored and accessible
