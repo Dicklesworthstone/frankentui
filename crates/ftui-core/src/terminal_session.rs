@@ -108,6 +108,17 @@ const SIGNAL_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 #[cfg(unix)]
 const SIGNAL_SHUTDOWN_POLL: Duration = Duration::from_millis(10);
 
+/// Set when deliberate teardown has begun ([`TerminalSession::cleanup`]).
+///
+/// A termination signal that arrives AFTER the main loop's last signal check
+/// would otherwise find nobody left to acknowledge it: the signal thread
+/// would sit out the full grace period and then force-exit mid-`Drop`,
+/// skipping the remaining destructors (bd-kdn7n). Once this latch is set,
+/// `wait_for_shutdown_ack` returns immediately — the terminal is already
+/// being restored by the explicit path, so the signal is treated as
+/// acknowledged.
+#[cfg(unix)]
+static EXPLICIT_TEARDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 /// Returns (sum_us, count) for read I/O operations.
 pub fn terminal_io_read_stats() -> (u64, u64) {
     (
@@ -134,6 +145,12 @@ pub fn terminal_io_flush_stats() -> (u64, u64) {
 
 #[cfg(unix)]
 fn wait_for_shutdown_ack() -> bool {
+    // Deliberate teardown already started: the signal is acknowledged by the
+    // explicit restore path itself (bd-kdn7n race — late SIGTERM after the
+    // main loop's final check must not force-exit mid-Drop).
+    if EXPLICIT_TEARDOWN_STARTED.load(Ordering::SeqCst) {
+        return true;
+    }
     let deadline = std::time::Instant::now()
         .checked_add(SIGNAL_SHUTDOWN_GRACE)
         .unwrap_or_else(std::time::Instant::now);
@@ -245,6 +262,16 @@ const MOUSE_DISABLE_MUX_SAFE_SEQ: &[u8] =
     b"\x1b[?1016l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1001l\x1b[?1005l\x1b[?1015l";
 
 static TERMINAL_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Set once any best-effort (panic/signal/exit) teardown has emitted the
+/// stack-based kitty-keyboard pop (`CSI < u`).
+///
+/// The pop consumes one entry from the terminal's kitty-protocol stack, so it
+/// must happen at most once per process push: a second emission (Drop cleanup
+/// after the panic hook, or a repeated best-effort call) would discard an
+/// *enclosing* tty context's entry (bd-kdn7n). Non-stack resets are safe to
+/// repeat and stay ungated.
+static BEST_EFFORT_KITTY_POP_EMITTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 struct SessionLock;
@@ -978,6 +1005,12 @@ impl TerminalSession {
 
     /// Cleanup helper (shared between drop and explicit cleanup).
     fn cleanup(&mut self) {
+        // Latch BEFORE dropping the guard: a termination signal racing this
+        // teardown sees the explicit restore in progress and acknowledges
+        // immediately instead of force-exiting mid-Drop (bd-kdn7n).
+        #[cfg(unix)]
+        EXPLICIT_TEARDOWN_STARTED.store(true, Ordering::SeqCst);
+
         #[cfg(unix)]
         let _ = self.signal_guard.take();
 
@@ -1009,12 +1042,16 @@ impl TerminalSession {
 
         // Disable features in reverse order of enabling
         if self.kitty_keyboard_enabled {
-            let _ = Self::disable_kitty_keyboard(&mut stdout);
+            // A panic/signal best-effort teardown may already have emitted
+            // the stack-based pop; repeating it would consume an enclosing
+            // tty context's kitty entry (bd-kdn7n).
+            if !BEST_EFFORT_KITTY_POP_EMITTED.load(Ordering::SeqCst) {
+                let _ = Self::disable_kitty_keyboard(&mut stdout);
+                #[cfg(feature = "tracing")]
+                tracing::info!("kitty keyboard disabled");
+            }
             self.kitty_keyboard_enabled = false;
-            #[cfg(feature = "tracing")]
-            tracing::info!("kitty keyboard disabled");
         }
-
         if self.focus_events_enabled {
             let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
             self.focus_events_enabled = false;
@@ -1113,26 +1150,35 @@ pub fn best_effort_cleanup_for_exit() {
 fn best_effort_cleanup() {
     let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
+    best_effort_cleanup_to(&mut stdout, &caps);
+}
 
+/// Emission body of [`best_effort_cleanup`], parameterized over the output
+/// for testability. Consumes the process-global stack-pop budget: only the
+/// first invocation emits the kitty-keyboard pop.
+fn best_effort_cleanup_to(stdout: &mut impl Write, caps: &TerminalCapabilities) {
     // DECSC/DECRC bracket: DECSTBM reset homes the cursor on real
     // terminals; preserve whatever position the writer left it at.
     let _ = stdout.write_all(b"\x1b7");
     let _ = stdout.write_all(RESET_SCROLL_REGION);
     let _ = stdout.write_all(b"\x1b8");
     let _ = stdout.write_all(RESET_STYLE);
-    // Ensure synchronized output is disabled (prevent frozen terminal on panic)
     let _ = stdout.write_all(SYNC_END);
 
     // Keep panic/signal cleanup conservative: only emit mux-sensitive mode
-    // disables when policy says they could have been enabled.
-    if caps.kitty_keyboard && !caps.in_any_mux() {
-        let _ = TerminalSession::disable_kitty_keyboard(&mut stdout);
+    // disables when policy says they could have been enabled. The kitty pop
+    // is stack-based, so only the FIRST best-effort invocation emits it —
+    // later invocations (hook → Drop → for_exit) must not pop an enclosing
+    // tty context's entry (bd-kdn7n).
+    let emit_stack_pops = !BEST_EFFORT_KITTY_POP_EMITTED.swap(true, Ordering::SeqCst);
+    if emit_stack_pops && caps.kitty_keyboard && !caps.in_any_mux() {
+        let _ = TerminalSession::disable_kitty_keyboard(stdout);
     }
     if caps.focus_events && !caps.in_any_mux() {
         let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
     }
     let _ = crossterm::execute!(stdout, crossterm::event::DisableBracketedPaste);
-    let _ = stdout.write_all(TerminalSession::mouse_disable_sequence_for_caps(&caps));
+    let _ = stdout.write_all(TerminalSession::mouse_disable_sequence_for_caps(caps));
     let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
     let _ = crossterm::execute!(stdout, crossterm::terminal::LeaveAlternateScreen);
     let _ = crossterm::terminal::disable_raw_mode();
@@ -1283,6 +1329,64 @@ mod tests {
         // Verify the escape sequences are correct
         assert_eq!(KITTY_KEYBOARD_ENABLE, b"\x1b[>15u");
         assert_eq!(KITTY_KEYBOARD_DISABLE, b"\x1b[<u");
+    }
+    /// CONTRACT (bd-kdn7n): the stack-based kitty-keyboard pop is emitted by
+    /// exactly ONE best-effort teardown invocation per process. Later
+    /// invocations (panic hook → Drop cleanup → best_effort_cleanup_for_exit)
+    /// must not pop again, or an enclosing tty context's kitty entry is lost.
+    ///
+    /// Note: consumes the process-global pop budget; run-order independent
+    /// because no other test asserts on emitted `CSI < u` bytes.
+    #[test]
+    fn best_effort_cleanup_emits_kitty_pop_once() {
+        let caps = TerminalCapabilities::modern();
+        assert!(caps.kitty_keyboard);
+
+        let mut first = Vec::new();
+        best_effort_cleanup_to(&mut first, &caps);
+        assert!(
+            first
+                .windows(KITTY_KEYBOARD_DISABLE.len())
+                .any(|w| w == KITTY_KEYBOARD_DISABLE),
+            "first best-effort teardown must emit the kitty pop"
+        );
+
+        let mut second = Vec::new();
+        best_effort_cleanup_to(&mut second, &caps);
+        assert!(
+            !second
+                .windows(KITTY_KEYBOARD_DISABLE.len())
+                .any(|w| w == KITTY_KEYBOARD_DISABLE),
+            "repeat best-effort teardown must NOT emit a second stack pop"
+        );
+    }
+
+    /// CONTRACT (bd-kdn7n): once deliberate teardown has begun, a late
+    /// termination signal is treated as acknowledged — `wait_for_shutdown_ack`
+    /// returns immediately instead of burning the grace period and letting
+    /// the signal thread force-exit mid-`Drop`.
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_shutdown_ack_immediate_after_explicit_teardown() {
+        crate::shutdown_signal::with_test_signal_serialization(|| {
+            // A pending signal would normally make the wait spin for the full
+            // grace period waiting for an acknowledgement that will never come.
+            crate::shutdown_signal::record_pending_termination_signal(
+                signal_hook::consts::signal::SIGTERM,
+            );
+
+            // Without the latch this branch costs SIGNAL_SHUTDOWN_GRACE (2s).
+            let started = std::time::Instant::now();
+            EXPLICIT_TEARDOWN_STARTED.store(true, Ordering::SeqCst);
+            assert!(wait_for_shutdown_ack());
+            assert!(
+                started.elapsed() < SIGNAL_SHUTDOWN_GRACE / 2,
+                "ack must be immediate once explicit teardown started, took {:?}",
+                started.elapsed()
+            );
+
+            EXPLICIT_TEARDOWN_STARTED.store(false, Ordering::SeqCst);
+        });
     }
 
     #[test]

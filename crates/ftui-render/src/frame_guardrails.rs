@@ -305,10 +305,12 @@ pub struct QueueConfig {
     /// Maximum pending frames before critical action.
     /// Default: 8.
     pub max_depth: u32,
-    /// Emergency depth — drop all but latest.
+    /// Emergency depth — at this depth the queue is drained hard:
+    /// `DropOldest` keeps only the latest frame, `DropNewest` keeps only the
+    /// oldest, `Backpressure` signals the producer (bd-1za0z: the old
+    /// "drop all but latest" wording described only the default policy).
     /// Default: 16.
     pub emergency_depth: u32,
-    /// What to do when max_depth is reached.
     pub drop_policy: QueueDropPolicy,
 }
 
@@ -366,10 +368,27 @@ pub struct QueueGuardrails {
 
 impl QueueGuardrails {
     /// Create a new queue guardrail with the given configuration.
+    ///
+    /// Thresholds are normalized at construction (same policy as
+    /// `MemoryBudgetConfig`): `warn_depth` is clamped to `max_depth` and
+    /// `max_depth` to `emergency_depth`. A malformed config like
+    /// `warn_depth > max_depth` would otherwise produce zero-excess
+    /// `DropOldest(0)` / `DropNewest(0)` actions at the critical tier —
+    /// alerts that look actionable but do nothing (bd-1za0z).
     #[must_use]
     pub fn new(config: QueueConfig) -> Self {
+        // Floor warn at 1: warn_depth 0 would flag an idle queue. Ordering
+        // is then enforced upward so every threshold tier is reachable.
+        let warn_depth = config.warn_depth.max(1);
+        let max_depth = config.max_depth.max(warn_depth);
+        let emergency_depth = config.emergency_depth.max(max_depth);
         Self {
-            config,
+            config: QueueConfig {
+                warn_depth,
+                max_depth,
+                emergency_depth,
+                drop_policy: config.drop_policy,
+            },
             peak_depth: 0,
             current_depth: 0,
             total_drops: 0,
@@ -390,12 +409,12 @@ impl QueueGuardrails {
         if current_depth >= self.config.emergency_depth {
             let action = match self.config.drop_policy {
                 QueueDropPolicy::DropOldest => {
-                    let excess = current_depth - 1; // keep only latest
+                    let excess = current_depth - 1; // DropOldest: keep only the latest
                     self.total_drops = self.total_drops.saturating_add(excess as u64);
                     QueueAction::DropOldest(excess)
                 }
                 QueueDropPolicy::DropNewest => {
-                    let excess = current_depth - 1; // keep only oldest
+                    let excess = current_depth - 1; // DropNewest: keep only the oldest
                     self.total_drops = self.total_drops.saturating_add(excess as u64);
                     QueueAction::DropNewest(excess)
                 }
@@ -417,13 +436,24 @@ impl QueueGuardrails {
             let action = match self.config.drop_policy {
                 QueueDropPolicy::DropOldest => {
                     let excess = current_depth.saturating_sub(self.config.warn_depth);
-                    self.total_drops = self.total_drops.saturating_add(excess as u64);
-                    QueueAction::DropOldest(excess)
+                    if excess == 0 {
+                        // Thresholds collapsed (e.g. warn == max): the
+                        // critical alert still fires, but there is nothing
+                        // to drop — never emit a no-op Drop(excess=0).
+                        QueueAction::None
+                    } else {
+                        self.total_drops = self.total_drops.saturating_add(u64::from(excess));
+                        QueueAction::DropOldest(excess)
+                    }
                 }
                 QueueDropPolicy::DropNewest => {
                     let excess = current_depth.saturating_sub(self.config.warn_depth);
-                    self.total_drops = self.total_drops.saturating_add(excess as u64);
-                    QueueAction::DropNewest(excess)
+                    if excess == 0 {
+                        QueueAction::None
+                    } else {
+                        self.total_drops = self.total_drops.saturating_add(u64::from(excess));
+                        QueueAction::DropNewest(excess)
+                    }
                 }
                 QueueDropPolicy::Backpressure => {
                     self.total_backpressure_events =
@@ -1015,6 +1045,69 @@ mod tests {
         let config = QueueConfig::relaxed();
         let qg = QueueGuardrails::new(config);
         assert_eq!(qg.config().max_depth, 16);
+    }
+
+    /// CONTRACT (bd-1za0z): malformed threshold ordering is normalized at
+    /// construction — warn <= max <= emergency, warn floored at 1.
+    #[test]
+    fn queue_config_normalized_at_construction() {
+        let config = QueueConfig {
+            warn_depth: 10,
+            max_depth: 8,
+            emergency_depth: 6,
+            drop_policy: QueueDropPolicy::DropOldest,
+        };
+        let qg = QueueGuardrails::new(config);
+        let cfg = qg.config();
+        assert_eq!(cfg.warn_depth, 10);
+        assert_eq!(cfg.max_depth, 10, "max must be raised to warn");
+        assert_eq!(cfg.emergency_depth, 10, "emergency must be raised to max");
+
+        let zeroed = QueueGuardrails::new(QueueConfig {
+            warn_depth: 0,
+            ..QueueConfig::default()
+        });
+        assert_eq!(
+            zeroed.config().warn_depth,
+            1,
+            "warn_depth 0 would flag an idle queue"
+        );
+    }
+
+    /// CONTRACT (bd-1za0z): collapsed thresholds (warn == max) must never
+    /// produce a zero-excess Drop action; the critical alert still fires.
+    #[test]
+    fn queue_collapsed_thresholds_yield_noop_action_not_zero_drop() {
+        let config = QueueConfig {
+            warn_depth: 8,
+            max_depth: 8,
+            emergency_depth: 16,
+            drop_policy: QueueDropPolicy::DropOldest,
+        };
+        let mut qg = QueueGuardrails::new(config);
+        let (alert, action) = qg.check(8);
+        assert_eq!(alert.unwrap().severity, AlertSeverity::Critical);
+        assert_eq!(
+            action,
+            QueueAction::None,
+            "excess 0 must not be reported as a real drop action"
+        );
+        assert_eq!(qg.total_drops(), 0, "no-op action must not count drops");
+    }
+
+    /// CONTRACT (bd-1za0z): DropNewest at emergency keeps the oldest frame
+    /// (drops the newest excess) — policy-relative semantics, now documented
+    /// on the config field.
+    #[test]
+    fn queue_emergency_drop_newest_keeps_oldest() {
+        let config = QueueConfig {
+            drop_policy: QueueDropPolicy::DropNewest,
+            ..QueueConfig::default()
+        };
+        let mut qg = QueueGuardrails::new(config);
+        let (alert, action) = qg.check(16);
+        assert_eq!(alert.unwrap().severity, AlertSeverity::Emergency);
+        assert_eq!(action, QueueAction::DropNewest(15));
     }
 
     // ---- QueueAction ----
