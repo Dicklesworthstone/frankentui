@@ -952,8 +952,13 @@ impl ResizeCoalescer {
 
     /// Tick at a specific time (for testing).
     pub fn tick_at(&mut self, now: Instant) -> CoalesceAction {
-        // Update cooldown
-        if self.regime == Regime::Burst {
+        // Heuristic cooldown exit: HEURISTIC MODE ONLY. In BOCPD mode the
+        // posterior owns regime changes (BocpdPosteriorSteady on the next
+        // event); letting this rate-based exit fire too produced
+        // contradictory transitions — and with a low-rate custom BocpdConfig
+        // it was the only between-events Burst exit, fighting the posterior
+        // and flapping the regime (bd-1za0z).
+        if self.regime == Regime::Burst && self.bocpd.is_none() {
             let rate = self.calculate_event_rate(now);
             if rate >= self.config.burst_exit_rate {
                 self.cooldown_remaining = self.config.cooldown_frames.max(1);
@@ -2115,8 +2120,7 @@ mod tests {
         let mut c = ResizeCoalescer::new(config.clone(), (80, 24));
 
         let base = Instant::now();
-        let action =
-            c.handle_resize_at(120, 40, base + Duration::from_millis(500));
+        let action = c.handle_resize_at(120, 40, base + Duration::from_millis(500));
 
         match action {
             CoalesceAction::ApplyResize {
@@ -2145,8 +2149,7 @@ mod tests {
 
         // Second event arrives after the hard deadline elapsed with the
         // first still unapplied.
-        let action =
-            c.handle_resize_at(120, 40, base + Duration::from_millis(500));
+        let action = c.handle_resize_at(120, 40, base + Duration::from_millis(500));
 
         match action {
             CoalesceAction::ApplyResize {
