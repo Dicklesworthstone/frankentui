@@ -4778,9 +4778,6 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     frame_arena: FrameArena,
     /// Unified frame guardrails (memory/queue limits).
     guardrails: FrameGuardrails,
-    /// Optional tick strategy for selective background screen ticking.
-    /// Per-frame bump arena for temporary render-path allocations.
-    frame_arena: FrameArena,
     /// Frame index of the last soft-tier capacity trim.
     ///
     /// Soft memory alerts fire on retained CAPACITY that only a rebuild can
