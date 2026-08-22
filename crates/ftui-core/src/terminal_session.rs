@@ -273,6 +273,72 @@ static TERMINAL_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// repeat and stay ungated.
 static BEST_EFFORT_KITTY_POP_EMITTED: AtomicBool = AtomicBool::new(false);
 
+/// Process-wide serialization for terminal byte emission.
+///
+/// The signal/panic teardown paths (`best_effort_cleanup`,
+/// `TerminalSession::cleanup`) and the render path (ftui-runtime's
+/// `TerminalWriter`) both write escape sequences to the same stdout. Without
+/// mutual exclusion, a frame flush in progress interleaves with teardown
+/// bytes (`ESC[r`, `1049l`, ...) and the frame remainder lands on the cooked
+/// screen (bd-kdn7n item 2, the one-writer violation).
+///
+/// Reentrant on purpose: the panic hook runs ON the rendering thread while it
+/// may already hold this lock mid-frame, so same-thread re-entry must not
+/// deadlock; cross-thread callers (the signal thread) still block until the
+/// in-flight emission batch completes. Emission batches are short (one
+/// buffered frame or one teardown sequence), so a signal thread waiting on
+/// this lock is bounded by a single flush.
+static TERMINAL_OUTPUT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    /// Per-thread nesting depth for [`TERMINAL_OUTPUT_LOCK`]. The outermost
+    /// acquisition on a thread owns the mutex; nested acquisitions (teardown
+    /// re-entering from the panic hook on the render thread) hold no OS lock.
+    static TERMINAL_OUTPUT_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Guard produced by [`terminal_output_lock`]; releases on drop.
+#[derive(Debug)]
+pub struct TerminalOutputGuard {
+    /// Held only by the OUTERMOST acquisition on its thread; re-entries
+    /// keep `None`.
+    _inner: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+/// Acquire the process-wide terminal output lock (see
+/// [`TERMINAL_OUTPUT_LOCK`]).
+///
+/// Emission sites hold this guard for the duration of one write batch:
+/// teardown paths for their full restore sequence, `TerminalWriter` methods
+/// per frame / log / control write. Reentrant per thread; cross-thread
+/// callers block until the in-flight batch completes.
+#[doc(hidden)]
+#[must_use]
+pub fn terminal_output_lock() -> TerminalOutputGuard {
+    let is_outermost = TERMINAL_OUTPUT_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current + 1);
+        current == 0
+    });
+    // A panic while holding (e.g. a panicking write) poisons the mutex; the
+    // teardown paths must still be able to acquire it, so poison is ignored.
+    let inner = is_outermost.then(|| {
+        TERMINAL_OUTPUT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
+    TerminalOutputGuard { _inner: inner }
+}
+
+impl Drop for TerminalOutputGuard {
+    fn drop(&mut self) {
+        // Release the OS lock before decrementing so a waiting thread can
+        // proceed immediately once this thread's outermost batch ends.
+        self._inner = None;
+        TERMINAL_OUTPUT_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 #[derive(Debug)]
 struct SessionLock;
 
@@ -1011,6 +1077,9 @@ impl TerminalSession {
         #[cfg(unix)]
         EXPLICIT_TEARDOWN_STARTED.store(true, Ordering::SeqCst);
 
+        // Serialize against the render path (bd-kdn7n item 2).
+        let _output_guard = terminal_output_lock();
+
         #[cfg(unix)]
         let _ = self.signal_guard.take();
 
@@ -1157,6 +1226,10 @@ fn best_effort_cleanup() {
 /// for testability. Consumes the process-global stack-pop budget: only the
 /// first invocation emits the kitty-keyboard pop.
 fn best_effort_cleanup_to(stdout: &mut impl Write, caps: &TerminalCapabilities) {
+    // Serialize against the render path so teardown bytes cannot interleave
+    // with an in-flight frame flush (bd-kdn7n item 2). Reentrant: the panic
+    // hook may fire while the panicking render thread already holds the lock.
+    let _output_guard = terminal_output_lock();
     // DECSC/DECRC bracket: DECSTBM reset homes the cursor on real
     // terminals; preserve whatever position the writer left it at.
     let _ = stdout.write_all(b"\x1b7");
@@ -1387,6 +1460,47 @@ mod tests {
 
             EXPLICIT_TEARDOWN_STARTED.store(false, Ordering::SeqCst);
         });
+    }
+
+    /// CONTRACT (bd-kdn7n item 2): the terminal output lock is reentrant on
+    /// the owning thread — the panic hook fires ON the render thread while it
+    /// may already hold the lock mid-frame, so nested acquisition (teardown
+    /// under a held lock) must not deadlock.
+    #[test]
+    fn output_lock_is_reentrant_within_thread() {
+        let _outer = terminal_output_lock();
+        // Would hang forever if the lock were not reentrant on the owning
+        // thread: this call re-enters from "inside" the held lock.
+        best_effort_cleanup_to(&mut Vec::new(), &TerminalCapabilities::modern());
+    }
+
+    /// CONTRACT (bd-kdn7n item 2): the lock excludes OTHER threads — a
+    /// signal thread running teardown must not complete acquisition while a
+    /// frame batch is in flight, and must proceed once it completes.
+    #[test]
+    fn output_lock_excludes_other_threads() {
+        let held = terminal_output_lock();
+        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
+        let worker = std::thread::spawn(move || {
+            tx.send("started").expect("receiver alive");
+            // Blocks until the main thread drops its guard.
+            let _acquired = terminal_output_lock();
+            tx.send("acquired").expect("receiver alive");
+        });
+
+        assert_eq!(rx.recv().expect("worker started"), "started");
+        // The worker cannot have completed acquisition: it can only pass the
+        // lock after this thread releases it, which has not happened yet.
+        assert!(
+            rx.try_recv().is_err(),
+            "worker must still be blocked while the batch is held"
+        );
+        drop(held);
+        assert_eq!(
+            rx.recv().expect("worker acquired after release"),
+            "acquired"
+        );
+        worker.join().expect("worker thread joins");
     }
 
     #[test]

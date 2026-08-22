@@ -190,8 +190,13 @@ mod tests {
 
         let output = writer.into_inner().unwrap();
         let output_str = String::from_utf8_lossy(&output);
-        // Should have written an empty sanitized line + newline
-        assert!(output_str.contains('\n'));
+        // An empty line carries no payload: overlay-mode write_log emits
+        // nothing for it and NEVER a raw LF byte (bd-th0p6 — an unqualified
+        // LF would scroll and corrupt the displayed UI).
+        assert!(
+            !output_str.contains('\n'),
+            "overlay log emission must not contain raw newline bytes"
+        );
     }
 
     #[test]

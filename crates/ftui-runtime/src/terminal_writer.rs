@@ -74,6 +74,7 @@ use ftui_core::inline_mode::{InlineStrategy, sanitize_overlay_log_line};
 #[cfg(test)]
 use ftui_core::terminal_capabilities::ColorDepth;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
+use ftui_core::terminal_session::terminal_output_lock;
 use ftui_render::buffer::{Buffer, DirtySpanConfig, DirtySpanStats};
 use ftui_render::counting_writer::CountingWriter;
 use ftui_render::diff::{BufferDiff, TileDiffConfig, TileDiffFallback, TileDiffStats};
@@ -833,6 +834,9 @@ impl<W: Write> TerminalWriter<W> {
     ///
     /// Call this when the terminal is resized.
     pub fn set_size(&mut self, width: u16, height: u16) {
+        // May emit a DECSTBM reset when a scroll region is active; keep it
+        // inside the one-writer discipline (bd-kdn7n item 2).
+        let _output_guard = terminal_output_lock();
         self.term_width = width;
         self.term_height = height;
         if matches!(self.screen_mode, ScreenMode::InlineAuto { .. }) {
@@ -1143,6 +1147,9 @@ impl<W: Write> TerminalWriter<W> {
         cursor: Option<(u16, u16)>,
         cursor_visible: bool,
     ) -> io::Result<()> {
+        // One-writer discipline vs the signal/panic teardown paths
+        // (bd-kdn7n item 2): the whole frame is one emission batch.
+        let _output_guard = terminal_output_lock();
         let mode_str = match self.screen_mode {
             ScreenMode::Inline { .. } => "inline",
             ScreenMode::InlineAuto { .. } => "inline_auto",
@@ -1264,6 +1271,8 @@ impl<W: Write> TerminalWriter<W> {
         cursor: Option<(u16, u16)>,
         cursor_visible: bool,
     ) -> io::Result<()> {
+        // One-writer discipline vs teardown paths (bd-kdn7n item 2).
+        let _output_guard = terminal_output_lock();
         let mode_str = match self.screen_mode {
             ScreenMode::Inline { .. } => "inline",
             ScreenMode::InlineAuto { .. } => "inline_auto",
@@ -2140,6 +2149,8 @@ impl<W: Write> TerminalWriter<W> {
     ///
     /// In AltScreen mode, logs are typically not shown (returns Ok silently).
     pub fn write_log(&mut self, text: &str) -> io::Result<()> {
+        // One-writer discipline vs teardown paths (bd-kdn7n item 2).
+        let _output_guard = terminal_output_lock();
         // Defense in depth: callers usually sanitize before logging, but the
         // terminal writer is the final emission boundary and must never pass
         // through escape/control injection payloads.
@@ -2192,9 +2203,9 @@ impl<W: Write> TerminalWriter<W> {
                 // regions (0-indexed start doubles as the 1-indexed row
                 // directly above that region).
                 let pending_start = self.ui_start_row();
-                let anchor = self
-                    .last_inline_region
-                    .map_or(pending_start, |displayed| displayed.start.min(pending_start));
+                let anchor = self.last_inline_region.map_or(pending_start, |displayed| {
+                    displayed.start.min(pending_start)
+                });
                 if anchor == 0 {
                     // No free row above the UI.
                     return Ok(());
@@ -2264,6 +2275,8 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Clear the screen.
     pub fn clear_screen(&mut self) -> io::Result<()> {
+        // One-writer discipline vs teardown paths (bd-kdn7n item 2).
+        let _output_guard = terminal_output_lock();
         let mut first_error = None;
         if self.in_sync_block {
             if self.capabilities.use_sync_output()
@@ -2316,18 +2329,21 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Hide the cursor.
     pub fn hide_cursor(&mut self) -> io::Result<()> {
+        let _output_guard = terminal_output_lock();
         self.set_cursor_visibility(false)?;
         self.writer().flush()
     }
 
     /// Show the cursor.
     pub fn show_cursor(&mut self) -> io::Result<()> {
+        let _output_guard = terminal_output_lock();
         self.set_cursor_visibility(true)?;
         self.writer().flush()
     }
 
     /// Flush any buffered output.
     pub fn flush(&mut self) -> io::Result<()> {
+        let _output_guard = terminal_output_lock();
         self.writer().flush()
     }
 
@@ -2447,7 +2463,10 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Internal cleanup on drop.
     fn cleanup(&mut self) {
-        let Some(ref mut presenter) = self.presenter else {
+        // Teardown bytes must not interleave with another thread's emission
+        // batch (bd-kdn7n item 2); reentrant so Drop-under-lock is safe.
+        let _output_guard = terminal_output_lock();
+        let Some(presenter) = &mut self.presenter else {
             return; // Presenter already taken (via into_inner)
         };
         presenter.finish_frame_best_effort();
@@ -6498,24 +6517,39 @@ mod tests {
         }
 
         let saw_it = Arc::new(AtomicBool::new(false));
-        let subscriber = SpanChecker {
-            saw_inline_render: Arc::clone(&saw_it),
-        };
 
-        let _guard = tracing::subscriber::set_default(subscriber);
+        // Span callsite interest caches are process-global while this
+        // dispatcher is thread-local: a parallel test can race the
+        // info_span!("inline.render") callsite into caching "not enabled"
+        // even after a rebuild (bd-r2qx8). Retry with a fresh subscriber and
+        // a fresh rebuild each round; a neighbor can only win the race
+        // transiently, never persistently.
+        for _ in 0..8 {
+            saw_it.store(false, std::sync::atomic::Ordering::SeqCst);
+            let subscriber = SpanChecker {
+                saw_inline_render: Arc::clone(&saw_it),
+            };
 
-        let mut output = Vec::new();
-        {
-            let mut writer = TerminalWriter::new(
-                &mut output,
-                ScreenMode::Inline { ui_height: 5 },
-                UiAnchor::Bottom,
-                basic_caps(),
-            );
-            writer.set_size(80, 24);
+            let _guard = tracing::subscriber::set_default(subscriber);
+            tracing::callsite::rebuild_interest_cache();
 
-            let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer, None, true).unwrap();
+            let mut output = Vec::new();
+            {
+                let mut writer = TerminalWriter::new(
+                    &mut output,
+                    ScreenMode::Inline { ui_height: 5 },
+                    UiAnchor::Bottom,
+                    basic_caps(),
+                );
+                writer.set_size(80, 24);
+
+                let buffer = Buffer::new(80, 5);
+                writer.present_ui(&buffer, None, true).unwrap();
+            }
+
+            if saw_it.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
         }
 
         assert!(
