@@ -906,10 +906,14 @@ impl ResizeCoalescer {
             self.window_start = Some(now);
         }
 
-        // Check hard deadline
+        // Check hard deadline. `forced` must mean "work was ALREADY waiting
+        // and sat past its SLA deadline" — an isolated resize arriving after
+        // a quiet gap is applied instantly, but it is not a deadline breach
+        // and must not inflate the SLA forced count (bd-1za0z).
+        let had_pending_before_event = self.pending_size.is_some();
         let time_since_render = duration_since_or_zero(now, self.last_render);
         if time_since_render >= Duration::from_millis(self.config.hard_deadline_ms) {
-            return self.apply_pending_at(now, true);
+            return self.apply_pending_at(now, had_pending_before_event);
         }
 
         // If enough time has passed since the last event, apply now.
@@ -2096,6 +2100,61 @@ mod tests {
             return;
         };
         assert!(forced_by_deadline, "Should be forced by deadline");
+    }
+
+    /// CONTRACT (bd-1za0z): an isolated resize arriving after a quiet gap is
+    /// applied instantly but NOT flagged forced — nothing was waiting on the
+    /// deadline, so it is not an SLA breach.
+    #[test]
+    fn isolated_resize_after_quiet_gap_is_not_forced() {
+        let config = test_config();
+        let mut c = ResizeCoalescer::new(config.clone(), (80, 24));
+
+        let base = Instant::now();
+        let action =
+            c.handle_resize_at(120, 40, base + Duration::from_millis(500));
+
+        match action {
+            CoalesceAction::ApplyResize {
+                forced_by_deadline, ..
+            } => {
+                assert!(
+                    !forced_by_deadline,
+                    "quiet-gap instant apply must not count as forced"
+                );
+            }
+            other => panic!("Expected ApplyResize, got {other:?}"),
+        }
+    }
+
+    /// CONTRACT (bd-1za0z): when a resize arrives while an earlier resize is
+    /// STILL pending past the hard deadline, that IS an SLA breach — forced
+    /// stays true on the event path too.
+    #[test]
+    fn resize_arriving_while_pending_past_deadline_stays_forced() {
+        let config = test_config();
+        let mut c = ResizeCoalescer::new(config.clone(), (80, 24));
+
+        let base = Instant::now();
+        // First event coalesces (no dt yet), leaving work waiting.
+        c.handle_resize_at(90, 30, base);
+
+        // Second event arrives after the hard deadline elapsed with the
+        // first still unapplied.
+        let action =
+            c.handle_resize_at(120, 40, base + Duration::from_millis(500));
+
+        match action {
+            CoalesceAction::ApplyResize {
+                forced_by_deadline, ..
+            } => {
+                assert!(
+                    forced_by_deadline,
+                    "deadline breach of WAITING work must stay forced"
+                );
+            }
+            other => panic!("Expected ApplyResize, got {other:?}"),
+        }
     }
 
     #[test]
