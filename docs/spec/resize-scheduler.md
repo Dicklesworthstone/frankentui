@@ -104,6 +104,10 @@ choose action* = argmin_action E[L(action)]
 - Hard cap on maximum coalesce delay: `max_coalesce_ms`
 - Hard cap on maximum skip rate: `max_skip_ratio`
 - Always render if `elapsed_since_last_render > hard_deadline_ms`
+- `forced` marks an SLA breach of WAITING work: an apply triggered by the
+  hard deadline counts as forced only when a resize was already pending
+  when the deadline elapsed. An isolated resize arriving after a quiet
+  gap applies instantly with `forced = false`.
 
 Recommended defaults (documented + logged):
 - `max_coalesce_ms = 40`
