@@ -210,6 +210,14 @@ pub trait Model: Sized {
 /// Default weight assigned to background tasks.
 const DEFAULT_TASK_WEIGHT: f64 = 1.0;
 
+/// Frames between soft-tier memory capacity trims.
+///
+/// A soft alert fires on retained capacity; trimming (arena rebuild +
+/// grapheme-pool gc) releases it so the sensor can move again, but trimming
+/// every alerting frame would thrash allocations when usage hovers near the
+/// limit. One trim per 60 alerting frames bounds that churn (bd-1za0z).
+const SOFT_TRIM_COOLDOWN_FRAMES: u64 = 60;
+
 /// Default estimated task cost (ms) used for scheduling.
 const DEFAULT_TASK_ESTIMATE_MS: f64 = 10.0;
 
@@ -4778,13 +4786,17 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     frame_arena: FrameArena,
     /// Unified frame guardrails (memory/queue limits).
     guardrails: FrameGuardrails,
-    /// Frame index of the last soft-tier capacity trim.
+    /// Frame index of the last soft-tier capacity trim (`None` = never
+    /// trimmed).
     ///
     /// Soft memory alerts fire on retained CAPACITY that only a rebuild can
     /// shed; trimming every alerting frame would thrash allocations when
     /// usage hovers near the limit, so trims are cooldown-gated
     /// (bd-1za0z: actuator must be able to move the sensor).
-    last_soft_trim_frame: u64,
+    last_soft_trim_frame: Option<u64>,
+    /// Optional tick strategy for selective background screen ticking.
+    tick_strategy: Option<Box<dyn crate::tick_strategy::TickStrategy>>,
+    /// Last active screen observed by the tick strategy dispatch path.
     last_active_screen_for_strategy: Option<String>,
 }
 
@@ -4948,6 +4960,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             inline_auto_remeasure,
             frame_arena: FrameArena::default(),
             guardrails,
+            last_soft_trim_frame: None,
             tick_strategy: config
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
@@ -5080,6 +5093,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             inline_auto_remeasure,
             frame_arena: FrameArena::default(),
             guardrails,
+            last_soft_trim_frame: None,
             tick_strategy: config
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
@@ -6141,6 +6155,31 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             let current = self.budget.degradation();
             if verdict.recommended_level > current {
                 self.budget.set_degradation(verdict.recommended_level);
+            }
+
+            // Soft-tier early trim (bd-1za0z): the memory sensor measures
+            // retained CAPACITY, so once past the soft limit nothing the
+            // degradation actuator does can lower it again — only releasing
+            // capacity can. Trim early (same remediation as the emergency
+            // shed, but non-fatal) instead of waiting for the emergency
+            // tier; cooldown-gated so hovering near the limit cannot thrash
+            // allocations.
+            let soft_alert = verdict.alerts.iter().any(|alert| {
+                alert.kind == GuardrailKind::Memory && alert.severity == AlertSeverity::Warning
+            });
+            let cooldown_elapsed = match self.last_soft_trim_frame {
+                None => true,
+                Some(last) => self.frame_idx.saturating_sub(last) >= SOFT_TRIM_COOLDOWN_FRAMES,
+            };
+            if soft_alert && cooldown_elapsed {
+                self.frame_arena = FrameArena::default();
+                self.writer.gc(None);
+                self.last_soft_trim_frame = Some(self.frame_idx);
+                tracing::debug!(
+                    target: "ftui.guardrails",
+                    memory_bytes,
+                    "soft memory alert: arena rebuilt to release retained capacity"
+                );
             }
         }
 
@@ -11336,6 +11375,7 @@ mod tests {
             inline_auto_remeasure,
             frame_arena: FrameArena::default(),
             guardrails,
+            last_soft_trim_frame: None,
             tick_strategy: config
                 .tick_strategy
                 .map(|strategy| Box::new(strategy) as Box<dyn crate::tick_strategy::TickStrategy>),
@@ -12178,6 +12218,80 @@ mod tests {
         assert!(
             contents.contains(r#""mem_soft_violations":"#),
             "snapshot row must carry the violation counters"
+        );
+    }
+
+    /// CONTRACT (bd-1za0z): a soft memory alert must trigger a capacity trim
+    /// (arena rebuild + pool gc) so the degradation actuator can actually
+    /// move the sensor — retained capacity alone must not pin alerts forever.
+    #[test]
+    fn headless_render_frame_soft_alert_trims_retained_capacity() {
+        struct AlertModel;
+
+        #[derive(Debug)]
+        enum AlertMsg {
+            Noop,
+        }
+
+        impl From<Event> for AlertMsg {
+            fn from(_: Event) -> Self {
+                AlertMsg::Noop
+            }
+        }
+
+        impl Model for AlertModel {
+            type Message = AlertMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let config = ProgramConfig {
+            guardrails: GuardrailsConfig {
+                memory: MemoryBudgetConfig {
+                    soft_limit_bytes: 4096,
+                    ..MemoryBudgetConfig::default()
+                },
+                queue: QueueConfig::default(),
+            },
+            ..Default::default()
+        };
+
+        let mut program = headless_program_with_config(AlertModel, config.clone());
+
+        // Control: same config, same render, no injected capacity — its
+        // post-frame arena size is the floor a successful trim must return
+        // to (the render itself allocates a deterministic working set).
+        let mut control = headless_program_with_config(AlertModel, config);
+        control.dirty = true;
+        control.render_frame().expect("control render");
+        let control_bytes = control.frame_arena.allocated_bytes();
+
+        // Simulate retained capacity well above the soft limit: 256 KiB of
+        // arena allocations that a reset-less sensor can never shed.
+        let filler = vec![0u8; 256 * 1024];
+        program.frame_arena.alloc_slice(&filler);
+        assert!(program.frame_arena.allocated_bytes() >= 256 * 1024);
+
+        program.dirty = true;
+        program
+            .render_frame()
+            .expect("render frame with soft alert");
+        assert_eq!(
+            program.last_soft_trim_frame,
+            Some(program.frame_idx),
+            "soft alert must trigger the capacity trim"
+        );
+
+        // The trim released the injected chunk: the arena is back at the
+        // control's size instead of carrying the extra 256 KiB.
+        let after = program.frame_arena.allocated_bytes();
+        assert!(
+            after <= control_bytes + 1024,
+            "soft alert must trim retained capacity: after={after}, control={control_bytes}"
         );
     }
 
