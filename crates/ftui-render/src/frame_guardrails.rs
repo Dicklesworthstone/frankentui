@@ -175,6 +175,13 @@ pub struct MemoryBudget {
     soft_violations: u32,
     /// Number of frames where hard limit was exceeded.
     hard_violations: u32,
+    /// Number of frames where the emergency limit was exceeded.
+    ///
+    /// Counted separately from [`Self::hard_violations`]: emergency is a
+    /// distinct tier (frame shed + arena rebuild), and conflating it with
+    /// hard-limit hits made the snapshot unable to distinguish "hard limit
+    /// pressure" from "emergency shedding" (bd-1za0z F5).
+    emergency_violations: u32,
 }
 
 impl MemoryBudget {
@@ -190,6 +197,7 @@ impl MemoryBudget {
             current_bytes: 0,
             soft_violations: 0,
             hard_violations: 0,
+            emergency_violations: 0,
         }
     }
 
@@ -201,7 +209,10 @@ impl MemoryBudget {
         }
 
         if current_bytes >= self.config.emergency_limit_bytes {
-            self.hard_violations = self.hard_violations.saturating_add(1);
+            // Emergency is its OWN tier: counting it as a hard violation
+            // conflated "hard limit pressure" with "emergency shedding" in
+            // the snapshot (bd-1za0z F5).
+            self.emergency_violations = self.emergency_violations.saturating_add(1);
             Some(GuardrailAlert {
                 kind: GuardrailKind::Memory,
                 severity: AlertSeverity::Emergency,
@@ -264,6 +275,13 @@ impl MemoryBudget {
         self.hard_violations
     }
 
+    /// Number of frames where the emergency limit was exceeded.
+    #[inline]
+    #[must_use]
+    pub fn emergency_violations(&self) -> u32 {
+        self.emergency_violations
+    }
+
     /// Get a reference to the configuration.
     #[inline]
     #[must_use]
@@ -277,6 +295,7 @@ impl MemoryBudget {
         self.current_bytes = 0;
         self.soft_violations = 0;
         self.hard_violations = 0;
+        self.emergency_violations = 0;
     }
 }
 
@@ -714,6 +733,7 @@ impl FrameGuardrails {
             memory_usage_fraction: self.memory.usage_fraction(),
             memory_soft_violations: self.memory.soft_violations(),
             memory_hard_violations: self.memory.hard_violations(),
+            memory_emergency_violations: self.memory.emergency_violations(),
             queue_depth: self.queue.current_depth(),
             queue_peak_depth: self.queue.peak_depth(),
             queue_total_drops: self.queue.total_drops(),
@@ -748,6 +768,10 @@ pub struct GuardrailSnapshot {
     pub memory_soft_violations: u32,
     /// Frames exceeding hard memory limit.
     pub memory_hard_violations: u32,
+    /// Frames exceeding the emergency memory limit (frame shed + arena
+    /// rebuild). Kept distinct from [`Self::memory_hard_violations`]
+    /// (bd-1za0z F5).
+    pub memory_emergency_violations: u32,
     /// Current queue depth.
     pub queue_depth: u32,
     /// Peak queue depth.
@@ -768,7 +792,7 @@ impl GuardrailSnapshot {
         format!(
             concat!(
                 r#"{{"memory_bytes":{},"memory_peak":{},"memory_frac":{:.4},"#,
-                r#""mem_soft_violations":{},"mem_hard_violations":{},"#,
+                r#""mem_soft_violations":{},"mem_hard_violations":{},"mem_emergency_violations":{},"#,
                 r#""queue_depth":{},"queue_peak":{},"queue_drops":{},"#,
                 r#""queue_backpressure":{},"frames_checked":{},"frames_alerted":{}}}"#,
             ),
@@ -777,6 +801,7 @@ impl GuardrailSnapshot {
             self.memory_usage_fraction,
             self.memory_soft_violations,
             self.memory_hard_violations,
+            self.memory_emergency_violations,
             self.queue_depth,
             self.queue_peak_depth,
             self.queue_total_drops,
@@ -890,8 +915,14 @@ mod tests {
         mb.check(150); // soft
         mb.check(150); // soft again
         mb.check(250); // hard
+        mb.check(350); // emergency — its own tier, NOT a hard violation
         assert_eq!(mb.soft_violations(), 2);
         assert_eq!(mb.hard_violations(), 1);
+        assert_eq!(
+            mb.emergency_violations(),
+            1,
+            "emergency shedding must be counted separately from hard hits (bd-1za0z F5)"
+        );
     }
 
     #[test]

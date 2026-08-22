@@ -6096,6 +6096,21 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // Synchronous program has effectively zero queue depth.
         let verdict = self.guardrails.check_frame(memory_bytes, 0);
 
+        // F2 observability: export a guardrail snapshot whenever any
+        // guardrail fires. Alerts are naturally rate-limited by the
+        // degradation logic, so this stays quiet in healthy runs
+        // (bd-1za0z: GuardrailSnapshot::to_jsonl was production-dead).
+        if !verdict.alerts.is_empty()
+            && let Some(ref sink) = self.evidence_sink
+        {
+            let line = format!(
+                r#"{{"schema_version":"{}","event":"guardrail_snapshot","snapshot":{}}}"#,
+                crate::evidence_sink::EVIDENCE_SCHEMA_VERSION,
+                self.guardrails.snapshot().to_jsonl(),
+            );
+            let _ = sink.write_jsonl(&line);
+        }
+
         if verdict.should_drop_frame() {
             // Emergency shed: skip this frame entirely to prevent OOM.
             // CRUCIALLY, remediate: two of the sensor's components are
@@ -7281,6 +7296,7 @@ mod tests {
     use ftui_render::cell::Cell;
     use ftui_render::diff_strategy::DiffStrategy;
     use ftui_render::frame::CostEstimateSource;
+    use ftui_render::frame_guardrails::{MemoryBudgetConfig, QueueConfig};
     use serde_json::Value;
     use std::collections::{HashMap, VecDeque};
     use std::path::PathBuf;
@@ -12094,6 +12110,69 @@ mod tests {
         assert!(!program.dirty);
         assert!(program.writer.last_diff_strategy().is_some());
         assert_eq!(program.frame_idx, 1);
+    }
+
+    /// CONTRACT (bd-1za0z F2): when a guardrail alert fires during
+    /// render_frame, a `guardrail_snapshot` evidence row is exported through
+    /// the configured sink — GuardrailSnapshot::to_jsonl is live production
+    /// observability, not dead code.
+    #[test]
+    fn headless_render_frame_emits_guardrail_snapshot_evidence_on_alert() {
+        struct AlertModel;
+
+        #[derive(Debug)]
+        enum AlertMsg {
+            Noop,
+        }
+
+        impl From<Event> for AlertMsg {
+            fn from(_: Event) -> Self {
+                AlertMsg::Noop
+            }
+        }
+
+        impl Model for AlertModel {
+            type Message = AlertMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('X'));
+            }
+        }
+
+        let evidence_path = temp_evidence_path("guardrail_snapshot");
+        let config = ProgramConfig {
+            guardrails: GuardrailsConfig {
+                // Soft limit of one byte: the very first frame alerts, so
+                // no memory pressure needs to be manufactured.
+                memory: MemoryBudgetConfig {
+                    soft_limit_bytes: 1,
+                    ..MemoryBudgetConfig::default()
+                },
+                queue: QueueConfig::default(),
+            },
+            evidence_sink: EvidenceSinkConfig::enabled_file(&evidence_path),
+            ..Default::default()
+        };
+
+        let mut program = headless_program_with_config(AlertModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render frame with alert");
+
+        let contents =
+            std::fs::read_to_string(&evidence_path).expect("guardrail evidence file written");
+        let _ = std::fs::remove_file(&evidence_path);
+        assert!(
+            contents.contains(r#""event":"guardrail_snapshot""#),
+            "alerting frame must export a guardrail_snapshot row; got: {contents}"
+        );
+        assert!(
+            contents.contains(r#""mem_soft_violations":"#),
+            "snapshot row must carry the violation counters"
+        );
     }
 
     #[test]
