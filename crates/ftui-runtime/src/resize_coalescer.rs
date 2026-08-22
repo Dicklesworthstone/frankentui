@@ -895,6 +895,11 @@ impl ResizeCoalescer {
             return CoalesceAction::None;
         }
 
+        // Whether work was already waiting BEFORE this event arrived: a
+        // deadline apply counts as forced only if it breached the SLA of
+        // previously-pending work, not this fresh event (bd-1za0z).
+        let had_pending_before_event = self.pending_size.is_some();
+
         // Update pending size (latest wins)
         self.pending_size = Some((width, height));
 
@@ -910,7 +915,6 @@ impl ResizeCoalescer {
         // and sat past its SLA deadline" — an isolated resize arriving after
         // a quiet gap is applied instantly, but it is not a deadline breach
         // and must not inflate the SLA forced count (bd-1za0z).
-        let had_pending_before_event = self.pending_size.is_some();
         let time_since_render = duration_since_or_zero(now, self.last_render);
         if time_since_render >= Duration::from_millis(self.config.hard_deadline_ms) {
             return self.apply_pending_at(now, had_pending_before_event);
