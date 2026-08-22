@@ -94,7 +94,9 @@ use ftui_render::budget::{
 use ftui_render::buffer::Buffer;
 use ftui_render::diff_strategy::DiffStrategy;
 use ftui_render::frame::{Frame, HitData, HitId, HitRegion, WidgetBudget, WidgetSignal};
-use ftui_render::frame_guardrails::{FrameGuardrails, GuardrailsConfig};
+use ftui_render::frame_guardrails::{
+    AlertSeverity, FrameGuardrails, GuardrailKind, GuardrailsConfig,
+};
 use ftui_render::sanitize::sanitize;
 use std::any::Any;
 use std::collections::HashMap;
@@ -4777,8 +4779,15 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     /// Unified frame guardrails (memory/queue limits).
     guardrails: FrameGuardrails,
     /// Optional tick strategy for selective background screen ticking.
-    tick_strategy: Option<Box<dyn crate::tick_strategy::TickStrategy>>,
-    /// Last active screen observed by the tick strategy dispatch path.
+    /// Per-frame bump arena for temporary render-path allocations.
+    frame_arena: FrameArena,
+    /// Frame index of the last soft-tier capacity trim.
+    ///
+    /// Soft memory alerts fire on retained CAPACITY that only a rebuild can
+    /// shed; trimming every alerting frame would thrash allocations when
+    /// usage hovers near the limit, so trims are cooldown-gated
+    /// (bd-1za0z: actuator must be able to move the sensor).
+    last_soft_trim_frame: u64,
     last_active_screen_for_strategy: Option<String>,
 }
 
