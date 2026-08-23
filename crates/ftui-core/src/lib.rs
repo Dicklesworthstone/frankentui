@@ -56,6 +56,26 @@ where
     f()
 }
 
+/// Feature-off mirror of [`terminal_session`] for builds without the
+/// crossterm backend. Nothing else owns the terminal writer in that
+/// configuration, so the one-writer output lock degrades to a no-op guard;
+/// downstream crates (e.g. franken_node's operator surface) can keep calling
+/// [`terminal_output_lock`] unconditionally.
+#[cfg(not(all(not(target_arch = "wasm32"), feature = "crossterm")))]
+pub mod terminal_session {
+    /// Guard returned by the no-op [`terminal_output_lock`] stub.
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct TerminalOutputGuard;
+
+    /// Serialize terminal writes. Without crossterm there is no raw-mode
+    /// writer to contend with, so this is a no-op.
+    #[inline]
+    #[must_use]
+    pub fn terminal_output_lock() -> TerminalOutputGuard {
+        TerminalOutputGuard
+    }
+}
+
 pub mod shutdown_signal {
     //! Process-wide graceful-termination signal state shared by runtime and backends.
     //!
