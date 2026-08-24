@@ -6,13 +6,13 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
-Scope window: [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.0) (2026-04-12) through HEAD on 2026-08-19 ([`69642d35f56b18a6125ba329b469f7c106d34c59`](https://github.com/Dicklesworthstone/frankentui/commit/69642d35f56b18a6125ba329b469f7c106d34c59)). `Kind` below: GitHub Release vs plain git tag. **v0.4.0 is a tag only** — there is no GitHub Release at that tag. v0.3.1, v0.4.1, and v0.5.0 are published Releases.
+Scope window: [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.0) (2026-04-12) through [v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0) (2026-08-24). `Kind` below: GitHub Release vs plain git tag. **v0.4.0 is a tag only** — there is no GitHub Release at that tag. v0.3.1, v0.4.1, and v0.5.0 are published Releases.
 
 ## Version Timeline
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
-| [Unreleased](https://github.com/Dicklesworthstone/frankentui/compare/v0.5.0...main) | HEAD | 2026-08-19 | Color depth, perf-rollout, janitor docs-reorg |
+| [v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0) | Release | 2026-08-24 | Runtime guardrails, resize SLA, asupersync 0.4.9, color depth |
 | [v0.5.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0) | Release | 2026-07-05 | OpenTUI-import closeout + alien-governance |
 | [v0.4.1](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.4.1) | Release | 2026-06-13 | Allocation-reduction skill-loop |
 | [v0.4.0](https://github.com/Dicklesworthstone/frankentui/tree/v0.4.0) | Tag | 2026-04-24 | Load governor + WebGPU context-loss (no GitHub Release) |
@@ -21,11 +21,47 @@ Scope window: [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/
 
 ---
 
-## [Unreleased] -- development on `main` since [v0.5.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0) (as of 2026-08-19)
+## [v0.6.0] -- 2026-08-24 (GitHub Release)
 
-Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.5.0...main>
+Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.5.0...v0.6.0>
 
-111 non-merge commits after the v0.5.0 tag.
+Everything on `main` since v0.5.0. The version steps to 0.6.0 for the new
+runtime capability surface (guardrail evidence, capacity trim, resize SLA
+semantics, `flicker_scan`) and the asupersync 0.4.x dependency line.
+
+### Runtime: guardrails, capacity, resize SLA (2026-08-20 .. 08-23)
+
+- Live guardrail evidence with a dedicated emergency violation tier
+  ([`b5d6a5a1`](https://github.com/Dicklesworthstone/frankentui/commit/b5d6a5a1)).
+- Cooldown-gated soft-tier capacity trim moves the memory sensor
+  ([`4db9b92a`](https://github.com/Dicklesworthstone/frankentui/commit/4db9b92a)).
+- Honest resize SLA `forced` flag with BOCPD-only regime ownership
+  ([`1de69406`](https://github.com/Dicklesworthstone/frankentui/commit/1de69406));
+  an isolated resize after a quiet gap applies instantly without being
+  counted as forced
+  ([`e3d78829`](https://github.com/Dicklesworthstone/frankentui/commit/e3d78829));
+  had-pending state is captured before the latest-wins update
+  ([`9f643562`](https://github.com/Dicklesworthstone/frankentui/commit/9f643562)).
+- One-writer output lock between teardown and render paths
+  ([`a41a267f`](https://github.com/Dicklesworthstone/frankentui/commit/a41a267f));
+  kitty pop-once discipline, shutdown latch, and queue threshold
+  normalization
+  ([`535c3c3b`](https://github.com/Dicklesworthstone/frankentui/commit/535c3c3b)).
+- Overlay `write_log` never scrolls: erase-and-rewrite one clamped line
+  anchored to the displayed region
+  ([`91e7e7bb`](https://github.com/Dicklesworthstone/frankentui/commit/91e7e7bb)).
+- Feature-off `terminal_session` mirror so non-crossterm consumers compile
+  ([`ea797e1e`](https://github.com/Dicklesworthstone/frankentui/commit/ea797e1e)).
+
+### Dependencies and tooling (2026-08-22)
+
+- Optional asupersync dependency moves 0.3.9 -> 0.4.9, so
+  current-asupersync downstreams can use `ftui-runtime` with the
+  `asupersync-executor` feature (GitHub
+  [#92](https://github.com/Dicklesworthstone/frankentui/issues/92);
+  [`d85a674c`](https://github.com/Dicklesworthstone/frankentui/commit/d85a674c)).
+- `flicker_scan` CLI over captured ANSI streams
+  ([`6e59982d`](https://github.com/Dicklesworthstone/frankentui/commit/6e59982d)).
 
 ### Delivered capability
 
