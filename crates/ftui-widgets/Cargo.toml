@@ -1,6 +1,6 @@
 [package]
 name = "ftui-widgets"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Widget library built on FrankenTUI render and layout."
@@ -21,13 +21,13 @@ tracing = ["dep:tracing", "ftui-render/tracing"]
 [dependencies]
 ahash = "0.8"
 bitflags = "2.13.1"
-ftui-a11y = { path = "../ftui-a11y", version = "0.5.0" }
-ftui-core = { path = "../ftui-core", version = "0.5.0" }
-ftui-layout = { path = "../ftui-layout", version = "0.5.0" }
-ftui-render = { path = "../ftui-render", version = "0.5.0" }
-ftui-style = { path = "../ftui-style", version = "0.5.0" }
-ftui-runtime = { path = "../ftui-runtime", version = "0.5.0" }
-ftui-text = { path = "../ftui-text", version = "0.5.0", features = ["markup"] }
+ftui-a11y = { path = "../ftui-a11y", version = "0.6.0" }
+ftui-core = { path = "../ftui-core", version = "0.6.0" }
+ftui-layout = { path = "../ftui-layout", version = "0.6.0" }
+ftui-render = { path = "../ftui-render", version = "0.6.0" }
+ftui-style = { path = "../ftui-style", version = "0.6.0" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.6.0" }
+ftui-text = { path = "../ftui-text", version = "0.6.0", features = ["markup"] }
 web-time = "1.1.0"
 regex = { version = "1.13.1", optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }

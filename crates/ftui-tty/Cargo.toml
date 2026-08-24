@@ -1,6 +1,6 @@
 [package]
 name = "ftui-tty"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Native Unix terminal backend for FrankenTUI (replaces Crossterm)."
@@ -12,9 +12,9 @@ keywords = ["tui", "terminal", "ui", "ftui", "frankentui"]
 categories = ["command-line-interface", "gui"]
 
 [dependencies]
-ftui-backend = { path = "../ftui-backend", version = "0.5.0" }
-ftui-core = { path = "../ftui-core", version = "0.5.0" }
-ftui-render = { path = "../ftui-render", version = "0.5.0" }
+ftui-backend = { path = "../ftui-backend", version = "0.6.0" }
+ftui-core = { path = "../ftui-core", version = "0.6.0" }
+ftui-render = { path = "../ftui-render", version = "0.6.0" }
 
 # Safe Unix terminal control (termios, ioctl).
 [target.'cfg(unix)'.dependencies]
