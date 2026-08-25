@@ -1,4 +1,24 @@
+# Pinned by DATE, deliberately — do not revert this to a bare `channel = "nightly"`.
+#
+# A floating nightly means an upstream rustc regression lands here with no warning
+# and no reproducible green build. That is not hypothetical for this repository's
+# neighbourhood: the same clippy-driver ICE
+#
+#   internal compiler error: unexpected rigid alias in layout_of after normalization
+#
+# was hit on nightlies around 2026-08-22/08-23 in three unrelated repositories —
+# toon_rust (an async opaque type), frankenterm (frankenterm-core under
+# `cargo clippy --fix`), and charmed_rust (23 instances across russh and tokio).
+# In every case `cargo check` succeeded and only the clippy driver ICEd, so it is
+# a toolchain bug, not project code. It surfaces on async-heavy code, which is why
+# some repositories appeared unaffected on the same day — luck, not safety.
+#
+# nightly-2026-08-20 is known-good across four repositories in that sweep.
+#
+# If you need to move this pin: bump the date, re-run
+# `cargo clippy --workspace --all-targets -- -D warnings` and the full test suite,
+# and update this comment with what you verified. Do not replace it with "nightly".
 [toolchain]
-channel = "nightly"
+channel = "nightly-2026-08-20"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
