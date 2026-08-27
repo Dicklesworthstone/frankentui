@@ -52,6 +52,9 @@ telemetry = [
 # Enable Asupersync-backed blocking task execution behind the existing runtime APIs.
 asupersync-executor = ["dep:asupersync"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ftui-backend = { path = "../ftui-backend", version = "0.6.0" }
 # `caps-probe`: the native Program runs a runtime XTGETTCAP truecolor probe at

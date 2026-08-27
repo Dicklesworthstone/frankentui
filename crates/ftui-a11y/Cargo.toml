@@ -11,6 +11,9 @@ readme = "../../README.md"
 keywords = ["tui", "terminal", "ui", "accessibility", "a11y"]
 categories = ["command-line-interface", "gui", "accessibility"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ftui-core = { path = "../ftui-core", version = "0.6.0" }
 ahash = "0.8"

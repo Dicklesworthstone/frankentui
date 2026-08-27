@@ -1,3 +1,7 @@
+// Index walks over parallel slices by a single counter; an iterator rewrite would
+// obscure the arithmetic without changing behaviour.
+#![allow(clippy::needless_range_loop)]
+
 #![forbid(unsafe_code)]
 
 //! Core widgets for FrankenTUI.

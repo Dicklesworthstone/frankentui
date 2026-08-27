@@ -16,6 +16,9 @@ default = []
 pty-capture = ["dep:portable-pty", "ftui-extras/pty-capture"]
 telemetry = ["ftui-runtime/telemetry"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ftui-render = { path = "../ftui-render", version = "0.6.0", features = ["tracing"] }
 ftui-core = { path = "../ftui-core", version = "0.6.0", features = ["crossterm"] }

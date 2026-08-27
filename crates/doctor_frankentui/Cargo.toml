@@ -10,6 +10,9 @@ homepage = "https://github.com/Dicklesworthstone/frankentui"
 documentation = "https://docs.rs/doctor_frankentui"
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 clap = { version = "4.6.4", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }

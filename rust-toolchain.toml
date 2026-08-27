@@ -13,12 +13,12 @@
 # a toolchain bug, not project code. It surfaces on async-heavy code, which is why
 # some repositories appeared unaffected on the same day — luck, not safety.
 #
-# nightly-2026-08-20 is known-good across four repositories in that sweep.
+# nightly-2026-08-25 is known-good across four repositories in that sweep.
 #
 # If you need to move this pin: bump the date, re-run
 # `cargo clippy --workspace --all-targets -- -D warnings` and the full test suite,
 # and update this comment with what you verified. Do not replace it with "nightly".
 [toolchain]
-channel = "nightly-2026-08-20"
+channel = "nightly-2026-08-25"
 profile = "minimal"
 components = ["rustfmt", "clippy"]

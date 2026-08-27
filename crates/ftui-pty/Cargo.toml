@@ -11,6 +11,9 @@ readme = "../../README.md"
 keywords = ["tui", "terminal", "ui", "ftui", "frankentui"]
 categories = ["command-line-interface", "gui"]
 
+[lints]
+workspace = true
+
 [dependencies]
 frankenterm-core = { version = "0.2.0", features = ["ws-codec"] }
 ftui-core = { path = "../ftui-core", version = "0.6.0", features = ["crossterm"] }

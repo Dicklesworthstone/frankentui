@@ -18,6 +18,9 @@ regex-search = ["dep:regex"]
 state-persistence = ["dep:serde"]
 tracing = ["dep:tracing", "ftui-render/tracing"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ahash = "0.8"
 bitflags = "2.13.1"

@@ -25,6 +25,9 @@ tracing-json = ["tracing", "dep:tracing-subscriber"]
 caps-probe = []
 test-helpers = []
 
+[lints]
+workspace = true
+
 [dependencies]
 ahash = "0.8"
 arc-swap = "1.9.2"

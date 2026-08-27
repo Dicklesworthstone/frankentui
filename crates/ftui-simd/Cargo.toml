@@ -11,4 +11,7 @@ readme = "../../README.md"
 keywords = ["tui", "terminal", "ui", "ftui", "frankentui"]
 categories = ["command-line-interface", "gui"]
 
+[lints]
+workspace = true
+
 [dependencies]

@@ -17,6 +17,9 @@ runtime = ["dep:ftui-runtime"]
 extras = ["dep:ftui-extras"]
 crossterm = ["runtime", "ftui-core/crossterm", "ftui-runtime/crossterm-compat"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ftui-core = { path = "../ftui-core", version = "0.6.0" }
 ftui-render = { path = "../ftui-render", version = "0.6.0" }

@@ -12,6 +12,9 @@ readme = "../../README.md"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ftui-web = { path = "../ftui-web", version = "0.6.0", features = ["input-parser"] }
 ftui-demo-showcase = { path = "../ftui-demo-showcase", version = "0.6.0", default-features = false }

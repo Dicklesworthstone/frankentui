@@ -11,6 +11,9 @@ readme = "../../README.md"
 keywords = ["tui", "terminal", "ui", "ftui", "frankentui"]
 categories = ["command-line-interface", "gui"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ftui-backend = { path = "../ftui-backend", version = "0.6.0" }
 ftui-core = { path = "../ftui-core", version = "0.6.0" }

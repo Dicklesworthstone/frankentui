@@ -49,3 +49,12 @@ strip = false
 [profile.bench]
 debug = true
 strip = false
+
+[workspace.lints.clippy]
+# Absorbs lint families newer nightlies fire on unchanged, correct code here.
+# Correctness/suspicious/perf stay denied via the CI `-D warnings` gate.
+# Index walks over parallel slices by a single counter; an iterator rewrite would
+# obscure the arithmetic without changing behaviour.
+needless_range_loop = "allow"
+# Wide tuple types in internals that would not read better named.
+type_complexity = "allow"
