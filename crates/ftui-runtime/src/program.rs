@@ -5576,6 +5576,15 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let mut capped_this_burst = false;
 
         loop {
+            // `read_event` may return `Ok(None)` even though the preceding
+            // poll reported readiness: the event may be unrepresentable in
+            // ftui's canonical event types, and on Windows console readiness
+            // can be spurious (discarded key-release/focus/menu records), in
+            // which case the crossterm-backed source re-polls with a zero
+            // timeout instead of parking in a blocking read (frankentui#95).
+            // Either way we simply fall through to the bounded zero-timeout
+            // poll below; when nothing is pending the burst ends and the
+            // outer loop parks in its normal timed poll — no busy-spin.
             if let Some(event) = self.events.read_event()? {
                 self.handle_event(event)?;
                 if !self.running {
@@ -14303,6 +14312,129 @@ mod tests {
         let timeouts = poll_timeouts.lock().unwrap();
         assert!(timeouts.contains(&Duration::ZERO));
         assert!(timeouts.contains(&Duration::from_millis(1)));
+    }
+
+    /// Regression test for frankentui#95: an event source that reports poll
+    /// readiness but yields no event from `read_event` (spurious readiness,
+    /// as the Windows console can produce) must not stall or busy-spin the
+    /// event loop. The runtime must treat `read_event() == Ok(None)` as
+    /// "nothing decodable", finish the drain burst via its bounded
+    /// zero-timeout polls, and return to the timed outer poll so ticks and
+    /// queued messages keep flowing.
+    #[test]
+    fn spurious_poll_readiness_does_not_stall_event_loop() {
+        struct SpuriousModel {
+            ticks: usize,
+            quit_after: usize,
+        }
+
+        #[derive(Debug)]
+        enum SpuriousMsg {
+            Tick,
+            Other,
+        }
+
+        impl From<Event> for SpuriousMsg {
+            fn from(event: Event) -> Self {
+                match event {
+                    Event::Tick => SpuriousMsg::Tick,
+                    _ => SpuriousMsg::Other,
+                }
+            }
+        }
+
+        impl Model for SpuriousModel {
+            type Message = SpuriousMsg;
+
+            fn init(&mut self) -> Cmd<Self::Message> {
+                Cmd::tick(Duration::from_millis(1))
+            }
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    SpuriousMsg::Tick => {
+                        self.ticks = self.ticks.saturating_add(1);
+                        if self.ticks >= self.quit_after {
+                            Cmd::quit()
+                        } else {
+                            Cmd::none()
+                        }
+                    }
+                    SpuriousMsg::Other => Cmd::none(),
+                }
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        struct SpuriousReadySource {
+            spurious_polls_remaining: usize,
+            read_calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        impl BackendEventSource for SpuriousReadySource {
+            type Error = io::Error;
+
+            fn size(&self) -> Result<(u16, u16), Self::Error> {
+                Ok((80, 24))
+            }
+
+            fn set_features(&mut self, _features: BackendFeatures) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn poll_event(&mut self, _timeout: Duration) -> Result<bool, Self::Error> {
+                if self.spurious_polls_remaining > 0 {
+                    self.spurious_polls_remaining -= 1;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+
+            fn read_event(&mut self) -> Result<Option<Event>, Self::Error> {
+                // Readiness was spurious: nothing decodable is ever produced.
+                self.read_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(None)
+            }
+        }
+
+        let spurious_polls = 5usize;
+        let read_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let events = SpuriousReadySource {
+            spurious_polls_remaining: spurious_polls,
+            read_calls: read_calls.clone(),
+        };
+        let writer = TerminalWriter::new(
+            Vec::<u8>::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            TerminalCapabilities::dumb(),
+        );
+        let config = ProgramConfig::default()
+            .with_forced_size(80, 24)
+            .with_signal_interception(false);
+
+        let model = SpuriousModel {
+            ticks: 0,
+            quit_after: 3,
+        };
+        let mut program =
+            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
+                .expect("program creation");
+        // If spurious readiness parked the loop (the frankentui#95 failure
+        // mode with a blocking read), this would hang instead of returning.
+        program.run().expect("run with spurious readiness");
+
+        assert_eq!(program.model().ticks, 3, "ticks must keep flowing");
+        // Every `true` poll is followed by exactly one read attempt; a
+        // spurious-ready source must produce a bounded number of empty reads,
+        // not an unbounded spin.
+        assert_eq!(
+            read_calls.load(std::sync::atomic::Ordering::Relaxed),
+            spurious_polls
+        );
     }
 
     #[test]

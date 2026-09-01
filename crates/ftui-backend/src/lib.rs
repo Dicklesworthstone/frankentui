@@ -64,6 +64,14 @@ pub trait BackendEventSource {
     /// Read the next available event, or `None` if none is ready.
     ///
     /// Call after `poll_event` returns `true`, or speculatively.
+    ///
+    /// A prior `poll_event` readiness result is a hint, not a guarantee:
+    /// implementations may return `Ok(None)` even immediately after a `true`
+    /// poll (e.g. the pending input was discarded by the parser, or, on
+    /// Windows, console readiness was spurious — see frankentui#95).
+    /// Implementations must not park indefinitely when no event is actually
+    /// pending; callers must treat `Ok(None)` as "nothing decodable right
+    /// now" and return to their poll loop.
     fn read_event(&mut self) -> Result<Option<Event>, Self::Error>;
 }
 

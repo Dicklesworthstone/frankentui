@@ -746,11 +746,39 @@ impl TerminalSession {
         result
     }
 
-    /// Read the next event (blocking until available).
+    /// Read the next event.
+    ///
+    /// On Unix this blocks until an event is available, exactly like
+    /// `crossterm::event::read()`.
+    ///
+    /// On Windows the blocking read is guarded by a zero-timeout re-poll:
+    /// the console can report input readiness for `INPUT_RECORD`s that the
+    /// input parser subsequently discards (key-release records, focus/menu
+    /// events, mouse motion without capture), so a readiness result from an
+    /// earlier [`poll_event`](Self::poll_event) does not guarantee that a
+    /// blocking `crossterm::event::read()` will return promptly. A stale
+    /// readiness result would otherwise park the calling thread — and with
+    /// it the entire runtime event loop — until an unrelated console event
+    /// arrives (see frankentui#95 / pi_agent_rust#198). When the zero-timeout
+    /// re-poll reports nothing pending, this returns `Ok(None)` so the caller
+    /// falls back to its outer timed poll instead of parking. A `true` result
+    /// from a same-thread zero-timeout poll guarantees crossterm has already
+    /// parsed and buffered a real event, so the follow-up read cannot block.
     ///
     /// Returns `Ok(None)` if the event cannot be represented by the
-    /// ftui canonical event types (e.g. unsupported key codes).
+    /// ftui canonical event types (e.g. unsupported key codes), and on
+    /// Windows also when readiness turned out to be spurious. Callers must
+    /// treat `Ok(None)` as "nothing decodable right now" and return to their
+    /// poll loop; the runtime already does for the unsupported-event case.
     pub fn read_event(&self) -> io::Result<Option<Event>> {
+        // Windows-only guard; Unix keeps the exact blocking-read semantics
+        // (zero cost, zero behavior change).
+        #[cfg(windows)]
+        {
+            if !crossterm::event::poll(std::time::Duration::ZERO)? {
+                return Ok(None);
+            }
+        }
         let event = crossterm::event::read()?;
         Ok(Event::from_crossterm(event))
     }
@@ -1387,6 +1415,38 @@ mod tests {
         assert_eq!(cloned.bracketed_paste, opts.bracketed_paste);
         assert_eq!(cloned.focus_events, opts.focus_events);
         assert_eq!(cloned.kitty_keyboard, opts.kitty_keyboard);
+    }
+
+    /// Regression test for frankentui#95: on Windows, `read_event` must not
+    /// park in a blocking `crossterm::event::read()` when no decodable input
+    /// is actually pending (console readiness can be spurious). The
+    /// zero-timeout re-poll guard must make the call return promptly with
+    /// `Ok(None)` (or an error when no console is attached, e.g. in CI).
+    #[cfg(windows)]
+    #[test]
+    fn read_event_returns_promptly_without_pending_input() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default())
+            .expect("test session creation");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            // Ok(None) is the expected outcome; Err is acceptable when no
+            // console is attached (CI); Ok(Some(_)) would mean real console
+            // input arrived during the test. The property under test is only
+            // that the call returns instead of parking.
+            let result = session.read_event();
+            let _ = tx.send(result.map(|event| event.is_some()));
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(_) => {
+                let _ = handle.join();
+            }
+            Err(_) => panic!(
+                "read_event parked in a blocking read with no pending input \
+                 (frankentui#95 regression: zero-timeout re-poll guard missing)"
+            ),
+        }
     }
 
     #[test]
