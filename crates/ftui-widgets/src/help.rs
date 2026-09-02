@@ -19,6 +19,7 @@
 use crate::hint_ranker::{HintContext, HintRanker, RankingEvidence};
 use crate::{StatefulWidget, Widget, clear_text_area, draw_text_span};
 use ftui_core::geometry::Rect;
+use ftui_core::keybinding::{ContextId, KeyMap};
 use ftui_render::budget::DegradationLevel;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
@@ -283,6 +284,33 @@ impl Help {
             separator_style: Style::default(),
             hint_ids: Vec::new(),
         }
+    }
+
+    /// Build a help bar from a [`KeyMap`]: one entry per labelled binding
+    /// that wins under `active` contexts (shadowed bindings are left out),
+    /// with the chord's display text as the key and the label as the
+    /// description. Unlabelled bindings have nothing to say and are skipped.
+    ///
+    /// Entries keep bind order; attach a ranker with
+    /// [`Help::register_with_ranker`] and feed dispatched chords back through
+    /// [`Help::record_used`] with `chord.to_string()` to reorder by use.
+    #[must_use]
+    pub fn from_keymap<A>(map: &KeyMap<A>, active: &[ContextId]) -> Self {
+        let mut help = Self::new();
+        for binding in map.bindings() {
+            let Some(label) = binding.label.as_deref() else {
+                continue;
+            };
+            let wins = map
+                .lookup(&binding.chord, active)
+                .exact
+                .is_some_and(|winner| winner.id == binding.id);
+            if wins {
+                help.entries
+                    .push(HelpEntry::new(binding.chord.to_string(), label));
+            }
+        }
+        help
     }
 
     /// Register every entry with a [`HintRanker`] so the widget can be
@@ -1643,6 +1671,58 @@ mod tests {
             assert!(parsed["net_value"].is_number() && parsed["voi"].is_number());
         }
         assert_eq!(ledger[0].label, "? help", "the used shortcut ranks first");
+    }
+
+    /// A help bar generated from a KeyMap shows the winning labelled
+    /// bindings for the active contexts, and its chord text is what
+    /// `record_used` expects from a dispatched chord.
+    #[test]
+    fn help_from_keymap_lists_winning_labelled_bindings() {
+        use ftui_core::keybinding::{Chord, Priority};
+
+        let chord = |s: &str| Chord::parse(s).unwrap();
+        let mut map = KeyMap::new();
+        let editor = map.context("editor");
+        let quit = map.bind(chord("q"), 1);
+        map.set_label(quit, "quit");
+        let top = map.bind(chord("g g"), 2);
+        map.set_label(top, "top");
+        map.bind(chord("x"), 3); // unlabelled: skipped
+        let save = map.bind(chord("Ctrl+s"), 4);
+        map.set_label(save, "save");
+        let save_buffer = map.bind_in(chord("Ctrl+s"), 5, Priority::Widget, Some(editor));
+        map.set_label(save_buffer, "save buffer");
+
+        let global = Help::from_keymap(&map, &[]);
+        let rows: Vec<(&str, &str)> = global
+            .entries()
+            .iter()
+            .map(|e| (e.key.as_str(), e.desc.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![("q", "quit"), ("g g", "top"), ("Ctrl+s", "save")]
+        );
+
+        let mut in_editor = Help::from_keymap(&map, &[editor]);
+        let descs: Vec<&str> = in_editor
+            .entries()
+            .iter()
+            .map(|e| e.desc.as_str())
+            .collect();
+        assert_eq!(
+            descs,
+            vec!["quit", "top", "save buffer"],
+            "the context binding shadows the global one"
+        );
+
+        let mut ranker = HintRanker::new(RankerConfig::default());
+        in_editor.register_with_ranker(&mut ranker, HintContext::Global);
+        assert!(in_editor.record_used(&mut ranker, &chord("g g").to_string()));
+        assert!(
+            !in_editor.record_used(&mut ranker, "x"),
+            "unlabelled binding is not a hint"
+        );
     }
 
     /// Hysteresis: without new evidence, re-ranking must not reorder.
