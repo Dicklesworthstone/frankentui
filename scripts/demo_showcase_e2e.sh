@@ -2444,8 +2444,30 @@ def summarize_budget(entry):
         "bucket_key": entry.get("bucket_key"),
     }
 
+def summarize_capability(entry):
+    return {
+        "event": "capability_decision",
+        "capability": entry.get("capability"),
+        "env_detected": entry.get("env_detected"),
+        "probe": entry.get("probe"),
+        "operator_override": entry.get("operator_override"),
+        "in_mux": entry.get("in_mux"),
+        "final": entry.get("final"),
+        "evidence_rows": len(entry.get("evidence") or []),
+    }
+
+def summarize_inline_strategy(entry):
+    return {
+        "event": "inline_strategy",
+        "strategy": entry.get("strategy"),
+        "use_scroll_region": entry.get("use_scroll_region"),
+        "use_sync_output": entry.get("use_sync_output"),
+        "in_mux": entry.get("in_mux"),
+    }
+
 summaries = []
 seen_types = set()
+capabilities_decided = set()
 
 for line in lines:
     entry = json.loads(line)
@@ -2462,6 +2484,16 @@ for line in lines:
         frame_idx = entry.get("frame_idx")
         summary = summarize_budget(entry)
         decision_type = "budget_decision"
+    elif event == "capability_decision":
+        # Session-level row written when the evidence sink attaches (frame 0).
+        frame_idx = 0
+        summary = summarize_capability(entry)
+        decision_type = "capability_decision"
+        capabilities_decided.add(entry.get("capability"))
+    elif event == "inline_strategy":
+        frame_idx = 0
+        summary = summarize_inline_strategy(entry)
+        decision_type = "inline_strategy"
     else:
         continue
 
@@ -2481,8 +2513,17 @@ for line in lines:
         "exit_code": int(exit_code),
     })
 
-required = {"diff_decision", "resize_decision", "budget_decision"}
+required = {
+    "diff_decision",
+    "resize_decision",
+    "budget_decision",
+    "capability_decision",
+    "inline_strategy",
+}
 missing = required - seen_types
+# The capability ledger must decide all three policies the live probe covers.
+required_capabilities = {"true_color", "sync_output", "scroll_region"}
+missing_capabilities = required_capabilities - capabilities_decided
 
 with open(summary_path, "w", encoding="utf-8") as handle:
     for summary in summaries:
@@ -2490,6 +2531,8 @@ with open(summary_path, "w", encoding="utf-8") as handle:
 
 if missing:
     raise SystemExit(f"Missing decision types: {sorted(missing)}")
+if missing_capabilities:
+    raise SystemExit(f"capability_decision rows missing for: {sorted(missing_capabilities)}")
 PY
             then
                 explain_parse_ok=true
