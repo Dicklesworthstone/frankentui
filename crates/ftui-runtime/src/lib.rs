@@ -108,7 +108,7 @@ pub use evidence_telemetry::{
     diff_snapshot, resize_snapshot, set_budget_snapshot, set_diff_snapshot, set_resize_snapshot,
 };
 pub use ftui_backend::{BackendEventSource, BackendFeatures};
-#[cfg(feature = "native-backend")]
+#[cfg(all(feature = "native-backend", unix))]
 pub use ftui_tty::TtyBackend;
 pub use input_macro::{
     EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayback, MacroPlayer, MacroRecorder,
@@ -121,6 +121,8 @@ pub use log_sink::LogSink;
 pub use process_subscription::{ProcessEvent, ProcessSubscription};
 #[cfg(feature = "crossterm-compat")]
 pub use program::CrosstermEventSource;
+#[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
+pub use program::DefaultProgram;
 pub use program::{
     App, AppBuilder, BatchController, Cmd, EffectQueueConfig, FrameTiming, FrameTimingConfig,
     FrameTimingSink, HeadlessEventSource, InlineAutoRemeasureConfig, LoadGovernorConfig, Model,
@@ -131,6 +133,7 @@ pub use program::{
     pane_terminal_resolve_splitter_target, pane_terminal_splitter_handles,
     pane_terminal_target_from_hit, register_pane_terminal_splitter_hits,
 };
+pub use program::{DEFAULT_BACKEND, NO_BACKEND_MESSAGE};
 pub use render_trace::{
     RENDER_TRACE_SCHEMA_VERSION, RenderTraceConfig, RenderTraceContext, RenderTraceFrame,
     RenderTraceRecorder,

@@ -116,6 +116,62 @@ fn check_termination_signal() -> Option<i32> {
 fn clear_termination_signal() {
     ftui_core::shutdown_signal::clear_pending_termination_signal();
 }
+
+/// Name of the terminal backend that [`AppBuilder::run`] and [`Program::open`]
+/// select in this build: `"native"` (ftui-tty, Unix), `"crossterm"`, or
+/// `"none"` when neither backend feature was compiled.
+#[cfg(all(feature = "native-backend", unix))]
+pub const DEFAULT_BACKEND: &str = "native";
+/// Name of the terminal backend that [`AppBuilder::run`] and [`Program::open`]
+/// select in this build: `"native"` (ftui-tty, Unix), `"crossterm"`, or
+/// `"none"` when neither backend feature was compiled.
+#[cfg(all(
+    feature = "crossterm-compat",
+    not(all(feature = "native-backend", unix))
+))]
+pub const DEFAULT_BACKEND: &str = "crossterm";
+/// Name of the terminal backend that [`AppBuilder::run`] and [`Program::open`]
+/// select in this build: `"native"` (ftui-tty, Unix), `"crossterm"`, or
+/// `"none"` when neither backend feature was compiled.
+#[cfg(not(any(all(feature = "native-backend", unix), feature = "crossterm-compat")))]
+pub const DEFAULT_BACKEND: &str = "none";
+
+/// Error text returned by [`AppBuilder::run`] when no terminal backend was compiled.
+pub const NO_BACKEND_MESSAGE: &str =
+    "no terminal backend compiled: enable `native-backend` (unix) or `crossterm-compat`";
+
+/// The concrete [`Program`] type that [`Program::open`] returns in this build.
+#[cfg(all(feature = "native-backend", unix))]
+pub type DefaultProgram<M> = Program<M, ftui_tty::TtyBackend, Stdout>;
+/// The concrete [`Program`] type that [`Program::open`] returns in this build.
+#[cfg(all(
+    feature = "crossterm-compat",
+    not(all(feature = "native-backend", unix))
+))]
+pub type DefaultProgram<M> = Program<M, CrosstermEventSource, Stdout>;
+
+/// Run a program to completion and translate a signal-termination error into
+/// the conventional `128 + signal` process exit, after the program (and with it
+/// the terminal session) has been dropped and the terminal restored.
+///
+/// Shared by every [`AppBuilder`] run method so the three backend paths cannot
+/// drift in how they honor the [`SignalTerminationError`] contract.
+#[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
+fn finish_run<M, E, W>(mut program: Program<M, E, W>) -> io::Result<()>
+where
+    M: Model,
+    E: BackendEventSource<Error = io::Error>,
+    W: Write + Send,
+{
+    let result = program.run();
+    if let Err(ref err) = result
+        && let Some(signal) = signal_termination_from_error(err)
+    {
+        drop(program);
+        std::process::exit(128 + signal);
+    }
+    result
+}
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use tracing::{debug, debug_span, info, info_span, trace};
@@ -4733,6 +4789,17 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     poll_timeout: Duration,
     /// Whether the runtime should observe process-level termination signals.
     intercept_signals: bool,
+    /// Termination signal recorded for this program instance (0 = none).
+    ///
+    /// Interactive constructors additionally consult the process-global slot
+    /// that the OS signal handler thread writes to (`global_signal_slot`);
+    /// headless and simulator programs only ever see signals injected through
+    /// [`Program::inject_termination_signal`], so parallel tests can never
+    /// clear or observe each other's pending signal.
+    pending_signal: Arc<std::sync::atomic::AtomicI32>,
+    /// Whether `observed_termination_signal` also reads the process-global
+    /// slot written by the installed OS signal handler.
+    global_signal_slot: bool,
     /// Immediate drain policy for bursty input handling.
     immediate_drain_config: ImmediateDrainConfig,
     /// Runtime counters for immediate-drain behavior.
@@ -4933,6 +5000,8 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             forced_size: config.forced_size,
             poll_timeout: config.poll_timeout,
             intercept_signals: config.intercept_signals,
+            pending_signal: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            global_signal_slot: true,
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
@@ -5066,6 +5135,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             forced_size: config.forced_size,
             poll_timeout: config.poll_timeout,
             intercept_signals: config.intercept_signals,
+            pending_signal: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            global_signal_slot: true,
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
@@ -5123,8 +5194,20 @@ const fn sanitize_backend_features_for_capabilities(
     }
 }
 
-#[cfg(feature = "native-backend")]
+#[cfg(all(feature = "native-backend", unix))]
 impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
+    /// Open the default backend for this build (the native TTY backend).
+    ///
+    /// See [`DEFAULT_BACKEND`] and [`DefaultProgram`]; on builds without
+    /// `native-backend` (or on non-Unix targets) this resolves to the Crossterm
+    /// backend instead, and it does not exist when no backend was compiled.
+    pub fn open(model: M, config: ProgramConfig) -> io::Result<Self>
+    where
+        M::Message: Send + 'static,
+    {
+        Self::with_native_backend(model, config)
+    }
+
     /// Create a program backed by the native TTY backend (no Crossterm).
     ///
     /// This opens a live terminal session via `ftui-tty`, entering raw mode
@@ -5218,10 +5301,45 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
     #[inline]
     fn observed_termination_signal(&self) -> Option<i32> {
-        if self.intercept_signals {
+        if !self.intercept_signals {
+            return None;
+        }
+        match self
+            .pending_signal
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            0 => {}
+            signal => return Some(signal),
+        }
+        if self.global_signal_slot {
             check_termination_signal()
         } else {
             None
+        }
+    }
+
+    /// Record a termination signal for this program instance, as if the OS
+    /// signal handler had delivered it. The first pending signal wins until
+    /// the run loop consumes it. Intended for harnesses and tests; interactive
+    /// programs receive real signals through the installed handler.
+    pub fn inject_termination_signal(&self, signal: i32) {
+        let _ = self.pending_signal.compare_exchange(
+            0,
+            signal,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    /// The termination signal pending for this program instance, if any.
+    #[must_use]
+    pub fn pending_termination_signal(&self) -> Option<i32> {
+        match self
+            .pending_signal
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            0 => None,
+            signal => Some(signal),
         }
     }
 
@@ -5487,7 +5605,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // errors: it is what ended the loop, and callers rely on the
         // SignalTerminationError contract for the 128+signal process exit.
         if let Some(signal) = termination_signal {
-            clear_termination_signal();
+            self.pending_signal
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            if self.global_signal_slot {
+                clear_termination_signal();
+            }
             let error = io::Error::new(
                 io::ErrorKind::Interrupted,
                 SignalTerminationError { signal },
@@ -7085,21 +7207,78 @@ impl<M: Model> AppBuilder<M> {
         self
     }
 
-    /// Run the application using the legacy Crossterm backend.
-    #[cfg(feature = "crossterm-compat")]
+    /// Run the application on the default backend for this build.
+    ///
+    /// Selects the native TTY backend on Unix when `native-backend` is
+    /// compiled, otherwise the Crossterm backend when `crossterm-compat` is
+    /// compiled (see [`DEFAULT_BACKEND`]). When neither backend feature was
+    /// compiled this returns an [`io::ErrorKind::Unsupported`] error whose
+    /// message names the feature to enable ([`NO_BACKEND_MESSAGE`]).
+    ///
+    /// A termination signal that ends the run exits the process with
+    /// `128 + signal` after the terminal has been restored, matching the
+    /// behavior of [`AppBuilder::run_native`] and [`AppBuilder::run_crossterm`].
     pub fn run(self) -> io::Result<()>
     where
         M::Message: Send + 'static,
     {
-        let mut program = Program::with_config(self.model, self.config)?;
-        let result = program.run();
-        if let Err(ref err) = result
-            && let Some(signal) = signal_termination_from_error(err)
-        {
-            drop(program);
-            std::process::exit(128 + signal);
-        }
-        result
+        self.run_default_backend()
+    }
+
+    #[cfg(all(feature = "native-backend", unix))]
+    fn run_default_backend(self) -> io::Result<()>
+    where
+        M::Message: Send + 'static,
+    {
+        self.run_native()
+    }
+
+    #[cfg(all(
+        feature = "crossterm-compat",
+        not(all(feature = "native-backend", unix))
+    ))]
+    fn run_default_backend(self) -> io::Result<()>
+    where
+        M::Message: Send + 'static,
+    {
+        self.run_crossterm()
+    }
+
+    #[cfg(not(any(all(feature = "native-backend", unix), feature = "crossterm-compat")))]
+    fn run_default_backend(self) -> io::Result<()>
+    where
+        M::Message: Send + 'static,
+    {
+        let _ = (self.model, self.config);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            NO_BACKEND_MESSAGE,
+        ))
+    }
+
+    /// Run the application using the Crossterm backend.
+    #[cfg(feature = "crossterm-compat")]
+    pub fn run_crossterm(self) -> io::Result<()>
+    where
+        M::Message: Send + 'static,
+    {
+        finish_run(Program::with_config(self.model, self.config)?)
+    }
+
+    /// Run the application using the Crossterm backend.
+    ///
+    /// This build did not enable `crossterm-compat`; use [`AppBuilder::run`]
+    /// for the default backend.
+    #[cfg(not(feature = "crossterm-compat"))]
+    pub fn run_crossterm(self) -> io::Result<()>
+    where
+        M::Message: Send + 'static,
+    {
+        let _ = (self.model, self.config);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "enable `crossterm-compat` feature to use AppBuilder::run_crossterm()",
+        ))
     }
 
     /// Run the application using the native TTY backend.
@@ -7108,34 +7287,13 @@ impl<M: Model> AppBuilder<M> {
     where
         M::Message: Send + 'static,
     {
-        let mut program = Program::with_native_backend(self.model, self.config)?;
-        let result = program.run();
-        if let Err(ref err) = result
-            && let Some(signal) = signal_termination_from_error(err)
-        {
-            drop(program);
-            std::process::exit(128 + signal);
-        }
-        result
-    }
-
-    /// Run the application using the legacy Crossterm backend.
-    #[cfg(not(feature = "crossterm-compat"))]
-    pub fn run(self) -> io::Result<()>
-    where
-        M::Message: Send + 'static,
-    {
-        let _ = (self.model, self.config);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "enable `crossterm-compat` feature to use AppBuilder::run()",
-        ))
+        finish_run(Program::with_native_backend(self.model, self.config)?)
     }
 
     /// Run the application using the native TTY backend.
     ///
     /// On non-Unix targets the native backend is unavailable; call
-    /// [`AppBuilder::run`] (with `crossterm-compat`) instead.
+    /// [`AppBuilder::run`] (which selects Crossterm there) instead.
     #[cfg(any(not(feature = "native-backend"), not(unix)))]
     pub fn run_native(self) -> io::Result<()>
     where
@@ -7145,10 +7303,9 @@ impl<M: Model> AppBuilder<M> {
         // Prefer the platform-level message: a Windows user without
         // `native-backend` enabled would otherwise be told to enable the
         // feature, only to discover after rebuilding that it's still
-        // Unix-only. Pointing them at crossterm-compat up front avoids the
-        // two-step debug.
+        // Unix-only. Pointing them at run() up front avoids the two-step debug.
         #[cfg(not(unix))]
-        let msg = "AppBuilder::run_native() is Unix-only; use AppBuilder::run() (crossterm-compat) on this platform";
+        let msg = "AppBuilder::run_native() is Unix-only; use AppBuilder::run() on this platform";
         #[cfg(all(unix, not(feature = "native-backend")))]
         let msg = "enable `native-backend` feature to use AppBuilder::run_native()";
         Err(io::Error::new(io::ErrorKind::Unsupported, msg))
@@ -11280,7 +11437,6 @@ mod tests {
     where
         M::Message: Send + 'static,
     {
-        clear_termination_signal();
         let effect_queue_config = config.resolved_effect_queue_config();
         let capabilities = TerminalCapabilities::basic();
         let mut writer = TerminalWriter::with_diff_config(
@@ -11357,6 +11513,11 @@ mod tests {
             forced_size: config.forced_size,
             poll_timeout: config.poll_timeout,
             intercept_signals: config.intercept_signals,
+            pending_signal: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            // Headless test programs never install an OS signal handler, so
+            // they must not read (or clear) the process-global slot: that is
+            // exactly the cross-test race that used to hang this binary.
+            global_signal_slot: false,
             immediate_drain_config: config.immediate_drain,
             immediate_drain_stats: ImmediateDrainStats::default(),
             budget,
@@ -11973,21 +12134,109 @@ mod tests {
         }
 
         let shutdowns = Arc::new(AtomicUsize::new(0));
-        ftui_core::shutdown_signal::with_test_signal_serialization(|| {
+        let mut program = headless_signal_program_with_config(
+            ShutdownModel {
+                shutdowns: Arc::clone(&shutdowns),
+            },
+            ProgramConfig::default().with_signal_interception(true),
+        );
+
+        program.inject_termination_signal(2);
+        let err = program.run().expect_err("signal should stop runtime");
+
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+        assert_eq!(signal_termination_from_error(&err), Some(2));
+        assert_eq!(program.pending_termination_signal(), None);
+    }
+
+    /// Regression test for the cross-test signal race: two headless programs
+    /// running concurrently, each with its own injected signal, must both
+    /// terminate with their own signal. Before the per-program slot existed,
+    /// any other test constructing or finishing a headless program cleared
+    /// the process-global slot and left the loop waiting forever.
+    #[test]
+    fn two_concurrent_headless_programs_with_independent_pending_signals_both_terminate() {
+        fn run_with_signal(signal: i32) -> Option<i32> {
             let mut program = headless_signal_program_with_config(
-                ShutdownModel {
-                    shutdowns: Arc::clone(&shutdowns),
-                },
+                TestModel { value: 0 },
                 ProgramConfig::default().with_signal_interception(true),
             );
-
-            ftui_core::shutdown_signal::record_pending_termination_signal(2);
+            program.inject_termination_signal(signal);
             let err = program.run().expect_err("signal should stop runtime");
+            assert_eq!(program.pending_termination_signal(), None);
+            signal_termination_from_error(&err)
+        }
 
-            assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
-            assert_eq!(signal_termination_from_error(&err), Some(2));
-            assert_eq!(check_termination_signal(), None);
+        let sigint = std::thread::spawn(|| run_with_signal(2));
+        let sigterm = std::thread::spawn(|| run_with_signal(15));
+        // A third program without a pending signal must not observe either.
+        let clean = std::thread::spawn(|| {
+            let program = headless_signal_program_with_config(
+                TestModel { value: 0 },
+                ProgramConfig::default().with_signal_interception(true),
+            );
+            program.observed_termination_signal()
         });
+
+        assert_eq!(sigint.join().expect("sigint thread"), Some(2));
+        assert_eq!(sigterm.join().expect("sigterm thread"), Some(15));
+        assert_eq!(clean.join().expect("clean thread"), None);
+    }
+
+    /// `DEFAULT_BACKEND` must agree with the cfg predicates that select the
+    /// `AppBuilder::run` dispatch, so consumers can trust it to describe what
+    /// `run()` will do in their build.
+    #[test]
+    fn default_backend_constant_matches_cfg() {
+        let expected = if cfg!(all(feature = "native-backend", unix)) {
+            "native"
+        } else if cfg!(feature = "crossterm-compat") {
+            "crossterm"
+        } else {
+            "none"
+        };
+        assert_eq!(DEFAULT_BACKEND, expected);
+        assert!(NO_BACKEND_MESSAGE.contains("native-backend"));
+        assert!(NO_BACKEND_MESSAGE.contains("crossterm-compat"));
+    }
+
+    /// Without a compiled backend, `run()` must fail up front with an error
+    /// that names the features to enable instead of pretending to run.
+    #[cfg(not(any(all(feature = "native-backend", unix), feature = "crossterm-compat")))]
+    #[test]
+    fn run_without_backend_reports_missing_features() {
+        let err = App::new(TestModel { value: 0 })
+            .run()
+            .expect_err("no backend compiled");
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(err.to_string(), NO_BACKEND_MESSAGE);
+        let err = App::new(TestModel { value: 0 })
+            .run_crossterm()
+            .expect_err("crossterm not compiled");
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert!(err.to_string().contains("crossterm-compat"));
+    }
+
+    #[test]
+    fn inject_termination_signal_first_signal_wins() {
+        let program = headless_signal_program_with_config(
+            TestModel { value: 0 },
+            ProgramConfig::default().with_signal_interception(true),
+        );
+        assert_eq!(program.pending_termination_signal(), None);
+        program.inject_termination_signal(15);
+        program.inject_termination_signal(2);
+        assert_eq!(program.pending_termination_signal(), Some(15));
+        assert_eq!(program.observed_termination_signal(), Some(15));
+
+        // Interception disabled: the slot is still recorded but not observed.
+        let quiet = headless_signal_program_with_config(
+            TestModel { value: 0 },
+            ProgramConfig::default().with_signal_interception(false),
+        );
+        quiet.inject_termination_signal(2);
+        assert_eq!(quiet.pending_termination_signal(), Some(2));
+        assert_eq!(quiet.observed_termination_signal(), None);
     }
 
     #[test]
@@ -12045,23 +12294,21 @@ mod tests {
 
         let render_calls = Arc::new(AtomicUsize::new(0));
         let subscription_starts = Arc::new(AtomicUsize::new(0));
-        ftui_core::shutdown_signal::with_test_signal_serialization(|| {
-            let mut program = headless_signal_program_with_config(
-                SignalStopModel {
-                    render_calls: Arc::clone(&render_calls),
-                    subscription_starts: Arc::clone(&subscription_starts),
-                },
-                ProgramConfig::default().with_signal_interception(true),
-            );
+        let mut program = headless_signal_program_with_config(
+            SignalStopModel {
+                render_calls: Arc::clone(&render_calls),
+                subscription_starts: Arc::clone(&subscription_starts),
+            },
+            ProgramConfig::default().with_signal_interception(true),
+        );
 
-            ftui_core::shutdown_signal::record_pending_termination_signal(15);
-            let err = program.run().expect_err("signal should stop runtime");
+        program.inject_termination_signal(15);
+        let err = program.run().expect_err("signal should stop runtime");
 
-            assert_eq!(signal_termination_from_error(&err), Some(15));
-            assert_eq!(render_calls.load(Ordering::SeqCst), 0);
-            assert_eq!(subscription_starts.load(Ordering::SeqCst), 0);
-            assert_eq!(check_termination_signal(), None);
-        });
+        assert_eq!(signal_termination_from_error(&err), Some(15));
+        assert_eq!(render_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(subscription_starts.load(Ordering::SeqCst), 0);
+        assert_eq!(program.pending_termination_signal(), None);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Property-based invariant tests for the TTY backend (public API only).
 //!
 //! Verifies structural guarantees of cleanup sequences and headless backend:

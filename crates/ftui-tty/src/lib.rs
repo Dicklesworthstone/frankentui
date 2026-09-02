@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+// Unix-first; Windows is deferred (see docs/WINDOWS.md). The whole backend is
+// compiled out on other targets so the crate stays a no-op dependency there
+// instead of a pile of dead, unix-only helpers that fail clippy on Windows.
+#![cfg(unix)]
 //! Native Unix terminal backend for FrankenTUI.
 //!
 //! This crate implements the `ftui-backend` traits for native Unix/macOS terminals.
