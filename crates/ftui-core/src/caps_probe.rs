@@ -69,6 +69,16 @@ pub struct ProbeConfig {
     /// terminal rather than from a fragile environment variable. Fail-open: a
     /// timeout or a negative answer leaves env-based detection untouched.
     pub probe_truecolor: bool,
+    /// Whether to ask the terminal if it implements synchronized output
+    /// (DEC private mode 2026) via a DECRPM query (`CSI ? 2026 $ p`).
+    ///
+    /// Environment-based detection only enables sync output for a short
+    /// allowlist of terminal identities, so plain `xterm-256color`, iTerm2,
+    /// VS Code, and any terminal reached over `ssh` render without the
+    /// flicker-free brackets even when they support them. The DECRPM reply
+    /// (`CSI ? 2026 ; <status> $ y`) is authoritative: status 1/2/3 means the
+    /// mode is recognized, 0/4 means it is not. Fail-open and upgrade-only.
+    pub probe_sync_output: bool,
 }
 
 impl Default for ProbeConfig {
@@ -79,6 +89,7 @@ impl Default for ProbeConfig {
             probe_da2: true,
             probe_background: false,
             probe_truecolor: true,
+            probe_sync_output: true,
         }
     }
 }
@@ -124,6 +135,15 @@ pub struct ProbeResult {
     /// Authoritative even across an `ssh` hop, because the query reaches the
     /// real terminal regardless of which environment variables survived.
     pub true_color: Option<bool>,
+
+    /// Whether the terminal reported DEC private mode 2026 (synchronized
+    /// output) as a recognized mode in its DECRPM reply.
+    ///
+    /// - `Some(true)`  — status 1 (set), 2 (reset) or 3 (permanently set):
+    ///   the terminal knows the mode, so sync brackets are safe to emit.
+    /// - `Some(false)` — status 0 (not recognized) or 4 (permanently reset).
+    /// - `None`        — no reply within the timeout (fail-open).
+    pub sync_output: Option<bool>,
 }
 
 /// Probe terminal capabilities at runtime.
@@ -173,11 +193,53 @@ fn probe_capabilities_unix(config: &ProbeConfig) -> ProbeResult {
         result.true_color = probe_truecolor(config.timeout);
     }
 
+    if config.probe_sync_output {
+        result.sync_output = probe_sync_output(config.timeout);
+    }
+
     if config.probe_background {
         result.dark_background = probe_background_color(config.timeout);
     }
 
     result
+}
+
+/// DECRPM query for DEC private mode 2026 (synchronized output).
+const DECRPM_2026_QUERY: &[u8] = b"\x1b[?2026$p";
+
+/// Map a DECRPM status code to "is this mode supported".
+///
+/// DECRPM status values: 0 = not recognized, 1 = set, 2 = reset,
+/// 3 = permanently set, 4 = permanently reset. A recognized mode (1/2/3)
+/// means the terminal implements it; 0 and 4 mean it does not. Any other
+/// value is treated as unknown (fail-open).
+#[must_use]
+pub fn decrpm_status_supported(status: u32) -> Option<bool> {
+    match status {
+        1 | 2 | 3 => Some(true),
+        0 | 4 => Some(false),
+        _ => None,
+    }
+}
+
+/// Interpret a raw DECRPM reply to the mode-2026 query.
+///
+/// Returns `None` unless the reply is a well-formed DECRPM report for mode
+/// 2026 with a known status; a report for a different mode is ignored so a
+/// stale reply can never be mistaken for a sync-output answer.
+#[must_use]
+pub fn sync_output_from_decrpm(response: &[u8]) -> Option<bool> {
+    let (mode, status) = parse_decrpm_response(response)?;
+    if mode != 2026 {
+        return None;
+    }
+    decrpm_status_supported(status)
+}
+
+#[cfg(unix)]
+fn probe_sync_output(timeout: Duration) -> Option<bool> {
+    let response = send_probe(DECRPM_2026_QUERY, timeout)?;
+    sync_output_from_decrpm(&response)
 }
 
 // --- XTGETTCAP: 24-bit (true-color) capability ---
@@ -902,11 +964,7 @@ pub fn parse_decrpm_response(response: &[u8]) -> Option<(u32, u32)> {
 fn probe_query_for(cap: ProbeableCapability) -> Option<&'static [u8]> {
     match cap {
         ProbeableCapability::TrueColor => Some(DA2_QUERY),
-        ProbeableCapability::SynchronizedOutput => {
-            // DECRPM for mode 2026 — needs dynamic construction.
-            // For now, fall back to DA2 inference.
-            None
-        }
+        ProbeableCapability::SynchronizedOutput => Some(DECRPM_2026_QUERY),
         ProbeableCapability::Hyperlinks => Some(DA2_QUERY),
         ProbeableCapability::KittyKeyboard => None, // Inferred from DA2 terminal type.
         ProbeableCapability::Sixel => Some(DA1_QUERY),
@@ -956,6 +1014,15 @@ impl TerminalCapabilities {
         // a terminal's terminfo under-reports.
         if result.true_color == Some(true) {
             self.color_depth = ColorDepth::TrueColor;
+        }
+
+        // A DECRPM report that mode 2026 is recognized is direct evidence
+        // that synchronized output works, which the identity allowlist cannot
+        // know for xterm/iTerm2/VS Code/ssh sessions. UPGRADE ONLY: a
+        // negative or absent report never turns off an allowlisted terminal.
+        // Multiplexer policy (`use_sync_output`) still applies on top.
+        if result.sync_output == Some(true) {
+            self.sync_output = true;
         }
     }
 }
@@ -1545,6 +1612,7 @@ mod tests {
             probe_da2: false,
             probe_background: false,
             probe_truecolor: false,
+            probe_sync_output: false,
         };
         let result = probe_capabilities(&config);
         assert_eq!(result, ProbeResult::default());
@@ -1832,6 +1900,78 @@ mod tests {
     fn decrpm_query_format() {
         let query = decrpm_query(2026);
         assert_eq!(query, b"\x1b[?2026$p");
+        assert_eq!(DECRPM_2026_QUERY, query.as_slice());
+        assert_eq!(
+            probe_query_for(ProbeableCapability::SynchronizedOutput),
+            Some(DECRPM_2026_QUERY)
+        );
+    }
+
+    #[test]
+    fn decrpm_status_mapping_follows_dec_semantics() {
+        assert_eq!(decrpm_status_supported(0), Some(false), "not recognized");
+        assert_eq!(decrpm_status_supported(1), Some(true), "set");
+        assert_eq!(decrpm_status_supported(2), Some(true), "reset");
+        assert_eq!(decrpm_status_supported(3), Some(true), "permanently set");
+        assert_eq!(decrpm_status_supported(4), Some(false), "permanently reset");
+        assert_eq!(decrpm_status_supported(9), None, "unknown status fails open");
+    }
+
+    #[test]
+    fn sync_output_from_decrpm_parses_real_replies() {
+        // kitty / foot / WezTerm answer "reset" when the mode is off.
+        assert_eq!(sync_output_from_decrpm(b"\x1b[?2026;2$y"), Some(true));
+        // A terminal that already has the mode enabled answers "set".
+        assert_eq!(sync_output_from_decrpm(b"\x1b[?2026;1$y"), Some(true));
+        // xterm answers "not recognized".
+        assert_eq!(sync_output_from_decrpm(b"\x1b[?2026;0$y"), Some(false));
+        // Junk before the report (a pending key) is tolerated by the parser.
+        assert_eq!(sync_output_from_decrpm(b"q\x1b[?2026;2$y"), Some(true));
+        // Wrong mode, truncated, or garbage: no answer.
+        assert_eq!(sync_output_from_decrpm(b"\x1b[?1049;1$y"), None);
+        assert_eq!(sync_output_from_decrpm(b"\x1b[?2026;2$"), None);
+        assert_eq!(sync_output_from_decrpm(b""), None);
+        assert_eq!(sync_output_from_decrpm(b"\x1b[?2026;7$y"), None);
+    }
+
+    #[test]
+    fn refine_from_probe_upgrades_sync_output_only() {
+        let mut caps = TerminalCapabilities::xterm_256color();
+        assert!(!caps.sync_output);
+        caps.refine_from_probe(&ProbeResult {
+            sync_output: Some(true),
+            ..ProbeResult::default()
+        });
+        assert!(caps.sync_output, "positive DECRPM report enables sync output");
+        assert!(caps.use_sync_output(), "no mux, so policy allows it");
+
+        let mut allowlisted = TerminalCapabilities::modern();
+        assert!(allowlisted.sync_output);
+        allowlisted.refine_from_probe(&ProbeResult {
+            sync_output: Some(false),
+            ..ProbeResult::default()
+        });
+        assert!(
+            allowlisted.sync_output,
+            "negative report never downgrades an allowlisted terminal"
+        );
+        allowlisted.refine_from_probe(&ProbeResult::default());
+        assert!(allowlisted.sync_output, "timeout leaves capabilities unchanged");
+
+        let mut in_tmux = TerminalCapabilities::xterm_256color();
+        in_tmux.in_tmux = true;
+        in_tmux.refine_from_probe(&ProbeResult {
+            sync_output: Some(true),
+            ..ProbeResult::default()
+        });
+        assert!(in_tmux.sync_output);
+        assert!(!in_tmux.use_sync_output(), "mux policy still wins");
+    }
+
+    #[test]
+    fn probe_config_default_probes_sync_output() {
+        assert!(ProbeConfig::default().probe_sync_output);
+        assert_eq!(ProbeResult::default().sync_output, None);
     }
 
     // --- CapabilityProber tests ---

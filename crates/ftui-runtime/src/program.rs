@@ -153,6 +153,55 @@ pub type DefaultProgram<M> = Program<M, ftui_tty::TtyBackend, Stdout>;
 ))]
 pub type DefaultProgram<M> = Program<M, CrosstermEventSource, Stdout>;
 
+/// Ask the live terminal what environment detection could not establish.
+///
+/// Runs once per interactive session, after raw mode is active, and only
+/// for the two capabilities that matter for correctness and that identity
+/// heuristics routinely get wrong:
+///
+/// - **Truecolor**, when detection settled on 256 colors: an `ssh` hop
+///   forwards `TERM` but strips `COLORTERM`/`TERM_PROGRAM`, so a truecolor
+///   terminal is mis-detected. The XTGETTCAP `RGB` query round-trips to the
+///   real terminal. Restricted to the 256-color case so explicit monochrome
+///   policy (`NO_COLOR`, dumb/vt100) can never be upgraded.
+/// - **Synchronized output (DEC 2026)**, when the identity allowlist did not
+///   enable it: plain `xterm-256color`, iTerm2, VS Code and every terminal
+///   behind ssh support flicker-free frames but were rendered without them.
+///   The DECRPM `?2026$p` query is authoritative. Skipped inside a
+///   multiplexer, where `use_sync_output()` would veto the result anyway.
+///
+/// Every probe is bounded by a timeout, fail-open (a non-answer changes
+/// nothing) and upgrade-only. `FTUI_CAPS_PROBE=0` disables probing.
+fn probe_live_terminal(capabilities: &mut TerminalCapabilities) {
+    if std::env::var_os("FTUI_CAPS_PROBE").is_some_and(|value| value == "0") {
+        return;
+    }
+    let wants_truecolor =
+        capabilities.color_depth == ftui_core::terminal_capabilities::ColorDepth::Ansi256;
+    let wants_sync_output = !capabilities.sync_output && !capabilities.in_any_mux();
+    if !wants_truecolor && !wants_sync_output {
+        return;
+    }
+    let probe = ftui_core::caps_probe::probe_capabilities(&ftui_core::caps_probe::ProbeConfig {
+        timeout: std::time::Duration::from_millis(300),
+        probe_da1: false,
+        probe_da2: false,
+        probe_background: false,
+        probe_truecolor: wants_truecolor,
+        probe_sync_output: wants_sync_output,
+    });
+    capabilities.refine_from_probe(&probe);
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "ftui.runtime",
+        probed_truecolor = wants_truecolor,
+        probed_sync_output = wants_sync_output,
+        truecolor = ?probe.true_color,
+        sync_output = ?probe.sync_output,
+        "live terminal capability probe"
+    );
+}
+
 /// Run a program to completion and translate a signal-termination error into
 /// the conventional `128 + signal` process exit, after the program (and with it
 /// the terminal session) has been dropped and the terminal restored.
@@ -4887,7 +4936,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
     {
         let resolved_lane = config.runtime_lane.resolve();
         let effect_queue_config = config.resolved_effect_queue_config();
-        let capabilities = TerminalCapabilities::with_overrides();
+        let mut capabilities = TerminalCapabilities::with_overrides();
         let mouse_capture = config.resolved_mouse_capture();
         let requested_features = BackendFeatures {
             mouse_capture,
@@ -4906,6 +4955,10 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             intercept_signals: config.intercept_signals,
         })?;
         let events = CrosstermEventSource::new(session, initial_features);
+
+        // Raw mode is active now, so the terminal can answer probes; the
+        // writer built below must see the refined capabilities.
+        probe_live_terminal(&mut capabilities);
 
         let mut writer = TerminalWriter::with_diff_config(
             io::stdout(),
@@ -5245,30 +5298,9 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
         };
         let backend = ftui_tty::TtyBackend::open(0, 0, options)?;
 
-        // Runtime truecolor recovery. If environment detection did NOT already
-        // establish 24-bit color — the classic case being an `ssh` hop, which
-        // forwards `TERM` but strips `COLORTERM`/`TERM_PROGRAM`, so a truecolor
-        // terminal (e.g. WezTerm/FrankenTerm) is mis-detected as 256-color —
-        // ask the terminal DIRECTLY via the XTGETTCAP `RGB` query now that the
-        // native session is live (raw mode). The query round-trips to the real
-        // terminal even across ssh, so it recovers what the env var could not.
-        // It runs ONLY in this degraded case (zero added latency when truecolor
-        // is already known), is bounded by a timeout, fail-open, and
-        // upgrade-only (a non-answer never downgrades a known-good profile).
-        //
-        // Restrict probing to the degraded 256-color case so explicit
-        // monochrome policy (`NO_COLOR`, dumb/vt100) can never be upgraded.
-        if capabilities.color_depth == ftui_core::terminal_capabilities::ColorDepth::Ansi256 {
-            let probe =
-                ftui_core::caps_probe::probe_capabilities(&ftui_core::caps_probe::ProbeConfig {
-                    timeout: std::time::Duration::from_millis(300),
-                    probe_da1: false,
-                    probe_da2: false,
-                    probe_background: false,
-                    probe_truecolor: true,
-                });
-            capabilities.refine_from_probe(&probe);
-        }
+        // The native session is live (raw mode), so the terminal can be asked
+        // directly what it supports; see `probe_live_terminal`.
+        probe_live_terminal(&mut capabilities);
 
         let writer = TerminalWriter::with_diff_config(
             io::stdout(),

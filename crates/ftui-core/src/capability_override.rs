@@ -505,14 +505,64 @@ pub fn clear_all_overrides() {
 // Extension to TerminalCapabilities
 // ============================================================================
 
+/// Parse an operator policy switch: `1`/`true`/`on`/`yes` enable,
+/// `0`/`false`/`off`/`no` disable, anything else (including unset) is `None`.
+fn policy_switch(value: Option<String>) -> Option<bool> {
+    let value = value?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" => Some(true),
+        "0" | "false" | "off" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// Apply the operator environment switches that override detection policy.
+///
+/// - `FTUI_SYNC_OUTPUT=1|0` forces synchronized-output (DEC 2026) brackets on
+///   or off. `1` also lifts the conservative WezTerm-identity gate, because an
+///   explicit operator statement outranks an identity heuristic; real
+///   multiplexer evidence (tmux/screen/zellij) is never overridden.
+/// - `FTUI_SCROLL_REGION=1|0` does the same for the inline scroll-region
+///   (DECSTBM) strategy.
+///
+/// These exist so a user on a terminal the allowlist does not know (or one
+/// where a probe cannot run) can opt in without rebuilding, and so a flaky
+/// terminal can be opted out without editing code.
+pub fn apply_env_policy_overrides_with<F>(caps: &mut TerminalCapabilities, get_env: F)
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if let Some(enabled) = policy_switch(get_env("FTUI_SYNC_OUTPUT")) {
+        caps.sync_output = enabled;
+        if enabled {
+            caps.in_wezterm_mux = false;
+        }
+    }
+    if let Some(enabled) = policy_switch(get_env("FTUI_SCROLL_REGION")) {
+        caps.scroll_region = enabled;
+        if enabled {
+            caps.in_wezterm_mux = false;
+        }
+    }
+}
+
+/// Apply the operator environment switches from the process environment.
+pub fn apply_env_policy_overrides(caps: &mut TerminalCapabilities) {
+    apply_env_policy_overrides_with(caps, |key| std::env::var(key).ok());
+}
+
 impl TerminalCapabilities {
-    /// Detect capabilities and apply any active thread-local overrides.
+    /// Detect capabilities and apply any active thread-local overrides,
+    /// then the operator environment switches (`FTUI_SYNC_OUTPUT`,
+    /// `FTUI_SCROLL_REGION`; see [`apply_env_policy_overrides`]).
     ///
     /// This is the recommended way to get capabilities in code that may
     /// be running under test with overrides.
     #[must_use]
     pub fn with_overrides() -> Self {
-        current_capabilities()
+        let mut caps = current_capabilities();
+        apply_env_policy_overrides(&mut caps);
+        caps
     }
 
     /// Apply overrides to these capabilities.
@@ -529,6 +579,65 @@ impl TerminalCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + '_ {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_string())
+        }
+    }
+
+    #[test]
+    fn env_policy_switch_parses_common_spellings() {
+        for on in ["1", "true", "ON", " yes "] {
+            assert_eq!(policy_switch(Some(on.to_string())), Some(true), "{on:?}");
+        }
+        for off in ["0", "false", "Off", "no"] {
+            assert_eq!(policy_switch(Some(off.to_string())), Some(false), "{off:?}");
+        }
+        assert_eq!(policy_switch(Some("maybe".to_string())), None);
+        assert_eq!(policy_switch(None), None);
+    }
+
+    #[test]
+    fn env_policy_override_forces_sync_output_on_and_lifts_wezterm_gate() {
+        let mut caps = TerminalCapabilities::xterm_256color();
+        caps.in_wezterm_mux = true;
+        assert!(!caps.use_sync_output());
+        apply_env_policy_overrides_with(&mut caps, env_from(&[("FTUI_SYNC_OUTPUT", "1")]));
+        assert!(caps.sync_output);
+        assert!(!caps.in_wezterm_mux, "explicit opt-in outranks the identity gate");
+        assert!(caps.use_sync_output());
+    }
+
+    #[test]
+    fn env_policy_override_never_lifts_real_multiplexer_evidence() {
+        let mut caps = TerminalCapabilities::modern();
+        caps.in_tmux = true;
+        apply_env_policy_overrides_with(&mut caps, env_from(&[("FTUI_SYNC_OUTPUT", "1")]));
+        assert!(caps.sync_output);
+        assert!(caps.in_tmux);
+        assert!(!caps.use_sync_output(), "tmux policy still wins");
+    }
+
+    #[test]
+    fn env_policy_override_forces_off_and_ignores_unset_or_junk() {
+        let mut caps = TerminalCapabilities::modern();
+        apply_env_policy_overrides_with(&mut caps, env_from(&[("FTUI_SYNC_OUTPUT", "0")]));
+        assert!(!caps.sync_output);
+        assert!(caps.scroll_region, "unrelated switch untouched");
+
+        let mut caps = TerminalCapabilities::modern();
+        apply_env_policy_overrides_with(
+            &mut caps,
+            env_from(&[("FTUI_SYNC_OUTPUT", "banana"), ("FTUI_SCROLL_REGION", "0")]),
+        );
+        assert!(caps.sync_output, "junk value ignored");
+        assert!(!caps.scroll_region);
+        assert!(!caps.use_scroll_region());
+    }
 
     #[test]
     fn override_new_is_empty() {

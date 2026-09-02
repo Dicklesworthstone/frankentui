@@ -250,6 +250,9 @@ struct DetectInputs {
     no_color: bool,
     term: String,
     term_program: String,
+    /// `LC_TERMINAL`: iTerm2 propagates its identity over ssh through this
+    /// variable when `TERM_PROGRAM` is stripped by the remote shell.
+    lc_terminal: String,
     colorterm: String,
     in_tmux: bool,
     in_screen: bool,
@@ -281,6 +284,7 @@ impl DetectInputs {
             no_color: get_env("NO_COLOR").is_some(),
             term: text("TERM"),
             term_program: text("TERM_PROGRAM"),
+            lc_terminal: text("LC_TERMINAL"),
             colorterm: text("COLORTERM"),
             in_tmux: utf8_present("TMUX"),
             in_screen: utf8_present("STY"),
@@ -1044,7 +1048,19 @@ impl TerminalCapabilities {
 
     fn detect_from_inputs(env: &DetectInputs) -> Self {
         let term = normalize_terminal_env_value(&env.term);
-        let term_program = normalize_terminal_env_value(&env.term_program);
+        // iTerm2 sets LC_TERMINAL=iTerm2 and ssh forwards LC_* by default, so
+        // it survives hops that strip TERM_PROGRAM. Fold it into the program
+        // identity so every allowlist below sees "iterm.app".
+        let term_program = {
+            let program = normalize_terminal_env_value(&env.term_program);
+            if program.is_empty()
+                && normalize_terminal_env_value(&env.lc_terminal).contains("iterm")
+            {
+                "iterm.app".to_string()
+            } else {
+                program
+            }
+        };
         let colorterm = normalize_terminal_env_value(&env.colorterm);
 
         // Multiplexer detection. The $TMUX/$STY env vars do not survive
@@ -1100,12 +1116,16 @@ impl TerminalCapabilities {
         let is_wezterm = term_program_is_wezterm || term_is_wezterm || env.wezterm_executable;
 
         // Synchronized output detection
+        // Alacritty identifies itself through TERM=alacritty (it sets no
+        // TERM_PROGRAM), so the allowlist must consult both variables.
+        // Terminals outside this allowlist can still gain sync output at
+        // runtime through the DECRPM 2026 probe (`caps_probe`).
         let sync_output = !is_dumb
             && !is_wezterm
             && (is_kitty
                 || SYNC_OUTPUT_TERMINALS.iter().any(|t| {
                     let t_lower = t.to_ascii_lowercase();
-                    term_program.contains(&t_lower)
+                    term_program.contains(&t_lower) || term.contains(&t_lower)
                 }));
 
         // OSC 8 hyperlinks detection
@@ -1668,6 +1688,7 @@ mod tests {
             no_color: false,
             term: term.to_string(),
             term_program: term_program.to_string(),
+            lc_terminal: String::new(),
             colorterm: colorterm.to_string(),
             in_tmux: false,
             in_screen: false,
@@ -1810,6 +1831,40 @@ mod tests {
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert_eq!(caps.color_depth, ColorDepth::TrueColor);
         assert!(caps.kitty_keyboard);
+    }
+
+    /// Alacritty sets `TERM=alacritty` and no `TERM_PROGRAM`; the identity
+    /// allowlists must recognize it from `TERM` alone.
+    #[test]
+    fn detect_alacritty_via_term_only() {
+        let env = make_env("alacritty", "", "truecolor");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor);
+        assert!(caps.sync_output, "Alacritty implements DEC 2026");
+        assert!(caps.use_sync_output());
+        assert!(caps.osc8_hyperlinks);
+        assert!(caps.kitty_keyboard);
+        assert!(!caps.in_any_mux());
+    }
+
+    /// iTerm2 advertises itself through `LC_TERMINAL`, which ssh forwards
+    /// while `TERM_PROGRAM` is dropped; the fallback must still classify the
+    /// session as iTerm2 (modern, hyperlinks, kitty keyboard).
+    #[test]
+    fn detect_iterm2_via_lc_terminal_when_term_program_missing() {
+        let mut env = make_env("xterm-256color", "", "");
+        env.lc_terminal = "iTerm2".to_string();
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert_eq!(caps.color_depth, ColorDepth::TrueColor, "modern terminal");
+        assert!(caps.osc8_hyperlinks);
+        assert!(caps.kitty_keyboard);
+        assert!(!caps.sync_output, "not allowlisted: left to the DECRPM probe");
+
+        // An explicit TERM_PROGRAM always wins over LC_TERMINAL.
+        let mut env = make_env("xterm-256color", "Apple_Terminal", "");
+        env.lc_terminal = "iTerm2".to_string();
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(!caps.osc8_hyperlinks, "Apple Terminal is not on the allowlist");
     }
 
     #[test]
