@@ -539,248 +539,640 @@ the macOS CI log are the evidence.
 
 ---
 
-## 7. Bridge plan
+## 7. Bridge plan (Phase 2)
 
-Ordering principle: first make the truth mechanisms exist (WS0, WS1, WS2), because every
-later workstream is otherwise unverifiable; then wire or quarantine the intelligence layer
-(WS3), fix the terminal policy (WS4), deliver the missing features (WS5, WS6), decide
-doctor_frankentui and web scope (WS7), and lock the process (WS8). Every task lists its
-acceptance evidence; a bead closes only when that evidence exists in CI.
+**Reality check date:** 2026-09-01
+**Gap count:** 7 critical, 24 major, 11 minor (42 resolution blocks, several of them clusters)
+**Existing bead coverage:** 2 open beads touch 2 of the 42 blocks (bd-d4dtr covers G32 in full; bd-1za0z covers the telemetry half of G20 and the classification half of G12). Every other block is NO_BEAD.
+**Estimated work:** 3 XL, 12 L, 18 M, 9 S resolution blocks. With the parallelism in the dependency graph (Section 7.5), the critical tier is roughly two focused swarm-weeks; the major tier is where most of the calendar goes.
+**Plan-space passes done on this section:** completeness (every non-WORKING row of Section 3 and every letter of Section 2.2 maps to a block; V29 and V48 were the two misses found and are now in G25 and G24), optimality (G28 feeds G05; G13 merges four duplicate pairs in one block; widgets are exercised rather than quarantined), and test coverage (every block names a unit test, a bench where speed is claimed, and an E2E scenario; G42 is the final integration bead).
 
-### WS0. Truth mechanism: README and docs cannot drift from code again
+### 7.0 Conventions and decision policy
 
-- **WS0.1 README as doc-test.** Add `#![doc = include_str!("../../README.md")]` to the
-  `ftui` facade (or a dedicated `readme_doctests` crate) so every ```` ```rust ```` block
-  compiles under `cargo test --doc`. Mark intentionally non-compiling blocks
-  ```` ```rust,ignore ```` or ```` ```text ````. Acceptance: `cargo test -p ftui --doc` fails
-  on any README snippet that does not compile; the Minimal API Example passes.
-- **WS0.2 Claims ledger.** `docs/claims-ledger.md`: one row per quantitative or algorithmic
-  README claim (counts, byte layouts, constants, "used by X", "default Y") mapping to a
-  test name or a `cargo` command that proves it. A CI job greps the README for the tracked
-  numerals/identifiers and fails when a claim has no ledger row. Acceptance: 100% of the
-  rows in Section 2.2.C are either fixed in code or corrected in README, and each has a
-  ledger row.
-- **WS0.3 README rewrite pass.** Correct every row of 2.2.C that WS3/WS5 will not fix in
-  code (counts: 45 screens, 6 categories, 57+ widgets, 5 border styles; layouts:
-  `CellAttrs`, `GraphemeId`; names: `StyleSheet`, `CachedWidget`, `InspectorOverlay`,
-  `NotificationStack`, `ValidationErrorDisplay`, `TextInput`, `TextArea`, `ProgressBar`;
-  bench numbers replaced by the checked-in 2026-02-03 artifact or regenerated ones; VFX
-  attribution; evidence event names; degradation level names; VOI defaults; resize delays;
-  `ftui = "0.6"`; harness env vars vs showcase flags; SOS provenance). Add an honest
-  "Experimental modules" section for whatever WS3 quarantines. Acceptance: WS0.2 ledger
-  complete; README doc-tests green.
-- **WS0.4 AGENTS.md truth.** Backend statement (native `ftui-tty` on Unix, crossterm
-  optional), architecture diagram, workspace `tests/` description, toolchain pin note,
-  `doctor_frankentui` verification commands that actually pass. Acceptance: a fresh agent
-  following AGENTS.md verbatim gets green gates.
-- **WS0.5 Secondary docs.** `docs/getting-started.md` (features, crates.io statement,
-  working example that is itself doc-tested), `docs/risk-register.md` (summary matches
-  rows), `docs/main-todo-bead-map.md` (regenerate from beads or delete with permission),
-  ADR-004/005/006/008/010 status decisions, `docs/reports/deep-codebase-review-final.md`
-  annotated as superseded by this document.
+- **Status arrow.** Every block is written as `[current status] -> WORKING` where WORKING means: reachable from the production path (`Program`, `Frame`, `TerminalWriter`, a widget's `render`, or the showcase), covered by a named test, and where relevant proven by an E2E script that logs what it observed.
+- **Code-first unless the claim is not worth the code.** For each README mismatch the block states one of: **CODE** (change the code to match the promise) or **DOC** (retract or correct the promise). The rule: CODE when the promised behavior is user-visible value and the change is at most M; DOC when the promise was decorative (bit layouts, illustrative numbers, nicer names for the same thing).
+- **Quarantine before delete.** Dead modules move behind an `experimental` feature so the README can be truthful immediately; deletion needs explicit owner permission (AGENTS.md rule 1) and is listed as a separate decision in each block.
+- **Every block carries three kinds of proof.** A unit or property test, a benchmark where speed is the claim, and an E2E scenario under a real PTY with structured logging (`tests/e2e/lib/pty.sh` plus JSONL via `tests/e2e/lib/validate_jsonl.py`). The Python identity driver used for Section 2.2.D becomes `scripts/pty_identity_matrix.py` and is reused by several blocks.
+- **Would open beads close it?** Stated per block. Only G32 (bd-d4dtr) is fully covered.
+- **Vision goals served** refer to Section 3 row numbers (V1..V71) and Section 2.2 letters (A..F).
+- **Complexity:** S (under a day for one agent), M (1-3 days), L (a week), XL (multi-week or needs an owner decision first).
 
-### WS1. Consumer onboarding: `ftui = "0.6"` must run a program
+### 7.1 Critical gaps (block the core value proposition)
 
-- **WS1.1 Default backend.** Make `ftui` default features open a terminal: on Unix
-  `native-backend`, elsewhere `crossterm-compat`; `AppBuilder::run()` picks native on Unix
-  when compiled and crossterm otherwise, and only returns `Unsupported` when no backend was
-  compiled (with the exact feature to enable in the message). Expose `run_native`/`run_crossterm`
-  for explicit choice. Acceptance: a scratch crate with `ftui = { path = ... }` and no
-  features runs the README example under a PTY, renders "Ticks:", exits on `q`, restores
-  the terminal (E2E script `scripts/consumer_smoke_e2e.sh` with logged escape-sequence
-  counts).
-- **WS1.2 Fix the example.** Add `use ftui_widgets::Widget` (or make `Paragraph` reachable
-  through the facade prelude with the trait), keep the example identical in README,
-  getting-started and a real `crates/ftui/examples/minimal_inline.rs`. Acceptance: WS0.1
-  doc-test plus `cargo run -p ftui --example minimal_inline` in the E2E script.
-- **WS1.3 Easy mode.** Re-export `StringModel`/`StringModelAdapter` and `App::string_model`
-  from `ftui::` and the prelude; document `view_string()` as the 30-second path. Acceptance:
-  doc-tested example.
-- **WS1.4 Harness examples.** Replace `ftui-harness/examples/minimal.rs` with a real hello
-  world; make `streaming` the "logs above, chrome below" example; document
-  `FTUI_HARNESS_*` variables only where they are read; document `--screen=N` /
-  `FTUI_DEMO_SCREEN` for the showcase. Acceptance: examples run in
-  `scripts/consumer_smoke_e2e.sh`.
-- **WS1.5 Publish consistency.** Release checklist verifies README version string, crates.io
-  versions, and that `ftui-simd` is either given content or unpublished/yanked (owner
-  decision). `ftui-demo-showcase` 0.1.1 on crates.io: yank or mark deprecated (owner
-  decision).
+#### G01: Library consumers cannot run a program — PARTIAL -> WORKING
 
-### WS2. Green main and a test suite that cannot hang
+**Current state:** `ftui` facade `default = ["runtime", "extras"]` (`crates/ftui/Cargo.toml`); `crossterm` feature is opt-in; nothing enables `ftui-runtime/native-backend`. `AppBuilder::run()` under `#[cfg(not(feature = "crossterm-compat"))]` returns `Err(Unsupported)` (`crates/ftui-runtime/src/program.rs:7124`); `run_native()` exists only with `native-backend` on unix (`:7107`). `Program::new`/`with_config` are `crossterm-compat`-gated (`:4803-4814`); `with_native_backend` is `native-backend`-gated (`:5127-5160`). The showcase works because its own `default` enables both backends (`crates/ftui-demo-showcase/Cargo.toml`).
+**Target state:** `ftui = "0.6"` with default features opens a terminal on Linux, macOS and Windows. `App::new(m).screen_mode(..).run()` selects the native backend on unix and crossterm elsewhere, and only fails with an `Unsupported` error naming the feature to enable when neither backend was compiled. Explicit `run_native()` / `run_crossterm()` remain for callers who care.
+**Success criteria:**
+- [ ] `crates/ftui/tests/default_backend.rs`: compiles `App::new(..)` and asserts `cfg!(any(feature = "native-backend", feature = "crossterm"))` under defaults, and that `AppBuilder::run` is not the stub (a `const BACKEND: &str` exposed by the runtime reports `"native"`/`"crossterm"`/`"none"`).
+- [ ] `scripts/consumer_smoke_e2e.sh`: creates a temporary crate under `/data/projects/tmp-consumer-<pid>` (rch refuses paths outside `/data/projects`) depending on the facade by path with default features, copies the README Minimal API Example verbatim, builds it, runs it under `tests/e2e/lib/pty.sh` for 2 s, sends `q`, and logs JSONL with counts of `1049h/l`, `2026h/l`, `?25l/h`, DECSTBM, plus exit code 0 and the text `Ticks:` in the canonicalized screen. Runs in CI (G04).
+- [ ] The same script with `--no-default-features --features runtime` asserts the error message names `native-backend`/`crossterm`.
+**Implementation plan:**
+1. `crates/ftui-runtime/src/program.rs`: replace the two `run` variants with one `pub fn run(self) -> io::Result<()>` that dispatches `#[cfg(all(feature = "native-backend", unix))]` to `Program::with_native_backend`, else `#[cfg(feature = "crossterm-compat")]` to `Program::with_config`, else returns `io::ErrorKind::Unsupported` with text "no terminal backend compiled: enable `native-backend` (unix) or `crossterm-compat`". Add `run_crossterm()` gated on `crossterm-compat`; keep `run_native()`.
+2. Same file: add `Program::open(model, config)` with the same dispatch so non-builder users get one constructor; keep `new`/`with_config`/`with_native_backend`.
+3. `crates/ftui/Cargo.toml`: `default = ["runtime", "extras", "backend"]`, `backend = ["native-backend", "crossterm"]`, `native-backend = ["runtime", "ftui-runtime/native-backend"]`. Because `ftui-tty` is unix-only inside, G04.3 must first make it compile (empty) on Windows.
+4. `crates/ftui/src/lib.rs`: re-export `Program::open`; prelude gains `Widget` and `StatefulWidget` so README examples that call `.render(area, frame)` work with `use ftui::prelude::*`.
+5. Add `crates/ftui/examples/minimal_inline.rs` containing the README example verbatim (it is the doc-tested source of truth for G02).
+6. Write `scripts/consumer_smoke_e2e.sh` and add it to `ci.yml` job `e2e-widget-api` or a new `consumer-smoke` job.
+7. README "Installation", "Quick Start", "Minimal API Example", and `docs/getting-started.md`: state the default backends and the `--no-default-features` slim path.
+**Dependencies:** G04.3 (ftui-tty must compile on Windows) for the Windows leg; G02 for the doc-test side.
+**Complexity:** M
+**Vision goals served:** V5, V32, A.1-A.3; plan-doc 0.8.1 canonical entrypoint.
+**Would open beads close it?** No.
 
-- **WS2.1 Signal-state race.** Move pending-termination state off the process-global atomic
-  into the `Program`/session (or a per-`Program` handle registered with the signal thread),
-  remove `clear_termination_signal()` from `headless_program_with_resolved_config`, and make
-  `with_test_signal_serialization` unnecessary. Acceptance: `cargo test -p ftui-runtime`
-  passes 20 consecutive runs with `--test-threads=16`; a regression test asserts that two
-  concurrent headless programs with independent pending signals both terminate.
-- **WS2.2 Per-test timeouts.** Adopt `cargo-nextest` with a 120 s per-test slow-timeout and
-  terminate-after policy in CI; keep `cargo test` working locally. Acceptance: a deliberately
-  hanging test fails CI in under 3 minutes.
-- **WS2.3 Baseline test determinism.** Make `verify_no_regression` self-contained: capture
-  and verify in one test, or skip cleanly when provenance is missing and log why; never
-  read a file another test writes. Acceptance: passes on a clean clone and with a stale
-  local file.
-- **WS2.4 CI triage to green.** One task per row of Section 5.1: (a) stop
-  `widget_api_e2e.sh` and `demo_showcase_e2e.sh` from exporting seed variables into
-  `cargo test` (scope env to the PTY runs, or make the readers ignore it under
-  `cfg(test)`); (b) convert wall-clock assertions (`scorer.rs:3508`, `subscription.rs:1768`,
-  `every_respects_interval`) to virtual-clock or `#[ignore]`-on-CI perf tests fed by the
-  perf gate instead; (c) cfg-gate unix-only items in `ftui-tty` so Windows clippy is clean;
-  (d) fix rustdoc intra-doc links in `receipt_verifier_panel.rs`; (e) give `fuzz/` its own
-  `[workspace]` or lints table; (f) install `rg` and python `websockets` in the workflows
-  (or remove the dependencies); (g) fix both VHS install steps (find/pipefail; extraction
-  path); (h) surface the `parser_hooks` test output and fix it; (i) triage the 42 PTY E2E
-  failures into real bugs (cleanup, keybind, VOI markers, RTL locale, mouse SGR, paste) with
-  one bead each; (j) pin CI to the `rust-toolchain.toml` nightly instead of floating
-  `nightly`; (k) make `release.yml` skip already-published versions; (l) split the
-  all-features test job so disk exhaustion and hangs cannot take the matrix down; (m) run
-  `scripts/e2e_test.sh` and `scripts/pane_e2e.sh` in CI or delete the claim that they are
-  gates; (n) build `ftui-web` and `ftui-showcase-wasm` for wasm32 in the `wasm` job; (o)
-  make the `msrv` job a real MSRV check or rename it. Acceptance: three consecutive green
-  `ci.yml` runs on main; `doctor_frankentui Extended Verification` green or demoted per WS7.
-- **WS2.5 Green-main policy.** Beads may not close while main is red; the "Landing the
-  Plane" checklist in AGENTS.md gains "link the green run".
+#### G02: README and getting-started examples are unverified and do not compile — NOT_STARTED -> WORKING
 
-### WS3. Wire or quarantine the intelligence layer
+**Current state:** README "Minimal API Example" (README.md:139-190) lacks `use ftui_widgets::Widget`; `Paragraph` has no inherent `render` (`crates/ftui-widgets/src/paragraph.rs:291`). About twenty `rust` fenced blocks in README and `docs/getting-started.md` are never compiled. Several are fragments that cannot compile in isolation (evidence sink, rollout scorecard, effect queue, focus, modal, lens, persistence, macro, simulator).
+**Target state:** Every `rust` block in README.md, `docs/getting-started.md` and `docs/tutorials/agent-harness.md` is a rustdoc doc-test. Complete examples are `no_run` (they open a terminal); fragments are rewritten to be complete or marked `rust,ignore` with a visible "(fragment)" line.
+**Success criteria:**
+- [ ] `cargo test -p ftui --doc` compiles the README and both docs; CI `docs` job runs it.
+- [ ] A deliberately broken snippet in a PR fails that job (verified once during rollout, then documented in `docs/testing/coverage-playbook.md`).
+- [ ] `crates/ftui/examples/minimal_inline.rs` is byte-identical to the README block (checked by `scripts/check_readme_claims.py`, G06).
+**Implementation plan:**
+1. `crates/ftui/src/lib.rs`: add `#[cfg(doctest)] #[doc = include_str!("../../README.md")] pub struct ReadmeDoctests;` and the same for the two docs files.
+2. Audit every `rust` fence: minimal example gets the `Widget` import and `rust,no_run`; evidence-sink and effect-queue examples become complete `no_run` programs using `ProgramConfig::default()`; ShadowRun/RolloutScorecard blocks (already exact per Section 5.3) get a `# fn main()` wrapper or `no_run`; blocks describing APIs that G06 decides to DOC-fix are rewritten to the real API; blocks for quarantined modules (lens, SLO, IVM) move to the "Experimental" section as `rust,ignore`.
+3. `docs/getting-started.md`: same treatment; replace the crates.io sentence (G06).
+4. `ci.yml` `docs` job: add `cargo test -p ftui --doc` after `cargo doc`.
+**Dependencies:** G01 (the example must run under defaults), G06 (which mismatches are CODE vs DOC).
+**Complexity:** M
+**Vision goals served:** A.1, A.4-A.6, C (all rows), V41-V45.
+**Would open beads close it?** No.
 
-Decision rule for each dead module: WIRE if it delivers measurable user value on the
-production path with a benchmark or behavior test proving it; QUARANTINE behind an
-`experimental-*` feature with README moved to an "Experimental" section if the value is
-unproven; DELETE only with explicit owner permission (AGENTS.md rule 1).
+#### G03: The runtime test binary can hang forever — WRONG_APPROACH -> WORKING
 
-Recommended WIRE (each with before/after benchmark or behavior test and an evidence event):
+**Current state:** `ftui_core::shutdown_signal` keeps one process-global `AtomicI32` (`crates/ftui-core/src/lib.rs:79-140`). `record_pending_termination_signal` is a CAS from 0; `clear_pending_termination_signal` is an unconditional store. `Program::complete_lifecycle` clears it (`program.rs:5490`) and the test helper `headless_program_with_resolved_config` clears it at construction (`program.rs:11274`). Only two tests take `with_test_signal_serialization`. Result: any parallel headless test wipes a pending signal between `record` and the first `observed_termination_signal()` check and `run()` blocks in the headless event loop. Observed locally (Section 1) and in CI macOS nightly (Section 5.1). No per-test timeout exists.
+**Target state:** Signal state is owned per `Program` for tests and per process only for the real OS handler; no test can clear another test's signal; the serialization helper is unnecessary; CI kills any test that runs longer than 120 s and reports it as a failure with the test name.
+**Success criteria:**
+- [ ] `crates/ftui-runtime/src/program.rs` test `two_concurrent_headless_programs_with_independent_pending_signals_both_terminate` (spawns two headless programs on threads, injects SIGTERM into one and SIGINT into the other, both return `SignalTerminationError` with the right signal).
+- [ ] `for i in $(seq 20); do cargo nextest run -p ftui-runtime --test-threads 16; done` green (documented in the bead close reason with the run log).
+- [ ] `.config/nextest.toml` with `slow-timeout = { period = "60s", terminate-after = 2 }`; CI uses `cargo nextest run --workspace --no-fail-fast`; a scratch test with `loop {}` fails CI in under 3 minutes (verified once).
+**Implementation plan:**
+1. `program.rs`: add `pending_signal: Arc<AtomicI32>` to `Program` (default: a fresh atomic for headless/simulator constructors; the process-global slot for interactive constructors that install the signal thread). `observed_termination_signal()` reads `self.pending_signal`. `complete_lifecycle` clears only its own slot with a CAS from the observed value.
+2. Add `pub fn inject_termination_signal(&self, signal: i32)` (documented as test/harness API) and use it in `run_invokes_on_shutdown_before_returning_signal_error` and `run_pending_signal_skips_initial_render_and_subscription_start`; delete `clear_termination_signal()` from `headless_program_with_resolved_config`.
+3. `ftui-core/src/lib.rs`: keep the global for the OS handler path; make `with_test_signal_serialization` a no-op wrapper marked deprecated, then remove it once no crate uses it (harness, doctor).
+4. Add `.config/nextest.toml`; `ci.yml` check matrix switches to nextest (G04.12); AGENTS.md "Compiler Checks" gains the nextest command.
+**Dependencies:** none. Unblocks G04.
+**Complexity:** M
+**Vision goals served:** V70, E; plan-doc Gate 4 (cleanup) credibility.
+**Would open beads close it?** No.
 
-- **WS3.1 Width cache.** Route `ftui_core::text_width` grapheme lookups through one cache
-  (pick TinyLFU or S3-FIFO by `cache_bench.rs`; delete the losers only with permission).
-  Acceptance: wrap/measure bench shows the win; README claim matches the chosen policy.
-- **WS3.2 Accessibility tree.** Build the a11y tree during `view()` (Frame collects
-  `Accessible::accessibility_nodes()` from widgets that opt in), expose it from `Program`,
-  emit live-region announcements as evidence, and make `accessibility_panel` render the
-  real tree. Acceptance: snapshot of the tree for the Dashboard; diff events on focus move.
-- **WS3.3 VirtualizedList.** Default variable-height mode to Fenwick; wire
-  `height_predictor` + VOI remeasure; use `VirtualizedList` in `virtualized_search` and
-  `log_search`. Acceptance: scroll-jump metric test; evidence `voi_sample` written.
-- **WS3.4 Conformal frame guard on by default** with safe defaults and the `budget_decision`
-  evidence; keep `conformal_stages` per-stage monitors or quarantine them.
-- **WS3.5 BOCPD default-on** after a resize-storm differential test proves parity or
-  improvement over the heuristic (`tests/e2e/lib/resize_storm_differential.py` exists).
-- **WS3.6 Hint ranker** feeding `Help`/`StatusLine` hints; hysteresis proven by a
-  no-flicker test.
-- **WS3.7 SAT query** in tile skip (or remove the SAT); lower `min_cells_for_tiles` if the
-  bench supports it.
-- **WS3.8 Capability ledger** used by `probe_capabilities_unix` (log-BF combination with
-  evidence output), which is also the substrate for WS4.
-- **WS3.9 One controller each.** Unify `eprocess_throttle` with `budget.rs`'s e-process,
-  `degradation_cascade` with `BudgetController`, `diff_evidence` with `terminal_writer`'s
-  ledger, `allocation_budget` with `alloc_budget`, and pick one of the two terminal-session
-  stacks as canonical. Acceptance: no duplicate implementations; README describes the one
-  that runs.
-- **WS3.10 Queue depth** fed from `queue_telemetry().in_flight` (closes bd-1za0z item 3).
-- **WS3.11 Orphans.** Compile-or-remove `timeline_aggregator.rs` and `countmin_sketch.rs`
-  (wire the aggregator into `action_timeline`, or delete with permission).
+#### G04: `main` CI has not been green in 40 runs — REGRESSED -> WORKING (cluster of 15)
 
-Recommended QUARANTINE (feature `experimental-alien`): `rough_path`, `flat_combine`, `lens`,
-`ivm`, `cost_model`, `sos_barrier` (after deleting the false "auto-generated" header and
-either adding the solver script or documenting the constants as hand-chosen),
-`alpha_investing`, `flake_detector` (unless WS6 wires it into perf gates), `slo` (unless
-wired to safe mode), `egraph`, `S3FifoLayoutCache`, `roaring_bitmap`, `tier_budget`,
-`gesture` (unless WS5 wires it into widgets), `ConformalRanker`, `DecisionCard`,
-`DriftVisualization`, `CachedWidget`, `ErrorBoundary<W>`, `TimeTravel`.
+Each sub-block is one bead. Order inside the cluster: 04.1-04.5 and 04.10 first (they are pure fixes), then 04.6-04.9, then 04.11-04.15.
 
-- **WS3.12 Dead-code gate.** A CI script lists every `pub mod` in each crate and requires
-  at least one non-test reference outside its own file or an `experimental-*` gate;
-  fails on new orphans.
+- **G04.1 Seed env leaks into unit and snapshot tests** (Widget API E2E, Demo Showcase). Current: `scripts/widget_api_e2e.sh:114` exports `FTUI_HARNESS_SEED=0` then runs `cargo test --workspace --lib`; `crates/ftui-harness/src/determinism.rs:518` reads it. `scripts/demo_showcase_e2e.sh` exports `E2E_SEED=0`; `crates/ftui-demo-showcase/src/determinism.rs:53` reads `FTUI_DEMO_SEED|FTUI_SEED|E2E_SEED` (default 7) so the blessed snapshot `determinism_lab_initial_80x24` shows `Seed: 7`. Target: scripts scope seed variables to the PTY invocations only (`env FTUI_HARNESS_SEED=0 cargo run ...`), never to `cargo test`; the showcase determinism screen ignores `E2E_SEED` under `cfg(test)`. Proof: both scripts green in CI; a unit test asserts the seed default is 7 when env is set under test. S.
+- **G04.2 Wall-clock assertions on shared runners** (Check ubuntu/macos stable). Current: `crates/ftui-widgets/src/command_palette/scorer.rs:3508` asserts p95 under 5000 µs for a 1000-item corpus; `crates/ftui-runtime/src/subscription.rs:1768` asserts reconcile under 100 ms; `every_respects_interval` expects 2 ticks in a fixed sleep. Target: perf assertions move to the perf gate (G25) as criterion benches with baseline entries; timing tests use a virtual clock (`LabClock` exists in ftui-core `cx`) or generous CI multipliers via `FTUI_TEST_TIME_SCALE`. Proof: 20 consecutive green runs on `macos-latest`. M.
+- **G04.3 Windows clippy dead code in ftui-tty** (Check windows stable). Current: 19 `dead_code` errors, unix-only items not cfg-gated (`crates/ftui-tty/src/lib.rs:217, 267, 597`). Target: the crate compiles clean on Windows as an empty shell (`#![cfg(unix)]` on the implementation module plus a documented stub `TtyBackend::open` returning `Unsupported` on non-unix), and `docs/WINDOWS.md` describes what is validated. Proof: Windows check job green; `docs/WINDOWS.md` row dated with the run id. S. Also unblocks G01 step 3.
+- **G04.4 rustdoc `-D warnings`** (Documentation). Current: unresolved intra-doc link `ReceiptVerdict` and two redundant link targets in `crates/ftui-widgets/src/receipt_verifier_panel.rs`. Target: `cargo doc --workspace --no-deps` clean. S.
+- **G04.5 Fuzz manifest** (Fuzz Build Check). Current: `fuzz/Cargo.toml:11` `[lints] workspace = true` while root `exclude = ["fuzz"]`. Target: `fuzz/Cargo.toml` gets its own `[workspace]` table and an inline `[lints.clippy]` mirror; all 12 targets build; a nightly job runs each target for 60 s with corpus artifacts. Proof: job green; corpus artifact uploaded. S.
+- **G04.6 Runner tooling** (PTY E2E, FrankenTerm WS). Current: `rg` missing on runners (`tests/e2e/scripts/test_inline.sh:57,118,135`); python `websockets` never installed (`tests/e2e/lib/ws_client.py:46`). Target: workflow steps install `ripgrep` and `pip install websockets`; scripts fail fast with a clear message listing missing tools (`tests/e2e/lib/common.sh` gains `require_tools`). S.
+- **G04.7 VHS install steps** (doctor_frankentui Verification, Extended). Current: `ci.yml:1147` `vhs_bin="$(find /tmp ... | head -n 1)"` under `set -euo pipefail` aborts when `find` returns 1; `doctor_frankentui_extended.yml:85` installs `/tmp/vhs` but the tarball extracts to `/tmp/vhs_0.10.0_Linux_x86_64/vhs`. Target: one shared composite action `.github/actions/install-vhs` that downloads the pinned release, verifies its sha256, and installs from the real path; both workflows use it; the 68 skipped gate steps run. Proof: both workflows execute `doctor` gates and upload `artifact_map.txt`. S.
+- **G04.8 Golden Trace gate** (`frankenterm_js_parser_hooks_compat` exit 101, output hidden in /tmp). Target: the harness cell prints the failing test's stdout to the job log and uploads `/tmp/frankenterm_release_gates` as an artifact on failure; the test itself is fixed (root cause to be captured in the bead once visible). M.
+- **G04.9 PTY E2E real failures** (42/166 on ubuntu). Current: after tooling, remaining failures cluster as `cleanup_*` (4), `keybind_*` (3), `voi_marker_missing` (4), `rtl_locale_not_selected` (4), mouse SGR, paste; macOS adds `vsearch_*`, `inline_story_*`, `dashboard_typewriter`, `bidi`. Target: each cluster gets a root-cause bead; likely links: `keybind_*` to G14, `voi_marker` to G10/G20, `rtl_locale` to G29, `cleanup_*` to G03/G13, `vsearch` to G10. Proof: `tests/e2e/scripts/run_all.sh` 166/166 on both OSes with JSONL logs archived. L (as a cluster).
+- **G04.10 Pin CI to the toolchain file.** Current: jobs pass `toolchain: nightly` (floating) while `rust-toolchain.toml` pins `nightly-2026-08-25` with a documented ICE rationale. Target: every job uses `dtolnay/rust-toolchain@master` with `toolchain: ${{ steps.pin.outputs.channel }}` read from the file, or simply omits the input so the file wins. S.
+- **G04.11 Release idempotency.** Current: `release.yml` publish loop fails on `ftui-simd@0.6.0 already exists`. Target: the loop queries `cargo info`/crates.io API per crate and skips already-published versions, logging `skip` vs `published`; dry-run mode in PRs. S.
+- **G04.12 Job topology.** Current: one all-features test job exhausts runner disk; a hang holds the whole matrix for 6 h. Target: split `check` into `check` (clippy+fmt+check), `test-unit` (nextest, G03), `test-all-features` (with `cargo clean` of intermediates and `CARGO_INCREMENTAL=0`), each with a 45-minute timeout; `continue-on-error` is not used, but advisory jobs (coverage, benchmarks) move to a separate workflow so red there does not mask code failures. M.
+- **G04.13 wasm32 builds.** Current: `wasm` job only checks core crates. Target: it builds `ftui-web` and `ftui-showcase-wasm` for `wasm32-unknown-unknown` (and `wasm-pack build` of the showcase when G23 lands). S.
+- **G04.14 Scripts that are not gates.** Current: `scripts/e2e_test.sh` and `scripts/pane_e2e.sh` are invoked by no workflow; README lists them as E2E scripts. Target: both run in the `e2e-pty` job (smoke mode) with artifacts, or README stops implying they gate. S.
+- **G04.15 `msrv` job.** Current: installs floating nightly and runs `cargo check`. Target: rename to `toolchain-pin-check` and make it assert the pinned nightly builds, or delete the job and the README badge claim. S.
 
-### WS4. Terminal compatibility policy that keeps the flicker-free promise
+**Success criteria for the cluster:** three consecutive green `ci.yml` runs on `main`; `doctor_frankentui Extended Verification` green three nights running (or demoted per G22); the "Landing the Plane" section of AGENTS.md links the green run id.
+**Dependencies:** G03 before G04.12; G14/G10/G29 for parts of G04.9.
+**Complexity:** L (cluster)
+**Vision goals served:** V70, V68, E.
+**Would open beads close it?** No.
 
-- **WS4.1 Probe on the common path.** Run the DECRPM `?2026$p` and DECSTBM checks for every
-  interactive session (bounded timeout, already implemented for Ansi256), not only when
-  color depth is Ansi256. Enable sync output on a positive reply regardless of identity.
-- **WS4.2 Identity table.** Recognize `TERM=alacritty`, `LC_TERMINAL=iTerm2`, VS Code,
-  Apple Terminal, and modern xterm; treat WezTerm as a multiplexer only with mux-domain
-  evidence (`WEZTERM_UNIX_SOCKET` plus a mux pane), otherwise as a modern terminal.
-- **WS4.3 Overrides.** `FTUI_SYNC_OUTPUT`, `FTUI_SCROLL_REGION` env overrides with evidence
-  logging of the decision and its reason.
-- **WS4.4 Compat matrix in CI.** Extend `emulator_compat_matrix.yml` to assert, per
-  emulator identity, the counts of sync pairs and DECSTBM sets on a 2-second showcase run
-  (the Python PTY driver from this audit is the template). Publish the matrix in
-  `docs/compat-matrix.md` and link it from the README's Synchronized Output section, which
-  must state the guarantee's preconditions.
+#### G05: The flicker-free guarantee is off on most terminals — PARTIAL -> WORKING
 
-### WS5. Deliver the documented widget, input, and text features
+**Current state:** `use_sync_output()` returns `sync_output && !in_any_mux` (`crates/ftui-core/src/terminal_capabilities.rs:1233`); `sync_output` is true only for the `modern()` and `kitty()` profiles; `xterm_256color()` has `sync_output: false`. Identity mapping recognizes `kitty`/`xterm-kitty`, `TERM_PROGRAM` values for ghostty/Alacritty, and treats any WezTerm identity as mux evidence (`:1040-1062`). `caps_probe.rs` can query DA1, DA2, truecolor and background but has **no DECRPM 2026 probe** (`probe_capabilities`, `:146-200`), and `Program::with_native_backend` only probes when color depth is Ansi256 (`program.rs:5175`). Measured result: Section 2.2.D table.
+**Target state:** Sync output is enabled whenever the terminal says it supports DEC 2026 (probe), or when identity is known-good; WezTerm is treated as a modern terminal unless mux-domain evidence exists; the inline scroll-region strategy verifies DECSTBM at runtime and falls back to overlay when it misbehaves (this makes the README's "Hybrid with fallback" claim true); every decision is logged with its reason; a compat matrix is asserted in CI per identity.
+**Success criteria:**
+- [ ] Unit tests in `caps_probe.rs`: DECRPM reply parsing for `?2026;1$y`, `;2$y`, `;0$y`, `;3$y`, `;4$y`, timeout, garbage.
+- [ ] `scripts/pty_identity_matrix.py` (the driver from this audit) asserts, for each identity row of Section 2.2.D plus `TERM=alacritty`, `LC_TERMINAL=iTerm2`, `TERM_PROGRAM=vscode`, `TERM_PROGRAM=Apple_Terminal`, `TERM_PROGRAM=WezTerm` with and without `WEZTERM_UNIX_SOCKET`, the expected sync-pair count (>0 or 0), DECSTBM count in inline mode, and clean teardown; it emits JSONL and runs in `emulator_compat_matrix.yml`.
+- [ ] With a PTY that answers `?2026;2$y` (the driver can reply), `TERM=xterm-256color` produces sync pairs; with no reply it does not.
+- [ ] `docs/compat-matrix.md` generated from the JSONL and linked from README "Synchronized Output", which states the preconditions.
+**Implementation plan:**
+1. `crates/ftui-core/src/caps_probe.rs`: add `SYNC_OUTPUT_QUERY = "\x1b[?2026$p"`, `probe_sync_output(timeout) -> Option<bool>`, `ProbeConfig.probe_sync_output: bool` (default true), `ProbeResult.sync_output: Option<bool>`; the same for DECSTBM cannot be queried, so add `probe_cursor_position` (CPR) for step 4.
+2. `terminal_capabilities.rs`: `refine_from_probe` sets `sync_output = true` on `Some(true)` (upgrade-only; never downgrade a known-good profile). Add identities: `TERM=alacritty` -> modern; `LC_TERMINAL=iTerm2` or `TERM_PROGRAM=iTerm.app` -> modern-with-probe (sync false until the probe confirms); `TERM_PROGRAM=vscode` -> xterm-256color-with-probe; `TERM_PROGRAM=Apple_Terminal` -> scroll region yes, sync false, no probe; WezTerm -> modern; `in_wezterm_mux` only when `WEZTERM_UNIX_SOCKET` is set **and** `TERM_PROGRAM` is absent (ssh into a mux) or `WEZTERM_MUX_DOMAIN`-style evidence is present. Add `TerminalProfile::{Alacritty, ITerm2, VsCode, AppleTerminal, WezTerm}` to `from_str`/`as_str`.
+3. `program.rs:5170-5185`: probe whenever stdin is a terminal, not in a mux, and `FTUI_CAPS_PROBE != "0"`; keep the truecolor probe restricted to Ansi256; total probe budget 300 ms.
+4. `crates/ftui-runtime/src/terminal_writer.rs` inline path: on first present with `InlineStrategy::ScrollRegion`/`Hybrid`, run a one-time DECSTBM self-test (set region, emit a controlled `\n` at the region bottom, CPR, check the cursor stayed inside the region), else switch to `OverlayRedraw` and log `inline_strategy_fallback`. This is the runtime fallback `inline_mode.rs:93-107` currently lacks, and it makes Hybrid distinct from ScrollRegion.
+5. `capability_override.rs`: add `FTUI_SYNC_OUTPUT=0|1`, `FTUI_SCROLL_REGION=0|1`; every capability decision emits a `capability_decision` evidence line (reuse the log-BF ledger from G28) with `source: env|probe|override|self_test`.
+6. Add `scripts/pty_identity_matrix.py` and wire it into `emulator_compat_matrix.yml`; generate `docs/compat-matrix.md`.
+7. README: rewrite "Synchronized Output" and "Inline Mode" sections to state the mechanism and its preconditions; AGENTS.md architecture note.
+**Dependencies:** G28 (ledger) is helpful but not required; G04.13 not required.
+**Complexity:** L
+**Vision goals served:** V1, V31, V49, D; README "Guarantee" and "Theorem 1".
+**Would open beads close it?** No.
 
-- **WS5.1 Keybinding system** as described: priority levels, chord sequences with timeout,
-  context activation, conflict detection, serde load/save; wire showcase and
-  `pane_keymap` through it. Tests: chord timing, shadowing report, round-trip.
-- **WS5.2 Gesture recognizer** wired into `Draggable`/pane drag and Table click handling,
-  defaults documented as implemented (3 cells / 300 ms) or changed to the README's.
-- **WS5.3 Editor:** undo coalescing (typing burst = one step), paragraph movement,
-  outbound `Cmd::SetClipboard/GetClipboard` via OSC 52 with a PTY test.
-- **WS5.4 Subscriptions:** `tick_every` convenience and an FS watcher subscription
-  (`notify` crate, feature-gated), with a demo screen use.
-- **WS5.5 Widgets:** indeterminate `ProgressBar`, `JsonView` fold/unfold, `TextArea` syntax
-  hook, `TextInput` history, `Sparkline` min/max markers, border styles up to the documented
-  count or README corrected, `TableTheme` builders (`with_stripe_period`, header, selection)
-  and per-column truncation/alignment, `StyleSheet` consumed by at least Block/Table.
-- **WS5.6 Convenience API:** `Frame::render_widget/render_stateful_widget/area` and a
-  `Layout` alias over `Flex`, so the README's idioms are real (or the README adopts the
-  existing idioms; pick one in WS0.3).
-- **WS5.7 i18n:** either add locale number/date formatting and bidi integration, or
-  retract; align demo languages with the docs.
-- **WS5.8 Input parser:** SGR-pixels (1016) and DCS/APC payload handling, or retract.
+#### G06: README and AGENTS.md describe code that does not exist — WRONG_API -> WORKING (claims ledger)
 
-### WS6. Plan-document Definition of Done
+**Current state:** Section 2.2.C lists 25+ mismatches; counts (screens, widgets, borders), layouts (`CellAttrs`, `GraphemeId`), API names and shapes, defaults, evidence event names, benchmark numbers, and the architecture diagram are wrong in README.md and partly in AGENTS.md. Prior truth passes (bd-1zmo3, 2026-04-09) regressed within weeks because nothing checks them.
+**Target state:** A checked-in `docs/claims-ledger.md` maps every tracked claim to its proof; a CI script fails when README contains a tracked number or backticked identifier without a ledger row, or when a ledger row's proof (test name, file path, or command) no longer exists. README and AGENTS.md are rewritten once against the ledger.
+**Decision table (CODE vs DOC) for Section 2.2.C rows:**
 
-- **WS6.1 Agent-harness reference app.** Ship a real inline "agent shell" binary
-  (streaming child-process logs above, stable status/input chrome below, links, resize,
-  crash-safe teardown) as the getting-started tutorial target and the flagship inline demo;
-  drive it in `scripts/e2e_test.sh` with a log-spam scenario and assert scrollback
-  integrity. Owner decision: which real tool to dogfood it in.
-- **WS6.2 `write_raw()`** and SGR-only semi-trusted mode per ADR-006, with adversarial
-  injection PTY tests (ESC/CSI/OSC/DCS/APC payloads in log lines) and the "inline never
-  clears full screen" invariant test.
-- **WS6.3 Perf gates.** Run `scripts/perf_regression_gate.sh` in CI against
-  `tests/baseline.json`; add present budgets at 120x40 and 200x60, input parse+dispatch
-  latency, bytes-emitted-per-scene, wrap-200-lines, allocations-per-frame (counting
-  allocator behind a feature); regenerate README numbers from the artifact.
-- **WS6.4 Signals and platforms.** SIGTSTP/SIGCONT (bd-d4dtr); Windows decision (native
-  backend or documented crossterm-only with CI proof); SSH extra dropped from the plan or
-  scheduled.
-- **WS6.5 ADRs and trackers.** Accept or supersede ADR-004/005/006/008/010; regenerate the
-  execution tracker from beads; refresh the risk register.
-- **WS6.6 `ftui-simd`.** Give it real safe SIMD paths with benches, or unpublish.
+| Row | Decision | Lands in |
+|---|---|---|
+| `Frame::render_widget/render_stateful_widget/area` | CODE (convenience methods) | G17.9 |
+| `Layout::horizontal([..]).split(..)` | CODE (`Layout` alias + constructor taking constraints) | G17.9 |
+| Focus `register(str)/set_next` | DOC (document `FocusId`, `insert`, `connect`) | this block |
+| Modal `push(ConfirmDialog::new)` | DOC (`Dialog::confirm`) | this block |
+| `frame.link_registry()` / `cell.link_id =` | DOC (`register_link`, `with_link`) | this block |
+| Cell and GraphemeId layouts | DOC (draw the real layout) | this block |
+| `TimeTravel` API | DOC + quarantine | G07 |
+| `Stylesheet::register` | DOC (`StyleSheet::define`) + CODE consumer | G17.8 |
+| `TableTheme::modern().with_*` | CODE | G17.7 |
+| 9 border styles | DOC (5) unless G17.6 adds more | G17.6 |
+| `Cmd::perform` | DOC (`Cmd::task`) | this block |
+| `Cmd::SetClipboard/GetClipboard` | CODE | G15 |
+| `tick_every`, `file_watcher` | CODE | G16 |
+| `frame.checksum()`, `MacroPlayer::next`, `sim.send_event` | DOC | this block |
+| `PersistenceConfig`/`FileBackend` names | DOC | this block |
+| `field_lens!` | DOC + quarantine | G07 |
+| `slo.yaml` schema | DOC + quarantine | G07 |
+| Evidence event names | DOC for existing names; CODE for `voi_sample` | G20 |
+| Degradation level names | DOC | this block |
+| Editor coalescing, paragraph moves | CODE | G15 |
+| Input history, Textarea syntax hook, indeterminate Progress, JsonView folding, Sparkline markers | CODE | G17 |
+| Widget names (`CachedWidget`, no `DragHandle`, `InspectorOverlay`, `NotificationStack`, `ValidationErrorDisplay`) | DOC | this block |
+| 46 screens / 11 categories / `3d_data` / `quake` | DOC (45, 6, real slugs) | this block |
+| VFX attribution | DOC | this block |
+| Command palette factor formulas | DOC (state the real formulas) | this block |
+| i18n claims | CODE partial + DOC | G29 |
+| Benchmark numbers | regenerate | G25 |
+| `TerminalSession (crossterm)` diagram | DOC | this block |
+| Inline "Hybrid with fallback" | CODE | G05.4 |
+| 80+ widgets | DOC (57 production types, listed) | this block |
+| 850K+ lines | DOC (1.05M) | this block |
+| `ftui = "0.5"`; getting-started crates.io sentence | DOC | this block |
+| `FTUI_HARNESS_VIEW ... ftui-demo-showcase` | DOC | G35 |
+| VOI defaults, resize delays, gesture defaults | DOC | this block |
+| SOS provenance | CODE (header) + DOC | G21 |
 
-### WS7. Scope decisions the owner must make (see Section 5 for evidence)
+**Success criteria:**
+- [ ] `scripts/check_readme_claims.py` runs in the `docs` job; it extracts every backticked identifier and every number with a unit or count noun from README.md and AGENTS.md, requires a ledger row, and verifies each row's proof exists (`cargo test -- --list` output for test names; `test -e` for paths; `rg` for identifiers in `crates/*/src`).
+- [ ] Ledger has 100% coverage of Section 2.2.C rows with each row marked CODE (linking the closing bead) or DOC (linking the README diff).
+- [ ] README doc-tests (G02) green after the rewrite.
+**Implementation plan:**
+1. Write `docs/claims-ledger.md` (table: claim, location, kind, proof, status) seeded from Sections 2.2.C and 3.
+2. Write `scripts/check_readme_claims.py` with an allowlist file for prose numbers that are not claims (dates, version numbers).
+3. Rewrite README sections in this order: Installation and Quick Start (G01), Minimal API Example (G02), Workspace Overview (add ftui-extras' real contents: Mermaid, terminal emulator, Doom/Quake, text effects, Sinkhorn morph), Demo Showcase Gallery (45 screens, 6 categories), Widget System (57 types, real names, real features), Table Theming (real presets and builders), Alien Artifact sections (mark each as "wired by default", "opt-in", or "experimental" per G07), Performance Engineering (real layouts), Runtime Migration (G24 wording), Web/WASM (G23 wording), Synchronized Output (G05 wording), Benchmarks (G25 artifact), FAQ counts.
+4. AGENTS.md: Key Dependencies table (crossterm optional and legacy, `ftui-tty` native, `nix`/`rustix`), architecture diagram, Workspace Structure note on `tests/`, `doctor_frankentui` verification block updated to commands that pass (G22), add nextest and the claims check to Compiler Checks.
+5. `docs/getting-started.md`: crates.io sentence, features, example.
+6. Add an "Experimental modules" README section listing G07's quarantined modules with one line each and the feature flag.
+**Dependencies:** G01, G02, G07 (to know what is experimental), G25 (numbers). Can start immediately for pure DOC rows.
+**Complexity:** L
+**Vision goals served:** every C row, V6, V39-V45, V51, V65, V69.
+**Would open beads close it?** No.
 
-- doctor_frankentui: keep the ~12K-line verification core (capture, suite, report, doctor,
-  import) as the product the README describes and green its gates; then decide separately
-  for the TSX migration compiler, the alien-graveyard governance framework, and the
-  nightly/stress machinery: split each to its own repo, feature-gate it, or delete it (with
-  permission). Whatever stays must have a CI job that actually executes it.
-- ftui-web / ftui-showcase-wasm: define what "runs in a browser" means without the
-  out-of-tree FrankenTermWeb bundle. Minimum: build both crates for wasm32 in CI, ship a
-  minimal in-tree JS host that drives `ShowcaseRunner` and renders the flat patches to a
-  `<pre>`/canvas so the claim is testable, implement or retract DPR/zoom, and rewrite the
-  README web sections to say "patch producer for a host" until a renderer exists.
-- Asupersync lane: implement the executor behind lane selection, or remove the lane and the
-  Shadow policy from README until it exists.
+#### G07: Dead modules masquerade as features — DEAD -> WORKING (wired) or EXPERIMENTAL (quarantined)
 
-### WS8. Process guardrails
+**Current state:** About 30 of 63 `ftui-runtime` modules, three width caches, the a11y tree, `height_predictor`, `fenwick` mode, `egraph`, `S3FifoLayoutCache`, `gesture`, `hover_stabilizer`, `keybinding`, `roaring_bitmap`, `tier_budget`, bidi/shaping/normalization, `ConformalRanker`, `DecisionCard`, `DriftVisualization`, `CachedWidget`, `ErrorBoundary<W>`, `TimeTravel` have no production consumer (Section 2.2.B). `timeline_aggregator.rs` and `countmin_sketch.rs` are not declared in `lib.rs`.
+**Target state:** Every declared module is either reachable from a production path (with a test proving it) or compiled only under an `experimental` cargo feature and listed in the README "Experimental modules" section. A CI gate fails on new orphans.
+**Wire list (each is its own block):** width cache G08, a11y G09, VirtualizedList G10, conformal G11, BOCPD G12, controllers G13, keybinding G14, gesture and hover G18, hint ranker G19, evidence G20, SAT and caps ledger G28.
+**Quarantine list (this block, internal modules only):** `rough_path`, `flat_combine`, `lens`, `ivm`, `cost_model`, `sos_barrier` (+ `sos_barrier_coeffs`, after G21), `alpha_investing`, `flake_detector`, `slo`, `policy_config`, `policy_registry`, `evidence_bridges`, `validation_pipeline`, `degradation_cascade` (until G13 merges it), `conformal_frame_guard`, `conformal_alert`, `conformal_stages`, `eprocess_throttle` (until G13), `allocation_budget` (until G13), `resize_sla`, `reversible`, `schedule_trace`, `wasm_runner`, `diff_evidence` (until G13), `egraph`, `S3FifoLayoutCache`, `roaring_bitmap`, `tier_budget`, `ConformalRanker`, `timeline_aggregator` + `countmin_sketch` (declared under the feature; `action_timeline` demo may adopt the aggregator).
+**Public-API rule (not quarantined):** widgets and harness types are library surface; a widget does not need an in-tree consumer to be legitimate, it needs to be exercised. So `DecisionCard`, `DriftVisualization`, `CachedWidget` and `ErrorBoundary<W>` get a `widget_gallery` entry plus a snapshot (S each), and `TimeTravel`/`TimeTravelInspector` back the `snapshot_player` screen's scrubber (currently only a label) with README API names corrected (G06). The reachability gate treats `ftui-widgets` and `ftui-harness` public types as reachable when a showcase screen or a harness binary/example uses them.
+**Success criteria:**
+- [ ] `scripts/check_module_reachability.py`: for each `pub mod` in each crate's `lib.rs` not under `#[cfg(feature = "experimental")]`, require a reference (`X::`, `use crate::X`, `use ftui_<crate>::X`) from a non-test file outside the module's own file/dir; the allowlist `docs/module-reachability-allowlist.txt` starts at today's set and may only shrink; runs in the `check` job.
+- [ ] `cargo check --workspace --all-targets` with and without `--features experimental` both green; the `features` CI job includes the experimental combination.
+- [ ] README "Experimental modules" section exists and each listed module's tests are gated `#![cfg(feature = "experimental")]`.
+**Implementation plan:**
+1. Add `experimental = []` to `ftui-runtime`, `ftui-widgets`, `ftui-layout`, `ftui-render`, `ftui-text`, `ftui-core`, `ftui-harness`; gate the `pub mod` lines and their `tests/*.rs` and `benches/*.rs` files.
+2. Declare `timeline_aggregator` and `countmin_sketch` under the feature; fix whatever no longer compiles (they have been orphaned since 2026-02/03).
+3. Write the reachability script and allowlist; wire into CI.
+4. Owner decision list for deletion (needs explicit permission): `roaring_bitmap`, `flat_combine`, `rough_path`, `resize_sla`, `reversible`, `schedule_trace`, `wasm_runner` (harness has its own asciicast; ftui-web has its own `StepResult`).
+**Dependencies:** none for quarantine; G13 for the merged pairs.
+**Complexity:** M (quarantine + gate); deletions S each after permission.
+**Vision goals served:** V12-V25, V45, V46, V55, V58-V60, B.
+**Would open beads close it?** No.
 
-- Definition of done for any bead touching a README claim: reachable from production path,
-  evidence event or test named in the close reason, ledger row updated.
-- Close reasons must name the CI run or test; empty/"done" close reasons rejected by a
-  `br` pre-close hook or review script.
-- Reality check cadence: re-run this document's Section 1 commands monthly; diff the
-  claims ledger.
-- Version bump checklist includes README doc-tests, compat matrix, and consumer smoke E2E.
+### 7.2 Major gaps (significantly degrade the vision)
+
+#### G08: Width cache is not on the production path — DEAD -> WORKING
+
+**Current state:** `crates/ftui-text/src/width_cache.rs` has `WidthCache` (LRU, `:97`), `TinyLfuWidthCache` (`:1034`, CMS + doorkeeper), `S3FifoWidthCache` (`:1233`); none is constructed outside docs, tests and `benches/cache_bench.rs`. Production width goes `ftui-text/src/wrap.rs:451` -> `ftui_core::text_width::grapheme_width` (ASCII fast path, then `unicode_display_width`, uncached). `ftui-render` depends only on `ftui-core`, so a cache in `ftui-text` cannot serve the grapheme pool.
+**Target state:** One cache implementation lives in `ftui-core::text_width` (ftui-core already hosts `s3_fifo.rs`) behind a thread-local, keyed by grapheme hash, consulted for non-ASCII graphemes by `grapheme_width`; `ftui-text` wrap and `ftui-render` grapheme pool both benefit; the README names the policy actually used.
+**Success criteria:**
+- [ ] `crates/ftui-text/benches/cache_bench.rs` extended to a wrap benchmark over a mixed CJK/emoji/ZWJ corpus; the chosen policy shows at least 30% fewer nanoseconds per non-ASCII grapheme than uncached at steady state, recorded in `tests/baseline.json` (`text_width_non_ascii`).
+- [ ] Proptest: cached width equals uncached width for arbitrary grapheme clusters (`proptest_width_cache_transparency`).
+- [ ] Hit-rate telemetry exposed via `text_width::cache_stats()` and logged once per showcase run in `scripts/demo_showcase_e2e.sh` JSONL.
+**Implementation plan:**
+1. Run `cache_bench.rs` for LRU vs TinyLFU vs S3-FIFO on the corpus; pick the winner (S3-FIFO is the expected winner per its own module docs; decide by data).
+2. Move the winner into `crates/ftui-core/src/text_width/cache.rs` (submodule of the existing inline `text_width` module); `grapheme_width` consults it after the ASCII fast path; cap 4,096 entries; `FTUI_WIDTH_CACHE=0` disables.
+3. `ftui-text/src/width_cache.rs`: keep only the thin `cached_width` shim delegating to ftui-core, or quarantine the losers (deletion needs permission).
+4. Update README "Width Calculation" (G06 ledger row).
+**Dependencies:** none.
+**Complexity:** M
+**Vision goals served:** V20, V21, B.
+**Would open beads close it?** No.
+
+#### G09: Accessibility tree is never built — DEAD -> WORKING
+
+**Current state:** `ftui-a11y` (2,019 lines, no dependencies) provides `A11yNodeInfo`, `A11yTreeBuilder`, `A11yTreeDiff`, live regions; nine widgets implement `Accessible::accessibility_nodes()` (`list.rs:973`, `table.rs:332`, `block.rs:440`, `tabs.rs:518`, `progress.rs:209`, `input.rs:1155`, `spinner.rs:187`, paragraph, scrollbar) but nothing calls it; `Frame` (`crates/ftui-render/src/frame.rs`) has `links`, `hit_grid`, `widget_signals`, `arena` but no a11y hook; `accessibility_panel` renders theme toggles.
+**Target state:** When enabled, the runtime builds an accessibility tree every frame from widgets' declarations during `view()`, diffs it against the previous frame, emits live-region announcements as evidence, exposes the tree to the model, and the showcase panel renders the real tree.
+**Success criteria:**
+- [ ] `ftui-render` unit tests: `frame.push_a11y(node)` collects nodes in render order with parent nesting from `Block` children.
+- [ ] Snapshot `dashboard_a11y_tree_80x24.snap` of the tree text dump; `A11yTreeDiff` announcement test on focus move between two `TextInput`s.
+- [ ] Evidence line `a11y_announcement` written through the sink; tracing target `ftui.a11y` added to `telemetry_schema.rs`.
+- [ ] `scripts/a11y_transitions_e2e.sh` (exists) extended to assert announcements for Tab navigation in the forms screen.
+**Implementation plan:**
+1. `crates/ftui-render/Cargo.toml`: add `ftui-a11y` (no cycle: it has no deps). `frame.rs`: `pub a11y: Option<&'a mut A11yTreeBuilder>`, `push_a11y(&mut self, node)`, `with_a11y_scope(role, f)` for containers.
+2. `ftui-widgets`: in the nine `Widget::render` impls, call `frame.push_a11y` with the existing `accessibility_nodes()` output; `Block` wraps children in a scope.
+3. `ftui-runtime/src/program.rs`: `ProgramConfig::with_accessibility(bool)` (default off; showcase on); `Program` owns a builder, resets per frame, stores `last_a11y_tree: Arc<A11yTree>`, diffs, emits `a11y_announcement` evidence and a `Msg`-independent hook `Model::on_accessibility_tree(&Arc<A11yTree>)` with a default no-op (keeps `Model` backward compatible).
+4. Showcase: `accessibility_panel.rs` renders the tree from the hook; keep the theme toggles.
+**Dependencies:** G07 (experimental gate not needed here), G20 for the evidence name.
+**Complexity:** L
+**Vision goals served:** V46, B.
+**Would open beads close it?** No.
+
+#### G10: VirtualizedList's Bayesian machinery is disconnected — DEAD -> WORKING
+
+**Current state:** `ItemHeight::{Fixed, Variable(HeightCache), VariableFenwick}` (`crates/ftui-widgets/src/virtualized.rs:88-95`); default `Fixed(1)`; `with_variable_heights_fenwick` exists (`:164`) but no caller uses it. `height_predictor.rs` (1,079 lines: `HeightPredictor::{predict, observe, posterior_mean}`) has zero consumers; no VOI remeasurement exists. `virtualized_search.rs:613` and `log_search.rs:43` keep their own vectors and `LogViewer`; only `widget_gallery.rs:1920` uses `VirtualizedList` (fixed height).
+**Target state:** Variable-height lists default to the Fenwick index; unmeasured rows use the predictor; remeasurement is scheduled by a VOI rule surfaced through `WidgetSignal`; the two search demos use `VirtualizedList`; the runtime writes `voi_sample` evidence for those decisions.
+**Success criteria:**
+- [ ] Proptest `scroll_to_index_is_stable_under_late_measurements`: after measuring rows out of order, `scroll_to(i)` lands within the conformal interval, and the "scroll jump" metric (sum of absolute offset corrections) is lower with the predictor than with the mean-height baseline on a synthetic long-tail corpus (bench in `ftui-widgets/benches/virtualized_bench.rs`).
+- [ ] `virtualized_search` and `log_search` snapshots re-blessed with `VirtualizedList`; PTY tests `vsearch_*` (G04.9) green.
+- [ ] Evidence `voi_sample` lines appear in `scripts/demo_showcase_e2e.sh` JSONL with the fields `alpha, beta, voi, sample_cost, decision`.
+**Implementation plan:**
+1. `virtualized.rs`: `with_variable_heights(default)` returns `VariableFenwick`; add `predictor: Option<HeightPredictor>` with per-category registration (category = item kind supplied by the caller or a default); `measure(i, h)` calls `observe`; unmeasured rows use `predict().mean`.
+2. Add `RemeasurePolicy` (Beta-VOI, same formula as README) in `virtualized.rs`; when it decides to sample, push `WidgetSignal::Remeasure { index, voi, cost }`.
+3. `program.rs`: translate that signal into a `voi_sample` evidence line (G20).
+4. Rewrite `virtualized_search.rs` and `log_search.rs` on `VirtualizedList` with the search filter applied to the index set.
+**Dependencies:** G20 (evidence writer).
+**Complexity:** L
+**Vision goals served:** V11, B; README "Fenwick-backed virtualization" and "Bayesian height prediction".
+**Would open beads close it?** No.
+
+#### G11: Conformal frame-time gating is off by default — OPT-IN -> WORKING
+
+**Current state:** `ProgramConfig.conformal_config: None` (`program.rs:3008`); only `ftui-harness/src/main.rs:1925` and tests set it. When set, predict/degrade at `:6188-6234` and observe at `:6393-6406` are real; `budget_decision` evidence carries bucket, `q_b`, `upper_us`, `risk`, `fallback_level`. `conformal_stages.rs` (per-stage monitors) is unreferenced.
+**Target state:** The predictor is on by default with a warm-up (no gating until 30 observations per bucket), disabled for headless/simulator constructors, tunable via `ProgramConfig::with_conformal(None)`; the showcase runs with it; `conformal_stages` stays experimental until stage timings justify it.
+**Success criteria:**
+- [ ] Unit test `conformal_default_on_with_warmup`: first 30 frames never degrade; a synthetic 3x budget frame series after warm-up triggers `fallback_level >= 1` and recovers.
+- [ ] `budget_decision` lines present in the showcase E2E JSONL with `fallback_level` distribution logged.
+- [ ] Bench `frame_render` p99 in `tests/baseline.json` unchanged within threshold with the predictor on (it costs one quantile lookup per frame).
+**Implementation plan:**
+1. `program.rs`: `ProgramConfig::default()` sets `conformal_config: Some(ConformalConfig::default_with_warmup(30))`; `headless_*` and simulator constructors force `None`.
+2. Add `with_conformal(Option<ConformalConfig>)` builder; document in README "Degradation Cascade".
+3. Quarantine `conformal_stages` (G07) with a follow-up bead: emit per-stage timings in `budget_decision` first, then wire stages if any stage dominates in the collected evidence.
+**Dependencies:** G25 (baseline entry), G20.
+**Complexity:** S
+**Vision goals served:** V13, V14, V37.
+**Would open beads close it?** No.
+
+#### G12: BOCPD regime detection is off by default — OPT-IN -> WORKING
+
+**Current state:** `CoalescerConfig::default().enable_bocpd = false` (`crates/ftui-runtime/src/resize_coalescer.rs:202`); default regime detection is a 10/5 events-per-second heuristic (`:197-198`); `bocpd.rs` defaults match the README; the log10 Bayes-factor ledger is real (`:367-430`). Open bead bd-1za0z lists telemetry defects: `forced_by_deadline` inflation, heuristic cooldown-exit running in BOCPD mode, Immediate-mode Burst pinning, `ShowPlaceholder` dead action.
+**Target state:** BOCPD is the default regime detector with the heuristic as fallback when the posterior is undefined; the four telemetry defects are fixed; the differential harness proves parity or improvement.
+**Success criteria:**
+- [ ] `tests/e2e/lib/resize_storm_differential.py` run over the recorded traces in `crates/ftui-harness/src/resize_storm.rs` fixtures: BOCPD-on renders no more frames during drag than heuristic and applies the final size within 40 ms of the last event; report archived as `docs/perf/resize_differential_<date>.md`.
+- [ ] Unit tests for each bd-1za0z defect (quiet-gap resize not counted as forced; no contradictory `regime_transition` pairs in BOCPD mode; Immediate mode reports `Steady`; `ShowPlaceholder` either consumed or removed).
+- [ ] `decision_evidence` lines carry `detector: bocpd|heuristic`.
+**Implementation plan:**
+1. Fix the bd-1za0z items in `resize_coalescer.rs` (they are enumerated in the bead with line-level detail).
+2. Flip `enable_bocpd` default to true; keep `heuristic_fallback: true`.
+3. Run the differential; flip back if it loses, and record why.
+4. README "BOCPD" section states defaults and delays (16/40 ms coalescing, 200/20 ms observation means).
+**Dependencies:** none. Closes bd-1za0z items (1)-(2).
+**Complexity:** M
+**Vision goals served:** V10, V36, V51.
+**Would open beads close it?** Partially (bd-1za0z covers the telemetry defects, not the default).
+
+#### G13: Duplicate controllers and half-finished seams — WRONG_APPROACH -> WORKING
+
+**Current state:** Two e-processes (`ftui-render/src/budget.rs:212-330 EProcessState` wired; `ftui-runtime/src/eprocess_throttle.rs` with GRAPA, dead). Two degradation ladders (`BudgetController` wired; `degradation_cascade.rs` dead). Two diff-evidence ledgers (`terminal_writer.rs:1655` wired; `diff_evidence.rs` dead). Two allocation monitors (`ftui-render/src/alloc_budget.rs` referenced only by a doc comment in `frame_guardrails.rs:6`; `ftui-runtime/src/allocation_budget.rs` dead): allocation leak detection is not wired at all. Two terminal-session stacks (`ftui-core/src/terminal_session.rs` crossterm with panic hook `:1194`; `ftui-tty` `RawModeGuard` `:365-399` with its own hook `:312`). `ftui-backend` seam: events go through `BackendEventSource`; presentation bypasses `BackendPresenter` (only ftui-web implements it).
+**Target state:** One e-process (with GRAPA adaptive betting) inside `BudgetController`; one degradation ladder; one diff ledger; allocation leak detection wired into `FrameGuardrails::check_frame`; shared session teardown logic in ftui-core used by both session stacks; `Program` presents through `BackendPresenter` implemented by ftui-tty and ftui-web.
+**Success criteria:**
+- [ ] After the merge, `scripts/check_module_reachability.py` shows no duplicate implementations (`eprocess_throttle`, `degradation_cascade`, `diff_evidence`, `allocation_budget` gone or experimental).
+- [ ] Test `budget_controller_grapa_adapts_lambda`: with GRAPA the e-process crosses `1/alpha` sooner than fixed lambda on a step change, never on the null.
+- [ ] Test `guardrails_detect_allocation_drift`: a synthetic linear memory growth triggers `AllocLeakDetector` through `check_frame` and a `guardrail_snapshot` line.
+- [ ] PTY test `teardown_sequence_identical_native_vs_crossterm`: byte-identical teardown escape sequence order under both backends (kitty pop once, mouse off, paste off, cursor show, alt-screen leave).
+- [ ] ftui-web's presenter and ftui-tty's presenter both implement `BackendPresenter`; `Program` no longer takes `W: Write` for presentation.
+**Implementation plan:**
+1. Port GRAPA lambda adaptation from `eprocess_throttle.rs` into `budget.rs::EProcessState`; quarantine then delete `eprocess_throttle.rs` (permission).
+2. Delete-or-quarantine `degradation_cascade.rs`, `diff_evidence.rs`, `allocation_budget.rs`; wire `alloc_budget::AllocLeakDetector` into `frame_guardrails.rs` using the `memory_bytes` series already passed to `check_frame`.
+3. Extract `ftui-core::session_teardown` (ordered cleanup steps, panic-hook chaining, kitty pop-once latch) used by `TerminalSession::drop` and `ftui-tty::RawModeGuard::drop`.
+4. `ftui-backend`: keep `BackendPresenter`; implement it in `ftui-tty` (over the existing writer) and make `Program<M, E, P: BackendPresenter>`; `TerminalWriter` becomes the shared presenter core.
+**Dependencies:** G07 (quarantine mechanics), G03 (lifecycle tests), G01 (constructors).
+**Complexity:** XL
+**Vision goals served:** V4, V12, V15, V37, V58, B, design gap row.
+**Would open beads close it?** No.
+
+#### G14: Keybinding system does not exist as described — NOT_STARTED -> WORKING
+
+**Current state:** `crates/ftui-core/src/keybinding.rs` (1,913 lines) is an Esc-Esc `SequenceDetector` plus `SequenceConfig` (`:308-416`, env `FTUI_DISABLE_ESC_SEQ`). Widgets' `Keybinding`/`KeybindingHints` (`help_registry.rs:55`, `help.rs:1088`) are display-only. `pane_keymap` in ftui-runtime hardcodes pane keys. PTY tests `keybind_*` fail (Section 5.1).
+**Target state:** A real keymap: bindings with priority levels (global, mode, widget), chord sequences (`g g`, `Ctrl+x Ctrl+s`) with timeout, context activation, conflict/shadowing report, serde load/save (TOML and JSON, feature `serde`), and a dispatcher used by the showcase, `pane_keymap`, and `Help` hints (G19).
+**Success criteria:**
+- [ ] Unit tests with a virtual clock: chord completes within timeout, expires after, single-key bindings still fire while a chord is pending, priority resolution (widget beats mode beats global), `conflicts()` reports shadowed bindings.
+- [ ] Round-trip test: `KeyMap -> TOML -> KeyMap` equality; JSON likewise.
+- [ ] PTY E2E `tests/e2e/scripts/test_keybinding_chords.sh`: `g g` jumps to top in the log viewer screen, `Ctrl+x Ctrl+s` shows the save toast; the existing `keybind_*` cases pass.
+**Implementation plan:**
+1. `keybinding.rs`: add `KeyCombo`, `Chord(Vec<KeyCombo>)`, `Binding<A> { chord, action: A, priority: Priority, context: Option<ContextId> }`, `KeyMap<A>`, `KeyDispatcher<A>` state machine reusing `SequenceDetector`'s timing, `ConflictReport`.
+2. `serde` feature: derive on the types; `KeyMap::from_toml/to_toml` via the `toml` dep already used by `policy-config`.
+3. `ftui-runtime/src/pane_keymap.rs` and the showcase `app.rs` global keys migrate to `KeyMap`; `Help`/`KeybindingHints` read from the same map.
+4. Document in `docs/spec/keybinding-policy.md` (exists) and README.
+**Dependencies:** none; G19 builds on it.
+**Complexity:** L
+**Vision goals served:** V62; README "Keybinding System (1,900+ Lines)".
+**Would open beads close it?** No.
+
+#### G15: Editor lacks coalescing, paragraph movement and clipboard commands — PARTIAL -> WORKING
+
+**Current state:** `crates/ftui-text/src/editor.rs:498-516` `push_undo` pushes every operation; no paragraph movement; `Cmd` (`program.rs:325-373`) has no clipboard variants; only inbound `Event::Clipboard` exists (`ftui-core/src/event.rs:52`); `ftui-extras/src/clipboard.rs` (1,861 lines) already implements OSC 52 encoding.
+**Target state:** Typing bursts coalesce into one undo step (break on word boundary, direction change, or 500 ms idle); paragraph movement exists; `Cmd::SetClipboard(String)` and `Cmd::GetClipboard` emit OSC 52 through `TerminalWriter` and deliver `Event::Clipboard` on reply.
+**Success criteria:**
+- [ ] Tests: typing "hello world" yields two undo steps; deletion runs coalesce; paragraph movement over mixed blank-line layouts.
+- [ ] PTY E2E `test_clipboard_osc52.sh`: asserts `\x1b]52;c;<base64>\x07` on the wire for `SetClipboard`, and that a scripted reply produces one `Event::Clipboard`.
+- [ ] `TextArea` in the `advanced_text_editor` screen wired to both (`y`/`p`).
+**Implementation plan:**
+1. `editor.rs`: `UndoGroup` with coalescing rules and an explicit `break_undo_group()`; expose `set_coalesce_idle(Duration)`.
+2. `cursor.rs`: `move_paragraph_{up,down}` using blank-line boundaries.
+3. `program.rs`: add the two `Cmd` variants; `TerminalWriter::write_osc52_set/query` reusing `ftui-extras` encoding moved into `ftui-core` (small module) to avoid a runtime->extras dependency.
+**Dependencies:** none.
+**Complexity:** M
+**Vision goals served:** V57, C rows for editor and clipboard.
+**Would open beads close it?** No.
+
+#### G16: Subscription conveniences promised by the README — NOT_STARTED -> WORKING
+
+**Current state:** `Every` subscription exists (`subscription.rs:477`); no `tick_every` function; no filesystem watcher; `Cmd::perform` does not exist (`Cmd::task*` does).
+**Target state:** `tick_every(Duration)` returns a boxed `Every`; `file_watcher(path)` behind feature `fs-watch` (crate `notify`) yields `Event::Custom`-mapped messages; README documents `Cmd::task` (DOC).
+**Success criteria:**
+- [ ] Unit test with `LabClock`: `tick_every(16ms)` yields 3 ticks in 50 ms virtual time.
+- [ ] Integration test with a temp dir: create/modify/delete produce three watcher messages within 1 s; feature-gated in CI `features` job.
+- [ ] Showcase `async_tasks` screen shows a watched temp file changing.
+**Implementation plan:** `subscription.rs` helpers; new `fs_watch.rs` under the feature; README edits.
+**Dependencies:** none.
+**Complexity:** S
+**Vision goals served:** V32, C.
+**Would open beads close it?** No.
+
+#### G17: Widget features the README promises — PARTIAL/WRONG_API -> WORKING (cluster of 9)
+
+- **G17.1 `ProgressBar` indeterminate mode**: animated marquee with `Spinner`-style frames driven by `frame` tick; snapshot at three phases. S.
+- **G17.2 `JsonView` fold/unfold**: node ids, `toggle(path)`, keyboard `Enter`/`Space`, snapshot folded/unfolded. M.
+- **G17.3 `TextArea` syntax hook**: `with_highlighter(Box<dyn Fn(&str) -> Vec<Span>>)` consumed per line; the `markdown_live_editor` screen uses `ftui-extras::syntax`. M.
+- **G17.4 `TextInput` history**: ring buffer with Up/Down recall, `HistoryManager` reuse. S.
+- **G17.5 `Sparkline` min/max markers**: glyph overrides for min and max samples with a style; snapshot. S.
+- **G17.6 Border styles**: keep 5 (`Square, Ascii, Rounded, Double, Heavy`) and fix README, or add `Thick`, `Dashed`, `Dotted`, `Custom(BorderChars)` to reach the documented breadth. Decision: add `Custom` and `Dashed` (useful), README states the real count. S.
+- **G17.7 `TableTheme` builders and per-column options**: `with_stripe_period(u8)`, `with_header_style`, `with_selection_style`, `with_column_truncation(col, Truncate::{Ellipsis, Clip, Wrap})`, `with_column_alignment`; `Table` honors them; snapshots in `table_theme_gallery`. M.
+- **G17.8 `StyleSheet` consumers**: `Block::styled("heading")` and `Table::with_stylesheet(&sheet)` resolve names; test that a renamed style propagates. S.
+- **G17.9 Convenience API**: `Frame::render_widget`, `Frame::render_stateful_widget`, `Frame::area()`; `pub type Layout = Flex` with `Layout::horizontal(constraints)`; README examples switch to them (or to the existing idioms; G06 decides CODE). S.
+
+**Success criteria for the cluster:** each item has a unit test and a re-blessed snapshot; README widget table rows match; `scripts/widget_api_e2e.sh` extended with one scenario per item.
+**Dependencies:** G06 decisions.
+**Complexity:** M (cluster)
+**Vision goals served:** V6, V39, V40, V41, C rows.
+**Would open beads close it?** No.
+
+#### G18: Gesture recognizer and hover stabilizer are unwired — DEAD -> WORKING
+
+**Current state:** `crates/ftui-core/src/gesture.rs` (2,125 lines) has zero callers; defaults multi-click 300 ms, drag threshold 3 cells (`:66-69`); README says 500 ms and 2 cells. `hover_stabilizer.rs` (CUSUM) is used only by `mouse_playground`; `Table` hover is a plain compare (`table.rs:608-611`).
+**Target state:** `Draggable`/`DropTarget` (`drag.rs`) and `TextArea` (double-click word, triple-click line) use `GestureRecognizer`; `Table` and `List` hover use `HoverStabilizer`; README states the real defaults.
+**Success criteria:** unit tests for double/triple click selection in `TextArea`; a jitter test where one-cell mouse noise across a row boundary does not change Table hover; PTY E2E `mouse_playground` scenario logs recognized gestures as JSONL.
+**Implementation plan:** wire in `drag.rs`, `textarea.rs`, `table.rs`, `list.rs`; expose `GestureConfig` on `ProgramConfig` so apps tune thresholds; README (G06).
+**Dependencies:** none.
+**Complexity:** M
+**Vision goals served:** V15, V60.
+**Would open beads close it?** No.
+
+#### G19: Hint ranking is demo-only — DEAD -> WORKING
+
+**Current state:** `hint_ranker.rs` (846 lines; Beta utility, VOI bonus, hysteresis 0.02) used only by `command_palette_lab.rs`; `Help`/`KeybindingHints` do not use it.
+**Target state:** `Help::with_ranker(HintRanker)` orders hints by net value with hysteresis; usage feedback comes from the `KeyDispatcher` (G14) so shown hints learn from actual key use; `RankingEvidence::to_jsonl` goes to the evidence sink as `hint_ranking`.
+**Success criteria:** no-flicker test (ranking stable under small utility noise), learning test (a used hint rises), evidence lines in the showcase E2E JSONL.
+**Dependencies:** G14, G20.
+**Complexity:** S
+**Vision goals served:** README "Bayesian Hint Ranking".
+**Would open beads close it?** No.
+
+#### G20: Evidence and telemetry do not match the README; queue depth hardcoded — PARTIAL -> WORKING
+
+**Current state:** Emitted events are `diff_decision`, `budget_decision`, `guardrail_snapshot`, `fairness_*`, `decision`/`decision_evidence`/`regime_transition`, `effect_queue_select`, `certificate_decision`, `task_executor_*`, `widget_refresh`; README names `resize_decision`, `conformal_gate`, `degradation_event`, `queue_select`, `voi_sample`. `voi_decision`/`voi_observe` have `to_jsonl` but Program never writes them (`program.rs:6301`). `telemetry_schema.rs` constants are referenced by nothing (literals match). `check_frame(memory_bytes, 0)` hardcodes queue depth (`program.rs:6117`) while `queue_telemetry().in_flight` is available.
+**Target state:** README lists the real event names (DOC); `voi_sample` is emitted for inline-auto and for G10 signals (CODE); all tracing targets use `telemetry_schema` constants (mechanical edit across files, done by parallel subagents per AGENTS.md, not a script); `ftui.guardrails` and `ftui.a11y` added; queue depth fed from telemetry; a JSON schema for every event lives in `docs/spec/telemetry-events.md` and `tests/e2e/lib/e2e_jsonl_schema.json` validates showcase E2E output.
+**Success criteria:** schema validation passes over a showcase run; unit test `guardrails_receive_live_queue_depth`; grep in CI (part of `check_readme_claims.py`) that no `"ftui."` string literal appears outside `telemetry_schema.rs`.
+**Dependencies:** G10, G09 for new events.
+**Complexity:** M
+**Vision goals served:** V51, V54, V20; closes bd-1za0z item (3).
+**Would open beads close it?** Partially (bd-1za0z item 3).
+
+#### G21: SOS barrier provenance is false; two source files are orphaned — WRONG_APPROACH -> WORKING
+
+**Current state:** `crates/ftui-runtime/src/sos_barrier_coeffs.rs:1-41` says "Auto-generated ... 2026-03-05" by `scripts/solve_sos_barrier.py`, which never existed; the constants are round hand-typed numbers; `sos_barrier.rs` is not used for admissibility. `timeline_aggregator.rs` (990) and `countmin_sketch.rs` (1,022) are not declared in `lib.rs`.
+**Target state:** Either a real solver script exists and regenerates the coefficients reproducibly, or the header says the constants are hand-chosen and the module is experimental. The two orphans compile under `experimental`, and the aggregator backs the `action_timeline` screen.
+**Success criteria:** header truthful; if the script route is chosen, `scripts/solve_sos_barrier.py` (cvxpy + SCS, spec in `sos_barrier_spec.toml`) regenerates a byte-identical file in CI; `action_timeline` snapshot shows aggregated counts from `TimelineAggregator`.
+**Implementation plan:** decision by owner (script vs hand-chosen); this plan defaults to hand-chosen + experimental (G07) because nothing consumes the barrier; wire the aggregator into the demo under the feature.
+**Dependencies:** G07.
+**Complexity:** S (doc route) / M (script route)
+**Vision goals served:** V19, V21.
+**Would open beads close it?** No.
+
+#### G22: doctor_frankentui is three products with gates that never run — WRONG_APPROACH -> WORKING (owner decision)
+
+**Current state:** Section 5.4. Both workflows die at VHS install (G04.7). 192K lines, 47% tests, 7 of 128 files touch ftui.
+**Target state (recommended):** the verification core (capture, seed-demo, suite, report, doctor, import, list-profiles) stays and its gates run nightly and per push; the TSX migration compiler, the alien-graveyard governance framework, and the nightly/stress machinery are moved to their own workspace members or repositories with their own CI, or feature-gated as `experimental` inside the crate so `cargo test -p doctor_frankentui` runs the core in minutes.
+**Success criteria:**
+- [ ] `doctor_frankentui Verification` job executes the happy, failure, determinism and coverage scripts and uploads the artifact map; Extended Verification green three nights.
+- [ ] `cargo test -p doctor_frankentui` (core only) under 5 minutes locally via rch.
+- [ ] README and AGENTS.md describe exactly what the binary does and which subcommands are experimental.
+**Implementation plan:** (1) G04.7; (2) module map by product with line counts (Section 5.4 lists them); (3) owner decision; (4) execute the split or gating; (5) docs.
+**Dependencies:** G04.7 first; owner decision.
+**Complexity:** XL
+**Vision goals served:** V68.
+**Would open beads close it?** No.
+
+#### G23: "Runs in a browser" cannot be reproduced from this repo — PARTIAL -> WORKING (owner decision on scope)
+
+**Current state:** Section 5.2. `ftui-web` emits patches for an external host; no DOM/canvas code; DPR/zoom is a comment; the showcase HTML needs an out-of-tree bundle and an unbuilt `pkg/`; CI never builds either crate for wasm32.
+**Target state:** Both crates build for wasm32 in CI (G04.13); a minimal in-tree JS host (`sdk/showcase-host.js`, no bundler) drives `ShowcaseRunner` and paints flat patches into a `<pre>` grid so `frankentui_showcase_demo.html` works from a `wasm-pack build` alone; DPR/zoom is implemented for that host (cell metrics from `getBoundingClientRect`) or the README claim is removed; README web sections say "host-driven patch producer" until a renderer exists.
+**Success criteria:** a headless-browser CI step (playwright or `wasm-bindgen-test` in node) loads the page, advances 60 frames, and asserts the Dashboard title text is present in the grid; `docs/spec/wasm-showcase-runner-contract.md` matches the exports (already true).
+**Dependencies:** G04.13; owner decision on how far to go.
+**Complexity:** L
+**Vision goals served:** V8.
+**Would open beads close it?** No.
+
+#### G24: Asupersync lane and Shadow policy are labels — PARTIAL -> WORKING
+
+**Current state:** `RuntimeLane::resolve()` maps Asupersync to Structured unconditionally (`program.rs:2734-2742`); the `asupersync-executor` feature builds a real pool (`:3579-3690`) reachable only via `EffectQueueConfig::with_backend`; `RolloutPolicy::Shadow` logs at startup (`:4909`); shadow comparison lives in the harness.
+**Target state:** With the feature on, selecting the Asupersync lane resolves to the Asupersync executor; without it, resolution logs a warning and falls back (documented). `RolloutPolicy::Shadow` in `Program` records per-frame checksums and lane metadata into the evidence sink so `ftui-harness` `ShadowRun` can compare two recorded runs; README describes shadow-run as a harness workflow. The README also presents the queueing scheduler (SRPT, Smith's rule, aging; `queueing_scheduler.rs`, 2,891 lines) as the effect scheduler, but it runs only under the opt-in `EffectQueue` backend while the default lanes spawn a thread per task (`program.rs:2785-2791`): this block also decides the default backend by benchmark (`runtime_effect_queue_drain` baseline row plus a burst-of-200-tasks latency bench) and either makes `EffectQueue` the default or documents the scheduler as opt-in (V48).
+**Success criteria:** unit test `asupersync_lane_resolves_to_asupersync_backend_when_feature_enabled` (feature-gated) and its negative; `rollout_drills.rs` E2E compares two evidence files and yields `ShadowVerdict::Match`; the backend decision is recorded with the bench numbers in `docs/perf/effect_backend_<date>.md` and reflected in README "Queueing-Theoretic Scheduler".
+**Dependencies:** none.
+**Complexity:** M
+**Vision goals served:** V52.
+**Would open beads close it?** No.
+
+#### G25: Performance budgets are unenforced and README numbers are unbacked — UNPROVEN -> WORKING
+
+**Current state:** `scripts/perf_regression_gate.sh` consumes `tests/baseline.json` but no workflow runs it; `benchmarks` job runs `bench_budget.sh --quick` on main pushes with 1.5x envelopes; `runtime_first_frame`, `runtime_shutdown_latency`, `runtime_command_roundtrip` are skipped as `non_criterion_baseline`; no budgets for present at 120x40/200x60, input parse+dispatch, bytes emitted, wrap, allocations; README quotes 100x50 numbers no bench produces.
+**Target state:** A `perf-gate` job runs the gate on main pushes and nightly with `--json` artifacts; baseline gains the plan's budgets with criterion names; README numbers are regenerated from the artifact by a script.
+**Success criteria:**
+- [ ] `tests/baseline.json` rows: `present_80x24_sparse` (p50 < 1 ms, p99 < 3 ms), `present_120x40_sparse` (p50 < 2 ms, p99 < 6 ms), `present_200x60_sparse` (p50 < 6 ms, p99 < 18 ms), `input_parse_dispatch_event` (< 100 µs), `bytes_emitted_sparse_5pct` (O(changes): bytes < 8 x changed cells + 64), `wrap_200_lines` (< 2 ms), `frame_allocations_ascii_scene` (0 allocations in the ASCII path), `text_width_non_ascii` (G08).
+- [ ] New benches: `crates/ftui-core/benches/input_parser_bench.rs`, `crates/ftui-text/benches/wrap_bench.rs`, presenter sizes exist; `CountingWriter` used for bytes; feature `alloc-count` with a counting `#[global_allocator]` in benches.
+- [ ] `FrameArena` (V29) carries the per-frame allocations that the allocation bench exposes: wrapped-line span vectors in `ftui-text` wrap, solved `Rect` lists in `Flex::split`, and `ChangeRun` vectors in the diff take their storage from `frame.arena` when present (the arena is already plumbed through `Frame` and reset by `Program`; only `TextInput` and the dashboard use it today). Acceptance is the `frame_allocations_ascii_scene` row reaching zero and a non-ASCII scene dropping by at least half.
+- [ ] `scripts/render_perf_readme.py` writes `docs/perf/baseline_<date>.md` and the README "Benchmark Suite" block from the gate JSON; `check_readme_claims.py` verifies the block hash.
+**Dependencies:** G04.12 (job topology).
+**Complexity:** L
+**Vision goals served:** V35, F; plan-doc 0.12.
+**Would open beads close it?** No.
+
+#### G26: The plan's primary target has no consumer — PARTIAL -> WORKING
+
+**Current state:** `ftui-harness` is a test harness, not an app; `docs/tutorials/agent-harness.md` describes a Claude/Codex-style session; no in-tree app streams a child process under stable chrome.
+**Target state:** `crates/ftui/examples/agent_shell.rs`: spawns a command (`ProcessSubscription`), streams its stdout/stderr into scrollback via `write_log` with sanitization, keeps a status line and a `TextInput` in the inline chrome, supports links, resize, Ctrl-C forwarding, and crash-safe teardown; the tutorial targets it; it is the flagship inline demo in the README.
+**Success criteria:** `scripts/e2e_test.sh` scenario `agent_shell_log_spam`: 10,000 log lines at full speed while the chrome stays stable; assertions on scrollback integrity (canonicalized transcript contains all lines in order), zero `2J`/`1049h` in inline mode, and teardown sequence; JSONL log of frame counts and bytes.
+**Dependencies:** G01, G27 (sanitization modes).
+**Complexity:** M
+**Vision goals served:** plan-doc 0.1 primary target; V1.
+**Would open beads close it?** No.
+
+#### G27: Untrusted-output policy is half built — PARTIAL -> WORKING
+
+**Current state:** `write_log` and `LogSink` sanitize by default (`terminal_writer.rs:2157`, `log_sink.rs:54`); no `write_raw`/SGR-only mode (ADR-006); adversarial tests are unit-level; no named "inline never clears the screen" test.
+**Target state:** `TerminalWriter::write_log_raw` (explicit opt-in) and `write_log_sgr_only`; `LogSink::raw()`; adversarial PTY tests; the invariant test.
+**Success criteria:** `crates/ftui-harness/tests/pty_injection_adversarial.rs` feeds ESC/CSI/OSC/DCS/APC/C1 payloads and asserts the terminal model is unchanged and no full-clear sequences appear; `inline_never_clears_screen` proptest over harness scenarios asserts no `\x1b[2J`, `\x1b[3J`, `\x1b[?1049h` in inline mode; ADR-006 status Accepted.
+**Dependencies:** none.
+**Complexity:** M
+**Vision goals served:** plan-doc ADR-006, kernel invariant "inline never clears".
+**Would open beads close it?** No.
+
+#### G28: Built-but-unqueried structures — PARTIAL -> WORKING
+
+**Current state:** `diff.rs` computes a summed-area table (`:789-805`, `:1010-1026`) that only tests read; tile skipping uses a boolean grid and engages at 12,000+ cells (`:483`). `caps_probe.rs` builds a log-BF ledger only for the demo (`:1153`); production `probe_capabilities_unix` sets booleans.
+**Target state:** SAT either drives a two-level (tile-row then tile) skip that wins on 200x60 sparse frames by at least 10% in the diff bench, or it is deleted (permission) and the README sentence goes; the capability ledger is the production combiner for env + probe evidence and emits `capability_decision` (feeds G05).
+**Success criteria:** bench `diff_200x60_sparse` before/after; unit tests for ledger combination with conflicting env and probe evidence.
+**Dependencies:** G05 uses the ledger.
+**Complexity:** M
+**Vision goals served:** V64, README "Summed-Area Table", "Bayesian Capability Detection".
+**Would open beads close it?** No.
+
+#### G29: i18n overclaims — PARTIAL -> WORKING (scoped)
+
+**Current state:** `ftui-i18n` is a string catalog plus plural rules (1,160 lines); no number/date formatting; no bidi integration; demo languages en/es/fr/ru/ar/ja.
+**Target state:** README claims reduced to what exists (DOC) plus two CODE items: `LocaleContext::direction()` drives `Paragraph` alignment and cursor movement through `ftui-text` bidi when the `bidi` feature is on; the demo adds German. Number/date formatting is retracted (a full ICU dependency is out of scope; recorded as a decision).
+**Success criteria:** RTL snapshot for the i18n screen in Arabic; PTY test `rtl_locale_not_selected` (G04.9) green; German strings present.
+**Dependencies:** none.
+**Complexity:** M
+**Vision goals served:** V47.
+**Would open beads close it?** No.
+
+#### G30: Runtime API names in README vs code (persistence, macro player, simulator checksum, SLO) — WRONG_API -> WORKING
+
+Resolved as DOC rows in G06 plus quarantine of `slo` in G07; no separate code work. Listed here so the vision checklist rows V25-V28 have an owner. S.
+
+#### G31: Windows is "validated" on paper — PARTIAL -> WORKING (scoped)
+
+**Current state:** `docs/WINDOWS.md` says validated 2026-02-03; every Windows CI job since is red (G04.3); native backend deferred; `run_native` errors on Windows; crossterm path needs the feature (G01).
+**Target state:** Windows builds and runs the README example over crossterm by default (G01 + G04.3), the PTY-less smoke (ConPTY via `script`-equivalent is not available; use the headless simulator plus a `cargo run` start/stop check) runs on `windows-latest`, and `docs/WINDOWS.md` states the real matrix with run ids. ADR-004 accepted with the "crossterm-only on Windows" decision.
+**Complexity:** M (after G01/G04.3)
+**Vision goals served:** V67.
+
+### 7.3 Minor gaps (polish and completeness)
+
+#### G32: SIGTSTP/SIGCONT leaves the shell in raw mode — NOT_STARTED -> WORKING
+Covered by open bead **bd-d4dtr** (design needed: restore cooked state on TSTP, re-raise with default disposition, re-arm on CONT, force full repaint). Add a PTY test that sends `SIGTSTP` then `SIGCONT` and asserts the mode transitions. S-M. **Would open beads close it?** Yes.
+
+#### G33: `ftui-simd` is an empty published crate; `ftui-demo-showcase` 0.1.1 lingers on crates.io — WRONG_APPROACH -> WORKING
+Owner decision: give `ftui-simd` real safe SIMD paths (portable_simd is nightly; the workspace is nightly) for `bits_eq` row compare and ASCII width with benches, or unpublish/yank and remove it from the workspace (permission). Yank `ftui-demo-showcase` 0.1.1 or publish a README-only 0.6.0 marked deprecated. S (decision) / L (implement).
+
+#### G34: Stale governance docs — WRONG -> WORKING
+`docs/risk-register.md` summary vs rows; `docs/main-todo-bead-map.md` regenerated from beads by `scripts/pane_test_summary_aggregate.py`-style script or deleted (permission); ADR-004/005/006/008/010 accepted or superseded; `docs/reports/deep-codebase-review-final.md` gets a superseded banner pointing here. S.
+
+#### G35: Harness and showcase usage docs — WRONG_API -> WORKING
+`ftui-harness/examples/minimal.rs` becomes a hello world; README Configuration section lists `FTUI_HARNESS_*` for the harness and `--screen`/`FTUI_DEMO_SCREEN`/`FTUI_DEMO_SCREEN_MODE` for the showcase; Troubleshooting mouse line corrected. S.
+
+#### G36: Input parser gaps — PARTIAL -> WORKING
+SGR-pixels (1016) parsing and DCS/APC payload capture (currently consumed/discarded), or README retracts. Fuzz targets already cover the parser; extend with 1016 sequences. M.
+
+#### G37: Process guardrails — NOT_STARTED -> WORKING
+`br` pre-close check (`scripts/br_close_guard.sh`): refuse closing a bead whose reason lacks a test name, CI run id, or PR/commit; AGENTS.md "Landing the Plane" requires it; monthly reality-check job re-runs Section 1 commands and diffs the claims ledger. S.
+
+#### G38: Plan-doc leftovers — NOT_STARTED -> DECIDED
+SSH extra: drop from the plan (documented); formal TLA+ specs: keep `docs/spec/state-machines.md` as "formal-ish" and say so; execution tracker regenerated (G34). S.
+
+#### G39: AGENTS.md `tests/` claim and fuzz cadence — WRONG -> WORKING
+AGENTS.md says cross-component tests live in `tests/`; they live in per-crate `tests/`. Fix the text; add the nightly fuzz job (G04.5). S.
+
+#### G40: `verify_no_regression` order dependence — WRONG_APPROACH -> WORKING
+One test captures and verifies in-process; the gitignored file becomes an optional cache with provenance; a stale file is ignored with a logged reason. S.
+
+#### G41: Release and version hygiene — PARTIAL -> WORKING
+Release checklist file `docs/release-checklist.md`: README version string, crates.io versions, claims ledger green, compat matrix green, consumer smoke green, CHANGELOG entry; `release.yml` idempotent (G04.11). S.
+
+#### G42: Final integration verification — NOT_STARTED -> WORKING
+One closing block that depends on every other block: run every row of Section 7.6 on a clean clone, archive the outputs under `docs/reports/reality-check-verification-<date>/` (JSONL logs, compat matrix, perf artifact, claims-ledger report, three green CI run ids), and record the vision-delivery percentage against Section 3 in a short table at the top of this document. This is the bead that closes the reality-gap epic; it may not close while any Section 3 row is still PARTIAL, DEAD, WRONG_API or NOT_STARTED without a documented owner decision. M.
+
+### 7.4 Would existing open beads close the gaps?
+
+| Bead | Covers | Verdict |
+|---|---|---|
+| bd-d4dtr (P3) | G32 | Yes, fully |
+| bd-1za0z (P3) | telemetry defects in G12; queue depth in G20 | Partially |
+| everything else (G01-G31, G33-G41) | nothing | No bead exists |
+
+### 7.5 Dependency graph
+
+```mermaid
+flowchart TD
+  G03[G03 signal race + nextest] --> G04[G04 CI to green]
+  G04_3[G04.3 ftui-tty on Windows] --> G01[G01 default backend]
+  G01 --> G02[G02 README doc-tests]
+  G07[G07 quarantine + reachability gate] --> G06[G06 claims ledger + README rewrite]
+  G02 --> G06
+  G25[G25 perf gates] --> G06
+  G01 --> G26[G26 agent shell app]
+  G27[G27 write_raw + adversarial] --> G26
+  G28[G28 caps ledger + SAT] --> G05[G05 probing + compat matrix]
+  G07 --> G13[G13 one controller each]
+  G03 --> G13
+  G01 --> G13
+  G20[G20 evidence/telemetry] --> G10[G10 VirtualizedList]
+  G20 --> G09[G09 a11y tree]
+  G20 --> G19[G19 hint ranker]
+  G14[G14 keybindings] --> G19
+  G14 --> G04_9[G04.9 PTY E2E failures]
+  G10 --> G04_9
+  G29[G29 i18n] --> G04_9
+  G04_7[G04.7 VHS] --> G22[G22 doctor scope]
+  G04_13[G04.13 wasm32 builds] --> G23[G23 web host]
+  G06 --> G34[G34 governance docs]
+  G04_12[G04.12 job topology] --> G25
+  G04 --> G42[G42 final verification]
+  G06 --> G42
+  G05 --> G42
+  G13 --> G42
+  G22 --> G42
+  G23 --> G42
+```
+
+Parallel tracks that can start on day one with no dependencies: G03, G04.1-G04.7/G04.10/G04.11, G05 (probe), G07, G08, G11, G12, G14, G15, G16, G17, G18, G21, G24, G27, G28, G36, G37, G40.
+
+### 7.6 Verification plan (after all bridge work)
+
+| Vision goal | How to verify |
+|---|---|
+| V1 inline mode, V31 sync output, V49 strategies | `scripts/pty_identity_matrix.py` matrix green; `agent_shell_log_spam` E2E; `inline_never_clears_screen` test |
+| V5 composable crates, A onboarding | `scripts/consumer_smoke_e2e.sh` on Linux, macOS, Windows |
+| V6 widgets, V39-V45 APIs | README doc-tests; `widget_api_e2e.sh` scenarios; claims ledger check |
+| V8 web | headless-browser CI step (G23) |
+| V10-V14, V36, V37 Bayesian layer | evidence JSONL schema validation over a showcase run showing `decision_evidence` (bocpd), `budget_decision`, `voi_sample`, `guardrail_snapshot`, `capability_decision`, `hint_ranking`, `a11y_announcement` |
+| V20, V21 caches | `text_width_non_ascii` baseline row; reachability gate |
+| V33 unsafe | existing forbid check plus `scripts/check_readme_claims.py` |
+| V35 perf | `perf-gate` job artifact and `docs/perf/baseline_<date>.md` |
+| V46 a11y | `dashboard_a11y_tree_80x24.snap`; `a11y_transitions_e2e.sh` |
+| V52 lanes | feature-gated lane resolution tests; `rollout_drills.rs` |
+| V62 keybindings | `test_keybinding_chords.sh` |
+| V65 showcase counts | `all_screens_count` test and ledger row |
+| V67 Windows | Windows CI job green; `docs/WINDOWS.md` run ids |
+| V68 doctor | both doctor workflows green three runs |
+| V70 gates | three consecutive green `ci.yml` runs; nextest timeouts |
+| C every row | claims ledger 100% with proofs; README doc-tests |
+| F plan-doc DoD | `write_raw` tests, agent shell E2E, perf rows, ADR statuses |
+
+### 7.7 Suggested bead structure for Phase 3a
+
+One epic per gap block (41 epics), children: implementation task(s), companion test task, and where applicable an E2E-script task and a docs/ledger task; dependencies per Section 7.5; priorities: G01-G07 P0/P1, G08-G31 P1/P2, G32-G41 P2/P3. Every bead's description carries the block's current state, target state, success criteria and implementation steps verbatim so the markdown plan is never needed again.
 
 ---
 
 ## 8. Immediate next step
 
-Phase 3a: convert Section 7 into beads with the frozen template, after the owner steers on
-WS7 decisions and on the wire/quarantine/delete split in WS3. Suggested first five beads by
-leverage: WS1.1 default backend, WS2.1 signal race, WS0.1 README doc-tests, WS4.1 probing,
-WS2.4 CI to green.
+Phase 3a: convert Section 7 into beads with the frozen template after the owner steers on the four owner decisions (G22 doctor scope, G23 web scope, G33 `ftui-simd`, and the deletion list in G07/G13) and on the CODE/DOC decision table in G06. Highest-leverage first five: G01, G03, G02, G05, G04.
