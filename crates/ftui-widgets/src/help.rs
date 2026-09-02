@@ -16,6 +16,7 @@
 //! assert_eq!(help.entries().len(), 3);
 //! ```
 
+use crate::hint_ranker::{HintContext, HintRanker, RankingEvidence};
 use crate::{StatefulWidget, Widget, clear_text_area, draw_text_span};
 use ftui_core::geometry::Rect;
 use ftui_render::budget::DegradationLevel;
@@ -134,6 +135,9 @@ pub struct Help {
     desc_style: Style,
     /// Style for separator/ellipsis.
     separator_style: Style,
+    /// Hint ids assigned by [`Help::register_with_ranker`], parallel to
+    /// `entries`; empty until a ranker has been attached.
+    hint_ids: Vec<usize>,
 }
 
 /// Cached render state for [`Help`], enabling incremental layout reuse and
@@ -277,7 +281,78 @@ impl Help {
             key_style: Style::new().bold(),
             desc_style: Style::default(),
             separator_style: Style::default(),
+            hint_ids: Vec::new(),
         }
+    }
+
+    /// Register every entry with a [`HintRanker`] so the widget can be
+    /// reordered by learned utility (see [`Help::apply_ranking`]).
+    ///
+    /// Each entry becomes one ranker hint whose display cost is the width of
+    /// `"key desc"` in columns; the returned ids are in entry order, so callers
+    /// can feed usage back with [`HintRanker::record_usage`] when a shortcut is
+    /// pressed. Call this once after the entries are final; adding entries
+    /// afterwards requires registering again.
+    pub fn register_with_ranker(
+        &mut self,
+        ranker: &mut HintRanker,
+        context: HintContext,
+    ) -> Vec<usize> {
+        self.hint_ids = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let cost = (display_width(&entry.key) + 1 + display_width(&entry.desc)) as f64;
+                ranker.register(
+                    format!("{} {}", entry.key, entry.desc),
+                    cost,
+                    context.clone(),
+                    0,
+                )
+            })
+            .collect();
+        self.hint_ids.clone()
+    }
+
+    /// Hint id of the entry at `index`, once registered with a ranker.
+    #[must_use]
+    pub fn hint_id(&self, index: usize) -> Option<usize> {
+        self.hint_ids.get(index).copied()
+    }
+
+    /// Reorder the entries by the ranker's current utility ordering.
+    ///
+    /// The ranker decides (expected utility, a value-of-information
+    /// exploration bonus, display cost, and a hysteresis margin that stops
+    /// near-ties from flickering); this method only applies the order. Entries
+    /// the ranker did not rank (for example filtered out by `context_key`)
+    /// keep their relative order after the ranked ones. Returns the ranker's
+    /// evidence ledger so callers can log why the hints are ordered this way.
+    /// Does nothing if the entries were never registered or changed since.
+    pub fn apply_ranking(
+        &mut self,
+        ranker: &mut HintRanker,
+        context_key: Option<&str>,
+    ) -> Vec<RankingEvidence> {
+        if self.hint_ids.len() != self.entries.len() || self.entries.is_empty() {
+            return Vec::new();
+        }
+        let (order, ledger) = ranker.rank(context_key);
+        let position = |hint_id: usize| order.iter().position(|id| *id == hint_id);
+        let mut indexed: Vec<(usize, usize)> = (0..self.entries.len())
+            .map(|index| (index, position(self.hint_ids[index]).unwrap_or(usize::MAX)))
+            .collect();
+        // Stable sort: unranked entries (usize::MAX) keep their relative order.
+        indexed.sort_by_key(|(_, rank)| *rank);
+        let entries = std::mem::take(&mut self.entries);
+        let hint_ids = std::mem::take(&mut self.hint_ids);
+        let mut old_entries: Vec<Option<HelpEntry>> = entries.into_iter().map(Some).collect();
+        for (index, _) in &indexed {
+            self.entries
+                .push(old_entries[*index].take().expect("entry moved once"));
+            self.hint_ids.push(hint_ids[*index]);
+        }
+        ledger
     }
 
     /// Add an entry to the help widget.
@@ -1444,7 +1519,62 @@ impl Widget for KeybindingHints {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hint_ranker::RankerConfig;
     use ftui_render::buffer::Buffer;
+
+    /// A shortcut that keeps getting used rises to the front; the others keep
+    /// their relative order. The ranker's ledger comes back for logging.
+    #[test]
+    fn help_reorders_entries_by_learned_usage() {
+        let mut help = Help::new()
+            .entry("q", "quit")
+            .entry("s", "save")
+            .entry("?", "help");
+        let mut ranker = HintRanker::new(RankerConfig::default());
+        let ids = help.register_with_ranker(&mut ranker, HintContext::Global);
+        assert_eq!(ids.len(), 3);
+        assert_eq!(help.hint_id(2), Some(ids[2]));
+
+        // "?" is used every time, "s" occasionally, "q" is shown but ignored.
+        // (An entry with zero observations sits at its cold-start static
+        // priority, so every entry gets evidence here.)
+        for _ in 0..8 {
+            ranker.record_usage(ids[2]);
+            ranker.record_shown_not_used(ids[0]);
+        }
+        ranker.record_usage(ids[1]);
+        ranker.record_shown_not_used(ids[1]);
+        let ledger = help.apply_ranking(&mut ranker, None);
+        assert_eq!(ledger.len(), 3, "one evidence row per hint");
+        let keys: Vec<&str> = help.entries().iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, vec!["?", "s", "q"], "ordered by learned utility");
+        // ids follow their entries so later usage feedback still maps correctly.
+        assert_eq!(help.hint_id(0), Some(ids[2]));
+    }
+
+    /// Hysteresis: without new evidence, re-ranking must not reorder.
+    #[test]
+    fn help_ranking_is_stable_without_new_evidence() {
+        let mut help = Help::new().entry("a", "alpha").entry("b", "beta");
+        let mut ranker = HintRanker::new(RankerConfig::default());
+        help.register_with_ranker(&mut ranker, HintContext::Global);
+        help.apply_ranking(&mut ranker, None);
+        let first: Vec<String> = help.entries().iter().map(|e| e.key.clone()).collect();
+        for _ in 0..5 {
+            help.apply_ranking(&mut ranker, None);
+        }
+        let after: Vec<String> = help.entries().iter().map(|e| e.key.clone()).collect();
+        assert_eq!(first, after);
+    }
+
+    /// Unregistered widgets are left alone.
+    #[test]
+    fn help_apply_ranking_without_registration_is_noop() {
+        let mut help = Help::new().entry("x", "one").entry("y", "two");
+        let mut ranker = HintRanker::new(RankerConfig::default());
+        assert!(help.apply_ranking(&mut ranker, None).is_empty());
+        assert_eq!(help.entries()[0].key, "x");
+    }
     use ftui_render::frame::Frame;
     use ftui_render::grapheme_pool::GraphemePool;
     use proptest::prelude::*;
