@@ -580,7 +580,7 @@ impl TerminalCapabilities {
 mod tests {
     use super::*;
 
-    fn env_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + '_ {
+    fn env_from<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
             pairs
                 .iter()
