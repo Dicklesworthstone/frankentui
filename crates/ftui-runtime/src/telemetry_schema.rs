@@ -52,6 +52,10 @@ pub const TARGET_BOCPD: &str = "ftui.bocpd";
 /// E-process throttle decisions.
 pub const TARGET_EPROCESS: &str = "ftui.eprocess";
 
+/// Frame guardrails (memory / effect-queue budgets): soft trims, emergency
+/// frame drops.
+pub const TARGET_GUARDRAILS: &str = "ftui.guardrails";
+
 // ============================================================================
 // Canonical event names
 // ============================================================================
@@ -181,6 +185,7 @@ pub const ALL_TARGETS: &[&str] = &[
     TARGET_VOI,
     TARGET_BOCPD,
     TARGET_EPROCESS,
+    TARGET_GUARDRAILS,
 ];
 
 /// Complete list of registered event names.

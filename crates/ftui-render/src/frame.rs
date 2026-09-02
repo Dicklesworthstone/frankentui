@@ -942,9 +942,11 @@ mod tests {
         let frame = Frame::new(120, 40, &mut pool);
         assert_eq!(frame.area(), frame.bounds());
         assert_eq!(frame.area(), Rect::new(0, 0, 120, 40));
-        // A zero-sized frame still reports a well-formed (empty) area.
+        // `Buffer::new` clamps to at least 1x1, so a "zero-sized" frame still
+        // reports a well-formed, drawable area rather than an empty rect.
         let empty = Frame::new(0, 0, &mut pool);
-        assert_eq!(empty.area(), Rect::new(0, 0, 0, 0));
+        assert_eq!(empty.area(), empty.bounds());
+        assert_eq!(empty.area(), Rect::new(0, 0, 1, 1));
     }
 
     #[test]

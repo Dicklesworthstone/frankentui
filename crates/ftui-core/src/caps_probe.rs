@@ -1033,22 +1033,40 @@ impl TerminalCapabilities {
             }
         }
 
-        // A positive XTGETTCAP `RGB` report is authoritative truecolor evidence
-        // and is the whole point of runtime probing: it recovers 24-bit color
-        // when `COLORTERM` was stripped (e.g. over `ssh`). UPGRADE ONLY — never
-        // downgrade on a negative/absent report, because environment detection
-        // or the modern-terminal allowlist may legitimately know truecolor that
-        // a terminal's terminfo under-reports.
-        if result.true_color == Some(true) {
+        // Probe replies are combined with the environment evidence through
+        // the log-Bayes-factor ledger (`ledger_for`, the same rows the runtime
+        // exports as `capability_decision`); an upgrade is applied when the
+        // posterior clears `DECISION_THRESHOLD`. UPGRADE ONLY: a capability
+        // the environment or the allowlist already granted is never taken
+        // away by a negative or absent reply, because terminfo under-reports
+        // truecolor (`COLORTERM` stripped over `ssh` is the case the probe
+        // exists for) and the allowlist knows terminals that ignore DECRPM.
+        // Multiplexer policy (`use_sync_output`) still applies on top.
+        let in_mux = self.in_any_mux();
+        if !self.supports_true_color()
+            && ledger_for(
+                ProbeableCapability::TrueColor,
+                false,
+                ProbeOutcome::from_reply(result.true_color),
+                None,
+                in_mux,
+            )
+            .probability()
+                >= DECISION_THRESHOLD
+        {
             self.color_depth = ColorDepth::TrueColor;
         }
-
-        // A DECRPM report that mode 2026 is recognized is direct evidence
-        // that synchronized output works, which the identity allowlist cannot
-        // know for xterm/iTerm2/VS Code/ssh sessions. UPGRADE ONLY: a
-        // negative or absent report never turns off an allowlisted terminal.
-        // Multiplexer policy (`use_sync_output`) still applies on top.
-        if result.sync_output == Some(true) {
+        if !self.sync_output
+            && ledger_for(
+                ProbeableCapability::SynchronizedOutput,
+                false,
+                ProbeOutcome::from_reply(result.sync_output),
+                None,
+                in_mux,
+            )
+            .probability()
+                >= DECISION_THRESHOLD
+        {
             self.sync_output = true;
         }
     }
@@ -1378,6 +1396,75 @@ impl ProbeOutcome {
             (true, None) => Self::Timeout,
         }
     }
+
+    /// Classify a reply when it is unknown whether the query was sent
+    /// (`refine_from_probe` only sees the `ProbeResult`): a missing reply
+    /// counts as "not probed", which carries no evidence either way.
+    #[must_use]
+    pub const fn from_reply(answer: Option<bool>) -> Self {
+        match answer {
+            Some(true) => Self::Confirmed,
+            Some(false) => Self::Denied,
+            None => Self::NotProbed,
+        }
+    }
+}
+
+/// Posterior probability a capability's ledger must reach before a probe
+/// upgrade is applied (`TerminalCapabilities::refine_from_probe`).
+///
+/// With the weights in [`evidence_weights`], a confirmed XTGETTCAP or DECRPM
+/// reply on top of absent environment evidence reaches ~0.98 (~0.98 with the
+/// multiplexer penalty), while a denial, a timeout, or no probe at all stays
+/// below 0.5, so the threshold separates "the terminal said yes" from every
+/// weaker signal with margin on both sides.
+pub const DECISION_THRESHOLD: f64 = 0.8;
+
+/// Build the evidence ledger for one capability from the signals the live
+/// probe path knows about: environment/identity detection, the probe reply,
+/// the multiplexer penalty and the operator switch.
+///
+/// This is the production combiner: `refine_from_probe` decides upgrades from
+/// its posterior and `decisions_from_probe` exports the same rows as
+/// `capability_decision` evidence, so the log never disagrees with the code.
+#[must_use]
+pub fn ledger_for(
+    capability: ProbeableCapability,
+    env_detected: bool,
+    probe: ProbeOutcome,
+    operator_override: Option<bool>,
+    in_mux: bool,
+) -> CapabilityLedger {
+    let mut ledger = CapabilityLedger::new(capability);
+    ledger.record(
+        EvidenceSource::Environment,
+        if env_detected {
+            evidence_weights::ENV_POSITIVE
+        } else {
+            evidence_weights::ENV_ABSENT
+        },
+    );
+    let (source, confirmed, denied) = probe_evidence_for(capability);
+    match probe {
+        ProbeOutcome::Confirmed => ledger.record(source, confirmed),
+        ProbeOutcome::Denied => ledger.record(source, denied),
+        ProbeOutcome::Timeout => {
+            ledger.record(EvidenceSource::Timeout, evidence_weights::TIMEOUT);
+        }
+        ProbeOutcome::NotProbed => {}
+    }
+    if in_mux {
+        ledger.record(EvidenceSource::Environment, evidence_weights::MUX_PENALTY);
+    }
+    if let Some(forced) = operator_override {
+        let weight = if forced {
+            evidence_weights::OPERATOR_OVERRIDE
+        } else {
+            -evidence_weights::OPERATOR_OVERRIDE
+        };
+        ledger.record(EvidenceSource::Operator, weight);
+    }
+    ledger
 }
 
 /// How the runtime arrived at the policy value of one capability for this
@@ -1414,35 +1501,7 @@ impl CapabilityDecision {
         in_mux: bool,
         final_value: bool,
     ) -> Self {
-        let mut ledger = CapabilityLedger::new(capability);
-        ledger.record(
-            EvidenceSource::Environment,
-            if env_detected {
-                evidence_weights::ENV_POSITIVE
-            } else {
-                evidence_weights::ENV_ABSENT
-            },
-        );
-        let (source, confirmed, denied) = probe_evidence_for(capability);
-        match probe {
-            ProbeOutcome::Confirmed => ledger.record(source, confirmed),
-            ProbeOutcome::Denied => ledger.record(source, denied),
-            ProbeOutcome::Timeout => {
-                ledger.record(EvidenceSource::Timeout, evidence_weights::TIMEOUT);
-            }
-            ProbeOutcome::NotProbed => {}
-        }
-        if in_mux {
-            ledger.record(EvidenceSource::Environment, evidence_weights::MUX_PENALTY);
-        }
-        if let Some(forced) = operator_override {
-            let weight = if forced {
-                evidence_weights::OPERATOR_OVERRIDE
-            } else {
-                -evidence_weights::OPERATOR_OVERRIDE
-            };
-            ledger.record(EvidenceSource::Operator, weight);
-        }
+        let ledger = ledger_for(capability, env_detected, probe, operator_override, in_mux);
         Self {
             capability,
             env_detected,
@@ -2190,6 +2249,61 @@ mod tests {
         assert_eq!(scroll.final_value, after.use_scroll_region());
     }
 
+    /// The rows that decide are the rows exported: `refine_from_probe`
+    /// upgrades exactly when the ledger posterior clears the threshold.
+    #[test]
+    fn refine_from_probe_decides_through_the_ledger_threshold() {
+        use ProbeOutcome::{Confirmed, Denied, NotProbed, Timeout};
+        let cap = ProbeableCapability::SynchronizedOutput;
+        assert!(ledger_for(cap, false, Confirmed, None, false).probability() >= DECISION_THRESHOLD);
+        assert!(
+            ledger_for(cap, false, Confirmed, None, true).probability() >= DECISION_THRESHOLD,
+            "the multiplexer penalty alone must not veto a confirmed reply (policy does that)"
+        );
+        for outcome in [Denied, Timeout, NotProbed] {
+            assert!(
+                ledger_for(cap, false, outcome, None, false).probability() < DECISION_THRESHOLD,
+                "{outcome:?} must stay below the threshold"
+            );
+        }
+        assert!(
+            ledger_for(cap, true, NotProbed, None, false).probability() >= DECISION_THRESHOLD,
+            "environment evidence alone is enough (the allowlist path)"
+        );
+
+        let mut caps = TerminalCapabilities::xterm_256color();
+        assert!(!caps.sync_output && !caps.supports_true_color());
+        caps.refine_from_probe(&ProbeResult {
+            true_color: Some(false),
+            sync_output: Some(false),
+            ..ProbeResult::default()
+        });
+        assert!(
+            !caps.sync_output && !caps.supports_true_color(),
+            "denials upgrade nothing"
+        );
+        caps.refine_from_probe(&ProbeResult {
+            true_color: Some(true),
+            sync_output: Some(true),
+            ..ProbeResult::default()
+        });
+        assert!(
+            caps.sync_output && caps.supports_true_color(),
+            "confirmations upgrade"
+        );
+
+        let mut modern = TerminalCapabilities::modern();
+        modern.refine_from_probe(&ProbeResult {
+            true_color: Some(false),
+            sync_output: Some(false),
+            ..ProbeResult::default()
+        });
+        assert!(
+            modern.supports_true_color() && modern.sync_output,
+            "upgrade-only: granted capabilities survive a negative reply"
+        );
+    }
+
     #[test]
     fn decisions_from_probe_marks_timeouts_as_weak_negative_evidence() {
         let before = TerminalCapabilities::xterm_256color();
@@ -2579,10 +2693,19 @@ mod tests {
         let count = prober.send_all_probes(&caps, &mut buf).unwrap();
 
         // TrueColor, Hyperlinks, FocusEvents already detected — should skip them.
-        // SynchronizedOutput has no direct query (returns None).
-        // KittyKeyboard has no direct query (returns None).
-        // Sixel: DA1 query should be sent.
-        assert_eq!(count, 1); // Only Sixel (DA1)
+        // SynchronizedOutput: not detected on `basic()`, so the DECRPM ?2026
+        // query is sent. Sixel: DA1 query is sent. KittyKeyboard and
+        // ScrollRegion have no direct query (None).
+        assert_eq!(count, 2, "Sixel (DA1) + SynchronizedOutput (DECRPM)");
+        let sent = String::from_utf8_lossy(&buf);
+        assert!(sent.contains("\x1b[?2026$p"), "DECRPM query sent: {sent:?}");
+        assert!(sent.contains("\x1b[c"), "DA1 query sent: {sent:?}");
+
+        // Once sync output is known, only Sixel remains.
+        let mut prober = CapabilityProber::new(Duration::from_millis(200));
+        caps.sync_output = true;
+        let mut buf = Vec::new();
+        assert_eq!(prober.send_all_probes(&caps, &mut buf).unwrap(), 1);
     }
 
     #[test]
@@ -2594,8 +2717,9 @@ mod tests {
         let count = prober.send_all_probes(&caps, &mut buf).unwrap();
 
         // TrueColor → DA2, Hyperlinks → DA2 (duplicate, still counted),
-        // Sixel → DA1. SyncOutput/KittyKeyboard/FocusEvents → None.
-        assert!(count >= 1);
+        // Sixel → DA1, SynchronizedOutput → DECRPM.
+        // KittyKeyboard/FocusEvents/ScrollRegion → None.
+        assert_eq!(count, 4);
         assert!(!buf.is_empty());
     }
 

@@ -691,6 +691,7 @@ All runtime telemetry uses canonical targets and event names defined in `ftui_ru
 | `ftui.voi` | Value‑of‑information sampling |
 | `ftui.bocpd` | Change‑point detection |
 | `ftui.eprocess` | E‑process throttle decisions |
+| `ftui.guardrails` | Frame guardrails: soft memory trims and emergency frame drops |
 
 ---
 
@@ -824,19 +825,21 @@ Decision: argmin { E[Cost_full], E[Cost_dirty], E[Cost_redraw] }
 
 ### Bayesian Capability Detection (Terminal Caps Probe)
 
-Terminal capability detection uses **log Bayes factors as evidence weights** to combine noisy signals (env vars, DA1/DA2, DECRPM):
+Runtime capability upgrades are decided by a **log-Bayes-factor ledger** (`ftui_core::caps_probe::ledger_for`): every signal contributes a fixed log-odds weight and an upgrade is applied when the posterior clears 0.8 (`DECISION_THRESHOLD`):
 
 ```
-log BF = ln(P(data | feature) / P(data | ¬feature))
+log-odds = Σ log BF_i
+    environment/identity   +3.0 present / −0.4 absent
+    XTGETTCAP RGB reply     ±4.6      (truecolor)
+    DECRPM ?2026 reply      ±4.6      (synchronized output)
+    probe timeout           −0.7
+    multiplexer detected    −0.5
+    FTUI_* operator switch  ±9.2      (saturates: no heuristic outvotes it)
 
-log-odds posterior:
-    logit P(feature | evidence) = logit P(feature) + Σ log BF_i
-
-probability:
-    P = 1 / (1 + exp(-logit))
+P = 1 / (1 + exp(−log-odds))   →   upgrade when P ≥ 0.8
 ```
 
-**Result:** robust capability detection even when individual probes are flaky.
+The ledger is **upgrade-only**: a capability the environment or the allowlist already granted is never removed by a negative or absent reply (terminfo under-reports truecolor over `ssh`; the allowlist knows terminals that ignore DECRPM). The startup probe sends only the two bounded queries above (300 ms, fail-open, `FTUI_CAPS_PROBE=0` disables it); DA1/DA2 weights exist for the asynchronous `CapabilityProber` used by the showcase's capability screen. Every session writes one `capability_decision` evidence row per capability (truecolor, synchronized output, scroll region) carrying exactly the rows that decided.
 
 ### Dirty-Span Interval Union (Sparse Diff Scans)
 

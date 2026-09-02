@@ -6341,7 +6341,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             self.frame_arena = FrameArena::default();
             self.writer.gc(None);
             tracing::warn!(
-                target: "ftui.guardrails",
+                target: crate::telemetry_schema::TARGET_GUARDRAILS,
                 memory_bytes,
                 "emergency frame drop: memory guardrail tripped; arena rebuilt"
             );
@@ -6374,7 +6374,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 self.writer.gc(None);
                 self.last_soft_trim_frame = Some(self.frame_idx);
                 tracing::debug!(
-                    target: "ftui.guardrails",
+                    target: crate::telemetry_schema::TARGET_GUARDRAILS,
                     memory_bytes,
                     "soft memory alert: arena rebuilt to release retained capacity"
                 );
