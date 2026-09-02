@@ -107,6 +107,7 @@ pub use evidence_telemetry::{
     budget_snapshot, clear_budget_snapshot, clear_diff_snapshot, clear_resize_snapshot,
     diff_snapshot, resize_snapshot, set_budget_snapshot, set_diff_snapshot, set_resize_snapshot,
 };
+pub use ftui_a11y::tree::{A11yTree, ScreenReaderAnnouncement, ScreenReaderPolicy};
 pub use ftui_backend::{BackendEventSource, BackendFeatures};
 #[cfg(all(feature = "native-backend", unix))]
 pub use ftui_tty::TtyBackend;
@@ -124,14 +125,15 @@ pub use program::CrosstermEventSource;
 #[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
 pub use program::DefaultProgram;
 pub use program::{
-    App, AppBuilder, BatchController, Cmd, EffectQueueConfig, FrameTiming, FrameTimingConfig,
-    FrameTimingSink, HeadlessEventSource, InlineAutoRemeasureConfig, LoadGovernorConfig, Model,
-    MouseCapturePolicy, PaneTerminalAdapter, PaneTerminalAdapterConfig, PaneTerminalDispatch,
-    PaneTerminalIgnoredReason, PaneTerminalLifecyclePhase, PaneTerminalLogEntry,
-    PaneTerminalLogOutcome, PaneTerminalSplitterHandle, PersistenceConfig, Program, ProgramConfig,
-    ResizeBehavior, RolloutPolicy, RuntimeLane, TaskExecutorBackend, TaskSpec, WidgetRefreshConfig,
-    pane_terminal_resolve_splitter_target, pane_terminal_splitter_handles,
-    pane_terminal_target_from_hit, register_pane_terminal_splitter_hits,
+    AccessibilityFrame, App, AppBuilder, BatchController, Cmd, EffectQueueConfig, FrameTiming,
+    FrameTimingConfig, FrameTimingSink, HeadlessEventSource, InlineAutoRemeasureConfig,
+    LoadGovernorConfig, Model, MouseCapturePolicy, PaneTerminalAdapter, PaneTerminalAdapterConfig,
+    PaneTerminalDispatch, PaneTerminalIgnoredReason, PaneTerminalLifecyclePhase,
+    PaneTerminalLogEntry, PaneTerminalLogOutcome, PaneTerminalSplitterHandle, PersistenceConfig,
+    Program, ProgramConfig, ResizeBehavior, RolloutPolicy, RuntimeLane, TaskExecutorBackend,
+    TaskSpec, WidgetRefreshConfig, pane_terminal_resolve_splitter_target,
+    pane_terminal_splitter_handles, pane_terminal_target_from_hit,
+    register_pane_terminal_splitter_hits,
 };
 pub use program::{DEFAULT_BACKEND, NO_BACKEND_MESSAGE};
 pub use render_trace::{

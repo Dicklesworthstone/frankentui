@@ -2456,6 +2456,16 @@ def summarize_capability(entry):
         "evidence_rows": len(entry.get("evidence") or []),
     }
 
+def summarize_a11y_tree(entry):
+    return {
+        "event": "a11y_tree",
+        "nodes": entry.get("nodes"),
+        "added": entry.get("added"),
+        "removed": entry.get("removed"),
+        "changed": entry.get("changed"),
+        "announcements": entry.get("announcements"),
+    }
+
 def summarize_inline_strategy(entry):
     return {
         "event": "inline_strategy",
@@ -2494,6 +2504,12 @@ for line in lines:
         frame_idx = 0
         summary = summarize_inline_strategy(entry)
         decision_type = "inline_strategy"
+    elif event == "a11y_tree":
+        # The showcase enables ProgramConfig::accessibility, so the first
+        # frame that renders an Accessible widget must export a tree row.
+        frame_idx = entry.get("frame_idx")
+        summary = summarize_a11y_tree(entry)
+        decision_type = "a11y_tree"
     else:
         continue
 
@@ -2519,6 +2535,7 @@ required = {
     "budget_decision",
     "capability_decision",
     "inline_strategy",
+    "a11y_tree",
 }
 missing = required - seen_types
 # The capability ledger must decide all three policies the live probe covers.

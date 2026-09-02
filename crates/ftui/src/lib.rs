@@ -62,10 +62,11 @@ pub use ftui_style::{
 pub use ftui_runtime::DefaultProgram;
 #[cfg(feature = "runtime")]
 pub use ftui_runtime::{
-    App, Cmd, DEFAULT_BACKEND, EffectQueueConfig, FileEvent, FileWatcher,
-    InlineAutoRemeasureConfig, Locale, LocaleContext, LocaleOverride, Model, NO_BACKEND_MESSAGE,
-    PredictiveConfig, Program, ProgramConfig, ResizeBehavior, RuntimeDiffConfig, ScreenMode,
-    Subscription, TaskSpec, TerminalWriter, TickDecision, TickStrategy, TickStrategyKind, UiAnchor,
+    A11yTree, AccessibilityFrame, App, Cmd, DEFAULT_BACKEND, EffectQueueConfig, FileEvent,
+    FileWatcher, InlineAutoRemeasureConfig, Locale, LocaleContext, LocaleOverride, Model,
+    NO_BACKEND_MESSAGE, PredictiveConfig, Program, ProgramConfig, ResizeBehavior,
+    RuntimeDiffConfig, ScreenMode, ScreenReaderAnnouncement, ScreenReaderPolicy, Subscription,
+    TaskSpec, TerminalWriter, TickDecision, TickStrategy, TickStrategyKind, UiAnchor,
     current_locale, detect_system_locale, file_watcher, set_locale, tick_every,
 };
 

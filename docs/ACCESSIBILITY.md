@@ -34,6 +34,36 @@ ARIA-like accessibility tree for TUI widgets:
   accessibility metadata. Widgets that do not implement it are invisible
   to screen readers (treated as presentational/decorative).
 
+### Runtime wiring (per-frame tree, diff, announcements)
+
+The tree is not a side project any more: `Frame` carries an optional
+`A11yTreeBuilder`, and every widget below pushes its nodes into it while
+rendering (`frame.push_a11y_nodes(Accessible::accessibility_nodes(..))`;
+`Block` wraps its children with `frame.with_a11y_scope`). Enable collection
+with `ProgramConfig::with_accessibility(ScreenReaderPolicy)`; the default
+config collects nothing and the render path is unchanged.
+
+Per rendered frame the runtime then:
+
+1. builds the `A11yTree` (the first parentless node becomes the root
+   unless the view set one; the first node whose state reports `focused`
+   becomes the tree focus unless set explicitly) and records the reading
+   order (push order);
+2. diffs it against the previous frame's tree;
+3. derives bounded screen-reader announcements (`ScreenReaderPolicy`
+   caps count and text length): focus changes, live-region additions and
+   live-content changes;
+4. exports `a11y_tree` and `a11y_announcement` rows to the evidence sink,
+   logs on the `ftui.a11y` tracing target, and calls
+   `Model::on_accessibility(AccessibilityFrame)` when the tree changed
+   (one extra frame is scheduled so state changed there is rendered).
+
+`Program::accessibility_tree()`, `accessibility_order()`,
+`accessibility_announcements()` and `accessibility_dump()` expose the same
+data for tests and tooling. The demo showcase enables this and its
+`accessibility_panel` screen mirrors the tree size and the latest
+announcements.
+
 ### Widgets implementing `Accessible`
 
 | Widget | Role | Key properties exposed |

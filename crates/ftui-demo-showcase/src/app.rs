@@ -39,7 +39,9 @@ use ftui_render::cell::Cell as RenderCell;
 use ftui_render::frame::{Frame, HitGrid, HitId};
 use ftui_runtime::render_trace::checksum_buffer;
 use ftui_runtime::undo::HistoryManager;
-use ftui_runtime::{Cmd, FrameTiming, FrameTimingSink, Model, MouseCapturePolicy, Subscription};
+use ftui_runtime::{
+    AccessibilityFrame, Cmd, FrameTiming, FrameTimingSink, Model, MouseCapturePolicy, Subscription,
+};
 use ftui_style::Style;
 use ftui_text::{Line, Span, Text, WrapMode};
 use ftui_widgets::Widget;
@@ -4209,6 +4211,11 @@ impl AppModel {
 
 impl Model for AppModel {
     type Message = AppMsg;
+
+    fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Self::Message> {
+        self.screens.accessibility_panel.record_accessibility(&a11y);
+        Cmd::none()
+    }
 
     fn init(&mut self) -> Cmd<Self::Message> {
         self.load_pane_workspace_from_disk();

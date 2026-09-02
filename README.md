@@ -688,6 +688,7 @@ All runtime telemetry uses canonical targets and event names defined in `ftui_ru
 | `ftui.bocpd` | Change‑point detection |
 | `ftui.eprocess` | E‑process throttle decisions |
 | `ftui.guardrails` | Frame guardrails: soft memory trims and emergency frame drops |
+| `ftui.a11y` | Accessibility tree diffs and screen‑reader announcements (only with `ProgramConfig::with_accessibility`) |
 
 ---
 
@@ -2354,7 +2355,17 @@ The `ftui-a11y` crate provides an accessibility tree that mirrors the widget ren
 - **Live regions** for announcing dynamic content changes to screen readers
 - **Contrast checking** using WCAG 2.1 luminance ratios (`ftui-style/src/color.rs`)
 
-The `accessibility_panel` demo screen visualizes the a11y tree in real time as you navigate the UI.
+**Runtime wiring.** Widgets that implement `ftui_a11y::Accessible` (Block, Input, List, Table, Tabs, Paragraph, Progress, Scrollbar, Spinner) push their nodes into the `Frame` as they render. Enable collection per program:
+
+```rust
+use ftui::{ProgramConfig, ScreenReaderPolicy};
+
+let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+```
+
+With that set, every rendered frame builds an `A11yTree`, diffs it against the previous frame and derives bounded screen‑reader announcements (focus changes, live‑region additions and changes). Read them through `Program::accessibility_tree` / `accessibility_announcements` / `accessibility_dump`, or react from the model via `Model::on_accessibility(AccessibilityFrame)`, which runs after each frame whose tree changed. The evidence sink gets `a11y_tree` and `a11y_announcement` rows and the `ftui.a11y` tracing target carries the same data. Without the config no tree is built and rendering is unchanged.
+
+The `accessibility_panel` demo screen mirrors the live tree size and the latest announcements as you navigate the UI.
 
 ---
 

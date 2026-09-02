@@ -621,7 +621,7 @@ impl JobEvidence {
 // TODO(#32): Consolidate with the shared `escape_json` in
 // `ftui-demo-showcase/src/test_logging.rs` once the shared logger can be a
 // dependency of ftui-runtime (or is extracted to a lower-level crate).
-fn escape_json(input: &str) -> String {
+pub(crate) fn escape_json(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 8);
     for ch in input.chars() {
         match ch {

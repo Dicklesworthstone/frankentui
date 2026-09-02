@@ -56,6 +56,10 @@ pub const TARGET_EPROCESS: &str = "ftui.eprocess";
 /// frame drops.
 pub const TARGET_GUARDRAILS: &str = "ftui.guardrails";
 
+/// Accessibility: per-frame tree diffs and screen-reader announcements
+/// (emitted only when `ProgramConfig::accessibility` is set).
+pub const TARGET_A11Y: &str = "ftui.a11y";
+
 // ============================================================================
 // Canonical event names
 // ============================================================================
@@ -186,6 +190,7 @@ pub const ALL_TARGETS: &[&str] = &[
     TARGET_BOCPD,
     TARGET_EPROCESS,
     TARGET_GUARDRAILS,
+    TARGET_A11Y,
 ];
 
 /// Complete list of registered event names.

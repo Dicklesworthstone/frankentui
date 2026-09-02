@@ -70,6 +70,7 @@ use crate::voi_sampling::{VoiConfig, VoiSampler};
 use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor};
 #[cfg(feature = "asupersync-executor")]
 use asupersync::runtime::{BlockingTaskHandle, Runtime as AsupersyncRuntime, RuntimeBuilder};
+use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, ScreenReaderAnnouncement, ScreenReaderPolicy};
 use ftui_backend::{BackendEventSource, BackendFeatures};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -247,6 +248,33 @@ use std::thread::{self, JoinHandle};
 use tracing::{debug, debug_span, info, info_span, trace};
 use web_time::{Duration, Instant};
 
+/// The accessibility tree built for one rendered frame, handed to
+/// [`Model::on_accessibility`] whenever the tree changed (requires
+/// [`ProgramConfig::accessibility`]).
+#[derive(Debug, Clone, Copy)]
+pub struct AccessibilityFrame<'a> {
+    /// Index of the frame the tree was built from.
+    pub frame_idx: u64,
+    /// The tree: the nodes widgets pushed during `view`, with the first
+    /// parentless node as the root unless the view set one explicitly.
+    pub tree: &'a A11yTree,
+    /// Reading order: node IDs in widget push order.
+    pub order: &'a [u64],
+    /// Screen-reader announcements derived from the diff against the
+    /// previous frame, bounded by the configured [`ScreenReaderPolicy`].
+    pub announcements: &'a [ScreenReaderAnnouncement],
+    /// Announcements the policy cap dropped this frame.
+    pub dropped: usize,
+}
+
+impl AccessibilityFrame<'_> {
+    /// Indented, one-node-per-line dump of the tree in reading order.
+    #[must_use]
+    pub fn dump(&self) -> String {
+        self.tree.dump_text(self.order)
+    }
+}
+
 /// The Model trait defines application state and behavior.
 ///
 /// Implementations define how the application responds to events
@@ -306,6 +334,21 @@ pub trait Model: Sized {
         gesture: ftui_core::semantic_event::SemanticEvent,
     ) -> Cmd<Self::Message> {
         let _ = gesture;
+        Cmd::none()
+    }
+
+    /// React to a changed accessibility tree: inspect the tree the last
+    /// frame produced and the screen-reader announcements derived from its
+    /// diff (see [`AccessibilityFrame`]). Typical uses: mirror the
+    /// announcements into an on-screen live region or a screen-reader
+    /// bridge, or expose the tree in a debug panel.
+    ///
+    /// Only called when [`ProgramConfig::accessibility`] is set, and only
+    /// for frames whose tree differs from the previous one; it runs after
+    /// the frame was presented and the runtime schedules one more frame
+    /// so state changed here is rendered. Default: ignore.
+    fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Self::Message> {
+        let _ = a11y;
         Cmd::none()
     }
 
@@ -3112,6 +3155,14 @@ pub struct ProgramConfig {
     /// Gesture recognition (clicks, drags, long press, chords) delivered to
     /// [`Model::on_gesture`]; `None` (the default) runs no recognizer.
     pub gestures: Option<ftui_core::gesture::GestureConfig>,
+    /// Accessibility tree collection. When set, every rendered frame builds
+    /// an [`A11yTree`] from the nodes widgets push into the [`Frame`], diffs
+    /// it against the previous frame and derives screen-reader
+    /// announcements under this policy (exported as `a11y_tree` /
+    /// `a11y_announcement` evidence rows and on the `ftui.a11y` tracing
+    /// target). `None` (the default) collects nothing and adds no per-frame
+    /// work.
+    pub accessibility: Option<ScreenReaderPolicy>,
     /// Widget refresh selection configuration.
     pub widget_refresh: WidgetRefreshConfig,
     /// Effect queue scheduling configuration.
@@ -3172,6 +3223,7 @@ impl Default for ProgramConfig {
             persistence: PersistenceConfig::default(),
             inline_auto_remeasure: None,
             gestures: None,
+            accessibility: None,
             widget_refresh: WidgetRefreshConfig::default(),
             effect_queue: EffectQueueConfig::default(),
             guardrails: GuardrailsConfig::default(),
@@ -3218,6 +3270,16 @@ impl ProgramConfig {
     #[must_use]
     pub fn with_gestures(mut self, config: ftui_core::gesture::GestureConfig) -> Self {
         self.gestures = Some(config);
+        self
+    }
+
+    /// Build an accessibility tree every frame and derive screen-reader
+    /// announcements under `policy` (see [`Self::accessibility`]). Read the
+    /// results through [`Program::accessibility_tree`] and
+    /// [`Program::accessibility_announcements`].
+    #[must_use]
+    pub fn with_accessibility(mut self, policy: ScreenReaderPolicy) -> Self {
+        self.accessibility = Some(policy);
         self
     }
 
@@ -4959,6 +5021,22 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     /// Gesture recognizer fed by `handle_event` when
     /// `ProgramConfig::gestures` is set.
     gesture_recognizer: Option<ftui_core::gesture::GestureRecognizer>,
+    /// Screen-reader policy when `ProgramConfig::accessibility` is set.
+    a11y_policy: Option<ScreenReaderPolicy>,
+    /// Accessibility tree built from the last rendered frame.
+    a11y_tree: Option<A11yTree>,
+    /// Reading order (node IDs, push order) of the last accessibility tree.
+    a11y_order: Vec<u64>,
+    /// Screen-reader announcements derived from the last frame's tree diff.
+    a11y_announcements: Vec<ScreenReaderAnnouncement>,
+    /// Tree and reading order collected during `render_buffer`, consumed by
+    /// `process_a11y_frame` once the frame has been rendered.
+    a11y_pending: Option<(A11yTree, Vec<u64>)>,
+    /// Set by `process_a11y_frame` when the tree differed from the previous
+    /// frame; `render_frame` then delivers [`Model::on_accessibility`].
+    a11y_changed: bool,
+    /// Announcements dropped by the policy cap in the last frame.
+    a11y_dropped: usize,
     /// Per-frame bump arena for temporary render-path allocations.
     frame_arena: FrameArena,
     /// Unified frame guardrails (memory/queue limits).
@@ -5112,6 +5190,13 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             frame_idx: 0,
             tick_count: 0,
             widget_signals: Vec::new(),
+            a11y_policy: config.accessibility,
+            a11y_tree: None,
+            a11y_order: Vec::new(),
+            a11y_announcements: Vec::new(),
+            a11y_pending: None,
+            a11y_changed: false,
+            a11y_dropped: 0,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5252,6 +5337,13 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             frame_idx: 0,
             tick_count: 0,
             widget_signals: Vec::new(),
+            a11y_policy: config.accessibility,
+            a11y_tree: None,
+            a11y_order: Vec::new(),
+            a11y_announcements: Vec::new(),
+            a11y_pending: None,
+            a11y_changed: false,
+            a11y_dropped: 0,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -6611,6 +6703,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         )
         .entered();
         let (buffer, cursor, cursor_visible) = self.render_buffer(frame_height);
+        self.process_a11y_frame();
         self.update_widget_refresh_plan(frame_idx);
         let render_elapsed = render_start.elapsed();
         let mut present_elapsed = Duration::ZERO;
@@ -6725,6 +6818,13 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // update was never shown and must be retried on the next frame.
         if presented {
             self.dirty = false;
+        }
+
+        // Deliver the accessibility hook after the dirty reset so a model
+        // that changes state in response gets one more frame.
+        if self.a11y_changed {
+            self.a11y_changed = false;
+            self.deliver_a11y_frame()?;
         }
 
         Ok(())
@@ -6856,12 +6956,16 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // Note: Frame borrows the pool and links from writer.
         // We scope it so it drops before we call present_ui (which needs exclusive writer access).
         let buffer = self.writer.take_render_buffer(self.width, frame_height);
+        let mut a11y_builder = self.a11y_policy.map(|_| A11yTreeBuilder::new());
         let (pool, links) = self.writer.pool_and_links_mut();
         let mut frame = Frame::from_buffer(buffer, pool);
         frame.set_degradation(self.budget.degradation());
         frame.set_links(links);
         frame.set_widget_budget(self.widget_refresh_plan.as_budget());
         frame.set_arena(&self.frame_arena);
+        if let Some(builder) = a11y_builder.as_mut() {
+            frame.set_a11y(builder);
+        }
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
@@ -6872,10 +6976,155 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         .entered();
         self.model.view(&mut frame);
         self.widget_signals = frame.take_widget_signals();
+        frame.finish_a11y();
+        let a11y_order = frame.take_a11y_order();
         tracing::Span::current().record("duration_us", view_start.elapsed().as_micros() as u64);
         // widget_count would require tracking in Frame
 
-        (frame.buffer, frame.cursor_position, frame.cursor_visible)
+        let output = (frame.buffer, frame.cursor_position, frame.cursor_visible);
+        // `frame` is not used past this point, which releases its borrow of
+        // the builder so the tree can be built.
+        self.a11y_pending = a11y_builder.map(|builder| (builder.build(), a11y_order));
+        output
+    }
+
+    /// Diff the accessibility tree collected by the last `render_buffer`
+    /// against the previous frame's tree, derive screen-reader
+    /// announcements, and export them (evidence rows + `ftui.a11y` tracing).
+    ///
+    /// No-op unless `ProgramConfig::accessibility` is set.
+    fn process_a11y_frame(&mut self) {
+        let Some(policy) = self.a11y_policy else {
+            return;
+        };
+        let Some((tree, order)) = self.a11y_pending.take() else {
+            return;
+        };
+        let previous = self
+            .a11y_tree
+            .take()
+            .unwrap_or_else(|| A11yTreeBuilder::new().build());
+        let diff = tree.diff(&previous);
+        let announcements = diff.screen_reader_announcements(&tree, policy);
+
+        if !diff.is_empty() {
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_A11Y,
+                frame_idx = self.frame_idx,
+                nodes = tree.node_count(),
+                added = diff.added.len(),
+                removed = diff.removed.len(),
+                changed = diff.changed.len(),
+                focus_changed = diff.focus_changed.is_some(),
+                announcements = announcements.announcements.len(),
+                dropped = announcements.dropped_count,
+                "a11y tree changed"
+            );
+            if let Some(ref sink) = self.evidence_sink {
+                let focus = match diff.focus_changed {
+                    Some((_, Some(id))) => id.to_string(),
+                    Some((_, None)) | None => "null".to_string(),
+                };
+                let _ = sink.write_jsonl(&format!(
+                    r#"{{"event":"a11y_tree","frame_idx":{},"nodes":{},"added":{},"removed":{},"changed":{},"focus":{},"announcements":{},"dropped":{}}}"#,
+                    self.frame_idx,
+                    tree.node_count(),
+                    diff.added.len(),
+                    diff.removed.len(),
+                    diff.changed.len(),
+                    focus,
+                    announcements.announcements.len(),
+                    announcements.dropped_count,
+                ));
+                for announcement in &announcements.announcements {
+                    let node_id = announcement
+                        .node_id
+                        .map_or_else(|| "null".to_string(), |id| id.to_string());
+                    let _ = sink.write_jsonl(&format!(
+                        r#"{{"event":"a11y_announcement","frame_idx":{},"node_id":{},"urgency":"{}","reason":"{:?}","text":"{}"}}"#,
+                        self.frame_idx,
+                        node_id,
+                        announcement.urgency,
+                        announcement.reason,
+                        crate::queueing_scheduler::escape_json(&announcement.text),
+                    ));
+                }
+            }
+        }
+        for announcement in &announcements.announcements {
+            tracing::info!(
+                target: crate::telemetry_schema::TARGET_A11Y,
+                frame_idx = self.frame_idx,
+                node_id = announcement.node_id,
+                urgency = %announcement.urgency,
+                reason = ?announcement.reason,
+                text = %announcement.text,
+                "screen reader announcement"
+            );
+        }
+
+        self.a11y_changed = !diff.is_empty();
+        self.a11y_dropped = announcements.dropped_count;
+        self.a11y_announcements = announcements.announcements;
+        self.a11y_tree = Some(tree);
+        self.a11y_order = order;
+    }
+
+    /// Hand the last frame's tree to [`Model::on_accessibility`] (called by
+    /// `render_frame` when `process_a11y_frame` saw a change) and schedule
+    /// one more frame so state the hook changed gets rendered.
+    fn deliver_a11y_frame(&mut self) -> io::Result<()> {
+        let Some(tree) = self.a11y_tree.as_ref() else {
+            return Ok(());
+        };
+        let cmd = {
+            let _span = debug_span!("ftui.program.update", msg_type = "accessibility").entered();
+            self.model.on_accessibility(AccessibilityFrame {
+                frame_idx: self.frame_idx,
+                tree,
+                order: &self.a11y_order,
+                announcements: &self.a11y_announcements,
+                dropped: self.a11y_dropped,
+            })
+        };
+        self.mark_dirty();
+        self.execute_cmd(cmd)?;
+        if self.running {
+            self.reconcile_subscriptions();
+        }
+        Ok(())
+    }
+
+    /// The accessibility tree built from the last rendered frame, or `None`
+    /// when [`ProgramConfig::accessibility`] is unset or nothing has been
+    /// rendered yet.
+    #[must_use]
+    pub fn accessibility_tree(&self) -> Option<&A11yTree> {
+        self.a11y_tree.as_ref()
+    }
+
+    /// Reading order (node IDs in widget push order) of the last
+    /// accessibility tree; empty when accessibility is off.
+    #[must_use]
+    pub fn accessibility_order(&self) -> &[u64] {
+        &self.a11y_order
+    }
+
+    /// Screen-reader announcements derived from the last frame's tree diff
+    /// (bounded by the configured [`ScreenReaderPolicy`]); empty when the
+    /// tree did not change in an announceable way.
+    #[must_use]
+    pub fn accessibility_announcements(&self) -> &[ScreenReaderAnnouncement] {
+        &self.a11y_announcements
+    }
+
+    /// Indented, one-node-per-line dump of the last accessibility tree in
+    /// reading order (see [`A11yTree::dump_text`]); `None` when off.
+    #[must_use]
+    pub fn accessibility_dump(&self) -> Option<String> {
+        self.a11y_tree
+            .as_ref()
+            .map(|tree| tree.dump_text(&self.a11y_order))
     }
 
     fn emit_fairness_evidence(&mut self, decision: &FairnessDecision, dominance_count: u32) {
@@ -11690,6 +11939,13 @@ mod tests {
             frame_idx: 0,
             tick_count: 0,
             widget_signals: Vec::new(),
+            a11y_policy: config.accessibility,
+            a11y_tree: None,
+            a11y_order: Vec::new(),
+            a11y_announcements: Vec::new(),
+            a11y_pending: None,
+            a11y_changed: false,
+            a11y_dropped: 0,
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -12712,6 +12968,177 @@ mod tests {
         assert!(
             contents.contains(r#""should_sample":"#) && contents.contains(r#""voi_gain":"#),
             "voi_decision row must carry the sampler reasoning"
+        );
+    }
+
+    /// With `ProgramConfig::accessibility` set, every rendered frame builds
+    /// an accessibility tree from the nodes the view pushes, diffs it against
+    /// the previous frame and exports the resulting announcements as
+    /// evidence rows; without it nothing is collected.
+    #[test]
+    fn headless_accessibility_builds_tree_and_exports_announcements() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState, LiveRegion};
+        use ftui_a11y::tree::AnnouncementReason;
+        use ftui_core::geometry::Rect;
+
+        struct A11yModel {
+            frames: std::cell::Cell<u32>,
+            hook_calls: u32,
+            last_dump: String,
+        }
+
+        #[derive(Debug)]
+        enum A11yMsg {
+            Noop,
+        }
+
+        impl From<Event> for A11yMsg {
+            fn from(_: Event) -> Self {
+                A11yMsg::Noop
+            }
+        }
+
+        impl Model for A11yModel {
+            type Message = A11yMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Self::Message> {
+                self.hook_calls += 1;
+                self.last_dump = a11y.dump();
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                let n = self.frames.get();
+                self.frames.set(n + 1);
+                frame.buffer.set_raw(0, 0, Cell::from_char('A'));
+                frame.push_a11y(
+                    A11yNodeInfo::new(1, A11yRole::Button, Rect::new(0, 0, 10, 1))
+                        .with_name("OK")
+                        .with_state(A11yState {
+                            focused: true,
+                            ..A11yState::default()
+                        }),
+                );
+                if let Some(builder) = frame.a11y.as_deref_mut() {
+                    builder.set_focused(Some(1));
+                }
+                // The second frame adds a polite live region.
+                if n >= 1 {
+                    frame.push_a11y(
+                        A11yNodeInfo::new(2, A11yRole::Label, Rect::new(0, 1, 10, 1))
+                            .with_name("Saved")
+                            .with_live_region(LiveRegion::Polite),
+                    );
+                }
+            }
+        }
+
+        // Off by default: nothing is collected even though the view pushes.
+        let mut off = headless_program_with_config(
+            A11yModel {
+                frames: std::cell::Cell::new(0),
+                hook_calls: 0,
+                last_dump: String::new(),
+            },
+            ProgramConfig::default(),
+        );
+        off.dirty = true;
+        off.render_frame().expect("render without accessibility");
+        assert!(off.accessibility_tree().is_none());
+        assert!(off.accessibility_order().is_empty());
+        assert!(off.accessibility_announcements().is_empty());
+        assert!(off.accessibility_dump().is_none());
+        assert_eq!(off.model.hook_calls, 0);
+
+        let evidence_path = temp_evidence_path("a11y");
+        let config = ProgramConfig::default()
+            .with_accessibility(ScreenReaderPolicy::default())
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        let mut program = headless_program_with_config(
+            A11yModel {
+                frames: std::cell::Cell::new(0),
+                hook_calls: 0,
+                last_dump: String::new(),
+            },
+            config,
+        );
+
+        program.dirty = true;
+        program.render_frame().expect("render first a11y frame");
+        let tree = program
+            .accessibility_tree()
+            .expect("tree after first frame");
+        assert_eq!(tree.node_count(), 1);
+        assert_eq!(tree.focused_id(), Some(1));
+        assert_eq!(program.accessibility_order(), &[1]);
+        let first: Vec<AnnouncementReason> = program
+            .accessibility_announcements()
+            .iter()
+            .map(|a| a.reason)
+            .collect();
+        assert!(
+            first.contains(&AnnouncementReason::FocusChanged),
+            "first frame must announce the focused button; got {first:?}"
+        );
+
+        program.dirty = true;
+        program.render_frame().expect("render second a11y frame");
+        let tree = program
+            .accessibility_tree()
+            .expect("tree after second frame");
+        assert_eq!(tree.node_count(), 2);
+        assert_eq!(program.accessibility_order(), &[1, 2]);
+        let second: Vec<(AnnouncementReason, String)> = program
+            .accessibility_announcements()
+            .iter()
+            .map(|a| (a.reason, a.text.clone()))
+            .collect();
+        assert!(
+            second.iter().any(
+                |(reason, text)| *reason == AnnouncementReason::LiveRegionAdded
+                    && text.contains("Saved")
+            ),
+            "second frame must announce the new live region; got {second:?}"
+        );
+        let dump = program.accessibility_dump().expect("dump when enabled");
+        assert!(
+            dump.contains("OK") && dump.contains("Saved"),
+            "dump: {dump}"
+        );
+
+        // A frame with no tree change produces no announcements.
+        program.dirty = true;
+        program.render_frame().expect("render third a11y frame");
+        assert!(program.accessibility_announcements().is_empty());
+        // The hook fired for the two changing frames only, saw the dump, and
+        // requested one more frame each time.
+        assert_eq!(program.model.hook_calls, 2);
+        assert!(program.model.last_dump.contains("Saved"));
+        assert!(
+            !program.dirty,
+            "an unchanged frame must not request a redraw"
+        );
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let _ = std::fs::remove_file(&evidence_path);
+        assert!(
+            contents.contains(r#""event":"a11y_tree""#),
+            "tree changes must be exported; got: {contents}"
+        );
+        assert!(
+            contents.contains(r#""event":"a11y_announcement""#)
+                && contents.contains(r#""reason":"LiveRegionAdded""#)
+                && contents.contains(r#""urgency":"polite""#),
+            "announcements must be exported with reason and urgency; got: {contents}"
+        );
+        assert_eq!(
+            contents.matches(r#""event":"a11y_tree""#).count(),
+            2,
+            "only the two changing frames export a11y_tree rows; got: {contents}"
         );
     }
 

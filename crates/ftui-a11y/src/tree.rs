@@ -46,6 +46,13 @@ impl A11yTreeBuilder {
         }
     }
 
+    /// The explicitly focused node, if `set_focused` was called.
+    #[inline]
+    #[must_use]
+    pub fn focused(&self) -> Option<u64> {
+        self.focused
+    }
+
     /// Create a builder pre-sized for `capacity` nodes (avoids reallocs).
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {

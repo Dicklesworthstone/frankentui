@@ -56,6 +56,7 @@ asupersync-executor = ["dep:asupersync"]
 workspace = true
 
 [dependencies]
+ftui-a11y = { path = "../ftui-a11y", version = "0.6.0" }
 ftui-backend = { path = "../ftui-backend", version = "0.6.0" }
 # `caps-probe`: the native Program runs a runtime XTGETTCAP truecolor probe at
 # startup to recover 24-bit color when env detection is degraded (e.g. ssh

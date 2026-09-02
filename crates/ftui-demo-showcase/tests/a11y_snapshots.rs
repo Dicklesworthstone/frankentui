@@ -627,6 +627,65 @@ fn a11y_high_contrast_large_text_forms_input_120x40() {
 }
 
 // ============================================================================
+// Accessibility tree dump (G09): the dashboard's tree, built the way the
+// runtime builds it (widgets push nodes into the frame, `finish_a11y` links
+// scopes and derives focus), dumped in reading order. Asserted structurally
+// rather than against a golden file so the proof does not depend on the
+// dashboard's exact widget inventory.
+
+#[test]
+fn a11y_tree_dump_dashboard_80x24() {
+    use ftui_a11y::tree::A11yTreeBuilder;
+
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
+    let screen = ftui_demo_showcase::screens::dashboard::Dashboard::new();
+    let area = Rect::new(0, 0, 80, 24);
+
+    let mut pool = GraphemePool::new();
+    let mut builder = A11yTreeBuilder::new();
+    let order = {
+        let mut frame = Frame::new(80, 24, &mut pool);
+        frame.set_a11y(&mut builder);
+        screen.view(&mut frame, area);
+        frame.finish_a11y();
+        frame.take_a11y_order()
+    };
+    let tree = builder.build();
+    let dump = tree.dump_text(&order);
+    assert!(
+        tree.node_count() > 0 && tree.root().is_some(),
+        "the dashboard must expose accessibility nodes; dump:\n{dump}"
+    );
+    assert_eq!(
+        order.len(),
+        tree.node_count(),
+        "reading order covers every node"
+    );
+
+    // Nodes are dumped in reading order (a node whose name spans several
+    // lines takes several lines); the root comes first and unindented. The
+    // dashboard's blocks hold charts rather than accessible widgets, so its
+    // tree is a row of sibling groups: every pushed node must be present.
+    let lines: Vec<&str> = dump.lines().collect();
+    assert!(lines.len() >= order.len(), "dump:\n{dump}");
+    assert!(
+        !lines[0].starts_with(' '),
+        "root line must be unindented:\n{dump}"
+    );
+    assert!(
+        order.iter().all(|id| tree.node(*id).is_some()),
+        "every pushed node must be in the tree:\n{dump}"
+    );
+    assert!(tree.node_count() >= 2, "dump:\n{dump}");
+    // Block titles become group names.
+    assert!(
+        ["Info", "Activity", "Plasma", "Pane Studio"]
+            .iter()
+            .any(|title| dump.contains(title)),
+        "dashboard block titles must appear in the dump:\n{dump}"
+    );
+}
+
 // Per-Screen Individual A11y Tests (Dashboard screen variants)
 // ============================================================================
 

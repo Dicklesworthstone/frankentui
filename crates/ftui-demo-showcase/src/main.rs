@@ -10,6 +10,7 @@ use ftui_demo_showcase::screens;
 use ftui_render::budget::{FrameBudgetConfig, PhaseBudgets};
 use ftui_runtime::{
     EvidenceSinkConfig, FrameTimingConfig, MouseCapturePolicy, Program, ProgramConfig, ScreenMode,
+    ScreenReaderPolicy,
 };
 use std::process::ExitCode;
 use std::time::Duration;
@@ -167,6 +168,9 @@ fn main() -> ExitCode {
         screen_mode,
         mouse_capture_policy: mouse_policy,
         budget,
+        // The accessibility panel mirrors the runtime's per-frame tree and
+        // screen-reader announcements.
+        accessibility: Some(ScreenReaderPolicy::default()),
         ..ProgramConfig::default()
     };
     let config = apply_evidence_config(config);

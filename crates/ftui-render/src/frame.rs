@@ -880,6 +880,17 @@ impl<'a> Frame<'a> {
         {
             builder.set_root(root);
         }
+        // Widgets report focus through `A11yState::focused`; unless the app
+        // set the tree focus explicitly, the first such node (reading order)
+        // is the focused node, so focus moves show up in the tree diff.
+        if builder.focused().is_none()
+            && let Some(&focused) = self
+                .a11y_order
+                .iter()
+                .find(|id| builder.node(**id).is_some_and(|node| node.state.focused))
+        {
+            builder.set_focused(Some(focused));
+        }
     }
 
     /// Hit test at the given position (if hit grid is enabled).
@@ -1074,6 +1085,65 @@ mod tests {
 
     fn a11y_node(id: u64, role: ftui_a11y::node::A11yRole, name: &str) -> A11yNodeInfo {
         A11yNodeInfo::new(id, role, Rect::new(0, 0, 10, 1)).with_name(name)
+    }
+
+    #[test]
+    fn finish_a11y_derives_focus_from_node_state() {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let focused_state = A11yState {
+            focused: true,
+            ..A11yState::default()
+        };
+
+        // No explicit focus: the first focused node in reading order wins.
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(20, 4, &mut pool);
+        frame.set_a11y(&mut builder);
+        frame.push_a11y(A11yNodeInfo::new(
+            1,
+            A11yRole::Button,
+            Rect::new(0, 0, 5, 1),
+        ));
+        frame.push_a11y(
+            A11yNodeInfo::new(2, A11yRole::TextInput, Rect::new(0, 1, 5, 1))
+                .with_state(focused_state.clone()),
+        );
+        frame.push_a11y(
+            A11yNodeInfo::new(3, A11yRole::Button, Rect::new(0, 2, 5, 1))
+                .with_state(focused_state.clone()),
+        );
+        frame.finish_a11y();
+        drop(frame);
+        assert_eq!(builder.focused(), Some(2));
+
+        // Explicit focus is left alone.
+        let mut builder = A11yTreeBuilder::new();
+        builder.set_focused(Some(9));
+        let mut frame = Frame::new(20, 4, &mut pool);
+        frame.set_a11y(&mut builder);
+        frame.push_a11y(
+            A11yNodeInfo::new(2, A11yRole::TextInput, Rect::new(0, 1, 5, 1))
+                .with_state(focused_state),
+        );
+        frame.finish_a11y();
+        drop(frame);
+        assert_eq!(builder.focused(), Some(9));
+
+        // Nothing focused: stays unset.
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(20, 4, &mut pool);
+        frame.set_a11y(&mut builder);
+        frame.push_a11y(A11yNodeInfo::new(
+            1,
+            A11yRole::Button,
+            Rect::new(0, 0, 5, 1),
+        ));
+        frame.finish_a11y();
+        drop(frame);
+        assert_eq!(builder.focused(), None);
     }
 
     #[test]

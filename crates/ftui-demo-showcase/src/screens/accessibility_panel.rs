@@ -13,7 +13,7 @@ use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
-use ftui_runtime::Cmd;
+use ftui_runtime::{AccessibilityFrame, Cmd};
 use ftui_style::{Style, StyleFlags};
 use ftui_text::{Line, Span, Text};
 use ftui_widgets::Widget;
@@ -36,11 +36,32 @@ struct A11yEventEntry {
     large_text: bool,
 }
 
+/// Most recent screen-reader announcements kept for display.
+const MAX_ANNOUNCEMENTS: usize = 4;
+/// Leading tree-dump lines kept for display.
+const MAX_TREE_LINES: usize = 12;
+
+#[derive(Clone)]
+struct AnnouncementEntry {
+    frame: u64,
+    urgency: String,
+    text: String,
+}
+
 /// Accessibility control panel screen.
 pub struct AccessibilityPanel {
     a11y: theme::A11ySettings,
     base_theme: theme::ThemeId,
     events: VecDeque<A11yEventEntry>,
+    /// Size of the runtime's last accessibility tree (0 until the runtime
+    /// delivered one via `Model::on_accessibility`).
+    tree_nodes: usize,
+    /// Frame index the tree summary refers to.
+    tree_frame: u64,
+    /// Leading lines of the tree dump (reading order, indented by depth).
+    tree_lines: Vec<String>,
+    /// Latest screen-reader announcements delivered by the runtime.
+    announcements: VecDeque<AnnouncementEntry>,
     layout_toggles: Cell<Rect>,
     layout_wcag: Cell<Rect>,
 }
@@ -58,8 +79,36 @@ impl AccessibilityPanel {
             a11y: theme::A11ySettings::default(),
             base_theme: theme::ThemeId::CyberpunkAurora,
             events: VecDeque::with_capacity(MAX_EVENTS),
+            tree_nodes: 0,
+            tree_frame: 0,
+            tree_lines: Vec::new(),
+            announcements: VecDeque::with_capacity(MAX_ANNOUNCEMENTS),
             layout_toggles: Cell::new(Rect::default()),
             layout_wcag: Cell::new(Rect::default()),
+        }
+    }
+
+    /// Mirror the runtime's accessibility tree for the frame it was built
+    /// from (delivered through `Model::on_accessibility` whenever the tree
+    /// changed): keep the node count and the latest announcements.
+    pub fn record_accessibility(&mut self, a11y: &AccessibilityFrame<'_>) {
+        self.tree_nodes = a11y.tree.node_count();
+        self.tree_frame = a11y.frame_idx;
+        self.tree_lines = a11y
+            .dump()
+            .lines()
+            .take(MAX_TREE_LINES)
+            .map(str::to_owned)
+            .collect();
+        for announcement in a11y.announcements {
+            if self.announcements.len() == MAX_ANNOUNCEMENTS {
+                self.announcements.pop_front();
+            }
+            self.announcements.push_back(AnnouncementEntry {
+                frame: a11y.frame_idx,
+                urgency: announcement.urgency.to_string(),
+                text: announcement.text.clone(),
+            });
         }
     }
 
@@ -370,6 +419,28 @@ impl AccessibilityPanel {
         }
 
         let mut lines = Vec::new();
+        if self.tree_nodes > 0 {
+            lines.push(Line::from_spans([
+                Span::styled("Tree ", theme::muted()),
+                Span::styled(
+                    format!("{} nodes @ frame {}", self.tree_nodes, self.tree_frame),
+                    theme::body(),
+                ),
+            ]));
+            for line in &self.tree_lines {
+                lines.push(Line::from_spans([Span::styled(
+                    format!("  {line}"),
+                    theme::code(),
+                )]));
+            }
+        }
+        for entry in self.announcements.iter().rev() {
+            lines.push(Line::from_spans([
+                Span::styled(format!("[{:>4}] ", entry.frame), theme::muted()),
+                Span::styled(format!("SR {} ", entry.urgency), theme::code()),
+                Span::styled(entry.text.clone(), theme::body()),
+            ]));
+        }
         if self.events.is_empty() {
             lines.push(Line::from_spans([Span::styled(
                 "No a11y events yet. Toggle a mode to emit telemetry.",

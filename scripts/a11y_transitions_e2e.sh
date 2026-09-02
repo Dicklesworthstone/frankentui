@@ -29,6 +29,83 @@ fi
 if ! declare -f e2e_now_ms >/dev/null 2>&1; then
     e2e_now_ms() { date +%s%3N; }
 fi
+# shellcheck source=/dev/null
+if [[ -f "$LIB_DIR/pty.sh" ]]; then
+    source "$LIB_DIR/pty.sh"
+fi
+
+# G09: PTY-backed proof that a running program builds the accessibility tree
+# and announces focus changes. Runs the showcase on the Forms & Input screen
+# (screen 7) under a PTY with the evidence sink enabled, moves the panel
+# focus with Ctrl+Right, and requires `a11y_tree` rows plus
+# `a11y_announcement` rows whose reason is `FocusChanged`. The evidence JSONL
+# and the PTY transcript stay in the log directory for diagnosis.
+run_pty_focus_announcements() {
+    local bin="$1"
+    local evidence="$E2E_LOG_DIR/a11y_focus_evidence.jsonl"
+    local pty_out="$E2E_LOG_DIR/a11y_focus_pty.out"
+
+    if [[ ! -x "$bin" ]]; then
+        echo "showcase binary not found: $bin" >&2
+        return 1
+    fi
+    if ! declare -f pty_run >/dev/null 2>&1; then
+        echo "tests/e2e/lib/pty.sh is required for the PTY scenario" >&2
+        return 1
+    fi
+
+    # Ctrl+Right (CSI 1;5C) twice after the first frames have rendered: the
+    # screen's panel focus moves Form -> Search input -> Password input, and
+    # each TextInput reports `focused` in its accessibility node, so the tree
+    # focus changes and the diff announces it. (Tab moves inside the Form
+    # widget, which has no accessibility nodes yet.)
+    FTUI_DEMO_EVIDENCE_JSONL="$evidence" \
+    FTUI_DEMO_DETERMINISTIC=1 \
+    FTUI_DEMO_SCREEN=7 \
+    FTUI_DEMO_EXIT_AFTER_MS=2500 \
+    PTY_SEND=$'\e[1;5C\e[1;5C' \
+    PTY_SEND_DELAY_MS=700 \
+    PTY_TIMEOUT=8 \
+    PTY_COLS=100 \
+    PTY_ROWS=30 \
+        pty_run "$pty_out" "$bin" || {
+        echo "showcase exited abnormally under the PTY (see $pty_out)" >&2
+        return 1
+    }
+
+    if [[ ! -s "$evidence" ]]; then
+        echo "no evidence written to $evidence" >&2
+        return 1
+    fi
+
+    "$E2E_PYTHON" - "$evidence" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+trees = 0
+announcements = 0
+focus_changed = 0
+with open(path, encoding="utf-8") as handle:
+    for line in handle:
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        event = row.get("event")
+        if event == "a11y_tree":
+            trees += 1
+        elif event == "a11y_announcement":
+            announcements += 1
+            if row.get("reason") == "FocusChanged":
+                focus_changed += 1
+print(f"a11y_tree={trees} a11y_announcement={announcements} focus_changed={focus_changed}")
+if trees == 0:
+    raise SystemExit("no a11y_tree rows: the runtime did not build an accessibility tree")
+if focus_changed == 0:
+    raise SystemExit("no FocusChanged announcements after Ctrl+Right panel switches")
+PY
+}
 
 VERBOSE=false
 QUICK=false
@@ -150,6 +227,20 @@ run_step "a11y_preference_behavior_tests" bash -c "
     A11Y_TEST_SEED=\${A11Y_TEST_SEED:-0} \
         cargo test -p ftui-a11y -- preferences --nocapture
 "
+
+# G09: per-frame accessibility tree + focus announcements under a real PTY.
+if ! $QUICK; then
+    run_step "showcase_build" \
+        cargo build -p ftui-demo-showcase --quiet
+else
+    skip_step "showcase_build"
+fi
+SHOWCASE_TARGET_DIR=$(cargo metadata --format-version=1 -q 2>/dev/null \
+    | "${E2E_PYTHON:-python3}" -c "import sys,json;print(json.load(sys.stdin)['target_directory'])" 2>/dev/null \
+    || echo "$PROJECT_ROOT/target")
+SHOWCASE_BIN="$SHOWCASE_TARGET_DIR/debug/ftui-demo-showcase"
+run_step "pty_focus_announcements" \
+    run_pty_focus_announcements "$SHOWCASE_BIN"
 
 echo ""
 echo "=========================================="
