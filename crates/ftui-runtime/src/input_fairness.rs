@@ -33,7 +33,7 @@
 //! ## Intervention
 //!
 //! When starvation is detected:
-//! 1. Force resize coalescer to yield (return `ApplyNow` instead of `ShowPlaceholder`)
+//! 1. Force resize coalescer to yield (apply the pending resize instead of coalescing further)
 //! 2. Log the intervention with evidence
 //! 3. Reset dominance counter
 //!

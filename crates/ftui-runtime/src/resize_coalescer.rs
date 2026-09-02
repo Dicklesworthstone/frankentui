@@ -257,11 +257,10 @@ impl CoalescerConfig {
 /// Action returned by the coalescer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoalesceAction {
-    /// No action needed.
+    /// Nothing to apply this cycle: either no resize is pending or the
+    /// pending one is still being coalesced (check
+    /// [`ResizeCoalescer::has_pending`] to tell the two apart).
     None,
-
-    /// Show a placeholder/skeleton while coalescing.
-    ShowPlaceholder,
 
     /// Apply the resize with the given dimensions.
     ApplyResize {
@@ -302,6 +301,10 @@ pub enum TransitionReasonCode {
     HeuristicEnterBurstRate,
     /// Heuristic detector exited burst after cooldown with low event rate.
     HeuristicExitBurstCooldown,
+    /// Heuristic detector exited burst on the immediate path because the
+    /// event rate had fallen below the exit threshold (no frame ticks run
+    /// the cooldown in `ResizeBehavior::Immediate`).
+    HeuristicExitBurstRate,
     /// BOCPD posterior crossed burst threshold.
     BocpdPosteriorBurst,
     /// BOCPD posterior crossed steady threshold.
@@ -315,6 +318,7 @@ impl TransitionReasonCode {
         match self {
             Self::HeuristicEnterBurstRate => "heuristic_enter_burst_rate",
             Self::HeuristicExitBurstCooldown => "heuristic_exit_burst_cooldown",
+            Self::HeuristicExitBurstRate => "heuristic_exit_burst_rate",
             Self::BocpdPosteriorBurst => "bocpd_posterior_burst",
             Self::BocpdPosteriorSteady => "bocpd_posterior_steady",
         }
@@ -809,6 +813,24 @@ impl ResizeCoalescer {
             self.event_times.pop_front();
         }
         self.update_regime(now);
+        // The frame loop never ticks the coalescer in
+        // `ResizeBehavior::Immediate`, so the cooldown-based exit in `tick_at`
+        // cannot run on this path; without an event-path exit one burst
+        // pinned the regime to `Burst` for the rest of the session
+        // (bd-1za0z item 2). BOCPD mode exits through its posterior above.
+        if self.bocpd.is_none() && self.regime == Regime::Burst {
+            let rate = self.calculate_event_rate(now);
+            if rate < self.config.burst_exit_rate {
+                self.record_regime_transition(
+                    now,
+                    Regime::Steady,
+                    TransitionReasonCode::HeuristicExitBurstRate,
+                    (1.0 - (rate / self.config.burst_exit_rate)).clamp(0.0, 1.0),
+                    rate,
+                    None,
+                );
+            }
+        }
 
         self.pending_size = None;
         self.window_start = None;
@@ -940,7 +962,10 @@ impl ResizeCoalescer {
             hooks.fire_decision(entry);
         }
 
-        CoalesceAction::ShowPlaceholder
+        // Coalescing: the runtime keeps showing the last frame. (A separate
+        // `ShowPlaceholder` action existed here for years and was consumed by
+        // nothing; removed under bd-1za0z item 2 / G12.)
+        CoalesceAction::None
     }
 
     /// Tick the coalescer (call each frame).
@@ -1141,6 +1166,13 @@ impl ResizeCoalescer {
     }
 
     /// Export decision logs as JSONL (one entry per line).
+    ///
+    /// Stamping semantics (by design, bd-1za0z item 2): every row carries its
+    /// own decision-time `pending_size` / `applied_size`; the `cols` / `rows`
+    /// header fields are the size applied at export time, so a batch export
+    /// answers "what was the terminal when this file was written", not "what
+    /// was it at each decision". Consumers that need the per-decision size
+    /// read the row's own fields.
     #[must_use]
     pub fn decision_logs_jsonl(&self) -> String {
         let (cols, rows) = self.last_applied;
@@ -2049,11 +2081,11 @@ mod tests {
     }
 
     #[test]
-    fn different_size_shows_placeholder() {
+    fn different_size_coalesces_with_no_action_and_a_pending_size() {
         let mut c = ResizeCoalescer::new(test_config(), (80, 24));
         let action = c.handle_resize(100, 40);
-        assert_eq!(action, CoalesceAction::ShowPlaceholder);
-        assert!(c.has_pending());
+        assert_eq!(action, CoalesceAction::None);
+        assert!(c.has_pending(), "the size is held until the delay elapses");
     }
 
     #[test]
@@ -3822,7 +3854,7 @@ mod tests {
                 assert_eq!(width, 100);
                 assert_eq!(height, 40);
             }
-            CoalesceAction::None | CoalesceAction::ShowPlaceholder => {
+            CoalesceAction::None => {
                 // Tick past steady delay to get the apply
                 let later = base + Duration::from_millis(25);
                 let action = c.tick_at(later);
@@ -4452,12 +4484,93 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn coalesce_action_show_placeholder_eq() {
-        assert_eq!(
-            CoalesceAction::ShowPlaceholder,
-            CoalesceAction::ShowPlaceholder
+    fn coalesce_action_none_eq() {
+        assert_eq!(CoalesceAction::None, CoalesceAction::None);
+        assert_ne!(
+            CoalesceAction::None,
+            CoalesceAction::ApplyResize {
+                width: 1,
+                height: 1,
+                coalesce_time: Duration::ZERO,
+                forced_by_deadline: false,
+            }
         );
-        assert_ne!(CoalesceAction::ShowPlaceholder, CoalesceAction::None);
+    }
+
+    /// CONTRACT (bd-1za0z item 2, pinned): in BOCPD mode the posterior owns
+    /// regime changes; the heuristic cooldown exit must never fire, and the
+    /// transition log must alternate regimes (no `Burst -> Burst` pairs).
+    #[test]
+    fn bocpd_mode_never_emits_heuristic_cooldown_exit() {
+        let mut c = ResizeCoalescer::new(test_config().with_bocpd(), (80, 24));
+        let base = Instant::now();
+        let mut now = base;
+        // 200 events at 200 events/s (well above the 10/s burst threshold).
+        for i in 0..200u16 {
+            now += Duration::from_millis(5);
+            let _ = c.handle_resize_at(100 + (i % 7), 40 + (i % 3), now);
+        }
+        // Then 100 quiet ticks (one per 16 ms frame).
+        for _ in 0..100 {
+            now += Duration::from_millis(16);
+            let _ = c.tick_at(now);
+        }
+        let logs = c.transition_logs();
+        assert!(
+            logs.iter()
+                .all(|t| t.reason_code != TransitionReasonCode::HeuristicExitBurstCooldown),
+            "heuristic cooldown exit fired in BOCPD mode: {logs:?}"
+        );
+        for window in logs.windows(2) {
+            assert_ne!(
+                window[0].from_regime, window[0].to_regime,
+                "a transition must change regime: {logs:?}"
+            );
+            assert_eq!(
+                window[0].to_regime, window[1].from_regime,
+                "consecutive transitions must chain: {logs:?}"
+            );
+        }
+        assert_eq!(c.regime_transition_count(), logs.len() as u64);
+    }
+
+    /// CONTRACT (bd-1za0z item 2, regression): the immediate path
+    /// (`record_external_apply`, used by `ResizeBehavior::Immediate`) must not
+    /// leave `stats().regime` pinned to `Burst` once the burst is over.
+    #[test]
+    fn immediate_mode_regime_is_not_pinned_to_burst() {
+        let mut c = ResizeCoalescer::new(test_config(), (80, 24));
+        let mut now = Instant::now();
+        assert_eq!(c.stats().regime, Regime::Steady);
+        // A burst of externally applied resizes (5 ms apart = 200/s).
+        for i in 0..30u16 {
+            now += Duration::from_millis(5);
+            c.record_external_apply(100 + i, 40, now);
+        }
+        assert_eq!(c.stats().regime, Regime::Burst, "burst detected");
+        let transitions_after_burst = c.regime_transition_count();
+        // The immediate path is never ticked by the frame loop, so the next
+        // observation is the next resize: an isolated apply after a quiet gap
+        // must bring the regime back to Steady instead of leaving it pinned.
+        now += Duration::from_secs(2);
+        c.record_external_apply(90, 30, now);
+        assert_eq!(
+            c.stats().regime,
+            Regime::Steady,
+            "regime pinned to Burst after the burst ended"
+        );
+        assert_eq!(c.stats().last_applied, (90, 30));
+        assert_eq!(c.regime_transition_count(), transitions_after_burst + 1);
+        let last = c.transition_logs().last().expect("exit transition logged");
+        assert_eq!(
+            last.reason_code,
+            TransitionReasonCode::HeuristicExitBurstRate
+        );
+        assert_eq!(
+            (last.from_regime, last.to_regime),
+            (Regime::Burst, Regime::Steady)
+        );
+        assert_eq!(last.reason_code.as_str(), "heuristic_exit_burst_rate");
     }
 
     #[test]

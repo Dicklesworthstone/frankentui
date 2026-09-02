@@ -426,8 +426,8 @@ fn run_chaos_test(
 
         // Log decision
         let action_str = match &action {
+            CoalesceAction::None if coalescer.has_pending() => "coalesce",
             CoalesceAction::None => "none",
-            CoalesceAction::ShowPlaceholder => "coalesce",
             CoalesceAction::ApplyResize { .. } => "apply",
         };
         let regime_str = coalescer.regime().as_str();
