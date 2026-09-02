@@ -374,16 +374,13 @@ decisions, resize coalescing, and budget alerts. The log sink is shared and
 configured at the runtime level.
 
 ```rust
-use ftui_runtime::{EvidenceSinkConfig, EvidenceSinkDestination, Program, ProgramConfig};
+use ftui::runtime::EvidenceSinkConfig;
 
-let config = ProgramConfig::default().with_evidence_sink(
-    EvidenceSinkConfig::enabled_file("evidence.jsonl")
-        .with_destination(EvidenceSinkDestination::file("evidence.jsonl"))
-        .with_flush_on_write(true),
-);
-
-let mut program = Program::with_config(model, config)?;
-program.run()?;
+App::new(model)
+    .with_evidence_sink(
+        EvidenceSinkConfig::enabled_file("evidence.jsonl").with_flush_on_write(true),
+    )
+    .run()
 ```
 
 Example event line:
@@ -610,9 +607,9 @@ Runtime lane transitions are managed through a shadow‑run comparison system to
 ```rust
 // Operator workflow: Off → Shadow → Evaluate → Enable → Monitor → Rollback
 let config = ProgramConfig::default()
-    .with_lane(RuntimeLane::Structured)         // Current execution backend
-    .with_rollout_policy(RolloutPolicy::Shadow)  // Shadow‑compare before enabling
-    .with_env_overrides();                       // FTUI_RUNTIME_LANE, FTUI_ROLLOUT_POLICY
+    .with_lane(RuntimeLane::Structured) // Current execution backend
+    .with_rollout_policy(RolloutPolicy::Shadow) // Shadow‑compare before enabling
+    .with_env_overrides(); // FTUI_RUNTIME_LANE, FTUI_ROLLOUT_POLICY
 ```
 
 | Environment Variable | Values | Default | Purpose |
@@ -666,15 +663,14 @@ The effect executor tracks queue health with monotonic counters and enforces bac
 
 ```rust
 // Configure backpressure bounds
-let config = ProgramConfig::default()
-    .with_effect_queue(
-        EffectQueueConfig::default()
-            .with_enabled(true)
-            .with_max_queue_depth(64)  // Drop tasks beyond this depth
-    );
+let config = ProgramConfig::default().with_effect_queue(
+    EffectQueueConfig::default()
+        .with_enabled(true)
+        .with_max_queue_depth(64), // Drop tasks beyond this depth
+);
 
 // Monitor queue health at runtime
-let snap = ftui_runtime::effect_system::queue_telemetry();
+let snap = ftui::runtime::effect_system::queue_telemetry();
 // snap.enqueued, snap.processed, snap.dropped, snap.high_water, snap.in_flight
 ```
 
@@ -1016,6 +1012,8 @@ Risk if: ŷ_t^+ > budget
 
 Buckets fall back from (mode, diff, size) → (mode, diff) → (mode) → global default,
 preserving coverage even when data is sparse.
+
+**Where it runs:** on by default (`ProgramConfig::default()` carries `ConformalConfig::default()`: α = 0.05, `min_samples` = 20, window 256, `q_default` = 10 ms). Every frame the runtime predicts `ŷ_t^+` for its bucket before rendering and, when the bound exceeds the frame budget, steps the render degradation level down; the frame's measured time is fed back as the next residual. Warm-up rule: a verdict is only acted on once the level it rests on has at least `min_samples` residuals, so the `q_default` prior can never degrade a fresh program (it is still written to the `budget_decision` evidence row as `risk` with `n_b` < 20). `ProgramConfig::without_conformal()` turns the gate off; `with_conformal_config(..)` tunes it.
 
 ### CUSUM Control Charts
 
@@ -2035,8 +2033,8 @@ Declarative, long-running event sources:
 ```rust
 fn subscriptions(&self) -> Vec<Box<dyn Subscription<Msg>>> {
     vec![
-        tick_every(Duration::from_millis(16), || Msg::Tick),      // 60fps timer
-        file_watcher("config.toml", Msg::ConfigChanged),          // FileEvent::{Created, Modified, Removed}
+        tick_every(Duration::from_millis(16), || Msg::Tick), // 60fps timer
+        file_watcher("config.toml", Msg::ConfigChanged), // FileEvent::{Created, Modified, Removed}
     ]
 }
 ```
@@ -2239,24 +2237,30 @@ The table widget has a dedicated theme engine (3,500+ lines in `ftui-style/src/t
 Themes are composable; a base theme can be overlaid with per-instance overrides:
 
 ```rust
-let theme = TableTheme::modern()
-    .with_stripe_period(2)
-    .with_header_style(Style::new().bold().fg(Color::Cyan))
-    .with_selection_style(Style::new().bg(Color::DarkGray));
+// Six built-in presets (Aurora, Graphite, Neon, Slate, Solar, Orchard), each a
+// complete set of header / stripe / selection effect rules
+let theme = TableTheme::preset(TablePresetId::Aurora);
+let resolver = theme.effect_resolver();
 ```
 
 ### Stylesheet System
 
-Named styles are registered in a `Stylesheet` for consistent theming across widgets:
+Named styles are defined once in a `StyleSheet` (thread-safe, `ftui_style::stylesheet`) for consistent theming across widgets:
 
 ```rust
-let mut sheet = Stylesheet::new();
-sheet.register("heading", Style::new().bold().fg(Color::Blue));
-sheet.register("error", Style::new().fg(Color::Red).bold());
-sheet.register("muted", Style::new().fg(Color::DarkGray));
+use ftui::render::cell::PackedRgba;
+use ftui::style::stylesheet::StyleSheet;
 
-// Apply by name anywhere in the widget tree
-let style = sheet.get("heading").unwrap_or_default();
+let sheet = StyleSheet::new();
+let heading = Style::new().bold().fg(PackedRgba::rgb(80, 160, 255));
+let error = Style::new().bold().fg(PackedRgba::rgb(220, 60, 60));
+sheet.define("heading", heading);
+sheet.define("error", error);
+sheet.define("muted", Style::new().fg(PackedRgba::rgb(128, 128, 128)));
+
+// Resolve by name anywhere in the widget tree; compose layers left to right
+let resolved = sheet.get_or_default("heading");
+let loud_error = sheet.compose(&["heading", "error"]);
 ```
 
 ### Widget Composition
@@ -2278,17 +2282,15 @@ fn view(&self, frame: &mut Frame) {
 ### Stateful Widgets
 
 ```rust
-// State lives in your Model, widget borrows it
+// State lives in your Model; `view(&self)` borrows it mutably through a RefCell
 struct MyModel {
-    list_state: ListState,
+    items: Vec<String>,
+    list_state: RefCell<ListState>,
 }
 
 fn view(&self, frame: &mut Frame) {
-    frame.render_stateful_widget(
-        List::new(items),
-        area,
-        &mut self.list_state,
-    );
+    let list = List::new(self.items.iter().map(String::as_str));
+    frame.render_stateful_widget(&list, frame.area(), &mut self.list_state.borrow_mut());
 }
 ```
 
@@ -2299,42 +2301,41 @@ fn view(&self, frame: &mut Frame) {
 ### Hyperlink Support
 
 ```rust
-let link_id = frame.link_registry().register("https://example.com");
-cell.link_id = link_id;
+let link_id = frame.register_link("https://example.com");
+let cell = Cell::from_char('x').with_link(link_id);
 // Emits OSC 8 hyperlink sequences for supporting terminals
 ```
 
 ### Focus Management
 
 ```rust
-// Declarative focus graph
-focus_manager.register("input1", FocusNode::new());
-focus_manager.register("input2", FocusNode::new());
-focus_manager.set_next("input1", "input2");  // Tab order
+// Declarative focus graph: FocusManager owns a FocusGraph of nodes and nav edges
+let input1 = focus.graph_mut().insert(FocusNode::new(1, input1_area));
+let input2 = focus.graph_mut().insert(FocusNode::new(2, input2_area));
+focus.graph_mut().connect(input1, NavDirection::Next, input2); // Tab order
 
 // Navigation
-focus_manager.focus_next();  // Tab
-focus_manager.focus_prev();  // Shift+Tab
+focus.focus_next(); // Tab
+focus.focus_prev(); // Shift+Tab
 ```
 
 ### Modal System
 
 ```rust
-modal_stack.push(ConfirmDialog::new("Delete file?"));
+let id = modal_stack.push(Box::new(confirm_dialog)); // any `StackModal`
 // Modals capture input, render above main content
-// Escape or button press pops the stack
+// Escape or button press pops the stack; `pop()` returns the ModalResult
 ```
 
 ### Time-Travel Debugging
 
 ```rust
-// Record frames for debugging
-let mut recorder = TimeTravel::new();
-recorder.record(frame.clone());
+// Record frames for debugging (ftui-harness; delta-compressed ring of 256 frames)
+let mut history = TimeTravel::new(256);
+history.record(&frame.buffer, FrameMetadata::new(frame_number, render_time));
 
 // Replay
-recorder.seek(frame_index);
-let historical_frame = recorder.current();
+let historical_frame = history.get(frame_index);
 ```
 
 ---
@@ -2572,23 +2573,26 @@ Benefits over a bare `Mutex`:
 The `lens` module provides algebraic lenses for binding widgets to model subfields:
 
 ```rust
-use ftui_runtime::lens::{Lens, field_lens, compose};
+use ftui::runtime::lens::{Lens, field_lens};
 
-struct Config { volume: u8, brightness: u8 }
+struct Config {
+    volume: u8,
+    brightness: u8,
+}
 
-// A lens focuses on a part of a larger structure
-let volume_lens = field_lens!(Config, volume);
+// A lens focuses on one part of a larger structure
+let volume = field_lens(|c: &Config| c.volume, |c: &mut Config, v| c.volume = v);
 
-// Algebraic guarantees:
-//   GetPut: setting the value you just read is a no-op
-//   PutGet: reading after a set returns the value you set
-
-let config = Config { volume: 75, brightness: 50 };
-assert_eq!(volume_lens.view(&config), 75);
-
-let updated = volume_lens.set(&config, 100);
-assert_eq!(updated.volume, 100);
-assert_eq!(updated.brightness, 50);  // other fields untouched
+// Laws: GetPut (setting what you just read is a no-op),
+//       PutGet (you read back exactly what you set)
+let mut config = Config {
+    volume: 75,
+    brightness: 50,
+};
+assert_eq!(volume.view(&config), 75);
+volume.set(&mut config, 100);
+assert_eq!(config.volume, 100);
+assert_eq!(config.brightness, 50); // other fields untouched
 ```
 
 Lenses compose, so `compose(config_lens, volume_lens)` creates a lens from `AppState` directly to `volume` through an intermediate `Config` struct.
@@ -2603,18 +2607,13 @@ The `InputMacro` system records terminal events with timing for deterministic re
 // Record
 let mut recorder = MacroRecorder::new("login_flow");
 recorder.record_event(key_event_username);
-// ... 200ms passes ...
-recorder.record_event(key_event_tab);
+recorder.record_event_with_delay(key_event_tab, Duration::from_millis(200));
 recorder.record_event(key_event_password);
 recorder.record_event(key_event_enter);
 let macro_data = recorder.finish();
 
-// Replay through ProgramSimulator
-let mut player = MacroPlayer::new(macro_data);
-while let Some((event, delay)) = player.next() {
-    std::thread::sleep(delay);
-    simulator.send_event(event);
-}
+// Replay through ProgramSimulator (replay_with_timing honors the recorded delays)
+MacroPlayer::new(&macro_data).replay_all(&mut simulator);
 ```
 
 Uses: regression testing, demo recording, user workflow capture. The `macro_recorder` demo screen shows this in action.
@@ -2634,18 +2633,24 @@ Widget state survives across sessions via the `StateRegistry`:
                                 │
                 ┌───────────────┼───────────────┐
                 ▼               ▼               ▼
-          FileBackend     MemoryBackend   CustomBackend
-          (JSON on disk)  (tests only)   (user-provided)
+          FileStorage     MemoryStorage   impl StorageBackend
+          (JSON on disk)  (tests only)    (user-provided)
 ```
 
 Configuration:
 
 ```rust
+use ftui::runtime::{PersistenceConfig, StateRegistry};
+use std::sync::Arc;
+
+// In-memory registry needs no feature; `StateRegistry::with_file(path)` (JSON on
+// disk, atomic writes) needs ftui-runtime's `state-persistence` feature.
+let registry = Arc::new(StateRegistry::in_memory());
 let config = ProgramConfig::default().with_persistence(
-    PersistenceConfig::new()
-        .with_auto_save(true)
-        .with_auto_load(true)
-        .with_backend(FileBackend::new("~/.config/myapp/state.json"))
+    PersistenceConfig::with_registry(registry)
+        .auto_load(true)
+        .auto_save(true)
+        .checkpoint_every(Duration::from_secs(30)),
 );
 ```
 
@@ -2712,18 +2717,18 @@ This granularity means the runtime can identify *which* pipeline stage is respon
 The `ProgramSimulator` (1,700+ lines) runs a `Model` without a real terminal, enabling deterministic testing:
 
 ```rust
-let mut sim = ProgramSimulator::new(MyModel::new());
+use ftui::runtime::ProgramSimulator;
+
+let mut sim = ProgramSimulator::new(MyModel::default());
 sim.init();
 sim.send(Msg::LoadData);
 sim.tick();
 
 // Capture rendered output without a terminal
 let frame = sim.capture_frame(80, 24);
+assert_eq!(frame.width(), 80);
 assert_eq!(sim.model().items.len(), 42);
 assert!(sim.is_running());
-
-// Frame hashes for regression detection
-let hash = frame.checksum();
 ```
 
 The simulator is the backbone of the shadow-run comparison system and the rollout scorecard. It powers every harness test without needing a PTY or terminal emulator.
@@ -2737,12 +2742,12 @@ The render hot path uses a **bump allocator** reset at frame boundaries, elimina
 ```rust
 let mut arena = FrameArena::new(256 * 1024); // 256 KB initial
 
-// During frame rendering:
-let styled_spans = arena.alloc_slice(&computed_spans);
-let layout_rects = arena.alloc_slice(&solved_rects);
+// During frame rendering: bump-allocate transient strings
+let label: &str = arena.alloc_str(&format!("{done}/{total}"));
+let cell_text: &str = arena.alloc_fmt(format_args!("{value:>8}"));
 
 // At frame boundary:
-arena.reset();  // O(1), no individual deallocations
+arena.reset(); // O(1), no individual deallocations
 ```
 
 Why bump allocation? The render path produces many small, short-lived allocations (styled text spans, layout rectangles, change runs). A bump allocator satisfies these in O(1) with zero fragmentation, and `reset()` reclaims everything in a single pointer write.
@@ -2772,7 +2777,7 @@ TrueColor RGB(128, 0, 255)
 The module includes **WCAG 2.1 contrast ratio** utilities for accessibility checking:
 
 ```rust
-let ratio = contrast_ratio(foreground_rgb, background_rgb);
+let ratio = contrast_ratio(Rgb::new(220, 220, 220), Rgb::new(30, 30, 30));
 // WCAG AA: ratio ≥ 4.5 for normal text, ≥ 3.0 for large text
 // WCAG AAA: ratio ≥ 7.0 for normal text, ≥ 4.5 for large text
 ```
@@ -2786,9 +2791,8 @@ Perceived luminance uses the standard formula: `Y = 0.2126R + 0.7152G + 0.0722B`
 Every probabilistic decision in FrankenTUI is logged to a **shared evidence sink**, a structured JSONL stream that captures the reasoning behind runtime behavior:
 
 ```rust
-let config = ProgramConfig::default().with_evidence_sink(
-    EvidenceSinkConfig::enabled_file("evidence.jsonl")
-);
+let config = ProgramConfig::default()
+    .with_evidence_sink(EvidenceSinkConfig::enabled_file("evidence.jsonl"));
 ```
 
 Evidence events actually written by the runtime (grep for the `"event"` value):

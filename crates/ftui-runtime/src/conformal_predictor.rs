@@ -277,6 +277,18 @@ impl ConformalPredictor {
     }
 
     /// Predict a conservative upper bound for frame time.
+    /// Whether `prediction` rests on at least `min_samples` calibration
+    /// residuals (its own bucket or a pooled fallback level).
+    ///
+    /// Below that the quantile is either the `q_default` prior or a handful of
+    /// pooled residuals, so `risk` is a guess rather than a coverage
+    /// guarantee. The runtime only acts on a risky prediction when this is
+    /// true; the uncalibrated verdict is still reported in evidence rows.
+    #[must_use]
+    pub fn is_calibrated(&self, prediction: &ConformalPrediction) -> bool {
+        prediction.sample_count >= self.config.min_samples.max(1)
+    }
+
     pub fn predict(&self, key: BucketKey, y_hat_us: f64, budget_us: f64) -> ConformalPrediction {
         let span = tracing::info_span!(
             "conformal.predict",
@@ -733,6 +745,49 @@ mod tests {
     }
 
     // --- prediction fields ---
+
+    /// The runtime gates only on calibrated predictions: the `q_default`
+    /// prior and pooled fallbacks below `min_samples` still report `risk`
+    /// (for evidence) but must not count as a coverage guarantee.
+    #[test]
+    fn is_calibrated_requires_min_samples_on_the_level_used() {
+        let mut predictor = ConformalPredictor::new(ConformalConfig {
+            alpha: 0.1,
+            min_samples: 3,
+            window_size: 8,
+            q_default: 50_000.0,
+        });
+        let key = test_key(80, 24);
+        let cold = predictor.predict(key, 16_000.0, 16_000.0);
+        assert!(cold.risk, "q_default prior exceeds the budget");
+        assert_eq!(cold.sample_count, 0);
+        assert!(
+            !predictor.is_calibrated(&cold),
+            "no samples: not calibrated"
+        );
+
+        predictor.observe(key, 0.0, 10.0);
+        predictor.observe(key, 0.0, 12.0);
+        let two = predictor.predict(key, 0.0, 1.0);
+        assert_eq!(two.sample_count, 2);
+        assert!(
+            !predictor.is_calibrated(&two),
+            "below min_samples: not calibrated"
+        );
+
+        predictor.observe(key, 0.0, 11.0);
+        let three = predictor.predict(key, 0.0, 1.0);
+        assert_eq!(three.sample_count, 3);
+        assert_eq!(three.fallback_level, 0);
+        assert!(predictor.is_calibrated(&three));
+        assert!(three.risk);
+
+        // Pooled fallback counts too: a different size bucket in the same
+        // mode/diff class borrows the three residuals above.
+        let other = predictor.predict(test_key(200, 60), 0.0, 1.0);
+        assert!(other.fallback_level >= 1);
+        assert!(predictor.is_calibrated(&other));
+    }
 
     #[test]
     fn prediction_risk_flag() {

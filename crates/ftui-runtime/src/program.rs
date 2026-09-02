@@ -6485,7 +6485,19 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             );
             let budget_us = self.budget.total().as_secs_f64() * 1_000_000.0;
             let prediction = predictor.predict(key, baseline_us, budget_us);
-            if prediction.risk {
+            // Warm-up rule: the prior (`q_default`) or a few pooled residuals
+            // can flag risk on the very first frame; only a calibrated
+            // interval (>= min_samples residuals on the level used) is allowed
+            // to degrade rendering. The uncalibrated verdict still reaches the
+            // evidence row so the warm-up is visible.
+            if prediction.risk && !predictor.is_calibrated(&prediction) {
+                debug!(
+                    bucket = %prediction.bucket,
+                    sample_count = prediction.sample_count,
+                    fallback_level = prediction.fallback_level,
+                    "conformal risk ignored: predictor not calibrated yet (warm-up)"
+                );
+            } else if prediction.risk {
                 self.budget.degrade();
                 info!(
                     bucket = %prediction.bucket,
@@ -12700,6 +12712,84 @@ mod tests {
         assert!(
             contents.contains(r#""should_sample":"#) && contents.contains(r#""voi_gain":"#),
             "voi_decision row must carry the sampler reasoning"
+        );
+    }
+
+    /// Conformal gating is on by default, so its warm-up must be harmless:
+    /// the first frame's prediction rests on the `q_default` prior (10 ms)
+    /// added to a 16 ms baseline, which exceeds the budget and reports
+    /// `risk`, yet an uncalibrated verdict must never lower the degradation
+    /// level. The evidence rows must still show that risky, uncalibrated
+    /// verdict so the warm-up is observable.
+    #[test]
+    fn headless_default_config_never_degrades_during_conformal_warmup() {
+        use ftui_render::budget::DegradationLevel;
+
+        struct WarmModel;
+
+        #[derive(Debug)]
+        enum WarmMsg {
+            Noop,
+        }
+
+        impl From<Event> for WarmMsg {
+            fn from(_: Event) -> Self {
+                WarmMsg::Noop
+            }
+        }
+
+        impl Model for WarmModel {
+            type Message = WarmMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('W'));
+            }
+        }
+
+        let evidence_path = temp_evidence_path("conformal_warmup");
+        let config = ProgramConfig::default()
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        let min_samples = config
+            .conformal_config
+            .as_ref()
+            .expect("conformal on by default")
+            .min_samples;
+        let mut program = headless_program_with_config(WarmModel, config);
+        assert!(program.conformal_predictor.is_some());
+
+        for frame in 0..min_samples + 5 {
+            program.dirty = true;
+            program.render_frame().expect("render frame");
+            assert_eq!(
+                program.budget.degradation(),
+                DegradationLevel::Full,
+                "frame {frame}: an uncalibrated or fast frame must not degrade"
+            );
+        }
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence written");
+        let _ = std::fs::remove_file(&evidence_path);
+        let rows: Vec<&str> = contents
+            .lines()
+            .filter(|l| l.contains(r#""event":"budget_decision""#))
+            .collect();
+        assert!(
+            rows.len() >= min_samples,
+            "one budget_decision row per frame: {contents}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.contains(r#""risk":true"#) && r.contains(r#""n_b":0"#)),
+            "the cold-start prior must be visible as an uncalibrated risky verdict: {contents}"
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.contains(r#""degradation_after":"Full""#)),
+            "no row may record a degradation: {contents}"
         );
     }
 
