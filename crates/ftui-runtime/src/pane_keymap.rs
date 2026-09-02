@@ -20,7 +20,10 @@
 //! the same `PaneCommand` stream a conformant web binding (bd-21pbi.3) would for
 //! equivalent intent, so both hosts reach identical pane state.
 
+use std::sync::OnceLock;
+
 use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::keybinding::{Chord, KeyCombo, KeyMap, Priority};
 use ftui_layout::{
     PaneAccessibilityPreferences, PaneAffordanceMotion, PaneAnnouncement, PaneAnnouncer,
     PaneCardinalDirection, PaneCommand, PaneCommandAcceleration, PaneCommandEffect,
@@ -51,58 +54,220 @@ use ftui_style::{PaneAffordanceTheme, ResolvedTheme};
 ///
 /// `resize_units` is the snap-step count for `ResizeStep` (computed by the
 /// caller via [`PaneCommandAcceleration`]); it is ignored for other commands.
+///
+/// The bindings live in a [`KeyMap`] built from one table
+/// ([`pane_keymap`]); this resolves `key` against the shared default map.
+/// Modifiers match exactly (an unexpected Super or Ctrl leaves the key to
+/// the application), and a release never produces a command.
 #[must_use]
 pub fn key_to_pane_command(key: &KeyEvent, resize_units: u16) -> Option<PaneCommand> {
+    resolve_pane_key(default_pane_keymap(), key, resize_units)
+}
+
+/// One row of the pane binding table: the key, the command it produces
+/// (`ResizeStep` carries `units: 1` as a template; resolution substitutes
+/// the accelerated unit count), and the help-panel family it belongs to.
+#[derive(Debug, Clone, Copy)]
+struct PaneBindingSpec {
+    code: KeyCode,
+    modifiers: Modifiers,
+    command: PaneCommand,
+    hint_keys: &'static str,
+    hint_action: &'static str,
+}
+
+/// The pane binding table, in help-panel display order. It is the single
+/// source for the [`KeyMap`] the controller consults and for
+/// [`pane_keyboard_hints`], so behaviour and hints cannot drift. Letter
+/// bindings appear with and without Shift because terminals report `Alt+S`
+/// either way, and `Alt+=` / `Alt+_` stand in for `Alt++` / `Alt+-` on
+/// keyboards where the sign needs Shift.
+fn pane_binding_specs() -> Vec<PaneBindingSpec> {
+    use PaneCardinalDirection as Dir;
+
+    let spec = |code, modifiers, command, hint_keys, hint_action| PaneBindingSpec {
+        code,
+        modifiers,
+        command,
+        hint_keys,
+        hint_action,
+    };
+    let arrows = [
+        (KeyCode::Left, Dir::Left),
+        (KeyCode::Right, Dir::Right),
+        (KeyCode::Up, Dir::Up),
+        (KeyCode::Down, Dir::Down),
+    ];
+    let alt = Modifiers::ALT;
+    let alt_shift = Modifiers::ALT | Modifiers::SHIFT;
+    let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+
+    let mut specs = vec![
+        spec(
+            KeyCode::Tab,
+            Modifiers::NONE,
+            PaneCommand::FocusNext,
+            "Tab / Shift+Tab",
+            "focus next / previous pane",
+        ),
+        spec(
+            KeyCode::BackTab,
+            Modifiers::NONE,
+            PaneCommand::FocusPrevious,
+            "Tab / Shift+Tab",
+            "focus next / previous pane",
+        ),
+        spec(
+            KeyCode::BackTab,
+            Modifiers::SHIFT,
+            PaneCommand::FocusPrevious,
+            "Tab / Shift+Tab",
+            "focus next / previous pane",
+        ),
+    ];
+    for (code, dir) in arrows {
+        specs.push(spec(
+            code,
+            Modifiers::CTRL,
+            PaneCommand::FocusDirectional(dir),
+            "Ctrl+Arrows",
+            "focus pane by direction",
+        ));
+    }
+    for (code, dir) in arrows {
+        specs.push(spec(
+            code,
+            ctrl_shift,
+            PaneCommand::FocusEdge(dir),
+            "Ctrl+Shift+Arrows",
+            "focus pane at edge",
+        ));
+    }
+    for (code, dir) in arrows {
+        for modifiers in [alt, alt_shift] {
+            specs.push(spec(
+                code,
+                modifiers,
+                PaneCommand::MovePane(dir),
+                "Alt+Arrows",
+                "move pane",
+            ));
+        }
+    }
+    let grow = PaneCommand::ResizeStep {
+        direction: PaneResizeDirection::Increase,
+        units: 1,
+    };
+    let shrink = PaneCommand::ResizeStep {
+        direction: PaneResizeDirection::Decrease,
+        units: 1,
+    };
+    for (ch, command) in [('+', grow), ('=', grow), ('-', shrink), ('_', shrink)] {
+        specs.push(spec(
+            KeyCode::Char(ch),
+            alt,
+            command,
+            "Alt++ / Alt+-",
+            "grow / shrink pane",
+        ));
+    }
+    let letters = [
+        (
+            's',
+            PaneCommand::Split(SplitAxis::Horizontal),
+            "Alt+s / Alt+v",
+            "split horizontal / vertical",
+        ),
+        (
+            'v',
+            PaneCommand::Split(SplitAxis::Vertical),
+            "Alt+s / Alt+v",
+            "split horizontal / vertical",
+        ),
+        ('w', PaneCommand::Close, "Alt+w", "close pane"),
+    ];
+    for (ch, command, hint_keys, hint_action) in letters {
+        for modifiers in [alt, alt_shift] {
+            specs.push(spec(
+                KeyCode::Char(ch),
+                modifiers,
+                command,
+                hint_keys,
+                hint_action,
+            ));
+        }
+    }
+    specs.push(spec(
+        KeyCode::Char('['),
+        alt,
+        PaneCommand::SwapPane(PaneFocusOrdinal::Previous),
+        "Alt+[ / Alt+]",
+        "swap with previous / next pane",
+    ));
+    specs.push(spec(
+        KeyCode::Char(']'),
+        alt,
+        PaneCommand::SwapPane(PaneFocusOrdinal::Next),
+        "Alt+[ / Alt+]",
+        "swap with previous / next pane",
+    ));
+    for (ch, command) in [('z', PaneCommand::Maximize), ('r', PaneCommand::Restore)] {
+        for modifiers in [alt, alt_shift] {
+            specs.push(spec(
+                KeyCode::Char(ch),
+                modifiers,
+                command,
+                "Alt+z / Alt+r",
+                "maximize / restore pane",
+            ));
+        }
+    }
+    specs
+}
+
+/// The pane [`KeyMap`]: every row of the binding table bound at
+/// [`Priority::Global`] with no context and labelled with its help-panel
+/// action. Hosts that merge pane bindings into an application map start
+/// from this; [`PaneKeyboardController`] owns its own copy.
+#[must_use]
+pub fn pane_keymap() -> KeyMap<PaneCommand> {
+    let mut map = KeyMap::new();
+    for spec in pane_binding_specs() {
+        let id = map.bind_in(
+            Chord::single(KeyCombo::new(spec.code, spec.modifiers)),
+            spec.command,
+            Priority::Global,
+            None,
+        );
+        map.set_label(id, spec.hint_action);
+    }
+    map
+}
+
+fn default_pane_keymap() -> &'static KeyMap<PaneCommand> {
+    static MAP: OnceLock<KeyMap<PaneCommand>> = OnceLock::new();
+    MAP.get_or_init(pane_keymap)
+}
+
+/// Resolve `key` against `map`: the bound command with `ResizeStep` units
+/// replaced by `resize_units`; `None` for releases and unbound keys.
+fn resolve_pane_key(
+    map: &KeyMap<PaneCommand>,
+    key: &KeyEvent,
+    resize_units: u16,
+) -> Option<PaneCommand> {
     if key.kind == KeyEventKind::Release {
         return None;
     }
-    let m = key.modifiers;
-    let ctrl = m.contains(Modifiers::CTRL);
-    let alt = m.contains(Modifiers::ALT);
-    let shift = m.contains(Modifiers::SHIFT);
-    // Plain = no Ctrl/Alt/Super (Shift may still be present, e.g. for BackTab).
-    let unmodified = !ctrl && !alt && !m.contains(Modifiers::SUPER);
-
-    match key.code {
-        KeyCode::Tab if unmodified && !shift => Some(PaneCommand::FocusNext),
-        KeyCode::BackTab => Some(PaneCommand::FocusPrevious),
-
-        KeyCode::Left if ctrl && shift => Some(PaneCommand::FocusEdge(PaneCardinalDirection::Left)),
-        KeyCode::Right if ctrl && shift => {
-            Some(PaneCommand::FocusEdge(PaneCardinalDirection::Right))
-        }
-        KeyCode::Up if ctrl && shift => Some(PaneCommand::FocusEdge(PaneCardinalDirection::Up)),
-        KeyCode::Down if ctrl && shift => Some(PaneCommand::FocusEdge(PaneCardinalDirection::Down)),
-
-        KeyCode::Left if ctrl => Some(PaneCommand::FocusDirectional(PaneCardinalDirection::Left)),
-        KeyCode::Right if ctrl => Some(PaneCommand::FocusDirectional(PaneCardinalDirection::Right)),
-        KeyCode::Up if ctrl => Some(PaneCommand::FocusDirectional(PaneCardinalDirection::Up)),
-        KeyCode::Down if ctrl => Some(PaneCommand::FocusDirectional(PaneCardinalDirection::Down)),
-
-        KeyCode::Left if alt => Some(PaneCommand::MovePane(PaneCardinalDirection::Left)),
-        KeyCode::Right if alt => Some(PaneCommand::MovePane(PaneCardinalDirection::Right)),
-        KeyCode::Up if alt => Some(PaneCommand::MovePane(PaneCardinalDirection::Up)),
-        KeyCode::Down if alt => Some(PaneCommand::MovePane(PaneCardinalDirection::Down)),
-
-        KeyCode::Char('+' | '=') if alt => Some(PaneCommand::ResizeStep {
-            direction: PaneResizeDirection::Increase,
+    let chord = Chord::single(KeyCombo::new(key.code, key.modifiers));
+    let command = map.lookup(&chord, &[]).exact?.action;
+    Some(match command {
+        PaneCommand::ResizeStep { direction, .. } => PaneCommand::ResizeStep {
+            direction,
             units: resize_units,
-        }),
-        KeyCode::Char('-' | '_') if alt => Some(PaneCommand::ResizeStep {
-            direction: PaneResizeDirection::Decrease,
-            units: resize_units,
-        }),
-
-        KeyCode::Char('s' | 'S') if alt => Some(PaneCommand::Split(SplitAxis::Horizontal)),
-        KeyCode::Char('v' | 'V') if alt => Some(PaneCommand::Split(SplitAxis::Vertical)),
-        KeyCode::Char('w' | 'W') if alt => Some(PaneCommand::Close),
-        KeyCode::Char('[') if alt => Some(PaneCommand::SwapPane(PaneFocusOrdinal::Previous)),
-        KeyCode::Char(']') if alt => Some(PaneCommand::SwapPane(PaneFocusOrdinal::Next)),
-        KeyCode::Char('z' | 'Z') if alt => Some(PaneCommand::Maximize),
-        KeyCode::Char('r' | 'R') if alt => Some(PaneCommand::Restore),
-
-        _ => None,
-    }
+        },
+        other => other,
+    })
 }
 
 /// Outcome of feeding one key event to a [`PaneKeyboardController`].
@@ -137,10 +302,12 @@ pub struct PaneKeyboardController {
     repeat_count: u16,
     announcer: PaneAnnouncer,
     preferences: PaneAccessibilityPreferences,
+    keymap: KeyMap<PaneCommand>,
 }
 
 impl PaneKeyboardController {
-    /// Create a controller focused on `active` (or unfocused if `None`).
+    /// Create a controller focused on `active` (or unfocused if `None`),
+    /// bound to the default pane [`KeyMap`] ([`pane_keymap`]).
     #[must_use]
     pub fn new(active: Option<PaneId>) -> Self {
         Self {
@@ -153,7 +320,24 @@ impl PaneKeyboardController {
             repeat_count: 0,
             announcer: PaneAnnouncer::new(),
             preferences: PaneAccessibilityPreferences::none(),
+            keymap: pane_keymap(),
         }
+    }
+
+    /// The [`KeyMap`] `handle_key` resolves keys against.
+    #[must_use]
+    pub fn keymap(&self) -> &KeyMap<PaneCommand> {
+        &self.keymap
+    }
+
+    /// Replace the key map (e.g. an application map that merged
+    /// [`pane_keymap`] with its own bindings). Only bindings whose action
+    /// is a [`PaneCommand`] can be expressed here; `ResizeStep` units are
+    /// substituted at resolution time.
+    #[must_use]
+    pub fn with_keymap(mut self, keymap: KeyMap<PaneCommand>) -> Self {
+        self.keymap = keymap;
+        self
     }
 
     /// Take the pending accessibility announcement (for a status line / screen
@@ -252,7 +436,7 @@ impl PaneKeyboardController {
         }
         let resize_units = self.acceleration.units_for(self.repeat_count);
 
-        let Some(command) = key_to_pane_command(key, resize_units) else {
+        let Some(command) = resolve_pane_key(&self.keymap, key, resize_units) else {
             return PaneKeyOutcome::Unbound;
         };
 
@@ -333,47 +517,26 @@ pub struct PaneKeyHint {
     pub action: &'static str,
 }
 
-/// The canonical, discoverable pane keyboard shortcut hints, in display order.
+/// The canonical, discoverable pane keyboard shortcut hints, in display
+/// order: one entry per binding family, generated from the same table the
+/// [`KeyMap`] is built from, so a binding cannot exist without its hint or
+/// vice versa.
 #[must_use]
 pub fn pane_keyboard_hints() -> &'static [PaneKeyHint] {
-    &[
-        PaneKeyHint {
-            keys: "Tab / Shift+Tab",
-            action: "focus next / previous pane",
-        },
-        PaneKeyHint {
-            keys: "Ctrl+Arrows",
-            action: "focus pane by direction",
-        },
-        PaneKeyHint {
-            keys: "Ctrl+Shift+Arrows",
-            action: "focus pane at edge",
-        },
-        PaneKeyHint {
-            keys: "Alt+Arrows",
-            action: "move pane",
-        },
-        PaneKeyHint {
-            keys: "Alt++ / Alt+-",
-            action: "grow / shrink pane",
-        },
-        PaneKeyHint {
-            keys: "Alt+s / Alt+v",
-            action: "split horizontal / vertical",
-        },
-        PaneKeyHint {
-            keys: "Alt+w",
-            action: "close pane",
-        },
-        PaneKeyHint {
-            keys: "Alt+[ / Alt+]",
-            action: "swap with previous / next pane",
-        },
-        PaneKeyHint {
-            keys: "Alt+z / Alt+r",
-            action: "maximize / restore pane",
-        },
-    ]
+    static HINTS: OnceLock<Vec<PaneKeyHint>> = OnceLock::new();
+    HINTS.get_or_init(|| {
+        let mut hints: Vec<PaneKeyHint> = Vec::new();
+        for spec in pane_binding_specs() {
+            let hint = PaneKeyHint {
+                keys: spec.hint_keys,
+                action: spec.hint_action,
+            };
+            if !hints.contains(&hint) {
+                hints.push(hint);
+            }
+        }
+        hints
+    })
 }
 
 #[cfg(test)]
@@ -765,6 +928,92 @@ mod tests {
         assert!(hints.iter().any(|h| h.action.contains("focus next")));
         assert!(hints.iter().any(|h| h.action.contains("split")));
         assert!(hints.iter().any(|h| h.action.contains("maximize")));
+    }
+
+    /// The controller's map, the free function and the binding table agree:
+    /// every row resolves to its command through both paths (with the
+    /// accelerated resize units substituted), and the map has no conflicts.
+    #[test]
+    fn keymap_lookup_agrees_with_binding_table() {
+        let controller = PaneKeyboardController::new(None);
+        let conflicts = controller.keymap().conflicts();
+        assert!(conflicts.is_empty(), "{conflicts:?}");
+        let specs = pane_binding_specs();
+        assert_eq!(pane_keymap().bindings().len(), specs.len());
+        for spec in specs {
+            let event = key(spec.code, spec.modifiers);
+            let expected = match spec.command {
+                PaneCommand::ResizeStep { direction, .. } => PaneCommand::ResizeStep {
+                    direction,
+                    units: 3,
+                },
+                other => other,
+            };
+            assert_eq!(key_to_pane_command(&event, 3), Some(expected), "{spec:?}");
+            assert_eq!(
+                resolve_pane_key(controller.keymap(), &event, 3),
+                Some(expected),
+                "{spec:?}"
+            );
+        }
+        // Shifted letters resolve the same as unshifted ones.
+        assert_eq!(
+            key_to_pane_command(&key(KeyCode::Char('S'), Modifiers::ALT), 1),
+            Some(PaneCommand::Split(SplitAxis::Horizontal))
+        );
+    }
+
+    /// The hints are the binding table's families in table order, and every
+    /// binding label is one of the hint actions.
+    #[test]
+    fn hints_are_generated_from_the_binding_table() {
+        let hints = pane_keyboard_hints();
+        let mut families: Vec<(&str, &str)> = Vec::new();
+        for spec in pane_binding_specs() {
+            if !families.contains(&(spec.hint_keys, spec.hint_action)) {
+                families.push((spec.hint_keys, spec.hint_action));
+            }
+        }
+        let generated: Vec<(&str, &str)> = hints.iter().map(|h| (h.keys, h.action)).collect();
+        assert_eq!(generated, families);
+        assert_eq!(hints[0].keys, "Tab / Shift+Tab");
+        assert_eq!(hints[hints.len() - 1].action, "maximize / restore pane");
+        for binding in pane_keymap().bindings() {
+            let label = binding
+                .label
+                .as_deref()
+                .expect("every pane binding is labelled");
+            assert!(hints.iter().any(|h| h.action == label), "{label}");
+        }
+    }
+
+    /// A host-supplied map replaces the default bindings.
+    #[test]
+    fn controller_with_custom_keymap() {
+        let mut map = KeyMap::new();
+        map.bind(
+            Chord::single(KeyCombo::new(KeyCode::Char('n'), Modifiers::CTRL)),
+            PaneCommand::FocusNext,
+        );
+        let mut controller = PaneKeyboardController::new(Some(pid(1))).with_keymap(map);
+        let mut tree = nested();
+        let layout = tree.solve_layout(Rect::new(0, 0, 80, 24)).expect("solves");
+        assert_eq!(
+            controller.handle_key(&key(KeyCode::Tab, Modifiers::NONE), &mut tree, &layout),
+            PaneKeyOutcome::Unbound,
+            "Tab is not bound in the custom map"
+        );
+        assert!(matches!(
+            controller.handle_key(
+                &key(KeyCode::Char('n'), Modifiers::CTRL),
+                &mut tree,
+                &layout
+            ),
+            PaneKeyOutcome::Handled {
+                command: PaneCommand::FocusNext,
+                ..
+            }
+        ));
     }
 
     #[test]

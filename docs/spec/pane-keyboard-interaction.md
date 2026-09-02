@@ -24,6 +24,12 @@ This spec defines the **commands and their semantics**, not how any host produce
 them. Hosts MUST translate their native key events into `PaneCommand`s and feed
 them through `resolve`.
 
+The terminal host (`ftui_runtime::pane_keymap`) declares its bindings in a
+`KeyMap<PaneCommand>` built from one binding table (`pane_keymap()`), resolves
+keys against it in `PaneKeyboardController::handle_key`, and generates
+`pane_keyboard_hints()` from the same table (the hint text is unchanged), so
+the hint list and the bindings cannot diverge.
+
 ## 2. Command Vocabulary
 
 The canonical command set (`PaneCommand`) is closed and host-agnostic:
