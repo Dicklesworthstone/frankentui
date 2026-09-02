@@ -88,9 +88,13 @@ pub enum VirtualizedStorage<T> {
 pub enum ItemHeight {
     /// All items have fixed height.
     Fixed(u16),
-    /// Items have variable height, cached lazily (linear scan).
+    /// Legacy variable-height mode: an LRU cache of measured heights and a
+    /// linear scan per `visible_range`. Kept for callers that want bounded
+    /// memory over a sliding window; new code should use
+    /// [`Virtualized::with_variable_heights`] (Fenwick).
     Variable(HeightCache),
-    /// Items have variable height with O(log n) scroll-to-index via Fenwick tree.
+    /// Items have variable height with O(log n) scroll-to-index via Fenwick
+    /// tree; the default variable-height strategy.
     VariableFenwick(VariableHeightsFenwick),
 }
 
@@ -204,15 +208,43 @@ impl<T> Virtualized<T> {
         }
     }
 
-    /// Set variable heights with O(log n) Fenwick tree tracking.
-    ///
-    /// This is more efficient than `Variable(HeightCache)` for large lists
-    /// as scroll-to-index mapping is O(log n) instead of O(visible).
+    /// Use variable item heights (Fenwick-tracked, the default strategy):
+    /// unmeasured rows count `default_height`, `observe_height` records
+    /// real ones, and offsets, `scroll_to` and `visible_range` stay
+    /// O(log n). The tracker is sized to the current length and follows the
+    /// items: it grows with `push` (a tracker pre-filled with more heights
+    /// than items keeps them), shifts on `trim_front`, clears on `clear`
+    /// and matches `set_external_len` exactly.
+    #[must_use]
+    pub fn with_variable_heights(mut self, default_height: u16) -> Self {
+        let len = self.len();
+        self.item_height =
+            ItemHeight::VariableFenwick(VariableHeightsFenwick::new(default_height, len));
+        self
+    }
+
+    /// Variable heights with an explicit initial tracker capacity (the
+    /// tracker still follows the item count afterwards). Prefer
+    /// [`Self::with_variable_heights`] unless the list is filled in bulk
+    /// after construction.
     #[must_use]
     pub fn with_variable_heights_fenwick(mut self, default_height: u16, capacity: usize) -> Self {
         self.item_height =
             ItemHeight::VariableFenwick(VariableHeightsFenwick::new(default_height, capacity));
         self
+    }
+
+    /// Keep a Fenwick tracker's length in step with the item count: grow it
+    /// (`exact == false`, used by `push`, so a tracker pre-filled with more
+    /// heights than items keeps them) or set it exactly (`exact == true`,
+    /// used by `set_external_len`).
+    fn sync_height_tracker(&mut self, exact: bool) {
+        let len = self.len();
+        if let ItemHeight::VariableFenwick(tracker) = &mut self.item_height
+            && (tracker.len() < len || (exact && tracker.len() != len))
+        {
+            tracker.resize(len);
+        }
     }
 
     /// Set overscan amount.
@@ -505,6 +537,7 @@ impl<T> Virtualized<T> {
     pub fn push(&mut self, item: T) {
         if let VirtualizedStorage::Owned(items) = &mut self.storage {
             items.push_back(item);
+            self.sync_height_tracker(false);
             if self.follow_mode {
                 self.scroll_to_bottom();
             }
@@ -535,6 +568,9 @@ impl<T> Virtualized<T> {
     pub fn clear(&mut self) {
         if let VirtualizedStorage::Owned(items) = &mut self.storage {
             items.clear();
+            if let ItemHeight::VariableFenwick(tracker) = &mut self.item_height {
+                tracker.clear();
+            }
         }
         self.scroll_offset = 0;
     }
@@ -548,6 +584,9 @@ impl<T> Virtualized<T> {
         {
             let to_remove = items.len() - max;
             items.drain(..to_remove);
+            if let ItemHeight::VariableFenwick(tracker) = &mut self.item_height {
+                tracker.drop_front(to_remove);
+            }
             // Adjust scroll_offset if it was pointing beyond the new start
             self.scroll_offset = self.scroll_offset.saturating_sub(to_remove);
             return to_remove;
@@ -568,6 +607,7 @@ impl<T> Virtualized<T> {
     pub fn set_external_len(&mut self, len: usize) {
         if let VirtualizedStorage::External { len: l, .. } = &mut self.storage {
             *l = len;
+            self.sync_height_tracker(true);
             if self.follow_mode {
                 self.scroll_to_bottom();
             }
@@ -967,6 +1007,29 @@ impl VariableHeightsFenwick {
         self.len = new_len;
     }
 
+    /// Drop the first `n` entries (the list trimmed its front): remaining
+    /// heights and their measured flags shift down by `n`; an attached
+    /// predictor keeps what it learned.
+    pub fn drop_front(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        if n >= self.len {
+            self.clear();
+            return;
+        }
+        let kept: Vec<(u16, bool)> = (n..self.len)
+            .map(|idx| (self.get(idx), self.is_measured(idx)))
+            .collect();
+        self.clear();
+        self.resize(kept.len());
+        for (idx, (height, measured)) in kept.into_iter().enumerate() {
+            if measured {
+                self.set(idx, height);
+            }
+        }
+    }
+
     /// Clear all height data (an attached predictor keeps what it learned).
     pub fn clear(&mut self) {
         self.tree = FenwickTree::new(0);
@@ -1017,6 +1080,18 @@ pub trait RenderItem {
     }
 }
 
+/// How a [`VirtualizedList`] sizes its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListHeightMode {
+    /// Every row is this many terminal rows tall (default: 1).
+    Fixed(u16),
+    /// Each row is as tall as [`RenderItem::height`] reports. Rows are
+    /// measured into the state's Fenwick tracker as they render, so scroll
+    /// offsets and the scrollbar stay O(log n) in the item count. Scrolling
+    /// is item-aligned: the first visible row starts at the viewport top.
+    Variable,
+}
+
 /// State for the VirtualizedList widget.
 #[derive(Debug, Clone)]
 pub struct VirtualizedListState {
@@ -1036,6 +1111,9 @@ pub struct VirtualizedListState {
     scrollbar_drag_anchor: Option<usize>,
     /// Optional persistence ID for state saving/restoration.
     persistence_id: Option<String>,
+    /// Row heights measured while rendering in [`ListHeightMode::Variable`]
+    /// (`None` until the first variable-height render).
+    heights: Option<VariableHeightsFenwick>,
 }
 
 impl Default for VirtualizedListState {
@@ -1057,7 +1135,26 @@ impl VirtualizedListState {
             scroll_velocity: 0.0,
             scrollbar_drag_anchor: None,
             persistence_id: None,
+            heights: None,
         }
+    }
+
+    /// Record the measured height of item `idx` for a variable-height
+    /// list. Rendering measures the visible rows itself; call this when an
+    /// item's height changed while off-screen so offsets stay exact. Ignored
+    /// until the first variable-height render creates the tracker.
+    pub fn measure(&mut self, idx: usize, height: u16) {
+        if let Some(heights) = self.heights.as_mut()
+            && idx < heights.len()
+        {
+            heights.set(idx, height.max(1));
+        }
+    }
+
+    /// The variable-height tracker (after the first variable-height render).
+    #[must_use]
+    pub fn heights(&self) -> Option<&VariableHeightsFenwick> {
+        self.heights.as_ref()
     }
 
     /// Create with overscan.
@@ -1369,8 +1466,8 @@ pub struct VirtualizedList<'a, T> {
     highlight_style: Style,
     /// Whether to show scrollbar.
     show_scrollbar: bool,
-    /// Fixed item height.
-    fixed_height: u16,
+    /// Row sizing: fixed rows or per-item heights.
+    height_mode: ListHeightMode,
     /// Optional hit ID for scrollbar interaction.
     hit_id: Option<ftui_render::frame::HitId>,
 }
@@ -1384,7 +1481,7 @@ impl<'a, T> VirtualizedList<'a, T> {
             style: Style::default(),
             highlight_style: Style::default(),
             show_scrollbar: true,
-            fixed_height: 1,
+            height_mode: ListHeightMode::Fixed(1),
             hit_id: None,
         }
     }
@@ -1413,8 +1510,22 @@ impl<'a, T> VirtualizedList<'a, T> {
     /// Set fixed item height.
     #[must_use]
     pub fn fixed_height(mut self, height: u16) -> Self {
-        self.fixed_height = height;
+        self.height_mode = ListHeightMode::Fixed(height);
         self
+    }
+
+    /// Size each row by [`RenderItem::height`] (see
+    /// [`ListHeightMode::Variable`]).
+    #[must_use]
+    pub fn variable_heights(mut self) -> Self {
+        self.height_mode = ListHeightMode::Variable;
+        self
+    }
+
+    /// The row sizing mode.
+    #[must_use]
+    pub fn height_mode(&self) -> ListHeightMode {
+        self.height_mode
     }
 
     /// Set hit ID for scrollbar interaction.
@@ -1454,8 +1565,13 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
             return;
         }
 
+        let ListHeightMode::Fixed(fixed_h) = self.height_mode else {
+            self.render_variable(area, frame, state);
+            return;
+        };
+
         // Reserve space for scrollbar if needed
-        let fixed_h = self.fixed_height.max(1);
+        let fixed_h = fixed_h.max(1);
         // Use div_ceil to include partially visible items and avoid 0 count for large items
         let items_per_viewport = area.height.div_ceil(fixed_h) as usize;
         let fully_visible_items = (area.height / fixed_h) as usize;
@@ -1520,7 +1636,7 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
                 -(i32::try_from(state.scroll_offset - idx).unwrap_or(i32::MAX))
             };
 
-            let height_i32 = i32::from(self.fixed_height);
+            let height_i32 = i32::from(fixed_h);
             let y_offset = relative_idx.saturating_mul(height_i32);
 
             // Skip items above viewport
@@ -1556,8 +1672,7 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
                 break;
             }
 
-            let visible_height = self
-                .fixed_height
+            let visible_height = fixed_h
                 .saturating_sub(skip_rows)
                 .min(area.bottom().saturating_sub(y));
 
@@ -1590,6 +1705,133 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
             // Sync drag anchor from persistent state to transient scrollbar state
             scrollbar_state.drag_anchor = state.scrollbar_drag_anchor;
 
+            let mut scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+            if let Some(id) = self.hit_id {
+                scrollbar = scrollbar.hit_id(id);
+            }
+            scrollbar.render(scrollbar_area, frame, &mut scrollbar_state);
+        }
+    }
+}
+
+/// First item that starts at or after `offset` (the item containing
+/// `offset` when it starts exactly there, the next one otherwise), clamped
+/// to the last item.
+fn first_item_from_offset(heights: &VariableHeightsFenwick, offset: u32) -> usize {
+    let mut idx = heights.find_item_at_offset(offset);
+    if heights.offset_of_item(idx) < offset {
+        idx += 1;
+    }
+    idx.min(heights.len().saturating_sub(1))
+}
+
+impl<T: RenderItem> VirtualizedList<'_, T> {
+    /// Render in [`ListHeightMode::Variable`]: every row is as tall as
+    /// [`RenderItem::height`] reports. The rows that can matter this frame
+    /// (the selection and one screenful from the scroll offset) are measured
+    /// into the state's Fenwick tracker first, so the selection adjustment,
+    /// the bottom clamp and the scrollbar all work in rows with O(log n)
+    /// offset queries instead of multiplying by a fixed height.
+    fn render_variable(&self, area: Rect, frame: &mut Frame, state: &mut VirtualizedListState) {
+        let total_items = self.items.len();
+        let viewport = area.height;
+        let heights = state
+            .heights
+            .get_or_insert_with(|| VariableHeightsFenwick::new(1, total_items));
+        if heights.len() != total_items {
+            heights.resize(total_items);
+        }
+
+        let measure = |heights: &mut VariableHeightsFenwick, idx: usize| {
+            let height = self.items[idx].height().max(1);
+            if !heights.is_measured(idx) || heights.get(idx) != height {
+                heights.set(idx, height);
+            }
+        };
+        // Measure rows from `start` until they fill the viewport; returns how
+        // many rows that took (at least one).
+        let measure_screenful = |heights: &mut VariableHeightsFenwick, start: usize| -> usize {
+            let mut rows = 0u16;
+            let mut idx = start;
+            while idx < total_items && rows < viewport {
+                measure(heights, idx);
+                rows = rows.saturating_add(heights.get(idx));
+                idx += 1;
+            }
+            (idx - start).max(1)
+        };
+
+        // Keep the selection in range and in view.
+        if let Some(selected) = state.selected
+            && selected >= total_items
+        {
+            state.selected = Some(total_items - 1);
+        }
+        if let Some(selected) = state.selected {
+            measure(heights, selected);
+            if selected < state.scroll_offset {
+                state.scroll_offset = selected;
+            } else {
+                measure_screenful(heights, state.scroll_offset);
+                let top = heights.offset_of_item(state.scroll_offset);
+                let bottom = heights.offset_of_item(selected) + u32::from(heights.get(selected));
+                if bottom.saturating_sub(top) > u32::from(viewport) {
+                    let anchor = bottom.saturating_sub(u32::from(viewport));
+                    state.scroll_offset = first_item_from_offset(heights, anchor).min(selected);
+                }
+            }
+        }
+
+        // Clamp so the last screenful is as full as item alignment allows.
+        let total_height = heights.total_height();
+        let max_start = if total_height > u32::from(viewport) {
+            first_item_from_offset(heights, total_height - u32::from(viewport))
+        } else {
+            0
+        };
+        state.scroll_offset = state.scroll_offset.min(max_start);
+
+        let visible = measure_screenful(heights, state.scroll_offset).min(total_items);
+        state.visible_count = visible;
+
+        let total_height = heights.total_height();
+        let needs_scrollbar = self.show_scrollbar && total_height > u32::from(viewport);
+        let content_width = if needs_scrollbar {
+            area.width.saturating_sub(1)
+        } else {
+            area.width
+        };
+
+        let mut y = 0u16;
+        for idx in state.scroll_offset..state.scroll_offset.saturating_add(visible).min(total_items)
+        {
+            if y >= viewport {
+                break;
+            }
+            let row_h = heights.get(idx).min(viewport - y);
+            if row_h == 0 {
+                continue;
+            }
+            let row_area = Rect::new(area.x, area.y.saturating_add(y), content_width, row_h);
+            let is_selected = state.selected == Some(idx);
+            let row_style = if is_selected {
+                self.highlight_style.merge(&self.style)
+            } else {
+                self.style
+            };
+            clear_text_area(frame, row_area, row_style);
+            self.items[idx].render(row_area, frame, is_selected, 0);
+            y = y.saturating_add(row_h);
+        }
+
+        if needs_scrollbar {
+            let scrollbar_area = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
+            let position =
+                usize::try_from(heights.offset_of_item(state.scroll_offset)).unwrap_or(usize::MAX);
+            let content_length = usize::try_from(total_height).unwrap_or(usize::MAX);
+            let mut scrollbar_state =
+                ScrollbarState::new(content_length, position, usize::from(viewport));
+            scrollbar_state.drag_anchor = state.scrollbar_drag_anchor;
             let mut scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
             if let Some(id) = self.hit_id {
                 scrollbar = scrollbar.hit_id(id);
@@ -3714,8 +3956,164 @@ mod tests {
             .highlight_style(Style::default())
             .show_scrollbar(false)
             .fixed_height(3);
-        assert_eq!(list.fixed_height, 3);
+        assert_eq!(list.height_mode(), ListHeightMode::Fixed(3));
         assert!(!list.show_scrollbar);
+        assert_eq!(
+            VirtualizedList::new(&items)
+                .variable_heights()
+                .height_mode(),
+            ListHeightMode::Variable
+        );
+    }
+
+    /// `with_variable_heights` selects the Fenwick tracker sized to the
+    /// list: offsets are exact before any measurement, offset/index queries
+    /// round-trip, scrolling to the end computes the last screenful, and a
+    /// measurement shifts every later offset.
+    #[test]
+    fn with_variable_heights_defaults_to_fenwick_and_scrolls_in_log_time() {
+        let mut v: Virtualized<usize> = Virtualized::external(10_000, 0).with_variable_heights(3);
+        let ItemHeight::VariableFenwick(tracker) = v.item_height() else {
+            panic!("expected the Fenwick tracker, got {:?}", v.item_height());
+        };
+        assert_eq!(tracker.len(), 10_000);
+        assert_eq!(tracker.offset_of_item(9_999), 3 * 9_999);
+        for k in 0..100u32 {
+            let offset = k * 297;
+            let idx = tracker.find_item_at_offset(offset);
+            let start = tracker.offset_of_item(idx);
+            assert!(
+                start <= offset && offset < start + u32::from(tracker.get(idx)),
+                "offset {offset} must land inside item {idx} [{start}, +{})",
+                tracker.get(idx)
+            );
+        }
+
+        v.scroll_to(9_999);
+        let range = v.visible_range(24);
+        assert_eq!(range.end, 10_000);
+        assert_eq!(range.end - range.start, 8, "24 rows / 3 per item");
+
+        v.observe_height(5, 7);
+        let ItemHeight::VariableFenwick(tracker) = v.item_height() else {
+            unreachable!()
+        };
+        assert_eq!(tracker.offset_of_item(6), 3 * 6 + 4);
+        assert!(tracker.is_measured(5));
+        assert_eq!(v.unmeasured_item_height(), 3);
+    }
+
+    /// The tracker follows the item count through push, trim_front and
+    /// clear, keeping measured heights aligned with their items.
+    #[test]
+    fn variable_height_tracker_follows_owned_storage() {
+        let mut v: Virtualized<String> = Virtualized::new(8).with_variable_heights(2);
+        for i in 0..5 {
+            v.push(format!("row {i}"));
+        }
+        let ItemHeight::VariableFenwick(tracker) = v.item_height() else {
+            unreachable!()
+        };
+        assert_eq!(tracker.len(), 5);
+        assert_eq!(tracker.total_height(), 10);
+
+        v.observe_height(0, 5);
+        v.observe_height(3, 4);
+        assert_eq!(v.trim_front(3), 2);
+        let ItemHeight::VariableFenwick(tracker) = v.item_height() else {
+            unreachable!()
+        };
+        assert_eq!(tracker.len(), 3);
+        // Old item 3 (height 4) is now item 1; the others are unmeasured (2).
+        assert!(!tracker.is_measured(0));
+        assert!(tracker.is_measured(1));
+        assert_eq!(tracker.get(1), 4);
+        assert_eq!(tracker.total_height(), 2 + 4 + 2);
+
+        v.clear();
+        let ItemHeight::VariableFenwick(tracker) = v.item_height() else {
+            unreachable!()
+        };
+        assert_eq!(tracker.len(), 0);
+        assert_eq!(tracker.total_height(), 0);
+    }
+
+    /// A variable-height `VirtualizedList` lays rows out by
+    /// `RenderItem::height`, measures them into the state, keeps the
+    /// selection visible and clamps to the last item-aligned screenful.
+    #[test]
+    fn virtualized_list_variable_heights_renders_by_item_height() {
+        struct Tall(u16);
+        impl RenderItem for Tall {
+            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, _skip_rows: u16) {
+                let glyph = char::from(b'0' + u8::try_from(self.0).unwrap_or(9));
+                for row in 0..area.height {
+                    frame
+                        .buffer
+                        .set(area.x, area.y + row, Cell::from_char(glyph));
+                }
+            }
+            fn height(&self) -> u16 {
+                self.0
+            }
+        }
+        let column = |frame: &Frame| -> String {
+            (0..frame.buffer.height())
+                .map(|y| {
+                    frame
+                        .buffer
+                        .get(0, y)
+                        .and_then(|cell| cell.content.as_char())
+                        .unwrap_or(' ')
+                })
+                .collect()
+        };
+
+        let items = [Tall(1), Tall(2), Tall(3), Tall(1), Tall(2)];
+        let list = VirtualizedList::new(&items)
+            .variable_heights()
+            .show_scrollbar(false);
+        let mut state = VirtualizedListState::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+
+        let mut frame = Frame::new(4, 5, &mut pool);
+        StatefulWidget::render(&list, Rect::new(0, 0, 4, 5), &mut frame, &mut state);
+        // item0 (1 row), item1 (2 rows), item2 (3 rows, cut to the 2 left).
+        assert_eq!(column(&frame), "12233");
+        assert_eq!(state.visible_count(), 3);
+        let heights = state.heights().expect("tracker created by render");
+        assert_eq!(heights.get(1), 2);
+        assert!(heights.is_measured(2));
+        assert!(!heights.is_measured(4), "off-screen rows stay unmeasured");
+        drop(frame);
+
+        // Selecting the last item scrolls so it is visible; the clamp keeps
+        // the first visible row item-aligned (item3 at the top).
+        state.select(Some(4));
+        let mut frame = Frame::new(4, 5, &mut pool);
+        StatefulWidget::render(&list, Rect::new(0, 0, 4, 5), &mut frame, &mut state);
+        assert_eq!(state.scroll_offset(), 3);
+        assert_eq!(column(&frame), "122  ");
+        assert_eq!(state.visible_count(), 2);
+        let heights = state.heights().expect("tracker");
+        assert_eq!(heights.total_height(), 9);
+        assert_eq!(heights.offset_of_item(4), 7);
+        drop(frame);
+
+        // A manual measurement moves later offsets.
+        state.measure(0, 3);
+        assert_eq!(state.heights().expect("tracker").offset_of_item(1), 3);
+
+        // With the scrollbar on, the thumb works in rows.
+        let list = VirtualizedList::new(&items).variable_heights();
+        let mut state = VirtualizedListState::new();
+        let mut frame = Frame::new(4, 5, &mut pool);
+        StatefulWidget::render(&list, Rect::new(0, 0, 4, 5), &mut frame, &mut state);
+        assert!(
+            frame.buffer.get(3, 0).and_then(|c| c.content.as_char()) != Some('1'),
+            "the last column belongs to the scrollbar"
+        );
+        assert_eq!(column(&frame), "12233");
     }
 
     // ── VirtualizedStorage Debug/Clone ───────────────────────────────────

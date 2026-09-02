@@ -889,7 +889,7 @@ Conformal interval:
 
 Variance is tracked online with Welford’s algorithm, and `q` is the empirical quantile of |residuals|.
 
-Where it runs: `Virtualized::with_height_prediction(PredictorConfig)` attaches the model to the Fenwick height tracker. Unmeasured rows hold the posterior mean instead of a constant default, each `observe_height(idx, h)` trains it, and when the rounded prediction moves the unmeasured rows are refilled so total height and offsets track what has been measured. The `VirtualizedList` widget itself is fixed-height; variable-height and predicted layouts use the `Virtualized` primitive.
+Where it runs: `Virtualized::with_variable_heights(default)` selects the Fenwick tracker as the variable-height strategy (`with_variable_heights_fenwick` takes an explicit capacity; `ItemHeight::Variable(HeightCache)` is the legacy linear-scan mode), and the tracker follows `push`, `trim_front`, `clear` and `set_external_len`. `with_height_prediction(PredictorConfig)` attaches the model to that tracker: unmeasured rows hold the posterior mean instead of a constant default, each `observe_height(idx, h)` trains it, and when the rounded prediction moves the unmeasured rows are refilled so total height and offsets track what has been measured. The `VirtualizedList` widget renders variable heights with `.variable_heights()`: each row is as tall as `RenderItem::height` says, rows are measured into the state's Fenwick tracker as they render (`VirtualizedListState::measure` for off‑screen changes), and the selection adjustment, bottom clamp and scrollbar work in rows with O(log n) offset queries. Scrolling is item‑aligned. The widget's state tracker has no predictor yet; predicted layouts use the `Virtualized` primitive.
 
 ### BOCPD: Online Change-Point Detection
 
@@ -2218,7 +2218,7 @@ FrankenTUI ships 80+ direct `Widget` and `StatefulWidget` implementations across
 | `Modal` | Dialog/overlay system | Stack‑based, focus capture |
 | `JsonView` | JSON tree viewer | Collapse/expand nodes |
 | `FilePicker` | File browser | Directory navigation |
-| `VirtualizedList` | Large lists | Fixed-height widget; the `Virtualized` primitive adds Fenwick-tree scroll and Bayesian height prediction for variable heights |
+| `VirtualizedList` | Large lists | Fixed or variable row heights (`variable_heights()`, Fenwick-tracked, O(log n) scroll); the `Virtualized` primitive adds Bayesian height prediction |
 | `Toast` | Notifications | Timed, dismissable |
 | `Spinner` | Activity indicator | Multiple styles |
 | `Scrollbar` | Scroll position | Proportional thumb |
