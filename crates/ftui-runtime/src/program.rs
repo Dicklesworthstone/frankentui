@@ -3577,6 +3577,9 @@ struct EffectQueue<M: Send + 'static> {
     sender: mpsc::Sender<EffectCommand<M>>,
     handle: Option<JoinHandle<()>>,
     closed: bool,
+    /// Tasks accepted by the loop thread and not yet run (published by the
+    /// loop each iteration; read by the frame guardrail).
+    depth: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl<M: Send + 'static> EffectQueue<M> {
@@ -3586,15 +3589,25 @@ impl<M: Send + 'static> EffectQueue<M> {
         evidence_sink: Option<EvidenceSink>,
     ) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel::<EffectCommand<M>>();
+        let depth = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let loop_depth = std::sync::Arc::clone(&depth);
         let handle = thread::Builder::new()
             .name("ftui-effects".into())
-            .spawn(move || effect_queue_loop(config, rx, result_sender, evidence_sink))?;
+            .spawn(move || {
+                effect_queue_loop(config, rx, result_sender, evidence_sink, &loop_depth);
+            })?;
 
         Ok(Self {
             sender: tx,
             handle: Some(handle),
             closed: false,
+            depth,
         })
+    }
+
+    /// Tasks accepted by the queue that have not run yet.
+    fn in_flight(&self) -> usize {
+        self.depth.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn enqueue(&self, spec: TaskSpec, task: Box<dyn FnOnce() -> M + Send>) {
@@ -3964,6 +3977,26 @@ impl<M: Send + 'static> TaskExecutor<M> {
         }
     }
 
+    /// Tasks this executor accepted that have not produced their message
+    /// yet: live worker threads for the spawned and asupersync lanes, the
+    /// loop's unrun task map for the effect queue. Per program, unlike the
+    /// process-global `effect_system::queue_telemetry()` counters, so one
+    /// program's backlog never shows up in another's frame guardrail.
+    fn in_flight(&mut self) -> usize {
+        match self {
+            Self::Spawned(executor) => {
+                executor.reap_finished();
+                executor.handles.len()
+            }
+            #[cfg(feature = "asupersync-executor")]
+            Self::Asupersync(executor) => {
+                executor.reap_finished();
+                executor.handles.len()
+            }
+            Self::Queued(queue) => queue.in_flight(),
+        }
+    }
+
     fn shutdown(&mut self) {
         match self {
             Self::Spawned(executor) => executor.shutdown(),
@@ -4105,6 +4138,7 @@ fn effect_queue_loop<M: Send + 'static>(
     rx: mpsc::Receiver<EffectCommand<M>>,
     result_sender: mpsc::Sender<M>,
     evidence_sink: Option<EvidenceSink>,
+    depth: &std::sync::atomic::AtomicUsize,
 ) {
     let mut scheduler = QueueingScheduler::new(config.scheduler);
     let mut tasks: HashMap<u64, Box<dyn FnOnce() -> M + Send>> = HashMap::new();
@@ -4112,6 +4146,9 @@ fn effect_queue_loop<M: Send + 'static>(
     let max_depth = config.max_queue_depth;
 
     loop {
+        // Publish the accepted-but-unrun depth for the frame guardrail; the
+        // loop comes back here after every command batch and every task.
+        depth.store(tasks.len(), std::sync::atomic::Ordering::Relaxed);
         if tasks.is_empty() {
             if shutdown_requested {
                 return;
@@ -6483,15 +6520,17 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         self.budget.next_frame();
 
         // Check frame guardrails (memory/queue limits). The frame loop itself
-        // is synchronous, so "queue depth" is the effect backlog: tasks that
-        // were handed to the executor and have not produced their message
-        // yet (`queue_telemetry().in_flight`). This is the value the queue
-        // guardrail thresholds (warn/max/emergency) were designed against;
-        // it used to be hard-coded to 0, which made the whole queue guardrail
-        // dead in production (bd-1za0z item 3).
+        // is synchronous, so "queue depth" is the effect backlog: tasks this
+        // program handed to its executor that have not produced their
+        // message yet (`TaskExecutor::in_flight`). This is the value the
+        // queue guardrail thresholds (warn/max/emergency) were designed
+        // against; it used to be hard-coded to 0, which made the whole queue
+        // guardrail dead in production (bd-1za0z item 3). It is measured per
+        // program rather than from the process-global queue counters so a
+        // second program in the same process (or a leaked counter) cannot
+        // make this one shed frames.
         let memory_bytes = self.writer.estimate_memory_usage() + self.frame_arena.allocated_bytes();
-        let queue_depth =
-            u32::try_from(crate::effect_system::queue_telemetry().in_flight).unwrap_or(u32::MAX);
+        let queue_depth = u32::try_from(self.task_executor.in_flight()).unwrap_or(u32::MAX);
         let verdict = self.guardrails.check_frame(memory_bytes, queue_depth);
 
         // F2 observability: export a guardrail snapshot whenever any
@@ -10451,7 +10490,13 @@ mod tests {
         };
 
         let handle = std::thread::spawn(move || {
-            effect_queue_loop(config, cmd_rx, result_tx, None);
+            effect_queue_loop(
+                config,
+                cmd_rx,
+                result_tx,
+                None,
+                &std::sync::atomic::AtomicUsize::new(0),
+            );
         });
 
         cmd_tx
@@ -10491,7 +10536,13 @@ mod tests {
         };
 
         let handle = std::thread::spawn(move || {
-            effect_queue_loop(config, cmd_rx, result_tx, None);
+            effect_queue_loop(
+                config,
+                cmd_rx,
+                result_tx,
+                None,
+                &std::sync::atomic::AtomicUsize::new(0),
+            );
         });
 
         cmd_tx
@@ -10539,7 +10590,13 @@ mod tests {
         };
 
         let handle = std::thread::spawn(move || {
-            effect_queue_loop(config, cmd_rx, result_tx, None);
+            effect_queue_loop(
+                config,
+                cmd_rx,
+                result_tx,
+                None,
+                &std::sync::atomic::AtomicUsize::new(0),
+            );
         });
 
         cmd_tx
@@ -10582,7 +10639,13 @@ mod tests {
         };
 
         let handle = std::thread::spawn(move || {
-            effect_queue_loop(config, cmd_rx, result_tx, None);
+            effect_queue_loop(
+                config,
+                cmd_rx,
+                result_tx,
+                None,
+                &std::sync::atomic::AtomicUsize::new(0),
+            );
         });
 
         cmd_tx
@@ -10625,6 +10688,7 @@ mod tests {
             sender: tx,
             handle: None,
             closed: true,
+            depth: Arc::new(AtomicUsize::new(0)),
         };
         let runs = Arc::new(AtomicUsize::new(0));
         let before = crate::effect_system::effects_queue_dropped();
@@ -10657,6 +10721,7 @@ mod tests {
             sender: tx,
             handle: None,
             closed: false,
+            depth: Arc::new(AtomicUsize::new(0)),
         };
         let runs = Arc::new(AtomicUsize::new(0));
         let before = crate::effect_system::effects_queue_dropped();
@@ -10689,6 +10754,7 @@ mod tests {
         let (result_tx, _result_rx) = mpsc::channel::<u32>();
         let mut scheduler = QueueingScheduler::new(SchedulerConfig::default());
         let mut tasks: HashMap<u64, Box<dyn FnOnce() -> u32 + Send>> = HashMap::new();
+        let in_flight_before = crate::effect_system::queue_telemetry().in_flight;
 
         // Enqueue 2 tasks with max_depth=2 — should succeed
         let r1 = handle_effect_command(
@@ -10733,6 +10799,7 @@ mod tests {
             crate::effect_system::effects_queue_dropped() > dropped_before,
             "dropped counter should increment"
         );
+        release_unrun_queued_tasks(in_flight_before);
     }
 
     #[test]
@@ -10742,6 +10809,7 @@ mod tests {
         let mut tasks: HashMap<u64, Box<dyn FnOnce() -> u32 + Send>> = HashMap::new();
 
         // With max_depth=0, can enqueue many tasks
+        let in_flight_before = crate::effect_system::queue_telemetry().in_flight;
         for i in 0..20 {
             let r = handle_effect_command(
                 EffectCommand::Enqueue(TaskSpec::default(), Box::new(move || i)),
@@ -10754,6 +10822,21 @@ mod tests {
             assert_eq!(r, EffectLoopControl::Continue);
         }
         // All should be enqueued (some may have been inlined by scheduler, but none dropped)
+        release_unrun_queued_tasks(in_flight_before);
+    }
+
+    /// The enqueue counters are process-global and `in_flight` feeds the
+    /// frame guardrail of every `Program` in this process. A unit test that
+    /// queues tasks into a bare task map never runs them, so it must hand the
+    /// accounting back or later headless render tests see a phantom backlog
+    /// and drop their frames.
+    fn release_unrun_queued_tasks(in_flight_before: u64) {
+        let leaked = crate::effect_system::queue_telemetry()
+            .in_flight
+            .saturating_sub(in_flight_before);
+        for _ in 0..leaked {
+            crate::effect_system::record_queue_processed();
+        }
     }
 
     #[test]
@@ -13153,11 +13236,12 @@ mod tests {
     }
 
     /// Conformal gating is on by default, so its warm-up must be harmless:
-    /// the first frame's prediction rests on the `q_default` prior (10 ms)
-    /// added to a 16 ms baseline, which exceeds the budget and reports
-    /// `risk`, yet an uncalibrated verdict must never lower the degradation
-    /// level. The evidence rows must still show that risky, uncalibrated
-    /// verdict so the warm-up is observable.
+    /// until `min_samples` residuals exist the prediction rests on the
+    /// `q_default` prior, which (10 ms on top of a 16 ms baseline against a
+    /// 16 ms budget by default; made deliberately huge here) reports `risk`,
+    /// yet an uncalibrated verdict must never lower the degradation level.
+    /// The evidence rows must still show that risky, uncalibrated verdict so
+    /// the warm-up is observable.
     #[test]
     fn headless_default_config_never_degrades_during_conformal_warmup() {
         use ftui_render::budget::DegradationLevel;
@@ -13188,13 +13272,25 @@ mod tests {
         }
 
         let evidence_path = temp_evidence_path("conformal_warmup");
-        let config = ProgramConfig::default()
-            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
-        let min_samples = config
+        let defaults = ProgramConfig::default()
             .conformal_config
-            .as_ref()
-            .expect("conformal on by default")
-            .min_samples;
+            .expect("conformal on by default");
+        let min_samples = defaults.min_samples;
+        // Load-independent setup: a 5 s frame budget keeps the PID path from
+        // degrading when the test host is busy, while a 10 s `q_default`
+        // prior makes every uncalibrated conformal verdict risky, so the only
+        // thing that could degrade here is the warm-up gate letting the
+        // prior through.
+        let config = ProgramConfig::default()
+            .with_budget(FrameBudgetConfig {
+                total: Duration::from_secs(5),
+                ..FrameBudgetConfig::default()
+            })
+            .with_conformal_config(ConformalConfig {
+                q_default: 10_000_000.0,
+                ..defaults
+            })
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
         let mut program = headless_program_with_config(WarmModel, config);
         assert!(program.conformal_predictor.is_some());
 
@@ -13352,7 +13448,7 @@ mod tests {
     }
 
     /// CONTRACT (bd-1za0z item 3): the queue guardrail sees the live effect
-    /// backlog (`queue_telemetry().in_flight`), not a hard-coded zero. With a
+    /// backlog (`TaskExecutor::in_flight`), not a hard-coded zero. With a
     /// warn depth of one and four tasks in flight, the very first frame must
     /// raise a queue alert and export a snapshot carrying that depth.
     #[test]
@@ -13395,20 +13491,36 @@ mod tests {
             ..Default::default()
         };
 
-        // Simulate four effects handed to the executor that have not produced
-        // their message yet. The counters are process-global, so release them
-        // again afterwards; the assertion below tolerates other tests' traffic
-        // by checking for "at least four", never an exact figure.
+        // Hand four real effects to this program's executor (the default
+        // spawned lane) that are still running when the frame renders: the
+        // guardrail must count them as the backlog. Drain them afterwards so
+        // the test leaves no worker threads behind.
         const IN_FLIGHT: usize = 4;
-        for depth in 1..=IN_FLIGHT as u64 {
-            crate::effect_system::record_queue_enqueue(depth);
-        }
         let mut program = headless_program_with_config(QueueModel, config);
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        for _ in 0..IN_FLIGHT {
+            let release = std::sync::Arc::clone(&release);
+            program
+                .execute_cmd(Cmd::task(move || {
+                    while !release.load(std::sync::atomic::Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    QueueMsg::Noop
+                }))
+                .expect("submit in-flight task");
+        }
+        assert_eq!(program.task_executor.in_flight(), IN_FLIGHT);
         program.dirty = true;
         let rendered = program.render_frame();
-        for _ in 0..IN_FLIGHT {
-            crate::effect_system::record_queue_processed();
+        release.store(true, std::sync::atomic::Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while program.task_executor.in_flight() > 0 && Instant::now() <= deadline {
+            program
+                .process_task_results()
+                .expect("process task results");
+            std::thread::sleep(Duration::from_millis(1));
         }
+        assert_eq!(program.task_executor.in_flight(), 0, "tasks must drain");
         rendered.expect("render frame with queue alert");
 
         let contents =

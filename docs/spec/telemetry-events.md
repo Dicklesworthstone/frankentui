@@ -383,7 +383,7 @@ Written when the regime changes (`steady` <-> `burst`).
 
 Required fields:
 - `from_regime`, `to_regime` (`steady` | `burst`)
-- `reason_code` (`heuristic_enter_burst_rate` | `heuristic_exit_burst_cooldown` | `heuristic_exit_burst_rate` | `bocpd_posterior_burst` | `bocpd_posterior_steady`)
+- `reason_code` (`heuristic_enter_burst_rate` | `heuristic_exit_burst_cooldown` | `heuristic_exit_burst_rate` | `bocpd_posterior_burst` | `bocpd_posterior_steady` | `bocpd_idle_exit`); `bocpd_idle_exit` is the tick-side Burst exit in BOCPD mode, taken once no event has arrived for `mu_steady_ms` (the posterior itself only moves on events)
 - `confidence` (0..1), `event_rate`
 - `p_burst` (float or `null`)
 - `detector` (`bocpd` | `heuristic`)

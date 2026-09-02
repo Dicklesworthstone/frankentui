@@ -377,6 +377,12 @@ pub enum TransitionReasonCode {
     BocpdPosteriorBurst,
     /// BOCPD posterior crossed steady threshold.
     BocpdPosteriorSteady,
+    /// BOCPD mode exited burst on a tick because no event arrived for at
+    /// least the steady mean inter-arrival (`mu_steady_ms`). The posterior
+    /// only updates on events, so without this a burst followed by silence
+    /// would stay `Burst` (and keep the load governor in soft overload)
+    /// until the next resize.
+    BocpdIdleExit,
 }
 
 impl TransitionReasonCode {
@@ -389,6 +395,7 @@ impl TransitionReasonCode {
             Self::HeuristicExitBurstRate => "heuristic_exit_burst_rate",
             Self::BocpdPosteriorBurst => "bocpd_posterior_burst",
             Self::BocpdPosteriorSteady => "bocpd_posterior_steady",
+            Self::BocpdIdleExit => "bocpd_idle_exit",
         }
     }
 }
@@ -1093,6 +1100,27 @@ impl ResizeCoalescer {
             }
         }
 
+        // BOCPD idle exit: the posterior only moves on events, so a burst
+        // followed by silence would otherwise stay `Burst` until the next
+        // resize. Once the silence is at least the steady mean inter-arrival
+        // the run is over by the model's own parameters; the confidence is
+        // the probability a burst inter-arrival would not have lasted this
+        // long, 1 - exp(-idle / mu_burst).
+        if self.regime == Regime::Burst
+            && !self.heuristic_decides()
+            && let Some(idle_exit) = self.bocpd_idle_exit(now)
+        {
+            let (confidence, rate, p_burst) = idle_exit;
+            self.record_regime_transition(
+                now,
+                Regime::Steady,
+                TransitionReasonCode::BocpdIdleExit,
+                confidence,
+                rate,
+                Some(p_burst),
+            );
+        }
+
         if self.pending_size.is_none() {
             return CoalesceAction::None;
         }
@@ -1474,6 +1502,23 @@ impl ResizeCoalescer {
     #[inline]
     fn heuristic_decides(&self) -> bool {
         self.bocpd.is_none() || self.last_detector == RegimeDetector::Heuristic
+    }
+
+    /// BOCPD-mode idle check for `tick_at`: when the silence since the last
+    /// event has reached the steady mean inter-arrival, returns the
+    /// transition confidence, the current event rate and the posterior so
+    /// the caller can record a `BocpdIdleExit`.
+    fn bocpd_idle_exit(&self, now: Instant) -> Option<(f64, f64, f64)> {
+        let bocpd = self.bocpd.as_ref()?;
+        let last_event = self.last_event?;
+        let idle_ms = duration_since_or_zero(now, last_event).as_secs_f64() * 1000.0;
+        let cfg = bocpd.config();
+        if idle_ms < cfg.mu_steady_ms {
+            return None;
+        }
+        let confidence =
+            (1.0 - (-idle_ms / cfg.mu_burst_ms.max(f64::EPSILON)).exp()).clamp(0.0, 1.0);
+        Some((confidence, self.calculate_event_rate(now), bocpd.p_burst()))
     }
 
     /// Choose the detector for an event whose inter-arrival is
@@ -3757,6 +3802,11 @@ mod tests {
             .with_logging(true);
         assert!(!config.enable_bocpd);
         assert!(config.bocpd_config.is_none());
+        let config_row = config.to_jsonl("run", ScreenMode::AltScreen, 80, 24, 0);
+        assert!(
+            config_row.contains(r#""enable_bocpd":false"#),
+            "{config_row}"
+        );
         let mut c = ResizeCoalescer::new(config, (80, 24));
         assert!(c.bocpd().is_none());
 
@@ -3771,12 +3821,62 @@ mod tests {
         let jsonl = c.decision_logs_jsonl();
         assert!(!jsonl.contains(r#""detector":"bocpd""#), "{jsonl}");
         assert!(jsonl.contains(r#""detector":"heuristic""#), "{jsonl}");
+        assert!(jsonl.contains(r#""p_burst":null"#), "{jsonl}");
+
+        let transitions = c.transition_logs();
         assert!(
-            jsonl.contains(r#""event":"regime_transition""#)
-                && jsonl.contains(r#""reason_code":"heuristic_enter_burst_rate""#),
-            "{jsonl}"
+            transitions.iter().any(|t| t.to_regime == Regime::Burst
+                && t.reason_code == TransitionReasonCode::HeuristicEnterBurstRate),
+            "{transitions:?}"
         );
-        assert!(jsonl.contains(r#""enable_bocpd":false"#), "{jsonl}");
+        assert!(
+            transitions
+                .iter()
+                .all(|t| t.detector == RegimeDetector::Heuristic),
+            "{transitions:?}"
+        );
+        let row = transitions[0].to_jsonl("run", ScreenMode::AltScreen, 80, 24);
+        assert!(row.contains(r#""detector":"heuristic""#), "{row}");
+    }
+
+    /// BOCPD mode has no between-event exit from the posterior itself, so a
+    /// burst followed by silence leaves Burst on a tick once the silence
+    /// reaches `mu_steady_ms`, tagged `bocpd_idle_exit`.
+    #[test]
+    fn bocpd_mode_exits_burst_on_idle_tick() {
+        let mut c = ResizeCoalescer::new(CoalescerConfig::default(), (80, 24));
+        let base = Instant::now();
+        let mut now = base;
+        for i in 0..40u16 {
+            now += Duration::from_millis(5);
+            let _ = c.handle_resize_at(100 + (i % 7), 40 + (i % 3), now);
+        }
+        assert_eq!(c.last_detector(), RegimeDetector::Bocpd);
+        assert_eq!(
+            c.regime(),
+            Regime::Burst,
+            "40 events at 200/s must be a burst"
+        );
+        let mu_steady = c
+            .bocpd()
+            .expect("bocpd on by default")
+            .config()
+            .mu_steady_ms;
+
+        // Quiet ticks shorter than the steady mean inter-arrival keep Burst.
+        let _ = c.tick_at(now + Duration::from_millis((mu_steady / 2.0) as u64));
+        assert_eq!(c.regime(), Regime::Burst);
+
+        // Once the silence reaches it, the regime returns to Steady.
+        let _ = c.tick_at(now + Duration::from_millis(mu_steady as u64 + 1));
+        assert_eq!(c.regime(), Regime::Steady);
+        let last = c.transition_logs().last().expect("idle exit recorded");
+        assert_eq!(last.reason_code, TransitionReasonCode::BocpdIdleExit);
+        assert_eq!(last.detector, RegimeDetector::Bocpd);
+        assert!(last.confidence > 0.99, "{last:?}");
+        assert!(last.p_burst.is_some());
+        let row = last.to_jsonl("run", ScreenMode::AltScreen, 80, 24);
+        assert!(row.contains(r#""reason_code":"bocpd_idle_exit""#), "{row}");
     }
 
     /// The stats snapshot exposes the detector counters the evidence rows
