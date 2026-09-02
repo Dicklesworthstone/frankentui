@@ -26,12 +26,14 @@ fn default_features_select_a_terminal_backend() {
 /// `Model`, `ScreenMode` all come from `ftui::prelude::*`.
 struct TickApp {
     ticks: u64,
+    last_file_event: Option<FileEvent>,
 }
 
 #[derive(Debug, Clone)]
 enum Msg {
     Tick,
     Quit,
+    ConfigChanged(FileEvent),
 }
 
 impl From<Event> for Msg {
@@ -52,6 +54,10 @@ impl Model for TickApp {
                 self.ticks += 1;
                 Cmd::none()
             }
+            Msg::ConfigChanged(event) => {
+                self.last_file_event = Some(event);
+                Cmd::none()
+            }
             Msg::Quit => Cmd::quit(),
         }
     }
@@ -61,14 +67,55 @@ impl Model for TickApp {
         let area = Rect::new(0, 0, frame.width(), 1);
         Paragraph::new(text).render(area, frame);
     }
+
+    // The README "Subscriptions" snippet, verbatim modulo the message names.
+    fn subscriptions(&self) -> Vec<Box<dyn Subscription<Msg>>> {
+        vec![
+            tick_every(std::time::Duration::from_millis(16), || Msg::Tick),
+            file_watcher("config.toml", Msg::ConfigChanged),
+        ]
+    }
+}
+
+/// The README subscriptions snippet resolves through the prelude alone and
+/// yields two distinct, stable subscription ids.
+#[test]
+fn readme_subscriptions_snippet_builds_through_the_prelude() {
+    let mut app = TickApp {
+        ticks: 0,
+        last_file_event: None,
+    };
+    let subs = app.subscriptions();
+    assert_eq!(subs.len(), 2);
+    assert_ne!(subs[0].id(), subs[1].id());
+    let _ = app.update(Msg::ConfigChanged(FileEvent::Modified));
+    assert_eq!(app.last_file_event, Some(FileEvent::Modified));
+    let again = app.subscriptions();
+    assert_eq!(
+        subs[0].id(),
+        again[0].id(),
+        "tick id is stable across frames"
+    );
+    assert_eq!(
+        subs[1].id(),
+        again[1].id(),
+        "watcher id is stable across frames"
+    );
 }
 
 #[test]
 fn readme_example_model_builds_through_the_prelude() {
-    let mut app = TickApp { ticks: 0 };
+    let mut app = TickApp {
+        ticks: 0,
+        last_file_event: None,
+    };
     let _ = app.update(Msg::Tick);
     assert_eq!(app.ticks, 1);
     // The builder type-checks with the prelude imports; running it needs a
     // terminal and is covered by scripts/consumer_smoke_e2e.sh.
-    let _builder = App::new(TickApp { ticks: 0 }).screen_mode(ScreenMode::Inline { ui_height: 1 });
+    let _builder = App::new(TickApp {
+        ticks: 0,
+        last_file_event: None,
+    })
+    .screen_mode(ScreenMode::Inline { ui_height: 1 });
 }

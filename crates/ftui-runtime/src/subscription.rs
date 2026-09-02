@@ -16,6 +16,7 @@
 
 use crate::cancellation::{CancellationSource, CancellationToken};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use web_time::{Duration, Instant};
@@ -524,6 +525,162 @@ pub fn tick_every<M: Send + 'static>(
     Box::new(Every::new(interval, make_msg))
 }
 
+/// What a [`FileWatcher`] observed between two polls of its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileEvent {
+    /// The path exists now and did not at the previous poll.
+    Created,
+    /// The path still exists and its modification time or size changed.
+    Modified,
+    /// The path existed at the previous poll and is gone now.
+    Removed,
+}
+
+/// Metadata fingerprint compared between polls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+fn file_fingerprint(path: &Path) -> Option<FileFingerprint> {
+    std::fs::metadata(path).ok().map(|meta| FileFingerprint {
+        modified: meta.modified().ok(),
+        len: meta.len(),
+    })
+}
+
+/// Stable subscription id for a watched path: the same path yields the same
+/// id on every frame, so the runtime keeps one watcher running instead of
+/// restarting it whenever `subscriptions()` is re-evaluated.
+fn file_watcher_id(path: &Path) -> SubId {
+    // FNV-1a over the path bytes; the magic keeps it out of `Every`'s id space.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in path.as_os_str().as_encoded_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash ^ 0x4653_5754 // "FSWT" magic
+}
+
+/// A subscription that reports changes to one filesystem path.
+///
+/// The watcher polls the path's metadata (modification time and size) every
+/// `interval` (250 ms by default) and sends one message per observed
+/// transition: [`FileEvent::Created`], [`FileEvent::Modified`] or
+/// [`FileEvent::Removed`]. Polling keeps the runtime free of platform
+/// watcher dependencies and behaves the same everywhere; the trade-offs are
+/// latency bounded by the interval and that an edit which leaves both size
+/// and modification time unchanged within one interval is not reported (a
+/// same-length rewrite on a filesystem with coarse timestamps). Watching a
+/// directory reports changes to the directory entry itself (entries added
+/// or removed), not edits inside nested files.
+///
+/// # Example
+///
+/// ```ignore
+/// fn subscriptions(&self) -> Vec<Box<dyn Subscription<MyMsg>>> {
+///     vec![file_watcher("config.toml", MyMsg::ConfigChanged)]
+/// }
+/// ```
+pub struct FileWatcher<M: Send + 'static> {
+    id: SubId,
+    path: PathBuf,
+    interval: Duration,
+    make_msg: Box<dyn Fn(FileEvent) -> M + Send + Sync>,
+}
+
+impl<M: Send + 'static> FileWatcher<M> {
+    /// Default poll interval.
+    pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
+
+    /// Watch `path`, turning each observed [`FileEvent`] into a message.
+    pub fn new(
+        path: impl Into<PathBuf>,
+        make_msg: impl Fn(FileEvent) -> M + Send + Sync + 'static,
+    ) -> Self {
+        let path = path.into();
+        Self {
+            id: file_watcher_id(&path),
+            path,
+            interval: Self::DEFAULT_INTERVAL,
+            make_msg: Box::new(make_msg),
+        }
+    }
+
+    /// Set the poll interval (clamped to at least 1 ms).
+    #[must_use]
+    pub fn with_interval(mut self, interval: Duration) -> Self {
+        self.interval = interval.max(Duration::from_millis(1));
+        self
+    }
+
+    /// The watched path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The poll interval.
+    #[must_use]
+    pub fn interval(&self) -> Duration {
+        self.interval
+    }
+}
+
+/// Boxed file watcher: the one-liner for `subscriptions()`.
+///
+/// Equivalent to `Box::new(FileWatcher::new(path, make_msg))` with the
+/// default 250 ms poll interval.
+pub fn file_watcher<M: Send + 'static>(
+    path: impl Into<PathBuf>,
+    make_msg: impl Fn(FileEvent) -> M + Send + Sync + 'static,
+) -> Box<dyn Subscription<M>> {
+    Box::new(FileWatcher::new(path, make_msg))
+}
+
+impl<M: Send + 'static> Subscription<M> for FileWatcher<M> {
+    fn id(&self) -> SubId {
+        self.id
+    }
+
+    fn run(&self, sender: mpsc::Sender<M>, stop: StopSignal) {
+        let mut last = file_fingerprint(&self.path);
+        let mut sent: u64 = 0;
+        crate::debug_trace!(
+            "FileWatcher started: id={}, path={}, interval={:?}",
+            self.id,
+            self.path.display(),
+            self.interval
+        );
+        loop {
+            if stop.wait_timeout(self.interval) {
+                crate::debug_trace!("FileWatcher stopped: id={}, sent {} events", self.id, sent);
+                break;
+            }
+            let now = file_fingerprint(&self.path);
+            let event = match (last, now) {
+                (None, Some(_)) => Some(FileEvent::Created),
+                (Some(_), None) => Some(FileEvent::Removed),
+                (Some(prev), Some(cur)) if prev != cur => Some(FileEvent::Modified),
+                _ => None,
+            };
+            last = now;
+            if let Some(event) = event {
+                sent += 1;
+                if sender.send((self.make_msg)(event)).is_err() {
+                    crate::debug_trace!(
+                        "FileWatcher channel closed: id={}, sent {} events",
+                        self.id,
+                        sent
+                    );
+                    break;
+                }
+            }
+        }
+    }
+}
+
 impl<M: Send + 'static> Subscription<M> for Every<M> {
     fn id(&self) -> SubId {
         self.id
@@ -567,6 +724,7 @@ mod tests {
     enum TestMsg {
         Tick,
         Value(i32),
+        File(FileEvent),
     }
 
     struct ChannelSubscription<M: Send + 'static> {
@@ -700,6 +858,85 @@ mod tests {
         let msgs: Vec<_> = rx.try_iter().collect();
         assert!(!msgs.is_empty(), "boxed tick subscription must fire");
         assert!(msgs.iter().all(|m| *m == TestMsg::Tick));
+    }
+
+    #[test]
+    fn file_watcher_id_is_stable_per_path_and_distinct_from_ticks() {
+        let a1 = FileWatcher::new("/tmp/a.toml", TestMsg::File);
+        let a2 = FileWatcher::new("/tmp/a.toml", TestMsg::File);
+        let b = FileWatcher::new("/tmp/b.toml", TestMsg::File);
+        assert_eq!(a1.id(), a2.id(), "same path must dedupe across frames");
+        assert_ne!(
+            a1.id(),
+            b.id(),
+            "different paths are different subscriptions"
+        );
+        let tick = Every::new(Duration::from_millis(250), || TestMsg::Tick);
+        assert_ne!(a1.id(), tick.id());
+        assert_eq!(a1.interval(), FileWatcher::<TestMsg>::DEFAULT_INTERVAL);
+        assert_eq!(
+            a1.with_interval(Duration::ZERO).interval(),
+            Duration::from_millis(1),
+            "interval is clamped so the poll loop can never spin"
+        );
+    }
+
+    /// Create, modify and remove a real file and expect exactly those three
+    /// transitions in order, with nothing reported while the file is idle.
+    #[test]
+    fn file_watcher_reports_create_modify_remove() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("watched.toml");
+        let sub = FileWatcher::new(&path, TestMsg::File).with_interval(Duration::from_millis(5));
+        assert_eq!(sub.path(), path.as_path());
+        let (tx, rx) = mpsc::channel();
+        let (signal, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || sub.run(tx, signal));
+        let wait = Duration::from_secs(10);
+        // Let the watcher take its baseline (path absent) and prove it stays quiet.
+        thread::sleep(Duration::from_millis(40));
+        assert!(rx.try_recv().is_err(), "no event before anything happens");
+
+        std::fs::write(&path, b"a = 1\n").expect("create file");
+        assert_eq!(
+            rx.recv_timeout(wait).expect("created"),
+            TestMsg::File(FileEvent::Created)
+        );
+        // A create followed by the content write can straddle two polls and
+        // yield an extra Modified; drain it so the next assertion is exact.
+        thread::sleep(Duration::from_millis(40));
+        let _ = rx.try_iter().count();
+
+        // Growing the file changes the size, which every filesystem reports
+        // even when its timestamp granularity is coarse.
+        std::fs::write(&path, b"a = 1\nb = 22\n").expect("modify file");
+        assert_eq!(
+            rx.recv_timeout(wait).expect("modified"),
+            TestMsg::File(FileEvent::Modified)
+        );
+        thread::sleep(Duration::from_millis(40));
+        let _ = rx.try_iter().count();
+
+        std::fs::remove_file(&path).expect("remove file");
+        assert_eq!(
+            rx.recv_timeout(wait).expect("removed"),
+            TestMsg::File(FileEvent::Removed)
+        );
+        thread::sleep(Duration::from_millis(40));
+        assert!(rx.try_recv().is_err(), "nothing after removal");
+
+        trigger.stop();
+        handle.join().unwrap();
+    }
+
+    /// The boxed helper is the same subscription as the struct.
+    #[test]
+    fn file_watcher_helper_boxes_the_same_subscription() {
+        let boxed: Box<dyn Subscription<TestMsg>> = file_watcher("/tmp/x.toml", TestMsg::File);
+        assert_eq!(
+            boxed.id(),
+            FileWatcher::new("/tmp/x.toml", TestMsg::File).id()
+        );
     }
 
     #[test]

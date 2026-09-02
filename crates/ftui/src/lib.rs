@@ -62,10 +62,11 @@ pub use ftui_style::{
 pub use ftui_runtime::DefaultProgram;
 #[cfg(feature = "runtime")]
 pub use ftui_runtime::{
-    App, Cmd, DEFAULT_BACKEND, EffectQueueConfig, InlineAutoRemeasureConfig, Locale, LocaleContext,
-    LocaleOverride, Model, NO_BACKEND_MESSAGE, PredictiveConfig, Program, ProgramConfig,
-    ResizeBehavior, RuntimeDiffConfig, ScreenMode, TaskSpec, TerminalWriter, TickDecision,
-    TickStrategy, TickStrategyKind, UiAnchor, current_locale, detect_system_locale, set_locale,
+    App, Cmd, DEFAULT_BACKEND, EffectQueueConfig, FileEvent, FileWatcher,
+    InlineAutoRemeasureConfig, Locale, LocaleContext, LocaleOverride, Model, NO_BACKEND_MESSAGE,
+    PredictiveConfig, Program, ProgramConfig, ResizeBehavior, RuntimeDiffConfig, ScreenMode,
+    Subscription, TaskSpec, TerminalWriter, TickDecision, TickStrategy, TickStrategyKind, UiAnchor,
+    current_locale, detect_system_locale, file_watcher, set_locale, tick_every,
 };
 
 // --- Widget traits ----------------------------------------------------------
@@ -93,8 +94,8 @@ pub mod prelude {
 
     #[cfg(feature = "runtime")]
     pub use crate::{
-        App, Cmd, Model, PredictiveConfig, ScreenMode, TerminalWriter, TickDecision, TickStrategy,
-        TickStrategyKind,
+        App, Cmd, FileEvent, Model, PredictiveConfig, ScreenMode, Subscription, TerminalWriter,
+        TickDecision, TickStrategy, TickStrategyKind, file_watcher, tick_every,
     };
 
     pub use crate::{core, layout, pane, render, style, text, widgets};
