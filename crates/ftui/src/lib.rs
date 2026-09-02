@@ -55,13 +55,22 @@ pub use ftui_style::{
 
 // --- Runtime re-exports (feature-gated for wasm32 compatibility) ----------
 
+#[cfg(all(
+    feature = "runtime",
+    any(all(feature = "native-backend", unix), feature = "crossterm")
+))]
+pub use ftui_runtime::DefaultProgram;
 #[cfg(feature = "runtime")]
 pub use ftui_runtime::{
-    App, Cmd, EffectQueueConfig, InlineAutoRemeasureConfig, Locale, LocaleContext, LocaleOverride,
-    Model, PredictiveConfig, Program, ProgramConfig, ResizeBehavior, RuntimeDiffConfig, ScreenMode,
-    TaskSpec, TerminalWriter, TickDecision, TickStrategy, TickStrategyKind, UiAnchor,
-    current_locale, detect_system_locale, set_locale,
+    App, Cmd, DEFAULT_BACKEND, EffectQueueConfig, InlineAutoRemeasureConfig, Locale, LocaleContext,
+    LocaleOverride, Model, NO_BACKEND_MESSAGE, PredictiveConfig, Program, ProgramConfig,
+    ResizeBehavior, RuntimeDiffConfig, ScreenMode, TaskSpec, TerminalWriter, TickDecision,
+    TickStrategy, TickStrategyKind, UiAnchor, current_locale, detect_system_locale, set_locale,
 };
+
+// --- Widget traits ----------------------------------------------------------
+
+pub use ftui_widgets::{StatefulWidget, Widget};
 
 // --- Errors ---------------------------------------------------------------
 
@@ -75,9 +84,10 @@ pub use error::{
 pub mod prelude {
     #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
     pub use crate::TerminalSession;
+    pub use crate::core::geometry::Rect;
     pub use crate::{
         Buffer, Cx, CxController, CxError, Error, Event, Frame, KeyCode, KeyEvent, LabClock,
-        Modifiers, Result, Style, TablePresetId, TableTheme, Theme,
+        Modifiers, Result, StatefulWidget, Style, TablePresetId, TableTheme, Theme, Widget,
     };
 
     #[cfg(feature = "runtime")]

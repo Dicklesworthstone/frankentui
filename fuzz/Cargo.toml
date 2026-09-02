@@ -8,8 +8,11 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
-[lints]
-workspace = true
+# The fuzz crate is excluded from the root workspace (see the root Cargo.toml),
+# so it is its own workspace root and cannot inherit `[lints]` from the parent:
+# `[lints] workspace = true` here made every `cargo fuzz build` fail with
+# "error inheriting `lints` from workspace root manifest".
+[workspace]
 
 [dependencies]
 libfuzzer-sys = "0.4"

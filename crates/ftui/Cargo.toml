@@ -12,9 +12,15 @@ keywords = ["tui", "terminal", "ui", "ftui", "frankentui"]
 categories = ["command-line-interface", "gui"]
 
 [features]
-default = ["runtime", "extras"]
+# A default build can open a terminal: the native ftui-tty backend on Unix and
+# the Crossterm backend elsewhere (`ftui::App::run` picks whichever was
+# compiled; see `ftui::runtime::DEFAULT_BACKEND`). Disable `backend` for
+# headless, WASM, or custom-backend builds.
+default = ["runtime", "extras", "backend"]
 runtime = ["dep:ftui-runtime"]
 extras = ["dep:ftui-extras"]
+backend = ["native-backend", "crossterm"]
+native-backend = ["runtime", "ftui-runtime/native-backend"]
 crossterm = ["runtime", "ftui-core/crossterm", "ftui-runtime/crossterm-compat"]
 
 [lints]
