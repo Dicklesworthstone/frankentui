@@ -110,6 +110,9 @@ pub use evidence_telemetry::{
 pub use ftui_backend::{BackendEventSource, BackendFeatures};
 #[cfg(all(feature = "native-backend", unix))]
 pub use ftui_tty::TtyBackend;
+#[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
+pub use program::DefaultProgram;
+pub use program::{DEFAULT_BACKEND, NO_BACKEND_MESSAGE};
 pub use input_macro::{
     EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayback, MacroPlayer, MacroRecorder,
     RecordingFilter, RecordingState, TimedEvent,

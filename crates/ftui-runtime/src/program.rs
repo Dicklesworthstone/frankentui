@@ -7250,10 +7250,7 @@ impl<M: Model> AppBuilder<M> {
         M::Message: Send + 'static,
     {
         let _ = (self.model, self.config);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            NO_BACKEND_MESSAGE,
-        ))
+        Err(io::Error::new(io::ErrorKind::Unsupported, NO_BACKEND_MESSAGE))
     }
 
     /// Run the application using the Crossterm backend.
