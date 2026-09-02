@@ -892,6 +892,8 @@ Conformal interval:
 
 Variance is tracked online with Welford’s algorithm, and `q` is the empirical quantile of |residuals|.
 
+Where it runs: `Virtualized::with_height_prediction(PredictorConfig)` attaches the model to the Fenwick height tracker. Unmeasured rows hold the posterior mean instead of a constant default, each `observe_height(idx, h)` trains it, and when the rounded prediction moves the unmeasured rows are refilled so total height and offsets track what has been measured. The `VirtualizedList` widget itself is fixed-height; variable-height and predicted layouts use the `Virtualized` primitive.
+
 ### BOCPD: Online Change-Point Detection
 
 Resize coalescing uses **Bayesian Online Change-Point Detection** to detect regime transitions:
@@ -1073,6 +1075,8 @@ Key(Ctrl+x)     ─┘          ModifiedKey
 **Multi-click timing:** double/triple clicks use a configurable interval window (default: 500ms) with a `click_count` counter that resets on timeout or position change.
 
 **Chord recognition:** multi-key sequences like `g g` (vim-style) use a `KeySequence` buffer with configurable timeout, enabling complex keybinding schemes without blocking single-key shortcuts.
+
+**Where it runs:** opt in with `ProgramConfig::default().with_gestures(GestureConfig::default())` and implement `Model::on_gesture(&mut self, SemanticEvent) -> Cmd<Msg>`. The runtime feeds every input event through the recognizer after the ordinary `update()` call (raw events are never swallowed), delivers each recognized gesture to `on_gesture`, and polls for long presses once per tick. Mouse gestures need mouse capture enabled.
 
 ### Input Parser (3,200+ Lines)
 
@@ -2015,10 +2019,13 @@ pub trait Model: Sized {
 ### Commands & Side Effects
 
 ```rust
-Cmd::none()                    // No side effect
-Cmd::perform(future, mapper)   // Async operation → Message
-Cmd::quit()                    // Exit program
-Cmd::batch(vec![...])          // Multiple commands
+Cmd::none()                          // No side effect
+Cmd::task(|| Msg::Loaded(load()))    // Background work on a worker → Message
+Cmd::tick(Duration::from_millis(50)) // One Tick message after the delay
+Cmd::msg(Msg::Refresh)               // Deliver a message on the next turn
+Cmd::quit()                          // Exit program
+Cmd::batch(vec![...])                // Multiple commands, order irrelevant
+Cmd::sequence(vec![...])             // Multiple commands, in order
 ```
 
 ### Subscriptions
@@ -2026,15 +2033,15 @@ Cmd::batch(vec![...])          // Multiple commands
 Declarative, long-running event sources:
 
 ```rust
-fn subscriptions(&self) -> Vec<Box<dyn Subscription<Message>>> {
+fn subscriptions(&self) -> Vec<Box<dyn Subscription<Msg>>> {
     vec![
-        tick_every(Duration::from_millis(16)),   // 60fps timer
-        file_watcher("/path/to/watch"),          // FS events
+        tick_every(Duration::from_millis(16), || Msg::Tick),      // 60fps timer
+        file_watcher("config.toml", Msg::ConfigChanged),          // FileEvent::{Created, Modified, Removed}
     ]
 }
 ```
 
-Subscriptions are automatically started/stopped based on what `subscriptions()` returns each frame.
+Subscriptions are automatically started/stopped based on what `subscriptions()` returns each frame; a subscription's id (interval for `tick_every`, path for `file_watcher`) is what keeps it running across frames. `file_watcher` polls metadata (mtime and size, 250 ms by default; `FileWatcher::new(..).with_interval(..)` to change it), so it works on every platform without a native watcher dependency.
 
 ---
 
@@ -2206,7 +2213,7 @@ FrankenTUI ships 80+ direct `Widget` and `StatefulWidget` implementations across
 | `Modal` | Dialog/overlay system | Stack‑based, focus capture |
 | `JsonView` | JSON tree viewer | Collapse/expand nodes |
 | `FilePicker` | File browser | Directory navigation |
-| `VirtualizedList` | Large lists | Fenwick tree scroll, Bayesian height prediction |
+| `VirtualizedList` | Large lists | Fixed-height widget; the `Virtualized` primitive adds Fenwick-tree scroll and Bayesian height prediction for variable heights |
 | `Toast` | Notifications | Timed, dismissable |
 | `Spinner` | Activity indicator | Multiple styles |
 | `Scrollbar` | Scroll position | Proportional thumb |

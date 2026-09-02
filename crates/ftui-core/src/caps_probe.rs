@@ -2217,7 +2217,7 @@ mod tests {
             sync_output: Some(true),
             ..ProbeResult::default()
         };
-        let mut after = before.clone();
+        let mut after = before;
         after.refine_from_probe(&result);
 
         let rows = decisions_from_probe(
@@ -2309,7 +2309,7 @@ mod tests {
         let before = TerminalCapabilities::xterm_256color();
         let config = sync_only_config();
         let result = ProbeResult::default(); // no reply
-        let mut after = before.clone();
+        let mut after = before;
         after.refine_from_probe(&result);
 
         let rows = decisions_from_probe(
@@ -2335,7 +2335,7 @@ mod tests {
             sync_output: Some(false),
             ..ProbeResult::default()
         };
-        let mut after = before.clone();
+        let mut after = before;
         after.refine_from_probe(&result);
         assert!(!after.sync_output);
         let overrides =
@@ -2372,7 +2372,7 @@ mod tests {
             sync_output: Some(true),
             ..ProbeResult::default()
         };
-        let mut after = before.clone();
+        let mut after = before;
         after.refine_from_probe(&result);
         let rows = decisions_from_probe(
             &before,

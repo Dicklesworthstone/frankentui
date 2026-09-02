@@ -156,6 +156,54 @@ impl<T> Virtualized<T> {
         self
     }
 
+    /// Predict the heights of unmeasured items with a Bayesian model instead
+    /// of a constant default (see [`VariableHeightsFenwick::with_predictor`]).
+    ///
+    /// Switches the height strategy to the Fenwick tracker when it is not one
+    /// already (a fixed height becomes the tracker's default; a linear
+    /// [`HeightCache`] is replaced, dropping its cached measurements). Heights
+    /// recorded through [`Virtualized::observe_height`] train the model.
+    #[must_use]
+    pub fn with_height_prediction(mut self, config: PredictorConfig) -> Self {
+        let len = self.len();
+        let current = std::mem::replace(&mut self.item_height, ItemHeight::Fixed(1));
+        self.item_height = ItemHeight::VariableFenwick(match current {
+            ItemHeight::VariableFenwick(tracker) => tracker.with_predictor(config),
+            ItemHeight::Fixed(height) => {
+                VariableHeightsFenwick::new(height.max(1), len).with_predictor(config)
+            }
+            ItemHeight::Variable(cache) => {
+                VariableHeightsFenwick::new(cache.default_height, len).with_predictor(config)
+            }
+        });
+        self
+    }
+
+    /// Record the measured height of item `idx`.
+    ///
+    /// A no-op for the fixed-height strategy. With a predictor attached this
+    /// also trains the height model, so unmeasured items follow what has been
+    /// measured instead of a constant guess.
+    pub fn observe_height(&mut self, idx: usize, height: u16) {
+        match &mut self.item_height {
+            ItemHeight::Fixed(_) => {}
+            ItemHeight::Variable(cache) => cache.set(idx, height),
+            ItemHeight::VariableFenwick(tracker) => tracker.set(idx, height),
+        }
+    }
+
+    /// Height assumed for items that have not been measured yet: the
+    /// predictor's current point estimate when one is attached, otherwise
+    /// the strategy's default (or the fixed height).
+    #[must_use]
+    pub fn unmeasured_item_height(&self) -> u16 {
+        match &self.item_height {
+            ItemHeight::Fixed(height) => *height,
+            ItemHeight::Variable(cache) => cache.default_height,
+            ItemHeight::VariableFenwick(tracker) => tracker.predicted_height(),
+        }
+    }
+
     /// Set variable heights with O(log n) Fenwick tree tracking.
     ///
     /// This is more efficient than `Variable(HeightCache)` for large lists
@@ -602,6 +650,7 @@ impl HeightCache {
 // ============================================================================
 
 use crate::fenwick::FenwickTree;
+use crate::height_predictor::{HeightPredictor, PredictorConfig};
 
 /// Variable height tracker using Fenwick tree for O(log n) prefix sum queries.
 ///
@@ -630,6 +679,15 @@ pub struct VariableHeightsFenwick {
     default_height: u16,
     /// Number of items tracked.
     len: usize,
+    /// Which slots hold a measured height (`set`) rather than the fill value.
+    measured: Vec<bool>,
+    /// Number of `false` entries in `measured`.
+    unmeasured: usize,
+    /// Optional Bayesian model for the heights of unmeasured slots.
+    predictor: Option<HeightPredictor>,
+    /// Height every unmeasured slot currently holds: the predictor's point
+    /// prediction when one is attached, otherwise `default_height`.
+    fill_height: u16,
 }
 
 impl Default for VariableHeightsFenwick {
@@ -653,10 +711,14 @@ impl VariableHeightsFenwick {
             tree,
             default_height,
             len: capacity,
+            measured: vec![false; capacity],
+            unmeasured: capacity,
+            predictor: None,
+            fill_height: default_height,
         }
     }
 
-    /// Create from a slice of heights.
+    /// Create from a slice of heights (all of them count as measured).
     #[must_use]
     pub fn from_heights(heights: &[u16], default_height: u16) -> Self {
         let heights_u32: Vec<u32> = heights.iter().map(|&h| u32::from(h)).collect();
@@ -664,7 +726,68 @@ impl VariableHeightsFenwick {
             tree: FenwickTree::from_values(&heights_u32),
             default_height,
             len: heights.len(),
+            measured: vec![true; heights.len()],
+            unmeasured: 0,
+            predictor: None,
+            fill_height: default_height,
         }
+    }
+
+    /// Attach a Bayesian height predictor ([`HeightPredictor`]).
+    ///
+    /// Unmeasured slots then hold the predictor's current point prediction
+    /// instead of `default_height`; every [`set`](Self::set) trains the model
+    /// and, whenever the rounded prediction moves by a whole row, the
+    /// unmeasured slots are refilled so offsets and the total height track
+    /// the rows measured so far instead of a constant guess. A refill costs
+    /// O(u log n) for u unmeasured slots and a converging posterior triggers
+    /// it only a handful of times.
+    #[must_use]
+    pub fn with_predictor(mut self, config: PredictorConfig) -> Self {
+        let predictor = HeightPredictor::new(config);
+        self.fill_height = predictor.predict(0).predicted.max(1);
+        self.predictor = Some(predictor);
+        self.refill_unmeasured();
+        self
+    }
+
+    /// The attached height predictor, if any.
+    #[must_use]
+    pub fn predictor(&self) -> Option<&HeightPredictor> {
+        self.predictor.as_ref()
+    }
+
+    /// Height every unmeasured slot currently holds (the prediction when a
+    /// predictor is attached, otherwise the default height).
+    #[must_use]
+    pub fn predicted_height(&self) -> u16 {
+        self.fill_height
+    }
+
+    /// Number of slots that have not been measured through [`set`](Self::set).
+    #[must_use]
+    pub fn unmeasured_count(&self) -> usize {
+        self.unmeasured
+    }
+
+    /// Whether slot `idx` holds a measured height.
+    #[must_use]
+    pub fn is_measured(&self, idx: usize) -> bool {
+        self.measured.get(idx).copied().unwrap_or(false)
+    }
+
+    /// Rewrite every unmeasured slot with the current fill height.
+    /// Returns the number of slots rewritten.
+    fn refill_unmeasured(&mut self) -> usize {
+        let fill = u32::from(self.fill_height);
+        let mut rewritten = 0;
+        for idx in 0..self.len {
+            if !self.measured[idx] {
+                self.tree.set(idx, fill);
+                rewritten += 1;
+            }
+        }
+        rewritten
     }
 
     /// Number of items tracked.
@@ -686,22 +809,39 @@ impl VariableHeightsFenwick {
     }
 
     /// Get height of a specific item. O(log n).
+    ///
+    /// Items beyond the tracked length report the fill height (the
+    /// prediction when a predictor is attached).
     #[must_use]
     pub fn get(&self, idx: usize) -> u16 {
         if idx >= self.len {
-            return self.default_height;
+            return self.fill_height;
         }
         // Fenwick get returns the individual value at idx
         self.tree.get(idx).min(u32::from(u16::MAX)) as u16
     }
 
-    /// Set height of a specific item. O(log n).
+    /// Set (measure) the height of a specific item. O(log n), plus a refill
+    /// of the unmeasured slots when an attached predictor's rounded
+    /// prediction changes.
     pub fn set(&mut self, idx: usize, height: u16) {
         if idx >= self.len {
             // Need to resize
             self.resize(idx + 1);
         }
         self.tree.set(idx, u32::from(height));
+        if !self.measured[idx] {
+            self.measured[idx] = true;
+            self.unmeasured -= 1;
+        }
+        if let Some(predictor) = self.predictor.as_mut() {
+            predictor.observe(0, height);
+            let next = predictor.predict(0).predicted.max(1);
+            if next != self.fill_height {
+                self.fill_height = next;
+                self.refill_unmeasured();
+            }
+        }
     }
 
     /// Get the y-offset (in pixels/rows) of an item. O(log n).
@@ -806,32 +946,49 @@ impl VariableHeightsFenwick {
 
     /// Resize the tracker to accommodate `new_len` items.
     ///
-    /// New items are initialized with default height.
+    /// New items are initialized with the fill height (the default height,
+    /// or the current prediction when a predictor is attached).
     pub fn resize(&mut self, new_len: usize) {
         if new_len == self.len {
             return;
         }
         self.tree.resize(new_len);
-        // Set default heights for new items
         if new_len > self.len {
             for i in self.len..new_len {
-                self.tree.set(i, u32::from(self.default_height));
+                self.tree.set(i, u32::from(self.fill_height));
             }
+            self.unmeasured += new_len - self.len;
+            self.measured.resize(new_len, false);
+        } else {
+            let dropped_unmeasured = self.measured[new_len..].iter().filter(|m| !**m).count();
+            self.unmeasured -= dropped_unmeasured;
+            self.measured.truncate(new_len);
         }
         self.len = new_len;
     }
 
-    /// Clear all height data.
+    /// Clear all height data (an attached predictor keeps what it learned).
     pub fn clear(&mut self) {
         self.tree = FenwickTree::new(0);
         self.len = 0;
+        self.measured.clear();
+        self.unmeasured = 0;
     }
 
-    /// Rebuild from a fresh set of heights.
+    /// Rebuild from a fresh set of heights; all of them count as measured and
+    /// train an attached predictor.
     pub fn rebuild(&mut self, heights: &[u16]) {
         let heights_u32: Vec<u32> = heights.iter().map(|&h| u32::from(h)).collect();
         self.tree = FenwickTree::from_values(&heights_u32);
         self.len = heights.len();
+        self.measured = vec![true; heights.len()];
+        self.unmeasured = 0;
+        if let Some(predictor) = self.predictor.as_mut() {
+            for &height in heights {
+                predictor.observe(0, height);
+            }
+            self.fill_height = predictor.predict(0).predicted.max(1);
+        }
     }
 }
 
@@ -2532,6 +2689,120 @@ mod tests {
                 heights
             );
         }
+    }
+
+    /// With a predictor attached, unmeasured slots follow the posterior mean
+    /// of the measured rows (Normal-Normal update, prior κ₀=2 at μ₀=1) instead
+    /// of the constant default, and measured slots are never touched.
+    #[test]
+    fn fenwick_predictor_fills_unmeasured_slots_and_tracks_observations() {
+        let config = PredictorConfig {
+            default_height: 1,
+            prior_mean: 1.0,
+            prior_strength: 2.0,
+            ..PredictorConfig::default()
+        };
+        let mut tracker = VariableHeightsFenwick::new(1, 10).with_predictor(config);
+        assert_eq!(tracker.predicted_height(), 1, "cold start uses the default");
+        assert_eq!(tracker.unmeasured_count(), 10);
+        assert_eq!(tracker.total_height(), 10);
+
+        // Three rows measure 3 tall: posterior mean (2·1 + 3·3) / 5 = 2.2 → 2.
+        for idx in 0..3 {
+            tracker.set(idx, 3);
+        }
+        assert_eq!(tracker.predicted_height(), 2);
+        assert_eq!(tracker.unmeasured_count(), 7);
+        assert_eq!(tracker.get(0), 3, "measured slots keep their measurement");
+        assert_eq!(tracker.get(7), 2, "unmeasured slots hold the prediction");
+        assert_eq!(tracker.total_height(), 3 * 3 + 7 * 2);
+        assert_eq!(tracker.offset_of_item(4), 9 + 2);
+
+        // Three more: (2·1 + 6·3) / 8 = 2.5 → 3; the unmeasured tail is refilled.
+        for idx in 3..6 {
+            tracker.set(idx, 3);
+        }
+        assert_eq!(tracker.predicted_height(), 3);
+        assert_eq!(tracker.total_height(), 6 * 3 + 4 * 3);
+        assert!(tracker.is_measured(5) && !tracker.is_measured(6));
+        assert_eq!(
+            tracker.predictor().map(HeightPredictor::total_measurements),
+            Some(6)
+        );
+
+        // Growth uses the prediction, not the constructor default.
+        tracker.resize(12);
+        assert_eq!(tracker.get(11), 3);
+        assert_eq!(tracker.unmeasured_count(), 6);
+        assert_eq!(tracker.find_item_at_offset(tracker.total_height() - 1), 11);
+
+        // Shrinking below measured rows keeps the bookkeeping consistent.
+        tracker.resize(4);
+        assert_eq!(tracker.unmeasured_count(), 0);
+        tracker.resize(6);
+        assert_eq!(tracker.unmeasured_count(), 2);
+        assert_eq!(tracker.total_height(), 4 * 3 + 2 * 3);
+
+        // Rebuild trains on every provided height and marks all as measured.
+        tracker.rebuild(&[5, 5, 5, 5, 5, 5, 5, 5]);
+        assert_eq!(tracker.unmeasured_count(), 0);
+        assert_eq!(tracker.total_height(), 40);
+        assert!(
+            tracker.predicted_height() >= 4,
+            "posterior pulled toward the taller rows"
+        );
+
+        // Without a predictor nothing changes: unmeasured slots stay at the default.
+        let mut plain = VariableHeightsFenwick::new(2, 4);
+        plain.set(0, 9);
+        assert_eq!(plain.predicted_height(), 2);
+        assert_eq!(plain.get(3), 2);
+        assert_eq!(plain.unmeasured_count(), 3);
+        assert!(plain.predictor().is_none());
+    }
+
+    /// `Virtualized::with_height_prediction` switches to the Fenwick tracker
+    /// and `observe_height` trains the model; fixed heights ignore it.
+    #[test]
+    fn virtualized_height_prediction_observe_height_trains_the_model() {
+        let mut virt: Virtualized<i32> = Virtualized::new(100)
+            .with_fixed_height(1)
+            .with_height_prediction(PredictorConfig::default());
+        assert!(matches!(virt.item_height(), ItemHeight::VariableFenwick(_)));
+        assert_eq!(virt.unmeasured_item_height(), 1);
+
+        // Four rows of height 4: (2·1 + 4·4) / 6 = 3.
+        for idx in 0..4 {
+            virt.observe_height(idx, 4);
+        }
+        assert_eq!(virt.unmeasured_item_height(), 3);
+        let ItemHeight::VariableFenwick(tracker) = virt.item_height() else {
+            panic!("expected the Fenwick tracker");
+        };
+        assert_eq!(tracker.get(0), 4);
+        assert_eq!(tracker.len(), 4);
+        assert_eq!(
+            tracker.get(40),
+            3,
+            "beyond the tracked length: the prediction"
+        );
+
+        let mut fixed: Virtualized<i32> = Virtualized::new(10).with_fixed_height(2);
+        fixed.observe_height(0, 9);
+        assert_eq!(
+            fixed.unmeasured_item_height(),
+            2,
+            "fixed heights ignore observations"
+        );
+
+        let mut linear: Virtualized<i32> =
+            Virtualized::new(10).with_item_height(ItemHeight::Variable(HeightCache::new(2, 8)));
+        linear.observe_height(1, 5);
+        assert_eq!(linear.unmeasured_item_height(), 2);
+        let ItemHeight::Variable(cache) = linear.item_height() else {
+            panic!("expected the linear cache");
+        };
+        assert_eq!(cache.get(1), 5);
     }
 
     #[test]

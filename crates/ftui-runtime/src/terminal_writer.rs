@@ -3742,7 +3742,7 @@ mod tests {
             sync_output: Some(true),
             ..ProbeResult::default()
         };
-        let mut after = before.clone();
+        let mut after = before;
         after.refine_from_probe(&result);
         let decisions = decisions_from_probe(
             &before,
@@ -3764,7 +3764,7 @@ mod tests {
             Vec::new(),
             ScreenMode::Inline { ui_height: 5 },
             UiAnchor::Bottom,
-            after.clone(),
+            after,
         )
         .with_capability_decisions(decisions.clone())
         .with_evidence_sink(sink.clone());
