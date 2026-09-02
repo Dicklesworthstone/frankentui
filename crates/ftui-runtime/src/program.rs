@@ -172,25 +172,40 @@ pub type DefaultProgram<M> = Program<M, CrosstermEventSource, Stdout>;
 ///
 /// Every probe is bounded by a timeout, fail-open (a non-answer changes
 /// nothing) and upgrade-only. `FTUI_CAPS_PROBE=0` disables probing.
-fn probe_live_terminal(capabilities: &mut TerminalCapabilities) {
-    if std::env::var_os("FTUI_CAPS_PROBE").is_some_and(|value| value == "0") {
-        return;
-    }
-    let wants_truecolor =
-        capabilities.color_depth == ftui_core::terminal_capabilities::ColorDepth::Ansi256;
-    let wants_sync_output = !capabilities.sync_output && !capabilities.in_any_mux();
-    if !wants_truecolor && !wants_sync_output {
-        return;
-    }
-    let probe = ftui_core::caps_probe::probe_capabilities(&ftui_core::caps_probe::ProbeConfig {
+#[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
+fn probe_live_terminal(
+    capabilities: &mut ftui_core::terminal_capabilities::TerminalCapabilities,
+) -> Vec<ftui_core::caps_probe::CapabilityDecision> {
+    use ftui_core::caps_probe::{
+        ProbeConfig, ProbeResult, decisions_from_probe, probe_capabilities,
+    };
+
+    let before = capabilities.clone();
+    let probing_disabled = std::env::var_os("FTUI_CAPS_PROBE").is_some_and(|value| value == "0");
+    let wants_truecolor = !probing_disabled
+        && capabilities.color_depth == ftui_core::terminal_capabilities::ColorDepth::Ansi256;
+    let wants_sync_output =
+        !probing_disabled && !capabilities.sync_output && !capabilities.in_any_mux();
+    let config = ProbeConfig {
         timeout: std::time::Duration::from_millis(300),
         probe_da1: false,
         probe_da2: false,
         probe_background: false,
         probe_truecolor: wants_truecolor,
         probe_sync_output: wants_sync_output,
-    });
-    capabilities.refine_from_probe(&probe);
+    };
+    let probe = if wants_truecolor || wants_sync_output {
+        let probe = probe_capabilities(&config);
+        capabilities.refine_from_probe(&probe);
+        probe
+    } else {
+        ProbeResult::default()
+    };
+    // The operator switches (FTUI_SYNC_OUTPUT / FTUI_SCROLL_REGION) outrank
+    // everything, including a terminal that answers the probe positively.
+    // (`with_overrides()` applied them once already; re-applying after the
+    // probe is what makes them win over a positive answer.)
+    let overrides = ftui_core::capability_override::apply_env_policy_overrides(capabilities);
     #[cfg(feature = "tracing")]
     tracing::debug!(
         target: "ftui.runtime",
@@ -200,6 +215,9 @@ fn probe_live_terminal(capabilities: &mut TerminalCapabilities) {
         sync_output = ?probe.sync_output,
         "live terminal capability probe"
     );
+    // Every session gets a decision ledger, probed or not, so the evidence
+    // file always says why sync output / scroll regions are on or off.
+    decisions_from_probe(&before, &config, &probe, overrides, capabilities)
 }
 
 /// Run a program to completion and translate a signal-termination error into
@@ -3113,7 +3131,12 @@ impl Default for ProgramConfig {
             evidence_sink: EvidenceSinkConfig::default(),
             render_trace: RenderTraceConfig::default(),
             frame_timing: None,
-            conformal_config: None,
+            // Conformal frame-time risk gating is on by default: the predictor
+            // only starts gating once a bucket has `min_samples` (20) real
+            // frame timings, so a fresh program renders at full fidelity
+            // during warm-up and degrades only on measured evidence. Use
+            // `without_conformal()` to opt out.
+            conformal_config: Some(ConformalConfig::default()),
             locale_context: LocaleContext::global(),
             poll_timeout: Duration::from_millis(100),
             immediate_drain: ImmediateDrainConfig::default(),
@@ -4958,7 +4981,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
 
         // Raw mode is active now, so the terminal can answer probes; the
         // writer built below must see the refined capabilities.
-        probe_live_terminal(&mut capabilities);
+        let capability_decisions = probe_live_terminal(&mut capabilities);
 
         let mut writer = TerminalWriter::with_diff_config(
             io::stdout(),
@@ -4966,7 +4989,8 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             config.ui_anchor,
             capabilities,
             config.diff_config.clone(),
-        );
+        )
+        .with_capability_decisions(capability_decisions);
 
         let frame_timing = config.frame_timing.clone();
         writer.set_timing_enabled(frame_timing.is_some());
@@ -5300,7 +5324,7 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
 
         // The native session is live (raw mode), so the terminal can be asked
         // directly what it supports; see `probe_live_terminal`.
-        probe_live_terminal(&mut capabilities);
+        let capability_decisions = probe_live_terminal(&mut capabilities);
 
         let writer = TerminalWriter::with_diff_config(
             io::stdout(),
@@ -5308,7 +5332,8 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
             config.ui_anchor,
             capabilities,
             config.diff_config.clone(),
-        );
+        )
+        .with_capability_decisions(capability_decisions);
 
         Self::with_event_source(model, backend, features, writer, config)
     }
@@ -6277,10 +6302,17 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // Reset budget for new frame, potentially upgrading quality
         self.budget.next_frame();
 
-        // Check frame guardrails (memory/queue limits)
+        // Check frame guardrails (memory/queue limits). The frame loop itself
+        // is synchronous, so "queue depth" is the effect backlog: tasks that
+        // were handed to the executor and have not produced their message
+        // yet (`queue_telemetry().in_flight`). This is the value the queue
+        // guardrail thresholds (warn/max/emergency) were designed against;
+        // it used to be hard-coded to 0, which made the whole queue guardrail
+        // dead in production (bd-1za0z item 3).
         let memory_bytes = self.writer.estimate_memory_usage() + self.frame_arena.allocated_bytes();
-        // Synchronous program has effectively zero queue depth.
-        let verdict = self.guardrails.check_frame(memory_bytes, 0);
+        let queue_depth =
+            u32::try_from(crate::effect_system::queue_telemetry().in_flight).unwrap_or(u32::MAX);
+        let verdict = self.guardrails.check_frame(memory_bytes, queue_depth);
 
         // F2 observability: export a guardrail snapshot whenever any
         // guardrail fires. Alerts are naturally rate-limited by the
@@ -6432,6 +6464,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             && let Some(state) = self.inline_auto_remeasure.as_mut()
         {
             let decision = state.sampler.decide(Instant::now());
+            // The VOI decision is an evidence event like diff and budget
+            // decisions: without this line the sampler's reasoning was only
+            // visible through the in-process telemetry snapshot.
+            if let Some(ref sink) = self.evidence_sink {
+                let _ = sink.write_jsonl(&decision.to_jsonl());
+            }
             if decision.should_sample {
                 should_measure = true;
             }
@@ -7285,7 +7323,10 @@ impl<M: Model> AppBuilder<M> {
         M::Message: Send + 'static,
     {
         let _ = (self.model, self.config);
-        Err(io::Error::new(io::ErrorKind::Unsupported, NO_BACKEND_MESSAGE))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            NO_BACKEND_MESSAGE,
+        ))
     }
 
     /// Run the application using the Crossterm backend.
@@ -7669,7 +7710,17 @@ mod tests {
         assert!(config.bracketed_paste);
         assert_eq!(config.resize_behavior, ResizeBehavior::Throttled);
         assert!(config.inline_auto_remeasure.is_none());
-        assert!(config.conformal_config.is_none());
+        let conformal = config
+            .conformal_config
+            .as_ref()
+            .expect("conformal frame-time gating is on by default");
+        assert_eq!(conformal.min_samples, 20, "warm-up before any gating");
+        assert!(
+            ProgramConfig::default()
+                .without_conformal()
+                .conformal_config
+                .is_none()
+        );
         assert!(config.diff_config.bayesian_enabled);
         assert!(config.diff_config.dirty_rows_enabled);
         assert!(!config.resize_coalescer.enable_bocpd);
@@ -12506,6 +12557,138 @@ mod tests {
         assert!(
             contents.contains(r#""mem_soft_violations":"#),
             "snapshot row must carry the violation counters"
+        );
+    }
+
+    /// The inline-auto VOI sampler's decision is exported through the evidence
+    /// sink (`voi_decision`), not only through the in-process telemetry
+    /// snapshot, so operators can grep why a remeasure did or did not happen.
+    #[test]
+    fn headless_inline_auto_exports_voi_decision_evidence() {
+        struct TallModel;
+
+        #[derive(Debug)]
+        enum TallMsg {
+            Noop,
+        }
+
+        impl From<Event> for TallMsg {
+            fn from(_: Event) -> Self {
+                TallMsg::Noop
+            }
+        }
+
+        impl Model for TallModel {
+            type Message = TallMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('V'));
+            }
+        }
+
+        let evidence_path = temp_evidence_path("voi_decision");
+        let config = ProgramConfig::inline_auto(1, 6)
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        assert!(config.inline_auto_remeasure.is_some());
+
+        let mut program = headless_program_with_config(TallModel, config);
+        for _ in 0..3 {
+            program.dirty = true;
+            program.render_frame().expect("render inline-auto frame");
+        }
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let _ = std::fs::remove_file(&evidence_path);
+        assert!(
+            contents.contains(r#""event":"voi_decision""#),
+            "inline-auto frames must export the VOI decision; got: {contents}"
+        );
+        assert!(
+            contents.contains(r#""should_sample":"#) && contents.contains(r#""voi_gain":"#),
+            "voi_decision row must carry the sampler reasoning"
+        );
+    }
+
+    /// CONTRACT (bd-1za0z item 3): the queue guardrail sees the live effect
+    /// backlog (`queue_telemetry().in_flight`), not a hard-coded zero. With a
+    /// warn depth of one and four tasks in flight, the very first frame must
+    /// raise a queue alert and export a snapshot carrying that depth.
+    #[test]
+    fn headless_render_frame_feeds_live_effect_backlog_to_queue_guardrail() {
+        struct QueueModel;
+
+        #[derive(Debug)]
+        enum QueueMsg {
+            Noop,
+        }
+
+        impl From<Event> for QueueMsg {
+            fn from(_: Event) -> Self {
+                QueueMsg::Noop
+            }
+        }
+
+        impl Model for QueueModel {
+            type Message = QueueMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('Q'));
+            }
+        }
+
+        let evidence_path = temp_evidence_path("guardrail_queue_depth");
+        let config = ProgramConfig {
+            guardrails: GuardrailsConfig {
+                memory: MemoryBudgetConfig::default(),
+                queue: QueueConfig {
+                    warn_depth: 1,
+                    ..QueueConfig::default()
+                },
+            },
+            evidence_sink: EvidenceSinkConfig::enabled_file(&evidence_path),
+            ..Default::default()
+        };
+
+        // Simulate four effects handed to the executor that have not produced
+        // their message yet. The counters are process-global, so release them
+        // again afterwards; the assertion below tolerates other tests' traffic
+        // by checking for "at least four", never an exact figure.
+        const IN_FLIGHT: usize = 4;
+        for depth in 1..=IN_FLIGHT as u64 {
+            crate::effect_system::record_queue_enqueue(depth);
+        }
+        let mut program = headless_program_with_config(QueueModel, config);
+        program.dirty = true;
+        let rendered = program.render_frame();
+        for _ in 0..IN_FLIGHT {
+            crate::effect_system::record_queue_processed();
+        }
+        rendered.expect("render frame with queue alert");
+
+        let contents =
+            std::fs::read_to_string(&evidence_path).expect("guardrail evidence file written");
+        let _ = std::fs::remove_file(&evidence_path);
+        assert!(
+            contents.contains(r#""event":"guardrail_snapshot""#),
+            "queue backlog above warn_depth must export a guardrail_snapshot row; got: {contents}"
+        );
+        let depth = contents
+            .split(r#""queue_depth":"#)
+            .nth(1)
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|digits| digits.parse::<u64>().ok())
+            .expect("snapshot row carries queue_depth");
+        assert!(
+            depth >= IN_FLIGHT as u64,
+            "guardrail must observe the live backlog (>= {IN_FLIGHT}), saw {depth}: {contents}"
         );
     }
 

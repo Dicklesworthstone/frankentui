@@ -1860,13 +1860,19 @@ mod tests {
         assert_eq!(caps.color_depth, ColorDepth::TrueColor, "modern terminal");
         assert!(caps.osc8_hyperlinks);
         assert!(caps.kitty_keyboard);
-        assert!(!caps.sync_output, "not allowlisted: left to the DECRPM probe");
+        assert!(
+            !caps.sync_output,
+            "not allowlisted: left to the DECRPM probe"
+        );
 
         // An explicit TERM_PROGRAM always wins over LC_TERMINAL.
         let mut env = make_env("xterm-256color", "Apple_Terminal", "");
         env.lc_terminal = "iTerm2".to_string();
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.osc8_hyperlinks, "Apple Terminal is not on the allowlist");
+        assert!(
+            !caps.osc8_hyperlinks,
+            "Apple Terminal is not on the allowlist"
+        );
     }
 
     #[test]

@@ -516,6 +516,28 @@ fn policy_switch(value: Option<String>) -> Option<bool> {
     }
 }
 
+/// Which operator policy switches were present and what they forced.
+///
+/// Returned by [`apply_env_policy_overrides`] so the runtime can record the
+/// override in its capability decision ledger (`capability_decision`
+/// evidence rows) instead of silently mutating the detected capabilities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PolicyOverrides {
+    /// `FTUI_SYNC_OUTPUT` forced synchronized output on (`Some(true)`) or
+    /// off (`Some(false)`); `None` when the switch was absent or unparsable.
+    pub sync_output: Option<bool>,
+    /// `FTUI_SCROLL_REGION`, same encoding.
+    pub scroll_region: Option<bool>,
+}
+
+impl PolicyOverrides {
+    /// `true` when no switch was applied.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.sync_output.is_none() && self.scroll_region.is_none()
+    }
+}
+
 /// Apply the operator environment switches that override detection policy.
 ///
 /// - `FTUI_SYNC_OUTPUT=1|0` forces synchronized-output (DEC 2026) brackets on
@@ -528,27 +550,39 @@ fn policy_switch(value: Option<String>) -> Option<bool> {
 /// These exist so a user on a terminal the allowlist does not know (or one
 /// where a probe cannot run) can opt in without rebuilding, and so a flaky
 /// terminal can be opted out without editing code.
-pub fn apply_env_policy_overrides_with<F>(caps: &mut TerminalCapabilities, get_env: F)
+///
+/// Returns which switches were applied so callers can log the decision.
+pub fn apply_env_policy_overrides_with<F>(
+    caps: &mut TerminalCapabilities,
+    get_env: F,
+) -> PolicyOverrides
 where
     F: Fn(&str) -> Option<String>,
 {
-    if let Some(enabled) = policy_switch(get_env("FTUI_SYNC_OUTPUT")) {
+    let overrides = PolicyOverrides {
+        sync_output: policy_switch(get_env("FTUI_SYNC_OUTPUT")),
+        scroll_region: policy_switch(get_env("FTUI_SCROLL_REGION")),
+    };
+    if let Some(enabled) = overrides.sync_output {
         caps.sync_output = enabled;
         if enabled {
             caps.in_wezterm_mux = false;
         }
     }
-    if let Some(enabled) = policy_switch(get_env("FTUI_SCROLL_REGION")) {
+    if let Some(enabled) = overrides.scroll_region {
         caps.scroll_region = enabled;
         if enabled {
             caps.in_wezterm_mux = false;
         }
     }
+    overrides
 }
 
 /// Apply the operator environment switches from the process environment.
-pub fn apply_env_policy_overrides(caps: &mut TerminalCapabilities) {
-    apply_env_policy_overrides_with(caps, |key| std::env::var(key).ok());
+///
+/// Returns which switches were applied so callers can log the decision.
+pub fn apply_env_policy_overrides(caps: &mut TerminalCapabilities) -> PolicyOverrides {
+    apply_env_policy_overrides_with(caps, |key| std::env::var(key).ok())
 }
 
 impl TerminalCapabilities {
@@ -561,7 +595,7 @@ impl TerminalCapabilities {
     #[must_use]
     pub fn with_overrides() -> Self {
         let mut caps = current_capabilities();
-        apply_env_policy_overrides(&mut caps);
+        let _applied = apply_env_policy_overrides(&mut caps);
         caps
     }
 
@@ -608,7 +642,10 @@ mod tests {
         assert!(!caps.use_sync_output());
         apply_env_policy_overrides_with(&mut caps, env_from(&[("FTUI_SYNC_OUTPUT", "1")]));
         assert!(caps.sync_output);
-        assert!(!caps.in_wezterm_mux, "explicit opt-in outranks the identity gate");
+        assert!(
+            !caps.in_wezterm_mux,
+            "explicit opt-in outranks the identity gate"
+        );
         assert!(caps.use_sync_output());
     }
 
@@ -637,6 +674,30 @@ mod tests {
         assert!(caps.sync_output, "junk value ignored");
         assert!(!caps.scroll_region);
         assert!(!caps.use_scroll_region());
+    }
+
+    #[test]
+    fn env_policy_override_reports_which_switches_applied() {
+        let mut caps = TerminalCapabilities::modern();
+        let none = apply_env_policy_overrides_with(&mut caps, env_from(&[]));
+        assert!(none.is_empty());
+        assert_eq!(none, PolicyOverrides::default());
+
+        let mut caps = TerminalCapabilities::modern();
+        let applied = apply_env_policy_overrides_with(
+            &mut caps,
+            env_from(&[("FTUI_SYNC_OUTPUT", "off"), ("FTUI_SCROLL_REGION", "yes")]),
+        );
+        assert_eq!(applied.sync_output, Some(false));
+        assert_eq!(applied.scroll_region, Some(true));
+        assert!(!applied.is_empty());
+        assert!(!caps.sync_output);
+        assert!(caps.scroll_region);
+
+        let mut caps = TerminalCapabilities::modern();
+        let junk =
+            apply_env_policy_overrides_with(&mut caps, env_from(&[("FTUI_SYNC_OUTPUT", "maybe")]));
+        assert!(junk.is_empty(), "unparsable switch reports nothing applied");
     }
 
     #[test]

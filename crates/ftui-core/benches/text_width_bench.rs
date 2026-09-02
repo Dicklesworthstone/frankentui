@@ -43,41 +43,53 @@ fn bench_width(c: &mut Criterion) {
     let mut group = c.benchmark_group("text_width/non_ascii_grapheme");
     group.throughput(Throughput::Elements(clusters.len() as u64));
 
-    group.bench_with_input(BenchmarkId::new("uncached", clusters.len()), &clusters, |b, cl| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for g in cl {
-                total += grapheme_width_uncached(black_box(g));
-            }
-            black_box(total)
-        });
-    });
+    group.bench_with_input(
+        BenchmarkId::new("uncached", clusters.len()),
+        &clusters,
+        |b, cl| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for g in cl {
+                    total += grapheme_width_uncached(black_box(g));
+                }
+                black_box(total)
+            });
+        },
+    );
 
-    group.bench_with_input(BenchmarkId::new("cached", clusters.len()), &clusters, |b, cl| {
-        // Warm once so the measurement is the steady state a running screen sees.
-        clear_width_cache();
-        for g in cl {
-            let _ = grapheme_width(g);
-        }
-        b.iter(|| {
-            let mut total = 0usize;
-            for g in cl {
-                total += grapheme_width(black_box(g));
-            }
-            black_box(total)
-        });
-    });
-
-    group.bench_with_input(BenchmarkId::new("cached_cold", clusters.len()), &clusters, |b, cl| {
-        b.iter(|| {
+    group.bench_with_input(
+        BenchmarkId::new("cached", clusters.len()),
+        &clusters,
+        |b, cl| {
+            // Warm once so the measurement is the steady state a running screen sees.
             clear_width_cache();
-            let mut total = 0usize;
             for g in cl {
-                total += grapheme_width(black_box(g));
+                let _ = grapheme_width(g);
             }
-            black_box(total)
-        });
-    });
+            b.iter(|| {
+                let mut total = 0usize;
+                for g in cl {
+                    total += grapheme_width(black_box(g));
+                }
+                black_box(total)
+            });
+        },
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("cached_cold", clusters.len()),
+        &clusters,
+        |b, cl| {
+            b.iter(|| {
+                clear_width_cache();
+                let mut total = 0usize;
+                for g in cl {
+                    total += grapheme_width(black_box(g));
+                }
+                black_box(total)
+            });
+        },
+    );
     group.finish();
 }
 

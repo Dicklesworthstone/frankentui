@@ -72,3 +72,7 @@ trybuild = "1.0.118"
 [[bench]]
 name = "read_optimized_bench"
 harness = false
+
+[[bench]]
+name = "text_width_bench"
+harness = false

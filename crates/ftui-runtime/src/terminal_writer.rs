@@ -70,6 +70,7 @@ use crate::evidence_telemetry::{DiffDecisionSnapshot, set_diff_snapshot};
 use crate::render_trace::{
     RenderTraceFrame, RenderTraceRecorder, build_diff_runs_payload, build_full_buffer_payload,
 };
+use ftui_core::caps_probe::CapabilityDecision;
 use ftui_core::inline_mode::{InlineStrategy, sanitize_overlay_log_line};
 #[cfg(test)]
 use ftui_core::terminal_capabilities::ColorDepth;
@@ -561,6 +562,9 @@ pub struct TerminalWriter<W: Write> {
     diff_config: RuntimeDiffConfig,
     /// Evidence JSONL sink for diff decisions.
     evidence_sink: Option<EvidenceSink>,
+    /// Capability decision ledger from the live probe, held until an evidence
+    /// sink is attached and then written out once (drained).
+    capability_decisions: Vec<CapabilityDecision>,
     /// Run identifier for diff decision evidence.
     #[allow(dead_code)]
     /// The explicit skip certificate for the most recent diff decision.
@@ -710,6 +714,7 @@ impl<W: Write> TerminalWriter<W> {
             last_full_redraw_at: None,
             diff_config,
             evidence_sink: None,
+            capability_decisions: Vec::new(),
             diff_evidence_run_id: default_diff_run_id(),
             diff_evidence_idx: 0,
             last_diff_strategy: None,
@@ -785,12 +790,45 @@ impl<W: Write> TerminalWriter<W> {
     #[must_use]
     pub fn with_evidence_sink(mut self, sink: EvidenceSink) -> Self {
         self.evidence_sink = Some(sink);
+        self.export_capability_decisions();
         self
     }
 
     /// Set the evidence JSONL sink for diff decision logging.
     pub fn set_evidence_sink(&mut self, sink: Option<EvidenceSink>) {
         self.evidence_sink = sink;
+        self.export_capability_decisions();
+    }
+
+    /// Attach the capability decision ledger produced by the live terminal
+    /// probe. The rows are written to the evidence sink as
+    /// `capability_decision` events, followed by one `inline_strategy` event
+    /// naming the strategy selected from those capabilities, as soon as both
+    /// the ledger and a sink are present (in either order).
+    #[must_use]
+    pub fn with_capability_decisions(mut self, decisions: Vec<CapabilityDecision>) -> Self {
+        self.capability_decisions = decisions;
+        self.export_capability_decisions();
+        self
+    }
+
+    fn export_capability_decisions(&mut self) {
+        let Some(sink) = self.evidence_sink.as_ref() else {
+            return;
+        };
+        if self.capability_decisions.is_empty() {
+            return;
+        }
+        for decision in self.capability_decisions.drain(..) {
+            let _ = sink.write_jsonl(&decision.to_jsonl());
+        }
+        let _ = sink.write_jsonl(&format!(
+            r#"{{"event":"inline_strategy","strategy":"{}","use_scroll_region":{},"use_sync_output":{},"in_mux":{}}}"#,
+            inline_strategy_str(self.inline_strategy),
+            self.capabilities.use_scroll_region(),
+            self.capabilities.use_sync_output(),
+            self.capabilities.in_any_mux()
+        ));
     }
 
     /// Attach a render-trace recorder.
@@ -3682,6 +3720,100 @@ mod tests {
             output.windows(seq.len()).any(|w| w == seq),
             "expected SGR reset before cursor restore in inline mode"
         );
+    }
+
+    #[test]
+    fn evidence_sink_exports_capability_decisions_and_inline_strategy() {
+        use ftui_core::capability_override::PolicyOverrides;
+        use ftui_core::caps_probe::{ProbeConfig, ProbeResult, decisions_from_probe};
+
+        // A terminal that was not on the allowlist but answered DECRPM 2026.
+        let mut before = TerminalCapabilities::basic();
+        before.scroll_region = true;
+        let config = ProbeConfig {
+            probe_da1: false,
+            probe_da2: false,
+            probe_background: false,
+            probe_truecolor: false,
+            probe_sync_output: true,
+            ..ProbeConfig::default()
+        };
+        let result = ProbeResult {
+            sync_output: Some(true),
+            ..ProbeResult::default()
+        };
+        let mut after = before.clone();
+        after.refine_from_probe(&result);
+        let decisions = decisions_from_probe(
+            &before,
+            &config,
+            &result,
+            PolicyOverrides::default(),
+            &after,
+        );
+
+        let evidence_path = temp_evidence_path("capability_decisions");
+        let sink = crate::evidence_sink::EvidenceSink::from_config(
+            &crate::evidence_sink::EvidenceSinkConfig::enabled_file(&evidence_path),
+        )
+        .expect("sink config")
+        .expect("sink enabled");
+
+        // Ledger attached before the sink: rows must still come out once.
+        let w = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            after.clone(),
+        )
+        .with_capability_decisions(decisions.clone())
+        .with_evidence_sink(sink.clone());
+        assert_eq!(w.inline_strategy(), InlineStrategy::ScrollRegion);
+        drop(w);
+
+        // Sink attached before the ledger: same result.
+        let w = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            after,
+        )
+        .with_evidence_sink(sink)
+        .with_capability_decisions(decisions);
+        drop(w);
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let _ = std::fs::remove_file(&evidence_path);
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(
+            lines.len(),
+            8,
+            "3 decisions + 1 strategy row, twice: {contents}"
+        );
+        for block in lines.chunks(4) {
+            assert!(
+                block[0].contains(r#""capability":"true_color""#),
+                "{}",
+                block[0]
+            );
+            assert!(
+                block[1].contains(r#""capability":"sync_output""#),
+                "{}",
+                block[1]
+            );
+            assert!(block[1].contains(r#""probe":"confirmed""#), "{}", block[1]);
+            assert!(block[1].contains(r#""final":true"#), "{}", block[1]);
+            assert!(
+                block[2].contains(r#""capability":"scroll_region""#),
+                "{}",
+                block[2]
+            );
+            assert!(block[2].contains(r#""probe":"not_probed""#), "{}", block[2]);
+            assert_eq!(
+                block[3],
+                r#"{"event":"inline_strategy","strategy":"scroll_region","use_scroll_region":true,"use_sync_output":true,"in_mux":false}"#
+            );
+        }
     }
 
     #[test]

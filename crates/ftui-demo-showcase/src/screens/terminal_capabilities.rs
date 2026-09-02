@@ -1928,6 +1928,8 @@ fn evidence_label(source: EvidenceSource) -> &'static str {
         EvidenceSource::OscResponse => "osc",
         EvidenceSource::Timeout => "timeout",
         EvidenceSource::Prior => "prior",
+        EvidenceSource::XtgettcapResponse => "xtgettcap",
+        EvidenceSource::Operator => "operator",
     }
 }
 

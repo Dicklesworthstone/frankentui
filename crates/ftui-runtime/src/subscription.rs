@@ -506,6 +506,24 @@ impl<M: Send + 'static> Every<M> {
     }
 }
 
+/// Boxed tick subscription: the one-liner for `subscriptions()`.
+///
+/// Equivalent to `Box::new(Every::new(interval, make_msg))`.
+///
+/// # Example
+///
+/// ```ignore
+/// fn subscriptions(&self) -> Vec<Box<dyn Subscription<MyMsg>>> {
+///     vec![tick_every(Duration::from_millis(16), || MyMsg::Tick)]
+/// }
+/// ```
+pub fn tick_every<M: Send + 'static>(
+    interval: Duration,
+    make_msg: impl Fn() -> M + Send + Sync + 'static,
+) -> Box<dyn Subscription<M>> {
+    Box::new(Every::new(interval, make_msg))
+}
+
 impl<M: Send + 'static> Subscription<M> for Every<M> {
     fn id(&self) -> SubId {
         self.id
@@ -658,6 +676,29 @@ mod tests {
 
         let msgs: Vec<_> = rx.try_iter().collect();
         assert!(!msgs.is_empty(), "Should have received at least one tick");
+        assert!(msgs.iter().all(|m| *m == TestMsg::Tick));
+    }
+
+    #[test]
+    fn tick_every_is_a_boxed_every_with_the_same_id() {
+        let boxed: Box<dyn Subscription<TestMsg>> =
+            tick_every(Duration::from_millis(10), || TestMsg::Tick);
+        let plain = Every::new(Duration::from_millis(10), || TestMsg::Tick);
+        assert_eq!(
+            boxed.id(),
+            plain.id(),
+            "the helper must not change subscription identity (diffing relies on it)"
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let (signal, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || boxed.run(tx, signal));
+        thread::sleep(Duration::from_millis(50));
+        trigger.stop();
+        handle.join().unwrap();
+
+        let msgs: Vec<_> = rx.try_iter().collect();
+        assert!(!msgs.is_empty(), "boxed tick subscription must fire");
         assert!(msgs.iter().all(|m| *m == TestMsg::Tick));
     }
 

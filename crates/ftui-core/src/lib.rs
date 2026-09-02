@@ -327,10 +327,99 @@ pub mod text_width {
             || matches!(u, 0x202A..=0x202E | 0x2066..=0x2069 | 0x206A..=0x206F)
     }
 
+    /// Capacity of the per-thread grapheme width cache (entries).
+    ///
+    /// 4096 distinct non-ASCII graphemes covers the working set of a busy
+    /// CJK/emoji screen many times over; S3-FIFO keeps one-off scans (a log
+    /// stream of unique emoji) from evicting the hot set.
+    const WIDTH_CACHE_CAPACITY: usize = 4096;
+
+    /// Whether the grapheme width cache is enabled (`FTUI_WIDTH_CACHE=0`,
+    /// `false`, `off`, or `no` disables it; anything else keeps it on).
+    #[inline]
+    fn use_width_cache() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var("FTUI_WIDTH_CACHE")
+                .map(|value| {
+                    !matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "0" | "false" | "off" | "no"
+                    )
+                })
+                .unwrap_or(true)
+        })
+    }
+
+    thread_local! {
+        /// Per-thread S3-FIFO cache from grapheme hash to display width.
+        ///
+        /// Non-ASCII width lookups (`unicode_display_width`, VS16 stripping,
+        /// zero-width scans) are the expensive part of measuring text; every
+        /// wrap, table column, and diff of a CJK or emoji screen repeats them
+        /// for the same handful of clusters. Keyed by a 64-bit hash of the
+        /// cluster bytes; a collision would misreport a width, which is why
+        /// the hasher is seeded deterministically and the space is 2^64.
+        static WIDTH_CACHE: std::cell::RefCell<crate::s3_fifo::S3Fifo<u64, u8>> =
+            std::cell::RefCell::new(crate::s3_fifo::S3Fifo::new(WIDTH_CACHE_CAPACITY));
+    }
+
+    #[inline]
+    fn grapheme_cache_key(grapheme: &str) -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        let mut hasher =
+            ahash::RandomState::with_seeds(0x5749_4454, 0x485f_4341, 0x4348_455f, 0x4b45_5921)
+                .build_hasher();
+        hasher.write(grapheme.as_bytes());
+        hasher.finish()
+    }
+
+    /// Snapshot of the calling thread's grapheme width cache statistics,
+    /// or `None` when the cache is disabled.
+    #[must_use]
+    pub fn width_cache_stats() -> Option<crate::s3_fifo::S3FifoStats> {
+        if !use_width_cache() {
+            return None;
+        }
+        Some(WIDTH_CACHE.with(|cache| cache.borrow().stats()))
+    }
+
+    /// Drop every cached width on the calling thread (tests and benchmarks).
+    pub fn clear_width_cache() {
+        WIDTH_CACHE.with(|cache| cache.borrow_mut().clear());
+    }
+
     /// Width of a single grapheme cluster.
+    ///
+    /// ASCII is answered inline; every other cluster goes through the
+    /// per-thread width cache (see [`width_cache_stats`]) in front of the
+    /// Unicode width tables.
     #[inline]
     #[must_use]
     pub fn grapheme_width(grapheme: &str) -> usize {
+        if grapheme.is_ascii() {
+            return ascii_display_width(grapheme);
+        }
+        if !use_width_cache() {
+            return grapheme_width_uncached(grapheme);
+        }
+        let key = grapheme_cache_key(grapheme);
+        if let Some(width) = WIDTH_CACHE.with(|cache| cache.borrow_mut().get(&key).copied()) {
+            return usize::from(width);
+        }
+        let width = grapheme_width_uncached(grapheme);
+        let stored = u8::try_from(width).unwrap_or(u8::MAX);
+        WIDTH_CACHE.with(|cache| {
+            cache.borrow_mut().insert(key, stored);
+        });
+        width
+    }
+
+    /// Width of a non-ASCII grapheme cluster, computed from the Unicode
+    /// tables every time (the cached path in [`grapheme_width`] wraps this).
+    #[inline]
+    #[must_use]
+    pub fn grapheme_width_uncached(grapheme: &str) -> usize {
         if grapheme.is_ascii() {
             return ascii_display_width(grapheme);
         }
@@ -398,6 +487,83 @@ pub mod text_width {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        // ── grapheme width cache ────────────────────────────────────
+
+        const CORPUS: &[&str] = &[
+            "é",
+            "日",
+            "本",
+            "語",
+            "한",
+            "😀",
+            "👨‍👩‍👧‍👦",
+            "🇯🇵",
+            "\u{1F3F4}\u{E0067}",
+            "a\u{0301}",
+            "\u{200B}",
+            "\u{FE0F}",
+            "☂\u{FE0F}",
+            "ｱ",
+            "Ω",
+            "→",
+            "…",
+        ];
+
+        /// The cache must be invisible: cached answers equal the uncached
+        /// computation for every cluster, and repeated lookups are hits.
+        #[test]
+        fn width_cache_is_transparent_and_hits_on_repeat() {
+            clear_width_cache();
+            let before = width_cache_stats();
+            for grapheme in CORPUS {
+                assert_eq!(
+                    grapheme_width(grapheme),
+                    grapheme_width_uncached(grapheme),
+                    "cached width differs for {grapheme:?}"
+                );
+            }
+            for grapheme in CORPUS {
+                assert_eq!(grapheme_width(grapheme), grapheme_width_uncached(grapheme));
+            }
+            if let (Some(before), Some(after)) = (before, width_cache_stats()) {
+                assert!(
+                    after.hits >= before.hits + CORPUS.len() as u64,
+                    "second pass must hit the cache: before={before:?} after={after:?}"
+                );
+                assert!(after.small_size + after.main_size >= 1);
+            }
+        }
+
+        /// ASCII never touches the cache: its width is answered inline.
+        #[test]
+        fn width_cache_skips_ascii() {
+            clear_width_cache();
+            let before = width_cache_stats();
+            for text in ["a", "hello", " ", "~", "\t"] {
+                let _ = grapheme_width(text);
+            }
+            let after = width_cache_stats();
+            assert_eq!(before.map(|s| s.hits), after.map(|s| s.hits));
+            assert_eq!(before.map(|s| s.misses), after.map(|s| s.misses));
+        }
+
+        /// `display_width` over mixed text agrees with a from-scratch sum of
+        /// uncached grapheme widths, so the cache cannot change measurements.
+        #[test]
+        fn display_width_matches_uncached_sum_on_mixed_text() {
+            let samples = [
+                "hello 世界 👋🏽 done",
+                "table │ 日本語 │ ok",
+                "🇯🇵🇺🇸 flags and ☂\u{FE0F} rain",
+                "combining a\u{0301}e\u{0301} marks",
+            ];
+            for text in samples {
+                let expected: usize = text.graphemes(true).map(grapheme_width_uncached).sum();
+                assert_eq!(display_width(text), expected, "{text:?}");
+                assert_eq!(display_width(text), expected, "second pass {text:?}");
+            }
+        }
 
         // ── env helpers (testable without OnceLock) ─────────────────
 

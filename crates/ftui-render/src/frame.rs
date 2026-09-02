@@ -698,6 +698,16 @@ impl<'a> Frame<'a> {
         self.buffer.bounds()
     }
 
+    /// The full drawable area of the frame (`(0, 0)` to `(width, height)`).
+    ///
+    /// Same as [`Frame::bounds`]; this is the name layout code reads best
+    /// (`Flex::horizontal().constraints(..).split(frame.area())`).
+    #[inline]
+    #[must_use]
+    pub fn area(&self) -> Rect {
+        self.buffer.bounds()
+    }
+
     /// Register a hit region (if hit grid is enabled).
     ///
     /// Returns `true` if the region was registered, `false` if no hit grid.
@@ -924,6 +934,17 @@ mod tests {
         assert_eq!(bounds.y, 0);
         assert_eq!(bounds.width, 80);
         assert_eq!(bounds.height, 24);
+    }
+
+    #[test]
+    fn frame_area_is_the_full_buffer_rect() {
+        let mut pool = GraphemePool::new();
+        let frame = Frame::new(120, 40, &mut pool);
+        assert_eq!(frame.area(), frame.bounds());
+        assert_eq!(frame.area(), Rect::new(0, 0, 120, 40));
+        // A zero-sized frame still reports a well-formed (empty) area.
+        let empty = Frame::new(0, 0, &mut pool);
+        assert_eq!(empty.area(), Rect::new(0, 0, 0, 0));
     }
 
     #[test]

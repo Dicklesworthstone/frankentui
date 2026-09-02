@@ -1206,7 +1206,12 @@ FTUI_HARNESS_ENABLE_MOUSE=true cargo run -p ftui-harness
 
 ### “output flickers”
 
-Inline mode uses synchronized output where supported. If you’re in a very old terminal or multiplexer, expect reduced capability.
+Inline mode uses synchronized output where supported: allowlisted terminals get
+it immediately and any terminal that answers the DECRPM 2026 probe gets it at
+startup. Inside tmux/screen/zellij and under WezTerm identities it is off by
+policy. If you know your terminal handles `CSI ? 2026 h/l` correctly, set
+`FTUI_SYNC_OUTPUT=1` (and `FTUI_SCROLL_REGION=1` for the inline scroll-region
+strategy); set them to `0` to force the conservative path.
 
 ---
 
@@ -1376,19 +1381,28 @@ The `Editor` module (1,800+ lines) provides:
 
 ### Width Calculation
 
-Grapheme width calculation uses a **W-TinyLFU admission cache** for expensive `unicode-width` lookups:
+Every width in the render path goes through `ftui_core::text_width`. ASCII is
+answered inline; every other grapheme cluster is looked up in a per-thread
+**S3-FIFO cache** in front of the Unicode width tables (`unicode-width`,
+VS16 stripping, zero-width scans):
 
 ```
-Cache Architecture:
-  Doorkeeper (Bloom filter) → Count-Min Sketch → LRU cache
-
-Admission:
-  New item admitted only if CMS frequency ≥ eviction candidate frequency
-  → High hit-rate even under adversarial access patterns
+grapheme_width(cluster)
+  ASCII?            → byte length, no cache
+  cache hit         → width (S3-FIFO, 4096 entries, keyed by a 64-bit hash)
+  miss              → Unicode tables, then insert
 
 Width Embedding:
-  GraphemeId packs display width into bits [31:25], avoiding pool lookup for width queries
+  GraphemeId packs the display width (4 bits) next to the pool slot, so cells
+  never consult the pool for width
 ```
+
+S3-FIFO is scan-resistant: a stream of one-off emoji in a log viewer cannot
+evict the hot CJK labels of the table above it. `FTUI_WIDTH_CACHE=0` disables
+the cache; `text_width::width_cache_stats()` reports hits and occupancy. The
+`W-TinyLFU` and `LRU` caches in `ftui-text` are benchmark subjects only and are
+not on the render path. Measured numbers (cached vs uncached, cold vs warm) are
+in [docs/perf/text_width_cache_2026-09-02.md](docs/perf/text_width_cache_2026-09-02.md).
 
 ---
 
@@ -1916,12 +1930,13 @@ Complex graphemes (emoji, ZWJ sequences) are reference-counted in a pool:
 
 ```
 GraphemeId (4 bytes):
-┌────────────────────────────────────────┐
-│ [31-25: width] [24-0: pool slot index] │
-└────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ [30-27: width] [26-16: generation] [15-0: pool slot index] │
+└─────────────────────────────────────────────────────────────┘
 
-Capacity: 16M slots, display widths 0-127
-Lookup:   O(1) via HashMap deduplication
+Capacity: 65,536 slots, display widths 0-15; the generation counter
+          detects stale ids after a slot is recycled
+Lookup:   O(1) via hash-map deduplication
 ```
 
 **Why pooling?**
@@ -1939,7 +1954,26 @@ CSI ? 2026 h    ←Begin synchronized update
 CSI ? 2026 l    ← End synchronized update (terminal displays atomically)
 ```
 
-**Guarantee:** No partial frames ever visible, eliminating flicker even on slow terminals.
+**Guarantee:** while sync output is enabled, no partial frame is ever visible,
+eliminating flicker even on slow terminals. It is enabled when either:
+
+- the terminal identity is on the allowlist (kitty, Ghostty, Alacritty via
+  `TERM_PROGRAM` or `TERM=alacritty`, Contour), or
+- the terminal answers the DECRPM probe (`CSI ? 2026 $ p`) at startup saying it
+  recognizes mode 2026. This is how plain `xterm-256color`, iTerm2, VS Code, and
+  any terminal reached over `ssh` get flicker-free frames; the probe is bounded
+  (300 ms), fail-open, and upgrade-only.
+
+It is deliberately **off** inside tmux, screen, and zellij, and for WezTerm
+identities (WezTerm multiplexer sessions were observed to misbehave around
+`?2026 h/l`, and the markers that would distinguish a mux session from a local
+window do not survive every launch path). Operators can override policy without
+rebuilding: `FTUI_SYNC_OUTPUT=1|0` and `FTUI_SCROLL_REGION=1|0` force the
+setting (an explicit `1` also lifts the WezTerm gate, never real multiplexer
+evidence), and `FTUI_CAPS_PROBE=0` disables startup probing. The matrix in
+`scripts/pty_identity_matrix.py` runs the showcase under a real PTY per
+identity and asserts exactly which of these outcomes occur; the measured
+results are in [`docs/compat-matrix.md`](docs/compat-matrix.md).
 
 ---
 
@@ -2218,15 +2252,16 @@ let style = sheet.get("heading").unwrap_or_default();
 ### Widget Composition
 
 ```rust
-// Widgets compose via Frame's render method
-fn view(&self, frame: &mut Frame) {
-    let chunks = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(70),
-    ]).split(frame.area());
+// Widgets compose via Frame's render helpers (FrameExt, in the prelude)
+use ftui::layout::{Constraint, Flex};
 
-    frame.render_widget(sidebar, chunks[0]);
-    frame.render_widget(main_content, chunks[1]);
+fn view(&self, frame: &mut Frame) {
+    let chunks = Flex::horizontal()
+        .constraints([Constraint::Percentage(30.0), Constraint::Percentage(70.0)])
+        .split(frame.area());
+
+    frame.render_widget(&self.sidebar, chunks[0]);
+    frame.render_widget(&self.main_content, chunks[1]);
 }
 ```
 
@@ -2403,7 +2438,18 @@ For terminals that don't support scroll regions reliably (some multiplexers, old
 
 ### Strategy C: Hybrid
 
-Uses scroll-region for the fast path but falls back to overlay-redraw when capability probing detects an unreliable DECSTBM implementation. This is the default.
+Scroll-region without synchronized output: the fast path is the same DECSTBM region as Strategy A, but without sync brackets around the redraw. A runtime DECSTBM self-test that would fall back to overlay redraw on an unreliable implementation is planned, not implemented; today the choice is made once, from capabilities, when the writer is created.
+
+### Which strategy you actually get
+
+`InlineStrategy::select` (in `ftui_core::inline_mode`) decides in this order:
+
+1. inside tmux, screen, zellij or a WezTerm mux session: **Overlay Redraw**
+2. scroll-region capability and synchronized output both usable: **Scroll Region**
+3. scroll-region usable, no synchronized output: **Hybrid**
+4. otherwise: **Overlay Redraw**
+
+"Usable" is the policy answer (`use_scroll_region()` / `use_sync_output()`) after identity detection, the live DECRPM probe and the `FTUI_SCROLL_REGION` / `FTUI_SYNC_OUTPUT` operator switches. The decision is written to the evidence file as `capability_decision` rows plus an `inline_strategy` row when an evidence sink is configured.
 
 ### Key Invariants
 
@@ -2468,7 +2514,7 @@ Why SOS instead of a simple threshold? A polynomial barrier can encode nonlinear
 
 ## S3-FIFO Cache
 
-Terminal capability detection and grapheme width lookups use an **S3-FIFO** eviction policy, which was shown to match or outperform W-TinyLFU and ARC on most workloads while being simpler to implement:
+Grapheme width lookups (`ftui_core::text_width`) use an **S3-FIFO** eviction policy, which was shown to match or outperform W-TinyLFU and ARC on most workloads while being simpler to implement (terminal capability detection is not cached; it runs once per session):
 
 ```
 Three queues:
@@ -2735,13 +2781,17 @@ let config = ProgramConfig::default().with_evidence_sink(
 );
 ```
 
-Evidence categories:
-- `diff_decision`: which diff strategy was chosen and why (Beta posterior, cost estimates)
-- `resize_decision`: coalesce vs apply, with Bayes factor ledger
-- `conformal_gate`: frame-time risk gating with bucket, upper bound, budget
-- `degradation_event`: which visual tier was selected and why
-- `queue_select`: scheduler job selection with priority breakdown
-- `voi_sample`: VOI computation and sampling decision
+Evidence events actually written by the runtime (grep for the `"event"` value):
+- `diff_decision`: which diff strategy was chosen and why (Beta posterior, cost estimates, fallback reason)
+- `decision`, `decision_evidence`, `regime_transition`, `summary`: the resize coalescer's apply-vs-coalesce choices with their log10 Bayes-factor ledger and steady/burst regime changes
+- `budget_decision`: the conformal frame-time gate (bucket, quantile, upper bound, risk) together with the degradation tier chosen before and after the frame
+- `guardrail_snapshot`: memory and effect-queue guardrail state whenever a guardrail fires (queue depth is the live effect backlog)
+- `voi_decision`: the inline-auto height sampler's value-of-information decision (posterior, gain, cost, e-value)
+- `capability_decision`: one row per session for truecolor, synchronized output and the scroll-region policy: environment detection, probe outcome, multiplexer veto, operator switch, and the log-odds ledger behind the final value
+- `inline_strategy`: which inline strategy the writer selected from those capabilities (`scroll_region`, `hybrid`, `overlay_redraw`)
+- `fairness_config` / `fairness_decision`: the input-fairness guard's Jain-index decisions
+- `effect_queue_select`: scheduler job selection when the `EffectQueue` executor backend is enabled
+- `widget_refresh`, `certificate_decision`, `task_executor_*`: widget refresh plans, presenter certificates, and executor lifecycle
 
 **Why evidence?** When a frame is slow, operators can `grep` the JSONL for that frame index and see exactly which decisions were made and what statistical state drove them. No black boxes.
 

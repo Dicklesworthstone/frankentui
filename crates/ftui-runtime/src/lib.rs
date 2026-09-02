@@ -141,7 +141,7 @@ pub use render_trace::{
 pub use retry::{BackoffStrategy, RetryPolicy, task_with_retry, task_with_timeout};
 pub use simulator::{ProgramSimulator, SimulatorError};
 pub use string_model::{StringModel, StringModelAdapter};
-pub use subscription::{Every, StopSignal, SubId, Subscription};
+pub use subscription::{Every, StopSignal, SubId, Subscription, tick_every};
 pub use terminal_writer::{ScreenMode, TerminalWriter, UiAnchor, inline_active_widgets};
 pub use tick_strategy::{
     ActiveOnly, ActivePlusAdjacent, AllocationCurve, Custom, DecayConfig, MarkovPredictor,

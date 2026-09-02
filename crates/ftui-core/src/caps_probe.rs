@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 use web_time::{Duration, Instant};
 
+use crate::capability_override::PolicyOverrides;
 use crate::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 
 /// Maximum bytes to read in a single probe response.
@@ -216,7 +217,7 @@ const DECRPM_2026_QUERY: &[u8] = b"\x1b[?2026$p";
 #[must_use]
 pub fn decrpm_status_supported(status: u32) -> Option<bool> {
     match status {
-        1 | 2 | 3 => Some(true),
+        1..=3 => Some(true),
         0 | 4 => Some(false),
         _ => None,
     }
@@ -627,6 +628,11 @@ pub enum ProbeableCapability {
     Sixel,
     /// Focus event reporting.
     FocusEvents,
+    /// Scroll-region (DECSTBM) safety for the inline UI strategy.
+    ///
+    /// Decided from environment detection and the operator switch today; a
+    /// runtime DECSTBM self-test (G05.4) is the intended probe.
+    ScrollRegion,
 }
 
 impl ProbeableCapability {
@@ -638,7 +644,22 @@ impl ProbeableCapability {
         Self::KittyKeyboard,
         Self::Sixel,
         Self::FocusEvents,
+        Self::ScrollRegion,
     ];
+
+    /// Stable lowercase name used in evidence JSONL and logs.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::TrueColor => "true_color",
+            Self::SynchronizedOutput => "sync_output",
+            Self::Hyperlinks => "hyperlinks",
+            Self::KittyKeyboard => "kitty_keyboard",
+            Self::Sixel => "sixel",
+            Self::FocusEvents => "focus_events",
+            Self::ScrollRegion => "scroll_region",
+        }
+    }
 }
 
 /// Result of a single capability probe.
@@ -819,6 +840,9 @@ impl CapabilityProber {
                 ProbeableCapability::FocusEvents => {
                     caps.focus_events = true;
                 }
+                ProbeableCapability::ScrollRegion => {
+                    caps.scroll_region = true;
+                }
             }
         }
     }
@@ -858,6 +882,7 @@ impl CapabilityProber {
             ProbeableCapability::KittyKeyboard => caps.kitty_keyboard,
             ProbeableCapability::Sixel => false, // No field; always probe.
             ProbeableCapability::FocusEvents => caps.focus_events,
+            ProbeableCapability::ScrollRegion => caps.scroll_region,
         }
     }
 
@@ -865,13 +890,14 @@ impl CapabilityProber {
         // DECRPM status: 1=set, 2=reset, 3=permanently set, 4=permanently reset, 0=unknown
         match mode {
             2026 => {
-                // Synchronized output
-                if status == 1 || status == 2 || status == 3 || status == 4 {
-                    // Terminal recognizes the mode (even if currently reset).
-                    self.confirm(ProbeableCapability::SynchronizedOutput);
-                } else {
-                    // Status 0 = mode not recognized.
-                    self.deny(ProbeableCapability::SynchronizedOutput);
+                // Synchronized output: one DECRPM status mapping for the whole
+                // crate (`decrpm_status_supported`), so the async prober and
+                // the synchronous `probe_capabilities` path cannot disagree
+                // about "permanently reset" (4).
+                match decrpm_status_supported(status) {
+                    Some(true) => self.confirm(ProbeableCapability::SynchronizedOutput),
+                    Some(false) => self.deny(ProbeableCapability::SynchronizedOutput),
+                    None => {}
                 }
             }
             2004 => {
@@ -969,6 +995,7 @@ fn probe_query_for(cap: ProbeableCapability) -> Option<&'static [u8]> {
         ProbeableCapability::KittyKeyboard => None, // Inferred from DA2 terminal type.
         ProbeableCapability::Sixel => Some(DA1_QUERY),
         ProbeableCapability::FocusEvents => None, // Inferred from DA2.
+        ProbeableCapability::ScrollRegion => None, // Runtime DECSTBM self-test (G05.4), not a query.
     }
 }
 
@@ -1057,6 +1084,29 @@ pub enum EvidenceSource {
     Timeout,
     /// Conservative prior (no evidence).
     Prior,
+    /// XTGETTCAP `RGB` reply (truecolor).
+    XtgettcapResponse,
+    /// Operator switch (`FTUI_SYNC_OUTPUT`, `FTUI_SCROLL_REGION`): an explicit
+    /// statement that outranks every heuristic.
+    Operator,
+}
+
+impl EvidenceSource {
+    /// Stable lowercase name used in evidence JSONL.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Environment => "environment",
+            Self::Da1Response => "da1_response",
+            Self::Da2Response => "da2_response",
+            Self::DecrpmResponse => "decrpm_response",
+            Self::OscResponse => "osc_response",
+            Self::Timeout => "timeout",
+            Self::Prior => "prior",
+            Self::XtgettcapResponse => "xtgettcap_response",
+            Self::Operator => "operator",
+        }
+    }
 }
 
 /// Bayesian evidence ledger for a single capability.
@@ -1208,6 +1258,13 @@ pub mod evidence_weights {
 
     /// Multiplexer detected — slight negative for passthrough features.
     pub const MUX_PENALTY: f64 = -0.5;
+    /// XTGETTCAP `RGB` answered: as authoritative as a DECRPM reply.
+    pub const XTGETTCAP_CONFIRMED: f64 = 4.6;
+    /// XTGETTCAP explicitly reported `RGB` unsupported.
+    pub const XTGETTCAP_DENIED: f64 = -4.6;
+    /// Operator switch (`FTUI_*=1|0`): applied with this sign, it saturates
+    /// the posterior (~99.99%) so no heuristic can outvote it.
+    pub const OPERATOR_OVERRIDE: f64 = 9.2;
 }
 
 /// Convenience: build a complete evidence ledger from a `CapabilityProber` state.
@@ -1280,6 +1337,228 @@ impl CapabilityProber {
     pub fn record_timeout_evidence(&self, ledger: &mut CapabilityLedger) {
         ledger.record(EvidenceSource::Timeout, evidence_weights::TIMEOUT);
     }
+}
+
+// ============================================================================
+// Capability decision ledger: what the runtime decided for this session, and why
+// ============================================================================
+
+/// What a single live probe said about one capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// The probe was not sent (skipped by policy, disabled, or no query exists).
+    NotProbed,
+    /// The terminal answered positively.
+    Confirmed,
+    /// The terminal answered negatively.
+    Denied,
+    /// The probe was sent and no answer arrived within the timeout.
+    Timeout,
+}
+
+impl ProbeOutcome {
+    /// Stable lowercase name used in evidence JSONL.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotProbed => "not_probed",
+            Self::Confirmed => "confirmed",
+            Self::Denied => "denied",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    /// Classify a synchronous probe answer (`None` = no reply in time).
+    #[must_use]
+    pub const fn from_answer(probed: bool, answer: Option<bool>) -> Self {
+        match (probed, answer) {
+            (false, _) => Self::NotProbed,
+            (true, Some(true)) => Self::Confirmed,
+            (true, Some(false)) => Self::Denied,
+            (true, None) => Self::Timeout,
+        }
+    }
+}
+
+/// How the runtime arrived at the policy value of one capability for this
+/// session: environment detection, the live probe, the multiplexer rule and
+/// the operator switch, plus the Bayesian ledger that weighs them.
+///
+/// Exported by the runtime as a `capability_decision` evidence row so "why
+/// did sync output stay off on my terminal?" is answered by one grep of the
+/// evidence file instead of a rebuild with tracing enabled.
+#[derive(Debug, Clone)]
+pub struct CapabilityDecision {
+    /// Which capability this row decides.
+    pub capability: ProbeableCapability,
+    /// Value from environment/identity detection, before any probe.
+    pub env_detected: bool,
+    /// What the live probe said.
+    pub probe: ProbeOutcome,
+    /// Operator switch applied (`Some(true)` forced on, `Some(false)` off).
+    pub operator_override: Option<bool>,
+    /// Whether a multiplexer was detected (policy veto for sync/scroll region).
+    pub in_mux: bool,
+    /// The value the runtime actually uses (the policy method's answer).
+    pub final_value: bool,
+    /// Evidence ledger behind the decision.
+    pub ledger: CapabilityLedger,
+}
+
+impl CapabilityDecision {
+    fn build(
+        capability: ProbeableCapability,
+        env_detected: bool,
+        probe: ProbeOutcome,
+        operator_override: Option<bool>,
+        in_mux: bool,
+        final_value: bool,
+    ) -> Self {
+        let mut ledger = CapabilityLedger::new(capability);
+        ledger.record(
+            EvidenceSource::Environment,
+            if env_detected {
+                evidence_weights::ENV_POSITIVE
+            } else {
+                evidence_weights::ENV_ABSENT
+            },
+        );
+        let (source, confirmed, denied) = probe_evidence_for(capability);
+        match probe {
+            ProbeOutcome::Confirmed => ledger.record(source, confirmed),
+            ProbeOutcome::Denied => ledger.record(source, denied),
+            ProbeOutcome::Timeout => {
+                ledger.record(EvidenceSource::Timeout, evidence_weights::TIMEOUT);
+            }
+            ProbeOutcome::NotProbed => {}
+        }
+        if in_mux {
+            ledger.record(EvidenceSource::Environment, evidence_weights::MUX_PENALTY);
+        }
+        if let Some(forced) = operator_override {
+            let weight = if forced {
+                evidence_weights::OPERATOR_OVERRIDE
+            } else {
+                -evidence_weights::OPERATOR_OVERRIDE
+            };
+            ledger.record(EvidenceSource::Operator, weight);
+        }
+        Self {
+            capability,
+            env_detected,
+            probe,
+            operator_override,
+            in_mux,
+            final_value,
+            ledger,
+        }
+    }
+
+    /// One JSONL row (`"event":"capability_decision"`), without a newline.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        let mut evidence = String::new();
+        for (i, entry) in self.ledger.entries().iter().enumerate() {
+            if i > 0 {
+                evidence.push(',');
+            }
+            evidence.push_str(&format!(
+                r#"{{"source":"{}","log_odds":{:.4}}}"#,
+                entry.source.as_str(),
+                entry.log_odds
+            ));
+        }
+        let operator_override = match self.operator_override {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "null",
+        };
+        format!(
+            r#"{{"event":"capability_decision","capability":"{}","env_detected":{},"probe":"{}","operator_override":{},"in_mux":{},"final":{},"log_odds":{:.4},"probability":{:.6},"evidence":[{}]}}"#,
+            self.capability.as_str(),
+            self.env_detected,
+            self.probe.as_str(),
+            operator_override,
+            self.in_mux,
+            self.final_value,
+            self.ledger.log_odds(),
+            self.ledger.probability(),
+            evidence
+        )
+    }
+}
+
+/// Evidence source and (confirmed, denied) weights for a capability's probe,
+/// mirroring `CapabilityProber::build_ledger_for`.
+fn probe_evidence_for(cap: ProbeableCapability) -> (EvidenceSource, f64, f64) {
+    match cap {
+        ProbeableCapability::TrueColor => (
+            EvidenceSource::XtgettcapResponse,
+            evidence_weights::XTGETTCAP_CONFIRMED,
+            evidence_weights::XTGETTCAP_DENIED,
+        ),
+        ProbeableCapability::SynchronizedOutput | ProbeableCapability::FocusEvents => (
+            EvidenceSource::DecrpmResponse,
+            evidence_weights::DECRPM_CONFIRMED,
+            evidence_weights::DECRPM_DENIED,
+        ),
+        ProbeableCapability::Sixel => (
+            EvidenceSource::Da1Response,
+            evidence_weights::DA1_CONFIRMED,
+            -evidence_weights::DA1_CONFIRMED,
+        ),
+        ProbeableCapability::Hyperlinks
+        | ProbeableCapability::KittyKeyboard
+        | ProbeableCapability::ScrollRegion => (
+            EvidenceSource::Da2Response,
+            evidence_weights::DA2_KNOWN_TERMINAL,
+            -evidence_weights::DA2_KNOWN_TERMINAL,
+        ),
+    }
+}
+
+/// Build the decision rows for one live probe run.
+///
+/// `before` is the detected capability set the probe started from, `config`
+/// says which queries were sent, `result` what came back, `overrides` which
+/// operator switches were applied afterwards, and `after` the final
+/// capability set the runtime uses. Rows cover the capabilities the live probe
+/// path decides: truecolor, synchronized output and the scroll-region policy.
+#[must_use]
+pub fn decisions_from_probe(
+    before: &TerminalCapabilities,
+    config: &ProbeConfig,
+    result: &ProbeResult,
+    overrides: PolicyOverrides,
+    after: &TerminalCapabilities,
+) -> Vec<CapabilityDecision> {
+    let in_mux = after.in_any_mux();
+    vec![
+        CapabilityDecision::build(
+            ProbeableCapability::TrueColor,
+            before.supports_true_color(),
+            ProbeOutcome::from_answer(config.probe_truecolor, result.true_color),
+            None,
+            in_mux,
+            after.supports_true_color(),
+        ),
+        CapabilityDecision::build(
+            ProbeableCapability::SynchronizedOutput,
+            before.sync_output,
+            ProbeOutcome::from_answer(config.probe_sync_output, result.sync_output),
+            overrides.sync_output,
+            in_mux,
+            after.use_sync_output(),
+        ),
+        CapabilityDecision::build(
+            ProbeableCapability::ScrollRegion,
+            before.scroll_region,
+            ProbeOutcome::NotProbed,
+            overrides.scroll_region,
+            in_mux,
+            after.use_scroll_region(),
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -1829,7 +2108,181 @@ mod tests {
 
     #[test]
     fn all_capabilities_listed() {
-        assert_eq!(ProbeableCapability::ALL.len(), 6);
+        assert_eq!(ProbeableCapability::ALL.len(), 7);
+        let names: Vec<&str> = ProbeableCapability::ALL
+            .iter()
+            .map(|c| c.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "true_color",
+                "sync_output",
+                "hyperlinks",
+                "kitty_keyboard",
+                "sixel",
+                "focus_events",
+                "scroll_region"
+            ]
+        );
+    }
+
+    // --- Capability decision ledger tests ---
+
+    fn sync_only_config() -> ProbeConfig {
+        ProbeConfig {
+            probe_da1: false,
+            probe_da2: false,
+            probe_background: false,
+            probe_truecolor: false,
+            probe_sync_output: true,
+            ..ProbeConfig::default()
+        }
+    }
+
+    fn decision_for(rows: &[CapabilityDecision], cap: ProbeableCapability) -> &CapabilityDecision {
+        rows.iter()
+            .find(|d| d.capability == cap)
+            .unwrap_or_else(|| panic!("no decision row for {}", cap.as_str()))
+    }
+
+    #[test]
+    fn decisions_from_probe_records_decrpm_confirmation() {
+        let before = TerminalCapabilities::xterm_256color();
+        assert!(
+            !before.sync_output,
+            "xterm-256color is not on the allowlist"
+        );
+        let config = sync_only_config();
+        let result = ProbeResult {
+            sync_output: Some(true),
+            ..ProbeResult::default()
+        };
+        let mut after = before.clone();
+        after.refine_from_probe(&result);
+
+        let rows = decisions_from_probe(
+            &before,
+            &config,
+            &result,
+            PolicyOverrides::default(),
+            &after,
+        );
+        assert_eq!(rows.len(), 3);
+
+        let sync = decision_for(&rows, ProbeableCapability::SynchronizedOutput);
+        assert!(!sync.env_detected);
+        assert_eq!(sync.probe, ProbeOutcome::Confirmed);
+        assert_eq!(sync.operator_override, None);
+        assert!(!sync.in_mux);
+        assert!(sync.final_value, "policy uses the probe-confirmed value");
+        let expected = evidence_weights::ENV_ABSENT + evidence_weights::DECRPM_CONFIRMED;
+        assert!((sync.ledger.log_odds() - expected).abs() < 1e-9);
+        assert!(sync.ledger.probability() > 0.95);
+
+        let truecolor = decision_for(&rows, ProbeableCapability::TrueColor);
+        assert_eq!(truecolor.probe, ProbeOutcome::NotProbed);
+        assert_eq!(truecolor.env_detected, before.supports_true_color());
+        assert_eq!(truecolor.final_value, after.supports_true_color());
+
+        let scroll = decision_for(&rows, ProbeableCapability::ScrollRegion);
+        assert_eq!(scroll.probe, ProbeOutcome::NotProbed);
+        assert_eq!(scroll.final_value, after.use_scroll_region());
+    }
+
+    #[test]
+    fn decisions_from_probe_marks_timeouts_as_weak_negative_evidence() {
+        let before = TerminalCapabilities::xterm_256color();
+        let config = sync_only_config();
+        let result = ProbeResult::default(); // no reply
+        let mut after = before.clone();
+        after.refine_from_probe(&result);
+
+        let rows = decisions_from_probe(
+            &before,
+            &config,
+            &result,
+            PolicyOverrides::default(),
+            &after,
+        );
+        let sync = decision_for(&rows, ProbeableCapability::SynchronizedOutput);
+        assert_eq!(sync.probe, ProbeOutcome::Timeout);
+        assert!(!sync.final_value, "a silent terminal keeps sync output off");
+        let expected = evidence_weights::ENV_ABSENT + evidence_weights::TIMEOUT;
+        assert!((sync.ledger.log_odds() - expected).abs() < 1e-9);
+        assert!(sync.ledger.probability() < 0.5);
+    }
+
+    #[test]
+    fn operator_override_dominates_the_ledger() {
+        let before = TerminalCapabilities::xterm_256color();
+        let config = sync_only_config();
+        let result = ProbeResult {
+            sync_output: Some(false),
+            ..ProbeResult::default()
+        };
+        let mut after = before.clone();
+        after.refine_from_probe(&result);
+        assert!(!after.sync_output);
+        let overrides =
+            crate::capability_override::apply_env_policy_overrides_with(&mut after, |key| {
+                (key == "FTUI_SYNC_OUTPUT").then(|| "1".to_string())
+            });
+        assert_eq!(overrides.sync_output, Some(true));
+        assert!(after.use_sync_output());
+
+        let rows = decisions_from_probe(&before, &config, &result, overrides, &after);
+        let sync = decision_for(&rows, ProbeableCapability::SynchronizedOutput);
+        assert_eq!(sync.probe, ProbeOutcome::Denied);
+        assert_eq!(sync.operator_override, Some(true));
+        assert!(sync.final_value);
+        assert!(
+            sync.ledger.log_odds() > 0.0,
+            "the operator statement outweighs the denial: {}",
+            sync.ledger.log_odds()
+        );
+        let last = sync
+            .ledger
+            .entries()
+            .last()
+            .expect("operator entry recorded");
+        assert_eq!(last.source, EvidenceSource::Operator);
+        assert!((last.log_odds - evidence_weights::OPERATOR_OVERRIDE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn capability_decision_jsonl_is_valid_and_stable() {
+        let before = TerminalCapabilities::xterm_256color();
+        let config = sync_only_config();
+        let result = ProbeResult {
+            sync_output: Some(true),
+            ..ProbeResult::default()
+        };
+        let mut after = before.clone();
+        after.refine_from_probe(&result);
+        let rows = decisions_from_probe(
+            &before,
+            &config,
+            &result,
+            PolicyOverrides::default(),
+            &after,
+        );
+        let line = decision_for(&rows, ProbeableCapability::SynchronizedOutput).to_jsonl();
+
+        assert!(
+            line.starts_with(r#"{"event":"capability_decision","capability":"sync_output","#),
+            "{line}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(parsed["probe"], "confirmed");
+        assert_eq!(parsed["operator_override"], serde_json::Value::Null);
+        assert_eq!(parsed["final"], true);
+        assert_eq!(parsed["env_detected"], false);
+        let evidence = parsed["evidence"].as_array().expect("evidence array");
+        assert_eq!(evidence.len(), 2);
+        assert_eq!(evidence[0]["source"], "environment");
+        assert_eq!(evidence[1]["source"], "decrpm_response");
+        assert!(parsed["probability"].as_f64().unwrap() > 0.95);
     }
 
     // --- DECRPM parser tests ---
@@ -1914,7 +2367,11 @@ mod tests {
         assert_eq!(decrpm_status_supported(2), Some(true), "reset");
         assert_eq!(decrpm_status_supported(3), Some(true), "permanently set");
         assert_eq!(decrpm_status_supported(4), Some(false), "permanently reset");
-        assert_eq!(decrpm_status_supported(9), None, "unknown status fails open");
+        assert_eq!(
+            decrpm_status_supported(9),
+            None,
+            "unknown status fails open"
+        );
     }
 
     #[test]
@@ -1942,7 +2399,10 @@ mod tests {
             sync_output: Some(true),
             ..ProbeResult::default()
         });
-        assert!(caps.sync_output, "positive DECRPM report enables sync output");
+        assert!(
+            caps.sync_output,
+            "positive DECRPM report enables sync output"
+        );
         assert!(caps.use_sync_output(), "no mux, so policy allows it");
 
         let mut allowlisted = TerminalCapabilities::modern();
@@ -1956,7 +2416,10 @@ mod tests {
             "negative report never downgrades an allowlisted terminal"
         );
         allowlisted.refine_from_probe(&ProbeResult::default());
-        assert!(allowlisted.sync_output, "timeout leaves capabilities unchanged");
+        assert!(
+            allowlisted.sync_output,
+            "timeout leaves capabilities unchanged"
+        );
 
         let mut in_tmux = TerminalCapabilities::xterm_256color();
         in_tmux.in_tmux = true;
@@ -2663,6 +3126,7 @@ mod recorded_harness_tests {
             ProbeableCapability::KittyKeyboard => "KittyKeyboard",
             ProbeableCapability::Sixel => "Sixel",
             ProbeableCapability::FocusEvents => "FocusEvents",
+            ProbeableCapability::ScrollRegion => "ScrollRegion",
         }
     }
 
