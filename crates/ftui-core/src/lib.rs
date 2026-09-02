@@ -60,7 +60,8 @@ where
 /// crossterm backend. Nothing else owns the terminal writer in that
 /// configuration, so the one-writer output lock degrades to a no-op guard;
 /// downstream crates (e.g. franken_node's operator surface) can keep calling
-/// [`terminal_output_lock`] unconditionally.
+/// [`terminal_output_lock`](terminal_session::terminal_output_lock)
+/// unconditionally.
 #[cfg(not(all(not(target_arch = "wasm32"), feature = "crossterm")))]
 pub mod terminal_session {
     /// Guard returned by the no-op [`terminal_output_lock`] stub.

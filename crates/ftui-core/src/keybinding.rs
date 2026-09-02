@@ -1179,8 +1179,8 @@ impl FromStr for KeyCombo {
         }
         let (modifier_part, key_part) = if s == "+" {
             ("", "+")
-        } else if s.ends_with('+') {
-            (s[..s.len() - 1].trim_end_matches('+'), "+")
+        } else if let Some(stripped) = s.strip_suffix('+') {
+            (stripped.trim_end_matches('+'), "+")
         } else if let Some((modifiers, key)) = s.rsplit_once('+') {
             (modifiers, key)
         } else {
