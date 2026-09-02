@@ -442,7 +442,7 @@ pub fn make_sla_hooks(config: SlaConfig) -> (TelemetryHooks, Arc<Mutex<ResizeSla
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resize_coalescer::Regime;
+    use crate::resize_coalescer::{Regime, RegimeDetector};
 
     fn test_config() -> SlaConfig {
         SlaConfig {
@@ -473,6 +473,8 @@ mod tests {
             forced: false,
             transition_reason_code: None,
             transition_confidence: None,
+            detector: RegimeDetector::Heuristic,
+            p_burst: None,
         }
     }
 
@@ -659,6 +661,8 @@ mod tests {
             forced: false,
             transition_reason_code: None,
             transition_confidence: None,
+            detector: RegimeDetector::Heuristic,
+            p_burst: None,
         };
 
         let result = monitor.on_decision(&entry);
@@ -681,6 +685,8 @@ mod tests {
                 forced: false,
                 transition_reason_code: None,
                 transition_confidence: None,
+                detector: RegimeDetector::Heuristic,
+                p_burst: None,
             };
             monitor.on_decision(&entry);
         }
@@ -920,6 +926,8 @@ mod tests {
             forced: false,
             transition_reason_code: None,
             transition_confidence: None,
+            detector: RegimeDetector::Heuristic,
+            p_burst: None,
         };
         let result = monitor.on_decision(&entry);
         assert!(
@@ -948,6 +956,8 @@ mod tests {
             forced: false,
             transition_reason_code: None,
             transition_confidence: None,
+            detector: RegimeDetector::Heuristic,
+            p_burst: None,
         };
         let result = monitor.on_decision(&entry);
         // Should process using time_since_render_ms (42.0)

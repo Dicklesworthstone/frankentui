@@ -223,7 +223,7 @@ pub use policy_registry::{PolicyRegistry, PolicyRegistryError, PolicySwitchEvent
 pub use reactive::{BatchScope, Binding, BindingScope, Computed, Observable, TwoWayBinding};
 pub use resize_coalescer::{
     CoalesceAction, CoalescerConfig, CoalescerStats, CycleTimePercentiles, DecisionLog,
-    DecisionSummary, Regime, ResizeCoalescer,
+    DecisionSummary, DetectorDecisions, Regime, RegimeDetector, ResizeCoalescer,
 };
 pub use resize_sla::{
     ResizeEvidence, ResizeSlaMonitor, SlaConfig, SlaLogEntry, SlaSummary, make_sla_hooks,

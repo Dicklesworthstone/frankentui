@@ -174,17 +174,29 @@ pub struct CoalescerConfig {
 
     /// Enable BOCPD (Bayesian Online Change-Point Detection) for regime detection.
     ///
-    /// When enabled, the coalescer uses a Bayesian posterior over run-lengths to
-    /// detect regime changes (steady vs burst), replacing the simple rate threshold
-    /// heuristics. BOCPD provides:
+    /// When enabled (the default), the coalescer uses a Bayesian posterior over
+    /// run-lengths to detect regime changes (steady vs burst) instead of the
+    /// rate threshold heuristic. BOCPD provides:
     /// - Principled uncertainty quantification via P(burst)
     /// - Automatic adaptation without hand-tuned thresholds
     /// - Evidence logging for decision explainability
     ///
-    /// When disabled, falls back to rate threshold heuristics.
+    /// When disabled ([`Self::without_bocpd`]), the rate threshold heuristic
+    /// (`burst_enter_rate` / `burst_exit_rate`) is the only detector.
     pub enable_bocpd: bool,
 
-    /// BOCPD configuration (used when `enable_bocpd` is true).
+    /// Let the rate heuristic decide when the BOCPD posterior is undefined.
+    ///
+    /// The posterior needs an inter-arrival observation, and it clamps
+    /// observations to `[min_observation_ms, max_observation_ms]`. With this
+    /// flag (the default) the first event of a session, an event whose
+    /// inter-arrival lies outside that range, and a non-finite posterior are
+    /// decided by the heuristic instead of a clamped or empty posterior. The
+    /// detector that made each decision is recorded as `detector` on the
+    /// `decision` and `regime_transition` evidence rows.
+    pub heuristic_fallback: bool,
+
+    /// BOCPD configuration; `None` means [`BocpdConfig::default`].
     pub bocpd_config: Option<BocpdConfig>,
 }
 
@@ -199,7 +211,8 @@ impl Default for CoalescerConfig {
             cooldown_frames: 3,
             rate_window_size: 8,
             enable_logging: false,
-            enable_bocpd: false,
+            enable_bocpd: true,
+            heuristic_fallback: true,
             bocpd_config: None,
         }
     }
@@ -229,6 +242,23 @@ impl CoalescerConfig {
         self
     }
 
+    /// Disable BOCPD: the rate threshold heuristic becomes the only regime
+    /// detector (no `BocpdDetector` is built).
+    #[must_use]
+    pub fn without_bocpd(mut self) -> Self {
+        self.enable_bocpd = false;
+        self.bocpd_config = None;
+        self
+    }
+
+    /// Set whether the heuristic decides while the BOCPD posterior is
+    /// undefined (see [`Self::heuristic_fallback`]).
+    #[must_use]
+    pub fn with_heuristic_fallback(mut self, enabled: bool) -> Self {
+        self.heuristic_fallback = enabled;
+        self
+    }
+
     /// Serialize configuration to JSONL format.
     #[must_use]
     pub fn to_jsonl(
@@ -241,7 +271,7 @@ impl CoalescerConfig {
     ) -> String {
         let prefix = evidence_prefix(run_id, screen_mode, cols, rows, event_idx);
         format!(
-            r#"{{{prefix},"event":"config","steady_delay_ms":{},"burst_delay_ms":{},"hard_deadline_ms":{},"burst_enter_rate":{:.3},"burst_exit_rate":{:.3},"cooldown_frames":{},"rate_window_size":{},"logging_enabled":{}}}"#,
+            r#"{{{prefix},"event":"config","steady_delay_ms":{},"burst_delay_ms":{},"hard_deadline_ms":{},"burst_enter_rate":{:.3},"burst_exit_rate":{:.3},"cooldown_frames":{},"rate_window_size":{},"logging_enabled":{},"enable_bocpd":{},"heuristic_fallback":{}}}"#,
             self.steady_delay_ms,
             self.burst_delay_ms,
             self.hard_deadline_ms,
@@ -249,9 +279,47 @@ impl CoalescerConfig {
             self.burst_exit_rate,
             self.cooldown_frames,
             self.rate_window_size,
-            self.enable_logging
+            self.enable_logging,
+            self.enable_bocpd,
+            self.heuristic_fallback
         )
     }
+}
+
+/// Which detector made a regime decision.
+///
+/// BOCPD is the default detector; the rate heuristic decides when BOCPD is
+/// off ([`CoalescerConfig::without_bocpd`]) or, with
+/// [`CoalescerConfig::heuristic_fallback`], while the posterior is undefined
+/// (first event, inter-arrival outside the observation range, non-finite
+/// posterior). Recorded on `decision` and `regime_transition` evidence rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RegimeDetector {
+    /// Rate threshold heuristic (`burst_enter_rate` / `burst_exit_rate`).
+    #[default]
+    Heuristic,
+    /// BOCPD run-length posterior.
+    Bocpd,
+}
+
+impl RegimeDetector {
+    /// Stable string form for JSONL evidence.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Heuristic => "heuristic",
+            Self::Bocpd => "bocpd",
+        }
+    }
+}
+
+/// How many regime decisions each detector made in this session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DetectorDecisions {
+    /// Decisions made by the BOCPD posterior.
+    pub bocpd: u64,
+    /// Decisions made by the rate heuristic (BOCPD off or fallback active).
+    pub heuristic: u64,
 }
 
 /// Action returned by the coalescer.
@@ -527,6 +595,11 @@ pub struct DecisionLog {
     pub transition_reason_code: Option<TransitionReasonCode>,
     /// Transition confidence if this decision coincided with a regime transition.
     pub transition_confidence: Option<f64>,
+    /// Detector that made the regime decision this row reflects.
+    pub detector: RegimeDetector,
+    /// BOCPD posterior probability of burst at decision time (`None` when
+    /// BOCPD is off or the posterior is not finite).
+    pub p_burst: Option<f64>,
 }
 
 impl DecisionLog {
@@ -557,7 +630,7 @@ impl DecisionLog {
         let prefix = evidence_prefix(run_id, screen_mode, cols, rows, self.event_idx);
 
         format!(
-            r#"{{{prefix},"event":"decision","idx":{},"elapsed_ms":{:.3},"dt_ms":{:.3},"event_rate":{:.3},"regime":"{}","action":"{}","pending_w":{},"pending_h":{},"applied_w":{},"applied_h":{},"time_since_render_ms":{:.3},"coalesce_ms":{},"forced":{},"transition_reason_code":{},"transition_confidence":{}}}"#,
+            r#"{{{prefix},"event":"decision","idx":{},"elapsed_ms":{:.3},"dt_ms":{:.3},"event_rate":{:.3},"regime":"{}","action":"{}","pending_w":{},"pending_h":{},"applied_w":{},"applied_h":{},"time_since_render_ms":{:.3},"coalesce_ms":{},"forced":{},"transition_reason_code":{},"transition_confidence":{},"detector":"{}","p_burst":{}}}"#,
             self.event_idx,
             self.elapsed_ms,
             self.dt_ms,
@@ -572,7 +645,10 @@ impl DecisionLog {
             coalesce_ms,
             self.forced,
             transition_reason_code,
-            transition_confidence
+            transition_confidence,
+            self.detector.as_str(),
+            self.p_burst
+                .map_or_else(|| "null".to_string(), |p| format!("{p:.6}"))
         )
     }
 }
@@ -604,6 +680,8 @@ pub struct RegimeTransitionLog {
     pub p_burst: Option<f64>,
     /// Current cooldown counter after transition accounting.
     pub cooldown_remaining: u32,
+    /// Detector that made the transition.
+    pub detector: RegimeDetector,
 }
 
 impl RegimeTransitionLog {
@@ -616,13 +694,14 @@ impl RegimeTransitionLog {
             .map(|value| format!("{value:.6}"))
             .unwrap_or_else(|| "null".to_string());
         format!(
-            r#"{{{prefix},"event":"regime_transition","from_regime":"{}","to_regime":"{}","reason_code":"{}","confidence":{:.6},"event_rate":{:.3},"p_burst":{},"cooldown_remaining":{}}}"#,
+            r#"{{{prefix},"event":"regime_transition","from_regime":"{}","to_regime":"{}","reason_code":"{}","confidence":{:.6},"event_rate":{:.3},"p_burst":{},"detector":"{}","cooldown_remaining":{}}}"#,
             self.from_regime.as_str(),
             self.to_regime.as_str(),
             self.reason_code.as_str(),
             self.confidence,
             self.event_rate,
             p_burst,
+            self.detector.as_str(),
             self.cooldown_remaining,
         )
     }
@@ -695,6 +774,12 @@ pub struct ResizeCoalescer {
 
     /// BOCPD detector for Bayesian regime detection (when enabled).
     bocpd: Option<BocpdDetector>,
+
+    /// Detector that made the most recent regime decision.
+    last_detector: RegimeDetector,
+
+    /// Regime decisions per detector.
+    detector_decisions: DetectorDecisions,
 }
 
 /// Cycle time percentiles for reflow diagnostics (bd-1rz0.7).
@@ -760,6 +845,8 @@ impl ResizeCoalescer {
             events_in_window: 0,
             cycle_times: Vec::new(),
             bocpd,
+            last_detector: RegimeDetector::Heuristic,
+            detector_decisions: DetectorDecisions::default(),
         }
     }
 
@@ -817,8 +904,9 @@ impl ResizeCoalescer {
         // `ResizeBehavior::Immediate`, so the cooldown-based exit in `tick_at`
         // cannot run on this path; without an event-path exit one burst
         // pinned the regime to `Burst` for the rest of the session
-        // (bd-1za0z item 2). BOCPD mode exits through its posterior above.
-        if self.bocpd.is_none() && self.regime == Regime::Burst {
+        // (bd-1za0z item 2). BOCPD mode exits through its posterior above;
+        // while the heuristic fallback is deciding, it owns the exit too.
+        if self.heuristic_decides() && self.regime == Regime::Burst {
             let rate = self.calculate_event_rate(now);
             if rate < self.config.burst_exit_rate {
                 self.record_regime_transition(
@@ -949,7 +1037,7 @@ impl ResizeCoalescer {
             None => false, // First event must be coalesced to establish steady state timing
         };
 
-        if time_ok && (self.bocpd.is_some() || self.regime == Regime::Steady) {
+        if time_ok && (!self.heuristic_decides() || self.regime == Regime::Steady) {
             return self.apply_pending_at(now, false);
         }
 
@@ -982,8 +1070,11 @@ impl ResizeCoalescer {
         // event); letting this rate-based exit fire too produced
         // contradictory transitions — and with a low-rate custom BocpdConfig
         // it was the only between-events Burst exit, fighting the posterior
-        // and flapping the regime (bd-1za0z).
-        if self.regime == Regime::Burst && self.bocpd.is_none() {
+        // and flapping the regime (bd-1za0z). While the heuristic fallback
+        // is deciding (BOCPD posterior undefined) it must own the exit too,
+        // or an out-of-range burst would pin the regime until the posterior
+        // sees an in-range event again.
+        if self.regime == Regime::Burst && self.heuristic_decides() {
             let rate = self.calculate_event_rate(now);
             if rate >= self.config.burst_exit_rate {
                 self.cooldown_remaining = self.config.cooldown_frames.max(1);
@@ -1070,6 +1161,19 @@ impl ResizeCoalescer {
     #[inline]
     pub fn bocpd_enabled(&self) -> bool {
         self.bocpd.is_some()
+    }
+
+    /// Detector that made the most recent regime decision (`Heuristic`
+    /// before the first event).
+    #[inline]
+    pub fn last_detector(&self) -> RegimeDetector {
+        self.last_detector
+    }
+
+    /// Regime decisions made by each detector in this session.
+    #[inline]
+    pub fn detector_decisions(&self) -> DetectorDecisions {
+        self.detector_decisions
     }
 
     /// Get the BOCPD detector for inspection (if enabled).
@@ -1162,6 +1266,8 @@ impl ResizeCoalescer {
             event_rate: self.event_rate(),
             has_pending: self.pending_size.is_some(),
             last_applied: self.last_applied,
+            detector: self.last_detector,
+            detector_decisions: self.detector_decisions,
         }
     }
 
@@ -1352,86 +1458,137 @@ impl ResizeCoalescer {
 
     #[inline]
     fn current_delay_ms(&self) -> u64 {
-        if let Some(ref bocpd) = self.bocpd {
-            bocpd.recommended_delay(self.config.steady_delay_ms, self.config.burst_delay_ms)
-        } else {
-            match self.regime {
+        match (&self.bocpd, self.last_detector) {
+            (Some(bocpd), RegimeDetector::Bocpd) => {
+                bocpd.recommended_delay(self.config.steady_delay_ms, self.config.burst_delay_ms)
+            }
+            _ => match self.regime {
                 Regime::Steady => self.config.steady_delay_ms,
                 Regime::Burst => self.config.burst_delay_ms,
+            },
+        }
+    }
+
+    /// True when the rate heuristic owns regime decisions right now: BOCPD
+    /// is off, or the fallback decided the most recent event.
+    #[inline]
+    fn heuristic_decides(&self) -> bool {
+        self.bocpd.is_none() || self.last_detector == RegimeDetector::Heuristic
+    }
+
+    /// Choose the detector for an event whose inter-arrival is
+    /// `observation_ms` (`None` for the first event of the session).
+    fn select_detector(&self, observation_ms: Option<f64>) -> RegimeDetector {
+        let Some(bocpd) = self.bocpd.as_ref() else {
+            return RegimeDetector::Heuristic;
+        };
+        if !self.config.heuristic_fallback {
+            return RegimeDetector::Bocpd;
+        }
+        let cfg = bocpd.config();
+        match observation_ms {
+            None => RegimeDetector::Heuristic,
+            Some(obs) if !obs.is_finite() => RegimeDetector::Heuristic,
+            Some(obs) if obs < cfg.min_observation_ms || obs > cfg.max_observation_ms => {
+                RegimeDetector::Heuristic
             }
+            Some(_) => RegimeDetector::Bocpd,
         }
     }
 
     fn update_regime(&mut self, now: Instant) {
-        // Use BOCPD for regime detection when enabled
-        if self.bocpd.is_some() {
-            let transition = {
-                let mut pending = None;
-                if let Some(bocpd) = self.bocpd.as_mut() {
-                    // Update BOCPD with the event timestamp (it calculates inter-arrival internally)
-                    bocpd.observe_event(now);
+        // Inter-arrival as the posterior would see it (`last_event` is the
+        // previous event at this point of the event path).
+        let observation_ms = self
+            .last_event
+            .map(|t| duration_since_or_zero(now, t).as_secs_f64() * 1000.0);
+        let mut detector = self.select_detector(observation_ms);
 
-                    let p_burst = bocpd.p_burst();
-                    // Map BOCPD regime to coalescer regime.
-                    let proposed = match bocpd.regime() {
-                        BocpdRegime::Steady => Regime::Steady,
-                        BocpdRegime::Burst => Regime::Burst,
-                        BocpdRegime::Transitional => {
-                            // During transition, maintain current regime to avoid thrashing
-                            self.regime
-                        }
+        // The posterior is always updated so it tracks the stream even while
+        // the heuristic decides; only the verdict source changes.
+        let posterior = self.bocpd.as_mut().map(|bocpd| {
+            bocpd.observe_event(now);
+            (bocpd.regime(), bocpd.p_burst())
+        });
+        if self.config.heuristic_fallback
+            && let Some((_, p_burst)) = posterior
+            && !p_burst.is_finite()
+        {
+            detector = RegimeDetector::Heuristic;
+        }
+
+        if detector != self.last_detector {
+            tracing::debug!(
+                target: crate::telemetry_schema::TARGET_RESIZE,
+                from = self.last_detector.as_str(),
+                to = detector.as_str(),
+                observation_ms = ?observation_ms,
+                event_idx = self.event_count,
+                "resize regime detector switched"
+            );
+        }
+        self.last_detector = detector;
+
+        match detector {
+            RegimeDetector::Bocpd => {
+                self.detector_decisions.bocpd += 1;
+                let Some((bocpd_regime, p_burst)) = posterior else {
+                    return;
+                };
+                // Map BOCPD regime to coalescer regime.
+                let proposed = match bocpd_regime {
+                    BocpdRegime::Steady => Regime::Steady,
+                    BocpdRegime::Burst => Regime::Burst,
+                    // During transition, maintain current regime to avoid thrashing.
+                    BocpdRegime::Transitional => self.regime,
+                };
+                if proposed != self.regime {
+                    let (reason_code, confidence) = if proposed == Regime::Burst {
+                        (
+                            TransitionReasonCode::BocpdPosteriorBurst,
+                            p_burst.clamp(0.0, 1.0),
+                        )
+                    } else {
+                        (
+                            TransitionReasonCode::BocpdPosteriorSteady,
+                            (1.0 - p_burst).clamp(0.0, 1.0),
+                        )
                     };
-                    if proposed != self.regime {
-                        let (reason_code, confidence) = if proposed == Regime::Burst {
-                            (
-                                TransitionReasonCode::BocpdPosteriorBurst,
-                                p_burst.clamp(0.0, 1.0),
-                            )
-                        } else {
-                            (
-                                TransitionReasonCode::BocpdPosteriorSteady,
-                                (1.0 - p_burst).clamp(0.0, 1.0),
-                            )
-                        };
-                        pending = Some((proposed, reason_code, confidence, p_burst));
-                    }
+                    let rate = self.calculate_event_rate(now);
+                    self.record_regime_transition(
+                        now,
+                        proposed,
+                        reason_code,
+                        confidence,
+                        rate,
+                        Some(p_burst),
+                    );
                 }
-                pending
-            };
-
-            if let Some((proposed, reason_code, confidence, p_burst)) = transition {
-                let rate = self.calculate_event_rate(now);
-                self.record_regime_transition(
-                    now,
-                    proposed,
-                    reason_code,
-                    confidence,
-                    rate,
-                    Some(p_burst),
-                );
             }
-        } else {
-            // Fall back to heuristic rate-based detection
-            let rate = self.calculate_event_rate(now);
+            RegimeDetector::Heuristic => {
+                self.detector_decisions.heuristic += 1;
+                let rate = self.calculate_event_rate(now);
+                let p_burst = posterior.map(|(_, p)| p).filter(|p| p.is_finite());
 
-            match self.regime {
-                Regime::Steady => {
-                    if rate >= self.config.burst_enter_rate {
-                        self.cooldown_remaining = self.config.cooldown_frames.max(1);
-                        let confidence = (rate / self.config.burst_enter_rate).clamp(0.0, 1.0);
-                        self.record_regime_transition(
-                            now,
-                            Regime::Burst,
-                            TransitionReasonCode::HeuristicEnterBurstRate,
-                            confidence,
-                            rate,
-                            None,
-                        );
+                match self.regime {
+                    Regime::Steady => {
+                        if rate >= self.config.burst_enter_rate {
+                            self.cooldown_remaining = self.config.cooldown_frames.max(1);
+                            let confidence = (rate / self.config.burst_enter_rate).clamp(0.0, 1.0);
+                            self.record_regime_transition(
+                                now,
+                                Regime::Burst,
+                                TransitionReasonCode::HeuristicEnterBurstRate,
+                                confidence,
+                                rate,
+                                p_burst,
+                            );
+                        }
                     }
-                }
-                Regime::Burst => {
-                    if rate >= self.config.burst_exit_rate {
-                        self.cooldown_remaining = self.config.cooldown_frames.max(1);
+                    Regime::Burst => {
+                        if rate >= self.config.burst_exit_rate {
+                            self.cooldown_remaining = self.config.cooldown_frames.max(1);
+                        }
                     }
                 }
             }
@@ -1467,6 +1624,7 @@ impl ResizeCoalescer {
             event_rate,
             p_burst,
             cooldown_remaining: self.cooldown_remaining,
+            detector: self.last_detector,
         });
         if let Some(ref hooks) = self.telemetry_hooks {
             hooks.fire_regime_change(from_regime, to_regime);
@@ -1566,6 +1724,8 @@ impl ResizeCoalescer {
             forced,
             transition_reason_code,
             transition_confidence,
+            detector: self.last_detector,
+            p_burst: self.bocpd_p_burst().filter(|p| p.is_finite()),
         });
 
         if let Some(ref sink) = self.evidence_sink {
@@ -1605,6 +1765,10 @@ pub struct CoalescerStats {
     pub has_pending: bool,
     /// Last applied size.
     pub last_applied: (u16, u16),
+    /// Detector that made the most recent regime decision.
+    pub detector: RegimeDetector,
+    /// Regime decisions per detector.
+    pub detector_decisions: DetectorDecisions,
 }
 
 /// Summary of decision logs.
@@ -1867,6 +2031,7 @@ mod tests {
                 event_rate: 0.0,
                 p_burst: None,
                 cooldown_remaining: 0,
+                detector: RegimeDetector::Heuristic,
             });
         }
         assert_eq!(c.transition_logs.len(), MAX_TRANSITION_LOGS);
@@ -1884,6 +2049,7 @@ mod tests {
             rate_window_size: 8,
             enable_logging: true,
             enable_bocpd: false,
+            heuristic_fallback: true,
             bocpd_config: None,
         }
     }
@@ -2714,6 +2880,7 @@ mod tests {
             hard_deadline_ms: 5_000,
             enable_logging: true,
             enable_bocpd: false,
+            heuristic_fallback: true,
             bocpd_config: None,
         };
         let base = Instant::now();
@@ -2786,6 +2953,7 @@ mod tests {
             hard_deadline_ms: 5_000,
             enable_logging: true,
             enable_bocpd: false,
+            heuristic_fallback: true,
             bocpd_config: None,
         };
         let base = Instant::now();
@@ -3141,10 +3309,12 @@ mod tests {
             fn regime_follows_event_rate(
                 event_count in 1usize..30
             ) {
+                // This property is about the rate rule itself, so run the
+                // heuristic detector alone.
                 let config = CoalescerConfig {
                     burst_enter_rate: 10.0,
                     burst_exit_rate: 5.0,
-                    ..CoalescerConfig::default()
+                    ..CoalescerConfig::default().without_bocpd()
                 };
                 let mut c = ResizeCoalescer::new(config.clone(), (80, 24));
                 let base = Instant::now();
@@ -3459,11 +3629,173 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn bocpd_disabled_by_default() {
-        let c = ResizeCoalescer::new(CoalescerConfig::default(), (80, 24));
-        assert!(!c.bocpd_enabled());
+    fn config_default_enables_bocpd_with_heuristic_fallback() {
+        let config = CoalescerConfig::default();
+        assert!(config.enable_bocpd);
+        assert!(config.heuristic_fallback);
+        assert!(
+            config.bocpd_config.is_none(),
+            "None means BocpdConfig::default()"
+        );
+        let jsonl = config.to_jsonl("run", ScreenMode::AltScreen, 80, 24, 0);
+        assert!(jsonl.contains(r#""enable_bocpd":true"#), "{jsonl}");
+        assert!(jsonl.contains(r#""heuristic_fallback":true"#), "{jsonl}");
+
+        let c = ResizeCoalescer::new(config, (80, 24));
+        assert!(c.bocpd_enabled());
+        assert!(c.bocpd().is_some());
+        assert!(c.bocpd_p_burst().is_some());
+        assert_eq!(
+            c.last_detector(),
+            RegimeDetector::Heuristic,
+            "nothing decided yet"
+        );
+        assert_eq!(c.detector_decisions(), DetectorDecisions::default());
+    }
+
+    /// With defaults the first event has no inter-arrival, so the heuristic
+    /// decides it; from the second event on the posterior is defined and
+    /// BOCPD decides. Every `decision` row names its detector.
+    #[test]
+    fn first_event_uses_heuristic_then_bocpd() {
+        let mut c = ResizeCoalescer::new(CoalescerConfig::default().with_logging(true), (80, 24));
+        let base = Instant::now();
+
+        c.handle_resize_at(81, 24, base);
+        assert_eq!(c.last_detector(), RegimeDetector::Heuristic);
+        c.handle_resize_at(82, 24, base + Duration::from_millis(30));
+        assert_eq!(c.last_detector(), RegimeDetector::Bocpd);
+        c.handle_resize_at(83, 24, base + Duration::from_millis(60));
+        assert_eq!(c.last_detector(), RegimeDetector::Bocpd);
+
+        let jsonl = c.decision_logs_jsonl();
+        let decisions: Vec<&str> = jsonl
+            .lines()
+            .filter(|line| line.contains(r#""event":"decision""#))
+            .collect();
+        assert_eq!(decisions.len(), 3, "{jsonl}");
+        assert!(
+            decisions[0].contains(r#""detector":"heuristic""#),
+            "{}",
+            decisions[0]
+        );
+        assert!(decisions[0].contains(r#""p_burst":"#), "{}", decisions[0]);
+        assert!(
+            decisions[1].contains(r#""detector":"bocpd""#),
+            "{}",
+            decisions[1]
+        );
+        assert!(
+            decisions[2].contains(r#""detector":"bocpd""#),
+            "{}",
+            decisions[2]
+        );
+        assert_eq!(
+            c.detector_decisions(),
+            DetectorDecisions {
+                bocpd: 2,
+                heuristic: 1
+            }
+        );
+    }
+
+    /// An inter-arrival beyond `max_observation_ms` (10 s by default) would
+    /// only reach the posterior clamped, so the heuristic decides that event.
+    #[test]
+    fn clamped_observation_falls_back_to_heuristic() {
+        let mut c = ResizeCoalescer::new(CoalescerConfig::default().with_logging(true), (80, 24));
+        let base = Instant::now();
+
+        c.handle_resize_at(81, 24, base);
+        c.handle_resize_at(82, 24, base + Duration::from_millis(30));
+        assert_eq!(c.last_detector(), RegimeDetector::Bocpd);
+
+        c.handle_resize_at(83, 24, base + Duration::from_secs(20));
+        assert_eq!(c.last_detector(), RegimeDetector::Heuristic);
+        let last = c
+            .decision_logs_jsonl()
+            .lines()
+            .rfind(|line| line.contains(r#""event":"decision""#))
+            .map(str::to_owned)
+            .expect("decision row");
+        assert!(last.contains(r#""detector":"heuristic""#), "{last}");
+
+        // Sub-millisecond inter-arrivals sit below `min_observation_ms`.
+        c.handle_resize_at(
+            84,
+            24,
+            base + Duration::from_secs(20) + Duration::from_micros(200),
+        );
+        assert_eq!(c.last_detector(), RegimeDetector::Heuristic);
+
+        // Back in range: the posterior decides again.
+        c.handle_resize_at(
+            85,
+            24,
+            base + Duration::from_secs(20) + Duration::from_millis(40),
+        );
+        assert_eq!(c.last_detector(), RegimeDetector::Bocpd);
+    }
+
+    /// `heuristic_fallback = false` hands every event to the posterior, even
+    /// the first one.
+    #[test]
+    fn fallback_off_lets_bocpd_decide_the_first_event() {
+        let config = CoalescerConfig::default().with_heuristic_fallback(false);
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+        c.handle_resize_at(81, 24, Instant::now());
+        assert_eq!(c.last_detector(), RegimeDetector::Bocpd);
+        assert_eq!(c.detector_decisions().bocpd, 1);
+    }
+
+    /// `without_bocpd()` builds no detector: every decision is heuristic and
+    /// tagged as such, and rapid events enter Burst through the rate rule.
+    #[test]
+    fn explicit_disable_keeps_heuristic_only() {
+        let config = CoalescerConfig::default()
+            .without_bocpd()
+            .with_logging(true);
+        assert!(!config.enable_bocpd);
+        assert!(config.bocpd_config.is_none());
+        let mut c = ResizeCoalescer::new(config, (80, 24));
         assert!(c.bocpd().is_none());
-        assert!(c.bocpd_p_burst().is_none());
+
+        let base = Instant::now();
+        for i in 0..12u64 {
+            c.handle_resize_at(81 + i as u16, 24, base + Duration::from_millis(i * 20));
+        }
+        assert_eq!(c.regime(), Regime::Burst);
+        assert_eq!(c.detector_decisions().bocpd, 0);
+        assert_eq!(c.detector_decisions().heuristic, 12);
+
+        let jsonl = c.decision_logs_jsonl();
+        assert!(!jsonl.contains(r#""detector":"bocpd""#), "{jsonl}");
+        assert!(jsonl.contains(r#""detector":"heuristic""#), "{jsonl}");
+        assert!(
+            jsonl.contains(r#""event":"regime_transition""#)
+                && jsonl.contains(r#""reason_code":"heuristic_enter_burst_rate""#),
+            "{jsonl}"
+        );
+        assert!(jsonl.contains(r#""enable_bocpd":false"#), "{jsonl}");
+    }
+
+    /// The stats snapshot exposes the detector counters the evidence rows
+    /// are derived from.
+    #[test]
+    fn stats_counts_detector_decisions() {
+        let mut c = ResizeCoalescer::new(CoalescerConfig::default(), (80, 24));
+        let base = Instant::now();
+        c.handle_resize_at(81, 24, base);
+        c.handle_resize_at(82, 24, base + Duration::from_millis(25));
+        c.handle_resize_at(83, 24, base + Duration::from_millis(50));
+        let stats = c.stats();
+        assert_eq!(stats.detector, RegimeDetector::Bocpd);
+        assert_eq!(stats.detector_decisions.heuristic, 1);
+        assert_eq!(stats.detector_decisions.bocpd, 2);
+        assert_eq!(
+            stats.detector_decisions.bocpd + stats.detector_decisions.heuristic,
+            stats.event_count
+        );
     }
 
     #[test]
@@ -3719,6 +4051,8 @@ mod tests {
             forced: false,
             transition_reason_code: None,
             transition_confidence: None,
+            detector: RegimeDetector::Heuristic,
+            p_burst: None,
         };
 
         let jsonl = log.to_jsonl("test-run-1", ScreenMode::AltScreen, 100, 40);
@@ -3771,6 +4105,8 @@ mod tests {
             forced: false,
             transition_reason_code: None,
             transition_confidence: None,
+            detector: RegimeDetector::Heuristic,
+            p_burst: None,
         };
 
         let jsonl = log.to_jsonl("test-run-2", ScreenMode::AltScreen, 80, 24);
@@ -3824,6 +4160,8 @@ mod tests {
             forced: false,
             transition_reason_code: None,
             transition_confidence: None,
+            detector: RegimeDetector::Heuristic,
+            p_burst: None,
         };
 
         let jsonl = log.to_jsonl("inline-run", ScreenMode::Inline { ui_height: 12 }, 120, 40);

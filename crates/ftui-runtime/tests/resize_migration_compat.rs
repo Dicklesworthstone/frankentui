@@ -25,6 +25,15 @@ fn default_config_matches_docs() {
     assert_eq!(cfg.cooldown_frames, 3);
     assert_eq!(cfg.rate_window_size, 8);
     assert!(!cfg.enable_logging);
+    assert!(cfg.enable_bocpd, "BOCPD is the default regime detector");
+    assert!(
+        cfg.heuristic_fallback,
+        "the rate heuristic covers undefined posteriors"
+    );
+    assert!(
+        cfg.bocpd_config.is_none(),
+        "None selects BocpdConfig::default()"
+    );
 }
 
 /// Low-latency profile from the migration guide.
@@ -116,6 +125,7 @@ fn burst_regime_transition() {
         hard_deadline_ms: 100,
         enable_logging: true,
         enable_bocpd: false,
+        heuristic_fallback: true,
         bocpd_config: None,
     };
     let mut coalescer = ResizeCoalescer::new(cfg, (80, 24));
@@ -152,6 +162,7 @@ fn burst_cooldown_hysteresis() {
         hard_deadline_ms: 5000, // High enough to never trigger in this test
         enable_logging: false,
         enable_bocpd: false,
+        heuristic_fallback: true,
         bocpd_config: None,
     };
     let base = Instant::now();
@@ -672,7 +683,7 @@ fn run_simulation(
 #[test]
 fn simulation_compare_bocpd_vs_heuristic() {
     let base = CoalescerConfig::default().with_logging(true);
-    let cfg_heuristic = base.clone();
+    let cfg_heuristic = base.clone().without_bocpd();
     let cfg_bocpd = base.clone().with_bocpd();
 
     let scenarios = [

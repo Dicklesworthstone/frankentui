@@ -225,7 +225,8 @@ fn apply_evidence_config(mut config: ProgramConfig) -> ProgramConfig {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             config = config.with_evidence_sink(EvidenceSinkConfig::enabled_file(trimmed));
-            config.resize_coalescer = config.resize_coalescer.with_logging(true).with_bocpd();
+            // BOCPD is the default detector; only decision logging is opt-in.
+            config.resize_coalescer = config.resize_coalescer.with_logging(true);
         }
     }
     config

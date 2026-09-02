@@ -1913,12 +1913,11 @@ fn main() -> std::io::Result<()> {
         config.diff_config = config.diff_config.with_bayesian_enabled(enabled);
     }
     if let Some(enabled) = env_flag("FTUI_HARNESS_BOCPD") {
-        if enabled {
-            config.resize_coalescer = config.resize_coalescer.with_bocpd();
+        config.resize_coalescer = if enabled {
+            config.resize_coalescer.with_bocpd()
         } else {
-            config.resize_coalescer.enable_bocpd = false;
-            config.resize_coalescer.bocpd_config = None;
-        }
+            config.resize_coalescer.without_bocpd()
+        };
     }
     if let Some(enabled) = env_flag("FTUI_HARNESS_CONFORMAL") {
         if enabled {

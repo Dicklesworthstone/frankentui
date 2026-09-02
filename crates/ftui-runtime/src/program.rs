@@ -4342,6 +4342,8 @@ struct BudgetDecisionEvidence {
     in_warmup: bool,
     controller_reason: BudgetDecisionReason,
     load_governor: LoadGovernorSnapshot,
+    /// Detector that made the resize coalescer's latest regime decision.
+    resize_detector: &'static str,
     conformal: Option<ConformalEvidence>,
 }
 
@@ -4372,7 +4374,7 @@ impl BudgetDecisionEvidence {
         let queue_max_depth = Self::opt_usize(self.load_governor.queue_max_depth);
 
         format!(
-            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
+            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
             self.frame_idx,
             self.decision.as_str(),
             self.controller_decision.as_str(),
@@ -4400,6 +4402,7 @@ impl BudgetDecisionEvidence {
             queue_max_depth,
             self.load_governor.queue_dropped_delta,
             self.load_governor.resize_coalescing_active,
+            self.resize_detector,
             self.load_governor.recovery_intervals_observed,
             self.load_governor.recovery_intervals_required,
             self.load_governor.deferred_work_total,
@@ -6895,6 +6898,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             in_warmup: telemetry.in_warmup,
             controller_reason: telemetry.decision_reason,
             load_governor: *load_snapshot,
+            resize_detector: self.resize_coalescer.last_detector().as_str(),
             conformal,
         };
 
@@ -8069,7 +8073,8 @@ mod tests {
         );
         assert!(config.diff_config.bayesian_enabled);
         assert!(config.diff_config.dirty_rows_enabled);
-        assert!(!config.resize_coalescer.enable_bocpd);
+        assert!(config.resize_coalescer.enable_bocpd);
+        assert!(config.resize_coalescer.heuristic_fallback);
         assert!(!config.effect_queue.enabled);
         assert_eq!(config.immediate_drain.max_zero_timeout_polls_per_burst, 64);
         assert_eq!(
@@ -10780,6 +10785,7 @@ mod tests {
             frames_since_change: 3,
             in_warmup: false,
             controller_reason: BudgetDecisionReason::OverloadEvidencePassed,
+            resize_detector: "bocpd",
             load_governor: LoadGovernorSnapshot {
                 mode: RuntimeLoadMode::Degraded,
                 mode_before: RuntimeLoadMode::Stressed,
@@ -10832,6 +10838,7 @@ mod tests {
         assert!(jsonl.contains("\"strict_semantics_preserved\":true"));
         assert!(jsonl.contains("\"queue_in_flight\":8"));
         assert!(jsonl.contains("\"queue_max_depth\":10"));
+        assert!(jsonl.contains("\"resize_detector\":\"bocpd\""));
         assert!(jsonl.contains("\"deferred_work_total\":2"));
         assert!(jsonl.contains("\"bucket_key\":\"inline:dirty:10\""));
         assert!(jsonl.contains("\"n_b\":32"));
@@ -11080,6 +11087,7 @@ mod tests {
             rate_window_size: 6,
             enable_logging: true,
             enable_bocpd: false,
+            heuristic_fallback: true,
             bocpd_config: None,
         });
         assert_eq!(config.resize_coalescer.steady_delay_ms, 8);
@@ -11146,9 +11154,11 @@ mod tests {
 
     fn coalescer_checksum(enable_bocpd: bool) -> String {
         let mut config = CoalescerConfig::default().with_logging(true);
-        if enable_bocpd {
-            config = config.with_bocpd();
-        }
+        config = if enable_bocpd {
+            config.with_bocpd()
+        } else {
+            config.without_bocpd()
+        };
 
         let base = Instant::now();
         let mut coalescer = ResizeCoalescer::new(config, (80, 24)).with_last_render(base);
