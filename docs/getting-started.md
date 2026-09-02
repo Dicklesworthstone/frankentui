@@ -198,7 +198,10 @@ ftui-widgets = { path = "../frankentui/crates/ftui-widgets" }
 ## Minimal Inline App (Copy/Paste)
 
 This is adapted from `crates/ftui-harness/examples/minimal.rs` but written
-against the `ftui` facade so you can depend on a single crate.
+against the `ftui` facade so you can depend on a single crate. The block below
+is byte-for-byte `crates/ftui/examples/getting_started.rs`, which the facade's
+tests compile (`cargo run -p ftui --example getting_started` runs it from the
+repository).
 
 ```rust
 use std::time::Duration;

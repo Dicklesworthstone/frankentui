@@ -355,6 +355,39 @@ impl Help {
         ledger
     }
 
+    /// Record that the shortcut labelled `key` was pressed.
+    ///
+    /// Looks the entry up by its key label, records a use for its hint and
+    /// returns `true` when the key belongs to a registered entry. Call it
+    /// from `update()` when a bound key fires; the next
+    /// [`Help::apply_ranking`] moves frequently used shortcuts forward.
+    pub fn record_used(&self, ranker: &mut HintRanker, key: &str) -> bool {
+        let Some(index) = self.entries.iter().position(|entry| entry.key == key) else {
+            return false;
+        };
+        match self.hint_ids.get(index) {
+            Some(&id) => {
+                ranker.record_usage(id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Record that the entries were displayed without being used.
+    ///
+    /// Call once per interaction round for every registered entry except the
+    /// one that was used (`except_key`); the ranker treats it as negative
+    /// evidence, so hints nobody acts on drift to the end of the bar.
+    pub fn record_shown(&self, ranker: &mut HintRanker, except_key: Option<&str>) {
+        for (entry, &id) in self.entries.iter().zip(&self.hint_ids) {
+            if except_key.is_some_and(|key| key == entry.key) {
+                continue;
+            }
+            ranker.record_shown_not_used(id);
+        }
+    }
+
     /// Add an entry to the help widget.
     #[must_use]
     pub fn entry(mut self, key: impl Into<String>, desc: impl Into<String>) -> Self {
@@ -1550,6 +1583,43 @@ mod tests {
         assert_eq!(keys, vec!["?", "s", "q"], "ordered by learned utility");
         // ids follow their entries so later usage feedback still maps correctly.
         assert_eq!(help.hint_id(0), Some(ids[2]));
+    }
+
+    /// Apps feed usage back by key label: `record_used("s")` after the key
+    /// fires and `record_shown` for the rest, and the bar reorders itself.
+    #[test]
+    fn help_usage_feedback_by_key_label_reorders_the_bar() {
+        let mut help = Help::new()
+            .entry("q", "quit")
+            .entry("s", "save")
+            .entry("?", "help");
+        let mut ranker = HintRanker::new(RankerConfig::default());
+        assert!(
+            !help.record_used(&mut ranker, "s"),
+            "nothing is registered yet, so nothing can be recorded"
+        );
+        let ids = help.register_with_ranker(&mut ranker, HintContext::Global);
+        for _ in 0..8 {
+            assert!(help.record_used(&mut ranker, "s"));
+            help.record_shown(&mut ranker, Some("s"));
+        }
+        assert!(
+            !help.record_used(&mut ranker, "zzz"),
+            "unknown labels are ignored"
+        );
+
+        help.apply_ranking(&mut ranker, None);
+        let keys: Vec<&str> = help.entries().iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["s", "q", "?"],
+            "used first; the ignored two keep their order"
+        );
+        assert_eq!(
+            help.hint_id(0),
+            Some(ids[1]),
+            "hint ids travel with their entries"
+        );
     }
 
     /// Hysteresis: without new evidence, re-ranking must not reorder.

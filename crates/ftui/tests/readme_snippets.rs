@@ -72,12 +72,37 @@ fn assert_in_readme(regions: &[&str]) {
     );
 }
 
+// README-SNIPPET: not_in_readme
+// This region is deliberately absent from README.md; it proves the checker bites.
+// README-SNIPPET-END: not_in_readme
+
+/// A region the README does not carry must fail the identity check, so a
+/// green run means every pinned block really is in the README.
+#[test]
+#[should_panic(expected = "drifted")]
+fn readme_checker_fails_on_a_missing_snippet() {
+    assert_in_readme(&["not_in_readme"]);
+}
+
 #[test]
 fn readme_minimal_example_is_the_shipped_example() {
     const EXAMPLE: &str = include_str!("../examples/minimal_inline.rs");
     assert!(
         README.contains(EXAMPLE.trim_end()),
         "README Minimal API Example must equal crates/ftui/examples/minimal_inline.rs"
+    );
+}
+
+/// `docs/getting-started.md`'s inline program is `examples/getting_started.rs`
+/// (compiled with the facade's tests), so the guide cannot drift from a
+/// program that builds.
+#[test]
+fn getting_started_example_is_the_shipped_example() {
+    const GUIDE: &str = include_str!("../../../docs/getting-started.md");
+    const EXAMPLE: &str = include_str!("../examples/getting_started.rs");
+    assert!(
+        GUIDE.contains(EXAMPLE.trim_end()),
+        "docs/getting-started.md example must equal crates/ftui/examples/getting_started.rs"
     );
 }
 

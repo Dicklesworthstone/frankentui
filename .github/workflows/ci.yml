@@ -103,6 +103,13 @@ jobs:
       - name: Run tests
         run: cargo nextest run --workspace --lib --profile ci
 
+      # The facade's integration tests are the consumer contract: default
+      # features open a backend, the prelude carries the README example, and
+      # crates/ftui/tests/readme_snippets.rs compiles the README's API
+      # snippets and pins them byte-for-byte to README.md.
+      - name: Run facade contract tests
+        run: cargo nextest run -p ftui --profile ci
+
       - name: Run tests (all features)
         run: cargo nextest run --workspace --all-features --profile ci
         # Only one runner pays for the all-features build (it is the heaviest
