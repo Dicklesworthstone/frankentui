@@ -86,6 +86,7 @@ pub mod prelude {
     #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
     pub use crate::TerminalSession;
     pub use crate::core::geometry::Rect;
+    pub use crate::core::keybinding::{Chord, KeyCombo, KeyDispatcher, KeyMap, Priority};
     pub use crate::{
         Buffer, Cx, CxController, CxError, Error, Event, Frame, FrameExt, KeyCode, KeyEvent,
         LabClock, Modifiers, Result, StatefulWidget, Style, TablePresetId, TableTheme, Theme,

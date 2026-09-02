@@ -973,6 +973,1435 @@ impl ActionMapper {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ===========================================================================
+// Declarative keymaps: combos, chords, priorities, contexts, conflict
+// detection, and a chord-aware dispatcher
+// ===========================================================================
+//
+// Resolution order, in prose (the keybinding policy spec copies this):
+//
+// 1. A key press extends the pending prefix. If the extended chord is bound
+//    and no longer bound chord starts with it, the binding fires at once.
+//    If a longer bound chord starts with it (`g` while `g g` is bound), the
+//    dispatcher waits: the exact binding fires on the chord timeout or when a
+//    key arrives that cannot extend the chord, so single-key shortcuts are
+//    never blocked, only delayed while a real chord is possible.
+// 2. A key that cannot extend the pending prefix flushes it (the prefix
+//    fires if it is bound, otherwise it is reported as expired) and is then
+//    processed on its own.
+// 3. Among bindings for the same chord, one attached to an active context
+//    beats a context-free one, then the higher `Priority` wins, then the most
+//    recently bound. `KeyMap::conflicts` reports every case that needs the
+//    tie-break so shadowing is visible instead of silent.
+// 4. `Repeat` events re-fire a single-key binding but never extend a chord;
+//    `Release` events are reported as unbound.
+// 5. `Esc` goes through the embedded `SequenceDetector` (one Esc timer per
+//    dispatcher); `Esc` and `Esc Esc` can be bound like any chord.
+
+use std::fmt;
+use std::str::FromStr;
+
+/// Why a key, combo, or chord string could not be parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyParseError {
+    /// The key name (or the whole chord) was empty.
+    EmptyKey,
+    /// A key name that matches no [`KeyCode`].
+    UnknownKey(String),
+    /// A modifier name other than `Ctrl`, `Alt`, `Shift`, `Super`.
+    UnknownModifier(String),
+    /// More than [`Chord::MAX_LEN`] combos in one chord.
+    TooManyKeys(usize),
+}
+
+impl fmt::Display for KeyParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyKey => f.write_str("empty key"),
+            Self::UnknownKey(name) => write!(f, "unknown key `{name}`"),
+            Self::UnknownModifier(name) => write!(f, "unknown modifier `{name}`"),
+            Self::TooManyKeys(n) => {
+                write!(f, "chord has {n} keys; the maximum is {}", Chord::MAX_LEN)
+            }
+        }
+    }
+}
+
+impl std::error::Error for KeyParseError {}
+
+/// A single key press with its modifiers (`Ctrl+x`, `Shift+Tab`, `F12`, `g`).
+///
+/// Combos are normalized so that `Shift+a`, `A`, and a terminal that reports
+/// `Char('A')` with the Shift bit all compare equal: alphabetic characters
+/// are stored lowercase with [`Modifiers::SHIFT`] set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyCombo {
+    /// The key.
+    pub code: KeyCode,
+    /// Modifier keys held.
+    pub modifiers: Modifiers,
+}
+
+impl KeyCombo {
+    /// Build a normalized combo.
+    #[must_use]
+    pub fn new(code: KeyCode, modifiers: Modifiers) -> Self {
+        match code {
+            KeyCode::Char(c) if c.is_alphabetic() && c.is_uppercase() => Self {
+                code: KeyCode::Char(c.to_lowercase().next().unwrap_or(c)),
+                modifiers: modifiers | Modifiers::SHIFT,
+            },
+            _ => Self { code, modifiers },
+        }
+    }
+
+    /// A combo without modifiers.
+    #[must_use]
+    pub fn key(code: KeyCode) -> Self {
+        Self::new(code, Modifiers::NONE)
+    }
+
+    /// The combo a key event represents (its kind is ignored).
+    #[must_use]
+    pub fn from_event(event: &KeyEvent) -> Self {
+        Self::new(event.code, event.modifiers)
+    }
+
+    /// Whether `event` presses this combo (any kind).
+    #[must_use]
+    pub fn matches(&self, event: &KeyEvent) -> bool {
+        Self::from_event(event) == *self
+    }
+}
+
+impl fmt::Display for KeyCombo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut modifiers = self.modifiers;
+        let key = match self.code {
+            KeyCode::Char(c) if c.is_alphabetic() && modifiers.contains(Modifiers::SHIFT) => {
+                modifiers.remove(Modifiers::SHIFT);
+                c.to_uppercase().collect::<String>()
+            }
+            KeyCode::Char(' ') => "Space".to_string(),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::Enter => "Enter".to_string(),
+            KeyCode::Escape => "Esc".to_string(),
+            KeyCode::Backspace => "Backspace".to_string(),
+            KeyCode::Tab => "Tab".to_string(),
+            KeyCode::BackTab => "BackTab".to_string(),
+            KeyCode::Delete => "Delete".to_string(),
+            KeyCode::Insert => "Insert".to_string(),
+            KeyCode::Home => "Home".to_string(),
+            KeyCode::End => "End".to_string(),
+            KeyCode::PageUp => "PageUp".to_string(),
+            KeyCode::PageDown => "PageDown".to_string(),
+            KeyCode::Up => "Up".to_string(),
+            KeyCode::Down => "Down".to_string(),
+            KeyCode::Left => "Left".to_string(),
+            KeyCode::Right => "Right".to_string(),
+            KeyCode::F(n) => format!("F{n}"),
+            KeyCode::Null => "Null".to_string(),
+            KeyCode::MediaPlayPause => "MediaPlayPause".to_string(),
+            KeyCode::MediaStop => "MediaStop".to_string(),
+            KeyCode::MediaNextTrack => "MediaNextTrack".to_string(),
+            KeyCode::MediaPrevTrack => "MediaPrevTrack".to_string(),
+        };
+        for (flag, name) in [
+            (Modifiers::CTRL, "Ctrl"),
+            (Modifiers::ALT, "Alt"),
+            (Modifiers::SHIFT, "Shift"),
+            (Modifiers::SUPER, "Super"),
+        ] {
+            if modifiers.contains(flag) {
+                write!(f, "{name}+")?;
+            }
+        }
+        f.write_str(&key)
+    }
+}
+
+/// Parse a key name: a single character, or a named key (case-insensitive:
+/// `Enter`, `Esc`, `Tab`, `BackTab`, `Backspace`, `Delete`, `Insert`, `Home`,
+/// `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, `Right`, `Space`,
+/// `F1`..`F24`, media keys).
+fn parse_key_name(name: &str) -> Result<KeyCode, KeyParseError> {
+    let mut chars = name.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return Ok(KeyCode::Char(c));
+    }
+    let lower = name.to_ascii_lowercase();
+    let code = match lower.as_str() {
+        "enter" | "return" => KeyCode::Enter,
+        "esc" | "escape" => KeyCode::Escape,
+        "backspace" => KeyCode::Backspace,
+        "tab" => KeyCode::Tab,
+        "backtab" => KeyCode::BackTab,
+        "delete" | "del" => KeyCode::Delete,
+        "insert" | "ins" => KeyCode::Insert,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" | "pgup" => KeyCode::PageUp,
+        "pagedown" | "pgdn" => KeyCode::PageDown,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "space" => KeyCode::Char(' '),
+        "null" => KeyCode::Null,
+        "mediaplaypause" => KeyCode::MediaPlayPause,
+        "mediastop" => KeyCode::MediaStop,
+        "medianexttrack" => KeyCode::MediaNextTrack,
+        "mediaprevtrack" => KeyCode::MediaPrevTrack,
+        other => {
+            if let Some(digits) = other.strip_prefix('f')
+                && let Ok(n) = digits.parse::<u8>()
+                && (1..=24).contains(&n)
+            {
+                KeyCode::F(n)
+            } else {
+                return Err(KeyParseError::UnknownKey(name.to_string()));
+            }
+        }
+    };
+    Ok(code)
+}
+
+impl FromStr for KeyCombo {
+    type Err = KeyParseError;
+
+    /// Parse `Ctrl+x`, `Shift+Tab`, `F12`, `g`, `Ctrl++` (the plus key).
+    /// Modifier names are case-insensitive (`Ctrl`/`Control`, `Alt`/`Opt`/
+    /// `Option`, `Shift`, `Super`/`Cmd`/`Meta`/`Win`).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(KeyParseError::EmptyKey);
+        }
+        let (modifier_part, key_part) = if s == "+" {
+            ("", "+")
+        } else if s.ends_with('+') {
+            (s[..s.len() - 1].trim_end_matches('+'), "+")
+        } else if let Some((modifiers, key)) = s.rsplit_once('+') {
+            (modifiers, key)
+        } else {
+            ("", s)
+        };
+        let mut modifiers = Modifiers::NONE;
+        for part in modifier_part.split('+').filter(|p| !p.is_empty()) {
+            modifiers |= match part.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => Modifiers::CTRL,
+                "alt" | "opt" | "option" => Modifiers::ALT,
+                "shift" => Modifiers::SHIFT,
+                "super" | "cmd" | "meta" | "win" => Modifiers::SUPER,
+                _ => return Err(KeyParseError::UnknownModifier(part.to_string())),
+            };
+        }
+        if key_part.is_empty() {
+            return Err(KeyParseError::EmptyKey);
+        }
+        Ok(Self::new(parse_key_name(key_part)?, modifiers))
+    }
+}
+
+/// One to [`Chord::MAX_LEN`] combos pressed in sequence (`g g`, `Ctrl+x Ctrl+s`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Chord(Vec<KeyCombo>);
+
+impl Chord {
+    /// Longest supported chord.
+    pub const MAX_LEN: usize = 4;
+
+    /// A one-combo chord.
+    #[must_use]
+    pub fn single(combo: KeyCombo) -> Self {
+        Self(vec![combo])
+    }
+
+    /// Build a chord from combos (1..=[`Chord::MAX_LEN`]).
+    pub fn new(combos: Vec<KeyCombo>) -> Result<Self, KeyParseError> {
+        if combos.is_empty() {
+            Err(KeyParseError::EmptyKey)
+        } else if combos.len() > Self::MAX_LEN {
+            Err(KeyParseError::TooManyKeys(combos.len()))
+        } else {
+            Ok(Self(combos))
+        }
+    }
+
+    /// Parse a whitespace-separated chord such as `"g g"` or `"Ctrl+x Ctrl+s"`.
+    pub fn parse(s: &str) -> Result<Self, KeyParseError> {
+        s.parse()
+    }
+
+    /// The combos in order.
+    #[must_use]
+    pub fn combos(&self) -> &[KeyCombo] {
+        &self.0
+    }
+
+    /// Number of combos.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Never true for a chord built through the constructors; provided for
+    /// API completeness.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether this chord is a strict prefix of `other` (`g` of `g g`).
+    #[must_use]
+    pub fn is_prefix_of(&self, other: &Self) -> bool {
+        self.0.len() < other.0.len() && other.0.starts_with(&self.0)
+    }
+}
+
+impl FromStr for Chord {
+    type Err = KeyParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let combos = s
+            .split_whitespace()
+            .map(str::parse)
+            .collect::<Result<Vec<KeyCombo>, _>>()?;
+        Self::new(combos)
+    }
+}
+
+impl fmt::Display for Chord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, combo) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{combo}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Binding priority level; higher wins for the same chord.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Priority {
+    /// Application-wide default.
+    Global = 0,
+    /// Active when the app is in a particular mode.
+    Mode = 1,
+    /// Owned by the focused widget.
+    Widget = 2,
+}
+
+/// An interned context name (see [`KeyMap::context`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ContextId(pub u32);
+
+/// Identifier of one binding inside a [`KeyMap`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BindingId(pub u32);
+
+impl fmt::Display for BindingId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+/// One chord bound to an action.
+#[derive(Debug, Clone)]
+pub struct Binding<A> {
+    /// Identifier assigned by the map.
+    pub id: BindingId,
+    /// The chord that triggers the action.
+    pub chord: Chord,
+    /// The action to dispatch.
+    pub action: A,
+    /// Priority level.
+    pub priority: Priority,
+    /// Context the binding is limited to (`None` = always applicable).
+    pub context: Option<ContextId>,
+    /// Human-readable label for help bars and conflict reports.
+    pub label: Option<String>,
+}
+
+/// Lower bound of the chord timeout (ms).
+pub const MIN_CHORD_TIMEOUT_MS: u64 = 200;
+/// Upper bound of the chord timeout (ms).
+pub const MAX_CHORD_TIMEOUT_MS: u64 = 5000;
+/// Default chord timeout (ms).
+pub const DEFAULT_CHORD_TIMEOUT_MS: u64 = 1000;
+
+/// Timing configuration of a [`KeyMap`].
+#[derive(Debug, Clone)]
+pub struct KeyMapConfig {
+    /// How long a pending chord prefix waits for its next key.
+    pub chord_timeout: Duration,
+    /// Esc / Esc Esc detection settings for the dispatcher's detector.
+    pub esc: SequenceConfig,
+}
+
+impl Default for KeyMapConfig {
+    fn default() -> Self {
+        Self {
+            chord_timeout: Duration::from_millis(DEFAULT_CHORD_TIMEOUT_MS),
+            esc: SequenceConfig::default(),
+        }
+    }
+}
+
+impl KeyMapConfig {
+    /// Set the chord timeout, clamped to `200..=5000` ms.
+    #[must_use]
+    pub fn with_chord_timeout(mut self, timeout: Duration) -> Self {
+        let ms = timeout.as_millis().clamp(
+            u128::from(MIN_CHORD_TIMEOUT_MS),
+            u128::from(MAX_CHORD_TIMEOUT_MS),
+        );
+        self.chord_timeout = Duration::from_millis(ms as u64);
+        self
+    }
+
+    /// Set the Esc sequence configuration.
+    #[must_use]
+    pub fn with_esc(mut self, esc: SequenceConfig) -> Self {
+        self.esc = esc;
+        self
+    }
+}
+
+/// Result of [`KeyMap::lookup`].
+#[derive(Debug, Clone, Copy)]
+pub struct Lookup<'a, A> {
+    /// The winning binding for exactly this chord, if any.
+    pub exact: Option<&'a Binding<A>>,
+    /// Number of applicable bindings whose chord starts with this chord and
+    /// is longer (a pending prefix must wait for them).
+    pub longer: usize,
+}
+
+impl<A> Lookup<'_, A> {
+    /// Neither an exact binding nor a longer chord.
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        self.exact.is_none() && self.longer == 0
+    }
+}
+
+/// A binding conflict found by [`KeyMap::conflicts`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Conflict {
+    /// Same chord, same context, different priority: `winner` hides `loser`.
+    Shadowed {
+        winner: BindingId,
+        loser: BindingId,
+        chord: Chord,
+    },
+    /// `short` is a strict prefix of `long`, so `short` fires only after the
+    /// chord timeout or a non-extending key.
+    PrefixCollision {
+        short: BindingId,
+        long: BindingId,
+        short_chord: Chord,
+        long_chord: Chord,
+    },
+    /// Same chord, context and priority: the later binding wins.
+    Duplicate {
+        first: BindingId,
+        second: BindingId,
+        chord: Chord,
+    },
+}
+
+/// Every conflict in a map, with a one-line warning per item.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConflictReport {
+    /// The conflicts, in map order.
+    pub items: Vec<Conflict>,
+}
+
+impl ConflictReport {
+    /// No conflicts.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Number of conflicts.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
+impl fmt::Display for ConflictReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for item in &self.items {
+            match item {
+                Conflict::Shadowed {
+                    winner,
+                    loser,
+                    chord,
+                } => writeln!(
+                    f,
+                    "warning: binding {winner} shadows binding {loser} on `{chord}` (higher priority)"
+                )?,
+                Conflict::PrefixCollision {
+                    short,
+                    long,
+                    short_chord,
+                    long_chord,
+                } => writeln!(
+                    f,
+                    "warning: binding {short} (`{short_chord}`) is a prefix of binding {long} (`{long_chord}`); it fires only after the chord timeout or a non-extending key"
+                )?,
+                Conflict::Duplicate {
+                    first,
+                    second,
+                    chord,
+                } => writeln!(
+                    f,
+                    "warning: bindings {first} and {second} both bind `{chord}` at the same priority; the later one wins"
+                )?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A declarative binding map: chords to actions with priorities and
+/// contexts. Actions are any `Clone` type (usually an app enum).
+#[derive(Debug, Clone)]
+pub struct KeyMap<A> {
+    bindings: Vec<Binding<A>>,
+    contexts: Vec<String>,
+    config: KeyMapConfig,
+    next_id: u32,
+}
+
+impl<A> Default for KeyMap<A> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<A> KeyMap<A> {
+    /// An empty map with default timing.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_config(KeyMapConfig::default())
+    }
+
+    /// An empty map with the given timing.
+    #[must_use]
+    pub fn with_config(config: KeyMapConfig) -> Self {
+        Self {
+            bindings: Vec::new(),
+            contexts: Vec::new(),
+            config,
+            next_id: 0,
+        }
+    }
+
+    /// Timing configuration.
+    #[must_use]
+    pub fn config(&self) -> &KeyMapConfig {
+        &self.config
+    }
+
+    /// Intern a context name; the same name always yields the same id.
+    pub fn context(&mut self, name: &str) -> ContextId {
+        if let Some(index) = self.contexts.iter().position(|n| n == name) {
+            return ContextId(index as u32);
+        }
+        self.contexts.push(name.to_string());
+        ContextId((self.contexts.len() - 1) as u32)
+    }
+
+    /// Name of an interned context.
+    #[must_use]
+    pub fn context_name(&self, id: ContextId) -> Option<&str> {
+        self.contexts.get(id.0 as usize).map(String::as_str)
+    }
+
+    /// Bind a chord at [`Priority::Global`] with no context.
+    pub fn bind(&mut self, chord: Chord, action: A) -> BindingId {
+        self.bind_in(chord, action, Priority::Global, None)
+    }
+
+    /// Bind a chord with an explicit priority and optional context.
+    pub fn bind_in(
+        &mut self,
+        chord: Chord,
+        action: A,
+        priority: Priority,
+        context: Option<ContextId>,
+    ) -> BindingId {
+        let id = BindingId(self.next_id);
+        self.next_id += 1;
+        self.bindings.push(Binding {
+            id,
+            chord,
+            action,
+            priority,
+            context,
+            label: None,
+        });
+        id
+    }
+
+    /// Attach a label to a binding; `false` if the id is unknown.
+    pub fn set_label(&mut self, id: BindingId, label: impl Into<String>) -> bool {
+        match self.bindings.iter_mut().find(|b| b.id == id) {
+            Some(binding) => {
+                binding.label = Some(label.into());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove a binding.
+    pub fn unbind(&mut self, id: BindingId) -> Option<Binding<A>> {
+        let index = self.bindings.iter().position(|b| b.id == id)?;
+        Some(self.bindings.remove(index))
+    }
+
+    /// All bindings in bind order.
+    #[must_use]
+    pub fn bindings(&self) -> &[Binding<A>] {
+        &self.bindings
+    }
+
+    /// A binding by id.
+    #[must_use]
+    pub fn get(&self, id: BindingId) -> Option<&Binding<A>> {
+        self.bindings.iter().find(|b| b.id == id)
+    }
+
+    /// Number of bindings.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.bindings.len()
+    }
+
+    /// Whether the map has no bindings.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+
+    fn applies(binding: &Binding<A>, active: &[ContextId]) -> bool {
+        binding
+            .context
+            .is_none_or(|context| active.contains(&context))
+    }
+
+    /// Ranking used to pick a winner among bindings for the same chord:
+    /// active context beats none, then priority, then recency.
+    fn rank(binding: &Binding<A>) -> (bool, Priority, BindingId) {
+        (binding.context.is_some(), binding.priority, binding.id)
+    }
+
+    /// Resolve `chord` against the bindings applicable under `active`
+    /// contexts: the winning exact binding and how many longer bound chords
+    /// start with it.
+    #[must_use]
+    pub fn lookup(&self, chord: &Chord, active: &[ContextId]) -> Lookup<'_, A> {
+        let mut exact: Option<&Binding<A>> = None;
+        let mut longer = 0;
+        for binding in &self.bindings {
+            if !Self::applies(binding, active) {
+                continue;
+            }
+            if binding.chord == *chord {
+                if exact.is_none_or(|current| Self::rank(binding) > Self::rank(current)) {
+                    exact = Some(binding);
+                }
+            } else if chord.is_prefix_of(&binding.chord) {
+                longer += 1;
+            }
+        }
+        Lookup { exact, longer }
+    }
+
+    /// Report shadowed, duplicate, and prefix-colliding bindings.
+    #[must_use]
+    pub fn conflicts(&self) -> ConflictReport {
+        let mut items = Vec::new();
+        for (i, a) in self.bindings.iter().enumerate() {
+            for b in &self.bindings[i + 1..] {
+                if a.chord == b.chord {
+                    if a.context != b.context {
+                        // A context-specific override is the intended use.
+                        continue;
+                    }
+                    if a.priority == b.priority {
+                        items.push(Conflict::Duplicate {
+                            first: a.id,
+                            second: b.id,
+                            chord: a.chord.clone(),
+                        });
+                    } else {
+                        let (winner, loser) = if a.priority > b.priority {
+                            (a.id, b.id)
+                        } else {
+                            (b.id, a.id)
+                        };
+                        items.push(Conflict::Shadowed {
+                            winner,
+                            loser,
+                            chord: a.chord.clone(),
+                        });
+                    }
+                } else if a.chord.is_prefix_of(&b.chord) {
+                    items.push(Conflict::PrefixCollision {
+                        short: a.id,
+                        long: b.id,
+                        short_chord: a.chord.clone(),
+                        long_chord: b.chord.clone(),
+                    });
+                } else if b.chord.is_prefix_of(&a.chord) {
+                    items.push(Conflict::PrefixCollision {
+                        short: b.id,
+                        long: a.id,
+                        short_chord: b.chord.clone(),
+                        long_chord: a.chord.clone(),
+                    });
+                }
+            }
+        }
+        ConflictReport { items }
+    }
+}
+
+/// What the dispatcher decided for one key event or tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dispatch<A> {
+    /// A binding fired.
+    Action {
+        action: A,
+        binding: BindingId,
+        chord: Chord,
+    },
+    /// The key extended a chord prefix; waiting for more keys or the timeout.
+    Pending { prefix: Chord },
+    /// The key matched nothing (and could not extend a chord).
+    Unbound(KeyEvent),
+    /// A pending prefix was abandoned (timeout or a non-extending key).
+    Expired { prefix: Chord },
+    /// Esc sequence detector output for an unbound Esc / Esc Esc.
+    Esc(SequenceOutput),
+}
+
+/// Counters for evidence rows and hint-usage feedback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DispatchStats {
+    /// Bindings fired.
+    pub dispatched: u64,
+    /// Keys that entered a chord prefix.
+    pub pending: u64,
+    /// Prefixes abandoned.
+    pub expired: u64,
+    /// Keys that matched nothing.
+    pub unbound: u64,
+    /// Esc / Esc Esc verdicts handed back unbound (see [`Dispatch::Esc`]).
+    pub esc: u64,
+}
+
+fn action_dispatch<A: Clone>(binding: &Binding<A>, chord: Chord) -> Dispatch<A> {
+    Dispatch::Action {
+        action: binding.action.clone(),
+        binding: binding.id,
+        chord,
+    }
+}
+
+/// Chord-aware dispatcher over a [`KeyMap`].
+///
+/// Feed every key event through [`feed`](Self::feed) and call
+/// [`tick`](Self::tick) once per frame so pending chords and the Esc timer
+/// expire; every call returns the decisions to act on. See the module
+/// section header for the resolution rules.
+#[derive(Debug)]
+pub struct KeyDispatcher<A> {
+    map: KeyMap<A>,
+    pending: Vec<KeyCombo>,
+    pending_since: Option<Instant>,
+    esc: SequenceDetector,
+    active_contexts: Vec<ContextId>,
+    stats: DispatchStats,
+}
+
+impl<A: Clone> KeyDispatcher<A> {
+    /// A dispatcher over `map` with no active contexts.
+    #[must_use]
+    pub fn new(map: KeyMap<A>) -> Self {
+        let esc = SequenceDetector::new(map.config().esc.clone());
+        Self {
+            map,
+            pending: Vec::new(),
+            pending_since: None,
+            esc,
+            active_contexts: Vec::new(),
+            stats: DispatchStats::default(),
+        }
+    }
+
+    /// The underlying map.
+    #[must_use]
+    pub fn map(&self) -> &KeyMap<A> {
+        &self.map
+    }
+
+    /// Mutable access to the map (rebinding at runtime).
+    pub fn map_mut(&mut self) -> &mut KeyMap<A> {
+        &mut self.map
+    }
+
+    /// Replace the set of active contexts (focused widget, mode, ...).
+    pub fn set_active_contexts(&mut self, contexts: &[ContextId]) {
+        self.active_contexts.clear();
+        self.active_contexts.extend_from_slice(contexts);
+    }
+
+    /// Currently active contexts.
+    #[must_use]
+    pub fn active_contexts(&self) -> &[ContextId] {
+        &self.active_contexts
+    }
+
+    /// The chord prefix currently waiting for more keys.
+    #[must_use]
+    pub fn pending_prefix(&self) -> Option<Chord> {
+        Chord::new(self.pending.clone()).ok()
+    }
+
+    /// Counters so far.
+    #[must_use]
+    pub fn stats(&self) -> DispatchStats {
+        self.stats
+    }
+
+    /// Drop any pending prefix and Esc state.
+    pub fn reset(&mut self) {
+        self.pending.clear();
+        self.pending_since = None;
+        self.esc.reset();
+    }
+
+    /// Process one key event.
+    pub fn feed(&mut self, key: &KeyEvent, now: Instant) -> Vec<Dispatch<A>> {
+        let mut out = Vec::with_capacity(2);
+
+        if key.code == KeyCode::Escape {
+            if key.kind == KeyEventKind::Press {
+                self.flush_pending(&mut out, false);
+            }
+            match self.esc.feed(key, now) {
+                // Repeat / release of Esc: nothing sequence-related to do.
+                SequenceOutput::PassThrough => {}
+                output => {
+                    self.dispatch_esc(output, &mut out);
+                    return out;
+                }
+            }
+        }
+
+        match key.kind {
+            KeyEventKind::Release => {
+                self.stats.unbound += 1;
+                out.push(Dispatch::Unbound(*key));
+                return out;
+            }
+            KeyEventKind::Repeat => {
+                // A held key re-fires its own single-key binding, never a chord.
+                let single = Chord::single(KeyCombo::from_event(key));
+                let fired = if self.pending.is_empty() {
+                    self.map
+                        .lookup(&single, &self.active_contexts)
+                        .exact
+                        .map(|binding| action_dispatch(binding, single))
+                } else {
+                    None
+                };
+                match fired {
+                    Some(dispatch) => {
+                        self.stats.dispatched += 1;
+                        out.push(dispatch);
+                    }
+                    None => {
+                        self.stats.unbound += 1;
+                        out.push(Dispatch::Unbound(*key));
+                    }
+                }
+                return out;
+            }
+            KeyEventKind::Press => {}
+        }
+
+        let combo = KeyCombo::from_event(key);
+        if self.try_extend(combo, now, &mut out) {
+            return out;
+        }
+
+        // The key cannot extend the prefix: flush it, then start over with the
+        // key on its own so it can fire or begin a new chord.
+        if !self.pending.is_empty() {
+            self.flush_pending(&mut out, false);
+            if self.try_extend(combo, now, &mut out) {
+                return out;
+            }
+        }
+
+        self.stats.unbound += 1;
+        out.push(Dispatch::Unbound(*key));
+        out
+    }
+
+    /// Expire a pending prefix past the chord timeout and drive the Esc timer.
+    pub fn tick(&mut self, now: Instant) -> Vec<Dispatch<A>> {
+        let mut out = Vec::new();
+        if let Some(since) = self.pending_since
+            && now.saturating_duration_since(since) >= self.map.config.chord_timeout
+        {
+            self.flush_pending(&mut out, true);
+        }
+        if let Some(output) = self.esc.check_timeout(now) {
+            self.dispatch_esc(output, &mut out);
+        }
+        out
+    }
+
+    /// Try to treat `combo` as the next key of the pending prefix. Returns
+    /// `false` when the extended chord matches nothing (nothing is emitted).
+    fn try_extend(&mut self, combo: KeyCombo, now: Instant, out: &mut Vec<Dispatch<A>>) -> bool {
+        if self.pending.len() >= Chord::MAX_LEN {
+            return false;
+        }
+        let mut candidate = self.pending.clone();
+        candidate.push(combo);
+        let chord = Chord(candidate);
+        let lookup = self.map.lookup(&chord, &self.active_contexts);
+        if let Some(binding) = lookup.exact
+            && lookup.longer == 0
+        {
+            let dispatch = action_dispatch(binding, chord);
+            self.pending.clear();
+            self.pending_since = None;
+            self.stats.dispatched += 1;
+            out.push(dispatch);
+            return true;
+        }
+        if lookup.exact.is_some() || lookup.longer > 0 {
+            self.pending.clone_from(&chord.0);
+            self.pending_since = Some(now);
+            self.stats.pending += 1;
+            out.push(Dispatch::Pending { prefix: chord });
+            return true;
+        }
+        false
+    }
+
+    /// Fire the pending prefix if it is bound, otherwise report it expired;
+    /// on a timeout the expiry is reported first so the delay is visible.
+    fn flush_pending(&mut self, out: &mut Vec<Dispatch<A>>, timed_out: bool) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let prefix = Chord(std::mem::take(&mut self.pending));
+        self.pending_since = None;
+        let fired = self
+            .map
+            .lookup(&prefix, &self.active_contexts)
+            .exact
+            .map(|binding| action_dispatch(binding, prefix.clone()));
+        match fired {
+            Some(dispatch) => {
+                if timed_out {
+                    self.stats.expired += 1;
+                    out.push(Dispatch::Expired { prefix });
+                }
+                self.stats.dispatched += 1;
+                out.push(dispatch);
+            }
+            None => {
+                self.stats.expired += 1;
+                out.push(Dispatch::Expired { prefix });
+            }
+        }
+    }
+
+    /// Route a detector verdict: a bound `Esc` / `Esc Esc` fires its binding,
+    /// anything else is handed back as [`Dispatch::Esc`].
+    fn dispatch_esc(&mut self, output: SequenceOutput, out: &mut Vec<Dispatch<A>>) {
+        let esc = KeyCombo::key(KeyCode::Escape);
+        let bound = match output {
+            SequenceOutput::Esc => Some(Chord::single(esc)),
+            SequenceOutput::EscEsc => Chord::new(vec![esc, esc]).ok(),
+            SequenceOutput::Pending | SequenceOutput::PassThrough => None,
+        };
+        let fired = bound.and_then(|chord| {
+            self.map
+                .lookup(&chord, &self.active_contexts)
+                .exact
+                .map(|binding| action_dispatch(binding, chord.clone()))
+        });
+        match fired {
+            Some(dispatch) => {
+                self.stats.dispatched += 1;
+                out.push(dispatch);
+            }
+            None => {
+                self.stats.esc += 1;
+                out.push(Dispatch::Esc(output));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod keymap_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Act {
+        GoTop,
+        Help,
+        Save,
+        Quit,
+        Submit,
+        Newline,
+        Global,
+        Mode,
+        Widget,
+        Down,
+    }
+
+    fn press(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c))
+    }
+
+    fn kind(mut event: KeyEvent, kind: KeyEventKind) -> KeyEvent {
+        event.kind = kind;
+        event
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    fn chord(s: &str) -> Chord {
+        Chord::parse(s).unwrap_or_else(|e| panic!("{s}: {e}"))
+    }
+
+    fn actions<A: Clone>(dispatches: &[Dispatch<A>]) -> Vec<A> {
+        dispatches
+            .iter()
+            .filter_map(|d| match d {
+                Dispatch::Action { action, .. } => Some(action.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn combo_parse_display_and_normalization() {
+        let ctrl_x: KeyCombo = "Ctrl+x".parse().unwrap();
+        assert_eq!(ctrl_x, KeyCombo::new(KeyCode::Char('x'), Modifiers::CTRL));
+        assert_eq!(ctrl_x.to_string(), "Ctrl+x");
+
+        // Shift+a, A and a terminal reporting Char('A')+SHIFT are one combo.
+        let shift_a: KeyCombo = "shift+a".parse().unwrap();
+        assert_eq!(shift_a, "A".parse().unwrap());
+        assert_eq!(shift_a, KeyCombo::new(KeyCode::Char('A'), Modifiers::SHIFT));
+        assert_eq!(shift_a.to_string(), "A");
+
+        assert_eq!("F12".parse::<KeyCombo>().unwrap().code, KeyCode::F(12));
+        assert_eq!(
+            "Space".parse::<KeyCombo>().unwrap().code,
+            KeyCode::Char(' ')
+        );
+        assert_eq!(
+            "Ctrl+Alt+Delete".parse::<KeyCombo>().unwrap().to_string(),
+            "Ctrl+Alt+Delete"
+        );
+        assert_eq!(
+            "Shift+Tab".parse::<KeyCombo>().unwrap().to_string(),
+            "Shift+Tab"
+        );
+        // The plus key itself.
+        assert_eq!("+".parse::<KeyCombo>().unwrap().code, KeyCode::Char('+'));
+        let ctrl_plus: KeyCombo = "Ctrl++".parse().unwrap();
+        assert_eq!(
+            ctrl_plus,
+            KeyCombo::new(KeyCode::Char('+'), Modifiers::CTRL)
+        );
+
+        assert_eq!(
+            "Hyper+x".parse::<KeyCombo>(),
+            Err(KeyParseError::UnknownModifier("Hyper".into()))
+        );
+        assert_eq!(
+            "Banana".parse::<KeyCombo>(),
+            Err(KeyParseError::UnknownKey("Banana".into()))
+        );
+        assert_eq!("".parse::<KeyCombo>(), Err(KeyParseError::EmptyKey));
+        assert_eq!(
+            "F0".parse::<KeyCombo>(),
+            Err(KeyParseError::UnknownKey("F0".into()))
+        );
+    }
+
+    #[test]
+    fn chord_parse_prefix_and_limits() {
+        let gg = chord("g g");
+        let g = chord("g");
+        assert_eq!(gg.len(), 2);
+        assert_eq!(gg.to_string(), "g g");
+        assert!(g.is_prefix_of(&gg));
+        assert!(!gg.is_prefix_of(&g));
+        assert!(!g.is_prefix_of(&g), "a chord is not its own prefix");
+        assert_eq!(chord("Ctrl+x Ctrl+s").to_string(), "Ctrl+x Ctrl+s");
+        assert_eq!(Chord::parse(""), Err(KeyParseError::EmptyKey));
+        assert_eq!(
+            Chord::parse("a b c d e"),
+            Err(KeyParseError::TooManyKeys(5))
+        );
+    }
+
+    #[test]
+    fn chord_completes_within_timeout() {
+        let mut map = KeyMap::new();
+        map.bind(chord("g g"), Act::GoTop);
+        map.bind(chord("x"), Act::Save);
+        let mut dispatcher = KeyDispatcher::new(map);
+        let t0 = Instant::now();
+
+        let first = dispatcher.feed(&press('g'), t0);
+        assert_eq!(first, vec![Dispatch::Pending { prefix: chord("g") }]);
+        assert_eq!(dispatcher.pending_prefix(), Some(chord("g")));
+        assert!(
+            dispatcher.tick(t0 + ms(300)).is_empty(),
+            "still inside the timeout"
+        );
+
+        let second = dispatcher.feed(&press('g'), t0 + ms(300));
+        assert_eq!(actions(&second), vec![Act::GoTop]);
+        assert_eq!(dispatcher.pending_prefix(), None);
+        assert_eq!(dispatcher.stats().dispatched, 1);
+        assert_eq!(dispatcher.stats().pending, 1);
+    }
+
+    #[test]
+    fn chord_expires_after_timeout() {
+        // Prefix that is itself bound: expiry fires it.
+        let mut map = KeyMap::new();
+        map.bind(chord("g g"), Act::GoTop);
+        map.bind(chord("g"), Act::Help);
+        let mut dispatcher = KeyDispatcher::new(map);
+        let t0 = Instant::now();
+        assert_eq!(
+            dispatcher.feed(&press('g'), t0),
+            vec![Dispatch::Pending { prefix: chord("g") }]
+        );
+        assert!(dispatcher.tick(t0 + ms(999)).is_empty());
+        let expired = dispatcher.tick(t0 + ms(1000));
+        assert_eq!(expired[0], Dispatch::Expired { prefix: chord("g") });
+        assert_eq!(actions(&expired), vec![Act::Help]);
+        assert_eq!(dispatcher.stats().expired, 1);
+
+        // Prefix that is not bound: expiry only.
+        let mut map = KeyMap::new();
+        map.bind(chord("g g"), Act::GoTop);
+        let mut dispatcher = KeyDispatcher::new(map);
+        dispatcher.feed(&press('g'), t0);
+        assert_eq!(
+            dispatcher.tick(t0 + ms(5000)),
+            vec![Dispatch::Expired { prefix: chord("g") }]
+        );
+        assert_eq!(dispatcher.pending_prefix(), None);
+    }
+
+    #[test]
+    fn single_key_fires_while_chord_pending() {
+        let mut map = KeyMap::new();
+        map.bind(chord("g g"), Act::GoTop);
+        map.bind(chord("x"), Act::Save);
+        let mut dispatcher = KeyDispatcher::new(map);
+        let t0 = Instant::now();
+        dispatcher.feed(&press('g'), t0);
+        let out = dispatcher.feed(&press('x'), t0 + ms(10));
+        assert_eq!(out[0], Dispatch::Expired { prefix: chord("g") });
+        assert_eq!(
+            actions(&out),
+            vec![Act::Save],
+            "x is never blocked by the pending g"
+        );
+
+        // Same with a bound prefix: it fires first, then the single key.
+        let mut map = KeyMap::new();
+        map.bind(chord("g g"), Act::GoTop);
+        map.bind(chord("g"), Act::Help);
+        map.bind(chord("x"), Act::Save);
+        let mut dispatcher = KeyDispatcher::new(map);
+        dispatcher.feed(&press('g'), t0);
+        let out = dispatcher.feed(&press('x'), t0 + ms(10));
+        assert_eq!(actions(&out), vec![Act::Help, Act::Save]);
+
+        // A non-extending key that starts another chord goes pending itself.
+        let mut map = KeyMap::new();
+        map.bind(chord("g g"), Act::GoTop);
+        map.bind(chord("z z"), Act::Quit);
+        let mut dispatcher = KeyDispatcher::new(map);
+        dispatcher.feed(&press('g'), t0);
+        let out = dispatcher.feed(&press('z'), t0 + ms(10));
+        assert_eq!(
+            out,
+            vec![
+                Dispatch::Expired { prefix: chord("g") },
+                Dispatch::Pending { prefix: chord("z") }
+            ]
+        );
+    }
+
+    #[test]
+    fn widget_beats_mode_beats_global() {
+        let mut map = KeyMap::new();
+        let g = map.bind_in(chord("s"), Act::Global, Priority::Global, None);
+        let m = map.bind_in(chord("s"), Act::Mode, Priority::Mode, None);
+        let w = map.bind_in(chord("s"), Act::Widget, Priority::Widget, None);
+        let lookup = map.lookup(&chord("s"), &[]);
+        assert_eq!(lookup.exact.map(|b| b.id), Some(w));
+        assert_eq!(lookup.longer, 0);
+
+        let mut dispatcher = KeyDispatcher::new(map);
+        assert_eq!(
+            actions(&dispatcher.feed(&press('s'), Instant::now())),
+            vec![Act::Widget]
+        );
+
+        let report = dispatcher.map().conflicts();
+        assert_eq!(report.len(), 3, "{report}");
+        assert!(report.items.contains(&Conflict::Shadowed {
+            winner: w,
+            loser: g,
+            chord: chord("s")
+        }));
+        assert!(report.items.contains(&Conflict::Shadowed {
+            winner: m,
+            loser: g,
+            chord: chord("s")
+        }));
+        assert!(report.items.contains(&Conflict::Shadowed {
+            winner: w,
+            loser: m,
+            chord: chord("s")
+        }));
+        assert_eq!(report.to_string().lines().count(), 3);
+
+        // Removing the winner promotes the next.
+        dispatcher.map_mut().unbind(w);
+        assert_eq!(
+            actions(&dispatcher.feed(&press('s'), Instant::now())),
+            vec![Act::Mode]
+        );
+    }
+
+    #[test]
+    fn active_context_beats_contextless_even_at_lower_priority() {
+        let mut map = KeyMap::new();
+        let text_input = map.context("text_input");
+        assert_eq!(map.context("text_input"), text_input, "interned once");
+        assert_eq!(map.context_name(text_input), Some("text_input"));
+        map.bind_in(chord("Enter"), Act::Submit, Priority::Widget, None);
+        map.bind_in(
+            chord("Enter"),
+            Act::Newline,
+            Priority::Global,
+            Some(text_input),
+        );
+        assert!(
+            map.conflicts().is_empty(),
+            "a context override is not a conflict"
+        );
+
+        let mut dispatcher = KeyDispatcher::new(map);
+        let enter = KeyEvent::new(KeyCode::Enter);
+        let t0 = Instant::now();
+        assert_eq!(actions(&dispatcher.feed(&enter, t0)), vec![Act::Submit]);
+        dispatcher.set_active_contexts(&[text_input]);
+        assert_eq!(actions(&dispatcher.feed(&enter, t0)), vec![Act::Newline]);
+        dispatcher.set_active_contexts(&[]);
+        assert_eq!(actions(&dispatcher.feed(&enter, t0)), vec![Act::Submit]);
+    }
+
+    #[test]
+    fn conflicts_reports_shadowed_prefix_and_duplicate() {
+        let mut map = KeyMap::new();
+        let long = map.bind(chord("g g"), Act::GoTop);
+        let short = map.bind(chord("g"), Act::Help);
+        let q1 = map.bind(chord("q"), Act::Quit);
+        let q2 = map.bind(chord("q"), Act::Quit);
+        map.set_label(q2, "quit");
+        assert_eq!(map.get(q2).and_then(|b| b.label.as_deref()), Some("quit"));
+
+        let report = map.conflicts();
+        assert_eq!(report.len(), 2, "{report}");
+        assert_eq!(
+            report.items[0],
+            Conflict::PrefixCollision {
+                short,
+                long,
+                short_chord: chord("g"),
+                long_chord: chord("g g"),
+            }
+        );
+        assert_eq!(
+            report.items[1],
+            Conflict::Duplicate {
+                first: q1,
+                second: q2,
+                chord: chord("q")
+            }
+        );
+        let text = report.to_string();
+        assert_eq!(text.lines().count(), 2);
+        assert!(
+            text.contains("warning: binding #1 (`g`) is a prefix of binding #0 (`g g`)"),
+            "{text}"
+        );
+        assert!(text.contains("the later one wins"), "{text}");
+
+        // The later duplicate wins at dispatch.
+        assert_eq!(map.lookup(&chord("q"), &[]).exact.map(|b| b.id), Some(q2));
+    }
+
+    #[test]
+    fn repeat_refires_single_key_binding_but_never_extends_a_chord() {
+        let mut map = KeyMap::new();
+        map.bind(chord("j"), Act::Down);
+        map.bind(chord("g g"), Act::GoTop);
+        let mut dispatcher = KeyDispatcher::new(map);
+        let t0 = Instant::now();
+
+        let held = kind(press('j'), KeyEventKind::Repeat);
+        assert_eq!(actions(&dispatcher.feed(&held, t0)), vec![Act::Down]);
+
+        dispatcher.feed(&press('g'), t0);
+        let repeat_g = kind(press('g'), KeyEventKind::Repeat);
+        assert_eq!(
+            dispatcher.feed(&repeat_g, t0 + ms(10)),
+            vec![Dispatch::Unbound(repeat_g)]
+        );
+        assert_eq!(
+            dispatcher.pending_prefix(),
+            Some(chord("g")),
+            "repeat left the prefix alone"
+        );
+
+        let released = kind(press('j'), KeyEventKind::Release);
+        assert_eq!(
+            dispatcher.feed(&released, t0 + ms(20)),
+            vec![Dispatch::Unbound(released)]
+        );
+    }
+
+    #[test]
+    fn esc_goes_through_the_sequence_detector() {
+        let mut map = KeyMap::new();
+        map.bind(chord("Esc"), Act::Quit);
+        map.bind(chord("Esc Esc"), Act::Help);
+        map.bind(chord("g g"), Act::GoTop);
+        let mut dispatcher = KeyDispatcher::new(map);
+        let esc = KeyEvent::new(KeyCode::Escape);
+        let t0 = Instant::now();
+
+        // A lone Esc waits for the detector window, then fires its binding.
+        assert_eq!(
+            dispatcher.feed(&esc, t0),
+            vec![Dispatch::Esc(SequenceOutput::Pending)]
+        );
+        assert_eq!(actions(&dispatcher.tick(t0 + ms(300))), vec![Act::Quit]);
+
+        // Esc Esc inside the window fires the double binding.
+        let t1 = t0 + ms(1000);
+        dispatcher.feed(&esc, t1);
+        assert_eq!(
+            actions(&dispatcher.feed(&esc, t1 + ms(100))),
+            vec![Act::Help]
+        );
+
+        // Esc cancels a pending chord prefix first.
+        let t2 = t0 + ms(3000);
+        dispatcher.feed(&press('g'), t2);
+        let out = dispatcher.feed(&esc, t2 + ms(10));
+        assert_eq!(out[0], Dispatch::Expired { prefix: chord("g") });
+        assert_eq!(dispatcher.pending_prefix(), None);
+
+        // Unbound Esc surfaces the detector verdict.
+        let mut plain = KeyDispatcher::new(KeyMap::<Act>::new());
+        plain.feed(&esc, t0);
+        assert_eq!(
+            plain.tick(t0 + ms(300)),
+            vec![Dispatch::Esc(SequenceOutput::Esc)]
+        );
+    }
+
+    fn arb_key() -> impl Strategy<Value = KeyEvent> {
+        let code = prop_oneof![
+            Just(KeyCode::Char('a')),
+            Just(KeyCode::Char('b')),
+            Just(KeyCode::Char('c')),
+            Just(KeyCode::Enter),
+            Just(KeyCode::Escape),
+        ];
+        let kind = prop_oneof![
+            Just(KeyEventKind::Press),
+            Just(KeyEventKind::Repeat),
+            Just(KeyEventKind::Release),
+        ];
+        (code, kind).prop_map(|(code, kind)| KeyEvent {
+            code,
+            modifiers: Modifiers::NONE,
+            kind,
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+
+        /// No key is ever swallowed: every feed yields at least one dispatch,
+        /// and draining the timers afterwards never panics or leaks a prefix.
+        #[test]
+        fn every_fed_key_yields_a_dispatch(
+            keys in proptest::collection::vec(arb_key(), 1..20),
+            gaps in proptest::collection::vec(0u64..1500, 1..20),
+        ) {
+            let mut map = KeyMap::new();
+            map.bind(chord("a b"), Act::GoTop);
+            map.bind(chord("a"), Act::Help);
+            map.bind(chord("c c c"), Act::Save);
+            map.bind(chord("Enter"), Act::Submit);
+            let mut dispatcher = KeyDispatcher::new(map);
+            let mut now = Instant::now();
+            for (key, gap) in keys.iter().zip(gaps.iter().cycle()) {
+                now += ms(*gap);
+                let out = dispatcher.feed(key, now);
+                prop_assert!(!out.is_empty(), "{key:?} produced nothing");
+                let _ = dispatcher.tick(now);
+            }
+            let _ = dispatcher.tick(now + ms(10_000));
+            prop_assert_eq!(dispatcher.pending_prefix(), None);
+            let stats = dispatcher.stats();
+            prop_assert!(
+                stats.dispatched + stats.pending + stats.expired + stats.unbound + stats.esc > 0
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
