@@ -22,6 +22,7 @@ const MAX_TRAVERSAL_DEPTH: usize = 1000;
 /// 2. Add nodes via [`add_node`](Self::add_node).
 /// 3. Optionally designate the root and focused node.
 /// 4. Call [`build`](Self::build) to freeze.
+#[derive(Debug, Clone)]
 pub struct A11yTreeBuilder {
     nodes: AHashMap<u64, A11yNodeInfo>,
     root: Option<u64>,
@@ -73,6 +74,40 @@ impl A11yTreeBuilder {
         self.focused = id;
     }
 
+    /// The root id chosen so far, if any.
+    #[inline]
+    #[must_use]
+    pub fn root(&self) -> Option<u64> {
+        self.root
+    }
+
+    /// A node added so far.
+    #[inline]
+    #[must_use]
+    pub fn node(&self, id: u64) -> Option<&A11yNodeInfo> {
+        self.nodes.get(&id)
+    }
+
+    /// Mutable access to a node added so far (used to wire children in).
+    #[inline]
+    pub fn node_mut(&mut self, id: u64) -> Option<&mut A11yNodeInfo> {
+        self.nodes.get_mut(&id)
+    }
+
+    /// Number of nodes added so far.
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Whether no node has been added.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
     /// Consume the builder and produce an immutable tree snapshot.
     #[inline]
     pub fn build(self) -> A11yTree {
@@ -91,6 +126,7 @@ impl A11yTreeBuilder {
 /// The tree is a flat map keyed by node ID; parent/child relationships
 /// are encoded inside each [`A11yNodeInfo`]. This makes traversal O(1)
 /// per hop and diffing O(n) in the number of nodes.
+#[derive(Debug, Clone)]
 pub struct A11yTree {
     nodes: AHashMap<u64, A11yNodeInfo>,
     root: Option<u64>,
@@ -173,6 +209,66 @@ impl A11yTree {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// One text line per node in `order` (document order as collected by the
+    /// frame): `{indent}{role:?} "{name}" [{states}] @{x},{y} {w}x{h}`, with
+    /// the indent equal to the node's depth. This is the format the
+    /// accessibility panel and the tree snapshots share. Ids missing from the
+    /// tree are skipped.
+    #[must_use]
+    pub fn dump_text(&self, order: &[u64]) -> String {
+        let mut out = String::new();
+        for &id in order {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            // `ancestors` includes the node itself, so depth = chain - 1.
+            let depth = self.ancestors(id).len().saturating_sub(1);
+            let mut states: Vec<&str> = Vec::new();
+            if node.state.focused {
+                states.push("focused");
+            }
+            if node.state.disabled {
+                states.push("disabled");
+            }
+            if node.state.selected {
+                states.push("selected");
+            }
+            match node.state.checked {
+                Some(true) => states.push("checked"),
+                Some(false) => states.push("unchecked"),
+                None => {}
+            }
+            match node.state.expanded {
+                Some(true) => states.push("expanded"),
+                Some(false) => states.push("collapsed"),
+                None => {}
+            }
+            if node.state.readonly {
+                states.push("readonly");
+            }
+            if node.state.required {
+                states.push("required");
+            }
+            if node.state.busy {
+                states.push("busy");
+            }
+            let name = node.name.as_deref().unwrap_or("");
+            let b = node.bounds;
+            out.push_str(&format!(
+                "{}{:?} \"{}\" [{}] @{},{} {}x{}\n",
+                "  ".repeat(depth),
+                node.role,
+                name,
+                states.join(","),
+                b.x,
+                b.y,
+                b.width,
+                b.height
+            ));
+        }
+        out
     }
 
     /// Walk ancestors from `id` up to the root (inclusive), returning

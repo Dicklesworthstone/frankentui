@@ -207,6 +207,24 @@ pub struct A11yNodeInfo {
 impl A11yNodeInfo {
     /// Create a minimal node with required fields; everything else defaults.
     #[inline]
+    /// A deterministic node id derived from the role and the rendered
+    /// bounds, for widgets that have no hit id or widget id of their own.
+    ///
+    /// Stable across frames as long as the widget keeps its role and area,
+    /// which is what the frame-to-frame diff and the announcements need. The
+    /// caveat is inherent: a widget that moves or resizes shows up as a
+    /// remove plus an add rather than a change.
+    #[must_use]
+    pub fn stable_id_for(role: A11yRole, bounds: Rect) -> u64 {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let mut hasher =
+            ahash::RandomState::with_seeds(0x4131_3179, 0x5354_4142, 0x4c45_4944, 0x2e30_3031)
+                .build_hasher();
+        role.hash(&mut hasher);
+        (bounds.x, bounds.y, bounds.width, bounds.height).hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub fn new(id: u64, role: A11yRole, bounds: Rect) -> Self {
         Self {
             id,

@@ -28,9 +28,13 @@ unicode-segmentation = "1.13.3"
 web-time = "1.1.0"
 bumpalo = { version = "3.20.3", features = ["collections"] }
 ftui-core = { path = "../ftui-core", version = "0.6.0" }
+# The frame collects accessibility nodes into an ftui-a11y tree builder
+# (ftui-a11y depends only on ftui-core, so this introduces no cycle).
+ftui-a11y = { path = "../ftui-a11y", version = "0.6.0" }
 tracing = { version = "0.1.41", optional = true }
 # Note: ftui-render is the core kernel and should not depend on ftui-style.
-# ftui-style depends on ftui-render (not vice versa).
+# ftui-style depends on ftui-render (not vice versa). Allowed workspace
+# dependencies here: ftui-core, ftui-a11y.
 # ftui-layout = { path = "../ftui-layout" }  # TODO: Add when needed
 # ftui-text = { path = "../ftui-text" }      # TODO: Add when needed
 

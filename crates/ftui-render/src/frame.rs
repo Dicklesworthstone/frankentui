@@ -36,6 +36,8 @@ use crate::cell::{Cell, CellContent, GraphemeId};
 use crate::drawing::{BorderChars, Draw};
 use crate::grapheme_pool::GraphemePool;
 use crate::{display_width, grapheme_width};
+use ftui_a11y::node::A11yNodeInfo;
+use ftui_a11y::tree::A11yTreeBuilder;
 use ftui_core::geometry::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -468,6 +470,19 @@ pub struct Frame<'a> {
     /// slices). The arena is reset at frame boundaries, eliminating
     /// allocator churn on the hot render path.
     pub arena: Option<&'a FrameArena>,
+
+    /// Accessibility tree builder for this frame, when the runtime collects
+    /// one (see [`Frame::push_a11y`]). `None` makes every a11y call a no-op.
+    pub a11y: Option<&'a mut A11yTreeBuilder>,
+
+    /// Container ids opened by [`Frame::with_a11y_scope`].
+    a11y_scope_stack: Vec<u64>,
+
+    /// Node ids in push (document) order.
+    a11y_order: Vec<u64>,
+
+    /// `(parent, child)` links to apply in [`Frame::finish_a11y`].
+    a11y_children: Vec<(u64, u64)>,
 }
 
 impl<'a> Frame<'a> {
@@ -487,6 +502,10 @@ impl<'a> Frame<'a> {
             cursor_visible: true,
             degradation: DegradationLevel::Full,
             arena: None,
+            a11y: None,
+            a11y_scope_stack: Vec::new(),
+            a11y_order: Vec::new(),
+            a11y_children: Vec::new(),
         }
     }
 
@@ -506,6 +525,10 @@ impl<'a> Frame<'a> {
             cursor_visible: true,
             degradation: DegradationLevel::Full,
             arena: None,
+            a11y: None,
+            a11y_scope_stack: Vec::new(),
+            a11y_order: Vec::new(),
+            a11y_children: Vec::new(),
         }
     }
 
@@ -531,6 +554,10 @@ impl<'a> Frame<'a> {
             cursor_visible: true,
             degradation: DegradationLevel::Full,
             arena: None,
+            a11y: None,
+            a11y_scope_stack: Vec::new(),
+            a11y_order: Vec::new(),
+            a11y_children: Vec::new(),
         }
     }
 
@@ -556,6 +583,10 @@ impl<'a> Frame<'a> {
             cursor_visible: true,
             degradation: DegradationLevel::Full,
             arena: None,
+            a11y: None,
+            a11y_scope_stack: Vec::new(),
+            a11y_order: Vec::new(),
+            a11y_children: Vec::new(),
         }
     }
 
@@ -748,6 +779,109 @@ impl<'a> Frame<'a> {
         }
     }
 
+    // ── Accessibility tree collection ───────────────────────────────────
+
+    /// Whether an accessibility tree builder is attached to this frame.
+    #[must_use]
+    pub fn a11y_enabled(&self) -> bool {
+        self.a11y.is_some()
+    }
+
+    /// Attach the builder that collects this frame's accessibility nodes
+    /// (the runtime does this once per frame when accessibility is on).
+    pub fn set_a11y(&mut self, builder: &'a mut A11yTreeBuilder) {
+        self.a11y = Some(builder);
+    }
+
+    /// Push one accessibility node. A no-op without a builder.
+    ///
+    /// The node's parent defaults to the enclosing [`Frame::with_a11y_scope`]
+    /// container; a parent the widget set itself is kept. Ids must be stable
+    /// across frames so the tree can be diffed and changes announced: reuse
+    /// a hit id or widget id where one exists, otherwise
+    /// [`A11yNodeInfo::stable_id_for`].
+    pub fn push_a11y(&mut self, mut node: A11yNodeInfo) {
+        let Some(builder) = self.a11y.as_deref_mut() else {
+            return;
+        };
+        if node.parent.is_none()
+            && let Some(&parent) = self.a11y_scope_stack.last()
+        {
+            node.parent = Some(parent);
+        }
+        if let Some(parent) = node.parent {
+            self.a11y_children.push((parent, node.id));
+        }
+        self.a11y_order.push(node.id);
+        builder.add_node(node);
+    }
+
+    /// Push every node a widget reports
+    /// (`ftui_a11y::Accessible::accessibility_nodes`).
+    pub fn push_a11y_nodes(&mut self, nodes: impl IntoIterator<Item = A11yNodeInfo>) {
+        for node in nodes {
+            self.push_a11y(node);
+        }
+    }
+
+    /// Push `container` and make it the parent of every node pushed while
+    /// `f` runs (containers such as `Block` wrap their children with this).
+    /// Without a builder `f` simply runs.
+    pub fn with_a11y_scope<R>(
+        &mut self,
+        container: A11yNodeInfo,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if self.a11y.is_none() {
+            return f(self);
+        }
+        let id = container.id;
+        self.push_a11y(container);
+        self.a11y_scope_stack.push(id);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.a11y_scope_stack.pop();
+        match result {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// Node ids in push (document) order.
+    #[must_use]
+    pub fn a11y_order(&self) -> &[u64] {
+        &self.a11y_order
+    }
+
+    /// Move the push order out (the runtime keeps it beside the built tree).
+    pub fn take_a11y_order(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.a11y_order)
+    }
+
+    /// Apply the collected parent/child links to the builder and, when no
+    /// root was set, make the first parentless node the root. Call once
+    /// after the view has rendered and before the tree is built; a no-op
+    /// without a builder.
+    pub fn finish_a11y(&mut self) {
+        let Some(builder) = self.a11y.as_deref_mut() else {
+            return;
+        };
+        for (parent, child) in self.a11y_children.drain(..) {
+            if let Some(node) = builder.node_mut(parent)
+                && !node.children.contains(&child)
+            {
+                node.children.push(child);
+            }
+        }
+        if builder.root().is_none()
+            && let Some(&root) = self
+                .a11y_order
+                .iter()
+                .find(|id| builder.node(**id).is_some_and(|node| node.parent.is_none()))
+        {
+            builder.set_root(root);
+        }
+    }
+
     /// Hit test at the given position (if hit grid is enabled).
     #[must_use]
     pub fn hit_test(&self, x: u16, y: u16) -> Option<(HitId, HitRegion, HitData)> {
@@ -934,6 +1068,91 @@ mod tests {
         assert_eq!(bounds.y, 0);
         assert_eq!(bounds.width, 80);
         assert_eq!(bounds.height, 24);
+    }
+
+    // ── accessibility collection ───────────────────────────────────────
+
+    fn a11y_node(id: u64, role: ftui_a11y::node::A11yRole, name: &str) -> A11yNodeInfo {
+        A11yNodeInfo::new(id, role, Rect::new(0, 0, 10, 1)).with_name(name)
+    }
+
+    #[test]
+    fn frame_a11y_is_a_noop_without_a_builder() {
+        use ftui_a11y::node::A11yRole;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
+        assert!(!frame.a11y_enabled());
+        frame.push_a11y(a11y_node(1, A11yRole::Label, "lonely"));
+        let ran = frame.with_a11y_scope(a11y_node(2, A11yRole::Window, "w"), |f| {
+            f.push_a11y(a11y_node(3, A11yRole::Button, "b"));
+            42
+        });
+        assert_eq!(ran, 42);
+        frame.finish_a11y();
+        assert!(frame.a11y_order().is_empty());
+        assert!(frame.take_a11y_order().is_empty());
+    }
+
+    #[test]
+    fn frame_a11y_collects_nodes_with_scope_parents_and_a_root() {
+        use ftui_a11y::node::A11yRole;
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
+        frame.set_a11y(&mut builder);
+        assert!(frame.a11y_enabled());
+
+        frame.with_a11y_scope(a11y_node(1, A11yRole::Window, "main"), |f| {
+            f.push_a11y(a11y_node(2, A11yRole::Button, "ok"));
+            f.with_a11y_scope(a11y_node(3, A11yRole::List, "items"), |f| {
+                f.push_a11y_nodes(vec![
+                    a11y_node(4, A11yRole::ListItem, "first"),
+                    a11y_node(5, A11yRole::ListItem, "second"),
+                ]);
+            });
+            // An explicit parent set by the widget is kept.
+            f.push_a11y(a11y_node(6, A11yRole::Label, "detached").with_parent(99));
+        });
+        frame.push_a11y(a11y_node(7, A11yRole::Label, "status"));
+        assert_eq!(frame.a11y_order(), &[1, 2, 3, 4, 5, 6, 7]);
+        frame.finish_a11y();
+        let order = frame.take_a11y_order();
+        drop(frame);
+
+        let tree = builder.build();
+        assert_eq!(tree.root_id(), Some(1), "first parentless node is the root");
+        assert_eq!(tree.node(2).and_then(|n| n.parent), Some(1));
+        assert_eq!(tree.node(4).and_then(|n| n.parent), Some(3));
+        assert_eq!(tree.node(6).and_then(|n| n.parent), Some(99));
+        assert_eq!(tree.node(7).and_then(|n| n.parent), None);
+        // The explicit parent (99, never pushed) keeps node 6 out of the
+        // scope container's children; the dangling link is simply dropped.
+        assert_eq!(tree.node(1).map(|n| n.children.clone()), Some(vec![2, 3]));
+        assert_eq!(tree.node(3).map(|n| n.children.clone()), Some(vec![4, 5]));
+        assert_eq!(tree.ancestors(5), vec![5, 3, 1], "self, parent, root");
+
+        let text = tree.dump_text(&order);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 7, "{text}");
+        assert!(
+            lines[0].starts_with("Window \"main\" [] @0,0 10x1"),
+            "{text}"
+        );
+        assert!(lines[1].starts_with("  Button \"ok\""), "{text}");
+        assert!(lines[3].starts_with("    ListItem \"first\""), "{text}");
+        assert!(lines[6].starts_with("Label \"status\""), "{text}");
+    }
+
+    #[test]
+    fn stable_a11y_ids_depend_on_role_and_bounds_only() {
+        use ftui_a11y::node::A11yRole;
+        let a = A11yNodeInfo::stable_id_for(A11yRole::Button, Rect::new(1, 2, 3, 4));
+        let same = A11yNodeInfo::stable_id_for(A11yRole::Button, Rect::new(1, 2, 3, 4));
+        let moved = A11yNodeInfo::stable_id_for(A11yRole::Button, Rect::new(2, 2, 3, 4));
+        let other_role = A11yNodeInfo::stable_id_for(A11yRole::Label, Rect::new(1, 2, 3, 4));
+        assert_eq!(a, same);
+        assert_ne!(a, moved);
+        assert_ne!(a, other_role);
     }
 
     #[test]
