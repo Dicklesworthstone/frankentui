@@ -1,0 +1,25 @@
+# cargo-nextest configuration.
+#
+# Why this exists: on 2026-08-28 the "Check (macos-latest, nightly)" CI job ran
+# for six hours because two ftui-runtime unit tests blocked forever on a
+# process-global signal slot that a parallel test had cleared. `cargo test`
+# has no per-test timeout, so a hang costs the whole job budget. nextest kills
+# any test that exceeds the slow-timeout so a hang costs minutes, not hours,
+# and reports the test by name.
+#
+# Usage: `cargo nextest run --workspace --no-fail-fast` (CI) or per crate.
+# `cargo test` keeps working for local runs; this file only affects nextest.
+
+[profile.default]
+# A test that runs longer than 60s is reported as slow; after two periods
+# (120s) it is terminated and counted as a failure with its name in the log.
+slow-timeout = { period = "60s", terminate-after = 2 }
+# Keep going after a failure so one hang cannot hide the rest of the results.
+fail-fast = false
+
+[profile.ci]
+slow-timeout = { period = "60s", terminate-after = 2 }
+fail-fast = false
+# Retry once to distinguish a flaky timing test from a real regression; the
+# retry is reported, so flakes stay visible instead of silently passing.
+retries = 1

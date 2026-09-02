@@ -11,6 +11,9 @@ source "$LIB_DIR/logging.sh"
 # shellcheck source=/dev/null
 source "$LIB_DIR/pty.sh"
 
+# Fail fast with a clear message instead of 40 "rg: command not found" cases.
+require_cmd rg || exit 1
+
 if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
     LOG_FILE="$E2E_LOG_DIR/inline_missing.log"
     for t in inline_basic inline_log_scroll inline_many_logs inline_custom_height inline_ui_chrome inline_resize inline_cursor_contract; do

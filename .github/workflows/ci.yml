@@ -15,22 +15,43 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # The one toolchain every job uses. It must equal the `channel` pinned in
+  # rust-toolchain.toml (the `toolchain-pin` job fails the run if it drifts);
+  # jobs used to install a floating `nightly` while the repo pin was dated,
+  # so CI and local builds could silently diverge.
+  RUST_TOOLCHAIN: nightly-2026-08-25
 
 jobs:
+  # ==========================================================================
+  # Toolchain pin: CI must build with the toolchain rust-toolchain.toml pins
+  # ==========================================================================
+  toolchain-pin:
+    name: Toolchain pin matches rust-toolchain.toml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Compare RUST_TOOLCHAIN with rust-toolchain.toml
+        run: |
+          set -euo pipefail
+          pinned="$(grep -E '^channel = ' rust-toolchain.toml | sed -E 's/channel = "([^"]+)"/\1/')"
+          echo "rust-toolchain.toml channel: $pinned"
+          echo "workflow RUST_TOOLCHAIN:     $RUST_TOOLCHAIN"
+          if [ "$pinned" != "$RUST_TOOLCHAIN" ]; then
+            echo "::error::RUST_TOOLCHAIN in .github/workflows/ci.yml ($RUST_TOOLCHAIN) does not match rust-toolchain.toml ($pinned); update both together."
+            exit 1
+          fi
+
   # ==========================================================================
   # Check Job: Format, Clippy, Tests
   # ==========================================================================
   check:
-    name: Check (${{ matrix.os }}, ${{ matrix.rust }})
+    name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        rust: [stable, nightly]
-        include:
-          - os: windows-latest
-            rust: stable
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout
@@ -39,8 +60,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -49,9 +73,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.rust }}-
+            ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -73,12 +97,19 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace
 
+      # nextest applies the per-test timeout in .config/nextest.toml: a hung
+      # test is killed and named after 120s instead of eating the 6h job budget
+      # (that is how the 2026-08-28 macOS run spent six hours on two tests).
       - name: Run tests
-        run: cargo test --workspace --lib
+        run: cargo nextest run --workspace --lib --profile ci
 
       - name: Run tests (all features)
-        run: cargo test --workspace --all-features
-        if: matrix.rust == 'nightly'
+        run: cargo nextest run --workspace --all-features --profile ci
+        # Only one runner pays for the all-features build (it is the heaviest
+        # target set and exhausted the runner disk when every leg ran it).
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          CARGO_INCREMENTAL: 0
 
   # ==========================================================================
   # Docs Job: Rustdoc + Examples
@@ -94,7 +125,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -127,7 +158,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -169,7 +200,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
@@ -303,7 +334,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -347,7 +378,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -384,7 +415,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -446,7 +477,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -540,12 +571,27 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.x'
+
+      # The PTY suite greps captured output with ripgrep (tests/e2e/scripts/
+      # test_inline.sh) and its websocket self-tests need the python
+      # `websockets` package; neither ships on the hosted runners, and their
+      # absence used to fail 42 of 166 cases with "rg: command not found".
+      - name: Install E2E tooling (ripgrep, jq, python websockets)
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y ripgrep jq
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install ripgrep jq
+          fi
+          python3 -m pip install --quiet websockets
+          rg --version && jq --version
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -708,12 +754,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.x'
+
+      # tests/e2e/lib/ws_client.py self-tests need the `websockets` package.
+      - name: Install python websockets
+        run: python3 -m pip install --quiet websockets
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -1109,7 +1159,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: llvm-tools-preview
 
       - name: Setup Python
@@ -1136,22 +1186,7 @@ jobs:
           fi
 
       - name: Install VHS (pinned)
-        run: |
-          set -euo pipefail
-          VHS_VERSION="0.10.0"
-          curl -fsSL -o /tmp/vhs.tar.gz "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz"
-          # The 0.10.x tarballs contain a versioned directory rather than
-          # extracting the binary at the archive root, so locate the binary
-          # before installing instead of assuming `/tmp/vhs` exists.
-          tar -xzf /tmp/vhs.tar.gz -C /tmp
-          vhs_bin="$(find /tmp -maxdepth 3 -type f -name vhs -perm -u+x 2>/dev/null | head -n 1)"
-          if [ -z "$vhs_bin" ]; then
-            echo "vhs binary not found after extracting /tmp/vhs.tar.gz" >&2
-            ls -R /tmp | head -50 >&2 || true
-            exit 1
-          fi
-          sudo install -m 0755 "$vhs_bin" /usr/local/bin/vhs
-          vhs --version
+        uses: ./.github/actions/install-vhs
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -2091,7 +2126,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
@@ -2155,7 +2190,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -2245,7 +2280,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           # Using nightly as MSRV since project requires edition 2024
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Check MSRV
         run: cargo check --workspace
@@ -2264,7 +2299,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Install wasm32 target
         run: rustup target add wasm32-unknown-unknown
@@ -2309,7 +2344,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -2488,7 +2523,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo
         uses: actions/cache@v6

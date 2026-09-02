@@ -352,8 +352,12 @@ else
 # ────────────────────────────────────────────────────────────────────────────
 # Step 4: Unit + Snapshot Tests
 # ────────────────────────────────────────────────────────────────────────────
+# Snapshot tests carry their own seeds (DeterminismLab is blessed at seed 7);
+# the E2E seed variables exported for the PTY steps must not reach cargo test.
 run_step "Unit + snapshot tests" "$LOG_DIR/04_tests.log" \
-    cargo test -p "$PKG" -- --test-threads=4 || true
+    env -u FTUI_HARNESS_SEED -u FTUI_SEED -u FTUI_DEMO_SEED -u FTUI_TEST_SEED \
+        -u E2E_SEED -u E2E_CONTEXT_SEED \
+        cargo test -p "$PKG" -- --test-threads=4 || true
 
 # ────────────────────────────────────────────────────────────────────────────
 # Steps 5-9: Smoke / Interactive Tests (require PTY)

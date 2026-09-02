@@ -477,8 +477,13 @@ run_step "Building workspace" "$LOG_DIR/01_build.log" \
     cargo build --workspace
 
 # Step 2: Unit Tests
+# The deterministic seed variables exported above are for the PTY runs below;
+# unit tests must see their own defaults (ftui-harness determinism tests assert
+# seed 99/42), so strip the seed env for this step only.
 run_step "Running unit tests" "$LOG_DIR/02_tests.log" \
-    cargo test --workspace --lib -- --test-threads=4
+    env -u FTUI_HARNESS_SEED -u FTUI_SEED -u FTUI_DEMO_SEED -u FTUI_TEST_SEED \
+        -u E2E_SEED -u E2E_CONTEXT_SEED \
+        cargo test --workspace --lib -- --test-threads=4
 
 # Step 3: Clippy
 run_step "Running clippy" "$LOG_DIR/03_clippy.log" \

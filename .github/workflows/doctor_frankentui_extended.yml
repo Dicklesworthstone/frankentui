@@ -77,13 +77,7 @@ jobs:
           ttyd --version || ttyd -v || true
 
       - name: Install VHS (pinned)
-        run: |
-          set -euo pipefail
-          VHS_VERSION="0.10.0"
-          curl -fsSL -o /tmp/vhs.tar.gz "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz"
-          tar -xzf /tmp/vhs.tar.gz -C /tmp
-          sudo install -m 0755 /tmp/vhs /usr/local/bin/vhs
-          vhs --version
+        uses: ./.github/actions/install-vhs
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov

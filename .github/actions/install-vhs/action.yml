@@ -1,0 +1,52 @@
+name: Install VHS (pinned)
+description: >-
+  Download a pinned charmbracelet/vhs release tarball, verify its checksum,
+  and install the binary into /usr/local/bin. Shared by every workflow that
+  records terminal sessions so the extraction layout is handled in one place
+  (the 0.10.x tarballs unpack into a versioned directory, not the archive root).
+inputs:
+  version:
+    description: VHS release version (without the leading v)
+    required: false
+    default: "0.10.0"
+  sha256:
+    description: >-
+      Expected SHA-256 of the Linux x86_64 tarball. Leave empty to skip the
+      check (not recommended); set it to pin the exact artifact.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Download, verify, and install vhs
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="${{ inputs.version }}"
+        work="$(mktemp -d)"
+        tarball="$work/vhs.tar.gz"
+        curl -fsSL -o "$tarball" \
+          "https://github.com/charmbracelet/vhs/releases/download/v${version}/vhs_${version}_Linux_x86_64.tar.gz"
+        if [ -n "${{ inputs.sha256 }}" ]; then
+          echo "${{ inputs.sha256 }}  $tarball" | sha256sum -c -
+        fi
+        mkdir -p "$work/extract"
+        tar -xzf "$tarball" -C "$work/extract"
+        # Known layouts: "<root>/vhs" (older releases) or
+        # "<root>/vhs_<version>_Linux_x86_64/vhs" (0.10.x). Search only the
+        # directory we just created so `find` cannot fail on unreadable /tmp
+        # entries and abort the step under `set -o pipefail`.
+        vhs_bin=""
+        for candidate in "$work/extract/vhs" "$work/extract/vhs_${version}_Linux_x86_64/vhs"; do
+          if [ -f "$candidate" ]; then vhs_bin="$candidate"; break; fi
+        done
+        if [ -z "$vhs_bin" ]; then
+          vhs_bin="$(find "$work/extract" -type f -name vhs | head -n 1 || true)"
+        fi
+        if [ -z "$vhs_bin" ]; then
+          echo "vhs binary not found in the extracted tarball:" >&2
+          find "$work/extract" -maxdepth 3 >&2 || true
+          exit 1
+        fi
+        sudo install -m 0755 "$vhs_bin" /usr/local/bin/vhs
+        vhs --version
