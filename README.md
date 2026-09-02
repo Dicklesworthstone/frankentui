@@ -1070,9 +1070,9 @@ Key(a)          ─┤          KeyChord (multi-key sequences)
 Key(Ctrl+x)     ─┘          ModifiedKey
 ```
 
-**Dead zone:** drag is only recognized after the pointer moves beyond a configurable threshold (default: 2 cells), preventing accidental drags from jittery mice.
+**Dead zone:** drag is only recognized after the pointer moves beyond a configurable threshold (`GestureConfig::drag_threshold`, default: 3 cells of Manhattan distance), preventing accidental drags from jittery mice.
 
-**Multi-click timing:** double/triple clicks use a configurable interval window (default: 500ms) with a `click_count` counter that resets on timeout or position change.
+**Multi-click timing:** double/triple clicks use a configurable interval window (`multi_click_timeout`, default: 300 ms; `click_tolerance` 1 cell) with a `click_count` counter that resets on timeout or position change. A stationary press becomes a `LongPress` after `long_press_threshold` (default: 500 ms).
 
 **Chord recognition:** multi-key sequences like `g g` (vim-style) use a `KeySequence` buffer with configurable timeout, enabling complex keybinding schemes without blocking single-key shortcuts.
 

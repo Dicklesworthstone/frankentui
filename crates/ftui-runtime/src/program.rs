@@ -180,7 +180,7 @@ fn probe_live_terminal(
         ProbeConfig, ProbeResult, decisions_from_probe, probe_capabilities,
     };
 
-    let before = capabilities.clone();
+    let before = *capabilities;
     let probing_disabled = std::env::var_os("FTUI_CAPS_PROBE").is_some_and(|value| value == "0");
     let wants_truecolor = !probing_disabled
         && capabilities.color_depth == ftui_core::terminal_capabilities::ColorDepth::Ansi256;
@@ -288,6 +288,25 @@ pub trait Model: Sized {
     /// Returns an empty vec (no subscriptions).
     fn subscriptions(&self) -> Vec<Box<dyn crate::subscription::Subscription<Self::Message>>> {
         vec![]
+    }
+
+    /// React to a recognized gesture: click, double/triple click, long
+    /// press, drag start/move/end/cancel, or key chord (see
+    /// [`SemanticEvent`](ftui_core::semantic_event::SemanticEvent)).
+    ///
+    /// Only called when [`ProgramConfig::gestures`] is set. The runtime then
+    /// feeds every input event through a
+    /// [`GestureRecognizer`](ftui_core::gesture::GestureRecognizer) after the
+    /// ordinary `update()` call and delivers each recognized gesture here;
+    /// long presses are checked once per tick. Raw events keep flowing to
+    /// `update()` unchanged, so enabling gestures never alters existing
+    /// behavior. Default: ignore gestures.
+    fn on_gesture(
+        &mut self,
+        gesture: ftui_core::semantic_event::SemanticEvent,
+    ) -> Cmd<Self::Message> {
+        let _ = gesture;
+        Cmd::none()
     }
 
     /// Downcast to [`ScreenTickDispatch`](crate::tick_strategy::ScreenTickDispatch)
@@ -3090,6 +3109,9 @@ pub struct ProgramConfig {
     pub persistence: PersistenceConfig,
     /// Inline auto UI height remeasurement policy.
     pub inline_auto_remeasure: Option<InlineAutoRemeasureConfig>,
+    /// Gesture recognition (clicks, drags, long press, chords) delivered to
+    /// [`Model::on_gesture`]; `None` (the default) runs no recognizer.
+    pub gestures: Option<ftui_core::gesture::GestureConfig>,
     /// Widget refresh selection configuration.
     pub widget_refresh: WidgetRefreshConfig,
     /// Effect queue scheduling configuration.
@@ -3149,6 +3171,7 @@ impl Default for ProgramConfig {
             kitty_keyboard: false,
             persistence: PersistenceConfig::default(),
             inline_auto_remeasure: None,
+            gestures: None,
             widget_refresh: WidgetRefreshConfig::default(),
             effect_queue: EffectQueueConfig::default(),
             guardrails: GuardrailsConfig::default(),
@@ -3187,6 +3210,15 @@ impl ProgramConfig {
             inline_auto_remeasure: Some(InlineAutoRemeasureConfig::default()),
             ..Default::default()
         }
+    }
+
+    /// Run a gesture recognizer over the input stream and deliver recognized
+    /// gestures to [`Model::on_gesture`]. Mouse gestures need mouse capture
+    /// (see [`Self::with_mouse_capture_policy`]).
+    #[must_use]
+    pub fn with_gestures(mut self, config: ftui_core::gesture::GestureConfig) -> Self {
+        self.gestures = Some(config);
+        self
     }
 
     /// Enable mouse support.
@@ -4924,6 +4956,9 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     last_checkpoint: Instant,
     /// Inline auto UI height remeasurement state.
     inline_auto_remeasure: Option<InlineAutoRemeasureState>,
+    /// Gesture recognizer fed by `handle_event` when
+    /// `ProgramConfig::gestures` is set.
+    gesture_recognizer: Option<ftui_core::gesture::GestureRecognizer>,
     /// Per-frame bump arena for temporary render-path allocations.
     frame_arena: FrameArena,
     /// Unified frame guardrails (memory/queue limits).
@@ -5041,6 +5076,10 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             .inline_auto_remeasure
             .clone()
             .map(InlineAutoRemeasureState::new);
+        let gesture_recognizer = config
+            .gestures
+            .clone()
+            .map(ftui_core::gesture::GestureRecognizer::new);
         let task_executor = TaskExecutor::new(
             &effect_queue_config,
             task_sender.clone(),
@@ -5107,6 +5146,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            gesture_recognizer,
             frame_arena: FrameArena::default(),
             guardrails,
             last_soft_trim_frame: None,
@@ -5186,6 +5226,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             .inline_auto_remeasure
             .clone()
             .map(InlineAutoRemeasureState::new);
+        let gesture_recognizer = config
+            .gestures
+            .clone()
+            .map(ftui_core::gesture::GestureRecognizer::new);
         let task_executor = TaskExecutor::new(
             &effect_queue_config,
             task_sender.clone(),
@@ -5242,6 +5286,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            gesture_recognizer,
             frame_arena: FrameArena::default(),
             guardrails,
             last_soft_trim_frame: None,
@@ -5582,6 +5627,16 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                     self.reconcile_subscriptions();
                 }
 
+                // A stationary mouse-down only becomes a long press with the
+                // passage of time, so the recognizer is polled once per tick.
+                if let Some(gesture) = self
+                    .gesture_recognizer
+                    .as_mut()
+                    .and_then(|recognizer| recognizer.check_long_press(Instant::now()))
+                {
+                    self.deliver_gesture(gesture)?;
+                }
+
                 if !used_screen_dispatch {
                     // Monolithic model path does not expose active-screen
                     // transitions, so clear dispatch-local transition state.
@@ -5859,6 +5914,24 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         }
     }
 
+    /// Hand one recognized gesture to `Model::on_gesture` and run the
+    /// resulting command like any update command.
+    fn deliver_gesture(
+        &mut self,
+        gesture: ftui_core::semantic_event::SemanticEvent,
+    ) -> io::Result<()> {
+        let cmd = {
+            let _span = debug_span!("ftui.program.update", msg_type = "gesture").entered();
+            self.model.on_gesture(gesture)
+        };
+        self.mark_dirty();
+        self.execute_cmd(cmd)?;
+        if self.running {
+            self.reconcile_subscriptions();
+        }
+        Ok(())
+    }
+
     fn handle_event(&mut self, event: Event) -> io::Result<()> {
         // Track event start time and type for fairness scheduling.
         let event_start = Instant::now();
@@ -5938,6 +6011,15 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             other => other,
         };
 
+        // Gesture recognition runs beside the raw event, never instead of it:
+        // the raw event still reaches `update()` below, and any gesture the
+        // recognizer completes is delivered to `on_gesture` afterwards.
+        let gestures = self
+            .gesture_recognizer
+            .as_mut()
+            .map(|recognizer| recognizer.process(&event, Instant::now()))
+            .unwrap_or_default();
+
         let msg = M::Message::from(event);
         let cmd = {
             let _span = debug_span!(
@@ -5960,6 +6042,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         self.execute_cmd(cmd)?;
         if self.running {
             self.reconcile_subscriptions();
+        }
+        for gesture in gestures {
+            self.deliver_gesture(gesture)?;
         }
 
         // Track input event processing for fairness.
@@ -11567,6 +11652,10 @@ mod tests {
             .inline_auto_remeasure
             .clone()
             .map(InlineAutoRemeasureState::new);
+        let gesture_recognizer = config
+            .gestures
+            .clone()
+            .map(ftui_core::gesture::GestureRecognizer::new);
         let guardrails = FrameGuardrails::new(config.guardrails);
         let task_executor = TaskExecutor::new(
             &effect_queue_config,
@@ -11626,6 +11715,7 @@ mod tests {
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            gesture_recognizer,
             frame_arena: FrameArena::default(),
             guardrails,
             last_soft_trim_frame: None,
@@ -12611,6 +12701,127 @@ mod tests {
             contents.contains(r#""should_sample":"#) && contents.contains(r#""voi_gain":"#),
             "voi_decision row must carry the sampler reasoning"
         );
+    }
+
+    /// With `ProgramConfig::gestures` set, raw mouse events still reach
+    /// `update()` and every recognized gesture reaches `Model::on_gesture`;
+    /// without it nothing is recognized.
+    #[test]
+    fn headless_program_delivers_recognized_gestures_to_on_gesture() {
+        use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ftui_core::gesture::GestureConfig;
+        use ftui_core::semantic_event::SemanticEvent;
+        use std::sync::{Arc, Mutex};
+
+        struct GestureModel {
+            raw: usize,
+            gestures: Arc<Mutex<Vec<SemanticEvent>>>,
+        }
+
+        #[derive(Debug)]
+        enum GMsg {
+            Raw,
+        }
+
+        impl From<Event> for GMsg {
+            fn from(_: Event) -> Self {
+                GMsg::Raw
+            }
+        }
+
+        impl Model for GestureModel {
+            type Message = GMsg;
+
+            fn update(&mut self, _msg: GMsg) -> Cmd<GMsg> {
+                self.raw += 1;
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+
+            fn on_gesture(&mut self, gesture: SemanticEvent) -> Cmd<GMsg> {
+                self.gestures.lock().unwrap().push(gesture);
+                Cmd::none()
+            }
+        }
+
+        let mouse = |kind: MouseEventKind, x: u16, y: u16| {
+            Event::Mouse(MouseEvent {
+                kind,
+                x,
+                y,
+                modifiers: Modifiers::NONE,
+            })
+        };
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let config = ProgramConfig::default().with_gestures(GestureConfig::default());
+        let mut program = headless_program_with_config(
+            GestureModel {
+                raw: 0,
+                gestures: Arc::clone(&log),
+            },
+            config,
+        );
+        // Click: down and up at the same cell.
+        program
+            .handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 4, 2))
+            .unwrap();
+        program
+            .handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 4, 2))
+            .unwrap();
+        // Drag: down, move past the 3-cell dead zone, up.
+        program
+            .handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 10, 5))
+            .unwrap();
+        program
+            .handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 16, 5))
+            .unwrap();
+        program
+            .handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 16, 5))
+            .unwrap();
+        assert_eq!(program.model.raw, 5, "raw events keep flowing to update()");
+
+        let gestures = log.lock().unwrap();
+        assert!(
+            matches!(
+                gestures.first(),
+                Some(SemanticEvent::Click { pos, button: MouseButton::Left })
+                    if pos.x == 4 && pos.y == 2
+            ),
+            "first gesture is the click: {gestures:?}"
+        );
+        assert!(
+            gestures
+                .iter()
+                .any(|g| matches!(g, SemanticEvent::DragStart { .. })),
+            "drag start recognized: {gestures:?}"
+        );
+        assert!(
+            gestures
+                .iter()
+                .any(|g| matches!(g, SemanticEvent::DragEnd { .. })),
+            "drag end recognized: {gestures:?}"
+        );
+        drop(gestures);
+
+        // Without the config nothing is recognized and update() is unaffected.
+        let quiet = Arc::new(Mutex::new(Vec::new()));
+        let mut program = headless_program_with_config(
+            GestureModel {
+                raw: 0,
+                gestures: Arc::clone(&quiet),
+            },
+            ProgramConfig::default(),
+        );
+        program
+            .handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 1, 1))
+            .unwrap();
+        program
+            .handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 1, 1))
+            .unwrap();
+        assert!(quiet.lock().unwrap().is_empty());
+        assert_eq!(program.model.raw, 2);
     }
 
     /// CONTRACT (bd-1za0z item 3): the queue guardrail sees the live effect
