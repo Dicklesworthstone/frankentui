@@ -70,7 +70,7 @@ pub use ftui_runtime::{
 
 // --- Widget traits ----------------------------------------------------------
 
-pub use ftui_widgets::{StatefulWidget, Widget};
+pub use ftui_widgets::{FrameExt, StatefulWidget, Widget};
 
 // --- Errors ---------------------------------------------------------------
 
@@ -86,10 +86,10 @@ pub mod prelude {
     pub use crate::TerminalSession;
     pub use crate::core::geometry::Rect;
     pub use crate::{
-        Buffer, Cx, CxController, CxError, Error, Event, Frame, KeyCode, KeyEvent, LabClock,
-        Modifiers, Result, StatefulWidget, Style, TablePresetId, TableTheme, Theme, Widget,
+        Buffer, Cx, CxController, CxError, Error, Event, Frame, FrameExt, KeyCode, KeyEvent,
+        LabClock, Modifiers, Result, StatefulWidget, Style, TablePresetId, TableTheme, Theme,
+        Widget,
     };
-    pub use crate::core::geometry::Rect;
 
     #[cfg(feature = "runtime")]
     pub use crate::{
