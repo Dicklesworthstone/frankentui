@@ -89,6 +89,7 @@ pub mod prelude {
         Buffer, Cx, CxController, CxError, Error, Event, Frame, KeyCode, KeyEvent, LabClock,
         Modifiers, Result, StatefulWidget, Style, TablePresetId, TableTheme, Theme, Widget,
     };
+    pub use crate::core::geometry::Rect;
 
     #[cfg(feature = "runtime")]
     pub use crate::{
