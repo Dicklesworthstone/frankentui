@@ -239,7 +239,9 @@ pub fn sync_output_from_decrpm(response: &[u8]) -> Option<bool> {
 
 #[cfg(unix)]
 fn probe_sync_output(timeout: Duration) -> Option<bool> {
-    let response = send_probe(DECRPM_2026_QUERY, timeout)?;
+    let response = send_probe_expecting(DECRPM_2026_QUERY, timeout, |bytes| {
+        parse_decrpm_response(bytes).is_some()
+    })?;
     sync_output_from_decrpm(&response)
 }
 
@@ -364,7 +366,7 @@ pub fn probe_scroll_region(
         .write_all(&scroll_region_self_test_query(region_bottom))
         .ok()?;
     tty_write.flush().ok()?;
-    let reply = read_tty_response(timeout);
+    let reply = read_tty_reply(timeout, |bytes| parse_cpr_response(bytes).is_some());
     // Always restore, even after a timeout.
     let _ = tty_write.write_all(SCROLL_REGION_SELF_TEST_RESTORE);
     let _ = tty_write.flush();
@@ -401,7 +403,10 @@ const TRUECOLOR_RGB_QUERY: &[u8] = b"\x1bP+q524742\x1b\\";
 
 #[cfg(unix)]
 fn probe_truecolor(timeout: Duration) -> Option<bool> {
-    let response = send_probe(TRUECOLOR_RGB_QUERY, timeout)?;
+    // XTGETTCAP answers with a DCS (`ESC P ... ST`); anything else is input.
+    let response = send_probe_expecting(TRUECOLOR_RGB_QUERY, timeout, |bytes| {
+        bytes.starts_with(b"\x1bP")
+    })?;
     parse_xtgettcap_truecolor(&response)
 }
 
@@ -450,7 +455,9 @@ const DA1_QUERY: &[u8] = b"\x1b[c";
 
 #[cfg(unix)]
 fn probe_da1(timeout: Duration) -> Option<Vec<u32>> {
-    let response = send_probe(DA1_QUERY, timeout)?;
+    let response = send_probe_expecting(DA1_QUERY, timeout, |bytes| {
+        parse_da1_response(bytes).is_some()
+    })?;
     parse_da1_response(&response)
 }
 
@@ -492,7 +499,9 @@ const DA2_QUERY: &[u8] = b"\x1b[>c";
 
 #[cfg(unix)]
 fn probe_da2(timeout: Duration) -> Option<(u32, u32)> {
-    let response = send_probe(DA2_QUERY, timeout)?;
+    let response = send_probe_expecting(DA2_QUERY, timeout, |bytes| {
+        parse_da2_response(bytes).is_some()
+    })?;
     parse_da2_response(&response)
 }
 
@@ -548,7 +557,9 @@ const BG_COLOR_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 
 #[cfg(unix)]
 fn probe_background_color(timeout: Duration) -> Option<bool> {
-    let response = send_probe(BG_COLOR_QUERY, timeout)?;
+    // OSC 11 answers with `ESC ] 11 ; rgb:... ST`; anything else is input.
+    let response =
+        send_probe_expecting(BG_COLOR_QUERY, timeout, |bytes| bytes.starts_with(b"\x1b]"))?;
     parse_background_response(&response)
 }
 
@@ -616,8 +627,18 @@ fn parse_color_component(s: &str) -> Option<u16> {
 // interfering with crossterm's internal event reader, which also
 // uses /dev/tty but through its own file descriptor.
 
+/// Send `query` to the tty and wait for the reply `is_reply` recognises.
+///
+/// Anything else that arrives while waiting (a key pressed during startup,
+/// a mouse report) is not the terminal's answer; it is kept in the leftover
+/// buffer ([`take_probe_leftover_input`]) so the runtime can deliver it as
+/// ordinary input instead of losing it.
 #[cfg(unix)]
-fn send_probe(query: &[u8], timeout: Duration) -> Option<Vec<u8>> {
+fn send_probe_expecting(
+    query: &[u8],
+    timeout: Duration,
+    is_reply: impl Fn(&[u8]) -> bool,
+) -> Option<Vec<u8>> {
     use std::io::Write;
 
     // Write query directly to the tty.
@@ -629,19 +650,85 @@ fn send_probe(query: &[u8], timeout: Duration) -> Option<Vec<u8>> {
     tty_write.flush().ok()?;
     drop(tty_write);
 
-    read_tty_response(timeout)
+    read_tty_reply(timeout, is_reply)
 }
 
 /// Poll interval for nonblocking tty probe reads.
 #[cfg(unix)]
 const TTY_READ_POLL: Duration = Duration::from_millis(1);
 
-/// Read a response from /dev/tty with a hard timeout.
+/// Bytes a probe read from the tty that were not its reply (user input that
+/// arrived while a probe was waiting). Process-global like the tty itself.
+static PROBE_LEFTOVER_INPUT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+fn stash_probe_leftover(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    if let Ok(mut leftover) = PROBE_LEFTOVER_INPUT.lock() {
+        leftover.extend_from_slice(bytes);
+    }
+}
+
+/// Take the input bytes the probes consumed from the tty that were not
+/// probe replies, in arrival order. The runtime feeds them to its input
+/// parser before the first frame so a key or mouse report sent while the
+/// terminal was being probed is delivered rather than dropped.
+#[must_use]
+pub fn take_probe_leftover_input() -> Vec<u8> {
+    PROBE_LEFTOVER_INPUT
+        .lock()
+        .map(|mut leftover| std::mem::take(&mut *leftover))
+        .unwrap_or_default()
+}
+
+/// Read complete responses from `reader` until one satisfies `is_reply` or
+/// `timeout` elapses. Responses that are not the awaited reply are user
+/// input and go to the leftover buffer.
+#[cfg(unix)]
+fn read_probe_reply<R: std::io::Read>(
+    reader: &mut R,
+    timeout: Duration,
+    is_reply: impl Fn(&[u8]) -> bool,
+) -> Option<Vec<u8>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let chunk = read_nonblocking_probe_response(&mut *reader, remaining)?;
+        if let Some(start) = reply_start(&chunk, &is_reply) {
+            stash_probe_leftover(&chunk[..start]);
+            return Some(chunk[start..].to_vec());
+        }
+        stash_probe_leftover(&chunk);
+    }
+}
+
+/// Offset at which the awaited reply starts inside `chunk`: the chunk
+/// itself, or a suffix starting at a later ESC when user bytes preceded the
+/// reply in the same read.
+#[cfg(unix)]
+fn reply_start(chunk: &[u8], is_reply: &impl Fn(&[u8]) -> bool) -> Option<usize> {
+    if is_reply(chunk) {
+        return Some(0);
+    }
+    chunk
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, byte)| **byte == 0x1b)
+        .map(|(idx, _)| idx)
+        .find(|&idx| is_reply(&chunk[idx..]))
+}
+
+/// Read the awaited reply from /dev/tty with a hard timeout.
 ///
 /// Uses a nonblocking tty file descriptor and a bounded poll loop so
 /// timed-out probes do not leave behind stuck reader threads.
 #[cfg(unix)]
-fn read_tty_response(timeout: Duration) -> Option<Vec<u8>> {
+fn read_tty_reply(timeout: Duration, is_reply: impl Fn(&[u8]) -> bool) -> Option<Vec<u8>> {
     use std::fs::OpenOptions;
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -650,7 +737,8 @@ fn read_tty_response(timeout: Duration) -> Option<Vec<u8>> {
         .custom_flags(libc::O_NONBLOCK)
         .open("/dev/tty")
         .ok()?;
-    read_nonblocking_probe_response(std::io::BufReader::new(tty), timeout)
+    let mut reader = std::io::BufReader::new(tty);
+    read_probe_reply(&mut reader, timeout, is_reply)
 }
 
 #[cfg(unix)]
@@ -2557,6 +2645,81 @@ mod tests {
         );
         let restore = std::str::from_utf8(SCROLL_REGION_SELF_TEST_RESTORE).expect("ascii");
         assert_eq!(restore, "\x1b[?6l\x1b[r\x1b8\x1b[?25h");
+    }
+
+    /// A reader that hands out its chunks one per read call, then reports
+    /// WouldBlock forever (a quiet tty).
+    #[cfg(unix)]
+    struct ChunkedReader {
+        chunks: Vec<Vec<u8>>,
+        pending: Vec<u8>,
+    }
+
+    #[cfg(unix)]
+    impl std::io::Read for ChunkedReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pending.is_empty() {
+                if self.chunks.is_empty() {
+                    return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+                }
+                self.pending = self.chunks.remove(0);
+            }
+            let n = buf.len().min(self.pending.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            Ok(n)
+        }
+    }
+
+    /// Input that arrives while a probe waits (here an SGR mouse press and
+    /// a typed `q`) must not be mistaken for the reply nor be lost: the
+    /// probe keeps waiting for the real DECRPM report and the user bytes
+    /// land in the leftover buffer in order.
+    #[cfg(unix)]
+    #[test]
+    fn probe_reply_reader_preserves_user_input_and_finds_the_reply() {
+        let _ = take_probe_leftover_input();
+        let mut reader = ChunkedReader {
+            chunks: vec![
+                b"\x1b[<0;2;1M".to_vec(),
+                b"q".to_vec(),
+                b"\x1b[?2026;2$y".to_vec(),
+            ],
+            pending: Vec::new(),
+        };
+        let reply = read_probe_reply(&mut reader, Duration::from_millis(500), |bytes| {
+            parse_decrpm_response(bytes).is_some()
+        });
+        assert_eq!(reply.as_deref(), Some(&b"\x1b[?2026;2$y"[..]));
+        assert_eq!(take_probe_leftover_input(), b"\x1b[<0;2;1Mq".to_vec());
+
+        // User bytes glued to the reply in one read are split off too.
+        let mut reader = ChunkedReader {
+            chunks: vec![b"\x1b[<0;2;1M\x1b[?2026;2$y".to_vec()],
+            pending: Vec::new(),
+        };
+        let reply = read_probe_reply(&mut reader, Duration::from_millis(500), |bytes| {
+            parse_decrpm_response(bytes).is_some()
+        });
+        // `is_response_complete` cuts the chunk at the first CSI terminator
+        // (the mouse report's `M`), so the reply arrives as the next chunk.
+        assert_eq!(reply.as_deref(), Some(&b"\x1b[?2026;2$y"[..]));
+        assert_eq!(take_probe_leftover_input(), b"\x1b[<0;2;1M".to_vec());
+
+        // No reply at all: the input is still kept, the probe times out.
+        let mut reader = ChunkedReader {
+            chunks: vec![b"\x1b[<0;2;1m".to_vec()],
+            pending: Vec::new(),
+        };
+        let reply = read_probe_reply(&mut reader, Duration::from_millis(30), |bytes| {
+            parse_decrpm_response(bytes).is_some()
+        });
+        assert_eq!(reply, None);
+        assert_eq!(take_probe_leftover_input(), b"\x1b[<0;2;1m".to_vec());
+        assert!(
+            take_probe_leftover_input().is_empty(),
+            "take drains the buffer"
+        );
     }
 
     #[test]

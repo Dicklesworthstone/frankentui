@@ -5149,6 +5149,10 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     a11y_changed: bool,
     /// Announcements dropped by the policy cap in the last frame.
     a11y_dropped: usize,
+    /// Input events recovered from bytes the startup capability probes read
+    /// off the tty while waiting for terminal replies; delivered before the
+    /// main loop so a key or click during startup is not lost.
+    startup_events: Vec<Event>,
     /// Per-frame bump arena for temporary render-path allocations.
     frame_arena: FrameArena,
     /// Unified frame guardrails (memory/queue limits).
@@ -5316,6 +5320,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             a11y_pending: None,
             a11y_changed: false,
             a11y_dropped: 0,
+            startup_events: Vec::new(),
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5463,6 +5468,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             a11y_pending: None,
             a11y_changed: false,
             a11y_dropped: 0,
+            startup_events: Vec::new(),
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5679,11 +5685,45 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     }
 
     /// The inner event loop, separated for proper cleanup handling.
+    /// Parse raw input bytes (as the tty would have delivered them) into
+    /// events that the main loop delivers before it starts polling. Used for
+    /// the bytes the startup capability probes read off the tty while
+    /// waiting for terminal replies (`caps_probe::take_probe_leftover_input`).
+    pub fn queue_startup_input(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let mut parser = ftui_core::input_parser::InputParser::new();
+        let events = parser.parse(bytes);
+        debug!(
+            bytes = bytes.len(),
+            events = events.len(),
+            "queued startup input recovered from the capability probes"
+        );
+        self.startup_events.extend(events);
+    }
+
+    /// Deliver the queued startup events in arrival order.
+    fn drain_startup_events(&mut self) -> io::Result<()> {
+        let events = std::mem::take(&mut self.startup_events);
+        for event in events {
+            if !self.running {
+                break;
+            }
+            self.handle_event(event)?;
+        }
+        Ok(())
+    }
+
     fn run_event_loop(&mut self) -> io::Result<Option<i32>> {
         // Auto-load state on start
         if self.persistence_config.auto_load {
             self.load_state();
         }
+
+        // Input the constructors' probes swallowed belongs to this program.
+        let leftover = ftui_core::caps_probe::take_probe_leftover_input();
+        self.queue_startup_input(&leftover);
 
         // Initialize
         let cmd = {
@@ -5702,6 +5742,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             if self.running {
                 self.render_frame()?;
             }
+        }
+
+        // Deliver input that arrived during startup before polling for more.
+        if self.running && termination_signal.is_none() {
+            self.drain_startup_events()?;
         }
 
         // Main loop
@@ -12125,6 +12170,7 @@ mod tests {
             a11y_pending: None,
             a11y_changed: false,
             a11y_dropped: 0,
+            startup_events: Vec::new(),
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -13148,6 +13194,78 @@ mod tests {
             contents.contains(r#""should_sample":"#) && contents.contains(r#""voi_gain":"#),
             "voi_decision row must carry the sampler reasoning"
         );
+    }
+
+    /// Bytes the startup probes swallowed (a click and a key sent while the
+    /// terminal was being probed) are parsed and delivered to the model in
+    /// order before the main loop; draining twice delivers nothing more.
+    #[test]
+    fn startup_input_recovered_from_probes_reaches_the_model() {
+        use ftui_core::event::{KeyCode, MouseEventKind};
+
+        #[derive(Default)]
+        struct RecorderModel {
+            seen: Vec<String>,
+        }
+
+        #[derive(Debug)]
+        enum RecMsg {
+            Event(Event),
+        }
+
+        impl From<Event> for RecMsg {
+            fn from(event: Event) -> Self {
+                RecMsg::Event(event)
+            }
+        }
+
+        impl Model for RecorderModel {
+            type Message = RecMsg;
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    RecMsg::Event(Event::Mouse(mouse)) => {
+                        self.seen
+                            .push(format!("mouse:{:?}@{},{}", mouse.kind, mouse.x, mouse.y));
+                    }
+                    RecMsg::Event(Event::Key(key)) => {
+                        self.seen.push(format!("key:{:?}", key.code));
+                    }
+                    RecMsg::Event(_) => {}
+                }
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('R'));
+            }
+        }
+
+        let mut program =
+            headless_program_with_config(RecorderModel::default(), ProgramConfig::default());
+        // SGR mouse press + release at column 2 row 1, then a typed `q`.
+        program.queue_startup_input(b"\x1b[<0;2;1M\x1b[<0;2;1mq");
+        assert_eq!(program.startup_events.len(), 3);
+        program
+            .drain_startup_events()
+            .expect("deliver startup events");
+        assert!(program.startup_events.is_empty());
+        let seen = program.model().seen.clone();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(
+            seen[0].starts_with(&format!(
+                "mouse:{:?}",
+                MouseEventKind::Down(ftui_core::event::MouseButton::Left)
+            )) && seen[0].ends_with("@1,0"),
+            "{seen:?}"
+        );
+        assert!(seen[1].starts_with("mouse:Up"), "{seen:?}");
+        assert_eq!(seen[2], format!("key:{:?}", KeyCode::Char('q')));
+
+        program.drain_startup_events().expect("nothing left");
+        assert_eq!(program.model().seen.len(), 3);
+        program.queue_startup_input(b"");
+        assert!(program.startup_events.is_empty());
     }
 
     /// With `ProgramConfig::accessibility` set, every rendered frame builds
