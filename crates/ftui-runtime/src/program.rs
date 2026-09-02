@@ -221,6 +221,78 @@ fn probe_live_terminal(
     decisions_from_probe(&before, &config, &probe, overrides, capabilities)
 }
 
+/// Outcome of the DECSTBM self-test for the writer: the verdict (or `None`
+/// when the test did not run) plus the geometry it was judged against.
+#[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
+struct ScrollRegionCheck {
+    verdict: Option<ftui_core::caps_probe::ScrollRegionVerdict>,
+    rows: u16,
+    region_bottom: u16,
+}
+
+/// Run the DECSTBM self-test (`caps_probe::probe_scroll_region`) when the
+/// selected inline strategy is going to rely on a scroll region. Runs right
+/// after `probe_live_terminal`, with raw mode on and no input reader alive,
+/// so the reply cannot race the event loop. Skipped for the alternate
+/// screen, when the terminal is a multiplexer or lacks the capability
+/// (overlay redraw is selected anyway), when `FTUI_SCROLL_REGION=1` trusts
+/// the region explicitly, when `FTUI_CAPS_PROBE=0` disables probing, or
+/// when the UI leaves no region to test.
+#[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
+fn verify_scroll_region(
+    capabilities: &ftui_core::terminal_capabilities::TerminalCapabilities,
+    screen_mode: ScreenMode,
+    size: Option<(u16, u16)>,
+) -> ScrollRegionCheck {
+    use ftui_core::inline_mode::InlineStrategy;
+
+    let ui_height = match screen_mode {
+        ScreenMode::Inline { ui_height } => ui_height,
+        ScreenMode::InlineAuto { max_height, .. } => max_height,
+        ScreenMode::AltScreen => 0,
+    };
+    let rows = size.map_or(0, |(_, rows)| rows);
+    let region_bottom = rows.saturating_sub(ui_height);
+    let skip = ScrollRegionCheck {
+        verdict: None,
+        rows,
+        region_bottom,
+    };
+    if ui_height == 0 || rows == 0 {
+        return skip;
+    }
+    if !matches!(
+        InlineStrategy::select(capabilities),
+        InlineStrategy::ScrollRegion | InlineStrategy::Hybrid
+    ) {
+        return skip;
+    }
+    let env = |name: &str| std::env::var_os(name);
+    if env("FTUI_CAPS_PROBE").is_some_and(|value| value == "0")
+        || env("FTUI_SCROLL_REGION").is_some_and(|value| value == "1")
+    {
+        return skip;
+    }
+    let verdict = ftui_core::caps_probe::probe_scroll_region(
+        rows,
+        ui_height,
+        std::time::Duration::from_millis(150),
+    );
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "ftui.render.scroll_region",
+        rows,
+        region_bottom,
+        verdict = ?verdict,
+        "DECSTBM self-test"
+    );
+    ScrollRegionCheck {
+        verdict,
+        rows,
+        region_bottom,
+    }
+}
+
 /// Run a program to completion and translate a signal-termination error into
 /// the conventional `128 + signal` process exit, after the program (and with it
 /// the terminal session) has been dropped and the terminal restored.
@@ -5135,6 +5207,8 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
         // Raw mode is active now, so the terminal can answer probes; the
         // writer built below must see the refined capabilities.
         let capability_decisions = probe_live_terminal(&mut capabilities);
+        let scroll_region =
+            verify_scroll_region(&capabilities, config.screen_mode, events.size().ok());
 
         let mut writer = TerminalWriter::with_diff_config(
             io::stdout(),
@@ -5144,6 +5218,11 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             config.diff_config.clone(),
         )
         .with_capability_decisions(capability_decisions);
+        writer.set_scroll_region_verified(
+            scroll_region.verdict,
+            scroll_region.rows,
+            scroll_region.region_bottom,
+        );
 
         let frame_timing = config.frame_timing.clone();
         writer.set_timing_enabled(frame_timing.is_some());
@@ -5502,8 +5581,10 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
         // The native session is live (raw mode), so the terminal can be asked
         // directly what it supports; see `probe_live_terminal`.
         let capability_decisions = probe_live_terminal(&mut capabilities);
+        let scroll_region =
+            verify_scroll_region(&capabilities, config.screen_mode, backend.size().ok());
 
-        let writer = TerminalWriter::with_diff_config(
+        let mut writer = TerminalWriter::with_diff_config(
             io::stdout(),
             config.screen_mode,
             config.ui_anchor,
@@ -5511,6 +5592,11 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
             config.diff_config.clone(),
         )
         .with_capability_decisions(capability_decisions);
+        writer.set_scroll_region_verified(
+            scroll_region.verdict,
+            scroll_region.rows,
+            scroll_region.region_bottom,
+        );
 
         Self::with_event_source(model, backend, features, writer, config)
     }

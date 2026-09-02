@@ -168,6 +168,19 @@ Use raw passthrough **only** for:
 - Network-sourced data
 - Untrusted subprocess output
 
+### The Pre-Writer Probe Exception
+
+`ftui_core::caps_probe` talks to `/dev/tty` directly (DECRPM 2026, XTGETTCAP
+truecolor, and the DECSTBM self-test `probe_scroll_region`). It runs once, in
+the `Program` constructors, after raw mode is on and **before** the
+`TerminalWriter` exists and before any input reader thread starts, so it
+neither competes with the writer for output nor races the event loop for
+replies. Its only visible side effect is cursor movement while the cursor is
+hidden; every sequence it sends is undone before it returns. Nothing else may
+read `/dev/tty` outside the backend, and the probe never runs once the reader
+is live (which is why the scroll-region verdict is taken at construction and
+not repeated on resize).
+
 ### Terminal Multiplexer Notes
 
 When running under tmux, screen, or zellij:

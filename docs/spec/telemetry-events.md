@@ -425,6 +425,32 @@ Required fields:
 - `cusum_plus`, `cusum_minus`, `e_value`
 - `alert` (bool)
 
+#### Event: `inline_strategy`
+
+Written once when the evidence sink attaches to the writer (after the
+capability ledger rows).
+
+Required fields:
+- `strategy` (`scroll_region` | `overlay_redraw` | `hybrid`), the strategy in force after the self-test
+- `use_scroll_region`, `use_sync_output`, `in_mux` (bool)
+- `scroll_region_verified` (`true` | `false` | `null`): DECSTBM self-test verdict (`null`: not run, e.g. alt-screen, overridden by `FTUI_SCROLL_REGION=1`, or no tty)
+
+#### Event: `inline_strategy_fallback`
+
+Written when the DECSTBM self-test rejects the selected scroll-region
+strategy; the writer switches to overlay redraw before its first frame.
+
+Required fields:
+- `from` (`scroll_region` | `hybrid`), `to` (`overlay_redraw`)
+- `reason` (`cpr_mismatch` | `cpr_timeout`)
+- `observed_row` (u16 or `null`), `expected_row` (u16), `rows` (u16), `region_bottom` (u16)
+
+Example:
+
+```json
+{"event":"inline_strategy_fallback","from":"hybrid","to":"overlay_redraw","reason":"cpr_mismatch","observed_row":24,"expected_row":20,"rows":24,"region_bottom":20}
+```
+
 #### Event: `a11y_tree`
 
 Written once per rendered frame whose accessibility tree differs from the

@@ -2480,7 +2480,7 @@ For terminals that don't support scroll regions reliably (some multiplexers, old
 
 ### Strategy C: Hybrid
 
-Scroll-region without synchronized output: the fast path is the same DECSTBM region as Strategy A, but without sync brackets around the redraw. A runtime DECSTBM self-test that would fall back to overlay redraw on an unreliable implementation is planned, not implemented; today the choice is made once, from capabilities, when the writer is created.
+Scroll-region without synchronized output: the fast path is the same DECSTBM region as Strategy A, but without sync brackets around the redraw. Before the first frame the runtime runs a DECSTBM self‑test on the live terminal (`ftui_core::caps_probe::probe_scroll_region`): save cursor, set the region, turn origin mode on, move the cursor far below, ask for a cursor‑position report, restore. A terminal that honours the region reports the region's last row; one that ignores it reports the screen bottom (or nothing within 150 ms). On a bad verdict the writer switches to Strategy B before anything is drawn and writes an `inline_strategy_fallback` evidence row (`reason` `cpr_mismatch` or `cpr_timeout`, observed and expected rows); the `inline_strategy` row carries `scroll_region_verified`. The probe runs at construction time, before the input reader starts, so it cannot race the event loop; it is not repeated on resize. `FTUI_SCROLL_REGION=1` skips the test and trusts the region, `FTUI_SCROLL_REGION=0` selects overlay redraw outright. `scripts/inline_scroll_region_selftest_e2e.py` runs the showcase under a PTY that answers the cursor query as a honouring, an ignoring and a silent terminal and checks all three outcomes. Under this repository's own WezTerm session the WezTerm identity counts as a multiplexer, so inline runs there use overlay redraw and emit no DECSTBM at all; that is the mux rule, not a writer bug.
 
 ### Which strategy you actually get
 
@@ -2491,7 +2491,7 @@ Scroll-region without synchronized output: the fast path is the same DECSTBM reg
 3. scroll-region usable, no synchronized output: **Hybrid**
 4. otherwise: **Overlay Redraw**
 
-"Usable" is the policy answer (`use_scroll_region()` / `use_sync_output()`) after identity detection, the live DECRPM probe and the `FTUI_SCROLL_REGION` / `FTUI_SYNC_OUTPUT` operator switches. The decision is written to the evidence file as `capability_decision` rows plus an `inline_strategy` row when an evidence sink is configured.
+"Usable" is the policy answer (`use_scroll_region()` / `use_sync_output()`) after identity detection, the live DECRPM probe and the `FTUI_SCROLL_REGION` / `FTUI_SYNC_OUTPUT` operator switches. Strategies 2 and 3 are then confirmed by the DECSTBM self‑test described under Strategy C; a terminal that fails it gets Overlay Redraw. The decision is written to the evidence file as `capability_decision` rows plus an `inline_strategy` row (with `scroll_region_verified`) and, on a failed self‑test, an `inline_strategy_fallback` row when an evidence sink is configured.
 
 ### Key Invariants
 

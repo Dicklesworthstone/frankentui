@@ -243,6 +243,146 @@ fn probe_sync_output(timeout: Duration) -> Option<bool> {
     sync_output_from_decrpm(&response)
 }
 
+/// Outcome of the DECSTBM self-test ([`probe_scroll_region`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollRegionVerdict {
+    /// The terminal confined the cursor to the region: DECSTBM is honoured.
+    Honoured {
+        /// Row the CPR reply reported.
+        observed_row: u16,
+    },
+    /// The terminal accepted the sequence but let the cursor leave the
+    /// region (or reported a row that fits no honoured layout): DECSTBM is
+    /// ignored and scrolling would corrupt the scrollback.
+    Ignored {
+        /// Row the CPR reply reported.
+        observed_row: u16,
+    },
+    /// No parseable CPR reply arrived before the deadline.
+    NoReply,
+}
+
+impl ScrollRegionVerdict {
+    /// `true` when the region is honoured.
+    #[must_use]
+    pub const fn honoured(self) -> bool {
+        matches!(self, Self::Honoured { .. })
+    }
+
+    /// Stable reason string for evidence rows (`None` when honoured).
+    #[must_use]
+    pub const fn fallback_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Honoured { .. } => None,
+            Self::Ignored { .. } => Some("cpr_mismatch"),
+            Self::NoReply => Some("cpr_timeout"),
+        }
+    }
+
+    /// Row the CPR reply reported, if any.
+    #[must_use]
+    pub const fn observed_row(self) -> Option<u16> {
+        match self {
+            Self::Honoured { observed_row } | Self::Ignored { observed_row } => Some(observed_row),
+            Self::NoReply => None,
+        }
+    }
+}
+
+/// The DECSTBM self-test sequence for a region `1..=region_bottom`: save the
+/// cursor (DECSC), set the region, switch origin mode on (DECOM, so cursor
+/// addressing is region-relative and clamps to the region), move far below
+/// (CUP row 999), and ask where the cursor is (CPR). With the region honoured
+/// the reply row is `region_bottom`; a terminal that ignores DECSTBM lets
+/// the cursor reach the screen bottom instead. Nothing scrolls and no cell
+/// changes; the cursor is hidden for the duration.
+#[must_use]
+pub fn scroll_region_self_test_query(region_bottom: u16) -> Vec<u8> {
+    format!("\x1b[?25l\x1b7\x1b[1;{region_bottom}r\x1b[?6h\x1b[999;1H\x1b[6n").into_bytes()
+}
+
+/// The sequence that undoes [`scroll_region_self_test_query`]: origin mode
+/// off, region reset, cursor restored (DECRC) and shown again.
+pub const SCROLL_REGION_SELF_TEST_RESTORE: &[u8] = b"\x1b[?6l\x1b[r\x1b8\x1b[?25h";
+
+/// Parse a CPR reply (`ESC [ row ; col R`) into `(row, col)`.
+#[must_use]
+pub fn parse_cpr_response(response: &[u8]) -> Option<(u16, u16)> {
+    let text = std::str::from_utf8(response).ok()?;
+    let start = text.find("\x1b[")? + 2;
+    let end = text[start..].find('R')? + start;
+    let (row, col) = text[start..end].split_once(';')?;
+    Some((row.trim().parse().ok()?, col.trim().parse().ok()?))
+}
+
+/// Judge a CPR reply from [`scroll_region_self_test_query`] for a terminal
+/// of `rows` rows and a region ending at `region_bottom`.
+#[must_use]
+pub fn scroll_region_verdict(
+    rows: u16,
+    region_bottom: u16,
+    reply: Option<&[u8]>,
+) -> ScrollRegionVerdict {
+    let Some((observed_row, _)) = reply.and_then(parse_cpr_response) else {
+        return ScrollRegionVerdict::NoReply;
+    };
+    // Region-relative (DECOM) and absolute reports coincide for a region
+    // that starts at row 1; anything at or beyond the region's end that
+    // reaches the screen bottom means the region was not honoured.
+    if observed_row == region_bottom && region_bottom < rows {
+        ScrollRegionVerdict::Honoured { observed_row }
+    } else {
+        ScrollRegionVerdict::Ignored { observed_row }
+    }
+}
+
+/// Run the DECSTBM self-test on the live terminal for a `rows`-row screen
+/// and a bottom-anchored UI of `ui_height` rows (region `1..=rows-ui_height`).
+/// Returns `None` when the layout leaves no scroll region to test
+/// (`ui_height >= rows` or fewer than two rows) or the tty cannot be opened.
+///
+/// Must run while no other reader owns `/dev/tty` (before the input thread
+/// starts), like every probe in this module.
+#[cfg(unix)]
+#[must_use]
+pub fn probe_scroll_region(
+    rows: u16,
+    ui_height: u16,
+    timeout: Duration,
+) -> Option<ScrollRegionVerdict> {
+    use std::io::Write;
+
+    let region_bottom = rows.checked_sub(ui_height)?;
+    if region_bottom == 0 || region_bottom >= rows {
+        return None;
+    }
+    let mut tty_write = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/tty")
+        .ok()?;
+    tty_write
+        .write_all(&scroll_region_self_test_query(region_bottom))
+        .ok()?;
+    tty_write.flush().ok()?;
+    let reply = read_tty_response(timeout);
+    // Always restore, even after a timeout.
+    let _ = tty_write.write_all(SCROLL_REGION_SELF_TEST_RESTORE);
+    let _ = tty_write.flush();
+    Some(scroll_region_verdict(rows, region_bottom, reply.as_deref()))
+}
+
+/// Off-Unix there is no `/dev/tty` to probe; the verdict stays unknown.
+#[cfg(not(unix))]
+#[must_use]
+pub fn probe_scroll_region(
+    rows: u16,
+    ui_height: u16,
+    timeout: Duration,
+) -> Option<ScrollRegionVerdict> {
+    let _ = (rows, ui_height, timeout);
+    None
+}
+
 // --- XTGETTCAP: 24-bit (true-color) capability ---
 //
 // Query:    DCS + q <hex(capname)> ST     e.g. ESC P + q 524742 ESC \  ("RGB")
@@ -2400,6 +2540,69 @@ mod tests {
     }
 
     // --- DECRPM parser tests ---
+
+    #[test]
+    fn scroll_region_self_test_sequence_round_trips() {
+        let query = scroll_region_self_test_query(20);
+        let text = String::from_utf8(query).expect("ascii");
+        assert!(
+            text.starts_with("\x1b[?25l\x1b7"),
+            "hide + save first: {text:?}"
+        );
+        assert!(text.contains("\x1b[1;20r"), "DECSTBM 1..20: {text:?}");
+        assert!(text.contains("\x1b[?6h"), "origin mode on: {text:?}");
+        assert!(
+            text.ends_with("\x1b[999;1H\x1b[6n"),
+            "far CUP then CPR: {text:?}"
+        );
+        let restore = std::str::from_utf8(SCROLL_REGION_SELF_TEST_RESTORE).expect("ascii");
+        assert_eq!(restore, "\x1b[?6l\x1b[r\x1b8\x1b[?25h");
+    }
+
+    #[test]
+    fn parse_cpr_reply() {
+        assert_eq!(parse_cpr_response(b"\x1b[20;1R"), Some((20, 1)));
+        assert_eq!(parse_cpr_response(b"\x1b[24;80R"), Some((24, 80)));
+        assert_eq!(parse_cpr_response(b"\x1b[?2026;2$y"), None);
+        assert_eq!(parse_cpr_response(b"garbage"), None);
+        assert_eq!(parse_cpr_response(b"\x1b[20R"), None);
+    }
+
+    /// 24 rows, UI 4 rows: the region is 1..=20. A honoured region clamps
+    /// the far cursor move to row 20; an ignored one lets it reach row 24.
+    #[test]
+    fn scroll_region_verdict_reads_the_cursor_row() {
+        assert_eq!(
+            scroll_region_verdict(24, 20, Some(b"\x1b[20;1R")),
+            ScrollRegionVerdict::Honoured { observed_row: 20 }
+        );
+        assert_eq!(
+            scroll_region_verdict(24, 20, Some(b"\x1b[24;1R")),
+            ScrollRegionVerdict::Ignored { observed_row: 24 }
+        );
+        assert_eq!(
+            scroll_region_verdict(24, 20, Some(b"\x1b[21;1R")),
+            ScrollRegionVerdict::Ignored { observed_row: 21 }
+        );
+        assert_eq!(
+            scroll_region_verdict(24, 20, None),
+            ScrollRegionVerdict::NoReply
+        );
+        assert_eq!(
+            scroll_region_verdict(24, 20, Some(b"\x1b[?2026;2$y")),
+            ScrollRegionVerdict::NoReply
+        );
+        assert!(ScrollRegionVerdict::Honoured { observed_row: 20 }.honoured());
+        assert_eq!(
+            ScrollRegionVerdict::Ignored { observed_row: 24 }.fallback_reason(),
+            Some("cpr_mismatch")
+        );
+        assert_eq!(
+            ScrollRegionVerdict::NoReply.fallback_reason(),
+            Some("cpr_timeout")
+        );
+        assert_eq!(ScrollRegionVerdict::NoReply.observed_row(), None);
+    }
 
     #[test]
     fn parse_decrpm_mode_set() {

@@ -66,6 +66,44 @@ pub fn inline_active_widgets() -> u32 {
 }
 
 use crate::evidence_sink::EvidenceSink;
+
+/// A strategy downgrade forced by the DECSTBM self-test
+/// (`TerminalWriter::set_scroll_region_verified`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineStrategyFallback {
+    /// Strategy selected from capabilities before the test.
+    pub from: InlineStrategy,
+    /// `cpr_mismatch` (the cursor left the region) or `cpr_timeout` (no
+    /// cursor-position report arrived).
+    pub reason: &'static str,
+    /// Row the terminal reported, if it answered.
+    pub observed_row: Option<u16>,
+    /// Row a terminal that honours the region reports.
+    pub expected_row: u16,
+    /// Terminal height at the time of the test.
+    pub rows: u16,
+    /// Last row of the tested scroll region.
+    pub region_bottom: u16,
+}
+
+impl InlineStrategyFallback {
+    /// The `inline_strategy_fallback` evidence row.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        let observed = self
+            .observed_row
+            .map_or_else(|| "null".to_string(), |row| row.to_string());
+        format!(
+            r#"{{"event":"inline_strategy_fallback","from":"{}","to":"overlay_redraw","reason":"{}","observed_row":{},"expected_row":{},"rows":{},"region_bottom":{}}}"#,
+            inline_strategy_str(self.from),
+            self.reason,
+            observed,
+            self.expected_row,
+            self.rows,
+            self.region_bottom
+        )
+    }
+}
 use crate::evidence_telemetry::{DiffDecisionSnapshot, set_diff_snapshot};
 use crate::render_trace::{
     RenderTraceFrame, RenderTraceRecorder, build_diff_runs_payload, build_full_buffer_payload,
@@ -542,6 +580,11 @@ pub struct TerminalWriter<W: Write> {
     inline_strategy: InlineStrategy,
     /// Whether a scroll region is currently active.
     scroll_region_active: bool,
+    /// DECSTBM self-test verdict (`None`: not run).
+    scroll_region_verified: Option<bool>,
+    /// Strategy fallback taken because of the self-test, exported with the
+    /// capability ledger.
+    strategy_fallback: Option<InlineStrategyFallback>,
     /// Last inline UI region for clearing on shrink.
     last_inline_region: Option<InlineRegion>,
     /// Bayesian diff strategy selector.
@@ -706,6 +749,8 @@ impl<W: Write> TerminalWriter<W> {
             cursor_visible: true,
             inline_strategy,
             scroll_region_active: false,
+            scroll_region_verified: None,
+            strategy_fallback: None,
             last_inline_region: None,
             diff_strategy,
             diff_scratch,
@@ -816,18 +861,25 @@ impl<W: Write> TerminalWriter<W> {
         let Some(sink) = self.evidence_sink.as_ref() else {
             return;
         };
-        if self.capability_decisions.is_empty() {
+        if self.capability_decisions.is_empty() && self.strategy_fallback.is_none() {
             return;
         }
         for decision in self.capability_decisions.drain(..) {
             let _ = sink.write_jsonl(&decision.to_jsonl());
         }
+        if let Some(fallback) = self.strategy_fallback.take() {
+            let _ = sink.write_jsonl(&fallback.to_jsonl());
+        }
+        let verified = self
+            .scroll_region_verified
+            .map_or_else(|| "null".to_string(), |v| v.to_string());
         let _ = sink.write_jsonl(&format!(
-            r#"{{"event":"inline_strategy","strategy":"{}","use_scroll_region":{},"use_sync_output":{},"in_mux":{}}}"#,
+            r#"{{"event":"inline_strategy","strategy":"{}","use_scroll_region":{},"use_sync_output":{},"in_mux":{},"scroll_region_verified":{}}}"#,
             inline_strategy_str(self.inline_strategy),
             self.capabilities.use_scroll_region(),
             self.capabilities.use_sync_output(),
-            self.capabilities.in_any_mux()
+            self.capabilities.in_any_mux(),
+            verified
         ));
     }
 
@@ -1058,6 +1110,73 @@ impl<W: Write> TerminalWriter<W> {
     /// Check if a scroll region is currently active.
     pub fn scroll_region_active(&self) -> bool {
         self.scroll_region_active
+    }
+
+    /// The DECSTBM self-test verdict recorded by
+    /// [`Self::set_scroll_region_verified`] (`None`: not run).
+    pub fn scroll_region_verified(&self) -> Option<bool> {
+        self.scroll_region_verified
+    }
+
+    /// The strategy fallback the self-test forced, if any.
+    pub fn strategy_fallback(&self) -> Option<&InlineStrategyFallback> {
+        self.strategy_fallback.as_ref()
+    }
+
+    /// Record the DECSTBM self-test verdict
+    /// (`ftui_core::caps_probe::probe_scroll_region`), taken by the runtime
+    /// at construction time before the input reader starts. A negative
+    /// verdict while the strategy is `ScrollRegion` or `Hybrid` switches the
+    /// writer to `OverlayRedraw` before its first frame, so a terminal that
+    /// ignores DECSTBM never scrolls the whole screen into the UI; the
+    /// fallback is exported as an `inline_strategy_fallback` evidence row
+    /// when a sink attaches. `None` leaves the strategy as selected.
+    pub fn set_scroll_region_verified(
+        &mut self,
+        verdict: Option<ftui_core::caps_probe::ScrollRegionVerdict>,
+        rows: u16,
+        region_bottom: u16,
+    ) {
+        let Some(verdict) = verdict else {
+            self.scroll_region_verified = None;
+            return;
+        };
+        self.scroll_region_verified = Some(verdict.honoured());
+        if verdict.honoured() {
+            return;
+        }
+        let from = self.inline_strategy;
+        if !matches!(from, InlineStrategy::ScrollRegion | InlineStrategy::Hybrid) {
+            return;
+        }
+        self.inline_strategy = InlineStrategy::OverlayRedraw;
+        if self.scroll_region_active {
+            let _ = self.deactivate_scroll_region();
+        }
+        let fallback = InlineStrategyFallback {
+            from,
+            reason: verdict.fallback_reason().unwrap_or("cpr_mismatch"),
+            observed_row: verdict.observed_row(),
+            expected_row: region_bottom,
+            rows,
+            region_bottom,
+        };
+        tracing::warn!(
+            target: "ftui.render.scroll_region",
+            from = inline_strategy_str(from),
+            to = "overlay_redraw",
+            reason = fallback.reason,
+            observed_row = ?fallback.observed_row,
+            expected_row = fallback.expected_row,
+            rows,
+            "DECSTBM self-test failed: inline strategy falls back to overlay redraw"
+        );
+        if let Some(sink) = self.evidence_sink.as_ref() {
+            let _ = sink.write_jsonl(&fallback.to_jsonl());
+            self.strategy_fallback = None;
+        } else {
+            self.strategy_fallback = Some(fallback);
+        }
     }
 
     /// Activate the scroll region for inline mode.
@@ -3722,6 +3841,149 @@ mod tests {
         );
     }
 
+    /// Regression for the "0 DECSTBM under xterm-256color" audit finding:
+    /// scroll-region capability without sync output selects `Hybrid`, and
+    /// the first inline present emits the DECSTBM region. (The audit run
+    /// emitted none because this repository's WezTerm session counts as a
+    /// multiplexer, which selects overlay redraw; that is the mux rule.)
+    #[test]
+    fn hybrid_strategy_emits_decstbm_without_sync() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = true;
+        caps.sync_output = false;
+        let mut output = Vec::new();
+        {
+            let mut w = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 3 },
+                UiAnchor::Bottom,
+                caps,
+            );
+            w.set_size(80, 24);
+            assert_eq!(w.inline_strategy(), InlineStrategy::Hybrid);
+            assert_eq!(w.scroll_region_verified(), None);
+
+            let mut buffer = Buffer::new(80, 3);
+            buffer.set(0, 0, ftui_render::cell::Cell::from_char('H'));
+            w.present_ui(&buffer, None, false).expect("present");
+            assert!(w.scroll_region_active());
+        }
+        let out = String::from_utf8_lossy(&output).into_owned();
+        assert!(
+            out.contains("\x1b[1;21r"),
+            "Hybrid must set DECSTBM 1..rows-ui_height; got: {out:?}"
+        );
+        assert!(
+            !out.contains("\x1b[?2026h"),
+            "no sync brackets without sync output; got: {out:?}"
+        );
+    }
+
+    /// A negative DECSTBM self-test verdict switches a scroll-region
+    /// strategy to overlay redraw before the first frame and exports the
+    /// fallback with the ledger; a positive verdict keeps it.
+    #[test]
+    fn unverified_scroll_region_falls_back_to_overlay_and_exports_evidence() {
+        use ftui_core::caps_probe::ScrollRegionVerdict;
+
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = true;
+        caps.sync_output = false;
+
+        // Honoured: nothing changes.
+        let mut kept_output = Vec::new();
+        {
+            let mut kept = TerminalWriter::new(
+                &mut kept_output,
+                ScreenMode::Inline { ui_height: 3 },
+                UiAnchor::Bottom,
+                caps,
+            );
+            kept.set_scroll_region_verified(
+                Some(ScrollRegionVerdict::Honoured { observed_row: 21 }),
+                24,
+                21,
+            );
+            assert_eq!(kept.inline_strategy(), InlineStrategy::Hybrid);
+            assert_eq!(kept.scroll_region_verified(), Some(true));
+            assert!(kept.strategy_fallback().is_none());
+        }
+
+        // Ignored: fall back, remember the fallback until a sink attaches.
+        let evidence_path = temp_evidence_path("scroll_region_fallback");
+        let mut output = Vec::new();
+        {
+            let mut w = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 3 },
+                UiAnchor::Bottom,
+                caps,
+            );
+            w.set_size(80, 24);
+            w.set_scroll_region_verified(
+                Some(ScrollRegionVerdict::Ignored { observed_row: 24 }),
+                24,
+                21,
+            );
+            assert_eq!(w.inline_strategy(), InlineStrategy::OverlayRedraw);
+            assert_eq!(w.scroll_region_verified(), Some(false));
+            let fallback = w.strategy_fallback().expect("fallback recorded").clone();
+            assert_eq!(fallback.from, InlineStrategy::Hybrid);
+            assert_eq!(fallback.reason, "cpr_mismatch");
+            assert_eq!(fallback.observed_row, Some(24));
+            assert_eq!(fallback.expected_row, 21);
+
+            let mut buffer = Buffer::new(80, 3);
+            buffer.set(0, 0, ftui_render::cell::Cell::from_char('O'));
+            w.present_ui(&buffer, None, false).expect("present");
+            assert!(!w.scroll_region_active());
+
+            let sink = crate::evidence_sink::EvidenceSink::from_config(
+                &crate::evidence_sink::EvidenceSinkConfig::enabled_file(&evidence_path),
+            )
+            .expect("sink config")
+            .expect("sink enabled");
+            w.set_evidence_sink(Some(sink));
+            w.export_capability_decisions();
+            assert!(w.strategy_fallback().is_none(), "exported once");
+        }
+        let out = String::from_utf8_lossy(&output).into_owned();
+        assert!(
+            !out.contains("\x1b[1;21r"),
+            "no DECSTBM after the fallback; got: {out:?}"
+        );
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence written");
+        let _ = std::fs::remove_file(&evidence_path);
+        assert!(
+            contents.contains(
+                r#"{"event":"inline_strategy_fallback","from":"hybrid","to":"overlay_redraw","reason":"cpr_mismatch","observed_row":24,"expected_row":21,"rows":24,"region_bottom":21}"#
+            ),
+            "{contents}"
+        );
+        assert!(
+            contents.contains(r#""event":"inline_strategy","strategy":"overlay_redraw""#)
+                && contents.contains(r#""scroll_region_verified":false"#),
+            "{contents}"
+        );
+
+        // Timeout counts as not honoured too.
+        let mut timed_out_output = Vec::new();
+        {
+            let mut timed_out = TerminalWriter::new(
+                &mut timed_out_output,
+                ScreenMode::Inline { ui_height: 3 },
+                UiAnchor::Bottom,
+                caps,
+            );
+            timed_out.set_scroll_region_verified(Some(ScrollRegionVerdict::NoReply), 24, 21);
+            assert_eq!(timed_out.inline_strategy(), InlineStrategy::OverlayRedraw);
+            assert_eq!(
+                timed_out.strategy_fallback().map(|f| f.reason),
+                Some("cpr_timeout")
+            );
+        }
+    }
+
     #[test]
     fn evidence_sink_exports_capability_decisions_and_inline_strategy() {
         use ftui_core::capability_override::PolicyOverrides;
@@ -3811,7 +4073,7 @@ mod tests {
             assert!(block[2].contains(r#""probe":"not_probed""#), "{}", block[2]);
             assert_eq!(
                 block[3],
-                r#"{"event":"inline_strategy","strategy":"scroll_region","use_scroll_region":true,"use_sync_output":true,"in_mux":false}"#
+                r#"{"event":"inline_strategy","strategy":"scroll_region","use_scroll_region":true,"use_sync_output":true,"in_mux":false,"scroll_region_verified":null}"#
             );
         }
     }

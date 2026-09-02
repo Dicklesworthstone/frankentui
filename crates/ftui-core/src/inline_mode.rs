@@ -76,19 +76,26 @@ pub enum InlineStrategy {
     /// More portable but more redraw work.
     OverlayRedraw,
 
-    /// Hybrid: overlay-redraw baseline with scroll-region optimization
-    /// where safe (detected modern terminals without mux).
+    /// Hybrid: the same DECSTBM scroll region as `ScrollRegion` but without
+    /// synchronized-output brackets, verified at startup by the DECSTBM
+    /// self-test (`caps_probe::probe_scroll_region`); a terminal that
+    /// ignores the region is switched to `OverlayRedraw` before the first
+    /// frame.
     #[default]
     Hybrid,
 }
 
 impl InlineStrategy {
-    /// Select strategy based on terminal capabilities.
+    /// Select the strategy from capabilities, in this order:
+    /// - inside a terminal multiplexer (tmux/screen/zellij/WezTerm mux):
+    ///   `OverlayRedraw` (muxes may not handle scroll regions correctly);
+    /// - scroll region and synchronized output: `ScrollRegion`;
+    /// - scroll region without synchronized output: `Hybrid`;
+    /// - otherwise `OverlayRedraw`.
     ///
-    /// Hybrid mode uses scroll-region only when:
-    /// - Not in a terminal multiplexer (tmux/screen/zellij)
-    /// - Scroll region capability is detected
-    /// - Synchronized output is available (reduces flicker)
+    /// The runtime then runs the DECSTBM self-test for `ScrollRegion` and
+    /// `Hybrid` and falls back to `OverlayRedraw` when the terminal does not
+    /// honour the region (`TerminalWriter::set_scroll_region_verified`).
     #[must_use]
     pub fn select(caps: &TerminalCapabilities) -> Self {
         if caps.in_any_mux() {
