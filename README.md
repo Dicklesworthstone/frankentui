@@ -920,6 +920,8 @@ Decision thresholds:
     otherwise      →  Transitional (interpolate delay)
 ```
 
+**Where it runs:** on by default. `CoalescerConfig::default()` carries `enable_bocpd = true` and `heuristic_fallback = true`; `ResizeCoalescer` feeds every resize event's inter‑arrival to the posterior and reads the regime and the recommended delay from it. The 10/5 events‑per‑second rate heuristic decides only when the posterior is undefined: the first event of a session, an inter‑arrival outside `[min_observation_ms, max_observation_ms]` (1 ms to 10 s by default, which the posterior would otherwise see clamped), or a non‑finite posterior. While the heuristic decides it also owns the Burst exit (cooldown on ticks, rate check on the immediate path). Every `decision` and `regime_transition` evidence row carries `detector` (`bocpd` or `heuristic`) and `p_burst`, the `config` row carries both flags, `budget_decision` carries `resize_detector`, and `CoalescerStats::detector_decisions` counts decisions per detector. `CoalescerConfig::without_bocpd()` returns to the heuristic alone; `with_heuristic_fallback(false)` hands even the first event to the posterior.
+
 ### Bayes-Factor Evidence Ledger (Resize Coalescer)
 
 Resize coalescing decisions are explained with a **log10 Bayes factor** ledger:

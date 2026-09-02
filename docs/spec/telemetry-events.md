@@ -358,6 +358,7 @@ Required fields:
 - `burst_enter_rate`, `burst_exit_rate`
 - `cooldown_frames`, `rate_window_size`
 - `logging_enabled`
+- `enable_bocpd` (bool, default `true`), `heuristic_fallback` (bool, default `true`)
 
 #### Event: `decision` (resize coalescer)
 
@@ -367,6 +368,26 @@ Required fields:
 - `action` (`apply` | `apply_forced` | `apply_immediate` | `coalesce` | `skip_same_size`)
 - `pending_w`, `pending_h`, `applied_w`, `applied_h`
 - `time_since_render_ms`, `coalesce_ms`, `forced`
+- `transition_reason_code` (string or `null`), `transition_confidence` (float or `null`)
+- `detector` (`bocpd` | `heuristic`): which detector made the regime decision
+  this row reflects. With defaults the first event of a session and events
+  whose inter-arrival lies outside the BOCPD observation range are
+  `heuristic`; everything else is `bocpd`. `without_bocpd()` yields
+  `heuristic` only.
+- `p_burst` (float or `null`): BOCPD posterior at decision time (`null` when
+  BOCPD is off)
+
+#### Event: `regime_transition` (resize coalescer)
+
+Written when the regime changes (`steady` <-> `burst`).
+
+Required fields:
+- `from_regime`, `to_regime` (`steady` | `burst`)
+- `reason_code` (`heuristic_enter_burst_rate` | `heuristic_exit_burst_cooldown` | `heuristic_exit_burst_rate` | `bocpd_posterior_burst` | `bocpd_posterior_steady`)
+- `confidence` (0..1), `event_rate`
+- `p_burst` (float or `null`)
+- `detector` (`bocpd` | `heuristic`)
+- `cooldown_remaining`
 
 #### Event: `decision_evidence` (resize coalescer)
 
