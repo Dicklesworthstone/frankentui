@@ -895,9 +895,13 @@ mod tests {
         handle.join().unwrap();
         let kill_elapsed = kill_start.elapsed();
 
+        // The child sleeps 60 s; a prompt kill returns in about one poll
+        // interval (50 ms). The 5 s bound is a hang guard with room for a
+        // loaded runner, and it still fails when the kill waited for the
+        // child (G04.2).
         assert!(
-            kill_elapsed < Duration::from_millis(500),
-            "kill must complete within 500ms of stop signal, took {kill_elapsed:?}"
+            kill_elapsed < Duration::from_secs(5),
+            "kill must complete promptly after the stop signal, took {kill_elapsed:?}"
         );
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();

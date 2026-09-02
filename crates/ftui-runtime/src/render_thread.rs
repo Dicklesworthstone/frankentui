@@ -753,11 +753,15 @@ mod tests {
             "render thread should enter the blocking writer"
         );
 
+        // shutdown() gives up on the stuck writer after
+        // RENDER_THREAD_JOIN_TIMEOUT (250 ms); without that it would block
+        // until the writer is released below, i.e. forever. The 5 s bound is
+        // a hang guard with room for a loaded runner (G04.2).
         let started = std::time::Instant::now();
         rt.shutdown();
         let elapsed = started.elapsed();
         assert!(
-            elapsed < Duration::from_secs(1),
+            elapsed < Duration::from_secs(5),
             "render-thread shutdown should not block on a stuck writer: {elapsed:?}"
         );
 

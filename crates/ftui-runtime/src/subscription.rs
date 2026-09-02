@@ -1092,13 +1092,18 @@ mod tests {
         let (signal, trigger) = StopSignal::new();
         trigger.stop();
 
-        // Should return immediately, not wait for timeout
+        // Should return immediately, not wait for timeout. The bound is a
+        // hang guard at half the timeout, not a speed assertion: a loaded
+        // runner may add tens of milliseconds, never seconds (G04.2).
         let start = Instant::now();
         let stopped = signal.wait_timeout(Duration::from_secs(10));
         let elapsed = start.elapsed();
 
         assert!(stopped);
-        assert!(elapsed < Duration::from_millis(100));
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "wait_timeout on a stopped signal must not wait for the timeout; took {elapsed:?}"
+        );
     }
 
     #[test]
@@ -1183,7 +1188,8 @@ mod tests {
 
     #[test]
     fn every_respects_interval() {
-        let sub = Every::with_id(1, Duration::from_millis(50), || TestMsg::Tick);
+        let interval = Duration::from_millis(50);
+        let sub = Every::with_id(1, interval, || TestMsg::Tick);
         let (tx, rx) = mpsc::channel();
         let (signal, trigger) = StopSignal::new();
 
@@ -1192,26 +1198,38 @@ mod tests {
             sub.run(tx, signal);
         });
 
-        // Wait for 3 ticks worth of time
-        thread::sleep(Duration::from_millis(160));
+        // Wait for three ticks by receiving them rather than sleeping a
+        // fixed time: a loaded runner may deliver them late, but it must
+        // deliver them, and never closer together than the interval (G04.2).
+        let mut arrivals = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while arrivals.len() < 3 && Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(TestMsg::Tick) => arrivals.push(Instant::now()),
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
         trigger.stop();
         handle.join().unwrap();
 
-        let msgs: Vec<_> = rx.try_iter().collect();
-        let elapsed = start.elapsed();
-
-        // Should have approximately 3 ticks (at 50ms intervals over 160ms)
         assert!(
-            msgs.len() >= 2,
-            "Expected at least 2 ticks, got {}",
-            msgs.len()
+            arrivals.len() >= 2,
+            "expected at least 2 ticks within 10 s, got {}",
+            arrivals.len()
         );
+        for pair in arrivals.windows(2) {
+            let gap = pair[1].duration_since(pair[0]);
+            assert!(
+                gap >= interval,
+                "ticks arrived {gap:?} apart, closer than the {interval:?} interval"
+            );
+        }
         assert!(
-            msgs.len() <= 4,
-            "Expected at most 4 ticks, got {}",
-            msgs.len()
+            start.elapsed() >= interval * 2,
+            "two ticks cannot arrive before two intervals have passed"
         );
-        assert!(elapsed >= Duration::from_millis(150));
     }
 
     #[test]
@@ -1431,9 +1449,13 @@ mod tests {
         let completed = std::sync::Arc::new(AtomicBool::new(false));
         let completed_clone = completed.clone();
 
+        // The thread ignores the stop signal for 3 s; stop() honours its
+        // 250 ms join timeout, so it must return long before that. The 1.5 s
+        // bound leaves a 1.25 s margin for a loaded runner (G04.2) while
+        // still distinguishing "timed out" from "blocked for the full sleep".
         let (_signal, trigger) = StopSignal::new();
         let thread = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_secs(3));
             completed_clone.store(true, Ordering::SeqCst);
         });
 
@@ -1446,12 +1468,17 @@ mod tests {
 
         let start = Instant::now();
         running.stop();
+        let elapsed = start.elapsed();
         assert!(
-            start.elapsed() < Duration::from_millis(400),
-            "stop() should not block behind an uncooperative subscription thread"
+            elapsed < Duration::from_millis(1500),
+            "stop() should not block behind an uncooperative subscription thread; took {elapsed:?}"
         );
 
-        thread::sleep(Duration::from_millis(550));
+        // The detached thread keeps running to completion.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !completed.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
         assert!(completed.load(Ordering::SeqCst));
     }
 
@@ -1597,10 +1624,14 @@ mod tests {
         mgr.stop_all();
         let elapsed = start.elapsed();
 
-        // 2 subscriptions * 250ms timeout each = 500ms max, plus some margin
+        // Both subscriptions sleep 5 s and ignore the stop signal. stop_all
+        // must give up on each after its 250 ms join timeout (about 500 ms
+        // in total); the bound is half the sleep, so it fails only when
+        // stop_all actually waited for a thread, never on a loaded runner
+        // (G04.2).
         assert!(
-            elapsed < Duration::from_millis(800),
-            "stop_all took {elapsed:?}, expected < 800ms for 2 uncooperative subscriptions"
+            elapsed < Duration::from_millis(2500),
+            "stop_all took {elapsed:?}: it blocked on an uncooperative subscription"
         );
     }
 
@@ -1936,8 +1967,19 @@ mod tests {
         let stop_count = std::sync::Arc::new(AtomicUsize::new(0));
         let sub_count = 4;
 
+        // Proves the stops overlap without timing them (G04.2): each
+        // subscription's wind-down waits until every peer is also winding
+        // down. With the parallel signal phase all four are released at
+        // once; a sequential signal+join would leave the first one waiting
+        // alone until its guard trips, which `stranded` records.
+        let winding_down = std::sync::Arc::new(AtomicUsize::new(0));
+        let stranded = std::sync::Arc::new(AtomicUsize::new(0));
+
         struct SlowStopSub {
             id: SubId,
+            expected: usize,
+            winding_down: std::sync::Arc<AtomicUsize>,
+            stranded: std::sync::Arc<AtomicUsize>,
             counter: std::sync::Arc<AtomicUsize>,
         }
 
@@ -1947,11 +1989,18 @@ mod tests {
             }
 
             fn run(&self, _sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
-                // Wait for stop, then simulate slow cleanup (50ms).
                 while !stop.is_stopped() {
                     thread::sleep(Duration::from_millis(5));
                 }
-                thread::sleep(Duration::from_millis(50));
+                self.winding_down.fetch_add(1, Ordering::SeqCst);
+                let guard = Instant::now();
+                while self.winding_down.load(Ordering::SeqCst) < self.expected {
+                    if guard.elapsed() > Duration::from_secs(5) {
+                        self.stranded.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
                 self.counter.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -1961,6 +2010,9 @@ mod tests {
             .map(|i| -> Box<dyn Subscription<TestMsg>> {
                 Box::new(SlowStopSub {
                     id: 1000 + i,
+                    expected: sub_count as usize,
+                    winding_down: winding_down.clone(),
+                    stranded: stranded.clone(),
                     counter: stop_count.clone(),
                 })
             })
@@ -1969,23 +2021,22 @@ mod tests {
         mgr.reconcile(subs);
         thread::sleep(Duration::from_millis(20));
 
-        let start = Instant::now();
         mgr.stop_all();
-        let elapsed = start.elapsed();
 
-        // With parallel signal, all 4 subs start their 50ms cleanup
-        // simultaneously. Sequential would take ~200ms (4 * 50ms).
-        // Parallel should complete in ~50ms + join overhead.
-        // Use 150ms as a generous bound (well under 200ms sequential).
-        assert!(
-            elapsed < Duration::from_millis(150),
-            "parallel stop_all took {elapsed:?}, expected < 150ms \
-             (sequential would be ~{expected_sequential}ms)",
-            expected_sequential = sub_count * 50
+        // Every subscription completed its overlapped cleanup and none was
+        // stranded waiting for a peer that was only signalled later.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while stop_count.load(Ordering::SeqCst) + stranded.load(Ordering::SeqCst)
+            < sub_count as usize
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            stranded.load(Ordering::SeqCst),
+            0,
+            "stop phases did not overlap: stop_all signalled subscriptions sequentially"
         );
-
-        // All subscriptions should have completed cleanup.
-        thread::sleep(Duration::from_millis(20));
         assert_eq!(
             stop_count.load(Ordering::SeqCst),
             sub_count as usize,
@@ -2001,8 +2052,16 @@ mod tests {
 
         let stop_count = std::sync::Arc::new(AtomicUsize::new(0));
 
+        // Same overlap proof as `lifecycle_stop_all_parallel_shutdown`: the
+        // three wind-downs wait for each other, so only a parallel signal
+        // phase lets any of them finish (G04.2).
+        let winding_down = std::sync::Arc::new(AtomicUsize::new(0));
+        let stranded = std::sync::Arc::new(AtomicUsize::new(0));
+
         struct SlowStopSub {
             id: SubId,
+            winding_down: std::sync::Arc<AtomicUsize>,
+            stranded: std::sync::Arc<AtomicUsize>,
             counter: std::sync::Arc<AtomicUsize>,
         }
 
@@ -2015,40 +2074,49 @@ mod tests {
                 while !stop.is_stopped() {
                     thread::sleep(Duration::from_millis(5));
                 }
-                thread::sleep(Duration::from_millis(40));
+                self.winding_down.fetch_add(1, Ordering::SeqCst);
+                let guard = Instant::now();
+                while self.winding_down.load(Ordering::SeqCst) < 3 {
+                    if guard.elapsed() > Duration::from_secs(5) {
+                        self.stranded.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
                 self.counter.fetch_add(1, Ordering::SeqCst);
             }
         }
 
         let mut mgr = SubscriptionManager::<TestMsg>::new();
-        mgr.reconcile(vec![
-            Box::new(SlowStopSub {
-                id: 2000,
-                counter: stop_count.clone(),
-            }),
-            Box::new(SlowStopSub {
-                id: 2001,
-                counter: stop_count.clone(),
-            }),
-            Box::new(SlowStopSub {
-                id: 2002,
-                counter: stop_count.clone(),
-            }),
-        ]);
+        mgr.reconcile(
+            [2000, 2001, 2002]
+                .into_iter()
+                .map(|id| -> Box<dyn Subscription<TestMsg>> {
+                    Box::new(SlowStopSub {
+                        id,
+                        winding_down: winding_down.clone(),
+                        stranded: stranded.clone(),
+                        counter: stop_count.clone(),
+                    })
+                })
+                .collect(),
+        );
         thread::sleep(Duration::from_millis(20));
 
         // Remove all subscriptions via reconcile.
-        let start = Instant::now();
         mgr.reconcile(vec![]);
-        let elapsed = start.elapsed();
 
-        // Parallel: ~40ms + overhead. Sequential would be ~120ms.
-        assert!(
-            elapsed < Duration::from_millis(100),
-            "reconcile removal took {elapsed:?}, expected < 100ms with parallel stop"
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while stop_count.load(Ordering::SeqCst) + stranded.load(Ordering::SeqCst) < 3
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            stranded.load(Ordering::SeqCst),
+            0,
+            "reconcile removal stopped subscriptions sequentially"
         );
-
-        thread::sleep(Duration::from_millis(20));
         assert_eq!(stop_count.load(Ordering::SeqCst), 3);
     }
 
@@ -2120,9 +2188,12 @@ mod tests {
     fn lifecycle_join_bounded_returns_handle_for_uncooperative() {
         use std::sync::atomic::AtomicBool;
 
+        // The thread sleeps 3 s; join_bounded gives up after 250 ms. The
+        // bound is half the sleep so it only trips when join_bounded really
+        // waited for the thread, never on a loaded runner (G04.2).
         let (_signal, trigger) = StopSignal::new();
         let thread = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_secs(3));
         });
 
         let running = RunningSubscription {
@@ -2142,7 +2213,7 @@ mod tests {
             "uncooperative thread should not join within timeout"
         );
         assert!(
-            elapsed < Duration::from_millis(400),
+            elapsed < Duration::from_millis(1500),
             "join_bounded should respect the 250ms timeout, took {elapsed:?}"
         );
     }
