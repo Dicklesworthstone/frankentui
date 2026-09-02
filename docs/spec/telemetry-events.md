@@ -316,6 +316,15 @@ Notes:
 Each line is a single JSON object. Field sets are **event-specific**.
 These are the current runtime events emitted by the evidence sink.
 
+The machine-checkable form of this section is
+`tests/e2e/lib/e2e_evidence_schema.json` (one entry per `event`, keyed by
+the `event` field; required fields and JSON types), validated by
+`tests/e2e/lib/validate_jsonl.py --schema tests/e2e/lib/e2e_evidence_schema.json --strict`.
+The showcase E2E (`scripts/demo_showcase_e2e.sh`, explainability step)
+validates every row of its evidence file against it, and CI validates
+`tests/e2e/lib/e2e_evidence_examples.jsonl`, which carries one real row per
+event; adding an event means adding it to both files.
+
 #### Event: `diff_decision`
 
 Required fields:

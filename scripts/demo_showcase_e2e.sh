@@ -2558,6 +2558,22 @@ PY
             fi
         fi
 
+        # Every evidence row must match the per-event schema
+        # (tests/e2e/lib/e2e_evidence_schema.json): a producer that drops or
+        # renames a field fails this step instead of silently drifting.
+        explain_schema_ok=false
+        if $explain_report_ok; then
+            echo ""
+            echo "--- evidence schema validation ---"
+            if python3 "$LIB_DIR/validate_jsonl.py" "$EXPLAIN_REPORT" \
+                --schema "$LIB_DIR/e2e_evidence_schema.json" --strict; then
+                explain_schema_ok=true
+                echo "evidence schema: OK ($(wc -l < "$EXPLAIN_REPORT") rows)"
+            else
+                echo "evidence schema: FAILED"
+            fi
+        fi
+
         explain_exit_ok=true
         if [ "$explain_exit" -ne 0 ] && [ "$explain_exit" -ne 124 ]; then
             explain_exit_ok=false
@@ -2567,6 +2583,7 @@ PY
         if ! $explain_exit_ok; then explain_success=false; fi
         if ! $explain_report_ok; then explain_success=false; fi
         if ! $explain_parse_ok; then explain_success=false; fi
+        if ! $explain_schema_ok; then explain_success=false; fi
 
         echo "Outcome: $explain_outcome"
         echo "Summary JSONL: $EXPLAIN_JSONL"

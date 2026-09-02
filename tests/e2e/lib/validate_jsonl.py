@@ -29,6 +29,9 @@ class Schema:
     common_required: List[str]
     common_types: Dict[str, Any]
     events: Dict[str, Dict[str, Any]]
+    # Field that names the event: "type" for the E2E script logs,
+    # "event" for the runtime evidence sink rows.
+    key_field: str = "type"
 
 
 class ValidationError(Exception):
@@ -77,11 +80,15 @@ def load_schema(path: str) -> Schema:
     events = data.get("events")
     if not isinstance(events, dict):
         raise ValidationError("events must be an object")
+    key_field = data.get("key_field", "type")
+    if not isinstance(key_field, str) or not key_field:
+        raise ValidationError("key_field must be a non-empty string")
     return Schema(
         version=version,
         common_required=[str(item) for item in common_required],
         common_types=common_types,
         events=events,
+        key_field=key_field,
     )
 
 
@@ -190,14 +197,15 @@ def validate_frame_semantics(obj: Dict[str, Any]) -> List[str]:
 def validate_event(schema: Schema, obj: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
 
-    event_type = obj.get("type")
+    event_type = obj.get(schema.key_field)
     if not isinstance(event_type, str):
-        errors.append("type must be a string")
+        errors.append(f"{schema.key_field} must be a string")
         return errors
 
     event_schema = schema.events.get(event_type)
     if event_schema is None:
-        errors.append(f"unknown event type: {event_type}")
+        label = "event type" if schema.key_field == "type" else "event"
+        errors.append(f"unknown {label}: {event_type}")
         return errors
 
     required = list(schema.common_required)
@@ -208,9 +216,12 @@ def validate_event(schema: Schema, obj: Dict[str, Any]) -> List[str]:
             errors.append(f"missing required field: {field}")
 
     schema_version = obj.get("schema_version")
-    if schema_version is not None and schema_version != schema.version:
+    # An event may carry its own versioned sub-schema (e.g. the BOCPD row's
+    # "bocpd-v1"); the event entry names it, otherwise the file version applies.
+    expected_version = event_schema.get("schema_version", schema.version)
+    if schema_version is not None and schema_version != expected_version:
         errors.append(
-            f"schema_version mismatch: expected {schema.version}, got {schema_version}"
+            f"schema_version mismatch: expected {expected_version}, got {schema_version}"
         )
 
     types = dict(schema.common_types)
@@ -804,6 +815,43 @@ def run_self_tests(schema_path: str) -> int:
     return 0 if result.wasSuccessful() else 1
 
 
+def check_examples(schema: Schema, examples_path: str) -> int:
+    """Validate an examples file strictly and require one example per event.
+
+    Used for the evidence schema, whose examples are hand-written rows taken
+    from real runs: a producer that adds or renames a field must update the
+    example, and a schema event without an example is a schema nobody
+    exercised.
+    """
+    with open(examples_path, "r", encoding="utf-8") as handle:
+        lines = list(handle)
+    failures = validate_jsonl(schema, lines)
+    seen = set()
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get(schema.key_field), str):
+            seen.add(obj[schema.key_field])
+    missing = sorted(set(schema.events) - seen)
+    if failures:
+        sys.stderr.write("examples failed schema validation:\n")
+        for line, err in failures:
+            sys.stderr.write(f"line {line}: {err}\n")
+    if missing:
+        sys.stderr.write(
+            "schema events without an example: " + ", ".join(missing) + "\n"
+        )
+    if failures or missing:
+        return 1
+    print(f"examples OK: {len(seen)} events covered by {examples_path}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate FrankenTUI E2E JSONL logs against schema."
@@ -849,6 +897,14 @@ def main() -> int:
         action="store_true",
         help="Run validator self-tests and exit",
     )
+    parser.add_argument(
+        "--examples",
+        default="",
+        help=(
+            "Validate an examples JSONL file against the schema and require at "
+            "least one example per schema event (exit non-zero on any gap)"
+        ),
+    )
 
     args = parser.parse_args()
     schema_path = args.schema
@@ -863,6 +919,9 @@ def main() -> int:
     if args.print_examples:
         print_examples(schema.version)
         return 0
+
+    if args.examples:
+        return check_examples(schema, args.examples)
 
     if not args.jsonl:
         parser.error("jsonl file path is required")

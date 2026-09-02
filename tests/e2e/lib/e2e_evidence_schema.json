@@ -1,0 +1,517 @@
+{
+  "schema_version": "ftui-evidence-v1",
+  "key_field": "event",
+  "common_required": [],
+  "common_types": {
+    "event": "string",
+    "schema_version": "string",
+    "run_id": "string",
+    "event_idx": "integer",
+    "screen_mode": "string",
+    "cols": "integer",
+    "rows": "integer"
+  },
+  "events": {
+    "task_executor_backend": {
+      "required": ["backend"],
+      "optional": [],
+      "types": { "backend": "string" }
+    },
+    "task_executor_complete": {
+      "required": ["backend", "duration_us"],
+      "optional": [],
+      "types": { "backend": "string", "duration_us": "integer" }
+    },
+    "task_executor_panic": {
+      "required": ["backend", "panic_msg"],
+      "optional": [],
+      "types": { "backend": "string", "panic_msg": "string" }
+    },
+    "task_executor_backpressure": {
+      "required": ["backend", "action", "queue_length", "max_queue_size", "total_rejected"],
+      "optional": [],
+      "types": {
+        "backend": "string",
+        "action": "string",
+        "queue_length": "integer",
+        "max_queue_size": "integer",
+        "total_rejected": "integer"
+      }
+    },
+    "effect_queue_select": {
+      "required": [
+        "current_time", "selected_job_id", "queue_length", "mean_wait_time",
+        "max_wait_time", "reason", "tie_break_reason", "jobs"
+      ],
+      "optional": [],
+      "types": {
+        "current_time": "number",
+        "selected_job_id": ["integer", "null"],
+        "queue_length": "integer",
+        "mean_wait_time": "number",
+        "max_wait_time": "number",
+        "reason": "string",
+        "tie_break_reason": ["string", "null"],
+        "jobs": "array"
+      }
+    },
+    "guardrail_snapshot": {
+      "required": ["schema_version", "snapshot"],
+      "optional": [],
+      "types": { "snapshot": "object" }
+    },
+    "voi_decision": {
+      "required": [
+        "idx", "should_sample", "forced", "blocked", "voi_gain", "score", "cost",
+        "log_bayes_factor", "posterior_mean", "posterior_variance", "e_value",
+        "e_threshold", "boundary_score", "events_since_sample", "time_since_sample_ms",
+        "reason"
+      ],
+      "optional": [],
+      "types": {
+        "idx": "integer",
+        "should_sample": "boolean",
+        "forced": "boolean",
+        "blocked": "boolean",
+        "voi_gain": "number",
+        "score": "number",
+        "cost": "number",
+        "log_bayes_factor": "number",
+        "posterior_mean": "number",
+        "posterior_variance": "number",
+        "e_value": "number",
+        "e_threshold": "number",
+        "boundary_score": "number",
+        "events_since_sample": "integer",
+        "time_since_sample_ms": "number",
+        "reason": "string"
+      }
+    },
+    "budget_decision": {
+      "required": [
+        "frame_idx", "decision", "decision_controller", "decision_controller_reason",
+        "degradation_before", "degradation_after", "frame_time_us", "budget_us",
+        "pid_output", "pid_p", "pid_i", "pid_d", "e_value", "frames_observed",
+        "frames_since_change", "in_warmup", "runtime_mode", "runtime_mode_before",
+        "pressure_class", "work_disposition", "governor_reason", "governor_transition",
+        "strict_semantics_preserved", "queue_in_flight", "queue_max_depth",
+        "queue_dropped_delta", "resize_coalescing_active", "resize_detector",
+        "recovery_intervals_observed", "recovery_intervals_required",
+        "deferred_work_total", "coalesced_work_total", "dropped_work_total",
+        "bucket_key", "n_b", "alpha", "q_b", "y_hat", "upper_us", "risk",
+        "fallback_level", "window_size", "reset_count"
+      ],
+      "optional": [],
+      "types": {
+        "frame_idx": "integer",
+        "decision": "string",
+        "decision_controller": "string",
+        "decision_controller_reason": "string",
+        "degradation_before": "string",
+        "degradation_after": "string",
+        "frame_time_us": "number",
+        "budget_us": "number",
+        "pid_output": "number",
+        "pid_p": "number",
+        "pid_i": "number",
+        "pid_d": "number",
+        "e_value": "number",
+        "frames_observed": "integer",
+        "frames_since_change": "integer",
+        "in_warmup": "boolean",
+        "runtime_mode": "string",
+        "runtime_mode_before": "string",
+        "pressure_class": "string",
+        "work_disposition": "string",
+        "governor_reason": "string",
+        "governor_transition": "boolean",
+        "strict_semantics_preserved": "boolean",
+        "queue_in_flight": "integer",
+        "queue_max_depth": ["integer", "null"],
+        "queue_dropped_delta": "integer",
+        "resize_coalescing_active": "boolean",
+        "resize_detector": "string",
+        "recovery_intervals_observed": "integer",
+        "recovery_intervals_required": "integer",
+        "deferred_work_total": "integer",
+        "coalesced_work_total": "integer",
+        "dropped_work_total": "integer",
+        "bucket_key": ["string", "null"],
+        "n_b": ["integer", "null"],
+        "alpha": ["number", "null"],
+        "q_b": ["number", "null"],
+        "y_hat": ["number", "null"],
+        "upper_us": ["number", "null"],
+        "risk": ["boolean", "null"],
+        "fallback_level": ["integer", "null"],
+        "window_size": ["integer", "null"],
+        "reset_count": ["integer", "null"]
+      }
+    },
+    "widget_refresh": {
+      "required": [
+        "frame_idx", "budget_us", "degradation", "essentials_cost_us", "selected_cost_us",
+        "selected_value", "selected_count", "skipped_count", "starved_selected",
+        "starved_skipped", "over_budget", "selected"
+      ],
+      "optional": [],
+      "types": {
+        "frame_idx": "integer",
+        "budget_us": "number",
+        "degradation": "string",
+        "essentials_cost_us": "number",
+        "selected_cost_us": "number",
+        "selected_value": "number",
+        "selected_count": "integer",
+        "skipped_count": "integer",
+        "starved_selected": "integer",
+        "starved_skipped": "integer",
+        "over_budget": "boolean",
+        "selected": "array"
+      }
+    },
+    "a11y_tree": {
+      "required": ["frame_idx", "nodes", "added", "removed", "changed", "focus", "announcements", "dropped"],
+      "optional": [],
+      "types": {
+        "frame_idx": "integer",
+        "nodes": "integer",
+        "added": "integer",
+        "removed": "integer",
+        "changed": "integer",
+        "focus": ["integer", "null"],
+        "announcements": "integer",
+        "dropped": "integer"
+      }
+    },
+    "a11y_announcement": {
+      "required": ["frame_idx", "node_id", "urgency", "reason", "text"],
+      "optional": [],
+      "types": {
+        "frame_idx": "integer",
+        "node_id": ["integer", "null"],
+        "urgency": "string",
+        "reason": "string",
+        "text": "string"
+      }
+    },
+    "fairness_config": {
+      "required": ["enabled", "input_priority_threshold_ms", "dominance_threshold", "fairness_threshold"],
+      "optional": [],
+      "types": {
+        "enabled": "boolean",
+        "input_priority_threshold_ms": "integer",
+        "dominance_threshold": "integer",
+        "fairness_threshold": "number"
+      }
+    },
+    "fairness_decision": {
+      "required": [
+        "frame_idx", "decision", "reason", "pending_input_latency_ms", "jain_index",
+        "resize_dominance_count", "dominance_threshold", "fairness_threshold",
+        "input_priority_threshold_ms"
+      ],
+      "optional": [],
+      "types": {
+        "frame_idx": "integer",
+        "decision": "string",
+        "reason": "string",
+        "pending_input_latency_ms": ["integer", "null"],
+        "jain_index": "number",
+        "resize_dominance_count": "integer",
+        "dominance_threshold": "integer",
+        "fairness_threshold": "number",
+        "input_priority_threshold_ms": "integer"
+      }
+    },
+    "capability_decision": {
+      "required": [
+        "capability", "env_detected", "probe", "operator_override", "in_mux", "final",
+        "log_odds", "probability", "evidence"
+      ],
+      "optional": [],
+      "types": {
+        "capability": "string",
+        "env_detected": "boolean",
+        "probe": "string",
+        "operator_override": ["boolean", "null"],
+        "in_mux": "boolean",
+        "final": "boolean",
+        "log_odds": "number",
+        "probability": "number",
+        "evidence": "array"
+      }
+    },
+    "inline_strategy_fallback": {
+      "required": ["from", "to", "reason", "observed_row", "expected_row", "rows", "region_bottom"],
+      "optional": [],
+      "types": {
+        "from": "string",
+        "to": "string",
+        "reason": "string",
+        "observed_row": ["integer", "null"],
+        "expected_row": "integer",
+        "rows": "integer",
+        "region_bottom": "integer"
+      }
+    },
+    "inline_strategy": {
+      "required": ["strategy", "use_scroll_region", "use_sync_output", "in_mux", "scroll_region_verified"],
+      "optional": [],
+      "types": {
+        "strategy": "string",
+        "use_scroll_region": "boolean",
+        "use_sync_output": "boolean",
+        "in_mux": "boolean",
+        "scroll_region_verified": ["boolean", "null"]
+      }
+    },
+    "diff_decision": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "strategy", "cost_full", "cost_dirty", "cost_redraw", "posterior_mean",
+        "posterior_variance", "alpha", "beta", "guard_reason", "hysteresis_applied",
+        "hysteresis_ratio", "dirty_rows", "total_rows", "total_cells", "span_count",
+        "span_coverage_pct", "max_span_len", "fallback_reason", "scan_cost_estimate",
+        "tile_used", "tile_fallback", "tile_w", "tile_h", "tile_size", "tiles_x",
+        "tiles_y", "dirty_tiles", "dirty_tile_count", "dirty_cells", "dirty_tile_ratio",
+        "dirty_cell_ratio", "scanned_tiles", "skipped_tiles", "skipped_tile_count",
+        "tile_scan_cells_estimate", "sat_build_cost_est", "bayesian_enabled",
+        "dirty_rows_enabled"
+      ],
+      "optional": [],
+      "types": {
+        "strategy": "string",
+        "cost_full": "number",
+        "cost_dirty": "number",
+        "cost_redraw": "number",
+        "posterior_mean": "number",
+        "posterior_variance": "number",
+        "alpha": "number",
+        "beta": "number",
+        "guard_reason": "string",
+        "hysteresis_applied": "boolean",
+        "hysteresis_ratio": "number",
+        "dirty_rows": "integer",
+        "total_rows": "integer",
+        "total_cells": "integer",
+        "span_count": "integer",
+        "span_coverage_pct": "number",
+        "max_span_len": "integer",
+        "fallback_reason": "string",
+        "scan_cost_estimate": "integer",
+        "tile_used": "boolean",
+        "tile_fallback": "string",
+        "tile_w": "integer",
+        "tile_h": "integer",
+        "tile_size": "integer",
+        "tiles_x": "integer",
+        "tiles_y": "integer",
+        "dirty_tiles": "integer",
+        "dirty_tile_count": "integer",
+        "dirty_cells": "integer",
+        "dirty_tile_ratio": "number",
+        "dirty_cell_ratio": "number",
+        "scanned_tiles": "integer",
+        "skipped_tiles": "integer",
+        "skipped_tile_count": "integer",
+        "tile_scan_cells_estimate": "integer",
+        "sat_build_cost_est": "integer",
+        "bayesian_enabled": "boolean",
+        "dirty_rows_enabled": "boolean"
+      }
+    },
+    "certificate_decision": {
+      "required": ["run_id", "event_idx", "strategy", "certificate"],
+      "optional": [],
+      "types": { "strategy": "string", "certificate": "object" }
+    },
+    "config": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "steady_delay_ms", "burst_delay_ms", "hard_deadline_ms", "burst_enter_rate",
+        "burst_exit_rate", "cooldown_frames", "rate_window_size", "logging_enabled",
+        "enable_bocpd", "heuristic_fallback"
+      ],
+      "optional": [],
+      "types": {
+        "steady_delay_ms": "integer",
+        "burst_delay_ms": "integer",
+        "hard_deadline_ms": "integer",
+        "burst_enter_rate": "number",
+        "burst_exit_rate": "number",
+        "cooldown_frames": "integer",
+        "rate_window_size": "integer",
+        "logging_enabled": "boolean",
+        "enable_bocpd": "boolean",
+        "heuristic_fallback": "boolean"
+      }
+    },
+    "decision": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "idx", "elapsed_ms", "dt_ms", "event_rate", "regime", "action", "pending_w",
+        "pending_h", "applied_w", "applied_h", "time_since_render_ms", "coalesce_ms",
+        "forced", "transition_reason_code", "transition_confidence", "detector", "p_burst"
+      ],
+      "optional": [],
+      "types": {
+        "idx": "integer",
+        "elapsed_ms": "number",
+        "dt_ms": "number",
+        "event_rate": "number",
+        "regime": "string",
+        "action": "string",
+        "pending_w": ["integer", "null"],
+        "pending_h": ["integer", "null"],
+        "applied_w": ["integer", "null"],
+        "applied_h": ["integer", "null"],
+        "time_since_render_ms": "number",
+        "coalesce_ms": ["number", "null"],
+        "forced": "boolean",
+        "transition_reason_code": ["string", "null"],
+        "transition_confidence": ["number", "null"],
+        "detector": "string",
+        "p_burst": ["number", "null"]
+      }
+    },
+    "bocpd": {
+      "schema_version": "bocpd-v1",
+      "required": [
+        "schema_version", "p_burst", "log_bf", "obs_ms", "regime", "ll_steady", "ll_burst",
+        "runlen_mean", "runlen_var", "runlen_mode", "runlen_p95", "runlen_tail",
+        "delay_ms", "forced_deadline", "n_obs"
+      ],
+      "optional": [],
+      "types": {
+        "p_burst": "number",
+        "log_bf": "number",
+        "obs_ms": "number",
+        "regime": "string",
+        "ll_steady": "number",
+        "ll_burst": "number",
+        "runlen_mean": "number",
+        "runlen_var": "number",
+        "runlen_mode": "integer",
+        "runlen_p95": "integer",
+        "runlen_tail": "number",
+        "delay_ms": ["integer", "null"],
+        "forced_deadline": ["boolean", "null"],
+        "n_obs": "integer"
+      }
+    },
+    "regime_transition": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "from_regime", "to_regime", "reason_code", "confidence", "event_rate", "p_burst",
+        "detector", "cooldown_remaining"
+      ],
+      "optional": [],
+      "types": {
+        "from_regime": "string",
+        "to_regime": "string",
+        "reason_code": "string",
+        "confidence": "number",
+        "event_rate": "number",
+        "p_burst": ["number", "null"],
+        "detector": "string",
+        "cooldown_remaining": "integer"
+      }
+    },
+    "decision_evidence": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "log_bayes_factor", "regime_contribution", "timing_contribution",
+        "rate_contribution", "explanation"
+      ],
+      "optional": [],
+      "types": {
+        "log_bayes_factor": ["number", "string"],
+        "regime_contribution": "number",
+        "timing_contribution": "number",
+        "rate_contribution": "number",
+        "explanation": "string"
+      }
+    },
+    "summary": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "decisions", "applies", "forced_applies", "coalesces", "skips", "regime",
+        "last_w", "last_h", "checksum"
+      ],
+      "optional": [],
+      "types": {
+        "decisions": "integer",
+        "applies": "integer",
+        "forced_applies": "integer",
+        "coalesces": "integer",
+        "skips": "integer",
+        "regime": "string",
+        "last_w": "integer",
+        "last_h": "integer",
+        "checksum": "string"
+      }
+    },
+    "cycle_time_percentiles": {
+      "required": ["p50_ms", "p95_ms", "p99_ms", "mean_ms", "count"],
+      "optional": [],
+      "types": {
+        "p50_ms": "number",
+        "p95_ms": "number",
+        "p99_ms": "number",
+        "mean_ms": "number",
+        "count": "integer"
+      }
+    },
+    "voi_observe": {
+      "required": [
+        "idx", "sample_idx", "violated", "posterior_mean", "posterior_variance",
+        "alpha", "beta", "e_value", "e_threshold"
+      ],
+      "optional": [],
+      "types": {
+        "idx": "integer",
+        "sample_idx": "integer",
+        "violated": "boolean",
+        "posterior_mean": "number",
+        "posterior_variance": "number",
+        "alpha": "number",
+        "beta": "number",
+        "e_value": "number",
+        "e_threshold": "number"
+      }
+    },
+    "allocation_budget_config": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "alpha", "mu_0", "sigma_sq", "cusum_k", "cusum_h", "lambda", "window_size"
+      ],
+      "optional": [],
+      "types": {
+        "alpha": "number",
+        "mu_0": "number",
+        "sigma_sq": "number",
+        "cusum_k": "number",
+        "cusum_h": "number",
+        "lambda": "number",
+        "window_size": "integer"
+      }
+    },
+    "allocation_budget_evidence": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "frame", "x", "residual", "cusum_plus", "cusum_minus", "e_value", "alert"
+      ],
+      "optional": [],
+      "types": {
+        "frame": "integer",
+        "x": "number",
+        "residual": "number",
+        "cusum_plus": "number",
+        "cusum_minus": "number",
+        "e_value": "number",
+        "alert": "boolean"
+      }
+    }
+  }
+}

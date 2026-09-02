@@ -462,6 +462,17 @@ jobs:
               --strict
           done
 
+      # The runtime evidence rows (`FTUI_DEMO_EVIDENCE_JSONL`) have a schema
+      # of their own; every event must have a validating example so a
+      # producer that renames a field fails here, not in a consumer.
+      - name: Validate evidence schema examples
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 tests/e2e/lib/validate_jsonl.py \
+            --schema tests/e2e/lib/e2e_evidence_schema.json \
+            --examples tests/e2e/lib/e2e_evidence_examples.jsonl
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
