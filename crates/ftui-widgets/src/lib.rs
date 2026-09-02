@@ -916,6 +916,70 @@ mod tests {
         );
     }
 
+    /// With a tree builder attached to the frame, rendering an `Accessible`
+    /// widget pushes its nodes (a list with items, a titled block, a
+    /// paragraph) so the runtime can build the tree; without one nothing is
+    /// collected and rendering is unchanged.
+    #[test]
+    fn rendering_accessible_widgets_pushes_their_nodes_into_the_frame() {
+        use crate::block::Block;
+        use crate::list::{List, ListState};
+        use crate::paragraph::Paragraph;
+        use ftui_a11y::node::A11yRole;
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        let mut pool = GraphemePool::new();
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(30, 8, &mut pool);
+        frame.set_a11y(&mut builder);
+
+        let mut list_state = ListState::default();
+        let list = List::new(["alpha", "beta"]);
+        StatefulWidget::render(&list, Rect::new(0, 0, 30, 3), &mut frame, &mut list_state);
+        Block::new()
+            .title("Details")
+            .render(Rect::new(0, 3, 30, 3), &mut frame);
+        Paragraph::new("hello").render(Rect::new(0, 6, 30, 1), &mut frame);
+        frame.finish_a11y();
+        let order = frame.take_a11y_order();
+        drop(frame);
+
+        let tree = builder.build();
+        assert_eq!(order.len(), tree.node_count());
+        assert!(
+            order.len() >= 5,
+            "list + 2 items + block + paragraph: {order:?}"
+        );
+        let roles: Vec<A11yRole> = order
+            .iter()
+            .filter_map(|id| tree.node(*id).map(|n| n.role))
+            .collect();
+        assert_eq!(roles[0], A11yRole::List);
+        assert_eq!(roles[1], A11yRole::ListItem);
+        assert_eq!(roles[2], A11yRole::ListItem);
+        assert!(roles.contains(&A11yRole::Group), "{roles:?}");
+        let list_id = order[0];
+        assert_eq!(
+            tree.node(list_id).map(|n| n.children.len()),
+            Some(2),
+            "list items are the list's children"
+        );
+        assert_eq!(
+            tree.root_id(),
+            Some(list_id),
+            "first parentless node is the root"
+        );
+        let text = tree.dump_text(&order);
+        assert!(text.contains("ListItem \"alpha\""), "{text}");
+        assert!(text.contains("Group \"Details\""), "{text}");
+
+        // No builder: nothing collected, rendering still works.
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 8, &mut pool);
+        Paragraph::new("hello").render(Rect::new(0, 0, 30, 1), &mut frame);
+        assert!(frame.a11y_order().is_empty());
+    }
+
     /// The stateful helper hands the widget its state and keeps mutations.
     #[test]
     fn frame_ext_render_stateful_widget_passes_state() {

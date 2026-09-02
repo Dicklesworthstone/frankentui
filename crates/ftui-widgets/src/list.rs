@@ -759,6 +759,9 @@ impl<'a> StatefulWidget for List<'a> {
     type State = ListState;
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
+        if frame.a11y_enabled() {
+            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
+        }
         #[cfg(feature = "tracing")]
         let _widget_span = tracing::debug_span!(
             "widget_render",

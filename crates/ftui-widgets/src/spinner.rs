@@ -103,6 +103,9 @@ impl<'a> StatefulWidget for Spinner<'a> {
     type State = SpinnerState;
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
+        if frame.a11y_enabled() {
+            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
+        }
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",

@@ -406,6 +406,9 @@ impl StatefulWidget for Tabs<'_> {
         if area.is_empty() || area.height == 0 {
             return;
         }
+        if frame.a11y_enabled() {
+            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
+        }
 
         let deg = frame.buffer.degradation;
         let base_style = if deg.apply_styling() {
