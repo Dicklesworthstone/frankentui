@@ -15,8 +15,11 @@ path to a working inline (scrollback-preserving) UI.
 ## Stability Notes
 
 - Expect breaking API changes: this is pre-1.0 and moving fast.
-- As of today, only `ftui-core`, `ftui-layout`, and `ftui-i18n` are published on crates.io.
-  The rest of the stack (render/runtime/widgets/extras) should be consumed via workspace paths.
+- All 17 library crates (the `ftui` facade and every `ftui-*` crate except the
+  demo and WASM showcase targets) are published on crates.io at the workspace
+  version; a path dependency on this checkout works the same way.
+- The facade's default features compile a terminal backend (native `ftui-tty`
+  on Unix, Crossterm elsewhere) so `App::run()` works without configuration.
 
 ## Crate Map (Core vs Optional)
 
@@ -164,14 +167,22 @@ Do **not** embed xterm.js as a fallback for this integration path.
 
 ## Add The Dependency
 
-Right now only a subset of crates are published on crates.io (`ftui-core`,
-`ftui-layout`, `ftui-i18n`). For the full stack (runtime/render/widgets),
-prefer a workspace path dependency:
+Depend on the `ftui` facade from crates.io, or by path when working against a
+checkout of this repository:
 
 ```toml
 [dependencies]
-ftui = { path = "../frankentui/crates/ftui" }
+ftui = "0.6"
+# or, against a checkout:
+# ftui = { path = "../frankentui/crates/ftui" }
 ```
+
+The default features (`runtime`, `extras`, `backend`) are what the examples in
+this guide assume. `backend` compiles the native `ftui-tty` backend on Unix and
+the Crossterm backend elsewhere; `App::run()` picks whichever was compiled and
+`ftui::DEFAULT_BACKEND` names it. Headless, WASM, or custom-backend consumers
+should use `default-features = false, features = ["runtime"]`, in which case
+`App::run()` returns an `Unsupported` error naming the feature to enable.
 
 If you only want a small slice, you can depend on internal crates directly
 via path as well (same repo):

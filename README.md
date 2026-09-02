@@ -137,11 +137,8 @@ Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-sho
 ## Minimal API Example
 
 ```rust
-use ftui_core::event::Event;
-use ftui_core::geometry::Rect;
-use ftui_render::frame::Frame;
-use ftui_runtime::{App, Cmd, Model, ScreenMode};
-use ftui_widgets::paragraph::Paragraph;
+use ftui::prelude::*;
+use ftui::widgets::paragraph::Paragraph;
 
 struct TickApp {
     ticks: u64,
@@ -310,7 +307,17 @@ All 17 library crates are published on crates.io (the `ftui` facade plus
 
 ```toml
 [dependencies]
-ftui = "0.5"
+ftui = "0.6"
+```
+
+The default features compile a terminal backend, so `App::run()` works out of
+the box: the native `ftui-tty` backend on Unix and the Crossterm backend
+elsewhere (`ftui::DEFAULT_BACKEND` reports which one your build selected).
+Headless, WASM, or custom-backend consumers can opt out:
+
+```toml
+[dependencies]
+ftui = { version = "0.6", default-features = false, features = ["runtime"] }
 ```
 
 Only the demo/WASM showcase targets remain workspace-local.

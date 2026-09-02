@@ -153,6 +153,10 @@ Cross-component integration tests live in the workspace `tests/` directory.
 # Run all tests across the workspace
 cargo test --workspace
 
+# Same, with per-test timeouts (kills any test after 120 s and names it;
+# this is what CI runs; config in .config/nextest.toml)
+cargo nextest run --workspace --no-fail-fast
+
 # Run with output
 cargo test --workspace -- --nocapture
 
