@@ -443,6 +443,43 @@ pub trait Widget {
     }
 }
 
+/// Frame-side rendering helpers so `view()` code reads top-down:
+/// `frame.render_widget(&sidebar, left)` instead of `sidebar.render(left, frame)`.
+///
+/// This is an extension trait because [`Frame`] lives in `ftui-render`, which
+/// does not know the widget traits; import it through `ftui::prelude::*` or
+/// `use ftui_widgets::FrameExt`.
+pub trait FrameExt {
+    /// Render a stateless widget into `area`.
+    fn render_widget<W: Widget + ?Sized>(&mut self, widget: &W, area: Rect);
+
+    /// Render a stateful widget into `area`, giving it mutable access to its
+    /// state for the duration of the render.
+    fn render_stateful_widget<W: StatefulWidget + ?Sized>(
+        &mut self,
+        widget: &W,
+        area: Rect,
+        state: &mut W::State,
+    );
+}
+
+impl FrameExt for Frame<'_> {
+    #[inline]
+    fn render_widget<W: Widget + ?Sized>(&mut self, widget: &W, area: Rect) {
+        widget.render(area, self);
+    }
+
+    #[inline]
+    fn render_stateful_widget<W: StatefulWidget + ?Sized>(
+        &mut self,
+        widget: &W,
+        area: Rect,
+        state: &mut W::State,
+    ) {
+        widget.render(area, self, state);
+    }
+}
+
 /// Budget-aware wrapper that registers widget signals and respects refresh budgets.
 pub struct Budgeted<W> {
     widget_id: u64,
@@ -835,6 +872,67 @@ mod tests {
     use super::*;
     use ftui_render::cell::PackedRgba;
     use ftui_render::grapheme_pool::GraphemePool;
+
+    /// `frame.render_widget(&w, area)` must be exactly `w.render(area, frame)`:
+    /// same cells, same clipping, no extra state.
+    #[test]
+    fn frame_ext_render_widget_matches_direct_render() {
+        struct Fill(char);
+        impl Widget for Fill {
+            fn render(&self, area: Rect, frame: &mut Frame) {
+                for y in area.y..area.y + area.height {
+                    for x in area.x..area.x + area.width {
+                        frame.buffer.set_raw(x, y, Cell::from_char(self.0));
+                    }
+                }
+            }
+        }
+
+        let mut pool_a = GraphemePool::new();
+        let mut direct = Frame::new(6, 2, &mut pool_a);
+        Fill('d').render(Rect::new(1, 0, 3, 2), &mut direct);
+
+        let mut pool_b = GraphemePool::new();
+        let mut via_ext = Frame::new(6, 2, &mut pool_b);
+        via_ext.render_widget(&Fill('d'), Rect::new(1, 0, 3, 2));
+        assert_eq!(via_ext.area(), Rect::new(0, 0, 6, 2));
+
+        for y in 0..2 {
+            for x in 0..6 {
+                assert_eq!(
+                    direct.buffer.get(x, y).map(|cell| cell.content),
+                    via_ext.buffer.get(x, y).map(|cell| cell.content),
+                    "cell ({x},{y}) differs between direct render and FrameExt"
+                );
+            }
+        }
+        assert_eq!(
+            via_ext.buffer.get(1, 0).map(|cell| cell.content),
+            Some(Cell::from_char('d').content)
+        );
+        assert_eq!(
+            via_ext.buffer.get(0, 0).map(|cell| cell.content),
+            Some(Cell::default().content)
+        );
+    }
+
+    /// The stateful helper hands the widget its state and keeps mutations.
+    #[test]
+    fn frame_ext_render_stateful_widget_passes_state() {
+        struct Counter;
+        impl StatefulWidget for Counter {
+            type State = u32;
+            fn render(&self, _area: Rect, _frame: &mut Frame, state: &mut u32) {
+                *state += 1;
+            }
+        }
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 1, &mut pool);
+        let mut count = 0;
+        frame.render_stateful_widget(&Counter, frame.area(), &mut count);
+        frame.render_stateful_widget(&Counter, Rect::new(0, 0, 1, 1), &mut count);
+        assert_eq!(count, 2);
+    }
 
     #[test]
     fn apply_style_sets_fg() {
