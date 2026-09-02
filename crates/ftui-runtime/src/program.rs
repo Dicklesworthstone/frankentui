@@ -117,22 +117,25 @@ fn clear_termination_signal() {
     ftui_core::shutdown_signal::clear_pending_termination_signal();
 }
 
-/// Name of the terminal backend that [`AppBuilder::run`] and [`Program::open`]
+/// Name of the terminal backend that [`AppBuilder::run`] and `Program::open`
 /// select in this build: `"native"` (ftui-tty, Unix), `"crossterm"`, or
-/// `"none"` when neither backend feature was compiled.
+/// `"none"` when neither backend feature was compiled (in which case
+/// `Program::open` and `DefaultProgram` do not exist).
 #[cfg(all(feature = "native-backend", unix))]
 pub const DEFAULT_BACKEND: &str = "native";
-/// Name of the terminal backend that [`AppBuilder::run`] and [`Program::open`]
+/// Name of the terminal backend that [`AppBuilder::run`] and `Program::open`
 /// select in this build: `"native"` (ftui-tty, Unix), `"crossterm"`, or
-/// `"none"` when neither backend feature was compiled.
+/// `"none"` when neither backend feature was compiled (in which case
+/// `Program::open` and `DefaultProgram` do not exist).
 #[cfg(all(
     feature = "crossterm-compat",
     not(all(feature = "native-backend", unix))
 ))]
 pub const DEFAULT_BACKEND: &str = "crossterm";
-/// Name of the terminal backend that [`AppBuilder::run`] and [`Program::open`]
+/// Name of the terminal backend that [`AppBuilder::run`] and `Program::open`
 /// select in this build: `"native"` (ftui-tty, Unix), `"crossterm"`, or
-/// `"none"` when neither backend feature was compiled.
+/// `"none"` when neither backend feature was compiled (in which case
+/// `Program::open` and `DefaultProgram` do not exist).
 #[cfg(not(any(all(feature = "native-backend", unix), feature = "crossterm-compat")))]
 pub const DEFAULT_BACKEND: &str = "none";
 
@@ -140,10 +143,10 @@ pub const DEFAULT_BACKEND: &str = "none";
 pub const NO_BACKEND_MESSAGE: &str =
     "no terminal backend compiled: enable `native-backend` (unix) or `crossterm-compat`";
 
-/// The concrete [`Program`] type that [`Program::open`] returns in this build.
+/// The concrete [`Program`] type that `Program::open` returns in this build.
 #[cfg(all(feature = "native-backend", unix))]
 pub type DefaultProgram<M> = Program<M, ftui_tty::TtyBackend, Stdout>;
-/// The concrete [`Program`] type that [`Program::open`] returns in this build.
+/// The concrete [`Program`] type that `Program::open` returns in this build.
 #[cfg(all(
     feature = "crossterm-compat",
     not(all(feature = "native-backend", unix))
@@ -155,7 +158,7 @@ pub type DefaultProgram<M> = Program<M, CrosstermEventSource, Stdout>;
 /// the terminal session) has been dropped and the terminal restored.
 ///
 /// Shared by every [`AppBuilder`] run method so the three backend paths cannot
-/// drift in how they honor the [`SignalTerminationError`] contract.
+/// drift in how they honor the `SignalTerminationError` contract.
 #[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
 fn finish_run<M, E, W>(mut program: Program<M, E, W>) -> io::Result<()>
 where
