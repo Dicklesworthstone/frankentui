@@ -15,6 +15,7 @@ use crate::{
 };
 use ftui_core::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use ftui_core::geometry::{Rect, Size};
+use ftui_core::hover_stabilizer::{HoverStabilizer, HoverStabilizerConfig};
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
 use ftui_text::{Line, Span, Text as FtuiText, display_width};
@@ -381,6 +382,8 @@ pub struct ListState {
     pub selected: Option<usize>,
     /// Index of the currently hovered item, if any.
     pub hovered: Option<usize>,
+    /// Optional CUSUM hover stabilizer (see [`ListState::with_hover_stabilizer`]).
+    hover_stabilizer: Option<HoverStabilizer>,
     /// Scroll offset (first visible item index).
     pub offset: usize,
     /// Optional persistence ID for state saving/restoration.
@@ -404,6 +407,7 @@ impl Default for ListState {
             undo_id: UndoWidgetId::default(),
             selected: None,
             hovered: None,
+            hover_stabilizer: None,
             offset: 0,
             persistence_id: None,
             scroll_into_view_requested: true,
@@ -537,6 +541,24 @@ impl ListState {
         );
     }
 
+    /// Route hover through a CUSUM hover stabilizer
+    /// ([`ftui_core::hover_stabilizer`]) so one-cell pointer jitter across a
+    /// row boundary keeps the hovered row while a decisive move still
+    /// switches within a frame. Without it, `hovered` follows the raw hit
+    /// test on every mouse move.
+    #[must_use]
+    pub fn with_hover_stabilizer(mut self, config: HoverStabilizerConfig) -> Self {
+        self.hover_stabilizer = Some(HoverStabilizer::new(config));
+        self
+    }
+
+    /// The hover stabilizer, if one is attached (diagnostics such as
+    /// [`HoverStabilizer::switch_count`]).
+    #[must_use]
+    pub fn hover_stabilizer(&self) -> Option<&HoverStabilizer> {
+        self.hover_stabilizer.as_ref()
+    }
+
     /// Handle a mouse event for this list.
     ///
     /// # Hit data convention
@@ -586,24 +608,29 @@ impl ListState {
                 MouseResult::Ignored
             }
             MouseEventKind::Moved => {
-                if let Some((id, HitRegion::Content, data)) = hit
-                    && id == expected_id
-                {
-                    let index = data as usize;
-                    if index < item_count {
-                        let changed = self.hovered != Some(index);
-                        self.hovered = Some(index);
-                        return if changed {
-                            MouseResult::HoverChanged
-                        } else {
-                            MouseResult::Ignored
-                        };
+                // Raw hit: the row under the pointer, or None when the
+                // pointer is off the widget or on a non-content region.
+                let hit_index = match hit {
+                    Some((id, HitRegion::Content, data))
+                        if id == expected_id && (data as usize) < item_count =>
+                    {
+                        Some(data as usize)
                     }
-                }
-
-                // Mouse moved off the widget or to non-content region.
-                if self.hovered.is_some() {
-                    self.hovered = None;
+                    _ => None,
+                };
+                let next = match self.hover_stabilizer.as_mut() {
+                    Some(stabilizer) => stabilizer
+                        .update(
+                            hit_index.map(|index| index as u64),
+                            (event.x, event.y),
+                            web_time::Instant::now(),
+                        )
+                        .map(|target| target as usize),
+                    None => hit_index,
+                };
+                let changed = self.hovered != next;
+                self.hovered = next;
+                if changed {
                     MouseResult::HoverChanged
                 } else {
                     MouseResult::Ignored
@@ -2244,6 +2271,57 @@ mod tests {
         let result = state.handle_mouse(&event, hit, HitId::new(1), 10);
         assert_eq!(result, MouseResult::Activated(3));
         assert_eq!(state.selected(), Some(3));
+    }
+
+    /// With a hover stabilizer, one-cell jitter across a row boundary keeps
+    /// the hovered row; a decisive move still switches within one event.
+    #[test]
+    fn list_state_hover_stabilizer_ignores_boundary_jitter() {
+        let mut state =
+            ListState::default().with_hover_stabilizer(HoverStabilizerConfig::default());
+        let moved = |x, y| MouseEvent::new(MouseEventKind::Moved, x, y);
+        let hit = |row: u64| Some((HitId::new(1), HitRegion::Content, row));
+
+        assert_eq!(
+            state.handle_mouse(&moved(5, 3), hit(3), HitId::new(1), 20),
+            MouseResult::HoverChanged
+        );
+        assert_eq!(state.hovered, Some(3));
+
+        // Jitter between rows 3 and 4 (one cell): the hovered row must not flip.
+        for _ in 0..6 {
+            assert_eq!(
+                state.handle_mouse(&moved(5, 4), hit(4), HitId::new(1), 20),
+                MouseResult::Ignored
+            );
+            assert_eq!(state.hovered, Some(3));
+            assert_eq!(
+                state.handle_mouse(&moved(5, 3), hit(3), HitId::new(1), 20),
+                MouseResult::Ignored
+            );
+        }
+        assert_eq!(
+            state.hover_stabilizer().map(HoverStabilizer::switch_count),
+            Some(1),
+            "only the initial adoption counts as a switch"
+        );
+
+        // A decisive move five rows down switches at once.
+        assert_eq!(
+            state.handle_mouse(&moved(5, 8), hit(8), HitId::new(1), 20),
+            MouseResult::HoverChanged
+        );
+        assert_eq!(state.hovered, Some(8));
+
+        // Without a stabilizer the same jitter flips on every event.
+        let mut raw = ListState::default();
+        raw.handle_mouse(&moved(5, 3), hit(3), HitId::new(1), 20);
+        assert_eq!(
+            raw.handle_mouse(&moved(5, 4), hit(4), HitId::new(1), 20),
+            MouseResult::HoverChanged
+        );
+        assert_eq!(raw.hovered, Some(4));
+        assert!(raw.hover_stabilizer().is_none());
     }
 
     #[test]

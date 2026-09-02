@@ -103,7 +103,7 @@ struct CandidateTarget {
 ///
 /// Feed hit-test results via [`update`](HoverStabilizer::update) and read
 /// the stabilized target from [`current_target`](HoverStabilizer::current_target).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HoverStabilizer {
     config: HoverStabilizerConfig,
 

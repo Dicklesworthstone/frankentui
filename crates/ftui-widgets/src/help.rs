@@ -1622,6 +1622,29 @@ mod tests {
         );
     }
 
+    /// The ledger `apply_ranking` returns serializes to one JSONL evidence
+    /// row per hint with the ranker schema tag, so apps can log why the bar
+    /// is ordered the way it is.
+    #[test]
+    fn help_ranking_ledger_serializes_as_hint_ranking_evidence() {
+        let mut help = Help::new().entry("q", "quit").entry("?", "help");
+        let mut ranker = HintRanker::new(RankerConfig::default());
+        help.register_with_ranker(&mut ranker, HintContext::Global);
+        help.record_used(&mut ranker, "?");
+        let ledger = help.apply_ranking(&mut ranker, None);
+        assert_eq!(ledger.len(), 2);
+        for (rank, row) in ledger.iter().enumerate() {
+            let line = row.to_jsonl();
+            let parsed: serde_json::Value =
+                serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"));
+            assert_eq!(parsed["schema"], "hint-ranking-v1");
+            assert_eq!(parsed["rank"].as_u64(), Some(rank as u64));
+            assert!(parsed["label"].as_str().is_some_and(|l| l.contains(' ')));
+            assert!(parsed["net_value"].is_number() && parsed["voi"].is_number());
+        }
+        assert_eq!(ledger[0].label, "? help", "the used shortcut ranks first");
+    }
+
     /// Hysteresis: without new evidence, re-ranking must not reorder.
     #[test]
     fn help_ranking_is_stable_without_new_evidence() {
