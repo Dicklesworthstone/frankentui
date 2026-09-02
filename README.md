@@ -2363,9 +2363,23 @@ use ftui::{ProgramConfig, ScreenReaderPolicy};
 let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
 ```
 
-With that set, every rendered frame builds an `A11yTree`, diffs it against the previous frame and derives bounded screen‑reader announcements (focus changes, live‑region additions and changes). Read them through `Program::accessibility_tree` / `accessibility_announcements` / `accessibility_dump`, or react from the model via `Model::on_accessibility(AccessibilityFrame)`, which runs after each frame whose tree changed. The evidence sink gets `a11y_tree` and `a11y_announcement` rows and the `ftui.a11y` tracing target carries the same data. Without the config no tree is built and rendering is unchanged.
+With that set, every rendered frame builds an `A11yTree`, diffs it against the previous frame and derives bounded screen‑reader announcements (focus changes, live‑region additions and changes). Read them through `Program::accessibility_tree` / `accessibility_announcements` / `accessibility_dump`, or react from the model via `Model::on_accessibility`, which runs after each frame whose tree changed:
 
-The `accessibility_panel` demo screen mirrors the live tree size and the latest announcements as you navigate the UI.
+```rust
+fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Msg> {
+    // Runs after each frame whose tree changed. Forward the bounded
+    // announcements to a host bridge, a log, or an on-screen live region.
+    self.announcements
+        .extend(a11y.announcements.iter().map(|a| a.text.clone()));
+    Cmd::none()
+}
+```
+
+The evidence sink gets `a11y_tree` and `a11y_announcement` rows (schema in `docs/spec/telemetry-events.md`) and the `ftui.a11y` tracing target carries the same data. Without the config no tree is built and rendering is unchanged.
+
+**Not done:** there is no operating‑system bridge (AT‑SPI, UIA, NSAccessibility). Announcements are evidence rows, tracing events and hook calls that a host or an app forwards; nothing reaches a screen reader on its own. Containers other than `Block` do not scope their children yet, and `Form` has no accessibility nodes. Details and proofs: `docs/ACCESSIBILITY.md`.
+
+The `accessibility_panel` demo screen mirrors the live tree (size, leading dump lines) and the latest announcements as you navigate the UI.
 
 ---
 

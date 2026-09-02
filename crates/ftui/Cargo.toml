@@ -29,6 +29,7 @@ serde = ["ftui-core/serde"]
 workspace = true
 
 [dependencies]
+ftui-a11y = { path = "../ftui-a11y", version = "0.6.0" }
 ftui-core = { path = "../ftui-core", version = "0.6.0" }
 ftui-render = { path = "../ftui-render", version = "0.6.0" }
 ftui-style = { path = "../ftui-style", version = "0.6.0" }

@@ -93,6 +93,24 @@ Spans for input processing (redacted by default).
 
 ---
 
+### 3.5 Accessibility Events
+
+Emitted on the `ftui.a11y` target only when `ProgramConfig::accessibility`
+is set (`with_accessibility(ScreenReaderPolicy)`); the default config
+collects no tree and emits nothing here.
+
+| Event Name | Description | Fields |
+|------------|-------------|--------|
+| `ftui.a11y` (`a11y tree changed`, debug) | The frame's accessibility tree differs from the previous frame's | `frame_idx`, `nodes`, `added`, `removed`, `changed`, `focus_changed`, `announcements`, `dropped` |
+| `ftui.a11y` (`screen reader announcement`, info) | One bounded screen-reader announcement derived from the tree diff | `frame_idx`, `node_id`, `urgency` (`polite` \| `assertive`), `reason`, `text` |
+
+`text` is the announcement string built from the node's role, name,
+description and state (bounded by `ScreenReaderPolicy::max_text_chars`).
+It can carry user-visible widget text (input values are masked by the
+widget when `TextInput` is in password mode); treat it like the
+`ftui.input.event` payload under the redaction policy in Section 5 when
+forwarding it beyond the local evidence sink.
+
 ## 4) Field Schema
 
 ### 4.1 Common Fields (All Spans)
@@ -385,6 +403,42 @@ Required fields:
 - `frame`, `x`, `residual`
 - `cusum_plus`, `cusum_minus`, `e_value`
 - `alert` (bool)
+
+#### Event: `a11y_tree`
+
+Written once per rendered frame whose accessibility tree differs from the
+previous frame's (requires `ProgramConfig::accessibility`).
+
+Required fields:
+- `frame_idx` (u64)
+- `nodes` (usize, node count of the new tree)
+- `added`, `removed`, `changed` (usize, diff counts)
+- `focus` (u64 node id of the newly focused node, or `null`)
+- `announcements` (usize, announcements kept), `dropped` (usize, cut by the policy cap)
+
+Example:
+
+```json
+{"event":"a11y_tree","frame_idx":9,"nodes":27,"added":24,"removed":5,"changed":3,"focus":null,"announcements":1,"dropped":0}
+```
+
+#### Event: `a11y_announcement`
+
+One row per screen-reader announcement derived from the frame's tree diff,
+written right after that frame's `a11y_tree` row, assertive before polite.
+
+Required fields:
+- `frame_idx` (u64)
+- `node_id` (u64 or `null`)
+- `urgency` (`polite` | `assertive`)
+- `reason` (`FocusChanged` | `LiveRegionAdded` | `LiveContentChanged` | `LiveRegionChanged`)
+- `text` (string, JSON-escaped, bounded by `ScreenReaderPolicy::max_text_chars`)
+
+Example:
+
+```json
+{"event":"a11y_announcement","frame_idx":9,"node_id":12185758060053980160,"urgency":"polite","reason":"FocusChanged","text":"textInput: Password. password input. focused"}
+```
 
 ### 9.3 Runtime Mode Contract Additions
 

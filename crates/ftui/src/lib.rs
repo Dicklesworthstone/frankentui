@@ -106,6 +106,7 @@ pub mod prelude {
     pub use crate::runtime;
 }
 
+pub use ftui_a11y as a11y;
 pub use ftui_core as core;
 pub use ftui_layout as layout;
 pub use ftui_render as render;

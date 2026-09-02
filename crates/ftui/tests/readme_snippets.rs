@@ -15,7 +15,10 @@ use std::time::Duration;
 
 use ftui::layout::{Constraint, Flex};
 use ftui::prelude::*;
-use ftui::runtime::{EffectQueueConfig, ProgramConfig, RolloutPolicy, RuntimeLane};
+use ftui::runtime::{
+    AccessibilityFrame, EffectQueueConfig, ProgramConfig, RolloutPolicy, RuntimeLane,
+    ScreenReaderPolicy,
+};
 use ftui::widgets::list::{List, ListState};
 use ftui::widgets::paragraph::Paragraph;
 
@@ -204,6 +207,34 @@ impl Model for Dashboard {
 // Snippets that only need to compile (they would open a terminal if run)
 // ---------------------------------------------------------------------------
 
+/// A model that mirrors the runtime's screen-reader announcements into its
+/// own state (the README's accessibility hook example).
+struct Announcer {
+    announcements: Vec<String>,
+}
+
+impl Model for Announcer {
+    type Message = Msg;
+
+    fn update(&mut self, _msg: Msg) -> Cmd<Msg> {
+        Cmd::none()
+    }
+
+    fn view(&self, frame: &mut Frame) {
+        frame.render_widget(&Paragraph::new("hello"), frame.area());
+    }
+
+    // README-SNIPPET: accessibility_hook
+    fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Msg> {
+        // Runs after each frame whose tree changed. Forward the bounded
+        // announcements to a host bridge, a log, or an on-screen live region.
+        self.announcements
+            .extend(a11y.announcements.iter().map(|a| a.text.clone()));
+        Cmd::none()
+    }
+    // README-SNIPPET-END: accessibility_hook
+}
+
 #[allow(dead_code)]
 fn evidence_sink_example(model: MyModel) -> std::io::Result<()> {
     // README-SNIPPET: evidence_sink
@@ -277,6 +308,40 @@ fn readme_evidence_short_snippet() {
     // README-SNIPPET-END: evidence_short
     let _ = config;
     assert_in_readme(&["evidence_short"]);
+}
+
+#[test]
+fn readme_accessibility_snippets() {
+    use ftui::a11y::node::LiveRegion;
+    use ftui::a11y::tree::{A11yTreeBuilder, AnnouncementReason, ScreenReaderAnnouncement};
+
+    // README-SNIPPET: accessibility_config
+    let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+    // README-SNIPPET-END: accessibility_config
+    assert!(config.accessibility.is_some());
+    assert!(ProgramConfig::default().accessibility.is_none());
+    assert_in_readme(&["accessibility_config"]);
+    assert_in_readme(&["accessibility_hook"]);
+
+    // The hook receives the frame's tree and its announcements.
+    let tree = A11yTreeBuilder::new().build();
+    let announcements = [ScreenReaderAnnouncement {
+        node_id: Some(7),
+        urgency: LiveRegion::Polite,
+        reason: AnnouncementReason::FocusChanged,
+        text: "button: OK. focused".to_string(),
+    }];
+    let mut announcer = Announcer {
+        announcements: Vec::new(),
+    };
+    let _ = announcer.on_accessibility(AccessibilityFrame {
+        frame_idx: 1,
+        tree: &tree,
+        order: &[],
+        announcements: &announcements,
+        dropped: 0,
+    });
+    assert_eq!(announcer.announcements, ["button: OK. focused"]);
 }
 
 #[test]

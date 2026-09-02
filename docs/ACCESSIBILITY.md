@@ -61,8 +61,29 @@ Per rendered frame the runtime then:
 `Program::accessibility_tree()`, `accessibility_order()`,
 `accessibility_announcements()` and `accessibility_dump()` expose the same
 data for tests and tooling. The demo showcase enables this and its
-`accessibility_panel` screen mirrors the tree size and the latest
-announcements.
+`accessibility_panel` screen mirrors the tree size, the leading lines of
+the dump and the latest announcements.
+
+Proofs: `headless_accessibility_builds_tree_and_exports_announcements`
+(ftui-runtime), `finish_a11y_derives_focus_from_node_state` (ftui-render),
+`rendering_accessible_widgets_pushes_their_nodes_into_the_frame`
+(ftui-widgets), `a11y_tree_dump_dashboard_80x24` (showcase), and the
+`pty_focus_announcements` step of `scripts/a11y_transitions_e2e.sh`, which
+runs the showcase under a PTY and requires `FocusChanged` rows.
+
+What is **not** done:
+
+- No operating-system bridge (AT-SPI, UIA, NSAccessibility). Announcements
+  are evidence rows, tracing events and `Model::on_accessibility` calls
+  that a host or an app can forward; nothing reaches a screen reader on
+  its own.
+- Containers other than `Block` (Modal, Tabs content panes, pane
+  workspaces) do not scope their children yet, and `Form` does not
+  implement `Accessible`, so Tab moves inside a form are invisible to the
+  tree (the showcase's Forms screen only announces panel switches).
+- Focus is derived from `A11yState::focused` on the pushed nodes (first in
+  reading order) unless the view sets it on the builder; a focus manager
+  that owns the tree focus is future work.
 
 ### Widgets implementing `Accessible`
 
