@@ -1167,12 +1167,77 @@ Parallel tracks that can start on day one with no dependencies: G03, G04.1-G04.7
 | C every row | claims ledger 100% with proofs; README doc-tests |
 | F plan-doc DoD | `write_raw` tests, agent shell E2E, perf rows, ADR statuses |
 
-### 7.7 Suggested bead structure for Phase 3a
+### 7.7 Beads created (Phase 3a, 2026-09-02)
 
-One epic per gap block (41 epics), children: implementation task(s), companion test task, and where applicable an E2E-script task and a docs/ledger task; dependencies per Section 7.5; priorities: G01-G07 P0/P1, G08-G31 P1/P2, G32-G41 P2/P3. Every bead's description carries the block's current state, target state, success criteria and implementation steps verbatim so the markdown plan is never needed again.
+Phase 3a was executed on 2026-09-02 through the `br` CLI only. One root epic
+`bd-g00-root-epic-ewths` ("epic(reality-gap 2026-09)") parents 42 gap epics, which parent
+226 child beads (implementation, tests, E2E, docs, and owner-decision beads), for 268 new beads
+with 388 blocking edges plus 5 edges that link the two pre-existing open beads: `bd-d4dtr` was
+reparented under the G32 epic (blocked by the G32 design bead; the G32 tests bead is blocked by
+it) and `bd-1za0z` is now blocked by the G12 telemetry bead, the G20 evidence bead and the G13
+allocation-monitor bead that absorb its remaining items. `br dep cycles` reports none. Every
+bead description is self-contained (context and promise, current state with file:line evidence,
+target state, file-by-file plan, success criteria, tests and logging, dependencies, risks,
+definition of done), so this document is reference material from here on, not a prerequisite.
+
+| Gap | Epic id | Beads | Epic title |
+|---|---|---|---|
+| G01 | `bd-g00-root-epic-ewths.1` | 6 | Library consumers can run a program under the ftui facade's default features |
+| G02 | `bd-g00-root-epic-ewths.2` | 4 | Every rust fence in README, getting-started and agent-harness is a compiled doc-test |
+| G03 | `bd-g00-root-epic-ewths.3` | 4 | Per-Program termination-signal state and nextest timeouts so the runtime test binary canno |
+| G04 | `bd-g00-root-epic-ewths.6` | 38 | main CI has not been green in 40 runs — cluster of 15 fixes to green-main |
+| G05 | `bd-g00-root-epic-ewths.4` | 8 | Sync output and DECSTBM on every capable terminal: DECRPM probe, identities, self-test, ma |
+| G06 | `bd-g00-root-epic-ewths.5` | 8 | Claims ledger, README-claims CI checker, and one truthful rewrite of README.md and AGENTS. |
+| G07 | `bd-g00-root-epic-ewths.11` | 7 | Quarantine dead modules behind experimental, gate reachability in CI, exercise unused widg |
+| G08 | `bd-g00-root-epic-ewths.12` | 4 | Put one benchmark-selected width cache on the production grapheme_width path |
+| G09 | `bd-g00-root-epic-ewths.13` | 8 | Build the accessibility tree every frame, diff it, announce live regions, show it in the p |
+| G10 | `bd-g00-root-epic-ewths.14` | 7 | Connect VirtualizedList to the Fenwick index, height predictor, VOI remeasure, and search  |
+| G11 | `bd-g00-root-epic-ewths.15` | 4 | Conformal frame-time gating on by default with warm-up; stages stay experimental |
+| G12 | `bd-g00-root-epic-ewths.16` | 6 | BOCPD default resize regime detector with heuristic fallback, proven by a differential rep |
+| G13 | `bd-g00-root-epic-ewths.17` | 11 | One controller each (e-process, ladder, diff ledger, allocation), shared teardown, present |
+| G14 | `bd-g00-root-epic-ewths.20` | 7 | Keybinding system with priorities, chords, contexts, conflicts and serde (NOT_STARTED -> W |
+| G15 | `bd-g00-root-epic-ewths.21` | 8 | Editor undo coalescing, paragraph movement and outbound clipboard commands (PARTIAL -> WOR |
+| G16 | `bd-g00-root-epic-ewths.22` | 5 | tick_every and file_watcher subscription conveniences (NOT_STARTED -> WORKING) |
+| G17 | `bd-g00-root-epic-ewths.23` | 21 | Nine widget features the README promises (PARTIAL/WRONG_API -> WORKING, cluster of 9) |
+| G18 | `bd-g00-root-epic-ewths.24` | 5 | Wire GestureRecognizer and HoverStabilizer into widgets (DEAD -> WORKING) |
+| G19 | `bd-g00-root-epic-ewths.25` | 3 | Hint ranking into Help with KeyDispatcher usage feedback (DEAD -> WORKING) |
+| G20 | `bd-g00-root-epic-ewths.26` | 6 | Evidence/telemetry names, voi_sample writer, queue depth, schema validation (PARTIAL -> WO |
+| G21 | `bd-g00-root-epic-ewths.18` | 5 | Truthful SOS barrier provenance; compile orphan aggregator/CMS; exercise in action_timelin |
+| G22 | `bd-g00-root-epic-ewths.28` | 6 | doctor_frankentui scope decision and core gates that actually run in CI |
+| G23 | `bd-g00-root-epic-ewths.29` | 7 | make 'runs in a browser' reproducible from this repo (in-tree host, wasm32 CI) |
+| G24 | `bd-g00-root-epic-ewths.30` | 6 | Asupersync lane resolves to its executor, Shadow policy records evidence |
+| G25 | `bd-g00-root-epic-ewths.31` | 8 | enforce performance budgets in CI and back README numbers with artifacts |
+| G26 | `bd-g00-root-epic-ewths.32` | 5 | agent shell reference app: child process into scrollback under stable chrome |
+| G27 | `bd-g00-root-epic-ewths.33` | 4 | finish the untrusted-output policy: raw/SGR-only opt-in, adversarial PTY tests |
+| G28 | `bd-g00-root-epic-ewths.19` | 7 | Make the summed-area table earn its cost or go; make the capability ledger the production  |
+| G29 | `bd-g00-root-epic-ewths.34` | 5 | i18n scoped truth: RTL via LocaleContext::direction and bidi, German, retract formatting |
+| G30 | `bd-g00-root-epic-ewths.35` | 2 | runtime API names in README (persistence, macro player, checksum, SLO) as DOC rows |
+| G31 | `bd-g00-root-epic-ewths.36` | 4 | Windows scoped truth: crossterm by default, windows-latest smoke, real matrix |
+| G32 | `bd-g00-root-epic-ewths.37` | 3 | SIGTSTP/SIGCONT suspend-resume (bd-d4dtr implements; design note and PTY test here) |
+| G33 | `bd-g00-root-epic-ewths.38` | 5 | ftui-simd implement-or-unpublish and yank stale ftui-demo-showcase 0.1.1 |
+| G34 | `bd-g00-root-epic-ewths.39` | 4 | stale governance docs: risk register, ADR statuses, bead map, superseded review |
+| G35 | `bd-g00-root-epic-ewths.40` | 4 | harness hello world and truthful harness/showcase configuration docs |
+| G36 | `bd-g00-root-epic-ewths.27` | 4 | Input parser gaps: SGR-Pixels 1016, DCS payload capture, APC policy (PARTIAL -> WORKING) |
+| G37 | `bd-g00-root-epic-ewths.7` | 4 | Process guardrails — evidence-bearing close reasons, Landing the Plane, monthly reality ch |
+| G38 | `bd-g00-root-epic-ewths.41` | 2 | plan-doc leftovers decided: SSH extra dropped, TLA+ wording, execution tracker |
+| G39 | `bd-g00-root-epic-ewths.8` | 3 | AGENTS.md tests/ claim is false; fuzzing has no nightly cadence — WRONG -> WORKING |
+| G40 | `bd-g00-root-epic-ewths.9` | 3 | verify_no_regression is order-dependent and stale-file-sensitive — WRONG_APPROACH -> WORKI |
+| G41 | `bd-g00-root-epic-ewths.10` | 3 | Release and version hygiene — checklist plus idempotent release — PARTIAL -> WORKING |
+| G42 | `bd-g00-root-epic-ewths.42` | 3 | final integration verification on a clean clone with archived evidence |
+
+Labels: every new bead carries `reality-check-2026-09` and `gap:GNN` plus one area label.
+Owner-decision beads (type `question`, P1) block the work that depends on them: G06 (CODE vs
+DOC table confirmation), G07 and G13 and G28 (deletion permissions), G21 (SOS solver route),
+G22 (doctor_frankentui scope), G23 (browser scope), G33 (ftui-simd), G34 (todo-bead-map
+deletion). `br ready --json` lists the unblocked work; `bv --robot-triage` ranks it.
 
 ---
 
-## 8. Immediate next step
+## 8. Immediate next steps
 
-Phase 3a: convert Section 7 into beads with the frozen template after the owner steers on the four owner decisions (G22 doctor scope, G23 web scope, G33 `ftui-simd`, and the deletion list in G07/G13) and on the CODE/DOC decision table in G06. Highest-leverage first five: G01, G03, G02, G05, G04.
+1. Owner answers the eight decision beads (all P1, type `question`).
+2. Phase 4 ambition rounds revise Section 7 in place, then Phase 3a re-generates or amends the
+   affected beads; Phase 5 refinement passes (four to five rounds) polish the beads with `br`
+   and `bv`.
+3. Implementation starts from `br ready --json`; highest leverage first: G01 (default backend),
+   G03 (signal race), G02 (README doc-tests), G05 (capability probing), G04 (CI to green).
