@@ -22,6 +22,8 @@ extras = ["dep:ftui-extras"]
 backend = ["native-backend", "crossterm"]
 native-backend = ["runtime", "ftui-runtime/native-backend"]
 crossterm = ["runtime", "ftui-core/crossterm", "ftui-runtime/crossterm-compat"]
+# Load/save keymaps (`ftui::prelude::KeyMap`) as TOML/JSON files.
+serde = ["ftui-core/serde"]
 
 [lints]
 workspace = true

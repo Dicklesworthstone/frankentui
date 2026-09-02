@@ -1097,7 +1097,7 @@ The `Keybinding` module supports:
 - **Chord sequences** (`g g`, `Ctrl+x Ctrl+s`) with configurable timeout
 - **Context-sensitive activation**: bindings active only in specific modes/focus states
 - **Conflict detection**: warns when bindings shadow each other
-- **Serialization**: load/save binding maps for user customization (planned; the map types are plain data, but no TOML/JSON round-trip ships yet)
+- **Serialization**: load/save binding maps for user customization (`ftui-core` feature `serde`, `ftui` feature `serde`): `KeyMap<A>` serializes as a file with chords as text, contexts by name and `chord_timeout_ms`, so `toml::from_str::<KeyMap<Msg>>(&text)` reads a hand-edited keymap and a bad chord is reported with its binding index
 
 **Where it runs:** `ftui_core::keybinding::{KeyCombo, Chord, KeyMap, KeyDispatcher}` (also in `ftui::prelude`). `KeyMap::bind(Chord::parse("g g")?, Msg::GoTop)` and `bind_in(chord, action, Priority::Widget, Some(ctx))` declare bindings; `KeyMap::conflicts()` returns the shadow/prefix/duplicate report with one warning line per item; `KeyDispatcher::feed(&key_event, now)` and `tick(now)` return `Dispatch::{Action, Pending, Expired, Unbound, Esc}`. Resolution order: an active-context binding beats a context-free one, then higher priority, then the most recent binding. A key that is both bound alone and a chord prefix (`g` with `g g`) waits for the chord timeout (1 s default, 200 ms to 5 s) or a non-extending key, then fires; single-key shortcuts are never swallowed. `Esc` and `Esc Esc` go through the same 250 ms `SequenceDetector` window the rest of the runtime uses. No shipped app is routed through a `KeyMap` yet (the showcase and pane keymap still match keys directly).
 

@@ -1284,9 +1284,11 @@ impl fmt::Display for Chord {
 }
 
 /// Binding priority level; higher wins for the same chord.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Priority {
     /// Application-wide default.
+    #[default]
     Global = 0,
     /// Active when the app is in a particular mode.
     Mode = 1,
@@ -1960,6 +1962,156 @@ impl<A: Clone> KeyDispatcher<A> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Serialization (feature `serde`): human-editable keymap files
+// ---------------------------------------------------------------------------
+
+/// On-disk shape of a [`KeyMap`] (feature `serde`): chords as text, contexts
+/// by name, the chord timeout in milliseconds. Esc timing is not part of the
+/// file; it follows [`SequenceConfig`] (defaults and `FTUI_DISABLE_ESC_SEQ`).
+///
+/// ```toml
+/// chord_timeout_ms = 750
+///
+/// [[bindings]]
+/// chord = "Ctrl+x Ctrl+s"
+/// action = "Save"
+/// priority = "Mode"
+/// label = "save"
+///
+/// [[bindings]]
+/// chord = "Enter"
+/// action = "Newline"
+/// priority = "Widget"
+/// context = "editor"
+/// ```
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KeyMapFile<A> {
+    /// Chord timeout in milliseconds (clamped to `200..=5000` on load).
+    #[serde(default = "default_chord_timeout_ms")]
+    pub chord_timeout_ms: u64,
+    /// Bindings in bind order.
+    #[serde(default = "Vec::new")]
+    pub bindings: Vec<BindingFile<A>>,
+}
+
+#[cfg(feature = "serde")]
+fn default_chord_timeout_ms() -> u64 {
+    DEFAULT_CHORD_TIMEOUT_MS
+}
+
+/// One binding in a [`KeyMapFile`].
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BindingFile<A> {
+    /// Chord text, e.g. `"g g"` or `"Ctrl+x Ctrl+s"`.
+    pub chord: String,
+    /// The action (any serde type; usually a unit-variant enum).
+    pub action: A,
+    /// Priority level (default `Global`).
+    #[serde(default)]
+    pub priority: Priority,
+    /// Context name (default: none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Help label (default: none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Why a [`KeyMapFile`] could not become a [`KeyMap`].
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyMapFileError {
+    /// A binding's chord text did not parse.
+    Chord {
+        /// Index of the binding in the file.
+        index: usize,
+        /// The offending chord text.
+        chord: String,
+        /// Parse error.
+        source: KeyParseError,
+    },
+}
+
+#[cfg(feature = "serde")]
+impl fmt::Display for KeyMapFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Chord {
+                index,
+                chord,
+                source,
+            } => write!(f, "binding {index} (`{chord}`): {source}"),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl std::error::Error for KeyMapFileError {}
+
+#[cfg(feature = "serde")]
+impl<A: Clone> KeyMap<A> {
+    /// The file representation (contexts by name, chords as text).
+    #[must_use]
+    pub fn to_file(&self) -> KeyMapFile<A> {
+        KeyMapFile {
+            chord_timeout_ms: self.config.chord_timeout.as_millis() as u64,
+            bindings: self
+                .bindings
+                .iter()
+                .map(|binding| BindingFile {
+                    chord: binding.chord.to_string(),
+                    action: binding.action.clone(),
+                    priority: binding.priority,
+                    context: binding
+                        .context
+                        .and_then(|id| self.context_name(id))
+                        .map(str::to_string),
+                    label: binding.label.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Build a map from its file representation, interning context names and
+    /// parsing chords; a bad chord names the offending binding.
+    pub fn from_file(file: KeyMapFile<A>) -> Result<Self, KeyMapFileError> {
+        let config = KeyMapConfig::default()
+            .with_chord_timeout(Duration::from_millis(file.chord_timeout_ms));
+        let mut map = Self::with_config(config);
+        for (index, entry) in file.bindings.into_iter().enumerate() {
+            let chord = Chord::parse(&entry.chord).map_err(|source| KeyMapFileError::Chord {
+                index,
+                chord: entry.chord.clone(),
+                source,
+            })?;
+            let context = entry.context.as_deref().map(|name| map.context(name));
+            let id = map.bind_in(chord, entry.action, entry.priority, context);
+            if let Some(label) = entry.label {
+                map.set_label(id, label);
+            }
+        }
+        Ok(map)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<A: Clone + serde::Serialize> serde::Serialize for KeyMap<A> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_file().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, A: Clone + serde::Deserialize<'de>> serde::Deserialize<'de> for KeyMap<A> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let file = KeyMapFile::<A>::deserialize(deserializer)?;
+        Self::from_file(file).map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod keymap_tests {
     use super::*;
@@ -2347,6 +2499,75 @@ mod keymap_tests {
             plain.tick(t0 + ms(300)),
             vec![Dispatch::Esc(SequenceOutput::Esc)]
         );
+    }
+
+    /// A map round-trips through TOML and JSON with chords as text, contexts
+    /// by name and the timeout in milliseconds; a bad hand-written chord is
+    /// reported with its binding index.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn keymap_round_trips_through_toml_and_json() {
+        #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        enum Action {
+            Quit,
+            Save,
+            Newline,
+        }
+
+        let mut map = KeyMap::with_config(KeyMapConfig::default().with_chord_timeout(ms(750)));
+        let editor = map.context("editor");
+        let quit = map.bind(chord("q"), Action::Quit);
+        map.set_label(quit, "quit");
+        map.bind_in(chord("Ctrl+x Ctrl+s"), Action::Save, Priority::Mode, None);
+        map.bind_in(
+            chord("Enter"),
+            Action::Newline,
+            Priority::Widget,
+            Some(editor),
+        );
+
+        let text = toml::to_string(&map).expect("serialize to TOML");
+        assert!(text.contains("chord_timeout_ms = 750"), "{text}");
+        assert!(text.contains("chord = \"Ctrl+x Ctrl+s\""), "{text}");
+        assert!(text.contains("context = \"editor\""), "{text}");
+        assert!(text.contains("label = \"quit\""), "{text}");
+
+        let back: KeyMap<Action> = toml::from_str(&text).expect("parse TOML");
+        assert_eq!(back.config().chord_timeout, ms(750));
+        assert_eq!(back.len(), 3);
+        assert_eq!(back.bindings()[0].label.as_deref(), Some("quit"));
+        assert_eq!(back.bindings()[1].priority, Priority::Mode);
+        assert_eq!(back.bindings()[1].chord, chord("Ctrl+x Ctrl+s"));
+        let editor_back = back.bindings()[2].context.expect("context restored");
+        assert_eq!(back.context_name(editor_back), Some("editor"));
+        assert_eq!(
+            back.lookup(&chord("Enter"), &[editor_back])
+                .exact
+                .map(|b| &b.action),
+            Some(&Action::Newline)
+        );
+        assert!(
+            back.lookup(&chord("Enter"), &[]).is_none(),
+            "the context binding stays inactive outside its context"
+        );
+
+        let json = serde_json::to_string(&map).expect("serialize to JSON");
+        let back_json: KeyMap<Action> = serde_json::from_str(&json).expect("parse JSON");
+        assert_eq!(back_json.len(), 3);
+        assert_eq!(back_json.bindings()[2].action, Action::Newline);
+
+        let bad =
+            "chord_timeout_ms = 500\n\n[[bindings]]\nchord = \"Hyper+q\"\naction = \"Quit\"\n";
+        let err = toml::from_str::<KeyMap<Action>>(bad)
+            .expect_err("bad chord must fail")
+            .to_string();
+        assert!(err.contains("binding 0") && err.contains("Hyper"), "{err}");
+
+        let minimal: KeyMap<Action> =
+            toml::from_str("[[bindings]]\nchord = \"q\"\naction = \"Quit\"\n")
+                .expect("defaults fill in");
+        assert_eq!(minimal.config().chord_timeout, ms(DEFAULT_CHORD_TIMEOUT_MS));
+        assert_eq!(minimal.bindings()[0].priority, Priority::Global);
     }
 
     fn arb_key() -> impl Strategy<Value = KeyEvent> {
