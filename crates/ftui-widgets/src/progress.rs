@@ -1436,4 +1436,113 @@ mod tests {
         let dbg = format!("{:?}", bar);
         assert!(dbg.contains("MiniBar"));
     }
+
+    mod indeterminate_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Render `pb` to a `width`x1 frame and return, for each column, whether
+        /// its background is `bg` (i.e. it is a gauge-filled cell).
+        fn gauge_cols(pb: &ProgressBar, width: u16, bg: PackedRgba) -> Vec<bool> {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(width, 1, &mut pool);
+            Widget::render(pb, Rect::new(0, 0, width, 1), &mut frame);
+            (0..width).map(|x| cell_at(&frame, x, 0).bg == bg).collect()
+        }
+
+        #[test]
+        fn indeterminate_marquee_wraps() {
+            // width 40, seg = 40/5 = 8, period = 48.
+            assert_eq!(ProgressBar::marquee_span(40, 0), Some((0, 0)));
+            assert_eq!(ProgressBar::marquee_span(40, 3), Some((0, 3)));
+            assert_eq!(ProgressBar::marquee_span(40, 7), Some((0, 7)));
+            assert_eq!(ProgressBar::marquee_span(40, 8), Some((0, 8)));
+            assert_eq!(ProgressBar::marquee_span(40, 20), Some((12, 20)));
+            assert_eq!(ProgressBar::marquee_span(40, 47), Some((39, 40)));
+            // Wraps at inner_width + seg = 48.
+            assert_eq!(ProgressBar::marquee_span(40, 48), Some((0, 0)));
+            assert_eq!(
+                ProgressBar::marquee_span(40, 48 + 8),
+                ProgressBar::marquee_span(40, 8)
+            );
+        }
+
+        #[test]
+        fn indeterminate_width_one_and_zero() {
+            // Zero width has no span.
+            assert_eq!(ProgressBar::marquee_span(0, 5), None);
+            // Width 1 (seg clamps to 3) stays inside [0, 1] for every phase.
+            for phase in 0..10u64 {
+                let (start, end) = ProgressBar::marquee_span(1, phase).expect("width 1");
+                assert!(start <= end && end <= 1, "phase {phase}: {start}..{end}");
+            }
+            // Rendering width 1 must not panic.
+            let pb = ProgressBar::new()
+                .indeterminate(3)
+                .gauge_style(Style::new().bg(PackedRgba::BLUE));
+            let _ = gauge_cols(&pb, 1, PackedRgba::BLUE);
+        }
+
+        #[test]
+        fn determinate_unchanged_by_mode_default() {
+            let pb = ProgressBar::new()
+                .ratio(0.5)
+                .gauge_style(Style::new().bg(PackedRgba::BLUE));
+            assert!(!pb.is_indeterminate());
+            let cols = gauge_cols(&pb, 40, PackedRgba::BLUE);
+            // 0.5 * 40 = 20 cells filled from the left, exactly as before.
+            assert!(cols[..20].iter().all(|&f| f), "left half filled");
+            assert!(cols[20..].iter().all(|&f| !f), "right half empty");
+        }
+
+        #[test]
+        fn indeterminate_render_highlights_marquee() {
+            let pb = ProgressBar::new()
+                .indeterminate(8)
+                .gauge_style(Style::new().bg(PackedRgba::BLUE));
+            assert!(pb.is_indeterminate());
+            // phase 8 -> span (0, 8): cols 0..8 highlighted, the rest not.
+            let cols = gauge_cols(&pb, 40, PackedRgba::BLUE);
+            assert!(cols[..8].iter().all(|&f| f), "marquee segment filled");
+            assert!(cols[8..].iter().all(|&f| !f), "rest of bar empty");
+        }
+
+        #[test]
+        fn indeterminate_ignores_ratio() {
+            // The marquee is identical whatever the ratio is set to.
+            let high = ProgressBar::new()
+                .indeterminate(8)
+                .ratio(0.9)
+                .gauge_style(Style::new().bg(PackedRgba::BLUE));
+            let low = ProgressBar::new()
+                .indeterminate(8)
+                .ratio(0.1)
+                .gauge_style(Style::new().bg(PackedRgba::BLUE));
+            assert_eq!(
+                gauge_cols(&high, 40, PackedRgba::BLUE),
+                gauge_cols(&low, 40, PackedRgba::BLUE)
+            );
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            /// The marquee span is `None` iff the width is 0; otherwise it is a
+            /// non-empty-to-empty range clamped inside the bar and no wider than
+            /// the segment.
+            #[test]
+            fn marquee_span_always_inside_area(width in 0u16..=200, phase in any::<u64>()) {
+                match ProgressBar::marquee_span(width, phase) {
+                    None => prop_assert_eq!(width, 0),
+                    Some((start, end)) => {
+                        prop_assert_ne!(width, 0);
+                        prop_assert!(start <= end);
+                        prop_assert!(end <= width);
+                        let seg = (u64::from(width) / 5).max(3);
+                        prop_assert!(u64::from(end - start) <= seg);
+                    }
+                }
+            }
+        }
+    }
 }
