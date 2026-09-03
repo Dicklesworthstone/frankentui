@@ -5,6 +5,8 @@
 //! A single-line text input field with cursor management, scrolling, selection,
 //! word-level operations, and styling. Grapheme-cluster aware for correct Unicode handling.
 
+use std::collections::VecDeque;
+
 use ftui_core::event::{Event, ImeEvent, ImePhase, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, CellContent};
@@ -47,6 +49,143 @@ pub struct TextInput {
     selection_style: Style,
     /// Whether the input is focused (controls cursor output).
     focused: bool,
+    /// Optional command-line style entry recall (see [`InputHistory`]).
+    ///
+    /// This is entry recall — the shell-style Up/Down list of submitted values
+    /// — and is distinct from edit undo/redo, which lives on
+    /// [`create_text_edit_command`](TextInput::create_text_edit_command) +
+    /// [`ftui_runtime::undo::HistoryManager`]. It is `None` until
+    /// [`with_history`](TextInput::with_history) opts in.
+    history: Option<InputHistory>,
+}
+
+/// A bounded, command-line style entry-recall buffer for [`TextInput`].
+///
+/// This is the shell "type a command, press Enter, later press Up to get it
+/// back" facility, deliberately *not* built on the runtime's undo
+/// [`HistoryManager`](ftui_runtime::undo::HistoryManager): recall is a list of
+/// submitted strings with a single recall cursor, whereas undo is a stack of
+/// reversible edit commands. The two are complementary — undo walks the edits
+/// within one line, recall walks between previously submitted lines.
+///
+/// Semantics match a typical shell with `ignoredups`:
+/// - `push` records a non-empty value, skipping a run of an identical value,
+///   evicting the oldest once capacity is exceeded, and ending any recall.
+/// - `recall_older` (Up) stores the in-progress draft on first use, then walks
+///   toward older entries, stopping at the oldest.
+/// - `recall_newer` (Down) walks toward newer entries and, once past the
+///   newest, restores the saved draft and ends recall.
+/// - Editing the value ends recall (the edited text becomes the new draft).
+#[derive(Debug, Clone)]
+pub struct InputHistory {
+    /// Submitted values, oldest at the front, newest at the back.
+    entries: VecDeque<String>,
+    /// Maximum retained entries (at least 1).
+    cap: usize,
+    /// Index into `entries` while recalling; `None` when not recalling.
+    cursor: Option<usize>,
+    /// The in-progress line saved when recall began, restored on Down past the
+    /// newest entry.
+    draft: Option<String>,
+}
+
+impl InputHistory {
+    /// A new empty history retaining up to `capacity` entries (clamped to at
+    /// least 1).
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            cap: capacity.max(1),
+            cursor: None,
+            draft: None,
+        }
+    }
+
+    /// Record a submitted value. Empty values and a value equal to the most
+    /// recent entry are not stored (`ignoredups`); the oldest entry is evicted
+    /// once capacity is exceeded. Either way, any active recall ends.
+    pub fn push(&mut self, value: String) {
+        if !value.is_empty() && self.entries.back() != Some(&value) {
+            self.entries.push_back(value);
+            while self.entries.len() > self.cap {
+                self.entries.pop_front();
+            }
+        }
+        self.cursor = None;
+        self.draft = None;
+    }
+
+    /// Recall the previous (older) entry, saving `current` as the draft on the
+    /// first step. Returns the entry to display, or `None` when there is
+    /// nothing to recall. Stops at the oldest entry.
+    pub fn recall_older(&mut self, current: &str) -> Option<String> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        match self.cursor {
+            None => {
+                self.draft = Some(current.to_string());
+                self.cursor = Some(self.entries.len() - 1);
+            }
+            Some(0) => {}
+            Some(i) => self.cursor = Some(i - 1),
+        }
+        self.cursor.and_then(|i| self.entries.get(i)).cloned()
+    }
+
+    /// Recall the next (newer) entry. Once past the newest entry, restores the
+    /// saved draft and ends recall. Returns `None` when no recall is active.
+    pub fn recall_newer(&mut self) -> Option<String> {
+        match self.cursor {
+            None => None,
+            Some(i) if i + 1 < self.entries.len() => {
+                self.cursor = Some(i + 1);
+                self.entries.get(i + 1).cloned()
+            }
+            Some(_) => {
+                self.cursor = None;
+                self.draft.take()
+            }
+        }
+    }
+
+    /// End any active recall without changing the entries. Called when the
+    /// value is edited: the edited text becomes the new draft on the next Up.
+    fn note_edit(&mut self) {
+        self.cursor = None;
+        self.draft = None;
+    }
+
+    /// The retained entries, oldest first.
+    pub fn entries(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().map(String::as_str)
+    }
+
+    /// Number of retained entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether no entries are retained.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Drop all entries and end any recall.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.cursor = None;
+        self.draft = None;
+    }
+
+    /// The maximum number of retained entries.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.cap
+    }
 }
 
 impl TextInput {
@@ -84,6 +223,21 @@ impl TextInput {
     #[must_use]
     pub fn with_max_length(mut self, max: usize) -> Self {
         self.max_length = Some(max);
+        self
+    }
+
+    /// Enable command-line style entry recall with the given capacity (builder).
+    ///
+    /// With history enabled the widget records the value on `Enter` and recalls
+    /// previous entries with `Up`/`Down` (see [`InputHistory`]). This is entry
+    /// recall, separate from edit undo/redo
+    /// ([`create_text_edit_command`](TextInput::create_text_edit_command) +
+    /// [`ftui_runtime::undo::HistoryManager`]). Recall state is session-only and
+    /// is deliberately not part of [`TextInputSnapshot`]; a consumer that wants
+    /// persistent history stores [`history`](TextInput::history) itself.
+    #[must_use]
+    pub fn with_history(mut self, capacity: usize) -> Self {
+        self.history = Some(InputHistory::new(capacity));
         self
     }
 
@@ -161,6 +315,74 @@ impl TextInput {
     /// Set focus state.
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    /// Record the current value in the entry-recall history, if enabled.
+    ///
+    /// This is what `Enter` does automatically when history is enabled; it is
+    /// also exposed so a consumer with its own submit key can record entries.
+    /// Empty values and a value equal to the most recent entry are skipped
+    /// (`ignoredups`), and any active recall ends.
+    pub fn push_history(&mut self) {
+        let value = self.value.clone();
+        if let Some(history) = self.history.as_mut() {
+            history.push(value);
+        }
+    }
+
+    /// The recorded entry-recall history, oldest first (empty if history is not
+    /// enabled). This is entry recall, not edit undo/redo.
+    pub fn history(&self) -> impl Iterator<Item = &str> {
+        self.history.iter().flat_map(InputHistory::entries)
+    }
+
+    /// Drop all recorded entry-recall history (no-op if not enabled).
+    pub fn clear_history(&mut self) {
+        if let Some(history) = self.history.as_mut() {
+            history.clear();
+        }
+    }
+
+    /// The entry-recall history capacity, or `None` if history is not enabled.
+    #[must_use]
+    pub fn history_capacity(&self) -> Option<usize> {
+        self.history.as_ref().map(InputHistory::capacity)
+    }
+
+    /// Recall the previous (older) history entry into the value. Returns whether
+    /// the value changed (so a parent keeps its own Up handling when recall is
+    /// already at the oldest entry).
+    fn recall_history_older(&mut self) -> bool {
+        let current = self.value.clone();
+        match self.history.as_mut().and_then(|h| h.recall_older(&current)) {
+            Some(recalled) if recalled != current => {
+                self.set_value_from_recall(recalled);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Recall the next (newer) history entry, or the saved draft once past the
+    /// newest, into the value. Returns whether the value changed.
+    fn recall_history_newer(&mut self) -> bool {
+        let current = self.value.clone();
+        match self.history.as_mut().and_then(InputHistory::recall_newer) {
+            Some(recalled) if recalled != current => {
+                self.set_value_from_recall(recalled);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Replace the value from a recall without touching the history state (so a
+    /// recall does not count as an edit that ends recall).
+    fn set_value_from_recall(&mut self, value: String) {
+        self.value = value;
+        self.cursor = self.grapheme_count();
+        self.scroll_cells.set(0);
+        self.selection_anchor = None;
     }
 
     /// Get the cursor screen position relative to a render area.
@@ -325,7 +547,33 @@ impl TextInput {
         let ctrl = key.modifiers.contains(Modifiers::CTRL);
         let shift = key.modifiers.contains(Modifiers::SHIFT);
 
-        match key.code {
+        // Command-line style entry recall. Only plain Up/Down/Enter are claimed,
+        // and only when history is enabled, so parents keep their own Up/Down
+        // (e.g. list navigation) whenever recall does not apply. Up/Down return
+        // `true` only when the value actually changes.
+        if self.history.is_some() && !ctrl && !shift {
+            match key.code {
+                KeyCode::Up => return self.recall_history_older(),
+                KeyCode::Down => return self.recall_history_newer(),
+                KeyCode::Enter => {
+                    // Enter records the entry but does not itself change the
+                    // value; the parent keeps whatever submit semantics it had.
+                    self.push_history();
+                    return false;
+                }
+                _ => {}
+            }
+        }
+
+        // Snapshot the value so a genuine edit (not a cursor move) can end an
+        // active recall; only taken when history is enabled.
+        let value_before = if self.history.is_some() {
+            Some(self.value.clone())
+        } else {
+            None
+        };
+
+        let changed = match key.code {
             KeyCode::Char(c) if !ctrl => {
                 self.insert_char(c);
                 true
@@ -400,7 +648,18 @@ impl TextInput {
                 true
             }
             _ => false,
+        };
+
+        // A genuine edit (value changed, not a cursor move) ends any active
+        // recall; the edited text becomes the new draft on the next Up.
+        if let Some(before) = value_before
+            && self.value != before
+            && let Some(history) = self.history.as_mut()
+        {
+            history.note_edit();
         }
+
+        changed
     }
 
     #[cfg(feature = "tracing")]
@@ -1192,6 +1451,12 @@ impl ftui_a11y::Accessible for TextInput {
 // ============================================================================
 
 /// Snapshot of TextInput state for undo.
+///
+/// This captures the editable state (value, cursor, selection). It deliberately
+/// does **not** include the entry-recall [`InputHistory`]: recall entries are
+/// session state, not per-edit widget state, so undo/redo never rewinds the
+/// recall list. A consumer that wants persistent recall stores
+/// [`TextInput::history`] itself.
 #[derive(Debug, Clone)]
 pub struct TextInputSnapshot {
     value: String,
@@ -2408,5 +2673,204 @@ mod scroll_edge_tests {
         assert_eq!(input.value(), "abc");
         assert_eq!(input.cursor(), 2);
         assert_eq!(input.selection_anchor, Some(1));
+    }
+
+    mod history_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn key(code: KeyCode) -> Event {
+            Event::Key(KeyEvent::new(code))
+        }
+
+        fn typ(input: &mut TextInput, s: &str) {
+            for c in s.chars() {
+                input.handle_event(&key(KeyCode::Char(c)));
+            }
+        }
+
+        /// Submit the current value as a prompt would: Enter records it, then
+        /// the owner clears the field for the next entry.
+        fn submit_and_clear(input: &mut TextInput) {
+            input.handle_event(&key(KeyCode::Enter));
+            input.clear();
+        }
+
+        fn up(input: &mut TextInput) -> bool {
+            input.handle_event(&key(KeyCode::Up))
+        }
+
+        fn down(input: &mut TextInput) -> bool {
+            input.handle_event(&key(KeyCode::Down))
+        }
+
+        #[test]
+        fn up_recalls_previous_entry() {
+            let mut input = TextInput::new().with_history(10);
+            typ(&mut input, "one");
+            submit_and_clear(&mut input);
+            typ(&mut input, "two");
+            submit_and_clear(&mut input);
+
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "two");
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "one");
+            // At the oldest entry Up reports "unchanged" so a parent keeps its
+            // own Up handling.
+            assert!(!up(&mut input));
+            assert_eq!(input.value(), "one");
+            assert_eq!(input.history().collect::<Vec<_>>(), vec!["one", "two"]);
+        }
+
+        #[test]
+        fn down_returns_to_draft() {
+            let mut input = TextInput::new().with_history(10);
+            typ(&mut input, "one");
+            submit_and_clear(&mut input);
+            typ(&mut input, "two");
+            submit_and_clear(&mut input);
+            // An unsent draft in progress when recall starts.
+            typ(&mut input, "dr");
+
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "two");
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "one");
+            assert!(down(&mut input));
+            assert_eq!(input.value(), "two");
+            assert!(down(&mut input));
+            assert_eq!(
+                input.value(),
+                "dr",
+                "past the newest entry the draft returns"
+            );
+            // Past the draft there is nothing newer.
+            assert!(!down(&mut input));
+            assert_eq!(input.value(), "dr");
+        }
+
+        #[test]
+        fn history_dedups_consecutive() {
+            let mut input = TextInput::new().with_history(10);
+            for value in ["a", "a", "b", "a"] {
+                input.set_value(value);
+                input.push_history();
+            }
+            // Consecutive duplicates collapse; a non-adjacent repeat is kept.
+            assert_eq!(input.history().collect::<Vec<_>>(), vec!["a", "b", "a"]);
+        }
+
+        #[test]
+        fn history_caps_at_capacity() {
+            let mut input = TextInput::new().with_history(3);
+            for value in ["a", "b", "c", "d", "e"] {
+                input.set_value(value);
+                input.push_history();
+            }
+            assert_eq!(input.history_capacity(), Some(3));
+            assert_eq!(input.history().collect::<Vec<_>>(), vec!["c", "d", "e"]);
+        }
+
+        #[test]
+        fn submit_resets_cursor() {
+            let mut input = TextInput::new().with_history(10);
+            typ(&mut input, "aa");
+            submit_and_clear(&mut input);
+            typ(&mut input, "bb");
+            submit_and_clear(&mut input);
+
+            // Recall back to the oldest entry.
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "bb");
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "aa");
+
+            // Submitting the recalled "aa" records it (its predecessor is "bb",
+            // so it is not a consecutive duplicate) and ends recall, leaving
+            // entries [aa, bb, aa]. The next Up must restart from the newest.
+            submit_and_clear(&mut input);
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "aa", "recall restarts at the newest entry");
+            // A second Up steps to the entry before the newest, proving the
+            // cursor was reset to the end rather than left at the oldest.
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "bb");
+        }
+
+        #[test]
+        fn typing_after_recall_clears_cursor() {
+            let mut input = TextInput::new().with_history(10);
+            typ(&mut input, "one");
+            submit_and_clear(&mut input);
+            typ(&mut input, "two");
+            submit_and_clear(&mut input);
+
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "two");
+            // Editing the recalled text ends recall; the edited text is the new
+            // draft.
+            typ(&mut input, "x");
+            assert_eq!(input.value(), "twox");
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "two", "Up restarts recall from the newest");
+            assert!(down(&mut input));
+            assert_eq!(
+                input.value(),
+                "twox",
+                "Down past the newest restores the edited draft"
+            );
+        }
+
+        #[test]
+        fn empty_submit_not_recorded() {
+            let mut input = TextInput::new().with_history(10);
+            // Enter on an empty field records nothing.
+            input.handle_event(&key(KeyCode::Enter));
+            typ(&mut input, "x");
+            submit_and_clear(&mut input);
+            assert_eq!(input.history().collect::<Vec<_>>(), vec!["x"]);
+        }
+
+        #[test]
+        fn no_history_leaves_arrows_for_the_parent() {
+            // Without with_history, Up/Down/Enter are not claimed (return false),
+            // so a parent keeps list navigation and submit handling.
+            let mut input = TextInput::new();
+            assert!(!input.handle_event(&key(KeyCode::Up)));
+            assert!(!input.handle_event(&key(KeyCode::Down)));
+            assert!(!input.handle_event(&key(KeyCode::Enter)));
+            assert_eq!(input.history_capacity(), None);
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            /// Arbitrary Up/Down sequences never panic, and pressing Down enough
+            /// times after any run of Ups always lands back on the unsent draft.
+            #[test]
+            fn updown_sequences_never_panic_and_end_in_draft(
+                entries in prop::collection::vec("[a-c]{1,3}", 0..8),
+                draft in "[a-c]{0,3}",
+                ups in 0usize..12,
+            ) {
+                let mut input = TextInput::new().with_history(16);
+                for entry in &entries {
+                    input.set_value(entry.clone());
+                    input.push_history();
+                }
+                input.clear();
+                input.set_value(draft.clone());
+
+                for _ in 0..ups {
+                    input.handle_event(&key(KeyCode::Up));
+                }
+                // Exhaust recall in the newer direction.
+                for _ in 0..(ups + entries.len() + 2) {
+                    input.handle_event(&key(KeyCode::Down));
+                }
+                prop_assert_eq!(input.value(), draft.as_str());
+            }
+        }
     }
 }

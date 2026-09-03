@@ -231,6 +231,7 @@ impl FormsInput {
         let search_input = TextInput::new()
             .with_placeholder("Search...")
             .with_style(Style::new().fg(theme::fg::PRIMARY))
+            .with_history(50)
             .with_focused(false);
 
         let password_input = TextInput::new()
@@ -1014,6 +1015,23 @@ impl Screen for FormsInput {
             self.update_status();
             return Cmd::None;
         }
+        // Command-line style recall in the search field: let the focused input
+        // claim plain Up/Down first. It consumes them only when it actually
+        // recalls an entry (returns `true`), so with empty history the keys
+        // fall through to field navigation below, unchanged.
+        if matches!(self.focus, FocusPanel::SearchInput)
+            && let Event::Key(KeyEvent {
+                code: KeyCode::Up | KeyCode::Down,
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            }) = event
+            && modifiers.is_empty()
+            && self.search_input.handle_event(event)
+        {
+            self.update_status();
+            return Cmd::None;
+        }
         if let Event::Key(KeyEvent {
             code: KeyCode::Down,
             modifiers,
@@ -1277,6 +1295,34 @@ mod tests {
         assert_eq!(screen.focus, FocusPanel::SearchInput);
         screen.update(&alt_press(KeyCode::Up));
         assert_eq!(screen.focus, FocusPanel::Form);
+    }
+
+    #[test]
+    fn search_input_recalls_history_with_up_down() {
+        // The search field opts into command-line style recall; this drives it
+        // through the screen's real event routing to prove recall is reachable
+        // from the production path.
+        let mut screen = FormsInput::new();
+        screen.update(&ctrl_press(KeyCode::Right));
+        assert_eq!(screen.focus, FocusPanel::SearchInput);
+
+        for c in "hello".chars() {
+            screen.update(&press(KeyCode::Char(c)));
+        }
+        screen.update(&press(KeyCode::Enter));
+        screen.search_input.clear();
+        for c in "world".chars() {
+            screen.update(&press(KeyCode::Char(c)));
+        }
+        screen.update(&press(KeyCode::Enter));
+        screen.search_input.clear();
+
+        screen.update(&press(KeyCode::Up));
+        assert_eq!(screen.search_input.value(), "world");
+        screen.update(&press(KeyCode::Up));
+        assert_eq!(screen.search_input.value(), "hello");
+        screen.update(&press(KeyCode::Down));
+        assert_eq!(screen.search_input.value(), "world");
     }
 
     #[test]
