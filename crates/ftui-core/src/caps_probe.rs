@@ -682,9 +682,15 @@ pub fn take_probe_leftover_input() -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Read complete responses from `reader` until one satisfies `is_reply` or
-/// `timeout` elapses. Responses that are not the awaited reply are user
-/// input and go to the leftover buffer.
+/// Read from `reader` until a complete terminal response satisfying
+/// `is_reply` arrives or `timeout` elapses.
+///
+/// Everything else is typed input and goes to the leftover buffer: bytes
+/// that precede the first ESC (a typed `q`), complete sequences that are
+/// not the reply (a mouse report, an arrow key), and an unterminated
+/// sequence that is cut short by a new introducer (a bare Esc key, a
+/// function-key report ending in `~`). The reply itself is returned with
+/// nothing removed.
 #[cfg(unix)]
 fn read_probe_reply<R: std::io::Read>(
     reader: &mut R,
@@ -692,35 +698,62 @@ fn read_probe_reply<R: std::io::Read>(
     is_reply: impl Fn(&[u8]) -> bool,
 ) -> Option<Vec<u8>> {
     let deadline = Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        let chunk = read_nonblocking_probe_response(&mut *reader, remaining)?;
-        if let Some(start) = reply_start(&chunk, &is_reply) {
-            stash_probe_leftover(&chunk[..start]);
-            return Some(chunk[start..].to_vec());
-        }
-        stash_probe_leftover(&chunk);
-    }
-}
+    let mut buf: Vec<u8> = Vec::with_capacity(64);
+    let mut byte = [0u8; 1];
 
-/// Offset at which the awaited reply starts inside `chunk`: the chunk
-/// itself, or a suffix starting at a later ESC when user bytes preceded the
-/// reply in the same read.
-#[cfg(unix)]
-fn reply_start(chunk: &[u8], is_reply: &impl Fn(&[u8]) -> bool) -> Option<usize> {
-    if is_reply(chunk) {
-        return Some(0);
+    loop {
+        match reader.read(&mut byte) {
+            Ok(1) => {
+                buf.push(byte[0]);
+                // Bytes before the first ESC can never be part of a reply.
+                match buf.iter().position(|&b| b == 0x1b) {
+                    None => {
+                        stash_probe_leftover(&buf);
+                        buf.clear();
+                        continue;
+                    }
+                    Some(first_esc) if first_esc > 0 => {
+                        stash_probe_leftover(&buf[..first_esc]);
+                        buf.drain(..first_esc);
+                    }
+                    Some(_) => {}
+                }
+                // A new introducer (`ESC [`, `ESC ]`, `ESC P`) after an
+                // unterminated sequence ends that sequence: it was input.
+                let n = buf.len();
+                if n > 2 && buf[n - 2] == 0x1b && matches!(buf[n - 1], b'[' | b']' | b'P') {
+                    stash_probe_leftover(&buf[..n - 2]);
+                    buf.drain(..n - 2);
+                }
+                if is_response_complete(&buf) {
+                    if is_reply(&buf) {
+                        return Some(buf);
+                    }
+                    stash_probe_leftover(&buf);
+                    buf.clear();
+                } else if buf.len() >= MAX_RESPONSE_LEN {
+                    stash_probe_leftover(&buf);
+                    buf.clear();
+                }
+            }
+            Ok(0) => {
+                stash_probe_leftover(&buf);
+                return None;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    stash_probe_leftover(&buf);
+                    return None;
+                }
+                std::thread::sleep(TTY_READ_POLL);
+            }
+            Err(_) => {
+                stash_probe_leftover(&buf);
+                return None;
+            }
+            Ok(_) => unreachable!("single-byte probe buffer read should not overfill"),
+        }
     }
-    chunk
-        .iter()
-        .enumerate()
-        .skip(1)
-        .filter(|(_, byte)| **byte == 0x1b)
-        .map(|(idx, _)| idx)
-        .find(|&idx| is_reply(&chunk[idx..]))
 }
 
 /// Read the awaited reply from /dev/tty with a hard timeout.
@@ -741,42 +774,6 @@ fn read_tty_reply(timeout: Duration, is_reply: impl Fn(&[u8]) -> bool) -> Option
     read_probe_reply(&mut reader, timeout, is_reply)
 }
 
-#[cfg(unix)]
-fn read_nonblocking_probe_response<R: std::io::Read>(
-    mut reader: R,
-    timeout: Duration,
-) -> Option<Vec<u8>> {
-    let start = Instant::now();
-    let mut response = Vec::with_capacity(64);
-    let mut buf = [0u8; 1];
-
-    loop {
-        match reader.read(&mut buf) {
-            Ok(1) => {
-                response.push(buf[0]);
-                if is_response_complete(&response) {
-                    return Some(response);
-                }
-                if response.len() >= MAX_RESPONSE_LEN {
-                    return Some(response);
-                }
-            }
-            Ok(0) => {
-                return (!response.is_empty()).then_some(response);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() >= timeout {
-                    return None;
-                }
-                std::thread::sleep(TTY_READ_POLL);
-            }
-            Err(_) => {
-                return (!response.is_empty()).then_some(response);
-            }
-            Ok(_) => unreachable!("single-byte probe buffer read should not overfill"),
-        }
-    }
-}
 
 /// Check if a byte sequence represents a complete terminal response.
 ///
@@ -2358,8 +2355,9 @@ mod tests {
             .set_nonblocking(true)
             .expect("reader should be nonblocking");
 
+        let mut reader = reader;
         let start = Instant::now();
-        let result = read_nonblocking_probe_response(reader, Duration::from_millis(10));
+        let result = read_probe_reply(&mut reader, Duration::from_millis(10), |_| true);
         let elapsed = start.elapsed();
 
         assert_eq!(result, None);
@@ -2384,8 +2382,9 @@ mod tests {
                 .expect("writer should send probe response");
         });
 
-        let result =
-            read_nonblocking_probe_response(reader, Duration::from_millis(100)).expect("response");
+        let mut reader = reader;
+        let result = read_probe_reply(&mut reader, Duration::from_millis(100), |_| true)
+            .expect("response");
         writer_thread.join().expect("writer thread join");
 
         assert_eq!(result, b"\x1b[?1;2;4c");
