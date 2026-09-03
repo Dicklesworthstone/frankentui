@@ -1271,10 +1271,11 @@ impl WidgetGallery {
             theme::accent::SUCCESS,
         ];
 
+        // One row per determinate ratio plus a final indeterminate marquee bar.
+        let row_count = ratios.len() + 1;
         let bar_rows = Flex::vertical()
             .constraints(
-                ratios
-                    .iter()
+                (0..row_count)
                     .map(|_| Constraint::Fixed(1))
                     .collect::<Vec<_>>(),
             )
@@ -1292,6 +1293,17 @@ impl WidgetGallery {
                 .style(Style::new().fg(theme::fg::MUTED))
                 .gauge_style(Style::new().fg(color).bg(theme::alpha::SURFACE))
                 .render(bar_rows[i], frame);
+        }
+
+        // Indeterminate marquee driven by the screen tick, so it animates and
+        // the snapshot at a fixed tick is deterministic.
+        if let Some(&row) = bar_rows.get(ratios.len()) {
+            ProgressBar::new()
+                .indeterminate(self.tick_count)
+                .label("indeterminate")
+                .style(Style::new().fg(theme::fg::MUTED))
+                .gauge_style(Style::new().fg(theme::accent::INFO).bg(theme::alpha::SURFACE))
+                .render(row, frame);
         }
     }
 
