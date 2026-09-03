@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Once};
 
+use ftui_runtime::telemetry_schema;
+
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 
@@ -833,7 +835,11 @@ fn monotonic_counters_use_namespace() {
 #[test]
 fn events_inherit_parent_span_context() {
     let handle = with_captured_events(|| {
-        let span = tracing::info_span!("ftui.render.frame", width = 80u16, height = 24u16);
+        let span = tracing::info_span!(
+            telemetry_schema::span::RENDER_FRAME,
+            width = 80u16,
+            height = 24u16
+        );
         let _guard = span.enter();
 
         tracing::debug!(
@@ -847,7 +853,7 @@ fn events_inherit_parent_span_context() {
     assert_eq!(events.len(), 1);
     assert_eq!(
         events[0].parent_span_name.as_deref(),
-        Some("ftui.render.frame"),
+        Some(telemetry_schema::span::RENDER_FRAME),
         "Event emitted inside ftui.render.frame span should have it as parent"
     );
 }

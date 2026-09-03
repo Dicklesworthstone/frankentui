@@ -379,7 +379,7 @@ impl EProcessThrottle {
         .entered();
 
         tracing::debug!(
-            target: "ftui.eprocess",
+            target: crate::telemetry_schema::TARGET_EPROCESS,
             wealth_before = %wealth_before,
             wealth_after = %self.wealth,
             lambda = %self.lambda,
@@ -394,7 +394,7 @@ impl EProcessThrottle {
         if rejected {
             EPROCESS_REJECTIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
             tracing::info!(
-                target: "ftui.eprocess",
+                target: crate::telemetry_schema::TARGET_EPROCESS,
                 wealth = %self.wealth,
                 threshold = %self.threshold,
                 observation_count = self.observation_count,
@@ -405,7 +405,7 @@ impl EProcessThrottle {
 
         if forced_by_deadline && should_recompute {
             tracing::info!(
-                target: "ftui.eprocess",
+                target: crate::telemetry_schema::TARGET_EPROCESS,
                 deadline_ms = self.config.hard_deadline_ms,
                 observation_count = self.observation_count,
                 "hard deadline forced recompute"
@@ -1504,7 +1504,7 @@ mod tests {
             .iter()
             .filter(|e| {
                 e.level == tracing::Level::DEBUG
-                    && e.target == "ftui.eprocess"
+                    && e.target == crate::telemetry_schema::TARGET_EPROCESS
                     && e.fields.contains_key("wealth_before")
             })
             .collect();
@@ -1551,7 +1551,7 @@ mod tests {
             .iter()
             .filter(|e| {
                 e.level == tracing::Level::INFO
-                    && e.target == "ftui.eprocess"
+                    && e.target == crate::telemetry_schema::TARGET_EPROCESS
                     && e.fields.contains_key("wealth")
                     && e.fields.contains_key("threshold")
             })
@@ -1581,7 +1581,7 @@ mod tests {
             .iter()
             .filter(|e| {
                 e.level == tracing::Level::INFO
-                    && e.target == "ftui.eprocess"
+                    && e.target == crate::telemetry_schema::TARGET_EPROCESS
                     && e.fields.contains_key("deadline_ms")
             })
             .collect();
@@ -1644,7 +1644,7 @@ mod tests {
             .iter()
             .filter(|e| {
                 e.level == tracing::Level::DEBUG
-                    && e.target == "ftui.eprocess"
+                    && e.target == crate::telemetry_schema::TARGET_EPROCESS
                     && e.fields.contains_key("wealth_before")
             })
             .collect();

@@ -1162,7 +1162,7 @@ impl<W: Write> TerminalWriter<W> {
             region_bottom,
         };
         tracing::warn!(
-            target: "ftui.render.scroll_region",
+            target: crate::telemetry_schema::span::RENDER_SCROLL_REGION,
             from = inline_strategy_str(from),
             to = "overlay_redraw",
             reason = fallback.reason,
@@ -1322,7 +1322,7 @@ impl<W: Write> TerminalWriter<W> {
             None
         };
         let _span = info_span!(
-            "ftui.render.present",
+            crate::telemetry_schema::span::RENDER_PRESENT,
             mode = mode_str,
             width = buffer.width(),
             height = buffer.height(),
@@ -1445,7 +1445,7 @@ impl<W: Write> TerminalWriter<W> {
             None
         };
         let _span = info_span!(
-            "ftui.render.present",
+            crate::telemetry_schema::span::RENDER_PRESENT,
             mode = mode_str,
             width = buffer.width(),
             height = buffer.height(),
@@ -1971,7 +1971,8 @@ impl<W: Write> TerminalWriter<W> {
 
             // Activate scroll region if strategy calls for it
             {
-                let _span = debug_span!("ftui.render.scroll_region").entered();
+                let _span =
+                    debug_span!(crate::telemetry_schema::span::RENDER_SCROLL_REGION).entered();
                 if visible_height > 0 {
                     match self.inline_strategy {
                         InlineStrategy::ScrollRegion | InlineStrategy::Hybrid => {
@@ -2019,7 +2020,8 @@ impl<W: Write> TerminalWriter<W> {
                     None
                 };
                 let decision = {
-                    let _span = debug_span!("ftui.render.diff_compute").entered();
+                    let _span =
+                        debug_span!(crate::telemetry_schema::span::RENDER_DIFF_COMPUTE).entered();
                     self.decide_diff(buffer)
                 };
                 if let Some(start) = diff_start {
@@ -2029,7 +2031,7 @@ impl<W: Write> TerminalWriter<W> {
 
                 // Emit diff using Presenter
                 {
-                    let _span = debug_span!("ftui.render.emit").entered();
+                    let _span = debug_span!(crate::telemetry_schema::span::RENDER_EMIT).entered();
 
                     // Reset presenter state (cursor unknown) because we manually moved cursor/saved
                     // and apply viewport offset for inline positioning.
@@ -2147,7 +2149,7 @@ impl<W: Write> TerminalWriter<W> {
             None
         };
         let decision = {
-            let _span = debug_span!("ftui.render.diff_compute").entered();
+            let _span = debug_span!(crate::telemetry_schema::span::RENDER_DIFF_COMPUTE).entered();
             self.decide_diff(buffer)
         };
         let diff_us = diff_start
@@ -2176,7 +2178,7 @@ impl<W: Write> TerminalWriter<W> {
             self.set_cursor_visibility(false)?;
 
             let emit_stats = {
-                let _span = debug_span!("ftui.render.emit").entered();
+                let _span = debug_span!(crate::telemetry_schema::span::RENDER_EMIT).entered();
                 let presenter = self.presenter.as_mut().expect("presenter consumed");
 
                 // Reset presenter state (cursor and style) because we manually moved

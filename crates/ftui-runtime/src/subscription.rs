@@ -427,7 +427,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
 
         let signal_elapsed_us = start.elapsed().as_micros() as u64;
         tracing::trace!(
-            target: "ftui.runtime",
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             count,
             signal_elapsed_us,
             "subscription stop_all phase 1 (signal) complete"
@@ -448,7 +448,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
         let shutdown_elapsed_us = start.elapsed().as_micros() as u64;
         crate::effect_system::record_dynamics_shutdown(shutdown_elapsed_us, timed_out_count as u64);
         tracing::debug!(
-            target: "ftui.runtime",
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             count,
             panicked_count,
             timed_out_count,

@@ -828,43 +828,14 @@ impl BayesianEvidence {
 // This section defines the canonical event schema for FrankenTUI telemetry.
 // See `docs/spec/telemetry-events.md` for the full specification.
 
-/// Runtime phase span names (Elm/Bubbletea loop).
-pub mod spans {
-    /// Span for model initialization.
-    pub const PROGRAM_INIT: &str = "ftui.program.init";
-    /// Span for a single update cycle.
-    pub const PROGRAM_UPDATE: &str = "ftui.program.update";
-    /// Span for view rendering.
-    pub const PROGRAM_VIEW: &str = "ftui.program.view";
-    /// Span for subscription management.
-    pub const PROGRAM_SUBSCRIPTIONS: &str = "ftui.program.subscriptions";
+/// Runtime phase span names (Elm/Bubbletea loop): the canonical definitions
+/// live in [`crate::telemetry_schema::span`]; this path stays for the
+/// exporter's callers.
+pub use crate::telemetry_schema::span as spans;
 
-    /// Span for complete frame cycle.
-    pub const RENDER_FRAME: &str = "ftui.render.frame";
-    /// Span for buffer diff computation.
-    pub const RENDER_DIFF: &str = "ftui.render.diff";
-    /// Span for ANSI emission.
-    pub const RENDER_PRESENT: &str = "ftui.render.present";
-    /// Span for output flush.
-    pub const RENDER_FLUSH: &str = "ftui.render.flush";
-
-    /// Span for input event processing.
-    pub const INPUT_EVENT: &str = "ftui.input.event";
-    /// Span for macro playback.
-    pub const INPUT_MACRO: &str = "ftui.input.macro";
-}
-
-/// Decision event names (point-in-time auditable decisions).
-pub mod events {
-    /// Degradation level change event.
-    pub const DECISION_DEGRADATION: &str = "ftui.decision.degradation";
-    /// Capability fallback event.
-    pub const DECISION_FALLBACK: &str = "ftui.decision.fallback";
-    /// Resize handling decision event.
-    pub const DECISION_RESIZE: &str = "ftui.decision.resize";
-    /// Screen mode selection event.
-    pub const DECISION_SCREEN_MODE: &str = "ftui.decision.screen_mode";
-}
+/// Decision event names (point-in-time auditable decisions): the canonical
+/// definitions live in [`crate::telemetry_schema::decision`].
+pub use crate::telemetry_schema::decision as events;
 
 /// Common field names for telemetry spans/events.
 pub mod fields {
@@ -1407,10 +1378,10 @@ mod tests {
     #[test]
     fn test_event_names_follow_convention() {
         // All event names should start with "ftui.decision."
-        assert!(events::DECISION_DEGRADATION.starts_with("ftui.decision."));
-        assert!(events::DECISION_FALLBACK.starts_with("ftui.decision."));
-        assert!(events::DECISION_RESIZE.starts_with("ftui.decision."));
-        assert!(events::DECISION_SCREEN_MODE.starts_with("ftui.decision."));
+        assert!(events::DEGRADATION.starts_with("ftui.decision."));
+        assert!(events::FALLBACK.starts_with("ftui.decision."));
+        assert!(events::RESIZE.starts_with("ftui.decision."));
+        assert!(events::SCREEN_MODE.starts_with("ftui.decision."));
     }
 
     #[test]

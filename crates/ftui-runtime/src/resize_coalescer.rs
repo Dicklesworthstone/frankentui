@@ -2007,7 +2007,7 @@ impl TelemetryHooks {
         }
         if self.emit_tracing {
             tracing::debug!(
-                target: "ftui.decision.resize",
+                target: crate::telemetry_schema::TARGET_RESIZE,
                 from_regime = %from.as_str(),
                 to_regime = %to.as_str(),
                 "regime_change"
@@ -2029,7 +2029,7 @@ impl TelemetryHooks {
         let coalesce_ms = entry.coalesce_ms.unwrap_or(0.0);
 
         tracing::info!(
-            target: "ftui.decision.resize",
+            target: crate::telemetry_schema::TARGET_RESIZE,
             event_idx = entry.event_idx,
             elapsed_ms = entry.elapsed_ms,
             dt_ms = entry.dt_ms,

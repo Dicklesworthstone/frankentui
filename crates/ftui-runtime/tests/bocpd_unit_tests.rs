@@ -773,7 +773,7 @@ fn info_log_on_regime_transition() {
         .iter()
         .filter(|e| {
             e.level == tracing::Level::INFO
-                && e.target == "ftui.bocpd"
+                && e.target == ftui_runtime::telemetry_schema::TARGET_BOCPD
                 && e.message.contains("regime transition detected")
         })
         .collect();
@@ -783,7 +783,7 @@ fn info_log_on_regime_transition() {
         "Expected INFO log for regime transition; all events: {:?}",
         events
             .iter()
-            .filter(|e| e.target == "ftui.bocpd")
+            .filter(|e| e.target == ftui_runtime::telemetry_schema::TARGET_BOCPD)
             .map(|e| (&e.level, &e.message))
             .collect::<Vec<_>>()
     );
@@ -827,7 +827,7 @@ fn debug_log_for_posterior_updates() {
         .iter()
         .filter(|e| {
             e.level == tracing::Level::DEBUG
-                && e.target == "ftui.bocpd"
+                && e.target == ftui_runtime::telemetry_schema::TARGET_BOCPD
                 && e.fields.contains_key("p_burst")
         })
         .collect();
@@ -836,7 +836,10 @@ fn debug_log_for_posterior_updates() {
         !update_events.is_empty(),
         "Should have at least one DEBUG posterior update event with p_burst field; \
          total ftui.bocpd events: {}",
-        events.iter().filter(|e| e.target == "ftui.bocpd").count()
+        events
+            .iter()
+            .filter(|e| e.target == ftui_runtime::telemetry_schema::TARGET_BOCPD)
+            .count()
     );
 
     // Verify required fields on captured update events
@@ -867,7 +870,7 @@ fn debug_log_for_run_length_histogram() {
         .iter()
         .filter(|e| {
             e.level == tracing::Level::DEBUG
-                && e.target == "ftui.bocpd"
+                && e.target == ftui_runtime::telemetry_schema::TARGET_BOCPD
                 && e.message.contains("bocpd run length histogram")
         })
         .collect();
@@ -903,7 +906,7 @@ fn no_info_log_when_regime_stable() {
         .iter()
         .filter(|e| {
             e.level == tracing::Level::INFO
-                && e.target == "ftui.bocpd"
+                && e.target == ftui_runtime::telemetry_schema::TARGET_BOCPD
                 && e.message.contains("regime transition detected")
         })
         .collect();
@@ -1002,7 +1005,7 @@ fn no_transition_when_regime_stays_steady() {
         .iter()
         .filter(|e| {
             e.level == tracing::Level::INFO
-                && e.target == "ftui.bocpd"
+                && e.target == ftui_runtime::telemetry_schema::TARGET_BOCPD
                 && e.message.contains("regime transition detected")
         })
         .collect();

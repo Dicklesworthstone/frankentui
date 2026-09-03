@@ -17,6 +17,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Once};
 
+use ftui_runtime::telemetry_schema;
+
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 
@@ -460,7 +462,7 @@ fn simulate_full_render_cycle() {
     // Phase 1: Init
     {
         let init_span = tracing::info_span!(
-            "ftui.program.init",
+            telemetry_schema::span::PROGRAM_INIT,
             model_type = "TestModel",
             cmd_count = tracing::field::Empty
         );
@@ -472,7 +474,7 @@ fn simulate_full_render_cycle() {
     // Phase 2: Update cycle
     {
         let update_span = tracing::info_span!(
-            "ftui.program.update",
+            telemetry_schema::span::PROGRAM_UPDATE,
             msg_type = tracing::field::Empty,
             duration_us = tracing::field::Empty,
             cmd_type = tracing::field::Empty
@@ -487,7 +489,7 @@ fn simulate_full_render_cycle() {
     // Phase 3: Frame render
     {
         let frame_span = tracing::info_span!(
-            "ftui.render.frame",
+            telemetry_schema::span::RENDER_FRAME,
             width = tracing::field::Empty,
             height = tracing::field::Empty,
             duration_us = tracing::field::Empty
@@ -499,7 +501,7 @@ fn simulate_full_render_cycle() {
         // View rendering (child of frame)
         {
             let view_span = tracing::info_span!(
-                "ftui.program.view",
+                telemetry_schema::span::PROGRAM_VIEW,
                 duration_us = tracing::field::Empty,
                 widget_count = tracing::field::Empty
             );
@@ -512,7 +514,7 @@ fn simulate_full_render_cycle() {
         // Present (child of frame)
         {
             let present_span = tracing::info_span!(
-                "ftui.render.present",
+                telemetry_schema::span::RENDER_PRESENT,
                 bytes_written = tracing::field::Empty,
                 runs_count = tracing::field::Empty,
                 duration_us = tracing::field::Empty
@@ -529,19 +531,21 @@ fn simulate_full_render_cycle() {
 
                 // Scroll region (child of inline)
                 {
-                    let _scroll = tracing::info_span!("ftui.render.scroll_region").entered();
+                    let _scroll =
+                        tracing::info_span!(telemetry_schema::span::RENDER_SCROLL_REGION).entered();
                     tracing::trace!("scroll region applied");
                 }
 
                 // Diff compute (child of inline)
                 {
-                    let _diff = tracing::info_span!("ftui.render.diff_compute").entered();
+                    let _diff =
+                        tracing::info_span!(telemetry_schema::span::RENDER_DIFF_COMPUTE).entered();
                     tracing::trace!("diff computed");
                 }
 
                 // Emit (child of inline)
                 {
-                    let _emit = tracing::info_span!("ftui.render.emit").entered();
+                    let _emit = tracing::info_span!(telemetry_schema::span::RENDER_EMIT).entered();
                     tracing::trace!("ANSI emitted");
                 }
             }
@@ -553,7 +557,7 @@ fn simulate_full_render_cycle() {
     // Phase 4: Subscriptions
     {
         let subs_span = tracing::info_span!(
-            "ftui.program.subscriptions",
+            telemetry_schema::span::PROGRAM_SUBSCRIPTIONS,
             active_count = 2u64,
             started = 0u64,
             stopped = 0u64
@@ -696,16 +700,16 @@ fn full_render_cycle_produces_all_spans() {
     let (spans, _events) = with_pipeline_capture(simulate_full_render_cycle);
 
     let required_spans = [
-        "ftui.program.init",
-        "ftui.program.update",
-        "ftui.render.frame",
-        "ftui.program.view",
-        "ftui.render.present",
+        telemetry_schema::span::PROGRAM_INIT,
+        telemetry_schema::span::PROGRAM_UPDATE,
+        telemetry_schema::span::RENDER_FRAME,
+        telemetry_schema::span::PROGRAM_VIEW,
+        telemetry_schema::span::RENDER_PRESENT,
         "inline.render",
-        "ftui.render.scroll_region",
-        "ftui.render.diff_compute",
-        "ftui.render.emit",
-        "ftui.program.subscriptions",
+        telemetry_schema::span::RENDER_SCROLL_REGION,
+        telemetry_schema::span::RENDER_DIFF_COMPUTE,
+        telemetry_schema::span::RENDER_EMIT,
+        telemetry_schema::span::PROGRAM_SUBSCRIPTIONS,
         "conformal.predict",
     ];
 
@@ -723,17 +727,17 @@ fn span_count_nonzero_for_every_declared_name() {
     let (spans, _events) = with_pipeline_capture(simulate_full_render_cycle);
 
     let declared = [
-        "ftui.program.init",
-        "ftui.program.update",
-        "ftui.render.frame",
-        "ftui.program.view",
-        "ftui.render.present",
-        "ftui.program.subscriptions",
+        telemetry_schema::span::PROGRAM_INIT,
+        telemetry_schema::span::PROGRAM_UPDATE,
+        telemetry_schema::span::RENDER_FRAME,
+        telemetry_schema::span::PROGRAM_VIEW,
+        telemetry_schema::span::RENDER_PRESENT,
+        telemetry_schema::span::PROGRAM_SUBSCRIPTIONS,
         "conformal.predict",
         "inline.render",
-        "ftui.render.scroll_region",
-        "ftui.render.diff_compute",
-        "ftui.render.emit",
+        telemetry_schema::span::RENDER_SCROLL_REGION,
+        telemetry_schema::span::RENDER_DIFF_COMPUTE,
+        telemetry_schema::span::RENDER_EMIT,
     ];
 
     for name in &declared {
@@ -751,12 +755,21 @@ fn span_hierarchy_parent_child_correct() {
     let (spans, _events) = with_pipeline_capture(simulate_full_render_cycle);
 
     let required_parents = [
-        ("ftui.program.view", "ftui.render.frame"),
-        ("ftui.render.present", "ftui.render.frame"),
-        ("inline.render", "ftui.render.present"),
-        ("ftui.render.scroll_region", "inline.render"),
-        ("ftui.render.diff_compute", "inline.render"),
-        ("ftui.render.emit", "inline.render"),
+        (
+            telemetry_schema::span::PROGRAM_VIEW,
+            telemetry_schema::span::RENDER_FRAME,
+        ),
+        (
+            telemetry_schema::span::RENDER_PRESENT,
+            telemetry_schema::span::RENDER_FRAME,
+        ),
+        ("inline.render", telemetry_schema::span::RENDER_PRESENT),
+        (
+            telemetry_schema::span::RENDER_SCROLL_REGION,
+            "inline.render",
+        ),
+        (telemetry_schema::span::RENDER_DIFF_COMPUTE, "inline.render"),
+        (telemetry_schema::span::RENDER_EMIT, "inline.render"),
     ];
 
     for (child_name, expected_parent) in &required_parents {
@@ -782,10 +795,10 @@ fn root_spans_have_no_parent() {
     let (spans, _events) = with_pipeline_capture(simulate_full_render_cycle);
 
     let root_spans = [
-        "ftui.program.init",
-        "ftui.program.update",
-        "ftui.render.frame",
-        "ftui.program.subscriptions",
+        telemetry_schema::span::PROGRAM_INIT,
+        telemetry_schema::span::PROGRAM_UPDATE,
+        telemetry_schema::span::RENDER_FRAME,
+        telemetry_schema::span::PROGRAM_SUBSCRIPTIONS,
         "conformal.predict",
     ];
 
@@ -812,7 +825,7 @@ fn span_fields_populated() {
     // ftui.program.update should have msg_type and duration_us
     let update = spans
         .iter()
-        .find(|s| s.name == "ftui.program.update")
+        .find(|s| s.name == telemetry_schema::span::PROGRAM_UPDATE)
         .unwrap();
     assert!(
         update.fields.contains_key("msg_type"),
@@ -826,7 +839,7 @@ fn span_fields_populated() {
     // ftui.render.frame should have width, height, duration_us
     let frame = spans
         .iter()
-        .find(|s| s.name == "ftui.render.frame")
+        .find(|s| s.name == telemetry_schema::span::RENDER_FRAME)
         .unwrap();
     assert!(
         frame.fields.contains_key("width"),
@@ -840,7 +853,7 @@ fn span_fields_populated() {
     // ftui.program.view should have widget_count
     let view = spans
         .iter()
-        .find(|s| s.name == "ftui.program.view")
+        .find(|s| s.name == telemetry_schema::span::PROGRAM_VIEW)
         .unwrap();
     assert!(
         view.fields.contains_key("widget_count"),
@@ -1222,16 +1235,16 @@ fn span_levels_are_correct() {
 
     // All pipeline spans should be INFO level
     let info_spans = [
-        "ftui.program.init",
-        "ftui.program.update",
-        "ftui.render.frame",
-        "ftui.program.view",
-        "ftui.render.present",
+        telemetry_schema::span::PROGRAM_INIT,
+        telemetry_schema::span::PROGRAM_UPDATE,
+        telemetry_schema::span::RENDER_FRAME,
+        telemetry_schema::span::PROGRAM_VIEW,
+        telemetry_schema::span::RENDER_PRESENT,
         "inline.render",
-        "ftui.render.scroll_region",
-        "ftui.render.diff_compute",
-        "ftui.render.emit",
-        "ftui.program.subscriptions",
+        telemetry_schema::span::RENDER_SCROLL_REGION,
+        telemetry_schema::span::RENDER_DIFF_COMPUTE,
+        telemetry_schema::span::RENDER_EMIT,
+        telemetry_schema::span::PROGRAM_SUBSCRIPTIONS,
         "conformal.predict",
     ];
 
@@ -1256,10 +1269,10 @@ fn no_orphan_spans() {
     let (spans, _events) = with_pipeline_capture(simulate_full_render_cycle);
 
     let root_span_names = [
-        "ftui.program.init",
-        "ftui.program.update",
-        "ftui.render.frame",
-        "ftui.program.subscriptions",
+        telemetry_schema::span::PROGRAM_INIT,
+        telemetry_schema::span::PROGRAM_UPDATE,
+        telemetry_schema::span::RENDER_FRAME,
+        telemetry_schema::span::PROGRAM_SUBSCRIPTIONS,
         "conformal.predict",
     ];
 

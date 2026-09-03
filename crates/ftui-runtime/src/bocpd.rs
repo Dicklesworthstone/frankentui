@@ -743,7 +743,7 @@ impl BocpdDetector {
 
         // DEBUG log for posterior update
         tracing::debug!(
-            target: "ftui.bocpd",
+            target: crate::telemetry_schema::TARGET_BOCPD,
             p_burst = %self.p_burst,
             observation_ms = %x,
             posterior_max = %posterior_max,
@@ -754,7 +754,7 @@ impl BocpdDetector {
 
         // METRICS: histogram bocpd_run_length via tracing event
         tracing::debug!(
-            target: "ftui.bocpd",
+            target: crate::telemetry_schema::TARGET_BOCPD,
             bocpd_run_length = %self.expected_run_length(),
             "bocpd run length histogram"
         );
@@ -765,7 +765,7 @@ impl BocpdDetector {
             BOCPD_CHANGE_POINTS_DETECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
 
             tracing::info!(
-                target: "ftui.bocpd",
+                target: crate::telemetry_schema::TARGET_BOCPD,
                 from_regime = %self.previous_regime.as_str(),
                 to_regime = %current_regime.as_str(),
                 p_burst = %self.p_burst,

@@ -572,7 +572,7 @@ impl VoiSampler {
         .entered();
 
         tracing::debug!(
-            target: "ftui.voi",
+            target: crate::telemetry_schema::TARGET_VOI,
             voi_gain = %voi_gain,
             score = %score,
             cost = %cost,
@@ -587,7 +587,7 @@ impl VoiSampler {
         );
 
         tracing::debug!(
-            target: "ftui.voi",
+            target: crate::telemetry_schema::TARGET_VOI,
             voi_estimate_value = %voi_gain,
             "voi estimate histogram"
         );
@@ -641,7 +641,7 @@ impl VoiSampler {
 
         // --- TRACE: individual utility estimate after observation ---
         tracing::trace!(
-            target: "ftui.voi",
+            target: crate::telemetry_schema::TARGET_VOI,
             violated = violated,
             alpha = %self.alpha,
             beta = %self.beta,
@@ -2022,7 +2022,7 @@ mod tests {
             .iter()
             .filter(|e| {
                 e.level == tracing::Level::DEBUG
-                    && e.target == "ftui.voi"
+                    && e.target == crate::telemetry_schema::TARGET_VOI
                     && e.fields.contains_key("voi_gain")
             })
             .collect();
@@ -2057,7 +2057,7 @@ mod tests {
             .iter()
             .filter(|e| {
                 e.level == tracing::Level::DEBUG
-                    && e.target == "ftui.voi"
+                    && e.target == crate::telemetry_schema::TARGET_VOI
                     && e.fields.contains_key("voi_estimate_value")
             })
             .collect();
@@ -2086,7 +2086,7 @@ mod tests {
             .iter()
             .filter(|e| {
                 e.level == tracing::Level::TRACE
-                    && e.target == "ftui.voi"
+                    && e.target == crate::telemetry_schema::TARGET_VOI
                     && e.fields.contains_key("voi_estimate_value")
             })
             .collect();
@@ -2132,7 +2132,7 @@ mod tests {
             .iter()
             .filter(|e| {
                 e.level == tracing::Level::DEBUG
-                    && e.target == "ftui.voi"
+                    && e.target == crate::telemetry_schema::TARGET_VOI
                     && e.fields.contains_key("voi_gain")
             })
             .collect();

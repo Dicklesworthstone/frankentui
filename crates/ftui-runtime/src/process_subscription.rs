@@ -206,7 +206,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         let mut child = match cmd.spawn() {
             Ok(c) => {
                 tracing::debug!(
-                    target: "ftui.process",
+                    target: crate::telemetry_schema::TARGET_PROCESS,
                     sub_id,
                     program = %self.program,
                     args = ?self.args,
@@ -217,7 +217,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             }
             Err(e) => {
                 tracing::warn!(
-                    target: "ftui.process",
+                    target: crate::telemetry_schema::TARGET_PROCESS,
                     sub_id,
                     program = %self.program,
                     error = %e,
@@ -263,7 +263,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     let event = process_exit_event(status);
                     if let ProcessEvent::Exited(code) = &event {
                         tracing::debug!(
-                            target: "ftui.process",
+                            target: crate::telemetry_schema::TARGET_PROCESS,
                             sub_id,
                             exit_code = *code,
                             elapsed_ms = spawn_start.elapsed().as_millis() as u64,
@@ -271,7 +271,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                         );
                     } else if let ProcessEvent::Signaled(signal) = &event {
                         tracing::debug!(
-                            target: "ftui.process",
+                            target: crate::telemetry_schema::TARGET_PROCESS,
                             sub_id,
                             signal = *signal,
                             elapsed_ms = spawn_start.elapsed().as_millis() as u64,
@@ -283,7 +283,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 Ok(None) => {}
                 Err(e) => {
                     tracing::warn!(
-                        target: "ftui.process",
+                        target: crate::telemetry_schema::TARGET_PROCESS,
                         sub_id,
                         error = %e,
                         "process wait error"
@@ -296,7 +296,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 && web_time::Instant::now() >= dl
             {
                 tracing::debug!(
-                    target: "ftui.process",
+                    target: crate::telemetry_schema::TARGET_PROCESS,
                     sub_id,
                     elapsed_ms = spawn_start.elapsed().as_millis() as u64,
                     reason = "timeout",
@@ -309,7 +309,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
 
             if token.wait_timeout(poll_interval) {
                 tracing::debug!(
-                    target: "ftui.process",
+                    target: crate::telemetry_schema::TARGET_PROCESS,
                     sub_id,
                     elapsed_ms = spawn_start.elapsed().as_millis() as u64,
                     reason = "cancellation",
@@ -354,7 +354,7 @@ fn join_reader_thread_bounded(
     while !handle.is_finished() {
         if start.elapsed() >= PROCESS_READER_JOIN_TIMEOUT {
             tracing::warn!(
-                target: "ftui.process",
+                target: crate::telemetry_schema::TARGET_PROCESS,
                 sub_id,
                 stream,
                 timeout_ms = PROCESS_READER_JOIN_TIMEOUT.as_millis() as u64,

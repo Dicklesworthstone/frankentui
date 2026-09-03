@@ -209,7 +209,7 @@ fn probe_live_terminal(
     let overrides = ftui_core::capability_override::apply_env_policy_overrides(capabilities);
     #[cfg(feature = "tracing")]
     tracing::debug!(
-        target: "ftui.runtime",
+        target: crate::telemetry_schema::TARGET_RUNTIME,
         probed_truecolor = wants_truecolor,
         probed_sync_output = wants_sync_output,
         truecolor = ?probe.true_color,
@@ -280,7 +280,7 @@ fn verify_scroll_region(
     );
     #[cfg(feature = "tracing")]
     tracing::debug!(
-        target: "ftui.render.scroll_region",
+        target: crate::telemetry_schema::span::RENDER_SCROLL_REGION,
         rows,
         region_bottom,
         verdict = ?verdict,
@@ -2993,7 +2993,7 @@ impl RuntimeLane {
         match self {
             Self::Asupersync => {
                 tracing::info!(
-                    target: "ftui.runtime",
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     requested = "asupersync",
                     resolved = "structured",
                     "Asupersync lane not yet available; falling back to structured cancellation"
@@ -3083,7 +3083,7 @@ impl RuntimeLane {
             "asupersync" => Some(Self::Asupersync),
             _ => {
                 tracing::warn!(
-                    target: "ftui.runtime",
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     value = s,
                     "RuntimeLane::parse: unrecognized value"
                 );
@@ -3139,7 +3139,7 @@ impl RolloutPolicy {
             "enabled" => Some(Self::Enabled),
             _ => {
                 tracing::warn!(
-                    target: "ftui.runtime",
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     value = s,
                     "RolloutPolicy::parse: unrecognized value"
                 );
@@ -3717,7 +3717,7 @@ impl<M: Send + 'static> EffectQueue<M> {
                 let _ = handle.join();
                 let elapsed_us = start.elapsed().as_micros() as u64;
                 tracing::debug!(
-                    target: "ftui.runtime",
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     elapsed_us,
                     "effect-queue shutdown (fast path)"
                 );
@@ -3727,7 +3727,7 @@ impl<M: Send + 'static> EffectQueue<M> {
             while !handle.is_finished() {
                 if start.elapsed() >= Self::SHUTDOWN_TIMEOUT {
                     tracing::warn!(
-                        target: "ftui.runtime",
+                        target: crate::telemetry_schema::TARGET_RUNTIME,
                         timeout_ms = Self::SHUTDOWN_TIMEOUT.as_millis() as u64,
                         "effect-queue thread did not stop within timeout; detaching"
                     );
@@ -3738,7 +3738,7 @@ impl<M: Send + 'static> EffectQueue<M> {
             let _ = handle.join();
             let elapsed_us = start.elapsed().as_micros() as u64;
             tracing::debug!(
-                target: "ftui.runtime",
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 elapsed_us,
                 "effect-queue shutdown (slow path)"
             );
@@ -3849,7 +3849,7 @@ impl<M: Send + 'static> SpawnTaskExecutor<M> {
         if self.handles.is_empty() {
             let elapsed_us = start.elapsed().as_micros() as u64;
             tracing::debug!(
-                target: "ftui.runtime",
+                target: crate::telemetry_schema::TARGET_RUNTIME,
                 elapsed_us,
                 "spawn-executor shutdown (fast path, all tasks already finished)"
             );
@@ -3865,7 +3865,7 @@ impl<M: Send + 'static> SpawnTaskExecutor<M> {
                     .filter(|handle| !handle.is_finished())
                     .count();
                 tracing::warn!(
-                    target: "ftui.runtime",
+                    target: crate::telemetry_schema::TARGET_RUNTIME,
                     timeout_ms = Self::SHUTDOWN_TIMEOUT.as_millis() as u64,
                     pending_handles = still_pending,
                     "background task threads did not stop within timeout; detaching"
@@ -3878,7 +3878,7 @@ impl<M: Send + 'static> SpawnTaskExecutor<M> {
         self.reap_finished();
         let elapsed_us = start.elapsed().as_micros() as u64;
         tracing::debug!(
-            target: "ftui.runtime",
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             elapsed_us,
             pending_at_start,
             "spawn-executor shutdown (slow path)"
@@ -4185,7 +4185,7 @@ fn run_task_closure<M: Send + 'static>(
         Ok(msg) => {
             let duration_us = start.elapsed().as_micros() as u64;
             tracing::debug!(
-                target: "ftui.effect",
+                target: crate::telemetry_schema::TARGET_EFFECT,
                 command_type = "task",
                 executor_backend = backend,
                 duration_us = duration_us,
@@ -5290,7 +5290,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
 
         // Log runtime lane and rollout policy at startup (bd-2crbt)
         tracing::info!(
-            target: "ftui.runtime",
+            target: crate::telemetry_schema::TARGET_RUNTIME,
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
             rollout_policy = config.rollout_policy.label(),
@@ -5727,7 +5727,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
         // Initialize
         let cmd = {
-            let _span = info_span!("ftui.program.init").entered();
+            let _span = info_span!(crate::telemetry_schema::span::PROGRAM_INIT).entered();
             self.model.init()
         };
         self.execute_cmd(cmd)?;
@@ -5907,7 +5907,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                     let msg = M::Message::from(Event::Tick);
                     let cmd = {
                         let _span = debug_span!(
-                            "ftui.program.update",
+                            crate::telemetry_schema::span::PROGRAM_UPDATE,
                             msg_type = "Tick",
                             duration_us = tracing::field::Empty,
                             cmd_type = tracing::field::Empty
@@ -6023,7 +6023,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         self.shutdown_complete = true;
 
         let shutdown_cmd = {
-            let _span = info_span!("ftui.program.shutdown").entered();
+            let _span = info_span!(crate::telemetry_schema::span::PROGRAM_SHUTDOWN).entered();
             self.model.on_shutdown()
         };
         // The shutdown sequence is error-isolated: a failing shutdown command
@@ -6184,7 +6184,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         gesture: ftui_core::semantic_event::SemanticEvent,
     ) -> io::Result<()> {
         let cmd = {
-            let _span = debug_span!("ftui.program.update", msg_type = "gesture").entered();
+            let _span = debug_span!(
+                crate::telemetry_schema::span::PROGRAM_UPDATE,
+                msg_type = "gesture"
+            )
+            .entered();
             self.model.on_gesture(gesture)
         };
         self.mark_dirty();
@@ -6286,7 +6290,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let msg = M::Message::from(event);
         let cmd = {
             let _span = debug_span!(
-                "ftui.program.update",
+                crate::telemetry_schema::span::PROGRAM_UPDATE,
                 msg_type = "event",
                 duration_us = tracing::field::Empty,
                 cmd_type = tracing::field::Empty
@@ -6337,7 +6341,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     /// Reconcile the model's declared subscriptions with running ones.
     fn reconcile_subscriptions(&mut self) {
         let _span = debug_span!(
-            "ftui.program.subscriptions",
+            crate::telemetry_schema::span::PROGRAM_SUBSCRIPTIONS,
             active_count = tracing::field::Empty,
             started = tracing::field::Empty,
             stopped = tracing::field::Empty
@@ -6385,7 +6389,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     /// Invoke the model error hook and execute its recovery command.
     fn invoke_error_hook(&mut self, error: &str, during_lifecycle: bool) -> io::Result<()> {
         let cmd = {
-            let _span = info_span!("ftui.program.error", error).entered();
+            let _span = info_span!(crate::telemetry_schema::span::PROGRAM_ERROR, error).entered();
             self.model.on_error(error)
         };
         if during_lifecycle {
@@ -6418,7 +6422,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         for msg in messages {
             let cmd = {
                 let _span = debug_span!(
-                    "ftui.program.update",
+                    crate::telemetry_schema::span::PROGRAM_UPDATE,
                     msg_type = "subscription",
                     duration_us = tracing::field::Empty,
                     cmd_type = tracing::field::Empty
@@ -6450,7 +6454,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         while let Ok(msg) = self.task_receiver.try_recv() {
             let cmd = {
                 let _span = debug_span!(
-                    "ftui.program.update",
+                    crate::telemetry_schema::span::PROGRAM_UPDATE,
                     msg_type = "task",
                     duration_us = tracing::field::Empty,
                     cmd_type = tracing::field::Empty
@@ -6618,7 +6622,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         while let Ok(msg) = self.task_receiver.try_recv() {
             let cmd = {
                 let _span = debug_span!(
-                    "ftui.program.update",
+                    crate::telemetry_schema::span::PROGRAM_UPDATE,
                     msg_type = "shutdown_task",
                     duration_us = tracing::field::Empty,
                     cmd_type = tracing::field::Empty
@@ -6869,7 +6873,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
         let frame_height = self.writer.render_height_hint().max(1);
         let _frame_span = info_span!(
-            "ftui.render.frame",
+            crate::telemetry_schema::span::RENDER_FRAME,
             width = self.width,
             height = frame_height,
             duration_us = tracing::field::Empty
@@ -6902,7 +6906,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         if !self.budget.exhausted() {
             let present_start = Instant::now();
             {
-                let _present_span = debug_span!("ftui.render.present").entered();
+                let _present_span =
+                    debug_span!(crate::telemetry_schema::span::RENDER_PRESENT).entered();
                 self.writer
                     .present_ui_owned(buffer, cursor, cursor_visible)?;
             }
@@ -7143,7 +7148,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
-            "ftui.program.view",
+            crate::telemetry_schema::span::PROGRAM_VIEW,
             duration_us = tracing::field::Empty,
             widget_count = tracing::field::Empty
         )
@@ -7252,7 +7257,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             return Ok(());
         };
         let cmd = {
-            let _span = debug_span!("ftui.program.update", msg_type = "accessibility").entered();
+            let _span = debug_span!(
+                crate::telemetry_schema::span::PROGRAM_UPDATE,
+                msg_type = "accessibility"
+            )
+            .entered();
             self.model.on_accessibility(AccessibilityFrame {
                 frame_idx: self.frame_idx,
                 tree,
@@ -7350,7 +7359,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
-            "ftui.program.view",
+            crate::telemetry_schema::span::PROGRAM_VIEW,
             duration_us = tracing::field::Empty,
             widget_count = tracing::field::Empty
         )

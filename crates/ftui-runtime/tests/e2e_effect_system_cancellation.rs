@@ -21,6 +21,7 @@ use ftui_runtime::effect_system::{
     effects_command_total, effects_executed_total, effects_subscription_total,
     record_subscription_start, record_subscription_stop, trace_command_effect, warn_effect_timeout,
 };
+use ftui_runtime::telemetry_schema;
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
@@ -342,7 +343,7 @@ fn warn_log_emitted_for_effect_timeout() {
     let events = handle.events();
     let warn_events: Vec<_> = events
         .iter()
-        .filter(|e| e.level == tracing::Level::WARN && e.target == "ftui.effect")
+        .filter(|e| e.level == tracing::Level::WARN && e.target == telemetry_schema::TARGET_EFFECT)
         .collect();
 
     assert!(!warn_events.is_empty(), "expected WARN event for timeout");
@@ -376,7 +377,7 @@ fn warn_log_for_slow_command_effect() {
     // Should have both DEBUG lifecycle events and WARN timeout
     let debug_events: Vec<_> = events
         .iter()
-        .filter(|e| e.level == tracing::Level::DEBUG && e.target == "ftui.effect")
+        .filter(|e| e.level == tracing::Level::DEBUG && e.target == telemetry_schema::TARGET_EFFECT)
         .collect();
     assert!(!debug_events.is_empty(), "expected DEBUG lifecycle events");
 
@@ -489,7 +490,7 @@ fn full_lifecycle_start_run_cancel_verify() {
     // Verify DEBUG lifecycle events exist
     let debug_events: Vec<_> = events
         .iter()
-        .filter(|e| e.level == tracing::Level::DEBUG && e.target == "ftui.effect")
+        .filter(|e| e.level == tracing::Level::DEBUG && e.target == telemetry_schema::TARGET_EFFECT)
         .collect();
     assert!(
         debug_events.len() >= 8,

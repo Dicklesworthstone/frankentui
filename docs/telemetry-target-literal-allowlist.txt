@@ -1,0 +1,10 @@
+# Files still allowed to contain `"ftui.<name>` tracing target or span name
+# literals instead of `ftui_runtime::telemetry_schema` constants. Checked by
+# `telemetry_schema::tests::no_stray_target_literals`. One workspace-relative
+# path per line; this list may only shrink.
+#
+# telemetry.rs: the OpenTelemetry exporter's field-name constants
+# ("ftui.schema_version"), the reserved-prefix test for custom fields
+# ("ftui.internal") and its own test spans ("ftui.test.*") are not tracing
+# targets or runtime span names.
+crates/ftui-runtime/src/telemetry.rs

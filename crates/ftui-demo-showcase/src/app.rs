@@ -27,6 +27,12 @@ use crate::test_logging::{
 };
 use crate::theme;
 use crate::tour::{GuidedTourState, TourAdvanceReason, TourEvent, TourStep};
+
+/// Tracing target for the performance HUD's telemetry. App-level, not part
+/// of the runtime's `telemetry_schema`.
+const TARGET_PERF_HUD: &str = "ftui.perf_hud";
+/// Tracing target for the explainability cockpit's telemetry. App-level.
+const TARGET_EXPLAINABILITY_COCKPIT: &str = "ftui.explainability_cockpit";
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -3562,7 +3568,7 @@ impl AppModel {
                     ],
                 );
                 tracing::info!(
-                    target: "ftui.perf_hud",
+                    target: TARGET_PERF_HUD,
                     visible = self.perf_hud_visible,
                     tick = self.tick_count,
                     "Performance HUD toggled"
@@ -3618,7 +3624,7 @@ impl AppModel {
                     vec![("state".to_string(), state.to_string())],
                 );
                 tracing::info!(
-                    target: "ftui.explainability_cockpit",
+                    target: TARGET_EXPLAINABILITY_COCKPIT,
                     visible = self.evidence_ledger_visible,
                     tick = self.tick_count,
                     "Explainability cockpit toggled"
@@ -5253,7 +5259,7 @@ impl AppModel {
                 "critical"
             };
             tracing::debug!(
-                target: "ftui.perf_hud",
+                target: TARGET_PERF_HUD,
                 tick = self.tick_count,
                 fps = %format!("{est_fps:.1}"),
                 tps = %format!("{tps:.1}"),
@@ -5395,7 +5401,7 @@ impl AppModel {
     /// Emits `ftui.perf_hud.render` span with overlay dimensions.
     fn render_perf_hud(&self, frame: &mut Frame, area: Rect) {
         let _span = tracing::debug_span!(
-            target: "ftui.perf_hud",
+            target: TARGET_PERF_HUD,
             "render_perf_hud",
             area.width = area.width,
             area.height = area.height,
@@ -5407,7 +5413,7 @@ impl AppModel {
 
         if overlay_width < 20 || overlay_height < 6 {
             tracing::trace!(
-                target: "ftui.perf_hud",
+                target: TARGET_PERF_HUD,
                 overlay_width,
                 overlay_height,
                 "HUD gracefully degraded: area too small"
@@ -5670,7 +5676,7 @@ impl AppModel {
     /// in a single panel (bd-iuvb.4).
     fn render_evidence_ledger(&self, frame: &mut Frame, area: Rect) {
         let _span = tracing::debug_span!(
-            target: "ftui.explainability_cockpit",
+            target: TARGET_EXPLAINABILITY_COCKPIT,
             "render_explainability_cockpit",
             tick = self.tick_count,
         )

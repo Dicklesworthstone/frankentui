@@ -100,7 +100,7 @@ pub fn record_queue_processed() {
 pub fn record_queue_drop(reason: &str) {
     EFFECTS_QUEUE_DROPPED.fetch_add(1, Ordering::Relaxed);
     tracing::warn!(
-        target: "ftui.effect",
+        target: crate::telemetry_schema::TARGET_EFFECT,
         reason = reason,
         monotonic.counter.effects_queue_dropped_total = 1_u64,
         "effect queue task dropped"
@@ -304,7 +304,7 @@ where
     .entered();
 
     tracing::debug!(
-        target: "ftui.effect",
+        target: crate::telemetry_schema::TARGET_EFFECT,
         command_type = %command_type,
         "command effect started"
     );
@@ -313,7 +313,7 @@ where
     let duration_us = start.elapsed().as_micros() as u64;
 
     tracing::debug!(
-        target: "ftui.effect",
+        target: crate::telemetry_schema::TARGET_EFFECT,
         command_type = %command_type,
         duration_us = duration_us,
         effect_duration_us = duration_us,
@@ -336,7 +336,7 @@ pub fn record_command_effect(command_type: &str, duration_us: u64) {
     .entered();
 
     tracing::debug!(
-        target: "ftui.effect",
+        target: crate::telemetry_schema::TARGET_EFFECT,
         command_type = %command_type,
         duration_us = duration_us,
         effect_duration_us = duration_us,
@@ -361,7 +361,7 @@ pub fn record_subscription_start(sub_type: &str, sub_id: u64) {
     .entered();
 
     tracing::debug!(
-        target: "ftui.effect",
+        target: crate::telemetry_schema::TARGET_EFFECT,
         sub_type = %sub_type,
         sub_id = sub_id,
         active = true,
@@ -380,7 +380,7 @@ pub fn record_subscription_stop(sub_type: &str, sub_id: u64, event_count: u64) {
     .entered();
 
     tracing::debug!(
-        target: "ftui.effect",
+        target: crate::telemetry_schema::TARGET_EFFECT,
         sub_type = %sub_type,
         sub_id = sub_id,
         event_count = event_count,
@@ -392,7 +392,7 @@ pub fn record_subscription_stop(sub_type: &str, sub_id: u64, event_count: u64) {
 /// Record an effect timeout warning.
 pub fn warn_effect_timeout(effect_type: &str, deadline_us: u64) {
     tracing::warn!(
-        target: "ftui.effect",
+        target: crate::telemetry_schema::TARGET_EFFECT,
         effect_type = %effect_type,
         deadline_us = deadline_us,
         "effect timeout exceeded deadline"
@@ -402,7 +402,7 @@ pub fn warn_effect_timeout(effect_type: &str, deadline_us: u64) {
 /// Record an effect panic error.
 pub fn error_effect_panic(effect_type: &str, panic_msg: &str) {
     tracing::error!(
-        target: "ftui.effect",
+        target: crate::telemetry_schema::TARGET_EFFECT,
         effect_type = %effect_type,
         panic_msg = %panic_msg,
         "effect panicked during execution"
@@ -573,7 +573,7 @@ mod tests {
         let start_events: Vec<_> = events
             .iter()
             .filter(|e| {
-                e.target == "ftui.effect"
+                e.target == crate::telemetry_schema::TARGET_EFFECT
                     && e.fields
                         .get("message")
                         .is_some_and(|m| m.contains("started"))
@@ -584,7 +584,7 @@ mod tests {
         let complete_events: Vec<_> = events
             .iter()
             .filter(|e| {
-                e.target == "ftui.effect"
+                e.target == crate::telemetry_schema::TARGET_EFFECT
                     && e.fields
                         .get("message")
                         .is_some_and(|m| m.contains("completed"))
@@ -669,7 +669,10 @@ mod tests {
         let events = handle.events();
         let warn_events: Vec<_> = events
             .iter()
-            .filter(|e| e.level == tracing::Level::WARN && e.target == "ftui.effect")
+            .filter(|e| {
+                e.level == tracing::Level::WARN
+                    && e.target == crate::telemetry_schema::TARGET_EFFECT
+            })
             .collect();
         assert!(!warn_events.is_empty(), "expected WARN event for timeout");
     }
@@ -683,7 +686,10 @@ mod tests {
         let events = handle.events();
         let error_events: Vec<_> = events
             .iter()
-            .filter(|e| e.level == tracing::Level::ERROR && e.target == "ftui.effect")
+            .filter(|e| {
+                e.level == tracing::Level::ERROR
+                    && e.target == crate::telemetry_schema::TARGET_EFFECT
+            })
             .collect();
         assert!(!error_events.is_empty(), "expected ERROR event for panic");
     }
