@@ -12,6 +12,22 @@ use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_text::display_width;
 
+/// How a [`ProgressBar`] fills: a known fraction, or an animated marquee for
+/// work of unknown duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProgressMode {
+    /// Fill proportional to the bar's `ratio` (the default).
+    #[default]
+    Determinate,
+    /// A fixed-width segment sweeps across the bar; `ratio` is ignored. The
+    /// caller supplies the animation `phase` (a tick or frame counter), so the
+    /// widget stays a stateless [`Widget`] and its output is deterministic.
+    Indeterminate {
+        /// Animation phase, typically a monotonically increasing tick count.
+        phase: u64,
+    },
+}
+
 /// A widget to display a progress bar.
 #[derive(Debug, Clone, Default)]
 pub struct ProgressBar<'a> {
@@ -20,6 +36,7 @@ pub struct ProgressBar<'a> {
     label: Option<&'a str>,
     style: Style,
     gauge_style: Style,
+    mode: ProgressMode,
 }
 
 impl<'a> ProgressBar<'a> {
@@ -67,6 +84,64 @@ impl<'a> ProgressBar<'a> {
         self.gauge_style = style;
         self
     }
+
+    /// Switch to indeterminate mode with the given animation `phase`.
+    ///
+    /// In this mode a fixed-width segment sweeps across the bar and `ratio` is
+    /// ignored; the label (if any) is still drawn. The caller supplies `phase`
+    /// — usually a tick or frame counter driven from `Cmd::Tick`/`Every` — so
+    /// the widget remains a stateless [`Widget`] (like [`Sparkline`], unlike the
+    /// stateful `Spinner`) and renders deterministically for a given phase.
+    ///
+    /// [`Sparkline`]: crate::sparkline::Sparkline
+    #[must_use]
+    pub fn indeterminate(mut self, phase: u64) -> Self {
+        self.mode = ProgressMode::Indeterminate { phase };
+        self
+    }
+
+    /// Set the fill mode explicitly.
+    #[must_use]
+    pub fn mode(mut self, mode: ProgressMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Whether the bar is in indeterminate (marquee) mode.
+    #[must_use]
+    pub fn is_indeterminate(&self) -> bool {
+        matches!(self.mode, ProgressMode::Indeterminate { .. })
+    }
+
+    /// The visible `[start, end)` columns of the marquee segment for a bar of
+    /// `inner_width` cells at animation `phase`, or `None` when the width is 0.
+    ///
+    /// The segment is `max(3, inner_width / 5)` cells wide and its period is
+    /// `inner_width + seg`, so it enters from the left, crosses, and leaves at
+    /// the right before wrapping. The returned range is always clamped inside
+    /// `[0, inner_width)` (it may be empty while the segment is off-screen).
+    #[must_use]
+    pub fn marquee_span(inner_width: u16, phase: u64) -> Option<(u16, u16)> {
+        if inner_width == 0 {
+            return None;
+        }
+        let width = u64::from(inner_width);
+        let seg = (width / 5).max(3);
+        let period = width + seg;
+        let pos = (phase % period) as i64 - seg as i64;
+        let start = pos.max(0);
+        let end = (pos + seg as i64).clamp(0, width as i64);
+        Some((start as u16, end as u16))
+    }
+
+    /// A short label of the current mode, for the render span.
+    #[cfg(feature = "tracing")]
+    fn mode_label(&self) -> &'static str {
+        match self.mode {
+            ProgressMode::Determinate => "determinate",
+            ProgressMode::Indeterminate { .. } => "indeterminate",
+        }
+    }
 }
 
 impl<'a> Widget for ProgressBar<'a> {
@@ -81,7 +156,8 @@ impl<'a> Widget for ProgressBar<'a> {
             x = area.x,
             y = area.y,
             w = area.width,
-            h = area.height
+            h = area.height,
+            mode = self.mode_label()
         )
         .entered();
 
@@ -92,11 +168,17 @@ impl<'a> Widget for ProgressBar<'a> {
             return;
         }
 
-        // EssentialOnly: just show percentage text, no bar
+        // EssentialOnly: just show text, no bar. Determinate shows a
+        // percentage; indeterminate has none, so it shows the label or "...".
         if !deg.render_decorative() {
             clear_text_area(frame, area, Style::default());
-            let pct = format!("{}%", (self.ratio * 100.0) as u8);
-            crate::draw_text_span(frame, area.x, area.y, &pct, Style::default(), area.right());
+            let text = match self.mode {
+                ProgressMode::Determinate => format!("{}%", (self.ratio * 100.0) as u8),
+                ProgressMode::Indeterminate { .. } => {
+                    self.label.map_or_else(|| "...".to_string(), String::from)
+                }
+            };
+            crate::draw_text_span(frame, area.x, area.y, &text, Style::default(), area.right());
             return;
         }
 
@@ -120,11 +202,22 @@ impl<'a> Widget for ProgressBar<'a> {
             return;
         }
 
-        let max_width = bar_area.width as f64;
-        let filled_width = if self.ratio >= 1.0 {
-            bar_area.width
-        } else {
-            (max_width * self.ratio).floor() as u16
+        // The gauge-styled columns: a left-anchored fill in determinate mode,
+        // or the swept marquee segment in indeterminate mode. The determinate
+        // range is byte-for-byte what it was before this branch existed.
+        let (fill_start, fill_end) = match self.mode {
+            ProgressMode::Determinate => {
+                let max_width = bar_area.width as f64;
+                let filled_width = if self.ratio >= 1.0 {
+                    bar_area.width
+                } else {
+                    (max_width * self.ratio).floor() as u16
+                };
+                (0, filled_width)
+            }
+            ProgressMode::Indeterminate { phase } => {
+                Self::marquee_span(bar_area.width, phase).unwrap_or((0, 0))
+            }
         };
 
         // Draw filled part
@@ -137,7 +230,7 @@ impl<'a> Widget for ProgressBar<'a> {
         let fill_char = if deg.apply_styling() { ' ' } else { '#' };
 
         for y in bar_area.top()..bar_area.bottom() {
-            for x in 0..filled_width {
+            for x in fill_start..fill_end {
                 let cell_x = bar_area.left().saturating_add(x);
                 if cell_x < bar_area.right() {
                     let mut cell = Cell::from_char(fill_char);
@@ -214,19 +307,32 @@ impl ftui_a11y::Accessible for ProgressBar<'_> {
         use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
 
         let id = crate::a11y_node_id(area);
-        let pct = (self.ratio * 100.0).round() as u32;
-        let name = self
-            .label
-            .map(String::from)
-            .unwrap_or_else(|| format!("{pct}%"));
-
-        let state = A11yState {
-            value_now: Some(self.ratio),
-            value_min: Some(0.0),
-            value_max: Some(1.0),
-            value_text: Some(format!("{pct}%")),
-            ..A11yState::default()
+        // Indeterminate bars have no meaningful value: omit value_now (like an
+        // ARIA indeterminate progressbar) and describe them as "in progress".
+        let state = if self.is_indeterminate() {
+            A11yState {
+                value_text: Some("in progress".to_string()),
+                ..A11yState::default()
+            }
+        } else {
+            let pct = (self.ratio * 100.0).round() as u32;
+            A11yState {
+                value_now: Some(self.ratio),
+                value_min: Some(0.0),
+                value_max: Some(1.0),
+                value_text: Some(format!("{pct}%")),
+                ..A11yState::default()
+            }
         };
+        let name = self.label.map_or_else(
+            || {
+                state
+                    .value_text
+                    .clone()
+                    .unwrap_or_else(|| "progress".to_string())
+            },
+            String::from,
+        );
 
         vec![
             A11yNodeInfo::new(id, A11yRole::ProgressBar, area)
