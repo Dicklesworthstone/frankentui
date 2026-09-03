@@ -269,7 +269,7 @@ pub use log_ring::LogRing;
 pub use log_viewer::{LogViewer, LogViewerState, LogWrapMode, SearchConfig, SearchMode};
 pub use paginator::{Paginator, PaginatorMode};
 pub use panel::Panel;
-pub use sparkline::Sparkline;
+pub use sparkline::{Sparkline, SparklineMarkers};
 pub use status_line::{StatusItem, StatusLine};
 pub use tabs::{Tab, Tabs, TabsState};
 pub use virtualized::{

@@ -25,6 +25,30 @@ use ftui_style::Style;
 /// Block characters for sparkline rendering (9 levels: empty + 8 bars).
 const SPARK_CHARS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
+/// Optional glyph + style overrides that mark the extreme samples of a
+/// [`Sparkline`].
+///
+/// Each marker replaces the bar glyph at the column of the first minimum or
+/// first maximum sample (ties resolved to the earliest index) and merges its
+/// style over that column's computed style (base + gradient). Markers refer to
+/// the data extremes even when explicit scaling [`bounds`](Sparkline::bounds)
+/// are set. When a single sample is both the min and the max, the max marker
+/// wins. `NaN` samples are never extremes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SparklineMarkers {
+    /// Glyph and style for the first minimum sample, if enabled.
+    pub min: Option<(char, Style)>,
+    /// Glyph and style for the first maximum sample, if enabled.
+    pub max: Option<(char, Style)>,
+}
+
+impl SparklineMarkers {
+    /// The conventional maximum marker glyph (down-pointing triangle).
+    pub const DEFAULT_MAX_GLYPH: char = '▾';
+    /// The conventional minimum marker glyph (up-pointing triangle).
+    pub const DEFAULT_MIN_GLYPH: char = '▴';
+}
+
 /// A compact sparkline widget for trend visualization.
 ///
 /// Sparklines display a series of values as a row of Unicode block characters,
@@ -55,6 +79,8 @@ pub struct Sparkline<'a> {
     gradient: Option<(PackedRgba, PackedRgba)>,
     /// Baseline value (default 0.0) - values at baseline show as empty.
     baseline: f64,
+    /// Optional min/max marker glyphs and styles.
+    markers: SparklineMarkers,
 }
 
 impl<'a> Sparkline<'a> {
@@ -68,6 +94,7 @@ impl<'a> Sparkline<'a> {
             style: Style::default(),
             gradient: None,
             baseline: 0.0,
+            markers: SparklineMarkers::default(),
         }
     }
 
@@ -95,6 +122,118 @@ impl<'a> Sparkline<'a> {
         self.min = Some(min);
         self.max = Some(max);
         self
+    }
+
+    /// Mark the first minimum sample with `ch`, merging `style` over the
+    /// column's computed style.
+    ///
+    /// The marker tracks the data minimum, independent of any explicit
+    /// [`bounds`](Self::bounds). Ties resolve to the earliest sample; `NaN`
+    /// samples are never extremes. Under an ASCII-only degradation level a
+    /// non-ASCII glyph falls back to `^`. See [`SparklineMarkers`].
+    #[must_use]
+    pub fn with_min_marker(mut self, ch: char, style: Style) -> Self {
+        self.markers.min = Some((ch, style));
+        self
+    }
+
+    /// Mark the first maximum sample with `ch`, merging `style` over the
+    /// column's computed style.
+    ///
+    /// The marker tracks the data maximum, independent of any explicit
+    /// [`bounds`](Self::bounds). Ties resolve to the earliest sample; `NaN`
+    /// samples are never extremes; and a single sample (both min and max) shows
+    /// the max marker. Under an ASCII-only degradation level a non-ASCII glyph
+    /// falls back to `v`. See [`SparklineMarkers`].
+    #[must_use]
+    pub fn with_max_marker(mut self, ch: char, style: Style) -> Self {
+        self.markers.max = Some((ch, style));
+        self
+    }
+
+    /// Set both markers at once.
+    #[must_use]
+    pub fn with_markers(mut self, markers: SparklineMarkers) -> Self {
+        self.markers = markers;
+        self
+    }
+
+    /// The configured markers.
+    #[must_use]
+    pub fn markers(&self) -> SparklineMarkers {
+        self.markers
+    }
+
+    /// The indices of the first minimum and first maximum samples, ignoring
+    /// `NaN`. Returns `None` when there is no finite sample (empty or all-NaN).
+    /// Ties resolve to the earliest index.
+    fn extreme_indices(data: &[f64]) -> Option<(usize, usize)> {
+        let mut min_idx = None;
+        let mut max_idx = None;
+        let mut min_val = f64::INFINITY;
+        let mut max_val = f64::NEG_INFINITY;
+        for (i, &v) in data.iter().enumerate() {
+            if v.is_nan() {
+                continue;
+            }
+            if v < min_val {
+                min_val = v;
+                min_idx = Some(i);
+            }
+            if v > max_val {
+                max_val = v;
+                max_idx = Some(i);
+            }
+        }
+        match (min_idx, max_idx) {
+            (Some(min), Some(max)) => Some((min, max)),
+            _ => None,
+        }
+    }
+
+    /// The marker glyph, style, and whether it is the max marker for column
+    /// `index`, or `None` when this column carries no marker. Max wins when a
+    /// single sample is both extremes.
+    fn column_marker(
+        &self,
+        index: usize,
+        extremes: Option<(usize, usize)>,
+    ) -> Option<(char, Style, bool)> {
+        let (min_i, max_i) = extremes?;
+        if index == max_i
+            && let Some((ch, style)) = self.markers.max
+        {
+            Some((ch, style, true))
+        } else if index == min_i
+            && let Some((ch, style)) = self.markers.min
+        {
+            Some((ch, style, false))
+        } else {
+            None
+        }
+    }
+
+    /// Apply the crate's ASCII degradation to a marker glyph: a non-ASCII glyph
+    /// becomes `v` (max) or `^` (min) when Unicode borders are disabled.
+    fn degrade_marker(ch: char, is_max: bool, unicode: bool) -> char {
+        if unicode || ch.is_ascii() {
+            ch
+        } else if is_max {
+            'v'
+        } else {
+            '^'
+        }
+    }
+
+    /// A short label of which markers are enabled, for the render span.
+    #[cfg(feature = "tracing")]
+    fn markers_label(&self) -> &'static str {
+        match (self.markers.min.is_some(), self.markers.max.is_some()) {
+            (true, true) => "both",
+            (true, false) => "min",
+            (false, true) => "max",
+            (false, false) => "none",
+        }
     }
 
     /// Set the base style (foreground color, etc.).
@@ -183,11 +322,14 @@ impl<'a> Sparkline<'a> {
         }
 
         let (min, max) = self.compute_bounds();
+        let extremes = Self::extreme_indices(self.data);
         self.data
             .iter()
-            .map(|&v| {
-                let idx = self.value_to_bar_index(v, min, max);
-                SPARK_CHARS[idx]
+            .enumerate()
+            .map(|(i, &v)| match self.column_marker(i, extremes) {
+                // Text mode renders the glyph as chosen (no ASCII degradation).
+                Some((ch, _style, _is_max)) => ch,
+                None => SPARK_CHARS[self.value_to_bar_index(v, min, max)],
             })
             .collect()
     }
@@ -209,7 +351,8 @@ impl Widget for Sparkline<'_> {
             y = area.y,
             w = area.width,
             h = area.height,
-            data_len = self.data.len()
+            data_len = self.data.len(),
+            markers = self.markers_label()
         )
         .entered();
 
@@ -238,6 +381,11 @@ impl Widget for Sparkline<'_> {
         let (min, max) = self.compute_bounds();
         let range = max - min;
 
+        // Extreme columns are marked only when they fall inside the visible
+        // window (the leftmost `display_count` samples).
+        let extremes = Self::extreme_indices(self.data);
+        let unicode = deg.use_unicode_borders();
+
         // How many data points can we show?
         let display_count = (area.width as usize).min(self.data.len());
 
@@ -250,7 +398,12 @@ impl Widget for Sparkline<'_> {
             }
 
             let bar_idx = self.value_to_bar_index(value, min, max);
-            let ch = SPARK_CHARS[bar_idx];
+            let (ch, marker_style) = match self.column_marker(i, extremes) {
+                Some((glyph, style, is_max)) => {
+                    (Self::degrade_marker(glyph, is_max, unicode), Some(style))
+                }
+                None => (SPARK_CHARS[bar_idx], None),
+            };
 
             let mut cell = Cell::from_char(ch);
 
@@ -270,6 +423,12 @@ impl Widget for Sparkline<'_> {
                 } else if self.style.fg.is_none() {
                     // Default to white if no style fg and no gradient
                     cell.fg = PackedRgba::WHITE;
+                }
+
+                // Merge the marker style over the computed column style, so a
+                // marker recolours the extreme without dropping the gradient.
+                if let Some(style) = marker_style {
+                    crate::apply_style(&mut cell, style);
                 }
             }
 
@@ -646,5 +805,200 @@ mod tests {
         let c = sparkline.measure(Size::MAX);
 
         assert_eq!(c.max, Some(Size::new(3, 1)));
+    }
+
+    mod marker_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn chars_of(s: &str) -> Vec<char> {
+            s.chars().collect()
+        }
+
+        #[test]
+        fn min_marker_placed_at_first_min() {
+            // First minimum (1.0) is at index 1; the later 1.0 stays a bar.
+            let data = [3.0, 1.0, 2.0, 1.0];
+            let s = Sparkline::new(&data)
+                .with_min_marker('L', Style::default())
+                .render_to_string();
+            let chars = chars_of(&s);
+            assert_eq!(chars[1], 'L');
+            assert_eq!(chars.iter().filter(|&&c| c == 'L').count(), 1);
+        }
+
+        #[test]
+        fn max_marker_placed_at_first_max() {
+            // First maximum (3.0) is at index 1; the later 3.0 stays a bar.
+            let data = [1.0, 3.0, 2.0, 3.0];
+            let s = Sparkline::new(&data)
+                .with_max_marker('H', Style::default())
+                .render_to_string();
+            let chars = chars_of(&s);
+            assert_eq!(chars[1], 'H');
+            assert_eq!(chars.iter().filter(|&&c| c == 'H').count(), 1);
+        }
+
+        #[test]
+        fn markers_respect_explicit_bounds() {
+            // Bounds only scale the bars; markers still track the data extremes.
+            let data = [2.0, 8.0, 5.0];
+            let s = Sparkline::new(&data)
+                .bounds(0.0, 100.0)
+                .with_min_marker('L', Style::default())
+                .with_max_marker('H', Style::default())
+                .render_to_string();
+            let chars = chars_of(&s);
+            assert_eq!(chars[0], 'L', "data min, not the bound min");
+            assert_eq!(chars[1], 'H', "data max, not the bound max");
+        }
+
+        #[test]
+        fn single_sample_gets_max_marker() {
+            let data = [5.0];
+            let both = Sparkline::new(&data)
+                .with_min_marker('L', Style::default())
+                .with_max_marker('H', Style::default())
+                .render_to_string();
+            assert_eq!(both, "H", "a single sample is both extremes; max wins");
+            // Only a min marker still shows on the single sample.
+            let min_only = Sparkline::new(&data)
+                .with_min_marker('L', Style::default())
+                .render_to_string();
+            assert_eq!(min_only, "L");
+        }
+
+        #[test]
+        fn render_to_string_includes_markers() {
+            let data = [1.0, 5.0, 3.0];
+            let s = Sparkline::new(&data)
+                .with_min_marker('v', Style::default())
+                .with_max_marker('^', Style::default())
+                .render_to_string();
+            assert!(s.contains('v') && s.contains('^'), "{s}");
+        }
+
+        #[test]
+        fn empty_data_no_panic() {
+            let sparkline = Sparkline::new(&[])
+                .with_min_marker('L', Style::default())
+                .with_max_marker('H', Style::default());
+            assert_eq!(sparkline.render_to_string(), "");
+            // Rendering empty data to a frame must not panic.
+            let area = Rect::new(0, 0, 3, 1);
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(3, 1, &mut pool);
+            Widget::render(&sparkline, area, &mut frame);
+        }
+
+        #[test]
+        fn nan_samples_are_not_extremes() {
+            let data = [f64::NAN, 5.0, 1.0, f64::NAN];
+            // min at index 2 (1.0), max at index 1 (5.0); NaNs ignored.
+            assert_eq!(Sparkline::extreme_indices(&data), Some((2, 1)));
+            // All-NaN has no extremes.
+            assert_eq!(
+                Sparkline::extreme_indices(&[f64::NAN, f64::NAN]),
+                None
+            );
+            assert_eq!(Sparkline::extreme_indices(&[]), None);
+        }
+
+        #[test]
+        fn marker_outside_window_not_drawn() {
+            // Ascending data: min at 0 (inside a width-5 window), max at 19
+            // (outside it). The window is the leftmost `area.width` samples.
+            let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+            let sparkline = Sparkline::new(&data)
+                .with_min_marker('L', Style::default())
+                .with_max_marker('H', Style::default());
+            let area = Rect::new(0, 0, 5, 1);
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(5, 1, &mut pool);
+            Widget::render(&sparkline, area, &mut frame);
+
+            assert_eq!(
+                frame.buffer.get(0, 0).unwrap().content.as_char(),
+                Some('L'),
+                "the min is inside the window"
+            );
+            for x in 0..5 {
+                assert_ne!(
+                    frame.buffer.get(x, 0).unwrap().content.as_char(),
+                    Some('H'),
+                    "the max column is outside the window"
+                );
+            }
+        }
+
+        #[test]
+        fn marker_style_merges_over_gradient() {
+            // The max marker sets only a background; the gradient foreground at
+            // that column must survive the merge.
+            let data = [0.0, 10.0];
+            let sparkline = Sparkline::new(&data)
+                .bounds(0.0, 10.0)
+                .gradient(PackedRgba::BLUE, PackedRgba::GREEN)
+                .with_max_marker('H', Style::new().bg(PackedRgba::WHITE));
+            let area = Rect::new(0, 0, 2, 1);
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(2, 1, &mut pool);
+            Widget::render(&sparkline, area, &mut frame);
+
+            let max_cell = frame.buffer.get(1, 0).unwrap();
+            assert_eq!(max_cell.content.as_char(), Some('H'));
+            assert_eq!(max_cell.fg, PackedRgba::GREEN, "gradient fg preserved");
+            assert_eq!(max_cell.bg, PackedRgba::WHITE, "marker bg applied");
+        }
+
+        #[test]
+        fn ascii_degradation_falls_back_to_carets() {
+            use ftui_render::budget::DegradationLevel;
+
+            let data = [1.0, 9.0, 3.0];
+            let sparkline = Sparkline::new(&data)
+                .with_min_marker(SparklineMarkers::DEFAULT_MIN_GLYPH, Style::default())
+                .with_max_marker(SparklineMarkers::DEFAULT_MAX_GLYPH, Style::default());
+            let area = Rect::new(0, 0, 3, 1);
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(3, 1, &mut pool);
+            frame.buffer.degradation = DegradationLevel::SimpleBorders;
+            Widget::render(&sparkline, area, &mut frame);
+
+            assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('^'));
+            assert_eq!(frame.buffer.get(1, 0).unwrap().content.as_char(), Some('v'));
+        }
+
+        #[test]
+        fn no_markers_matches_plain_render() {
+            // With no markers set, render_to_string is byte-identical to the
+            // pre-feature output.
+            let data = [0.0, 4.0, 2.0, 8.0, 3.0];
+            let plain = Sparkline::new(&data).render_to_string();
+            let still_plain = Sparkline::new(&data)
+                .with_markers(SparklineMarkers::default())
+                .render_to_string();
+            assert_eq!(plain, still_plain);
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            /// `extreme_indices` returns the earliest indices whose values equal
+            /// the min and max of the (NaN-free) data.
+            #[test]
+            fn extreme_indices_finds_earliest_extremes(
+                data in prop::collection::vec(-100.0f64..100.0, 1..30),
+            ) {
+                let (min_i, max_i) = Sparkline::extreme_indices(&data)
+                    .expect("finite data has extremes");
+                let dmin = data.iter().copied().fold(f64::INFINITY, f64::min);
+                let dmax = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                prop_assert_eq!(data[min_i], dmin);
+                prop_assert_eq!(data[max_i], dmax);
+                prop_assert!(data[..min_i].iter().all(|&v| v > dmin), "earliest min");
+                prop_assert!(data[..max_i].iter().all(|&v| v < dmax), "earliest max");
+            }
+        }
     }
 }
