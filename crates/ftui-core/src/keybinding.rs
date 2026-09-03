@@ -1987,6 +1987,7 @@ impl<A: Clone> KeyDispatcher<A> {
 /// ```
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KeyMapFile<A> {
     /// Chord timeout in milliseconds (clamped to `200..=5000` on load).
     #[serde(default = "default_chord_timeout_ms")]
@@ -2004,6 +2005,7 @@ fn default_chord_timeout_ms() -> u64 {
 /// One binding in a [`KeyMapFile`].
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BindingFile<A> {
     /// Chord text, e.g. `"g g"` or `"Ctrl+x Ctrl+s"`.
     pub chord: String,
@@ -2319,6 +2321,43 @@ mod keymap_tests {
     }
 
     #[test]
+    fn prefix_with_own_binding_fires_on_flush() {
+        // `g` is bound both on its own and as the prefix of `g g`. A following
+        // key that cannot extend the prefix flushes it. Because this is not a
+        // timeout, the prefix's own binding fires with no `Expired`, and the
+        // non-extending key is then reported unbound.
+        let mut map = KeyMap::new();
+        let one = map.bind(chord("g"), Act::Help);
+        map.bind(chord("g g"), Act::GoTop);
+        let mut dispatcher = KeyDispatcher::new(map);
+        let t0 = Instant::now();
+
+        assert_eq!(
+            dispatcher.feed(&press('g'), t0),
+            vec![Dispatch::Pending { prefix: chord("g") }]
+        );
+        let out = dispatcher.feed(&press('x'), t0 + ms(10));
+        assert_eq!(
+            out,
+            vec![
+                Dispatch::Action {
+                    action: Act::Help,
+                    binding: one,
+                    chord: chord("g"),
+                },
+                Dispatch::Unbound(press('x')),
+            ]
+        );
+        assert_eq!(dispatcher.pending_prefix(), None);
+        assert_eq!(
+            dispatcher.stats().expired,
+            0,
+            "a bound prefix flushed by a non-extending key does not expire"
+        );
+        assert_eq!(dispatcher.stats().dispatched, 1);
+    }
+
+    #[test]
     fn widget_beats_mode_beats_global() {
         let mut map = KeyMap::new();
         let g = map.bind_in(chord("s"), Act::Global, Priority::Global, None);
@@ -2570,6 +2609,148 @@ mod keymap_tests {
         assert_eq!(minimal.bindings()[0].priority, Priority::Global);
     }
 
+    /// Unknown keys in a keymap file are rejected (the typo names itself), and
+    /// a bad chord names its binding index.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn toml_rejects_unknown_field_and_bad_chord() {
+        #[derive(Debug, Clone, serde::Deserialize)]
+        enum Action {
+            Quit,
+        }
+
+        let unknown_top =
+            toml::from_str::<KeyMap<Action>>("chord_timeout_ms = 500\ntypo_field = 3\n")
+                .expect_err("an unknown top-level field must be rejected")
+                .to_string();
+        assert!(unknown_top.contains("typo_field"), "{unknown_top}");
+
+        let unknown_binding = toml::from_str::<KeyMap<Action>>(
+            "[[bindings]]\nchord = \"q\"\naction = \"Quit\"\nchrod = \"x\"\n",
+        )
+        .expect_err("an unknown binding field must be rejected")
+        .to_string();
+        assert!(unknown_binding.contains("chrod"), "{unknown_binding}");
+
+        let bad_chord = toml::from_str::<KeyMap<Action>>(
+            "[[bindings]]\nchord = \"Nope+q\"\naction = \"Quit\"\n",
+        )
+        .expect_err("a bad chord must be rejected")
+        .to_string();
+        assert!(
+            bad_chord.contains("binding 0") && bad_chord.contains("Nope"),
+            "{bad_chord}"
+        );
+    }
+
+    /// The keymap example embedded in the keybinding policy doc (and shipped as
+    /// a fixture) parses into exactly the map it describes, so the docs and the
+    /// parser cannot silently drift apart.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn toml_example_in_docs_parses() {
+        #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+        enum Action {
+            Save,
+            Newline,
+            Top,
+        }
+
+        const EXAMPLE: &str = include_str!("../tests/fixtures/keymap_example.toml");
+        let map: KeyMap<Action> =
+            toml::from_str(EXAMPLE).expect("documented keymap example must parse");
+
+        assert_eq!(map.config().chord_timeout, ms(750));
+        assert_eq!(map.len(), 3);
+
+        let save = &map.bindings()[0];
+        assert_eq!(save.action, Action::Save);
+        assert_eq!(save.chord, chord("Ctrl+x Ctrl+s"));
+        assert_eq!(save.priority, Priority::Mode);
+        assert_eq!(save.label.as_deref(), Some("save"));
+
+        let newline = &map.bindings()[1];
+        assert_eq!(newline.action, Action::Newline);
+        assert_eq!(newline.priority, Priority::Widget);
+        let editor = newline.context.expect("editor context restored");
+        assert_eq!(map.context_name(editor), Some("editor"));
+        assert_eq!(
+            map.lookup(&chord("Enter"), &[editor])
+                .exact
+                .map(|binding| &binding.action),
+            Some(&Action::Newline)
+        );
+        assert!(
+            map.lookup(&chord("Enter"), &[]).is_none(),
+            "the editor binding stays inactive outside its context"
+        );
+
+        assert_eq!(map.bindings()[2].chord, chord("g g"));
+        assert_eq!(map.bindings()[2].action, Action::Top);
+        let report = map.conflicts();
+        assert!(report.is_empty(), "{report}");
+    }
+
+    fn arb_code() -> impl Strategy<Value = KeyCode> {
+        prop_oneof![
+            prop::sample::select(vec![
+                'a', 'b', 'q', 'x', 'z', 'A', 'Q', '1', '9', '+', '-', '.', '/', ' ',
+            ])
+            .prop_map(KeyCode::Char),
+            (1u8..=24).prop_map(KeyCode::F),
+            prop::sample::select(vec![
+                KeyCode::Enter,
+                KeyCode::Escape,
+                KeyCode::Backspace,
+                KeyCode::Tab,
+                KeyCode::BackTab,
+                KeyCode::Delete,
+                KeyCode::Insert,
+                KeyCode::Home,
+                KeyCode::End,
+                KeyCode::PageUp,
+                KeyCode::PageDown,
+                KeyCode::Up,
+                KeyCode::Down,
+                KeyCode::Left,
+                KeyCode::Right,
+                KeyCode::Null,
+                KeyCode::MediaPlayPause,
+                KeyCode::MediaStop,
+                KeyCode::MediaNextTrack,
+                KeyCode::MediaPrevTrack,
+            ]),
+        ]
+    }
+
+    fn arb_mods() -> impl Strategy<Value = Modifiers> {
+        (0u8..16).prop_map(|bits| {
+            let mut modifiers = Modifiers::NONE;
+            if bits & 0b0001 != 0 {
+                modifiers |= Modifiers::CTRL;
+            }
+            if bits & 0b0010 != 0 {
+                modifiers |= Modifiers::ALT;
+            }
+            if bits & 0b0100 != 0 {
+                modifiers |= Modifiers::SHIFT;
+            }
+            if bits & 0b1000 != 0 {
+                modifiers |= Modifiers::SUPER;
+            }
+            modifiers
+        })
+    }
+
+    fn arb_small_chord() -> impl Strategy<Value = Chord> {
+        prop::collection::vec(
+            prop::sample::select(vec!['a', 'b', 'c', 'd'])
+                .prop_map(|c| KeyCombo::key(KeyCode::Char(c))),
+            1..=3usize,
+        )
+        .prop_map(|combos| Chord::new(combos).expect("1..=3 combos is a valid chord"))
+    }
+
     fn arb_key() -> impl Strategy<Value = KeyEvent> {
         let code = prop_oneof![
             Just(KeyCode::Char('a')),
@@ -2619,6 +2800,58 @@ mod keymap_tests {
             prop_assert!(
                 stats.dispatched + stats.pending + stats.expired + stats.unbound + stats.esc > 0
             );
+        }
+
+        /// `Display` and `FromStr` are inverse over the normalized combo
+        /// domain: parsing a combo's own text yields the same combo back.
+        #[test]
+        fn combo_display_parse_round_trip(code in arb_code(), mods in arb_mods()) {
+            let combo = KeyCombo::new(code, mods);
+            let text = combo.to_string();
+            let parsed: KeyCombo = text
+                .parse()
+                .unwrap_or_else(|e| panic!("`{text}` did not re-parse: {e}"));
+            prop_assert_eq!(parsed, combo, "text = `{}`", text);
+        }
+
+        /// An unambiguous lookup never depends on the order bindings were
+        /// inserted; only reported conflicts may change a winner.
+        #[test]
+        fn lookup_is_deterministic_under_shuffle(
+            raw in prop::collection::vec((arb_small_chord(), any::<u64>()), 1..12),
+            queries in prop::collection::vec(arb_small_chord(), 1..8),
+        ) {
+            // Keep only the first occurrence of each chord: a duplicate is a
+            // reported conflict, not something lookup must resolve by order.
+            let mut seen = std::collections::BTreeSet::new();
+            let mut entries: Vec<(Chord, u64)> = Vec::new();
+            for (ch, key) in raw {
+                if seen.insert(ch.to_string()) {
+                    entries.push((ch, key));
+                }
+            }
+            let build = |order: &[(Chord, u64)]| {
+                let mut map = KeyMap::new();
+                for (ch, _) in order {
+                    map.bind(ch.clone(), ch.to_string());
+                }
+                map
+            };
+            let in_order = build(&entries);
+            let mut shuffled = entries.clone();
+            shuffled.sort_by_key(|(_, key)| *key);
+            let reordered = build(&shuffled);
+            for query in &queries {
+                let a = in_order.lookup(query, &[]);
+                let b = reordered.lookup(query, &[]);
+                prop_assert_eq!(
+                    a.exact.map(|binding| binding.action.clone()),
+                    b.exact.map(|binding| binding.action.clone()),
+                    "winner changed for `{}`",
+                    query
+                );
+                prop_assert_eq!(a.longer, b.longer, "longer count changed for `{}`", query);
+            }
         }
     }
 }

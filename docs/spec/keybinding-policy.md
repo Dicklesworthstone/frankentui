@@ -244,6 +244,39 @@ impl Default for KeybindingConfig {
 }
 ```
 
+### 9.3 Keymap File (serde feature)
+
+When the `ftui-core` crate is built with the `serde` feature, a `KeyMap`
+round-trips through a human-editable TOML/JSON file. Chords are text
+(whitespace-separated combos), contexts are named, and the chord timeout is
+milliseconds (clamped to `200..=5000` on load). Unknown keys are rejected so a
+typo names itself rather than silently dropping a binding.
+
+```toml
+chord_timeout_ms = 750
+
+[[bindings]]
+chord = "Ctrl+x Ctrl+s"
+action = "Save"
+priority = "Mode"
+label = "save"
+
+[[bindings]]
+chord = "Enter"
+action = "Newline"
+priority = "Widget"
+context = "editor"
+
+[[bindings]]
+chord = "g g"
+action = "Top"
+label = "go to top"
+```
+
+This exact example lives at `crates/ftui-core/tests/fixtures/keymap_example.toml`
+and is parsed by the test `keybinding::keymap_tests::toml_example_in_docs_parses`,
+so the documentation and the parser cannot drift apart.
+
 ---
 
 ## 10) Failure Modes

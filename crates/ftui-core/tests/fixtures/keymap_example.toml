@@ -1,0 +1,31 @@
+# Example FrankenTUI keymap file (parsed by the ftui-core `serde` feature).
+#
+# This is the canonical, human-editable keymap format. It is mirrored in
+# docs/spec/keybinding-policy.md section 9.3 and kept honest by the test
+# `keybinding::keymap_tests::toml_example_in_docs_parses`, which parses this
+# very file with `include_str!` and asserts the resulting `KeyMap`.
+#
+# `chord_timeout_ms` is clamped to 200..=5000 on load. Each `[[bindings]]`
+# entry names a chord (whitespace-separated combos), an action, and optional
+# `priority` (Global | Mode | Widget, default Global), `context`, and `label`.
+# Unknown keys are rejected (a typo names itself) so a bad file fails loudly
+# instead of silently dropping a binding.
+
+chord_timeout_ms = 750
+
+[[bindings]]
+chord = "Ctrl+x Ctrl+s"
+action = "Save"
+priority = "Mode"
+label = "save"
+
+[[bindings]]
+chord = "Enter"
+action = "Newline"
+priority = "Widget"
+context = "editor"
+
+[[bindings]]
+chord = "g g"
+action = "Top"
+label = "go to top"
