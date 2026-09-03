@@ -774,7 +774,6 @@ fn read_tty_reply(timeout: Duration, is_reply: impl Fn(&[u8]) -> bool) -> Option
     read_probe_reply(&mut reader, timeout, is_reply)
 }
 
-
 /// Check if a byte sequence represents a complete terminal response.
 ///
 /// Recognizes:
@@ -2383,8 +2382,8 @@ mod tests {
         });
 
         let mut reader = reader;
-        let result = read_probe_reply(&mut reader, Duration::from_millis(100), |_| true)
-            .expect("response");
+        let result =
+            read_probe_reply(&mut reader, Duration::from_millis(100), |_| true).expect("response");
         writer_thread.join().expect("writer thread join");
 
         assert_eq!(result, b"\x1b[?1;2;4c");
