@@ -42,7 +42,7 @@ use ftui_widgets::rule::Rule;
 use ftui_widgets::scrollbar::{
     SCROLLBAR_PART_TRACK, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
-use ftui_widgets::sparkline::Sparkline;
+use ftui_widgets::sparkline::{Sparkline, SparklineMarkers};
 use ftui_widgets::spinner::SpinnerState;
 use ftui_widgets::status_line::{StatusItem, StatusLine};
 use ftui_widgets::stopwatch::{Stopwatch, StopwatchFormat, StopwatchState};
@@ -1177,6 +1177,14 @@ impl WidgetGallery {
 
         Sparkline::new(&data_up)
             .style(Style::new().fg(theme::accent::PRIMARY))
+            .with_min_marker(
+                SparklineMarkers::DEFAULT_MIN_GLYPH,
+                Style::new().fg(theme::accent::SUCCESS),
+            )
+            .with_max_marker(
+                SparklineMarkers::DEFAULT_MAX_GLYPH,
+                Style::new().fg(theme::accent::ERROR),
+            )
             .render(rows[0], frame);
         if rows.len() > 1 {
             Sparkline::new(&data_down)
