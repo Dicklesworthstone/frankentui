@@ -897,10 +897,7 @@ mod tests {
             // min at index 2 (1.0), max at index 1 (5.0); NaNs ignored.
             assert_eq!(Sparkline::extreme_indices(&data), Some((2, 1)));
             // All-NaN has no extremes.
-            assert_eq!(
-                Sparkline::extreme_indices(&[f64::NAN, f64::NAN]),
-                None
-            );
+            assert_eq!(Sparkline::extreme_indices(&[f64::NAN, f64::NAN]), None);
             assert_eq!(Sparkline::extreme_indices(&[]), None);
         }
 
@@ -979,6 +976,49 @@ mod tests {
                 .with_markers(SparklineMarkers::default())
                 .render_to_string();
             assert_eq!(plain, still_plain);
+        }
+
+        #[test]
+        fn sparkline_markers_20x1() {
+            // A 20-wide render with a unique min at column 3 and a unique max at
+            // column 12; both markers land on exactly those columns.
+            let mut data = [5.0f64; 20];
+            data[3] = 0.0;
+            data[12] = 9.0;
+            let sparkline = Sparkline::new(&data)
+                .with_min_marker(SparklineMarkers::DEFAULT_MIN_GLYPH, Style::default())
+                .with_max_marker(SparklineMarkers::DEFAULT_MAX_GLYPH, Style::default());
+            let area = Rect::new(0, 0, 20, 1);
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(20, 1, &mut pool);
+            Widget::render(&sparkline, area, &mut frame);
+
+            let row: String = (0..20)
+                .map(|x| {
+                    frame
+                        .buffer
+                        .get(x, 0)
+                        .and_then(|c| c.content.as_char())
+                        .unwrap_or(' ')
+                })
+                .collect();
+            let chars: Vec<char> = row.chars().collect();
+            assert_eq!(chars[3], SparklineMarkers::DEFAULT_MIN_GLYPH);
+            assert_eq!(chars[12], SparklineMarkers::DEFAULT_MAX_GLYPH);
+            assert_eq!(
+                chars
+                    .iter()
+                    .filter(|&&c| c == SparklineMarkers::DEFAULT_MIN_GLYPH)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                chars
+                    .iter()
+                    .filter(|&&c| c == SparklineMarkers::DEFAULT_MAX_GLYPH)
+                    .count(),
+                1
+            );
         }
 
         proptest! {

@@ -419,6 +419,21 @@ fn widget_gallery_section2_120x40() {
 }
 
 #[test]
+fn widget_gallery_data_viz_120x40() {
+    // Section 3 (data viz) renders the sparklines, including the min/max
+    // marker row (G17.5).
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Right));
+    screen.update(&press(KeyCode::Right));
+    screen.update(&press(KeyCode::Right));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_data_viz_120x40", &frame.buffer);
+}
+
+#[test]
 fn widget_gallery_tiny_40x10() {
     let screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
     let mut pool = GraphemePool::new();
