@@ -341,6 +341,7 @@ Required fields:
 - `dirty_tiles`, `dirty_tile_count`, `dirty_cells`, `dirty_tile_ratio`, `dirty_cell_ratio`
 - `scanned_tiles`, `skipped_tiles`, `skipped_tile_count`
 - `tile_scan_cells_estimate`, `sat_build_cost_est`
+- `skipped_tile_rows` (tile rows retired wholesale by the SAT row prefilter), `sat_queries` (SAT row-sum queries made, one per tile row)
 - `bayesian_enabled`, `dirty_rows_enabled`
 
 Runtime defaults (`RuntimeDiffConfig`):

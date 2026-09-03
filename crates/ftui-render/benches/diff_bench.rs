@@ -44,6 +44,51 @@ fn make_pair(width: u16, height: u16, change_pct: f64) -> (Buffer, Buffer) {
     (old, new)
 }
 
+/// Like [`make_pair`], but every dirty cell is confined to the given tile rows
+/// (bands of `tile_h` buffer rows). This is the case the SAT row prefilter is
+/// built for: a frame that is sparse overall yet clusters its changes in a few
+/// horizontal bands (a status line, a scrolling log), so most tile rows are
+/// entirely clean and can be retired with one subtraction each.
+fn make_pair_rows(
+    width: u16,
+    height: u16,
+    change_pct: f64,
+    tile_h: u16,
+    bands: &[usize],
+) -> (Buffer, Buffer) {
+    let mut old = Buffer::new(width, height);
+    let mut new = old.clone();
+    old.clear_dirty();
+    new.clear_dirty();
+
+    let mut rows: Vec<u16> = Vec::new();
+    for &band in bands {
+        let start = band * tile_h as usize;
+        let end = ((band + 1) * tile_h as usize).min(height as usize);
+        for y in start..end {
+            rows.push(y as u16);
+        }
+    }
+    if rows.is_empty() {
+        return (old, new);
+    }
+
+    let total = width as usize * height as usize;
+    let to_change = ((total as f64) * change_pct / 100.0) as usize;
+    for i in 0..to_change {
+        let x = (i * 7 + 3) as u16 % width;
+        let y = rows[i % rows.len()];
+        let ch = char::from_u32(('A' as u32) + (i as u32 % 26)).unwrap();
+        new.set_raw(
+            x,
+            y,
+            Cell::from_char(ch).with_fg(PackedRgba::rgb(0, 255, 0)),
+        );
+    }
+
+    (old, new)
+}
+
 fn measure_diff_stats(iters: u64, old: &Buffer, new: &Buffer, diff_fn: DiffFn) -> DiffStats {
     let mut times = Vec::with_capacity(iters as usize);
     let mut total_us: u128 = 0;
@@ -204,6 +249,89 @@ fn bench_diff_sparse(c: &mut Criterion) {
             BenchmarkId::new("compute", format!("{w}x{h}")),
             &(),
             |b, _| b.iter(|| black_box(BufferDiff::compute(&old, &new))),
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_diff_sparse_rows(c: &mut Criterion) {
+    // 5% of cells dirty overall, but concentrated in three tile rows — the case
+    // the SAT row prefilter targets. Reports the flat `compute` cost and the
+    // tile path (with the prefilter), plus the tile stats so the number of tile
+    // rows retired by one subtraction each is visible in the log.
+    let mut group = c.benchmark_group("diff/sparse_5pct_rows");
+    let tile_h: u16 = 8;
+    let bands: &[usize] = &[2, 3, 4];
+
+    for (w, h) in [(120u16, 40u16), (200u16, 60u16), (240u16, 80u16)] {
+        let cells = w as u64 * h as u64;
+        group.throughput(Throughput::Elements(cells));
+        let (old, new) = make_pair_rows(w, h, 5.0, tile_h, bands);
+        let label = format!("{w}x{h}");
+
+        group.bench_with_input(
+            BenchmarkId::new("compute", &label),
+            &(&old, &new),
+            |b, (old, new)| {
+                b.iter_custom(|iters| {
+                    let stats = measure_diff_stats(iters, old, new, BufferDiff::compute);
+                    eprintln!(
+                        "{{\"event\":\"diff_sparse_rows_bench\",\"method\":\"compute\",\"width\":{w},\"height\":{h},\"iters\":{iters},\"p50_us\":{},\"p95_us\":{}}}",
+                        stats.p50_us, stats.p95_us
+                    );
+                    let total_us = stats.total_us.min(u128::from(u64::MAX)) as u64;
+                    Duration::from_micros(total_us)
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("compute_dirty", &label),
+            &(&old, &new),
+            |b, (old, new)| {
+                b.iter_custom(|iters| {
+                    // Force the tile path on at every listed size: 120x40 is
+                    // below the default 12k-cell threshold, and concentrating
+                    // the dirt in a few bands trips the dense-tile heuristic, so
+                    // both fallbacks are disabled to isolate the prefilter path.
+                    let mut diff = BufferDiff::new();
+                    {
+                        let cfg = diff.tile_config_mut();
+                        cfg.min_cells_for_tiles = 0;
+                        cfg.tile_h = tile_h;
+                        cfg.dense_cell_ratio = 1.1;
+                        cfg.dense_tile_ratio = 1.1;
+                    }
+                    let (stats, tile_stats) =
+                        measure_diff_stats_dirty(iters, old, new, &mut diff);
+                    let (
+                        tiles_y,
+                        dirty_tiles,
+                        scanned_tiles,
+                        skipped_tile_rows,
+                        sat_queries,
+                        fallback,
+                    ) = if let Some(t) = tile_stats {
+                        (
+                            t.tiles_y,
+                            t.dirty_tiles,
+                            t.scanned_tiles,
+                            t.skipped_tile_rows,
+                            t.sat_queries,
+                            t.fallback.map(|r| r.as_str()).unwrap_or("none"),
+                        )
+                    } else {
+                        (0, 0, 0, 0, 0, "none")
+                    };
+                    eprintln!(
+                        "{{\"event\":\"diff_sparse_rows_bench\",\"method\":\"compute_dirty\",\"width\":{w},\"height\":{h},\"iters\":{iters},\"p50_us\":{},\"p95_us\":{},\"tiles_y\":{tiles_y},\"dirty_tiles\":{dirty_tiles},\"scanned_tiles\":{scanned_tiles},\"skipped_tile_rows\":{skipped_tile_rows},\"sat_queries\":{sat_queries},\"fallback\":\"{fallback}\"}}",
+                        stats.p50_us, stats.p95_us
+                    );
+                    let total_us = stats.total_us.min(u128::from(u64::MAX)) as u64;
+                    Duration::from_micros(total_us)
+                })
+            },
         );
     }
 
@@ -919,6 +1047,8 @@ criterion_group! {
         // Diff benchmarks
         bench_diff_identical,
         bench_diff_sparse,
+        // SAT row-prefilter case: sparse but concentrated in a few tile rows
+        bench_diff_sparse_rows,
         bench_diff_heavy,
         bench_diff_full,
         bench_diff_runs,

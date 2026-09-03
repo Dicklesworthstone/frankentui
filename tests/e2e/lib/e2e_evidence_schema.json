@@ -276,8 +276,8 @@
         "tile_used", "tile_fallback", "tile_w", "tile_h", "tile_size", "tiles_x",
         "tiles_y", "dirty_tiles", "dirty_tile_count", "dirty_cells", "dirty_tile_ratio",
         "dirty_cell_ratio", "scanned_tiles", "skipped_tiles", "skipped_tile_count",
-        "tile_scan_cells_estimate", "sat_build_cost_est", "bayesian_enabled",
-        "dirty_rows_enabled"
+        "tile_scan_cells_estimate", "sat_build_cost_est", "skipped_tile_rows",
+        "sat_queries", "bayesian_enabled", "dirty_rows_enabled"
       ],
       "optional": [],
       "types": {
@@ -317,6 +317,8 @@
         "skipped_tile_count": "integer",
         "tile_scan_cells_estimate": "integer",
         "sat_build_cost_est": "integer",
+        "skipped_tile_rows": "integer",
+        "sat_queries": "integer",
         "bayesian_enabled": "boolean",
         "dirty_rows_enabled": "boolean"
       }

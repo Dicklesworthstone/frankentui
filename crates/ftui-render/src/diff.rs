@@ -589,6 +589,13 @@ pub struct TileDiffStats {
     pub skipped_tiles: usize,
     pub sat_build_cells: usize,
     pub scan_cells_estimate: usize,
+    /// Tile rows skipped wholesale by the SAT row prefilter because their SAT
+    /// row sum was zero (no tile in the row was dirty). This is the one thing
+    /// the summed-area table does that the per-tile bool grid cannot: retire a
+    /// whole band of tiles with a single subtraction.
+    pub skipped_tile_rows: usize,
+    /// SAT row-sum queries the prefilter made (one per tile row).
+    pub sat_queries: usize,
     pub fallback: Option<TileDiffFallback>,
 }
 
@@ -627,6 +634,64 @@ pub struct TileDiffPlan<'a> {
 pub enum TileDiffBuild<'a> {
     UseTiles(TileDiffPlan<'a>),
     Fallback(TileDiffStats),
+}
+
+impl TileDiffPlan<'_> {
+    /// Dirty-cell count in tile row `ty`, in O(1), read straight from the
+    /// summed-area table:
+    ///
+    /// ```text
+    /// sat_w      = tiles_x + 1
+    /// row_sum(ty) = sat[(ty + 1) * sat_w + tiles_x] - sat[ty * sat_w + tiles_x]
+    /// ```
+    ///
+    /// Border column `tiles_x` carries the running prefix total of whole rows,
+    /// so the difference of two adjacent rows is that row's dirty-cell count.
+    /// The SAT is monotonic (counts are non-negative), so the subtraction never
+    /// underflows; `saturating_sub` guards against a corrupt table anyway.
+    /// Returns 0 for an out-of-range row.
+    #[inline]
+    #[must_use]
+    pub fn tile_row_dirty(&self, ty: usize) -> u32 {
+        let tiles_x = self.params.tiles_x;
+        if ty >= self.params.tiles_y {
+            return 0;
+        }
+        let sat_w = tiles_x + 1;
+        let below = self.sat[(ty + 1) * sat_w + tiles_x];
+        let above = self.sat[ty * sat_w + tiles_x];
+        below.saturating_sub(above)
+    }
+
+    /// Dirty-cell count in the tile rectangle `[tx0, tx1) x [ty0, ty1)`, in
+    /// O(1), via the four-corner SAT formula:
+    ///
+    /// ```text
+    /// sat[ty1][tx1] - sat[ty0][tx1] - sat[ty1][tx0] + sat[ty0][tx0]
+    /// ```
+    ///
+    /// This is the README's "O(1) density of any rectangle" query. The scan
+    /// driver itself uses only [`tile_row_dirty`](Self::tile_row_dirty); this
+    /// method exists so the claim is real and testable. Corners are clamped to
+    /// the tile grid; an empty or out-of-range rectangle returns 0. The sum is
+    /// accumulated in `u64` so the two-corner addition cannot overflow before
+    /// the difference (which fits in `u32`) is taken.
+    #[inline]
+    #[must_use]
+    pub fn rect_dirty(&self, tx0: usize, ty0: usize, tx1: usize, ty1: usize) -> u32 {
+        let tiles_x = self.params.tiles_x;
+        let tx1 = tx1.min(tiles_x);
+        let ty1 = ty1.min(self.params.tiles_y);
+        if tx0 >= tx1 || ty0 >= ty1 {
+            return 0;
+        }
+        let sat_w = tiles_x + 1;
+        let at = |ty: usize, tx: usize| u64::from(self.sat[ty * sat_w + tx]);
+        let sum = (at(ty1, tx1) + at(ty0, tx0)).saturating_sub(at(ty0, tx1) + at(ty1, tx0));
+        // The result is bounded by the total dirty-cell count, which fit in a
+        // u32 when the SAT was built, so this cast is lossless.
+        sum as u32
+    }
 }
 
 impl TileDiffBuilder {
@@ -677,6 +742,8 @@ impl TileDiffBuilder {
             skipped_tiles: total_tiles,
             sat_build_cells: 0,
             scan_cells_estimate: 0,
+            skipped_tile_rows: 0,
+            sat_queries: 0,
             fallback: None,
         };
 
@@ -866,6 +933,8 @@ impl TileDiffBuilder {
             skipped_tiles: total_tiles,
             sat_build_cells: 0,
             scan_cells_estimate: 0,
+            skipped_tile_rows: 0,
+            sat_queries: 0,
             fallback: None,
         };
 
@@ -1117,36 +1186,97 @@ fn compute_dirty_changes(
     let tile_build = tile_builder.build_from_buffer(tile_config, new);
 
     if let TileDiffBuild::UseTiles(plan) = tile_build {
-        *tile_stats_out = Some(plan.stats);
+        let mut stats = plan.stats;
         let tile_w = plan.params.tile_w as usize;
         let tile_h = plan.params.tile_h as usize;
         let tiles_x = plan.params.tiles_x;
+        let tiles_y = plan.params.tiles_y;
+        let height_usize = height as usize;
         let dirty_tiles = plan.dirty_tiles;
 
-        for y in 0..height {
-            if !dirty[y as usize] {
+        let mut skipped_tile_rows = 0usize;
+        let mut sat_queries = 0usize;
+
+        // Walk whole tile rows. The summed-area table retires a clean band (row
+        // sum 0) with a single subtraction, so its `tile_h` buffer rows are
+        // never touched — the one thing the prefix-sum table does that the
+        // per-tile bool grid cannot. A zero row sum means every tile in the row
+        // has zero dirty cells, exactly what the per-tile skip would have found,
+        // so the emitted changes are identical to the flat scan.
+        for tile_y in 0..tiles_y {
+            sat_queries += 1;
+            if plan.tile_row_dirty(tile_y) == 0 {
+                skipped_tile_rows += 1;
                 continue;
             }
 
-            let row_start = y as usize * w;
-            let old_row = &old_cells[row_start..row_start + w];
-            let new_row = &new_cells[row_start..row_start + w];
-
-            if old_row == new_row {
-                continue;
-            }
-
-            let tile_y = y as usize / tile_h;
             let tile_row_base = tile_y * tiles_x;
             debug_assert!(tile_row_base + tiles_x <= dirty_tiles.len());
+            let y_start = tile_y * tile_h;
+            let y_end = ((tile_y + 1) * tile_h).min(height_usize);
 
-            let span_row = new.dirty_span_row(y);
-            if let Some(span_row) = span_row {
-                if span_row.is_full() {
+            for y in y_start..y_end {
+                if !dirty[y] {
+                    continue;
+                }
+
+                let row_start = y * w;
+                let old_row = &old_cells[row_start..row_start + w];
+                let new_row = &new_cells[row_start..row_start + w];
+
+                if old_row == new_row {
+                    continue;
+                }
+
+                let y16 = y as u16;
+                let span_row = new.dirty_span_row(y16);
+                if let Some(span_row) = span_row {
+                    if span_row.is_full() {
+                        scan_row_tiles(
+                            old_row,
+                            new_row,
+                            y16,
+                            w,
+                            tile_w,
+                            tiles_x,
+                            tile_row_base,
+                            dirty_tiles,
+                            changes,
+                        );
+                        continue;
+                    }
+                    let spans = span_row.spans();
+                    if spans.is_empty() {
+                        scan_row_tiles(
+                            old_row,
+                            new_row,
+                            y16,
+                            w,
+                            tile_w,
+                            tiles_x,
+                            tile_row_base,
+                            dirty_tiles,
+                            changes,
+                        );
+                        continue;
+                    }
+                    scan_row_tiles_spans(
+                        old_row,
+                        new_row,
+                        y16,
+                        w,
+                        tile_w,
+                        tiles_x,
+                        tile_row_base,
+                        dirty_tiles,
+                        spans,
+                        changes,
+                    );
+                } else {
                     scan_row_tiles(
                         old_row,
                         new_row,
-                        y,
+                        y16,
                         w,
                         tile_w,
                         tiles_x,
@@ -1154,49 +1284,13 @@ fn compute_dirty_changes(
                         dirty_tiles,
                         changes,
                     );
-                    continue;
                 }
-                let spans = span_row.spans();
-                if spans.is_empty() {
-                    scan_row_tiles(
-                        old_row,
-                        new_row,
-                        y,
-                        w,
-                        tile_w,
-                        tiles_x,
-                        tile_row_base,
-                        dirty_tiles,
-                        changes,
-                    );
-                    continue;
-                }
-                scan_row_tiles_spans(
-                    old_row,
-                    new_row,
-                    y,
-                    w,
-                    tile_w,
-                    tiles_x,
-                    tile_row_base,
-                    dirty_tiles,
-                    spans,
-                    changes,
-                );
-            } else {
-                scan_row_tiles(
-                    old_row,
-                    new_row,
-                    y,
-                    w,
-                    tile_w,
-                    tiles_x,
-                    tile_row_base,
-                    dirty_tiles,
-                    changes,
-                );
             }
         }
+
+        stats.skipped_tile_rows = skipped_tile_rows;
+        stats.sat_queries = sat_queries;
+        *tile_stats_out = Some(stats);
         return;
     }
 
@@ -2952,6 +3046,172 @@ mod tests {
             let changes = (total / 100).max(1);
             apply_random_changes(&mut new, 0xDEADBEEF_u64 + idx as u64, changes);
             assert_tile_diff_equivalence(&old, &new, "large_sparse");
+        }
+    }
+
+    #[test]
+    fn row_prefilter_skips_clean_tile_rows() {
+        // 200x60 with 8x8 tiles => 25 x 8 tiles. Concentrate every change in
+        // tile row 3 (buffer rows 24..32), across three distinct tile columns.
+        // The SAT row prefilter must retire the other seven tile rows with one
+        // subtraction each and never touch their buffer rows.
+        let old = Buffer::new(200, 60);
+        let new = make_dirty_buffer(200, 60, &[(0, 24, 'A'), (8, 25, 'B'), (16, 26, 'C')]);
+        let (dirty, stats) = diff_with_forced_tiles(&old, &new);
+
+        assert_eq!(stats.fallback, None, "{}", tile_diag(&stats));
+        assert_eq!(stats.tiles_y, 8, "eight tile rows at 8px tall over 60 rows");
+        assert_eq!(stats.sat_queries, 8, "one SAT row-sum query per tile row");
+        assert_eq!(
+            stats.skipped_tile_rows,
+            7,
+            "seven clean tile rows retired by the SAT: {}",
+            tile_diag(&stats)
+        );
+        assert_eq!(
+            stats.scanned_tiles, 3,
+            "three distinct dirty tiles, all in tile row 3"
+        );
+
+        // The prefilter changes performance, never output.
+        let full = BufferDiff::compute(&old, &new);
+        assert_eq!(full.changes(), dirty.changes());
+    }
+
+    mod sat_prefilter_props {
+        use super::*;
+        use proptest::prelude::*;
+
+        const W: u16 = 200;
+        const H: u16 = 60;
+
+        fn forced_tile_config() -> TileDiffConfig {
+            TileDiffConfig {
+                enabled: true,
+                tile_w: 8,
+                tile_h: 8,
+                min_cells_for_tiles: 0,
+                dense_cell_ratio: 1.1,
+                dense_tile_ratio: 1.1,
+                max_tiles: usize::MAX / 4,
+                ..Default::default()
+            }
+        }
+
+        /// Build the tile plan for `new` and hand it to `f`. The SAT query
+        /// methods are read-only, so a borrowed plan is all they need.
+        fn with_forced_plan<R>(new: &Buffer, f: impl FnOnce(&TileDiffPlan<'_>) -> R) -> R {
+            let mut builder = TileDiffBuilder::new();
+            let config = forced_tile_config();
+            match builder.build_from_buffer(&config, new) {
+                TileDiffBuild::UseTiles(plan) => f(&plan),
+                TileDiffBuild::Fallback(stats) => {
+                    panic!("expected the tile path, got fallback {:?}", stats.fallback)
+                }
+            }
+        }
+
+        fn naive_row_sum(plan: &TileDiffPlan<'_>, ty: usize) -> u32 {
+            let tiles_x = plan.params.tiles_x;
+            (0..tiles_x)
+                .map(|tx| plan.tile_counts[ty * tiles_x + tx])
+                .sum()
+        }
+
+        fn naive_rect_sum(
+            plan: &TileDiffPlan<'_>,
+            tx0: usize,
+            ty0: usize,
+            tx1: usize,
+            ty1: usize,
+        ) -> u32 {
+            let tiles_x = plan.params.tiles_x;
+            let mut sum = 0u32;
+            for ty in ty0..ty1 {
+                for tx in tx0..tx1 {
+                    sum += plan.tile_counts[ty * tiles_x + tx];
+                }
+            }
+            sum
+        }
+
+        fn dirty_cells() -> impl Strategy<Value = Vec<(u16, u16, char)>> {
+            prop::collection::vec((0u16..W, 0u16..H).prop_map(|(x, y)| (x, y, 'X')), 0..40)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            /// The SAT row-sum query equals a direct sum over the tile-count row.
+            #[test]
+            fn tile_row_dirty_matches_naive_sum(cells in dirty_cells()) {
+                let new = make_dirty_buffer(W, H, &cells);
+                with_forced_plan(&new, |plan| -> Result<(), TestCaseError> {
+                    for ty in 0..plan.params.tiles_y {
+                        prop_assert_eq!(
+                            plan.tile_row_dirty(ty),
+                            naive_row_sum(plan, ty),
+                            "row {}",
+                            ty
+                        );
+                    }
+                    // Out-of-range rows read as zero.
+                    prop_assert_eq!(plan.tile_row_dirty(plan.params.tiles_y), 0);
+                    Ok(())
+                })?;
+            }
+
+            /// The four-corner SAT rectangle query equals a direct sum over the
+            /// tile-count block, for arbitrary (including empty) rectangles.
+            #[test]
+            fn rect_dirty_matches_naive_sum(
+                cells in dirty_cells(),
+                tx0 in 0usize..25,
+                txw in 0usize..26,
+                ty0 in 0usize..8,
+                tyw in 0usize..9,
+            ) {
+                let new = make_dirty_buffer(W, H, &cells);
+                with_forced_plan(&new, |plan| -> Result<(), TestCaseError> {
+                    let tiles_x = plan.params.tiles_x;
+                    let tiles_y = plan.params.tiles_y;
+                    let tx1 = (tx0 + txw).min(tiles_x);
+                    let ty1 = (ty0 + tyw).min(tiles_y);
+                    let naive = if tx0 >= tx1 || ty0 >= ty1 {
+                        0
+                    } else {
+                        naive_rect_sum(plan, tx0, ty0, tx1, ty1)
+                    };
+                    prop_assert_eq!(plan.rect_dirty(tx0, ty0, tx1, ty1), naive);
+                    Ok(())
+                })?;
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            /// The tile diff with the row prefilter emits exactly the change
+            /// runs the flat `compute` does: the prefilter is a performance
+            /// path, never a semantic one.
+            #[test]
+            fn diff_output_identical_with_row_prefilter(
+                cells in prop::collection::vec(
+                    (0u16..W, 0u16..H).prop_map(|(x, y)| (x, y, 'Z')),
+                    1..80,
+                ),
+            ) {
+                let old = Buffer::new(W, H);
+                let new = make_dirty_buffer(W, H, &cells);
+                let full = BufferDiff::compute(&old, &new);
+                let (dirty, stats) = diff_with_forced_tiles(&old, &new);
+                prop_assert!(
+                    stats.fallback.is_none(),
+                    "unexpected fallback: {:?}",
+                    stats.fallback
+                );
+                prop_assert_eq!(full.changes(), dirty.changes());
+            }
         }
     }
 

@@ -1755,6 +1755,8 @@ impl<W: Write> TerminalWriter<W> {
                 skipped_tiles,
                 scan_cells_estimate,
                 sat_build_cells,
+                skipped_tile_rows,
+                sat_queries,
             ) = if let Some(stats) = tile_stats {
                 (
                     stats.tile_w,
@@ -1769,9 +1771,11 @@ impl<W: Write> TerminalWriter<W> {
                     stats.skipped_tiles,
                     stats.scan_cells_estimate,
                     stats.sat_build_cells,
+                    stats.skipped_tile_rows,
+                    stats.sat_queries,
                 )
             } else {
-                (0, 0, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0)
+                (0, 0, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0, 0)
             };
             let tile_size = tile_w as usize * tile_h as usize;
             let dirty_tile_count = dirty_tiles;
@@ -1809,7 +1813,7 @@ impl<W: Write> TerminalWriter<W> {
             );
             if let Some(ref sink) = self.evidence_sink {
                 let line = format!(
-                    r#"{{"schema_version":"{}","event":"diff_decision","run_id":"{}","event_idx":{},"screen_mode":"{}","cols":{},"rows":{},"strategy":"{}","cost_full":{:.6},"cost_dirty":{:.6},"cost_redraw":{:.6},"posterior_mean":{:.6},"posterior_variance":{:.6},"alpha":{:.6},"beta":{:.6},"guard_reason":"{}","hysteresis_applied":{},"hysteresis_ratio":{:.6},"dirty_rows":{},"total_rows":{},"total_cells":{},"span_count":{},"span_coverage_pct":{:.6},"max_span_len":{},"fallback_reason":"{}","scan_cost_estimate":{},"tile_used":{},"tile_fallback":"{}","tile_w":{},"tile_h":{},"tile_size":{},"tiles_x":{},"tiles_y":{},"dirty_tiles":{},"dirty_tile_count":{},"dirty_cells":{},"dirty_tile_ratio":{:.6},"dirty_cell_ratio":{:.6},"scanned_tiles":{},"skipped_tiles":{},"skipped_tile_count":{},"tile_scan_cells_estimate":{},"sat_build_cost_est":{},"bayesian_enabled":{},"dirty_rows_enabled":{}}}"#,
+                    r#"{{"schema_version":"{}","event":"diff_decision","run_id":"{}","event_idx":{},"screen_mode":"{}","cols":{},"rows":{},"strategy":"{}","cost_full":{:.6},"cost_dirty":{:.6},"cost_redraw":{:.6},"posterior_mean":{:.6},"posterior_variance":{:.6},"alpha":{:.6},"beta":{:.6},"guard_reason":"{}","hysteresis_applied":{},"hysteresis_ratio":{:.6},"dirty_rows":{},"total_rows":{},"total_cells":{},"span_count":{},"span_coverage_pct":{:.6},"max_span_len":{},"fallback_reason":"{}","scan_cost_estimate":{},"tile_used":{},"tile_fallback":"{}","tile_w":{},"tile_h":{},"tile_size":{},"tiles_x":{},"tiles_y":{},"dirty_tiles":{},"dirty_tile_count":{},"dirty_cells":{},"dirty_tile_ratio":{:.6},"dirty_cell_ratio":{:.6},"scanned_tiles":{},"skipped_tiles":{},"skipped_tile_count":{},"tile_scan_cells_estimate":{},"sat_build_cost_est":{},"skipped_tile_rows":{},"sat_queries":{},"bayesian_enabled":{},"dirty_rows_enabled":{}}}"#,
                     schema_version,
                     run_id,
                     event_idx,
@@ -1852,6 +1856,8 @@ impl<W: Write> TerminalWriter<W> {
                     skipped_tile_count,
                     scan_cells_estimate,
                     sat_build_cost_est,
+                    skipped_tile_rows,
+                    sat_queries,
                     self.diff_config.bayesian_enabled,
                     self.diff_config.dirty_rows_enabled,
                 );
@@ -5129,6 +5135,14 @@ mod tests {
             "sat_build_cost_est should be numeric"
         );
         assert!(
+            value["skipped_tile_rows"].is_number(),
+            "skipped_tile_rows should be numeric"
+        );
+        assert!(
+            value["sat_queries"].is_number(),
+            "sat_queries should be numeric"
+        );
+        assert!(
             value["fallback_reason"].is_string(),
             "fallback_reason should be string"
         );
@@ -6069,6 +6083,8 @@ mod tests {
             skipped_tiles: 13,
             sat_build_cells: 1920,
             scan_cells_estimate: 42,
+            skipped_tile_rows: 1,
+            sat_queries: 3,
             fallback: None,
         };
         let (cost, label) =
@@ -6097,6 +6113,8 @@ mod tests {
             skipped_tiles: 13,
             sat_build_cells: 1920,
             scan_cells_estimate: 42,
+            skipped_tile_rows: 0,
+            sat_queries: 0,
             fallback: Some(TileDiffFallback::SmallScreen),
         };
         let (cost, label) =
