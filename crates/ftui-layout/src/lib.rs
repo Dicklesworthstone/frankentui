@@ -63,9 +63,9 @@ pub mod veb_tree;
 pub mod visibility;
 pub mod workspace;
 
-pub use cache::{
-    CoherenceCache, CoherenceId, LayoutCache, LayoutCacheKey, LayoutCacheStats, S3FifoLayoutCache,
-};
+#[cfg(feature = "experimental")]
+pub use cache::S3FifoLayoutCache;
+pub use cache::{CoherenceCache, CoherenceId, LayoutCache, LayoutCacheKey, LayoutCacheStats};
 pub use direction::{FlowDirection, LogicalAlignment, LogicalSides, mirror_rects_horizontal};
 pub use ftui_core::geometry::{Rect, Sides, Size};
 pub use grid::{Grid, GridArea, GridLayout};

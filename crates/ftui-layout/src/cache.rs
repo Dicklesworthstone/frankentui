@@ -437,6 +437,7 @@ impl Default for LayoutCache {
 /// layouts (e.g. popup menus or tooltips that appear once).
 ///
 /// Supports the same generation-based invalidation as [`LayoutCache`].
+#[cfg(feature = "experimental")]
 #[derive(Debug)]
 pub struct S3FifoLayoutCache {
     cache: ftui_core::s3_fifo::S3Fifo<LayoutCacheKey, CachedLayoutEntry>,
@@ -446,6 +447,7 @@ pub struct S3FifoLayoutCache {
     misses: u64,
 }
 
+#[cfg(feature = "experimental")]
 impl S3FifoLayoutCache {
     /// Create a new S3-FIFO layout cache with the given capacity.
     #[inline]
@@ -545,6 +547,7 @@ impl S3FifoLayoutCache {
     }
 }
 
+#[cfg(feature = "experimental")]
 impl Default for S3FifoLayoutCache {
     fn default() -> Self {
         Self::new(64)
@@ -1351,6 +1354,7 @@ mod tests {
 
     // ── S3-FIFO Layout Cache ────────────────────────────────────────
 
+    #[cfg(feature = "experimental")]
     fn s3_fifo_test_key(x: u16, w: u16) -> LayoutCacheKey {
         LayoutCacheKey {
             area_x: x,
@@ -1367,6 +1371,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn s3fifo_layout_new_is_empty() {
         let cache = S3FifoLayoutCache::new(64);
         assert!(cache.is_empty());
@@ -1375,12 +1380,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn s3fifo_layout_default_capacity() {
         let cache = S3FifoLayoutCache::default();
         assert_eq!(cache.capacity(), 64);
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn s3fifo_layout_get_or_compute_caches() {
         let mut cache = S3FifoLayoutCache::new(64);
         let key = s3_fifo_test_key(0, 80);
@@ -1393,6 +1400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn s3fifo_layout_generation_invalidation() {
         let mut cache = S3FifoLayoutCache::new(64);
         let key = s3_fifo_test_key(0, 80);
@@ -1408,6 +1416,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn s3fifo_layout_clear() {
         let mut cache = S3FifoLayoutCache::new(64);
         let key = s3_fifo_test_key(0, 80);
@@ -1417,6 +1426,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn s3fifo_layout_different_keys() {
         let mut cache = S3FifoLayoutCache::new(64);
         let k1 = s3_fifo_test_key(0, 80);
@@ -1427,6 +1437,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn s3fifo_layout_reset_stats() {
         let mut cache = S3FifoLayoutCache::new(64);
         let key = s3_fifo_test_key(0, 80);
@@ -1439,6 +1450,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn s3fifo_layout_produces_same_results_as_lru() {
         let mut lru = LayoutCache::new(64);
         let mut s3 = S3FifoLayoutCache::new(64);
