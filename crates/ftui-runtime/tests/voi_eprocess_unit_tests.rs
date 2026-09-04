@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 #![forbid(unsafe_code)]
 
 //! bd-37a.9: Unit tests for VOI sampling & e-process testing.

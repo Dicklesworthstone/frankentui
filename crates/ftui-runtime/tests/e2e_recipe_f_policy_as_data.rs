@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 #![forbid(unsafe_code)]
 
 //! E2E integration test for Recipe F: Policy-as-Data Controllers.

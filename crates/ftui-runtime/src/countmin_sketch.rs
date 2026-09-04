@@ -398,9 +398,7 @@ impl CountMinSketch {
     /// Clear all counters.
     pub fn clear(&mut self) {
         for row in &mut self.counters {
-            for cell in row {
-                *cell = 0;
-            }
+            row.fill(0);
         }
         self.total_count = 0;
         self.calibration.clear();

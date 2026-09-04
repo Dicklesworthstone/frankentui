@@ -13,6 +13,9 @@ categories = ["command-line-interface", "gui"]
 
 [features]
 default = []
+# Compiles internal research modules not reachable from Program/Frame/
+# TerminalWriter. Not part of the supported API. See README "Experimental modules".
+experimental = []
 # Enable dedicated render/output thread (Mode B).
 # When enabled, all terminal output is serialized on a background thread,
 # preventing interleaving between logs and UI presents.
@@ -26,7 +29,7 @@ tracing = []
 # Adds FileStorage backend for cross-session state persistence.
 state-persistence = ["dep:serde", "dep:serde_json", "dep:base64"]
 # Enable policy-as-data configuration loading from TOML/JSON files.
-policy-config = ["dep:serde", "dep:serde_json", "dep:toml"]
+policy-config = ["experimental", "dep:serde", "dep:serde_json", "dep:toml"]
 # Legacy Crossterm backend compatibility. Enables CrosstermEventSource and the
 # `Program::new()`/`Program::with_config()` constructors that use TerminalSession.
 crossterm-compat = ["ftui-core/crossterm"]
@@ -128,6 +131,7 @@ harness = false
 [[bench]]
 name = "ivm_bench"
 harness = false
+required-features = ["experimental"]
 
 [[bench]]
 name = "pane_terminal_bench"

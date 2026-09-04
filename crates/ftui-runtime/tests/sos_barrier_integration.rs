@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! Integration tests and benchmark for SOS barrier certificate evaluation.
 //!
 //! Validates:

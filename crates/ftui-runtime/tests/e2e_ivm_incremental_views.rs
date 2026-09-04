@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! E2E integration tests for IVM Incremental Views (bd-3akdb.5).
 //!
 //! Full integration tests applying theme change + layout change via IVM

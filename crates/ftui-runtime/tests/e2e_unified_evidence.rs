@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 #![forbid(unsafe_code)]
 
 //! E2E tests for the Unified Evidence Ledger (bd-fp38v).

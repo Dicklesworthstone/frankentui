@@ -1047,6 +1047,7 @@ mod tests {
         assert!(evidence.is_empty(), "no evidence terms → empty array");
     }
 
+    #[cfg(feature = "experimental")]
     #[test]
     fn diff_strategy_evidence_format() {
         // Verify that diff strategy evidence from the bridge produces

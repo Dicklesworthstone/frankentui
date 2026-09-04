@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! Property-based invariant tests for statistical detector modules.
 //!
 //! These tests verify mathematical invariants of the flake detector (e-process)

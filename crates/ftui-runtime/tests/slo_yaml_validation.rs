@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 #![forbid(unsafe_code)]
 
 //! bd-2xj.2: CI test — validates slo.yaml schema and exercises safe-mode replay.

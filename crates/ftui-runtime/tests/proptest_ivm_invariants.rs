@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! Property-based invariant tests for Incremental View Maintenance (IVM).
 //!
 //! These tests verify structural invariants of the IVM module that must hold

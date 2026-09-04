@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! Property-based invariant tests for the VOI sampler and conformal alerter.
 //!
 //! These tests verify structural invariants that must hold for any valid inputs:

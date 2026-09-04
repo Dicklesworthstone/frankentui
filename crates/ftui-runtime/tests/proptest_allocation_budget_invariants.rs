@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! Property-based invariant tests for the allocation budget monitor.
 //!
 //! These tests verify structural and mathematical invariants of the dual

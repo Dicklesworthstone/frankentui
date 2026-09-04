@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 #![forbid(unsafe_code)]
 
 //! bd-382tk.4: Unit tests for policy-as-data controllers.

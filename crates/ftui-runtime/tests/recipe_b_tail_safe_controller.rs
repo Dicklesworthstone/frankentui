@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! Integration tests for Recipe B: Tail-Safe Adaptive Controller.
 //!
 //! Tests the full ConformalFrameGuard + DegradationCascade stack with

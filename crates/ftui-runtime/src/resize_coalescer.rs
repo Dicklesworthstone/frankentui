@@ -402,7 +402,7 @@ impl TransitionReasonCode {
 
 /// Event emitted when a resize operation is applied (bd-bksf.6 stub).
 ///
-/// Used by [`ResizeSlaMonitor`](crate::resize_sla::ResizeSlaMonitor) for latency tracking.
+/// Used by `ResizeSlaMonitor` for latency tracking.
 #[derive(Debug, Clone)]
 pub struct ResizeAppliedEvent {
     /// New terminal size after resize.

@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 #![forbid(unsafe_code)]
 
 //! bd-382tk.1: E2E integration test for Recipe F Policy-as-Data controllers.

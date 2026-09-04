@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 //! Property-based invariant tests for the cost model module.
 //!
 //! These tests verify mathematical invariants that must hold for any valid
