@@ -63,7 +63,6 @@ fn ctrl_press(code: KeyCode) -> Event {
 /// regardless of the host terminal. Other capabilities are left env-detected;
 /// only the emoji flag was observed to flip. The returned guard restores the
 /// previous overrides on drop, so parallel tests stay isolated.
-#[must_use]
 fn stable_caps() -> OverrideGuard {
     push_override(CapabilityOverride::new().unicode_emoji(Some(true)))
 }
