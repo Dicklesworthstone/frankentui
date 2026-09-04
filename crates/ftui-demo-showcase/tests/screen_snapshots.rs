@@ -12,6 +12,7 @@ use std::env;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ftui_core::capability_override::{CapabilityOverride, OverrideGuard, push_override};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseEvent, MouseEventKind,
 };
@@ -51,11 +52,28 @@ fn ctrl_press(code: KeyCode) -> Event {
     })
 }
 
+/// Pin the one terminal capability that otherwise varies between the machine
+/// that blesses a snapshot and the machine that checks it: `unicode_emoji`.
+///
+/// The [`Emoji`](ftui_widgets::emoji::Emoji) widget picks its glyph vs. its
+/// ASCII fallback from the ambient `TerminalCapabilities` at render time, which
+/// are detected from environment variables and so differ across build workers
+/// and CI. Pinning `unicode_emoji = true` (matching the blessed baselines,
+/// which show the emoji) makes every screen snapshot render deterministically
+/// regardless of the host terminal. Other capabilities are left env-detected;
+/// only the emoji flag was observed to flip. The returned guard restores the
+/// previous overrides on drop, so parallel tests stay isolated.
+#[must_use]
+fn stable_caps() -> OverrideGuard {
+    push_override(CapabilityOverride::new().unicode_emoji(Some(true)))
+}
+
 fn mouse_move(x: u16, y: u16) -> Event {
     Event::Mouse(MouseEvent::new(MouseEventKind::Moved, x, y))
 }
 
 fn snapshot_app(app: &mut AppModel, width: u16, height: u16, name: &str) {
+    let _caps = stable_caps();
     app.terminal_width = width;
     app.terminal_height = height;
     let mut pool = GraphemePool::new();
@@ -389,6 +407,7 @@ fn code_explorer_wide_200x50() {
 
 #[test]
 fn widget_gallery_initial_120x40() {
+    let _caps = stable_caps();
     let screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);
@@ -399,6 +418,7 @@ fn widget_gallery_initial_120x40() {
 
 #[test]
 fn widget_gallery_initial_80x24() {
+    let _caps = stable_caps();
     let screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
@@ -409,6 +429,7 @@ fn widget_gallery_initial_80x24() {
 
 #[test]
 fn widget_gallery_section2_120x40() {
+    let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
     screen.update(&press(KeyCode::Right));
     let mut pool = GraphemePool::new();
@@ -422,6 +443,7 @@ fn widget_gallery_section2_120x40() {
 fn widget_gallery_data_viz_120x40() {
     // Section 3 (data viz) renders the sparklines, including the min/max
     // marker row (G17.5).
+    let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
     screen.update(&press(KeyCode::Right));
     screen.update(&press(KeyCode::Right));
@@ -435,6 +457,7 @@ fn widget_gallery_data_viz_120x40() {
 
 #[test]
 fn widget_gallery_tiny_40x10() {
+    let _caps = stable_caps();
     let screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(40, 10, &mut pool);
@@ -445,6 +468,7 @@ fn widget_gallery_tiny_40x10() {
 
 #[test]
 fn widget_gallery_with_tick_120x40() {
+    let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
     screen.tick(5);
     let mut pool = GraphemePool::new();

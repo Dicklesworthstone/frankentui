@@ -13,6 +13,7 @@
 //!
 //! Naming convention: `a11y_{mode}_{screen}_{WIDTHxHEIGHT}`
 
+use ftui_core::capability_override::{CapabilityOverride, push_override};
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_demo_showcase::app::{AppModel, AppMsg};
@@ -210,6 +211,11 @@ impl A11yTestContext {
             theme::ThemeId::CyberpunkAurora
         };
         let _render_lock = ScopedRenderLock::new(theme_id, self.app.a11y.large_text, motion_scale);
+
+        // Pin the one env-detected capability (unicode_emoji) that otherwise
+        // makes the Emoji widget in the gallery render differently across build
+        // hosts, so these snapshots are deterministic regardless of terminal.
+        let _caps = push_override(CapabilityOverride::new().unicode_emoji(Some(true)));
 
         // Update terminal dimensions for proper rendering
         self.app.terminal_width = width;
