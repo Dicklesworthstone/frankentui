@@ -969,6 +969,7 @@ pub struct RankingSummary {
 /// - **All scores identical**: Every position is `Unstable` with confidence 0.
 /// - **Single item**: Confidence is 1.0 (trivially correct ranking).
 /// - **Empty input**: Returns empty results with zeroed summary.
+#[cfg(feature = "experimental")]
 #[derive(Debug, Clone)]
 pub struct ConformalRanker {
     /// Threshold below which two scores are considered tied.
@@ -981,6 +982,7 @@ pub struct ConformalRanker {
     pub marginal_threshold: f64,
 }
 
+#[cfg(feature = "experimental")]
 impl Default for ConformalRanker {
     fn default() -> Self {
         Self {
@@ -991,6 +993,7 @@ impl Default for ConformalRanker {
     }
 }
 
+#[cfg(feature = "experimental")]
 impl ConformalRanker {
     /// Create a ranker with default thresholds.
     pub fn new() -> Self {
@@ -2029,6 +2032,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_tie_breaks_by_match_type() {
         let mut exact = MatchResult::no_match();
         exact.score = 0.5;
@@ -2066,6 +2070,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_empty_input() {
         let ranker = ConformalRanker::new();
         let ranked = ranker.rank(Vec::new());
@@ -2077,6 +2082,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_single_item() {
         let scorer = BayesianScorer::new();
         let results = vec![scorer.score("set", "Settings")];
@@ -2089,6 +2095,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_sorted_descending() {
         let scorer = BayesianScorer::new();
         let results = vec![
@@ -2108,6 +2115,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_confidence_bounded() {
         let scorer = BayesianScorer::new();
         let titles = [
@@ -2136,6 +2144,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_deterministic() {
         let scorer = BayesianScorer::new();
         let titles = ["Settings", "Set Theme", "Asset", "Reset"];
@@ -2160,6 +2169,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_ties_detected() {
         // Create items with identical scores.
         let mut r1 = MatchResult::no_match();
@@ -2188,6 +2198,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_all_identical_scores() {
         let mut results = Vec::new();
         for _ in 0..5 {
@@ -2207,6 +2218,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_well_separated_scores_are_stable() {
         let mut results = Vec::new();
         // Scores well spread out: 0.9, 0.6, 0.3, 0.1.
@@ -2229,6 +2241,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_top_k_truncates() {
         let scorer = BayesianScorer::new();
         let titles = [
@@ -2249,6 +2262,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_original_indices_preserved() {
         let scorer = BayesianScorer::new();
         let titles = ["Zebra Tool", "Settings", "Apple"];
@@ -2265,6 +2279,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_summary_display() {
         let scorer = BayesianScorer::new();
         let results = vec![
@@ -2300,6 +2315,7 @@ mod tests {
     // --- Property: gap_to_next of last item is always 0 ---
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_last_item_gap_zero() {
         let scorer = BayesianScorer::new();
         let results = vec![
@@ -2320,6 +2336,7 @@ mod tests {
     // --- Property: median_gap is non-negative ---
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_median_gap_non_negative() {
         let scorer = BayesianScorer::new();
         let titles = [
@@ -3028,6 +3045,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_custom_thresholds() {
         let ranker = ConformalRanker {
             tie_epsilon: 0.1,
@@ -3051,6 +3069,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_rank_top_k_larger_than_count() {
         let scorer = BayesianScorer::new();
         let results = vec![scorer.score("set", "Settings")];
@@ -3060,6 +3079,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_rank_top_k_zero() {
         let scorer = BayesianScorer::new();
         let results = vec![
@@ -3095,6 +3115,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn conformal_median_gap_even_count() {
         // 4 items → 3 gaps → odd, but let's use 5 items → 4 gaps → even
         let mut results = Vec::new();

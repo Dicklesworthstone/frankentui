@@ -35,10 +35,11 @@
 
 pub mod scorer;
 
+#[cfg(feature = "experimental")]
+pub use scorer::ConformalRanker;
 pub use scorer::{
-    BayesianScorer, ConformalRanker, EvidenceKind, EvidenceLedger, IncrementalScorer,
-    IncrementalStats, MatchResult, MatchType, RankConfidence, RankStability, RankedItem,
-    RankedResults, RankingSummary,
+    BayesianScorer, EvidenceKind, EvidenceLedger, IncrementalScorer, IncrementalStats, MatchResult,
+    MatchType, RankConfidence, RankStability, RankedItem, RankedResults, RankingSummary,
 };
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
