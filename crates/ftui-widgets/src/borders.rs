@@ -102,9 +102,45 @@ impl BorderSet {
         tee_right: '┣',
         cross: '╋',
     };
+
+    /// Single line with dashed edges (┄, ┆); square corners and junctions.
+    pub const DASHED: Self = Self {
+        vertical: '┆',
+        horizontal: '┄',
+        top_left: '┌',
+        top_right: '┐',
+        bottom_left: '└',
+        bottom_right: '┘',
+        tee_up: '┴',
+        tee_down: '┬',
+        tee_left: '┤',
+        tee_right: '├',
+        cross: '┼',
+    };
+
+    /// Heavy line with dashed edges (┅, ┇); heavy corners and junctions.
+    pub const HEAVY_DASHED: Self = Self {
+        vertical: '┇',
+        horizontal: '┅',
+        top_left: '┏',
+        top_right: '┓',
+        bottom_left: '┗',
+        bottom_right: '┛',
+        tee_up: '┻',
+        tee_down: '┳',
+        tee_left: '┫',
+        tee_right: '┣',
+        cross: '╋',
+    };
 }
 
 /// Border style presets.
+///
+/// Eight variants: seven named glyph sets — `Square` (default), `Ascii`,
+/// `Rounded`, `Double`, `Heavy`, `Dashed`, `HeavyDashed` — plus `Custom`, which
+/// accepts any [`BorderSet`], so arbitrary corner/edge/junction glyphs are
+/// supported without a new variant. This doc comment is the source of truth for
+/// the "border styles" count cited in the README.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BorderType {
     /// No border (but space reserved if Borders::ALL is set).
@@ -118,11 +154,20 @@ pub enum BorderType {
     Double,
     /// Heavy line border.
     Heavy,
+    /// Single line border with dashed edges (┄, ┆).
+    Dashed,
+    /// Heavy line border with dashed edges (┅, ┇).
+    HeavyDashed,
     /// Custom border character set.
     Custom(BorderSet),
 }
 
 impl BorderType {
+    /// The number of built-in named border styles (every variant except the
+    /// open-ended [`Custom`](BorderType::Custom)). Cited by the README and the
+    /// `border_type_variant_count_matches_readme` test.
+    pub const NAMED_STYLE_COUNT: usize = 7;
+
     /// Convert this border type to its corresponding border character set.
     pub fn to_border_set(&self) -> BorderSet {
         match self {
@@ -131,6 +176,8 @@ impl BorderType {
             BorderType::Rounded => BorderSet::ROUNDED,
             BorderType::Double => BorderSet::DOUBLE,
             BorderType::Heavy => BorderSet::HEAVY,
+            BorderType::Dashed => BorderSet::DASHED,
+            BorderType::HeavyDashed => BorderSet::HEAVY_DASHED,
             BorderType::Custom(set) => *set,
         }
     }
@@ -277,6 +324,57 @@ mod tests {
         assert_eq!(BorderType::Rounded.to_border_set(), BorderSet::ROUNDED);
         assert_eq!(BorderType::Double.to_border_set(), BorderSet::DOUBLE);
         assert_eq!(BorderType::Heavy.to_border_set(), BorderSet::HEAVY);
+        assert_eq!(BorderType::Dashed.to_border_set(), BorderSet::DASHED);
+        assert_eq!(
+            BorderType::HeavyDashed.to_border_set(),
+            BorderSet::HEAVY_DASHED
+        );
+    }
+
+    #[test]
+    fn dashed_to_border_set_matches_const() {
+        let set = BorderType::Dashed.to_border_set();
+        assert_eq!(set, BorderSet::DASHED);
+        // Dashed edges with plain square corners and junctions.
+        assert_eq!(set.horizontal, '┄');
+        assert_eq!(set.vertical, '┆');
+        assert_eq!(set.top_left, '┌');
+        assert_eq!(set.top_right, '┐');
+        assert_eq!(set.cross, '┼');
+    }
+
+    #[test]
+    fn heavy_dashed_matches_const() {
+        let set = BorderType::HeavyDashed.to_border_set();
+        assert_eq!(set, BorderSet::HEAVY_DASHED);
+        assert_eq!(set.horizontal, '┅');
+        assert_eq!(set.vertical, '┇');
+        assert_eq!(set.top_left, '┏');
+        assert_eq!(set.cross, '╋');
+    }
+
+    #[test]
+    fn border_type_variant_count_matches_readme() {
+        // Seven named styles plus the open-ended `Custom`. If a variant is
+        // added or removed, update this count and the README together.
+        let named = [
+            BorderType::Square,
+            BorderType::Ascii,
+            BorderType::Rounded,
+            BorderType::Double,
+            BorderType::Heavy,
+            BorderType::Dashed,
+            BorderType::HeavyDashed,
+        ];
+        assert_eq!(named.len(), BorderType::NAMED_STYLE_COUNT);
+        assert_eq!(BorderType::NAMED_STYLE_COUNT, 7);
+        // Every named style resolves to a border set, and they are all distinct.
+        let sets: Vec<BorderSet> = named.iter().map(BorderType::to_border_set).collect();
+        for (i, a) in sets.iter().enumerate() {
+            for b in &sets[i + 1..] {
+                assert_ne!(a, b, "named border sets must be distinct");
+            }
+        }
     }
 
     #[test]

@@ -512,6 +512,25 @@ mod tests {
     }
 
     #[test]
+    fn render_block_with_dashed_borders() {
+        let block = Block::bordered().border_type(BorderType::Dashed);
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+        block.render(area, &mut frame);
+
+        let buf = &frame.buffer;
+        let top: String = (0..10)
+            .map(|x| buf.get(x, 0).unwrap().content.as_char().unwrap_or(' '))
+            .collect();
+        assert_eq!(top, "┌┄┄┄┄┄┄┄┄┐");
+        // Dashed vertical edge and square corners at the bottom.
+        assert_eq!(buf.get(0, 1).unwrap().content.as_char(), Some('┆'));
+        assert_eq!(buf.get(0, 2).unwrap().content.as_char(), Some('└'));
+        assert_eq!(buf.get(9, 2).unwrap().content.as_char(), Some('┘'));
+    }
+
+    #[test]
     fn render_block_with_title() {
         let block = Block::new()
             .borders(Borders::ALL)
