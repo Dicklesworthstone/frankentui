@@ -16,7 +16,7 @@
 //!    deterministic, provenance-tagged [`ImputationFamily`] (carry-forward for
 //!    MCAR, conservative-prior for MAR, bounded-worst-case for MNAR). Degraded
 //!    evidence inflates uncertainty ([`DegradationDecision::inflation_factor`]).
-//! 3. **State machine** — [`DegradationStateMachine`] gives degraded mode explicit
+//! 3. **State machine** — `DegradationStateMachine` gives degraded mode explicit
 //!    entry/exit/cooldown semantics with *hysteresis* (`exit_threshold >
 //!    enter_threshold`) so the controller never oscillates.
 //! 4. **Adversarial resilience** — contradictory evidence is arbitrated toward the
@@ -37,7 +37,7 @@
 //! falsifiable rather than tautological.
 //!
 //! The ledger is **float-free** (every numeric term is a fixed-decimal string via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically (AC4). Numerical
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically (AC4). Numerical
 //! finiteness is checked on the *raw* `f64`s before rendering (AC1), because
 //! `fmt6` maps a NaN to `"0.000000"` and a post-render string check alone would be
 //! tautological.

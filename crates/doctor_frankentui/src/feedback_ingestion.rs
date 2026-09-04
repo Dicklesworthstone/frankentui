@@ -19,7 +19,7 @@
 //!   report.
 //!
 //! The ledger is **float-free** (severities are fixed-decimal strings via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically. The pipeline is
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically. The pipeline is
 //! materialized (ledger + stats + summary + manifest) and exposed through the
 //! `feedback-report` CLI command.
 

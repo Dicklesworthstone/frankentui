@@ -1,7 +1,7 @@
 //! Concolic-style differential exploration over interaction traces.
 //!
 //! This module stays deliberately pure: it mutates and minimizes canonical
-//! [`InteractionTrace`](crate::trace::InteractionTrace) pairs, then delegates
+//! [`InteractionTrace`] pairs, then delegates
 //! behavioral comparison to [`semantic_diff`](crate::semantic_diff). Runtime
 //! harnesses can use the emitted fixture payloads to replay discovered
 //! counterexamples against real source and translated applications.

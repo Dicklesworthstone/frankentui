@@ -20,7 +20,7 @@
 //!   and refused promotion (never silently optimized).
 //!
 //! The ledger is **float-free** (numeric terms are fixed-decimal strings via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically. The pipeline is
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically. The pipeline is
 //! materialized to disk (ledger + checkpoint + stats + summary + manifest) so the
 //! E2E gate can drive resume and validate completeness.
 

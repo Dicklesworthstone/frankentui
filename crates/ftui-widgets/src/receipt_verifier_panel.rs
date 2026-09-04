@@ -4,8 +4,8 @@
 //!
 //! Renders the operator-facing verifier verdict for a signed decision receipt,
 //! mirroring `runbooks/scripts/verify_receipt.sh` inside the TUI. The panel
-//! takes a parsed [`ReceiptVerdict`] (build it from the verifier's JSON
-//! output, or programmatically) and displays:
+//! takes a parsed [`ReceiptVerdict`](crate::receipt_verifier_panel::ReceiptVerdict) —
+//! built from the verifier's JSON output, or programmatically — and displays:
 //!
 //! - the overall verdict (receipt id + PASS/FAIL + failure_class on failure);
 //! - the three verification layers (signature / transparency / attestation)

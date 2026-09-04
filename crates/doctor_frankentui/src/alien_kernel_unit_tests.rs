@@ -31,7 +31,7 @@
 //! command (AC3). Like the [`crate::optimization_control_tests`] precedent this is
 //! a `pub mod` compiled into the lib; all `proptest` usage is confined to the
 //! `#[cfg(test)]` block. The diagnostic is **float-free** (numeric terms are
-//! fixed-decimal strings via [`fmt6`]), so it derives [`Eq`] and replays
+//! fixed-decimal strings via `fmt6`), so it derives [`Eq`] and replays
 //! byte-identically.
 
 use serde::{Deserialize, Serialize};

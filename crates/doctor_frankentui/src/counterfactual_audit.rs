@@ -32,7 +32,7 @@
 //! perturbed object is the **evidence distribution** itself.
 //!
 //! The ledger is **float-free** (every numeric term is a fixed-decimal string via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically (AC2). Raw
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically (AC2). Raw
 //! finiteness is checked before rendering so a NaN cannot be masked to
 //! `"0.000000"`.
 

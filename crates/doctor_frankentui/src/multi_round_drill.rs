@@ -22,7 +22,7 @@
 //! missing proof, or a rollback-readiness failure (AC3).
 //!
 //! The ledger is **float-free** (numeric terms are fixed-decimal strings via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically. The pipeline is
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically. The pipeline is
 //! materialized for release-candidate promotion gating.
 
 use std::path::{Path, PathBuf};

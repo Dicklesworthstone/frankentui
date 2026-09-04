@@ -130,6 +130,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 # Verify formatting
 cargo fmt --check
+
+# Check for rustdoc lints (broken/redundant intra-doc links, private links).
+# The "Documentation" CI job enforces exactly this; a single bad link fails it
+# and hides every other rustdoc regression across the workspace.
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
 If you see errors, **carefully understand and resolve each issue**. Read sufficient context to fix them the RIGHT way.

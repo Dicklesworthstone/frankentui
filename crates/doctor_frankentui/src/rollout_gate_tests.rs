@@ -42,7 +42,7 @@
 //! precedents, this is a `pub mod` compiled into the lib; all `proptest` usage is
 //! confined to the `#[cfg(test)]` block so the dev-only dependency never leaks into
 //! the library build. The diagnostic is **float-free** (every ratio is a
-//! fixed-decimal string via [`fmt6`]), so it derives [`Eq`] and the report replays
+//! fixed-decimal string via `fmt6`), so it derives [`Eq`] and the report replays
 //! byte-identically.
 
 use serde::{Deserialize, Serialize};

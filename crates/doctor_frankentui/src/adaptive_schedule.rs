@@ -21,7 +21,7 @@
 //!   a mandated field.
 //!
 //! The ledger is **float-free** (numeric terms are fixed-decimal strings via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically. The pipeline is
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically. The pipeline is
 //! materialized to disk (ledger + stats + summary + manifest) for the E2E gate.
 
 use std::path::{Path, PathBuf};

@@ -4,7 +4,7 @@
 //! The runtime's `TerminalWriter` builds a [`RenderCertificateInputs`] from
 //! facts it can prove locally each frame and asks
 //! [`evaluate_render_certificate`] for a decision. The certificate maps to a
-//! [`DiffSkipHint`](crate::diff::DiffSkipHint) consumed by
+//! [`DiffSkipHint`] consumed by
 //! [`BufferDiff::compute_certified_into`](crate::diff::BufferDiff::compute_certified_into):
 //!
 //! - `FullRequired` — no previous frame, viewport change, or a due

@@ -20,7 +20,7 @@
 //!   miss-detection tradeoff explicit and tunable (AC3).
 //!
 //! The ledger is **float-free** (every rate is a fixed-decimal string via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically — a reproducible
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically — a reproducible
 //! replay trace for every drift/hazard signal (AC1). The pipeline is materialized
 //! and exposed through the `hazard-regime` CLI command.
 

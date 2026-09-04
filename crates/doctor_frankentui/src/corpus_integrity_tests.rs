@@ -323,7 +323,7 @@ pub struct ExpectedCoverageOutcome {
     pub expected_blind_spots: Vec<(String, String)>,
     /// `(category, dimension)` pairs that MUST be covered (count ≥ 1).
     pub expected_covered: Vec<(String, String)>,
-    /// Coverage percentage that must match within [`SCALAR_TOLERANCE`].
+    /// Coverage percentage that must match within `SCALAR_TOLERANCE`.
     pub expected_coverage_percentage: Option<f64>,
     /// The deterministic top prioritizer recommendation id, if pinned.
     pub expected_top_recommendation: Option<String>,
@@ -1711,7 +1711,7 @@ fn bench_run(
 ///   normalized = 10.4/14.0.
 /// - `run-b`: units = 1·1 + 4·0.25 + 2·0.5 + 2·1 = 5.0; p99 median = 20.0;
 ///   normalized = 20.0/5.0 = 4.0.
-/// - `run-c`: units = 2·1 + 0 + 0 + 0 = 2.0; p99 median of [5,5,5,9,9] = 5.0
+/// - `run-c`: units = 2·1 + 0 + 0 + 0 = 2.0; p99 median of `[5,5,5,9,9]` = 5.0
 ///   (proves the aggregate is the MEDIAN, not the mean of 6.6); normalized = 2.5.
 #[must_use]
 pub fn benchmark_stats_scenario() -> BenchmarkScenario {

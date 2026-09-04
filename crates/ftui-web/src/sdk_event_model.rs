@@ -4,7 +4,7 @@
 //! # Why this exists
 //!
 //! The FrankenTermJS browser SDK promises host integrators a *stable, typed*
-//! event and error surface (see [`docs/spec/frankenterm-web-api.md`] — the
+//! event and error surface (see `docs/spec/frankenterm-web-api.md` — the
 //! canonical contract). xterm.js integrators reach for `term.onData`,
 //! `term.onKey`, typed event payloads, and predictable error shapes; the
 //! FrankenTermJS replacement must offer the same with a single, versioned

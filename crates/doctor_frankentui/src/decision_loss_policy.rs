@@ -88,7 +88,7 @@ pub fn action_str(action: MigrationDecision) -> &'static str {
     }
 }
 
-/// Canonical index of an action in [`ALL_ACTIONS`] (`0..6`).
+/// Canonical index of an action in `ALL_ACTIONS` (`0..6`).
 #[must_use]
 pub fn action_index(action: MigrationDecision) -> usize {
     match action {
@@ -1175,7 +1175,7 @@ pub struct ActionDecision {
 /// Action selection is `argmin_a Σ_s P(s)·loss(a, s)`. Ties (expected losses
 /// within `tie_epsilon`) are resolved lexicographically: smaller worst-case
 /// loss first (minimax), then more conservative action (lower
-/// [`conservatism_rank`]), then canonical action order — fully deterministic.
+/// `conservatism_rank`), then canonical action order — fully deterministic.
 ///
 /// # Errors
 ///

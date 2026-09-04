@@ -20,7 +20,7 @@
 //!    triage hint rather than blindly continuing (AC3).
 //!
 //! The ledger is **float-free** (every numeric term is a fixed-decimal string via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically. Raw finiteness is
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically. Raw finiteness is
 //! checked before rendering so a NaN cannot be masked to `"0.000000"`.
 
 use serde::{Deserialize, Serialize};

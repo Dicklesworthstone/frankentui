@@ -22,7 +22,7 @@
 //! match it, and each red path must trigger a conservative fallback / rollback
 //! (AC2). The ledger carries the guarantee assumptions, bound terms, and a
 //! decision trace per scenario (AC1); it is **float-free** (bound terms are
-//! fixed-decimal strings via [`fmt6`]) so it derives [`Eq`] and replays
+//! fixed-decimal strings via `fmt6`) so it derives [`Eq`] and replays
 //! byte-identically (AC3). The pipeline is materialized for release-candidate
 //! promotion gating.
 
@@ -78,7 +78,7 @@ fn fmt6(x: f64) -> String {
 
 /// Render a conformal bound term. A non-finite quantile is a VACUOUS interval
 /// (the loosest possible bound) and must ledger as `"unbounded"` — routing it
-/// through [`fmt6`] would record `0.000000`, the tightest possible bound, in a
+/// through `fmt6` would record `0.000000`, the tightest possible bound, in a
 /// formal-assurance evidence artifact.
 fn fmt_bound(x: f64) -> String {
     if x.is_finite() {

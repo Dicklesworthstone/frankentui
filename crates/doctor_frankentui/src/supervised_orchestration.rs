@@ -23,7 +23,7 @@
 //!
 //! The generic [`supervise`] decision core is pure: wall-clock time is injected
 //! via the [`SupervisionClock`] trait, so retry / deadline / cancellation
-//! behaviour is unit-tested with a [`MockClock`] and never depends on real
+//! behaviour is unit-tested with a `MockClock` and never depends on real
 //! timing. Wall-clock durations are deliberately excluded from the record's
 //! deterministic fingerprint ([`SupervisionRecord::evidence_terms`]); only
 //! configured budgets and attempt-outcome *classes* appear there.
@@ -459,7 +459,7 @@ impl SupervisionRecord {
 /// returns an [`AttemptResult`].
 ///
 /// Timing is injected via `clock`, so the control flow is fully deterministic
-/// under a [`MockClock`]. This is the right supervisor for *synchronous* work
+/// under a `MockClock`. This is the right supervisor for *synchronous* work
 /// that returns promptly (e.g. a blocking HTTP probe); long-running child
 /// processes use [`supervise_subprocess`] instead.
 pub fn supervise<C, F>(

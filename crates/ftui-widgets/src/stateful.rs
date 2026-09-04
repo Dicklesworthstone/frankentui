@@ -2,7 +2,7 @@
 //!
 //! The [`Stateful`] trait defines a contract for widgets that can save and
 //! restore their state across sessions or configuration changes. It is
-//! orthogonal to [`StatefulWidget`](crate::StatefulWidget) — a widget can
+//! orthogonal to [`StatefulWidget`] — a widget can
 //! implement both (render-time state mutation + persistence) or just one.
 //!
 //! # Design Invariants

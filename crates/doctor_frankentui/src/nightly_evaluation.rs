@@ -24,7 +24,7 @@
 //!   downstream trend analysis.
 //!
 //! The evidence ledger is **float-free** (every numeric term is a fixed-decimal
-//! string via [`fmt6`]), so it derives [`Eq`] and replays byte-identically — even
+//! string via `fmt6`), so it derives [`Eq`] and replays byte-identically — even
 //! though the underlying kernels carry raw `f64`. The pipeline is materialized to
 //! disk (ledger + stats + summary + manifest) so the nightly-stress E2E
 //! (bd-3bxhj.8.9) can drive and validate it.

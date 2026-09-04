@@ -146,7 +146,7 @@ pub mod debug_overlay;
 pub mod decision_card;
 /// Reusable diagnostic logging and telemetry substrate for JSONL diagnostics.
 pub mod diagnostics;
-/// Drag-and-drop protocol: [`Draggable`](drag::Draggable) sources, [`DropTarget`](drag::DropTarget) targets, and [`DragPayload`](drag::DragPayload).
+/// Drag-and-drop protocol: [`Draggable`] sources, [`DropTarget`] targets, and [`DragPayload`] payloads.
 pub mod drag;
 /// Drift-triggered fallback visualization with per-domain confidence sparklines.
 pub mod drift_visualization;

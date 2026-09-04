@@ -19,7 +19,7 @@
 //!   safe, measured gains), and operational rollback notes.
 //!
 //! The ledger is **float-free** (parity scores and measured gains are
-//! fixed-decimal strings via [`fmt6`]), so it derives [`Eq`] and replays
+//! fixed-decimal strings via `fmt6`), so it derives [`Eq`] and replays
 //! byte-identically. The pipeline materializes one evidence-pack directory per
 //! exemplar (source snapshot, generated project, certification report, demo
 //! manifest, repro + rollback notes) plus the usual ledger / stats / summary /

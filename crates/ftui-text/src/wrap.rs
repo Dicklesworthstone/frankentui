@@ -791,7 +791,7 @@ pub struct KpBreakResult {
 /// Given a paragraph of text and a target width, finds the set of line
 /// breaks that minimizes total badness (cubic slack penalty).
 ///
-/// Runtime is bounded to O(n × [`KP_MAX_LOOKAHEAD`]) by only considering
+/// Runtime is bounded to O(n × `KP_MAX_LOOKAHEAD`) by only considering
 /// line starts within the lookahead window of each break point; for
 /// pathological inputs (more than 1024 words on one line) this degrades
 /// gracefully rather than falling back to a different algorithm.

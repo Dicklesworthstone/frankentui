@@ -8,7 +8,7 @@
 //!
 //! # Design
 //!
-//! The canonical [`PaneTree`](crate::pane::PaneTree) stores nodes in a flat
+//! The canonical [`PaneTree`] stores nodes in a flat
 //! `BTreeMap<PaneId, PaneNodeRecord>` with explicit parent pointers. That shape
 //! is excellent for `O(1)` id lookup but is *not* naturally persistent: cloning
 //! the whole map to snapshot a version is `O(nodes)`, and the timeline therefore
@@ -37,7 +37,7 @@
 //!   id-allocating insertion, sibling-promoting removal, and two-path rebuild.
 //! - [`MoveSubtree`](crate::pane::PaneOperation::MoveSubtree) and
 //!   [`NormalizeRatios`](crate::pane::PaneOperation::NormalizeRatios) use a
-//!   *rebuild fallback*: flatten to a canonical [`PaneTree`](crate::pane::PaneTree),
+//!   *rebuild fallback*: flatten to a canonical [`PaneTree`],
 //!   apply the certified conservative operation, and rebuild the persistent
 //!   tree. This guarantees total semantic parity for the differential oracle at
 //!   the cost of zero sharing for those (rare) operations.

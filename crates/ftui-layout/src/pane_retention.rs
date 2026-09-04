@@ -2,7 +2,7 @@
 //!
 //! The asymptotic replay-speed work ([`pane_persistent`](crate::pane_persistent))
 //! and the production checkpointed timeline
-//! ([`PaneInteractionTimeline`](crate::pane::PaneInteractionTimeline)) both buy
+//! ([`PaneInteractionTimeline`]) both buy
 //! undo/redo by *retaining state* — versions, operation-log entries, and
 //! checkpoint snapshots. Left unbounded that retained state grows without limit
 //! (the memory telemetry in [`pane_memory`](crate::pane_memory) quantifies the

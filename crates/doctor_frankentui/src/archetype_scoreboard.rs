@@ -22,7 +22,7 @@
 //!    comparator (AC1).
 //!
 //! The ledger is **float-free** (every numeric term is a fixed-decimal string via
-//! [`fmt6`]), so it derives [`Eq`] and replays byte-identically (AC3 logs include
+//! `fmt6`), so it derives [`Eq`] and replays byte-identically (AC3 logs include
 //! `component_id`, `opportunity_score`, `contract_id`, and the fallback trigger
 //! parameters). Raw finiteness is checked before rendering so a NaN cannot be
 //! masked to `"0.000000"`.
