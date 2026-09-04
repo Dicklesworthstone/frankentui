@@ -1,4 +1,437 @@
-# FrankenTUI Reality Check and Bridge Plan (2026-09-01)
+# FrankenTUI Reality Check and Bridge Plan (updated 2026-09-04)
+
+## Current assessment: 2026-09-04
+
+This assessment supersedes the September 1 verdict below. The older analysis is
+retained as dated history and as the detailed specification of G01–G42, not as a
+description of today's source. Baseline: `21a4e48b` on `main`. This pass read all of
+AGENTS.md and README.md, both original creation plans, the planning directory,
+ADRs, and the `docs/spec` and `docs/specs` corpus. It traced implementation and
+callers, reviewed tests and release scripts, examined published artifacts, and
+ran the workspace checks. It did not use additional audit agents.
+
+### The five questions, answered against current evidence
+
+**1. What works?** The native terminal framework is substantial, usable code:
+the 16-byte cell/render/diff/presenter stack, one-writer output, inline and
+alternate-screen runtime, subscriptions, input parsing, pane operations,
+widgets, deterministic simulation, and extensive property and integration
+tests. Several September 1 findings have been fixed in source: default facade
+backend dispatch and Widget imports; per-Program signal injection; broader
+capability probing and DECSTBM fallback; production width caching; accessibility
+tree collection; BOCPD and conformal defaults; live queue-depth evidence;
+gestures and hint ranking; subscription helpers; SAT queries; and experimental
+module gating. These are real improvements, not merely closed issues.
+
+**2. What is incomplete?** A registry consumer still receives the August 24
+0.6.0 release, which predates those facade fixes. Mandatory CI remains red.
+Three tests failed in this audit's full workspace run. Browser delivery still
+needs a real host, accessibility lacks an assistive-technology bridge, and the
+Asupersync lane still resolves to Structured. Numerous advertised algorithms
+are experimental libraries rather than runtime behavior. Some mathematical
+guarantees exceed what the implementation establishes. The pane release gate
+can return GO on empty evidence. The current width cache trades exact identity
+for a hash-only key without collision verification.
+
+**3. What blocks delivery?** The first blockers are the published-consumer path,
+reproducible green checks, and trustworthy acceptance evidence. The next are
+integration through actual user journeys, accurate public contracts, and
+measured performance on declared workloads. More algorithm modules do not
+resolve those blockers. Browser/AT integration and advanced adaptive execution
+have additional host and architecture work; those must have distinct milestones.
+
+**4. Would all previously open beads close the gap?** No. They cover most of the
+September 1 backlog in considerable detail, but a path-dependency smoke test
+does not prove the registry release; tree snapshots do not prove a screen reader
+can use the UI; a classification string does not establish a release certificate;
+and broad coverage tests do not repair finite-sample quantile logic. Some plans
+also block useful implementation on optional deletion decisions or mistake
+absence of in-tree callers for absence of a legitimate public library API.
+
+**5. What lacked adequate bead coverage?** G43–G47 below identify uncovered
+acceptance obligations: shipped dependency identity, non-vacuous release proof,
+statistical assumptions and finite calibration, a complete accessible journey,
+and live pane strategy/retention/rollback integration. G08 also needs exact cache
+identity; G20 needs announcement privacy tests. These are specific uncovered
+seams inside otherwise well-populated areas, not a claim that accessibility,
+releases, or statistics had no issues at all.
+
+### Evidence and its limits
+
+Raw audit artifacts live at `/tmp/ftui-reality-20260904-Oa6ZLn`. This directory is
+local scratch evidence, not a durable public artifact archive. The conclusions,
+commands, failure signatures, and reproduction recipe are recorded here so the
+assessment remains useful if that directory is unavailable.
+
+| Observation | Result at this audit baseline |
+|---|---|
+| `rch exec -- cargo check --workspace --all-targets` | Exit 0. |
+| `rch exec -- cargo clippy --workspace --all-targets -- -D warnings` | Exit 0. |
+| `cargo fmt --check` | Result recorded in completion notes below. |
+| `RUSTDOCFLAGS="-D warnings" rch exec -- cargo doc --workspace --no-deps` | Result recorded in completion notes below. |
+| `rch exec -- cargo nextest run --workspace --no-fail-fast` | Exit 100: 25,272 tests run, 25,269 passed, 3 failed, 7 skipped; 101.802 seconds of test execution across 313 binaries. Default workspace feature union, not every feature combination. |
+| Focus performance failure | `help_keybind_e2e::e2e_focus_change_storm_performance`: p95 2,112 µs exceeded 2,000 µs. |
+| Inspector performance failure | `inspector::tests::inspector_perf_budget_overlay`: p95 27,048 µs exceeded 15,000 µs; sequence checksum `0x2d63353185370c4e`. |
+| Behavioral PTY failure | `pane_input_pty_e2e::pty_escape_cancels_armed_interaction_cleanly`: `[alt] ESC did not reach adapter cancel path` at line 402. |
+| Isolated retries | Recorded below; a passing retry does not erase the full-run failure or prove its cause. |
+| Live CI | Latest completed sampled main CI [33913014703](https://github.com/Dicklesworthstone/frankentui/actions/runs/33913014703), SHA `ee3b0534`: 6 successful jobs, 15 failed. Newer runs were queued at inspection; this is not an exact-HEAD CI verdict. |
+| CI failures | Feature combinations, coverage, showcase/widget E2E, Ubuntu/macOS PTY, three OS Clippy jobs, toolchain pin, WebSocket compliance, doctor realism, advanced host compatibility, pane artifacts, fuzz. Documentation and WASM checks were among the green jobs. |
+| Published package | Actual crates.io `ftui` 0.6.0 archive and [release v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0), August 24: defaults are `runtime,extras`, lacking the new default backend. Source still declares version 0.6.0. |
+| Stub scan | Text search plus AST scans for `todo!` and `unimplemented!` found no AST matches under `crates`; this does not prove integration or completeness. |
+| Tracker baseline | 3,003 issues: 2,788 closed, 206 open, 9 in progress. Existing bridge: 268 issues, 54 closed, 205 open, 9 in progress. No completion percentage is inferred from these counts. |
+| Graph baseline | 3,003 nodes, 4,245 edges, no cycles; 103 actionable and 112 blocked non-closed issues. |
+
+Performance evidence is conditional. The September 2 width-cache corpus reports
+49.6 µs uncached versus 11.3 µs steady-state for 488 non-ASCII clusters. That is
+one repeated corpus, not a universal speedup or an adversarial correctness proof.
+The SAT report compares tile-plus-SAT against flat diff, so it does not isolate
+SAT's contribution. The pane persistent-tree reports distinguish pure O(1)
+navigation from flattening cost, and bounded from unbounded history; production
+end-to-end speedups need equal-history and equal-output comparisons. This audit
+did not rerun controlled performance benchmarks, a physical terminal matrix,
+Windows/macOS sessions, real screen readers, or browser GPU rendering.
+
+### Current vision checklist
+
+These numbered goals preserve the original 71-row checklist. WORKING refers to
+the bounded implemented/tested behavior, not certification on every host.
+PARTIAL includes remaining integration or acceptance; UNPROVEN means the stated
+guarantee is not established. Source improvements do not establish shipped parity.
+
+| # | Testable promise | Current status and evidence | Remaining gaps |
+|---|---|---|---|
+| 1 | Inline scrollback/stable chrome | WORKING with capability preconditions; terminal_writer/inline_mode and PTY suites | G05/G26/G32 |
+| 2 | Deterministic buffer/diff/presentation | WORKING; render kernel and harness proof/property tests | G25/G42 |
+| 3 | One terminal writer | WORKING; TerminalWriter and sanitized log path | G27 |
+| 4 | Restore terminal on exit/panic | PARTIAL; RAII exists, suspend/cross-backend proof remains | G13/G32 |
+| 5 | Composable runnable facade | PARTIAL; source defaults fixed, published defaults stale | G01/G43 |
+| 6 | Accurate widget inventory | PARTIAL; broad library, counts/feature claims need reconciliation | G06/G17 |
+| 7 | Pane drag/dock/snap/throw/history | PARTIAL; real model/adapters, ESC failure and advanced adoption remain | G04/G47 |
+| 8 | Reproducible browser delivery | PARTIAL; ftui-web/StepProgram/WASM, external renderer dependency | G23 |
+| 9 | Bayesian diff selection | WORKING; TerminalWriter calls diff_strategy | G25 |
+| 10 | BOCPD resize detection | PARTIAL; default enabled now, differential replay pending | G12 |
+| 11 | VOI remeasurement | PARTIAL; inline_auto live, generalized list work incomplete | G10/G20 |
+| 12 | Anytime-valid budget monitoring | UNPROVEN; budget.rs explicitly calls its e-process heuristic | G13/G45 |
+| 13 | Conformal frame gating | PARTIAL; default enabled, finite-sample edge defect | G11/G45 |
+| 14 | Multi-stage conformal monitors | PARTIAL; experimental modules, not default runtime | G07/G45 |
+| 15 | Allocation/hover CUSUM | PARTIAL; hover integration improved, allocation seam remains | G13/G18 |
+| 16 | Alpha-investing error control | UNPROVEN; experimental, metric/assumptions need correction | G45 |
+| 17 | Timing flake detector | PARTIAL; experimental library; CI timing failures still occur | G04/G07 |
+| 18 | Rough-path signatures | PARTIAL; truncated implementation, full-signature theorem stronger | G45 |
+| 19 | SOS barrier provenance | PARTIAL; hand-chosen header fixed, residual solver attribution | G21/G45 |
+| 20 | S3-FIFO caps/width caching | PARTIAL; width live; distinguish actual policies per cache | G08/G28 |
+| 21 | W-TinyLFU/CMS guarantees | PARTIAL; alternatives/experiments are not chosen live width cache | G07/G45 |
+| 22 | Flat combining | PARTIAL; experimental library, not runtime dispatch | G07 |
+| 23 | Lens API | PARTIAL; experimental library, examples need reconciliation | G06/G07 |
+| 24 | Incremental view DAG | PARTIAL; experimental IVM module | G07 |
+| 25 | SLO schema/safe mode | PARTIAL; live budget differs from advertised SLO API | G13/G30 |
+| 26 | State persistence | WORKING; registry/runtime load-save, docs names remain | G30 |
+| 27 | Input macro record/replay | WORKING; input_macro integration, docs names remain | G30 |
+| 28 | Headless simulator | WORKING; simulator/deterministic test corpus | G30 |
+| 29 | Frame arena in render path | PARTIAL; arena/OOM response real, broader adoption unmeasured | G25 |
+| 30 | Grapheme pool/width bits | WORKING; cell/pool code; cache identity separately incomplete | G06/G08 |
+| 31 | Synchronized output | PARTIAL; probes/overrides/fallback implemented, host conditions apply | G05/G42 |
+| 32 | Elm runtime/subscriptions | WORKING; task/tick/fs-watch helpers present, E2E remains | G16 |
+| 33 | No unsafe implementation | WORKING declared crate policy; governance FFI exception conflicts | G34 |
+| 34 | Render proof sketches | WORKING as bounded sketches/tests, not machine-checked proof | G06/G38 |
+| 35 | Property/snapshot/benchmark infrastructure | WORKING infrastructure, tests and gates not all green | G04/G25 |
+| 36 | Resize coalescing regimes | PARTIAL; controller real, differential/default docs remain | G12 |
+| 37 | PID degradation | WORKING budget controller; experimental duplicate remains | G13 |
+| 38 | Input fairness | WORKING; input_fairness wired through runtime | G25 |
+| 39 | Table themes | PARTIAL; themes render, column/builders incomplete | G17 |
+| 40 | Stylesheets | PARTIAL; library exists, promised consumers incomplete | G17 |
+| 41 | Composition helpers | WORKING in source; Frame helpers/Layout alias added | G17/G43 |
+| 42 | Hyperlinks | WORKING; link registry/OSC 8 presenter | G06/G27 |
+| 43 | Focus management | PARTIAL; manager works, accessibility connection incomplete | G46 |
+| 44 | Modals | WORKING widget/focus stack; semantic tree incomplete | G46 |
+| 45 | Time-travel debugging | PARTIAL; harness library, discoverable consumer missing | G07 |
+| 46 | Accessibility/live regions | PARTIAL; runtime tree collected now, no OS AT bridge | G09/G46 |
+| 47 | i18n/RTL/formatting | PARTIAL; catalogs/plurals/locales, direction/formatting missing | G29 |
+| 48 | Queue scheduling | PARTIAL; effect queue opt-in, spawned default needs measurement | G24 |
+| 49 | Inline A/B/C strategies | WORKING with new self-test fallback, host proof bounded | G05 |
+| 50 | Color profiles/contrast | WORKING; style/color/ANSI code and tests | G25 |
+| 51 | Evidence events | PARTIAL; queue depth/VOI improved, disclosure/completeness gaps | G20/G44 |
+| 52 | Runtime lanes/shadow execution | PARTIAL; Asupersync resolves to Structured, no live dual run | G24 |
+| 53 | Effect queue/backpressure | WORKING; effects runtime and tests | G24/G26 |
+| 54 | Telemetry schema | PARTIAL; constants used now, raw a11y text enters tracing | G20 |
+| 55 | E-graph before layout solver | PARTIAL; module exists, no call from Flex/Grid | G07 |
+| 56 | Rope text | WORKING; rope/editor integration | G15 |
+| 57 | Full editor feature list | PARTIAL; coalescing/paragraph/clipboard work remains | G15 |
+| 58 | Unified degradation cascade | PARTIAL; budget live, separate experimental module | G13 |
+| 59 | Runtime cost models | PARTIAL; experimental models, application proof absent | G07/G25 |
+| 60 | Gestures | PARTIAL; new hooks, opt-in config and PTY proof remain | G18 |
+| 61 | Input protocol list | PARTIAL; parser robust, pixel mouse/DCS/APC incomplete | G36 |
+| 62 | Chords/priorities/keymap | PARTIAL; core/serde/tests added, app routing in progress | G14 |
+| 63 | Animation | WORKING; widget animation code and tests | G25 |
+| 64 | Bayesian capability detection | PARTIAL; ledger/probes live now, host validation remains | G28/G05 |
+| 65 | Showcase screen count | PARTIAL; 45 asserted screens, README still says 46 | G06 |
+| 66 | Published libraries | PARTIAL; packages exist, documented behavior newer than release | G43 |
+| 67 | Windows support | PARTIAL; Crossterm fallback, CI Clippy/host proof pending | G31 |
+| 68 | Doctor verification | PARTIAL; real core plus importer/translation product, realism CI fails | G22 |
+| 69 | Cross-component test location | PARTIAL docs; tests largely in crate test directories | G39 |
+| 70 | Mandatory quality gates | PARTIAL; local check/Clippy green, full tests/recent CI red | G04/G42 |
+| 71 | Main/legacy branch synchronization | Verify at handoff; do not infer from historical audit | G41 |
+
+Plans add subprocess output under stable inline chrome (G26/G27), suspend/resume
+(G32), terminal protocol/resource caps (G36), reproducible optimization budgets
+(G25), real browser coordinates/IME/GPU delivery (G23), importer semantics and
+evidence (G22), and schema/migration/version contracts (G34/G41/G44). Adjacent
+FrankenTerm and OpenTUI specs describe additional products: in-tree Rust models
+and fixtures do not prove an absent browser renderer or universal source importer.
+Optional SSH transport and machine-checked TLA+ ambitions remain explicit G38
+decisions, not silently dropped requirements.
+
+### Bridge plan: preserve G01–G42, extend uncovered seams
+
+Retain the original detailed implementation and companion-test beads. The epic
+suffixes below belong to `bd-g00-root-epic-ewths`. Closed implementation tasks
+do not automatically establish acceptance; preserve in-progress assignments.
+
+| Gap | Suffix | Current bridge obligation |
+|---|---|---|
+| G01 | .1 | Preserve default-backend fix; source acceptance plus shipped G43 proof. |
+| G02 | .2 | Preserve compiled examples; test dependency origin as well as source identity. |
+| G03 | .3 | Preserve per-Program signal fix, timeout and soak evidence. |
+| G04 | .6 | Remaining CI clusters and three new test failures; no masking failures. |
+| G05 | .4 | Preserve probes/overrides/fallback; supported-host and teardown proof. |
+| G06 | .5 | Claims ledger, counts/API examples, source/release labels, negative checker tests. |
+| G07 | .11 | Experimental gating; judge exported APIs by intended use, not in-tree caller count alone. |
+| G08 | .12 | Exact collision guard, forced-collision tests, controlled width benchmarks. |
+| G09 | .13 | Finish tree/panel/PTY acceptance; widget/focus/AT journey in G46. |
+| G10 | .14 | Variable heights, stable scroll anchors, VOI and search-screen integration. |
+| G11 | .15 | Warm-up/degrade/recover; finite-sample quantile correction through G45. |
+| G12 | .16 | BOCPD/heuristic differential replay, recovery and correct defaults. |
+| G13 | .17 | Unify controllers/teardown with parity; deletion decisions separate. |
+| G14 | .20 | Shared keymap through apps/help and PTY chord behavior. |
+| G15 | .21 | Coalesced undo, paragraph movement, bounded clipboard and wire tests. |
+| G16 | .22 | Preserve helpers; filesystem E2E and lifecycle/cancellation proof. |
+| G17 | .23 | All nine widget feature commitments and visual/interaction tests. |
+| G18 | .24 | Preserve gesture/hover integration; PTY and configuration proof. |
+| G19 | .25 | Preserve ranked Help; verify actual application feedback. |
+| G20 | .26 | Evidence schemas and default announcement-text redaction at tracing boundary. |
+| G21 | .18 | Hand-chosen experimental SOS route; correct residual solver attribution. |
+| G22 | .28 | Usable doctor core gates; real importer fixture/source scope. |
+| G23 | .29 | In-tree host and actual browser tests; preserve renderer roadmap. |
+| G24 | .30 | Executor resolution, side-effect-safe shadow comparison, measured queue policy. |
+| G25 | .31 | Latency/bytes/allocation budgets, negative gates, no selected-best-run baselines. |
+| G26 | .32 | Agent-shell process stream, cancel/restart, stable chrome, bounded memory. |
+| G27 | .33 | Explicit raw/SGR-only trust modes and adversarial one-writer tests. |
+| G28 | .19 | SAT ablation and exact fallback; live capability evidence. |
+| G29 | .34 | RTL direction/render/cursor and locale changes; explicit formatting scope. |
+| G30 | .35 | Executable persistence/macro/simulator/SLO API examples. |
+| G31 | .36 | Windows startup/exit and host matrix with run IDs. |
+| G32 | .37 | Suspend/resume design and PTY proof; implementation remains bd-d4dtr. |
+| G33 | .38 | SIMD experimental until proven; yanking/deletion distinct choices. |
+| G34 | .39 | ADR/risk/migration truth, including no-unsafe/no-shim policy conflicts. |
+| G35 | .40 | Runnable harness hello-world and truthful CLI/environment docs. |
+| G36 | .27 | Pixel mouse/control strings, bounded payloads, fragmentation/fuzz tests. |
+| G37 | .7 | Runnable closure evidence, not a substitute prose-checking process. |
+| G38 | .41 | Explicit original-plan dispositions; external commitments stay visible. |
+| G39 | .8 | Truthful test topology, sustained fuzzing, bounded failure artifacts. |
+| G40 | .9 | Preserve deterministic baseline fix; stale-cache/order verification. |
+| G41 | .10 | Fail-closed preflight and immutable version identity, extended by G43. |
+| G42 | .42 | Fresh integration evidence; native and full-vision milestones, extended by G44. |
+
+#### G43: Source improvements have not reached the published consumer
+
+Add a registry-only lane with isolated workspace, lockfile, Cargo configuration,
+target directory and explicit toolchain. Record resolved URLs, versions,
+checksums and features; reject path/patch/git substitution when claiming registry
+acceptance. Build and run documented minimal and streaming journeys under a PTY.
+Retain source-only acceptance separately. `consumer_smoke_e2e.sh --scratch`
+assumes `$SCRATCH/target` despite inherited `CARGO_TARGET_DIR`; test this case.
+Prepare a new version: rerunning an idempotent publish loop cannot replace
+immutable 0.6.0 bytes. Pair identity-validator tests with real post-publication
+E2E receipts. Actual publication is a later release task, not this assessment.
+
+#### G44: Release evidence can be vacuous or unrelated to the claimed run
+
+Reproduction against `scripts/pane_release_gate.py`: call
+`evaluate({"schema":"ftui.pane.release_evidence","schema_version":1,
+"dimensions":{d:{} for d in ALL_DIMS}}, {"classification":"certified"}, "ga")`.
+It returns GO with no blocking failures: empty loops satisfy the clauses.
+Normal CI has extra aggregation/validation; this is not proof of an actual bad
+release. It is a defect in the gate's standalone contract. The evidence validator
+checks supplied suites rather than the exact canonical inventory, and runtime
+artifact presence is weaker than checked content/provenance.
+
+Require canonical dimensions/suites, positive observed case counts, typed
+verdicts and actual exits. Bind certificates to commit/tree, lockfile, toolchain,
+target, features, binaries, artifacts and producer/schema versions. Verify all
+runtime artifact digests. Missing, stale, skipped, duplicate, zero-case and
+substituted evidence cannot become GA success. Golden/differential/soak proof
+must concern the same run, not a CLI boolean. Pair validator unit/property tests
+with CLI E2E that mutates one obligation of a real passing bundle at a time.
+FrankenTerm simulated-engine scorecards must likewise not certify actual GPUs.
+
+#### G45: Mathematical claims need valid contracts and falsification
+
+`conformal_predictor.rs::quantile` clamps `ceil((n+1)(1-alpha))` to the largest
+observed residual. For n=20, alpha=.01, rank 21 is required: a finite maximum
+cannot provide the advertised 99% distribution-free coverage. Define an explicit
+unbounded/defer result or valid minimum sample requirement; propagate it through
+budget decisions without NaN/overflow. Test rank boundaries, ties, invalid alpha,
+non-finite values, warm-up, reset and per-bucket calibration separately from
+empirical coverage.
+
+Create a claim/assumption ledger for conformal, e-process/GRAPA, alpha-investing,
+truncated rough paths, CMS and SOS. Separate deterministic identities,
+conditional theorems, empirical observations and heuristics. Budget's comment
+already disclaims anytime validity. Alpha-investing's E[V]/E[R] claim omits the
+stabilizing convention in the literature; discovery rate without truth labels
+is not a false-discovery estimate. Truncated signatures do not inherit full
+signature uniqueness. Hand-chosen coefficients are not SDP output. Preserve
+useful experimental code, correct labels, and test assumption breaks/recovery
+with seeds and uncertainty intervals, not an impossible zero-false-alarm oracle.
+
+Primary references: [conformal prediction](https://arxiv.org/abs/2107.07511),
+[alpha-investing](https://faculty.wharton.upenn.edu/wp-content/uploads/2011/11/Alpha-investing.pdf),
+[signature uniqueness](https://arxiv.org/abs/math/0507536). The mathematical
+distinctions use those sources; implementation conclusions come from code.
+
+#### G46: Accessibility must reach an actual user
+
+Frame collection, Program's tree/diff hook, nine widget implementations and the
+showcase panel are foundations. Complete TextArea/Tree/Form/Modal/Toast/Palette
+semantics, stable IDs, container hierarchy, focus-manager linkage, modal focus
+restoration and live-region priority. Preserve full text for explicitly enabled
+local AT, while keeping ordinary tracing/export free of content by default.
+`program.rs` logs `text = %announcement.text`; the general OpenTelemetry layer
+does not automatically invoke the redaction helpers. This is a disclosure path
+when subscribers/exporters are enabled, not observed external transmission.
+
+Choose a host boundary before an AT library: a terminal process does not own its
+emulator's accessibility tree automatically. Deliver one supported real AT/host
+journey with actions, focus and announcements, then expand the matrix. Headless
+snapshots and ARIA-shaped Rust values cannot substitute for that journey. Pair
+semantic/property tests with real-host E2E and secret-canary privacy tests.
+
+#### G47: Pane optimization must control live interaction
+
+The selector, retention policy, monitors and persistent store exist and are
+tested. Their design docs still describe a selector for a future engine; no
+selector/store caller was found in showcase/runtime interaction code. Local
+operation fast paths are live and are distinct from persistent-strategy adoption.
+Wire one real pane consumer, retaining the conservative oracle. Preserve state,
+cursor, redo availability, IDs and rejection outcomes across strategy changes.
+Enforce retention with the cursor behind the newest version as well as at head.
+Feed actual timings/retained state to monitors, switch atomically on violation,
+and prove rollback plus continued interaction. Benchmark equal retained history
+and include conversion/render costs. A synthetic soak does not prove that the
+user-facing dispatcher selected the engine.
+
+### Delivery cuts
+
+1. **Native consumer release:** consumer/capability/CI acceptance, private
+   telemetry, critical budgets, agent-shell/trust journey, supported-platform
+   and lifecycle proof, immutable release identity, trustworthy evidence.
+2. **Complete interactive framework:** additionally all widget/editor/keymap,
+   virtualization/i18n/accessibility and live pane commitments.
+3. **Full original vision:** additionally real browser delivery, chosen
+   Asupersync/shadow architecture, advanced algorithms with valid guarantees,
+   and explicitly resolved original-plan/external commitments.
+
+Each cut needs named mandatory checks, reproducible artifacts and an explicit
+unfinished-capability list. Native-ready does not mean all vision delivered.
+Optional deletion/yanking decisions do not block reversible implementation.
+No files are deleted by this plan; a question bead is not destructive permission.
+
+### Skill execution record
+
+Phase 1 and Phase 2 are the current assessment and bridge above. Initial Phase
+3a retained the 268-issue bridge and created 22 issues: two new epics and ten
+implementation/proof pairs. All mutations use `br`; product issues stay open.
+The following frozen prompt governs both initial conversion and regeneration:
+
+```text
+OK so please take ALL of that and elaborate on it and use it to create a comprehensive and granular
+set of beads for all this with tasks, subtasks, and dependency structure overlaid, with detailed
+comments so that the whole thing is totally self-contained and self-documenting (including relevant
+background, reasoning/justification, considerations, etc.-- anything we'd want our "future self" to
+know about the goals and intentions and thought process and how it serves the over-arching goals of
+the project.) The beads should be so detailed that we never need to consult back to the original
+markdown plan document. Remember to ONLY use the `br` tool to create and modify the beads and add
+the dependencies.
+```
+
+**Ambition round 1 — complete user journeys.** Applied the skill's first ambition
+prompt and revised this same document. The initial gap-by-module plan missed
+cross-module boundaries, so acceptance now follows these concrete journeys:
+
+| Journey | Entry and required outcome | Failure/edge obligations |
+|---|---|---|
+| New library consumer | Registry install → documented app → input/logs → clean exit | Hidden feature unification/config, wrong version, no TTY, unsupported backend, termios restoration |
+| Agent shell | Child process → concurrent stream + editing → cancel/restart | Output flood/injection, resize, queue/memory limits, process crash, no orphan child |
+| Accessible interaction | Focus/edit → palette/modal → action/announcement → focus restored | Missing nodes, virtualized items, AT reconnect, queue overflow, private text |
+| Pane workspace | Drag/key → history → retention/strategy change → continue | Cancel, rejected operation, mid-history cursor, redo branch, rollback state parity |
+| Browser host | Build actual WASM → real host render/input → resize/teardown | Complex graphemes, IME, DPR, DOM ownership, unsupported GPU fallback, reconnect |
+| Release approver | Exact candidate → mandatory checks → validated receipt | Missing/stale/zero-case evidence, replaced binary, changed features, registry mismatch |
+
+The native release receives a dedicated acceptance task instead of depending on
+completion of every research and adjacent-product epic. Full-vision acceptance
+retains those obligations. Each journey names the actual host and dependency
+origin; a Rust model test cannot silently stand in for browser or AT interaction.
+
+**Ambition round 2 — proof that can survive an independent replay.** Applied
+the second ambition prompt and revised in place. A pass boolean and a valid JSON
+schema are insufficient. Extend existing evidence producers/validators with a
+portable receipt: relative artifact paths, content digests, exact tested source
+and dependency identity, toolchain/features/target, actual command/exits, expected
+case inventory, and a bounded reproduction command. Validate after copying the
+bundle to a fresh directory; reject path escapes, missing files and mixed runs.
+Failing and timed-out runs must retain diagnostic artifacts without being
+classified as success. Digests establish identity under a trusted producer;
+they do not authenticate a malicious producer or prove the test oracle is sound.
+Do not introduce a new certificate service or signing infrastructure for this.
+
+The same rule applies at each boundary: registry package versus checkout,
+browser runtime versus Rust simulation, actual AT versus semantic snapshots,
+and selected pane execution versus a log label. Existing G37 closure tooling
+should consume this evidence, not accept an arbitrary correctly formatted
+`test:` or `ci-run:` string as proof. Publishing and external issue/comment
+automation remain separate authorized operations, not prerequisites for audit.
+
+**Ambition round 3 — assumptions, exactness and total cost.** Applied the third,
+mathematics-focused ambition prompt. The useful mathematical work here is to
+make decisions falsifiable: exact order-statistic boundaries, explicit
+exchangeability/null assumptions, observational equivalence across pane
+representations, and cache identity despite adversarial hashing. For adaptive
+features, record the assumption, observable violation, conservative fallback,
+recovery condition and measurement overhead. Replay the same input trace through
+baseline, candidate and forced-fallback modes; verify semantic equality before
+comparing cost. Shadow execution must not duplicate subprocesses, network calls,
+clipboard writes or user-visible output.
+
+Promote an optimization only after measuring total user-visible latency,
+allocation/retained memory and output bytes on declared workloads. Include cold
+start, steady state, long history, adversarial resize/input and failure recovery.
+Use paired repeated measurements, uncertainty intervals and fixed exclusion
+rules; report regressions and inconclusive results. SAT requires flat/tile/
+tile-plus-SAT ablation. Persistent history requires equal retained history and
+conversion costs. An algorithm can remain an experimental public API without
+being forced into a default path merely to satisfy a reachability script.
+
+The regenerated graph therefore includes a bounded native acceptance milestone
+and a shared adaptive-comparison implementation/proof pair, reusing current
+benchmark and replay infrastructure. Mathematical novelty without measured
+benefit is not a reason to complicate the runtime.
+
+For every Phase 5 pass, apply this frozen prompt verbatim:
+
+```text
+Check over each bead super carefully-- are you sure it makes sense? Is it optimal? Could we change
+anything to make the system work better for users? If so, revise the beads. It's a lot easier and
+faster to operate in "plan space" before we start implementing these things! DO NOT OVERSIMPLIFY
+THINGS! DO NOT LOSE ANY FEATURES OR FUNCTIONALITY! Also make sure that as part of the beads we
+include comprehensive unit tests and e2e test scripts with great, detailed logging so we can be
+sure that everything is working perfectly after implementation. Make sure to ONLY use the `br` cli
+tool for all changes, and you can and should also use the `bv` tool to help diagnose potential
+problems with the beads.
+```
+
+---
+
+## Historical assessment: 2026-09-01
 
 > Phase 1 (reality check) and Phase 2 (bridge plan) of the `reality-check-for-project`
 > workflow. Code is ground truth for where the project IS; README.md, AGENTS.md and
