@@ -15,7 +15,7 @@ use ftui_widgets::Badge;
 use ftui_widgets::StatefulWidget;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
-use ftui_widgets::borders::{BorderType, Borders};
+use ftui_widgets::borders::{BorderSet, BorderType, Borders};
 use ftui_widgets::columns::{Column, Columns};
 use ftui_widgets::command_palette::{ActionItem, CommandPalette};
 use ftui_widgets::constraint_overlay::ConstraintOverlay;
@@ -466,13 +466,30 @@ impl WidgetGallery {
     // Section A: Borders
     // -----------------------------------------------------------------------
     fn render_borders(&self, frame: &mut Frame, area: Rect) {
+        // A genuine Custom set (# corners, - / | edges) — distinct from Ascii's
+        // all-'+' junctions, so the "Custom accepts any BorderSet" claim shows.
+        let custom = BorderType::Custom(BorderSet {
+            top_left: '#',
+            top_right: '#',
+            bottom_left: '#',
+            bottom_right: '#',
+            horizontal: '-',
+            vertical: '|',
+            tee_up: '+',
+            tee_down: '+',
+            tee_left: '+',
+            tee_right: '+',
+            cross: '+',
+        });
         let border_types = [
             ("ASCII", BorderType::Ascii),
             ("Square", BorderType::Square),
             ("Rounded", BorderType::Rounded),
             ("Double", BorderType::Double),
             ("Heavy", BorderType::Heavy),
-            ("Custom", BorderType::Rounded),
+            ("Dashed", BorderType::Dashed),
+            ("HeavyDashed", BorderType::HeavyDashed),
+            ("Custom", custom),
         ];
 
         let alignments = [
@@ -482,6 +499,8 @@ impl WidgetGallery {
             Alignment::Left,
             Alignment::Center,
             Alignment::Right,
+            Alignment::Left,
+            Alignment::Center,
         ];
 
         let colors = [
@@ -491,9 +510,11 @@ impl WidgetGallery {
             theme::accent::WARNING,
             theme::accent::ERROR,
             theme::accent::INFO,
+            theme::accent::PRIMARY,
+            theme::accent::SUCCESS,
         ];
 
-        // 2 rows of 3
+        // 2 rows of 4
         let rows = Flex::vertical()
             .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
             .split(area);
@@ -501,14 +522,15 @@ impl WidgetGallery {
         for (row_idx, row_area) in rows.iter().enumerate().take(2) {
             let cols = Flex::horizontal()
                 .constraints([
-                    Constraint::Percentage(33.3),
-                    Constraint::Percentage(33.3),
-                    Constraint::Percentage(33.4),
+                    Constraint::Percentage(25.0),
+                    Constraint::Percentage(25.0),
+                    Constraint::Percentage(25.0),
+                    Constraint::Percentage(25.0),
                 ])
                 .split(*row_area);
 
-            for (col_idx, col_area) in cols.iter().enumerate().take(3) {
-                let i = row_idx * 3 + col_idx;
+            for (col_idx, col_area) in cols.iter().enumerate().take(4) {
+                let i = row_idx * 4 + col_idx;
                 let (name, bt) = border_types[i];
                 let block = Block::new()
                     .borders(Borders::ALL)
@@ -1302,7 +1324,11 @@ impl WidgetGallery {
                 .indeterminate(self.tick_count)
                 .label("indeterminate")
                 .style(Style::new().fg(theme::fg::MUTED))
-                .gauge_style(Style::new().fg(theme::accent::INFO).bg(theme::alpha::SURFACE))
+                .gauge_style(
+                    Style::new()
+                        .fg(theme::accent::INFO)
+                        .bg(theme::alpha::SURFACE),
+                )
                 .render(row, frame);
         }
     }

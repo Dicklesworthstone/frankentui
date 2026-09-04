@@ -1,21 +1,21 @@
   A: Inputs │ ▸ B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F: Layout │   G: Utility │   H: Advanced 
-+ASCII-------+┌───Square───┐╭─────Rounded╮╭Text Style Flags───────────────────────╮  ┌────────── Pane Studio ──────────┐
-|Border: ASCI|│Border: Squa││Border: Roun││Bold            Dim                    │  │mode:Focus sel:1 tl:0/0 ops:0 sp:│
-|Align: Left |│Align: Cente││Align: Right││Italic          Underline              │  │┃              ││               ││
-|            |│            ││            ││DblUnder        CurlyUL                │  │┃ 16x15  @86,2 ││ 17x15  @102,2 ││
-|            |│            ││            ││Blink           Reverse                │  │┃              ││               ││
-|            |│            ││            ││Hidden          Strike                 │  │┃              ││               ││
-|            |│            ││            ││Bold+Italic     Bold+Under             │  │┃              ││               ││
-|            |│            ││            ││Dim+Italic      All Flags              │  │┃              ││               ││
-+------------+└────────────┘╰────────────╯│                                       │  │┃              ││               ││
-╔Double══════╗┏━━━Heavy━━━━┓╭──────Custom╮│                                       │  │┃              ││               ││
-║Border: Doub║┃Border: Heav┃│Border: Cust││                                       │  │┃              ││               ││
-║Align: Left ║┃Align: Cente┃│Align: Right││                                       │  │┃              ││               ││
-║            ║┃            ┃│            ││                                       │  │┃              ││               ││
-║            ║┃            ┃│            ││                                       │  │┃              ││               ││
-║            ║┃            ┃│            ││                                       │  │┃              ■│               ││
-║            ║┃            ┃│            ││                                       │  │──────■■■──────────────■■■───────│
-╚════════════╝┗━━━━━━━━━━━━┛╰────────────╯╰───────────────────────────────────────╯  │╭───5 pane-3───■╭───7 pane-4────╮│
++ASCII----+┌─Square──┐╭──Rounded╮╔Double═╗╭Text Style Flags───────────────────────╮  ┌────────── Pane Studio ──────────┐
+|Border: A|│Border: S││Border: R│║Border:║│Bold            Dim                    │  │mode:Focus sel:1 tl:0/0 ops:0 sp:│
+|Align: Le|│Align: Ce││Align: Ri│║Align: ║│Italic          Underline              │  │┃              ││               ││
+|         |│         ││         │║       ║│DblUnder        CurlyUL                │  │┃ 16x15  @86,2 ││ 17x15  @102,2 ││
+|         |│         ││         │║       ║│Blink           Reverse                │  │┃              ││               ││
+|         |│         ││         │║       ║│Hidden          Strike                 │  │┃              ││               ││
+|         |│         ││         │║       ║│Bold+Italic     Bold+Under             │  │┃              ││               ││
+|         |│         ││         │║       ║│Dim+Italic      All Flags              │  │┃              ││               ││
++---------+└─────────┘╰─────────╯╚═══════╝│                                       │  │┃              ││               ││
+┏━━Heavy━━┓┌┄┄┄Dashed┐┏HeavyDash┓#Custom-#│                                       │  │┃              ││               ││
+┃Border: H┃┆Border: D┆┇Border: H┇|Border:|│                                       │  │┃              ││               ││
+┃Align: Ce┃┆Align: Ri┆┇Align: Le┇|Align: |│                                       │  │┃              ││               ││
+┃         ┃┆         ┆┇         ┇|       |│                                       │  │┃              ││               ││
+┃         ┃┆         ┆┇         ┇|       |│                                       │  │┃              ││               ││
+┃         ┃┆         ┆┇         ┇|       |│                                       │  │┃              ■│               ││
+┃         ┃┆         ┆┇         ┇|       |│                                       │  │──────■■■──────────────■■■───────│
+┗━━━━━━━━━┛└┄┄┄┄┄┄┄┄┄┘┗┅┅┅┅┅┅┅┅┅┛#-------#╰───────────────────────────────────────╯  │╭───5 pane-3───■╭───7 pane-4────╮│
 ╭Paragraph Wrap────────────╮╭Lists────────────────────╮╭Code Block───────────────╮   ││              ■│               ││
 │Word: The quick brown fox ││• Bullet item            ││fn main() {              │   ││ 16x16  @86,1 ■│ 17x16  @102,1 ││
 │jumps over the lazy dog.  ││• Second item            ││    println!("hello");   │   ││              ││               ││
