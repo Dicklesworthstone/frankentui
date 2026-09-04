@@ -12,6 +12,9 @@
 //! assert_eq!(ta.line_count(), 2);
 //! ```
 
+use std::ops::Range;
+use std::sync::Arc;
+
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
@@ -24,7 +27,19 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::{StatefulWidget, Widget, apply_style, clear_text_area, draw_text_span};
 
 /// Multi-line text editor widget.
-#[derive(Debug, Clone)]
+/// A per-line syntax style provider for [`TextArea::with_highlighter`].
+///
+/// Called once per visible logical line per render with `(line_index,
+/// line_text)`, where `line_text` has no trailing newline. It returns byte
+/// ranges into `line_text` paired with a [`Style`] to merge over the base
+/// style (before the selection style, so selection still wins). Ranges may
+/// overlap — a later range wins for a byte it covers. Ranges that fall outside
+/// the line or that do not sit on grapheme boundaries are ignored; an empty
+/// vector means "no highlight". The hook lives entirely in `ftui-widgets` and
+/// knows nothing about any tokenizer.
+pub type LineHighlighter = Arc<dyn Fn(usize, &str) -> Vec<(Range<usize>, Style)> + Send + Sync>;
+
+#[derive(Clone)]
 pub struct TextArea {
     editor: Editor,
     /// Placeholder text shown when empty.
@@ -62,6 +77,46 @@ pub struct TextArea {
     last_viewport_height: std::cell::Cell<usize>,
     /// Last viewport width for visibility checks.
     last_viewport_width: std::cell::Cell<usize>,
+    /// Optional per-line syntax style provider (see [`LineHighlighter`]).
+    highlighter: Option<LineHighlighter>,
+}
+
+impl std::fmt::Debug for TextArea {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextArea")
+            .field("editor", &self.editor)
+            .field("placeholder", &self.placeholder)
+            .field("focused", &self.focused)
+            .field("show_line_numbers", &self.show_line_numbers)
+            .field("style", &self.style)
+            .field("cursor_line_style", &self.cursor_line_style)
+            .field("selection_style", &self.selection_style)
+            .field("placeholder_style", &self.placeholder_style)
+            .field("line_number_style", &self.line_number_style)
+            .field("soft_wrap", &self.soft_wrap)
+            .field("max_height", &self.max_height)
+            .field("scroll_anchor", &self.scroll_anchor)
+            .field("scroll_left", &self.scroll_left)
+            .field("last_viewport_height", &self.last_viewport_height)
+            .field("last_viewport_width", &self.last_viewport_width)
+            .field(
+                "highlighter",
+                &self.highlighter.as_ref().map(|_| "<fn>"),
+            )
+            .finish()
+    }
+}
+
+/// The style of the last range in `spans` that covers `byte`, or `None`.
+///
+/// Ranges are byte ranges into a single line; a later range wins on overlap.
+/// Never panics: offsets outside every range simply return `None`.
+fn style_at(spans: &[(Range<usize>, Style)], byte: usize) -> Option<Style> {
+    spans
+        .iter()
+        .rev()
+        .find(|(range, _)| range.contains(&byte))
+        .map(|(_, style)| *style)
 }
 
 impl Default for TextArea {
@@ -107,6 +162,7 @@ impl TextArea {
             scroll_left: std::cell::Cell::new(0),
             last_viewport_height: std::cell::Cell::new(0),
             last_viewport_width: std::cell::Cell::new(0),
+            highlighter: None,
         }
     }
 
@@ -292,6 +348,46 @@ impl TextArea {
     pub fn with_line_numbers(mut self, show: bool) -> Self {
         self.show_line_numbers = show;
         self
+    }
+
+    /// Install a per-line syntax style provider (builder). See
+    /// [`LineHighlighter`].
+    #[must_use]
+    pub fn with_highlighter(mut self, highlighter: LineHighlighter) -> Self {
+        self.highlighter = Some(highlighter);
+        self
+    }
+
+    /// Set or clear the per-line syntax style provider.
+    pub fn set_highlighter(&mut self, highlighter: Option<LineHighlighter>) {
+        self.highlighter = highlighter;
+    }
+
+    /// Whether a syntax highlighter is installed.
+    #[must_use]
+    pub fn has_highlighter(&self) -> bool {
+        self.highlighter.is_some()
+    }
+
+    /// The highlight spans for one line, or empty when there is no highlighter
+    /// or styling is disabled. Ranges that don't sit on grapheme boundaries of
+    /// `line_text` are dropped so partial-grapheme styling can't occur.
+    fn line_spans(&self, line_idx: usize, line_text: &str, styling: bool) -> Vec<(Range<usize>, Style)> {
+        if !styling {
+            return Vec::new();
+        }
+        let Some(highlighter) = self.highlighter.as_ref() else {
+            return Vec::new();
+        };
+        highlighter(line_idx, line_text)
+            .into_iter()
+            .filter(|(range, _)| {
+                range.start < range.end
+                    && range.end <= line_text.len()
+                    && line_text.is_char_boundary(range.start)
+                    && line_text.is_char_boundary(range.end)
+            })
+            .collect()
     }
 
     /// Set base style (builder).
@@ -1325,6 +1421,9 @@ impl Widget for TextArea {
                 let line_text = line_text.trim_end_matches(['\n', '\r']);
 
                 let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(line_idx, 0));
+                // Syntax highlight spans for the whole logical line, computed
+                // once and reused across every wrapped slice.
+                let hl_spans = self.line_spans(line_idx, line_text, deg.apply_styling());
                 let slices = Self::wrap_line_slices(line_text, text_area_w);
 
                 // If this is the start line, skip slices before anchor_vrow
@@ -1378,8 +1477,13 @@ impl Widget for TextArea {
 
                         let px = text_area_x + visual_x as u16;
 
-                        // Determine style (selection highlight)
+                        // Syntax highlight first, then selection over it.
                         let mut g_style = base_style;
+                        if let Some(hl) =
+                            style_at(&hl_spans, grapheme_byte_offset.saturating_sub(line_start_byte))
+                        {
+                            g_style = g_style.merge(&hl);
+                        }
                         if let Some((sel_start, sel_end)) = sel_range
                             && grapheme_byte_offset >= sel_start
                             && grapheme_byte_offset < sel_end
@@ -1451,6 +1555,7 @@ impl Widget for TextArea {
 
             // Calculate line byte offset for selection mapping
             let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(line_idx, 0));
+            let hl_spans = self.line_spans(line_idx, line_text, deg.apply_styling());
 
             // Render each grapheme
             let mut visual_x: usize = 0;
@@ -1461,8 +1566,13 @@ impl Widget for TextArea {
                 let g_width = display_width(g);
                 let g_byte_len = g.len();
 
-                // Determine style (selection highlight)
+                // Syntax highlight first, then selection over it.
                 let mut g_style = base_style;
+                if let Some(hl) =
+                    style_at(&hl_spans, grapheme_byte_offset.saturating_sub(line_start_byte))
+                {
+                    g_style = g_style.merge(&hl);
+                }
                 if let Some((sel_start, sel_end)) = sel_range
                     && grapheme_byte_offset >= sel_start
                     && grapheme_byte_offset < sel_end
