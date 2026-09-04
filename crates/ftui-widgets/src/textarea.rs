@@ -99,10 +99,7 @@ impl std::fmt::Debug for TextArea {
             .field("scroll_left", &self.scroll_left)
             .field("last_viewport_height", &self.last_viewport_height)
             .field("last_viewport_width", &self.last_viewport_width)
-            .field(
-                "highlighter",
-                &self.highlighter.as_ref().map(|_| "<fn>"),
-            )
+            .field("highlighter", &self.highlighter.as_ref().map(|_| "<fn>"))
             .finish()
     }
 }
@@ -372,7 +369,12 @@ impl TextArea {
     /// The highlight spans for one line, or empty when there is no highlighter
     /// or styling is disabled. Ranges that don't sit on grapheme boundaries of
     /// `line_text` are dropped so partial-grapheme styling can't occur.
-    fn line_spans(&self, line_idx: usize, line_text: &str, styling: bool) -> Vec<(Range<usize>, Style)> {
+    fn line_spans(
+        &self,
+        line_idx: usize,
+        line_text: &str,
+        styling: bool,
+    ) -> Vec<(Range<usize>, Style)> {
         if !styling {
             return Vec::new();
         }
@@ -1479,17 +1481,18 @@ impl Widget for TextArea {
 
                         // Syntax highlight first, then selection over it.
                         let mut g_style = base_style;
-                        if let Some(hl) =
-                            style_at(&hl_spans, grapheme_byte_offset.saturating_sub(line_start_byte))
-                        {
-                            g_style = g_style.merge(&hl);
+                        if let Some(hl) = style_at(
+                            &hl_spans,
+                            grapheme_byte_offset.saturating_sub(line_start_byte),
+                        ) {
+                            g_style = g_style.patch(&hl);
                         }
                         if let Some((sel_start, sel_end)) = sel_range
                             && grapheme_byte_offset >= sel_start
                             && grapheme_byte_offset < sel_end
                             && deg.apply_styling()
                         {
-                            g_style = g_style.merge(&self.selection_style);
+                            g_style = g_style.patch(&self.selection_style);
                         }
 
                         if g_width > 0 {
@@ -1568,17 +1571,18 @@ impl Widget for TextArea {
 
                 // Syntax highlight first, then selection over it.
                 let mut g_style = base_style;
-                if let Some(hl) =
-                    style_at(&hl_spans, grapheme_byte_offset.saturating_sub(line_start_byte))
-                {
-                    g_style = g_style.merge(&hl);
+                if let Some(hl) = style_at(
+                    &hl_spans,
+                    grapheme_byte_offset.saturating_sub(line_start_byte),
+                ) {
+                    g_style = g_style.patch(&hl);
                 }
                 if let Some((sel_start, sel_end)) = sel_range
                     && grapheme_byte_offset >= sel_start
                     && grapheme_byte_offset < sel_end
                     && deg.apply_styling()
                 {
-                    g_style = g_style.merge(&self.selection_style);
+                    g_style = g_style.patch(&self.selection_style);
                 }
 
                 // Skip graphemes before horizontal scroll
@@ -2244,12 +2248,18 @@ mod tests {
 
         #[test]
         fn highlighter_ranges_style_graphemes() {
-            let ta = TextArea::new().with_text("abcdef").with_highlighter(Arc::new(|_l, _t| {
-                vec![(0..3, Style::new().fg(PackedRgba::RED))]
-            }));
+            let ta = TextArea::new()
+                .with_text("abcdef")
+                .with_highlighter(Arc::new(|_l, _t| {
+                    vec![(0..3, Style::new().fg(PackedRgba::RED))]
+                }));
             render(&ta, 10, 1, |frame| {
                 for x in 0..3 {
-                    assert_eq!(frame.buffer.get(x, 0).unwrap().fg, PackedRgba::RED, "col {x}");
+                    assert_eq!(
+                        frame.buffer.get(x, 0).unwrap().fg,
+                        PackedRgba::RED,
+                        "col {x}"
+                    );
                 }
                 assert_ne!(frame.buffer.get(3, 0).unwrap().fg, PackedRgba::RED);
             });
@@ -2259,13 +2269,17 @@ mod tests {
         fn out_of_range_and_non_boundary_ranges_ignored() {
             // "café": c(0) a(1) f(2) é(3..5); len 5. All three ranges are
             // invalid (past end / splits 'é' / inverted) and are dropped.
-            let ta = TextArea::new().with_text("café").with_highlighter(Arc::new(|_l, _t| {
-                vec![
-                    (0..100, Style::new().fg(PackedRgba::RED)),
-                    (3..4, Style::new().fg(PackedRgba::GREEN)),
-                    (5..2, Style::new().fg(PackedRgba::BLUE)),
-                ]
-            }));
+            let ta = TextArea::new()
+                .with_text("café")
+                .with_highlighter(Arc::new(|_l, _t| {
+                    // Struct literal so clippy does not flag the reversed range.
+                    let inverted = Range { start: 5, end: 2 };
+                    vec![
+                        (0..100, Style::new().fg(PackedRgba::RED)),
+                        (3..4, Style::new().fg(PackedRgba::GREEN)),
+                        (inverted, Style::new().fg(PackedRgba::BLUE)),
+                    ]
+                }));
             assert!(ta.line_spans(0, "café", true).is_empty());
             render(&ta, 10, 1, |_| {}); // no panic
         }
@@ -2273,9 +2287,11 @@ mod tests {
         #[test]
         fn multibyte_ranges_align_to_graphemes() {
             // Highlight only the 2-byte 'é' (bytes 3..5).
-            let ta = TextArea::new().with_text("café").with_highlighter(Arc::new(|_l, _t| {
-                vec![(3..5, Style::new().fg(PackedRgba::RED))]
-            }));
+            let ta = TextArea::new()
+                .with_text("café")
+                .with_highlighter(Arc::new(|_l, _t| {
+                    vec![(3..5, Style::new().fg(PackedRgba::RED))]
+                }));
             assert_eq!(ta.line_spans(0, "café", true).len(), 1);
             render(&ta, 10, 1, |frame| {
                 assert_eq!(frame.buffer.get(3, 0).unwrap().fg, PackedRgba::RED, "'é'");
@@ -2296,18 +2312,20 @@ mod tests {
             ta.select_right();
             ta.select_right();
             ta.select_right();
-            eprintln!("DEBUG selection = {:?}", ta.selection());
             render(&ta, 10, 1, |frame| {
-                eprintln!(
-                    "DEBUG c0 fg={:?} bg={:?}",
-                    frame.buffer.get(0, 0).unwrap().fg,
-                    frame.buffer.get(0, 0).unwrap().bg
-                );
                 let selected = frame.buffer.get(0, 0).unwrap();
-                assert_eq!(selected.bg, PackedRgba::GREEN, "selection bg wins over highlight");
+                assert_eq!(
+                    selected.bg,
+                    PackedRgba::GREEN,
+                    "selection bg wins over highlight"
+                );
                 assert_eq!(selected.fg, PackedRgba::WHITE, "highlight fg preserved");
                 let highlighted = frame.buffer.get(3, 0).unwrap();
-                assert_eq!(highlighted.bg, PackedRgba::RED, "unselected cell keeps highlight bg");
+                assert_eq!(
+                    highlighted.bg,
+                    PackedRgba::RED,
+                    "unselected cell keeps highlight bg"
+                );
             });
         }
 
@@ -2318,9 +2336,15 @@ mod tests {
             let ta = TextArea::new()
                 .with_text("abcdefghij")
                 .with_soft_wrap(true)
-                .with_highlighter(Arc::new(|_l, _t| vec![(0..10, Style::new().fg(PackedRgba::RED))]));
+                .with_highlighter(Arc::new(|_l, _t| {
+                    vec![(0..10, Style::new().fg(PackedRgba::RED))]
+                }));
             render(&ta, 5, 2, |frame| {
-                assert_eq!(frame.buffer.get(0, 0).unwrap().fg, PackedRgba::RED, "first row");
+                assert_eq!(
+                    frame.buffer.get(0, 0).unwrap().fg,
+                    PackedRgba::RED,
+                    "first row"
+                );
                 assert_eq!(
                     frame.buffer.get(0, 1).unwrap().fg,
                     PackedRgba::RED,
