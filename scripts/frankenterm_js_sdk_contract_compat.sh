@@ -52,6 +52,20 @@ echo "=========================================="
 echo "  Log directory: $LOG_DIR"
 echo ""
 
+# Always surface a failing target's raw log in the CI job output (the panic
+# otherwise lives only in a /tmp file CI never uploads). See bd-...6.15.
+dump_failure_log() {
+    local label="$1" raw="$2"
+    echo "::group::${label} raw log"
+    grep -nE "panicked at|test result: FAILED|FAILED|error\[" "$raw" 2>/dev/null | head -20 || true
+    if $VERBOSE; then
+        cat "$raw" 2>/dev/null || true
+    else
+        tail -80 "$raw" 2>/dev/null || true
+    fi
+    echo "::endgroup::"
+}
+
 # run_target <label> -- <cargo test args...>
 run_target() {
     local label="$1"; shift
@@ -70,12 +84,13 @@ run_target() {
     if [[ "$rc" -ne 0 ]]; then
         FAILED=$((FAILED + 1))
         printf "  %-28s  FAIL  (exit %s)  cells=%s\n" "$label" "$rc" "$count"
-        $VERBOSE && tail -20 "$raw"
+        dump_failure_log "$label" "$raw"
         return 1
     fi
     if [[ "$count" -eq 0 ]]; then
         FAILED=$((FAILED + 1))
         printf "  %-28s  FAIL  (no evidence cells emitted)\n" "$label"
+        dump_failure_log "$label" "$raw"
         return 1
     fi
 

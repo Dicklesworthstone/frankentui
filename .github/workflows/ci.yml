@@ -1145,8 +1145,17 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: golden-trace-logs
+          # Always capture the advanced-API / addon-parity / sdk-contract harness
+          # raw logs and the release-gate tree, so a failing subsystem's panic is
+          # recoverable from the artifact even when a later step never ran. The
+          # harnesses now also echo the failing log inline (::group:: tail), so
+          # the signal is visible in the job log itself too (bd-...6.15).
           path: |
             /tmp/ftui_schedule_trace_e2e/
+            /tmp/ftui-frankenterm-js-advanced-api-*/
+            /tmp/ftui-frankenterm-js-addon-parity-*/
+            /tmp/frankenterm_gates/sdk_contract/
+            /tmp/frankenterm_release_gates/
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1157,7 +1166,11 @@ jobs:
           name: frankenterm-typography-rescale-release-gates
           path: /tmp/frankenterm_release_gates/remote_typography_rescale/
           retention-days: 7
-          if-no-files-found: error
+          # warn, not error: when an earlier release-gate step fails the
+          # typography step never runs and this directory does not exist; a
+          # missing-artifact hard error here used to fail the job a second time
+          # and hide the real cause (bd-...6.15).
+          if-no-files-found: warn
 
   # ==========================================================================
   # doctor_frankentui Verification (unit + integration + e2e + coverage gate)

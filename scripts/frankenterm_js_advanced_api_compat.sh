@@ -55,6 +55,23 @@ echo "=========================================="
 echo "  Log directory: $LOG_DIR"
 echo ""
 
+# Always surface a failing subsystem's raw log in the CI job output. Without
+# this the panic message lived only in a /tmp file that CI never uploaded, so a
+# real test failure (parser_hooks, exit 101) stayed invisible for weeks. The
+# grep floats the failing #[test] name/panic location to the top; the tail (or
+# full log under --verbose) gives the surrounding context.
+dump_failure_log() {
+    local subsystem="$1" raw="$2"
+    echo "::group::${subsystem} raw log"
+    grep -nE "panicked at|test result: FAILED|FAILED|error\[" "$raw" 2>/dev/null | head -20 || true
+    if $VERBOSE; then
+        cat "$raw" 2>/dev/null || true
+    else
+        tail -80 "$raw" 2>/dev/null || true
+    fi
+    echo "::endgroup::"
+}
+
 # run_subsystem <subsystem> <evidence-prefix> -- <cargo test args...>
 # Runs the test, extracts the evidence lines for the given prefix, and appends
 # normalised manifest rows (subsystem-tagged) to $MANIFEST.
@@ -77,12 +94,13 @@ run_subsystem() {
     if [[ "$rc" -ne 0 ]]; then
         FAILED=$((FAILED + 1))
         printf "  %-16s  FAIL  (exit %s)  cells=%s\n" "$subsystem" "$rc" "$count"
-        $VERBOSE && tail -20 "$raw"
+        dump_failure_log "$subsystem" "$raw"
         return 1
     fi
     if [[ "$count" -eq 0 ]]; then
         FAILED=$((FAILED + 1))
         printf "  %-16s  FAIL  (no evidence cells emitted)\n" "$subsystem"
+        dump_failure_log "$subsystem" "$raw"
         return 1
     fi
 
