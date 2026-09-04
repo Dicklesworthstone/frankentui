@@ -19,6 +19,6 @@
 # `cargo clippy --workspace --all-targets -- -D warnings` and the full test suite,
 # and update this comment with what you verified. Do not replace it with "nightly".
 [toolchain]
-channel = "nightly-2026-08-25"
+channel = "nightly-2026-08-31"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
