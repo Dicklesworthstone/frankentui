@@ -30,7 +30,7 @@ use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
 use ftui_widgets::paragraph::Paragraph;
-use ftui_widgets::textarea::TextArea;
+use ftui_widgets::textarea::{LineHighlighter, TextArea};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::{HelpEntry, Screen};
@@ -179,7 +179,8 @@ impl MarkdownLiveEditor {
             .with_line_numbers(true)
             .with_soft_wrap(true)
             .with_focus(true)
-            .with_placeholder("Start writing Markdown...");
+            .with_placeholder("Start writing Markdown...")
+            .with_highlighter(Self::build_editor_highlighter());
 
         let search_input = TextInput::new()
             .with_placeholder("Search in editor (Ctrl+F)")
@@ -235,6 +236,32 @@ impl MarkdownLiveEditor {
         let mut syntax_highlighter = SyntaxHighlighter::new();
         syntax_highlighter.set_theme(theme::syntax_theme());
         MarkdownRenderer::new(theme).with_syntax_highlighter(Arc::new(syntax_highlighter))
+    }
+
+    /// A per-line highlighter for the editor pane: the same `SyntaxHighlighter`
+    /// the preview uses, applied to the Markdown text being typed. Each line is
+    /// tokenised and its styled spans mapped to byte ranges. Multi-line
+    /// constructs (fenced blocks) are coloured per line; a stateful variant is
+    /// a follow-up.
+    fn build_editor_highlighter() -> LineHighlighter {
+        let mut sh = SyntaxHighlighter::new();
+        sh.set_theme(theme::syntax_theme());
+        let sh = Arc::new(sh);
+        Arc::new(move |_line_idx, line_text: &str| {
+            let text = sh.highlight(line_text, "markdown");
+            let mut spans = Vec::new();
+            if let Some(line) = text.lines().first() {
+                let mut byte = 0usize;
+                for span in line.spans() {
+                    let len = span.content.len();
+                    if let Some(style) = span.style {
+                        spans.push((byte..byte + len, style));
+                    }
+                    byte += len;
+                }
+            }
+            spans
+        })
     }
 
     fn build_theme() -> MarkdownTheme {
@@ -725,5 +752,61 @@ impl Screen for MarkdownLiveEditor {
 
     fn tab_label(&self) -> &'static str {
         "MD Live"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn default_editor_has_highlighter_installed() {
+        let screen = MarkdownLiveEditor::default();
+        assert!(
+            screen.editor.has_highlighter(),
+            "the editor pane should have a syntax highlighter wired in"
+        );
+    }
+
+    #[test]
+    fn highlighter_produces_multiple_styles_across_document() {
+        // The snapshot format is character-only and cannot capture colour, so
+        // this is the real proof that the editor highlighter tokenises live
+        // Markdown: across the sample document (headings, lists, code fences,
+        // inline code, tables) the tokenizer + theme must yield more than one
+        // distinct style. A flat/degenerate highlighter would fail here.
+        let hl = MarkdownLiveEditor::build_editor_highlighter();
+        let mut distinct: HashSet<Style> = HashSet::new();
+        for (line_idx, line) in SAMPLE_MARKDOWN.lines().enumerate() {
+            for (_, style) in hl(line_idx, line) {
+                distinct.insert(style);
+            }
+        }
+        assert!(
+            distinct.len() >= 2,
+            "sample Markdown should highlight into multiple distinct styles, got {}",
+            distinct.len()
+        );
+    }
+
+    #[test]
+    fn highlighter_ranges_are_valid_char_boundaries() {
+        // Mirrors TextArea::line_spans' safety contract: every emitted range is
+        // non-empty, in-bounds, and aligned to char boundaries even on lines
+        // with multi-byte graphemes.
+        let hl = MarkdownLiveEditor::build_editor_highlighter();
+        let line = "- café ☕ and `code`";
+        for (range, _) in hl(0, line) {
+            assert!(
+                range.start < range.end,
+                "range must be non-empty: {range:?}"
+            );
+            assert!(range.end <= line.len(), "range within bounds: {range:?}");
+            assert!(
+                line.is_char_boundary(range.start) && line.is_char_boundary(range.end),
+                "range aligns to char boundaries: {range:?} in {line:?}"
+            );
+        }
     }
 }
