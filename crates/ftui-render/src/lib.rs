@@ -42,6 +42,7 @@ pub mod presenter;
 pub mod render_certificate;
 
 pub mod quotient_filter;
+#[cfg(feature = "experimental")]
 pub mod roaring_bitmap;
 pub mod sanitize;
 pub mod spatial_hit_index;

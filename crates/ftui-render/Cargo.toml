@@ -78,3 +78,4 @@ harness = false
 [[bench]]
 name = "roaring_bench"
 harness = false
+required-features = ["experimental"]

@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 #![forbid(unsafe_code)]
 
 //! bd-22wk8.4: E2E integration test for Roaring Bitmap dirty tracking.

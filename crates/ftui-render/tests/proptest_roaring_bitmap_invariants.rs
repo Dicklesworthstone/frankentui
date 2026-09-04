@@ -1,3 +1,4 @@
+#![cfg(feature = "experimental")]
 #![forbid(unsafe_code)]
 
 //! Property-based invariant tests for the Roaring Bitmap.
