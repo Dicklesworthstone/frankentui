@@ -114,6 +114,8 @@ help = [
 doom = ["canvas", "dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:rand"]
 quake = ["canvas", "dep:ftui-core", "dep:ftui-render", "dep:ftui-style"]
 sinkhorn-morph = ["dep:ftui-render"]
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
 
 [dev-dependencies]
 tracing = "0.1.41"

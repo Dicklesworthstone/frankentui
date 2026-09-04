@@ -13,6 +13,8 @@ categories = ["command-line-interface", "gui"]
 
 [features]
 default = []
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
 # Enable JSON input parser for converting frankenterm-web encoded inputs to Events.
 input-parser = ["dep:serde", "dep:serde_json"]
 # Enable schema compatibility tracing spans/logs in session trace parsing.

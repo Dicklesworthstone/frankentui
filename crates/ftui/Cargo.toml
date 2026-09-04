@@ -17,6 +17,8 @@ categories = ["command-line-interface", "gui"]
 # compiled; see `ftui::runtime::DEFAULT_BACKEND`). Disable `backend` for
 # headless, WASM, or custom-backend builds.
 default = ["runtime", "extras", "backend"]
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
 runtime = ["dep:ftui-runtime"]
 extras = ["dep:ftui-extras"]
 backend = ["native-backend", "crossterm"]

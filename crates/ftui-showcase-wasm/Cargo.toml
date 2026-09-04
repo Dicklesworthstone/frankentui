@@ -12,6 +12,11 @@ readme = "../../README.md"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
+
 [lints]
 workspace = true
 

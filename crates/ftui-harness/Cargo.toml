@@ -13,6 +13,8 @@ categories = ["command-line-interface", "gui"]
 
 [features]
 default = []
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
 pty-capture = ["dep:portable-pty", "ftui-extras/pty-capture"]
 telemetry = ["ftui-runtime/telemetry"]
 

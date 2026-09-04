@@ -13,6 +13,8 @@ categories = ["command-line-interface", "gui"]
 
 [features]
 default = []
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
 debug-overlay = []
 regex-search = ["dep:regex"]
 state-persistence = ["dep:serde"]

@@ -13,6 +13,8 @@ categories = ["command-line-interface", "gui"]
 
 [features]
 default = []
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
 # Enable the Crossterm terminal backend (legacy). When disabled, terminal_session
 # and Event::from_crossterm are unavailable. Prefer the native ftui-tty backend.
 crossterm = ["dep:crossterm"]

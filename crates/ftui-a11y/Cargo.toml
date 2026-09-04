@@ -11,6 +11,11 @@ readme = "../../README.md"
 keywords = ["tui", "terminal", "ui", "accessibility", "a11y"]
 categories = ["command-line-interface", "gui", "accessibility"]
 
+[features]
+default = []
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
+
 [lints]
 workspace = true
 

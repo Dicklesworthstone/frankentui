@@ -23,6 +23,8 @@ serde = { version = "1.0.229", features = ["derive"], optional = true }
 
 [features]
 serde = ["dep:serde"]
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
 
 [dev-dependencies]
 ftui-core = { path = "../ftui-core", version = "0.6.0" }

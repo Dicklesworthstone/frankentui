@@ -10,6 +10,11 @@ homepage = "https://github.com/Dicklesworthstone/frankentui"
 documentation = "https://docs.rs/doctor_frankentui"
 readme = "../../README.md"
 
+[features]
+default = []
+# Compiles internal research modules not reachable from the public API. Not supported. See README.
+experimental = []
+
 [lints]
 workspace = true
 
