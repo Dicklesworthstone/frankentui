@@ -67,13 +67,16 @@ assessment remains useful if that directory is unavailable.
 |---|---|
 | `rch exec -- cargo check --workspace --all-targets` | Exit 0. |
 | `rch exec -- cargo clippy --workspace --all-targets -- -D warnings` | Exit 0. |
-| `cargo fmt --check` | Result recorded in completion notes below. |
-| `RUSTDOCFLAGS="-D warnings" rch exec -- cargo doc --workspace --no-deps` | Result recorded in completion notes below. |
+| `cargo fmt --check` | Exit 0. |
+| `RUSTDOCFLAGS="-D warnings" rch exec -- cargo doc --workspace --no-deps` | Exit 0. |
 | `rch exec -- cargo nextest run --workspace --no-fail-fast` | Exit 100: 25,272 tests run, 25,269 passed, 3 failed, 7 skipped; 101.802 seconds of test execution across 313 binaries. Default workspace feature union, not every feature combination. |
 | Focus performance failure | `help_keybind_e2e::e2e_focus_change_storm_performance`: p95 2,112 µs exceeded 2,000 µs. |
 | Inspector performance failure | `inspector::tests::inspector_perf_budget_overlay`: p95 27,048 µs exceeded 15,000 µs; sequence checksum `0x2d63353185370c4e`. |
 | Behavioral PTY failure | `pane_input_pty_e2e::pty_escape_cancels_armed_interaction_cleanly`: `[alt] ESC did not reach adapter cancel path` at line 402. |
-| Isolated retries | Recorded below; a passing retry does not erase the full-run failure or prove its cause. |
+| Isolated retries | Focus failed again (p95 7,327 µs). ESC passed. Inspector passed (p95 3,114 µs, same checksum). A passing retry does not erase the full-run failure or prove its cause. |
+| Source consumer execution | Separately built `ftui`'s `minimal_inline` example; `consumer_smoke_e2e.sh` passed, with ticks rendered, exit 0, no alternate-screen entry, and cursor/paste/scroll-region teardown observed. This is source acceptance. |
+| Showcase execution | Dashboard under a controlling Linux PTY passed in both alternate-screen and inline modes: exit 0, balanced synchronized-output sequences, cursor shown, and exact termios restoration. This is a two-mode smoke test, not the complete host/screen matrix. |
+| Isolated registry execution | Fresh `ftui = "0.6.0"` fixture and registry lockfile prepared. Compilation could not complete: RCH workers failed preflight and configured policy refused local fallback. Published-manifest/source inspection is evidence; a registry runtime result remains unverified. |
 | Live CI | Latest completed sampled main CI [33913014703](https://github.com/Dicklesworthstone/frankentui/actions/runs/33913014703), SHA `ee3b0534`: 6 successful jobs, 15 failed. Newer runs were queued at inspection; this is not an exact-HEAD CI verdict. |
 | CI failures | Feature combinations, coverage, showcase/widget E2E, Ubuntu/macOS PTY, three OS Clippy jobs, toolchain pin, WebSocket compliance, doctor realism, advanced host compatibility, pane artifacts, fuzz. Documentation and WASM checks were among the green jobs. |
 | Published package | Actual crates.io `ftui` 0.6.0 archive and [release v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0), August 24: defaults are `runtime,extras`, lacking the new default backend. Source still declares version 0.6.0. |
@@ -170,7 +173,7 @@ guarantee is not established. Source improvements do not establish shipped parit
 | 68 | Doctor verification | PARTIAL; real core plus importer/translation product, realism CI fails | G22 |
 | 69 | Cross-component test location | PARTIAL docs; tests largely in crate test directories | G39 |
 | 70 | Mandatory quality gates | PARTIAL; local check/Clippy green, full tests/recent CI red | G04/G42 |
-| 71 | Main/legacy branch synchronization | Verify at handoff; do not infer from historical audit | G41 |
+| 71 | Main/legacy branch synchronization | WORKING at handoff inspection: remote refs both `bde36363`; repeat after final report push | G41 |
 
 Plans add subprocess output under stable inline chrome (G26/G27), suspend/resume
 (G32), terminal protocol/resource caps (G36), reproducible optimization budgets
@@ -266,7 +269,7 @@ FrankenTerm simulated-engine scorecards must likewise not certify actual GPUs.
 
 #### G45: Mathematical claims need valid contracts and falsification
 
-`conformal_predictor.rs::quantile` clamps `ceil((n+1)(1-alpha))` to the largest
+`conformal_predictor.rs::conformal_quantile` clamps `ceil((n+1)(1-alpha))` to the largest
 observed residual. For n=20, alpha=.01, rank 21 is required: a finite maximum
 cannot provide the advertised 99% distribution-free coverage. Define an explicit
 unbounded/defer result or valid minimum sample requirement; propagate it through
@@ -429,6 +432,137 @@ tool for all changes, and you can and should also use the `bv` tool to help diag
 problems with the beads.
 ```
 
+### Completion record and implementation handoff
+
+The complete beads workflow was executed: Phase 1 assessment, Phase 2 bridge,
+initial Phase 3a conversion, all three Phase 4 ambition rounds, Phase 3a
+regeneration, five Phase 5 refinement rounds, and final `bv` validation. Phase
+3b is the skill's alternative for projects without beads; this project uses
+Phase 3a. Product implementation is the subsequent work represented by these
+issues, not a result claimed by this audit.
+
+Regeneration embedded the expanded journey, replay-evidence and mathematical
+contracts into the twenty new implementation/proof tasks, then added the native
+acceptance milestone and adaptive-comparison pair. This brought new issues from
+22 to 25. Refinement subsequently added five more without dropping browser or
+locale-formatting promises.
+
+| Refinement | Concrete changes or checks |
+|---|---|
+| 1 | Updated nine existing issues: separated checkout from shipped acceptance, corrected current warm-up/default assumptions and stale CLI guidance, recorded the three test failures, and rejected pending mandatory checks as release success. |
+| 2 | Revised twelve existing issues: corrected public-API reachability and universal-performance oracles, required side-effect-safe shadow execution, clarified real-service evidence, and separated reversible doctor/browser work from optional scope or deletion decisions. Removed two unnecessary blocking edges. |
+| 3 | Revised six existing issues and added five: explicit locale formatting plus its proof, and actual browser packaging, features and host proof. Removed requirements to force every row to WORKING or every ADR to accepted; preserved original functionality as explicit delivery obligations. |
+| 4 | Added nine focused refinement notes, refreshed nine stale titles, and established dated-note precedence on the root. Added 92 prerequisite links, including 65 links on existing verification tasks, so acceptance waits for implementation and companion proof. Removed four more optional-decision blockers. Corrected invalid multi-filter Cargo commands. |
+| 5 | Read-only review found no further task changes: checked task context and acceptance, all new parent/proof links, issue identity, status preservation, and exact prerequisite ordering. This is convergence of this plan review, not proof that the product is complete or that no future design improvement exists. |
+
+The final audit delta against `21a4e48b` is **30 new issues and 34 existing issues
+with revised title, description, acceptance context or notes**, plus additional
+dependency-only changes. Across the complete cycle, 106 blocking and 30 parent
+links were added, and six unnecessary blocking links were removed. No
+pre-existing issue status changed. All nine existing
+in-progress assignments remain intact; no implementation was closed by this audit.
+
+Final inventory: **3,033 issues**, comprising **2,788 closed, 236 open and nine
+in progress**. The bridge rooted at `bd-g00-root-epic-ewths` contains **298 issues**
+(54 closed, 235 open, nine in progress), with **44 child epic workstreams covering
+47 audited gaps**. These counts measure the backlog, not the fraction of the
+vision delivered.
+
+The new issues below use the common prefix `bd-g00-root-epic-ewths`. Every
+implementation has explicit acceptance and a companion proof task with unit,
+edge/error, real E2E and diagnostic-log obligations. The native milestone is
+itself an acceptance task.
+
+| Work | Implementation / acceptance suffix | Companion proof suffix |
+|---|---|---|
+| Registry package identity and actual consumer | `.10.3` | `.10.4` |
+| Non-vacuous, run-bound release evidence | `.42.3` | `.42.4` |
+| Finite-sample conformal calibration | `.43.1` | `.43.2` |
+| Mathematical claims and assumptions | `.43.3` | `.43.4` |
+| Complete widget/focus semantics | `.13.8` | `.13.9` |
+| Real assistive-technology host journey | `.13.10` | `.13.11` |
+| Live pane selector, retention and rollback | `.44.1` | `.44.2` |
+| Exact width-cache identity | `.12.4` | `.12.5` |
+| Announcement privacy at tracing/export boundary | `.26.6` | `.26.7` |
+| Reliable armed-pane ESC cancellation | `.6.32` | `.6.33` |
+| Paired adaptive comparisons including total cost | `.31.8` | `.31.9` |
+| Locale-aware formatting | `.34.5` | `.34.6` |
+| Real browser package and full host features | `.29.7`, `.29.8` | `.29.9` |
+| Bounded native-consumer release acceptance | `.42.5` | Depends on the required proof tasks |
+| New organizing epics | `.43` (G45), `.44` (G47) | Children above |
+
+`bv --robot-triage` and `bv --robot-plan` were rerun after refinement. They report
+118 actionable and 127 dependency-blocked non-closed issues. The triage field
+`blocked_count: 0` counts the explicit blocked status; it does not mean there
+are no prerequisite blockers. The top three ranked ready tasks are the claims
+ledger (`.5.2`), pinned CI toolchain (`.6.19`), and runner tooling (`.6.11`).
+Alongside those, the release gate (`.42.3`), conformal boundary (`.43.1`), cache
+identity (`.12.4`) and tracing privacy (`.26.6`) are concrete correctness work.
+The registry release lane (`.10.3`) then establishes what consumers actually get.
+
+Validation checked all 3,033 unique IDs, every dependency target, and each new
+issue's single parent. An independent exact topological traversal visited all
+3,033 nodes over **4,345 blocking edges**, establishing no scheduling cycle.
+The baseline also passed the same check (3,003 nodes, 4,245 blocking edges).
+`bv` skips its cycle enumeration above 2,000 nodes; its empty cycle list was
+therefore not accepted as proof. Parent-child containment and related links are
+not scheduling prerequisites: combining them with blocking edges creates
+containment loops and is not the graph used for this conclusion.
+
+#### Reproducible execution record
+
+The four required baseline checks passed: workspace check, workspace Clippy with
+warnings denied, formatting, and workspace rustdoc with warnings denied. Full
+workspace nextest remained red with the three failures recorded above. The
+isolated repetitions used one test filter per command:
+
+```bash
+rch exec -- cargo test -p ftui-demo-showcase --test help_keybind_e2e e2e_focus_change_storm_performance -- --exact --nocapture
+rch exec -- cargo test -p ftui-harness --test pane_input_pty_e2e pty_escape_cancels_armed_interaction_cleanly -- --exact --nocapture
+rch exec -- cargo test -p ftui-widgets inspector::tests::inspector_perf_budget_overlay -- --exact --nocapture
+rch exec -- cargo build -p ftui --example minimal_inline
+CONSUMER_SMOKE_SKIP_BUILD=1 scripts/consumer_smoke_e2e.sh --out /tmp/ftui-reality-20260904-Oa6ZLn/source-consumer
+```
+
+The source consumer exited 0 after producing 222 bytes and rendering ticks.
+Its receipt records no alternate-screen entry, bracketed-paste enable/disable,
+scroll-region set/reset and a final visible cursor. The showcase controlling-PTY
+driver ran Dashboard in both modes: alternate-screen produced 20,807 bytes with
+21 matched synchronized-output begin/end pairs and one matched alternate-screen
+entry/exit; inline produced 9,600 bytes with 19 matched pairs and no alternate
+screen entry. Both exited 0 and restored the original termios exactly. The first
+driver lacked a controlling TTY and failed before execution; its corrected run
+uses a new session and `TIOCSCTTY`. These checks establish bounded Linux behavior.
+
+The isolated registry fixture successfully resolved a registry lockfile, but
+RCH rejected compilation after all workers failed preflight. Local fallback was
+disabled by configuration. Neither a successful registry build nor a registry
+runtime failure was observed. The actual published 0.6.0 archive establishes
+the stale default-feature configuration; fresh-consumer execution stays a
+release acceptance obligation. Real Windows/macOS sessions, screen readers,
+browser GPU rendering, all feature combinations and controlled benchmark
+reruns also remain outside this audit's observed execution.
+
+Scratch receipts include `nextest.log`, `isolated-{focus,escape,inspector}.log`,
+`source-consumer/consumer_smoke.jsonl`, `demo-ctty-{alt,inline}.json` and their raw
+terminal streams, `pane-empty-gate-repro.json`, `triage-final.json`,
+`refinement-5-ordering-review.json`, and registry-attempt logs. The initial
+structural-review artifact also contains an all-relationship cycle flag; the
+ordering-review artifact explicitly corrects that interpretation using blocking
+edges only. Scratch paths are not permanent release receipts.
+
+This report was revised in place. Another session committed and pushed the
+shared report/tracker changes in `12f70e4b` and `bde36363` during this audit;
+their product source still matches the tested baseline. This completion record
+preserves those commits and records the remaining results. Existing untracked
+Beads database metadata was left untouched.
+
+Final document checks verified the 71 ordered vision rows, both verbatim frozen
+prompts, new issue references and `git diff --check`. `br sync --flush-only`
+reported nothing left to export. The required pre-commit UBS invocation received
+only Markdown and JSONL; it exited 3 because neither is a supported scanner
+language. No scanner ran, so this is not reported as a UBS pass.
+
 ---
 
 ## Historical assessment: 2026-09-01
@@ -440,8 +574,9 @@ problems with the beads.
 > command that was actually executed on 2026-09-01 against commit `ab07291f`
 > (origin/main was one commit ahead at `fc67ab6e`, a Windows input fix).
 >
-> This document is meant to be revised in place. Bead generation (Phase 3a) should be
-> driven from Section 7 once the owner has steered the priorities.
+> The following sections preserve the September 1 assessment and its original
+> handoff. The September 4 assessment and completed skill execution above supersede
+> its pending-phase instructions and any contradictory current-state claims.
 
 ---
 
@@ -492,7 +627,7 @@ Completing the two open beads would close approximately none of the gaps in this
 | Demo screens | 45 (`ScreenId` has 45 variants; `all_screens_count` asserts 45; README says 46 in seven places) | `app.rs:679`, `app.rs:7068` |
 | crates.io | all 17 library crates at 0.6.0 (README says `ftui = "0.5"`; getting-started says only three crates are published) | crates.io API |
 | `scripts/solve_sos_barrier.py` | does not exist and never existed in git history | `ls`, `git log --all` |
-| `master` branch | now synchronized with `main` on origin (was one commit behind at session start) | `git fetch` |
+| Legacy compatibility branch | now synchronized with `main` on origin (was one commit behind at session start) | `git fetch` |
 
 Five read-only audit agents covered: runtime and Bayesian wiring; render/core/text/style;
 widgets/layout/pane/a11y/i18n/extras/showcase; web/backends/harness/doctor/CI; and the
@@ -846,7 +981,7 @@ default), WRONG_API (exists, README shape wrong), NOT_STARTED, UNPROVEN.
 | 68 | doctor_frankentui verification stack | README, AGENTS | see Section 5 | daily CI failure |
 | 69 | Cross-component tests in workspace `tests/` | AGENTS | WRONG (no .rs files) | tests/ |
 | 70 | Mandatory gates green (check/clippy/fmt/tests) | AGENTS | PARTIAL locally, RED in CI | Section 1 |
-| 71 | `master` synchronized with `main` | AGENTS | WORKING (after fc67ab6e) | git |
+| 71 | Legacy compatibility branch synchronized with `main` | AGENTS | WORKING (after fc67ab6e) | git |
 
 Plan-document goals (agent 5's 46-item checklist) are folded into Sections 2.2.F and 7;
 the NO_BEAD list is in 2.5.
@@ -1062,7 +1197,7 @@ Each sub-block is one bead. Order inside the cluster: 04.1-04.5 and 04.10 first 
 - **G04.7 VHS install steps** (doctor_frankentui Verification, Extended). Current: `ci.yml:1147` `vhs_bin="$(find /tmp ... | head -n 1)"` under `set -euo pipefail` aborts when `find` returns 1; `doctor_frankentui_extended.yml:85` installs `/tmp/vhs` but the tarball extracts to `/tmp/vhs_0.10.0_Linux_x86_64/vhs`. Target: one shared composite action `.github/actions/install-vhs` that downloads the pinned release, verifies its sha256, and installs from the real path; both workflows use it; the 68 skipped gate steps run. Proof: both workflows execute `doctor` gates and upload `artifact_map.txt`. S.
 - **G04.8 Golden Trace gate** (`frankenterm_js_parser_hooks_compat` exit 101, output hidden in /tmp). Target: the harness cell prints the failing test's stdout to the job log and uploads `/tmp/frankenterm_release_gates` as an artifact on failure; the test itself is fixed (root cause to be captured in the bead once visible). M.
 - **G04.9 PTY E2E real failures** (42/166 on ubuntu). Current: after tooling, remaining failures cluster as `cleanup_*` (4), `keybind_*` (3), `voi_marker_missing` (4), `rtl_locale_not_selected` (4), mouse SGR, paste; macOS adds `vsearch_*`, `inline_story_*`, `dashboard_typewriter`, `bidi`. Target: each cluster gets a root-cause bead; likely links: `keybind_*` to G14, `voi_marker` to G10/G20, `rtl_locale` to G29, `cleanup_*` to G03/G13, `vsearch` to G10. Proof: `tests/e2e/scripts/run_all.sh` 166/166 on both OSes with JSONL logs archived. L (as a cluster).
-- **G04.10 Pin CI to the toolchain file.** Current: jobs pass `toolchain: nightly` (floating) while `rust-toolchain.toml` pins `nightly-2026-08-25` with a documented ICE rationale. Target: every job uses `dtolnay/rust-toolchain@master` with `toolchain: ${{ steps.pin.outputs.channel }}` read from the file, or simply omits the input so the file wins. S.
+- **G04.10 Pin CI to the toolchain file.** Current: jobs pass `toolchain: nightly` (floating) while `rust-toolchain.toml` pins `nightly-2026-08-25` with a documented ICE rationale. Target: every job uses `dtolnay/rust-toolchain` pinned to a reviewed commit with `toolchain: ${{ steps.pin.outputs.channel }}` read from the file, or simply omits the input so the file wins. S.
 - **G04.11 Release idempotency.** Current: `release.yml` publish loop fails on `ftui-simd@0.6.0 already exists`. Target: the loop queries `cargo info`/crates.io API per crate and skips already-published versions, logging `skip` vs `published`; dry-run mode in PRs. S.
 - **G04.12 Job topology.** Current: one all-features test job exhausts runner disk; a hang holds the whole matrix for 6 h. Target: split `check` into `check` (clippy+fmt+check), `test-unit` (nextest, G03), `test-all-features` (with `cargo clean` of intermediates and `CARGO_INCREMENTAL=0`), each with a 45-minute timeout; `continue-on-error` is not used, but advisory jobs (coverage, benchmarks) move to a separate workflow so red there does not mask code failures. M.
 - **G04.13 wasm32 builds.** Current: `wasm` job only checks core crates. Target: it builds `ftui-web` and `ftui-showcase-wasm` for `wasm32-unknown-unknown` (and `wasm-pack build` of the showcase when G23 lands). S.
@@ -1666,7 +1801,12 @@ deletion). `br ready --json` lists the unblocked work; `bv --robot-triage` ranks
 
 ---
 
-## 8. Immediate next steps
+## 8. Historical next steps (superseded)
+
+These were the September 1 instructions. The September 4 cycle above completed
+the ambition, regeneration and refinement work. The current dependency graph
+separates reversible implementation from optional owner decisions; the following
+list does not impose a new global approval prerequisite.
 
 1. Owner answers the eight decision beads (all P1, type `question`).
 2. Phase 4 ambition rounds revise Section 7 in place, then Phase 3a re-generates or amends the
