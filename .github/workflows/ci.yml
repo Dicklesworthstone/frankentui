@@ -2166,6 +2166,7 @@ jobs:
           cargo fuzz run fuzz_input_parser -- -max_len=4096 -max_total_time=20
           cargo fuzz run fuzz_input_parser_structured -- -max_len=4096 -max_total_time=20
           cargo fuzz run fuzz_input_parser_long_seq -- -max_total_time=20
+          cargo fuzz run fuzz_vt_parser -- -max_len=4096 -max_total_time=20
           cargo fuzz run fuzz_text_cluster_map -- -max_len=512 -max_total_time=20
           cargo fuzz run fuzz_text_shaped_layout -- -max_len=512 -max_total_time=20
           cargo fuzz run fuzz_text_wrap -- -max_len=512 -max_total_time=20
