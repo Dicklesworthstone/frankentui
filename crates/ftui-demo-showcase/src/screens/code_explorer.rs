@@ -1604,7 +1604,7 @@ impl CodeExplorer {
             .with_string_style(Style::new().fg(theme::accent::SUCCESS))
             .with_number_style(Style::new().fg(theme::accent::WARNING))
             .with_punct_style(Style::new().fg(theme::fg::MUTED));
-        json_view.render(json_inner, frame);
+        Widget::render(&json_view, json_inner, frame);
 
         // Panel 2: Context
         self.layout_context.set(rows[1]);

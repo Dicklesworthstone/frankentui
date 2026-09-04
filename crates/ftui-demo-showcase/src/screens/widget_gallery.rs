@@ -25,7 +25,7 @@ use ftui_widgets::group::Group;
 use ftui_widgets::help::{Help as HelpWidget, HelpMode};
 use ftui_widgets::history_panel::{HistoryPanel, HistoryPanelMode};
 use ftui_widgets::input::TextInput;
-use ftui_widgets::json_view::JsonView;
+use ftui_widgets::json_view::{JsonPathSegment, JsonView, JsonViewState};
 use ftui_widgets::layout::Layout;
 use ftui_widgets::layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
 use ftui_widgets::list::{List, ListItem};
@@ -106,6 +106,7 @@ pub struct WidgetGallery {
     log_viewer_state: RefCell<LogViewerState>,
     virtualized_items: Vec<GalleryVirtualItem>,
     virtualized_state: RefCell<VirtualizedListState>,
+    json_view_state: RefCell<JsonViewState>,
     layout_tabs: Cell<Rect>,
     layout_virtualized: Cell<Rect>,
     pane_workspace: LayoutLab,
@@ -183,6 +184,13 @@ impl WidgetGallery {
             log_viewer_state: RefCell::new(LogViewerState::default()),
             virtualized_items,
             virtualized_state: RefCell::new(virtualized_state),
+            json_view_state: RefCell::new({
+                // Start with the "nested" object folded so the demo shows a
+                // collapsed node; Enter/Space and arrows toggle and navigate.
+                let mut state = JsonViewState::new();
+                state.fold(&vec![JsonPathSegment::Key("nested".to_string())]);
+                state
+            }),
             layout_tabs: Cell::new(Rect::default()),
             layout_virtualized: Cell::new(Rect::default()),
             pane_workspace: LayoutLab::new(),
@@ -1343,7 +1351,7 @@ impl WidgetGallery {
         block.render(area, frame);
 
         let sample_json = r#"{"name": "FrankenTUI", "version": "0.1.0", "widgets": 28, "features": ["charts", "forms", "canvas"], "nested": {"key": "value"}}"#;
-        JsonView::new(sample_json)
+        let view = JsonView::new(sample_json)
             .with_indent(2)
             .with_key_style(
                 Style::new()
@@ -1354,7 +1362,11 @@ impl WidgetGallery {
             .with_number_style(Style::new().fg(theme::accent::WARNING))
             .with_literal_style(Style::new().fg(theme::accent::ERROR))
             .with_punct_style(Style::new().fg(theme::fg::MUTED))
-            .render(inner, frame);
+            .with_cursor_style(Style::new().fg(theme::accent::PRIMARY).reverse());
+        // Rendered statefully so folded nodes collapse (the "nested" object
+        // starts folded; Enter/Space toggle, arrows move the cursor).
+        let mut state = self.json_view_state.borrow_mut();
+        StatefulWidget::render(&view, inner, frame, &mut state);
     }
 
     // -----------------------------------------------------------------------

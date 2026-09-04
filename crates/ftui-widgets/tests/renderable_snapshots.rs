@@ -332,7 +332,7 @@ mod json_view_tests {
     fn json_view_zero_area_no_panic() {
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(1, 1, &mut pool);
-        JsonView::new("{}").render(Rect::new(0, 0, 0, 0), &mut frame);
+        Widget::render(&JsonView::new("{}"), Rect::new(0, 0, 0, 0), &mut frame);
     }
 }
 
@@ -875,7 +875,7 @@ fn all_renderables_survive_zero_area() {
     Columns::new().render(zero, &mut frame);
     Emoji::new("").render(zero, &mut frame);
     Group::new().render(zero, &mut frame);
-    JsonView::new("{}").render(zero, &mut frame);
+    Widget::render(&JsonView::new("{}"), zero, &mut frame);
     Padding::new(Paragraph::new(""), Sides::new(0, 0, 0, 0)).render(zero, &mut frame);
     Panel::new(Paragraph::new("")).render(zero, &mut frame);
     Pretty::new(&0).render(zero, &mut frame);
