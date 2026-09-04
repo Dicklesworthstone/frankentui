@@ -2286,7 +2286,7 @@ fn inline_mode_story_compare_top_120x40() {
 #[test]
 fn determinism_lab_initial_80x24() {
     let _theme_guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
-    let screen = ftui_demo_showcase::screens::determinism_lab::DeterminismLab::new();
+    let screen = ftui_demo_showcase::screens::determinism_lab::DeterminismLab::with_seed(7);
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
@@ -2297,7 +2297,7 @@ fn determinism_lab_initial_80x24() {
 #[test]
 fn determinism_lab_fault_120x40() {
     let _theme_guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
-    let mut screen = ftui_demo_showcase::screens::determinism_lab::DeterminismLab::new();
+    let mut screen = ftui_demo_showcase::screens::determinism_lab::DeterminismLab::with_seed(7);
     screen.update(&press(KeyCode::Char('f')));
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);
@@ -2309,7 +2309,7 @@ fn determinism_lab_fault_120x40() {
 #[test]
 fn determinism_lab_runs_120x40() {
     let _theme_guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
-    let mut screen = ftui_demo_showcase::screens::determinism_lab::DeterminismLab::new();
+    let mut screen = ftui_demo_showcase::screens::determinism_lab::DeterminismLab::with_seed(7);
     screen.update(&press(KeyCode::Char('a')));
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);

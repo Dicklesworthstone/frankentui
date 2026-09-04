@@ -353,11 +353,13 @@ else
 # Step 4: Unit + Snapshot Tests
 # ────────────────────────────────────────────────────────────────────────────
 # Snapshot tests carry their own seeds (DeterminismLab is blessed at seed 7);
-# the E2E seed variables exported for the PTY steps must not reach cargo test.
+# the E2E seed/time-step variables exported for the PTY steps must not reach
+# cargo test. e2e_cargo_test_env_guard strips them (shared list in common.sh);
+# the screens are also constructed with explicit seeds, so this is defense in
+# depth.
+e2e_log_cargo_test_hermetic
 run_step "Unit + snapshot tests" "$LOG_DIR/04_tests.log" \
-    env -u FTUI_HARNESS_SEED -u FTUI_SEED -u FTUI_DEMO_SEED -u FTUI_TEST_SEED \
-        -u E2E_SEED -u E2E_CONTEXT_SEED \
-        cargo test -p "$PKG" -- --test-threads=4 || true
+    e2e_cargo_test_env_guard cargo test -p "$PKG" -- --test-threads=4 || true
 
 # ────────────────────────────────────────────────────────────────────────────
 # Steps 5-9: Smoke / Interactive Tests (require PTY)

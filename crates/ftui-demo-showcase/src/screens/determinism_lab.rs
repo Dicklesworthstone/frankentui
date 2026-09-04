@@ -233,9 +233,16 @@ impl Default for DeterminismLab {
 
 impl DeterminismLab {
     pub fn new() -> Self {
+        Self::with_seed(determinism::demo_seed(DEFAULT_SEED))
+    }
+
+    /// Construct with an explicit seed, bypassing the `FTUI_DEMO_SEED`/`E2E_SEED`
+    /// environment lookups. Snapshot tests use this so their rendered scene is
+    /// independent of process environment (which leaks under the E2E scripts).
+    pub fn with_seed(seed: u64) -> Self {
         let base = Buffer::new(SCENE_WIDTH, SCENE_HEIGHT);
         let mut lab = Self {
-            seed: determinism::demo_seed(DEFAULT_SEED),
+            seed,
             frame_index: 0,
             paused: false,
             active_strategy: StrategyKind::DirtyRows,
@@ -1350,4 +1357,28 @@ fn format_history(history: &VecDeque<u64>) -> String {
         parts.push(format!("{:06x}", checksum & 0x00FF_FFFF));
     }
     parts.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn determinism_lab_seed_is_explicit() {
+        // `with_seed` pins the seed regardless of environment, whereas `new()`
+        // consults FTUI_DEMO_SEED/E2E_SEED. Snapshot tests rely on this so they
+        // stay stable even when the E2E scripts export seed variables. We do not
+        // mutate real process env here (racy under parallel tests); asserting the
+        // explicit constructor path is sufficient and deterministic.
+        assert_eq!(DeterminismLab::with_seed(7).seed, 7);
+        assert_eq!(DeterminismLab::with_seed(123).seed, 123);
+
+        // The seed actually drives scene generation: distinct seeds must yield
+        // distinct results, so the constructor is not ignoring it.
+        assert_ne!(
+            DeterminismLab::with_seed(7).results.full.checksum,
+            DeterminismLab::with_seed(123).results.full.checksum,
+            "distinct seeds must generate distinct scenes"
+        );
+    }
 }

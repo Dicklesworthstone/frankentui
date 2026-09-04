@@ -110,6 +110,37 @@ e2e_export_seed_env() {
     export E2E_CONTEXT_SEED="${E2E_CONTEXT_SEED:-$seed}"
 }
 
+# The seed / time-step variables the deterministic PTY runs need, but which must
+# NOT reach `cargo test`: unit tests and insta/screen snapshots carry their own
+# default seeds (e.g. ftui-harness asserts 99/42; DeterminismLab is blessed at
+# seed 7), so an inherited E2E seed makes them see the wrong value. Keep this
+# list in one place so the widget-api and demo-showcase scripts cannot drift.
+E2E_CARGO_TEST_STRIP_VARS=(
+    FTUI_TEST_SEED FTUI_SEED FTUI_HARNESS_SEED FTUI_DEMO_SEED
+    E2E_SEED E2E_CONTEXT_SEED FTUI_TEST_TIME_STEP_MS E2E_TIME_STEP_MS
+)
+
+# Run a `cargo test` invocation with the deterministic seed/time-step variables
+# stripped, so the tests observe their own defaults. Usage:
+#   e2e_cargo_test_env_guard cargo test -p foo -- --test-threads=4
+e2e_cargo_test_env_guard() {
+    local unset_args=()
+    local var
+    for var in "${E2E_CARGO_TEST_STRIP_VARS[@]}"; do
+        unset_args+=(-u "$var")
+    done
+    env "${unset_args[@]}" "$@"
+}
+
+# Emit the JSONL evidence line that the cargo-test step ran hermetically. Call
+# this immediately before the guarded step (outside run_step, so the line lands
+# on the JSONL stream rather than in the step's captured log).
+e2e_log_cargo_test_hermetic() {
+    local joined
+    joined="$(IFS=,; printf '%s' "${E2E_CARGO_TEST_STRIP_VARS[*]}")"
+    jsonl_assert "cargo_test_env_hermetic" "pass" "unset=${joined}"
+}
+
 e2e_json_escape() {
     printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }

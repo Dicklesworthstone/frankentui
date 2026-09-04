@@ -515,12 +515,30 @@ pub fn deterministic_mode() -> bool {
 
 /// Choose a seed from environment or use the provided default.
 pub fn fixture_seed(default_seed: u64) -> u64 {
-    env_u64("FTUI_TEST_SEED")
-        .or_else(|| env_u64("FTUI_SEED"))
-        .or_else(|| env_u64("FTUI_HARNESS_SEED"))
-        .or_else(|| env_u64("E2E_SEED"))
-        .or_else(|| env_u64("E2E_CONTEXT_SEED"))
-        .unwrap_or(default_seed)
+    fixture_seed_with(default_seed, &|key| std::env::var(key).ok())
+}
+
+/// The environment keys `fixture_seed` consults, in precedence order.
+pub const FIXTURE_SEED_KEYS: [&str; 5] = [
+    "FTUI_TEST_SEED",
+    "FTUI_SEED",
+    "FTUI_HARNESS_SEED",
+    "E2E_SEED",
+    "E2E_CONTEXT_SEED",
+];
+
+/// Resolve the deterministic seed from [`FIXTURE_SEED_KEYS`] in precedence
+/// order via an injected reader, falling back to `default_seed`. The reader
+/// indirection lets tests exercise the precedence rule without mutating real
+/// process environment (which is racy under parallel test execution). A value
+/// that does not parse as `u64` is skipped in favour of the next key.
+pub fn fixture_seed_with(default_seed: u64, read: &dyn Fn(&str) -> Option<String>) -> u64 {
+    for key in FIXTURE_SEED_KEYS {
+        if let Some(value) = read(key).and_then(|raw| raw.parse::<u64>().ok()) {
+            return value;
+        }
+    }
+    default_seed
 }
 
 /// Time step in milliseconds for deterministic clocks.
@@ -637,7 +655,7 @@ mod tests {
 
     #[test]
     fn jsonl_logger_emits_core_fields() {
-        let logger = TestJsonlLogger::new("jsonl_logger", 99);
+        let logger = TestJsonlLogger::new_with("jsonl_logger", 99, true, 100);
         let line = logger.emit_line("case_start", &[("case", JsonValue::str("alpha"))]);
         assert!(line.contains("\"event\":\"case_start\""));
         assert!(line.contains("\"run_id\""));
@@ -648,7 +666,7 @@ mod tests {
 
     #[test]
     fn jsonl_logger_includes_context() {
-        let mut logger = TestJsonlLogger::new("jsonl_logger_ctx", 7);
+        let mut logger = TestJsonlLogger::new_with("jsonl_logger_ctx", 7, true, 100);
         logger.add_context_str("suite", "determinism");
         let line = logger.emit_line("step", &[("ok", JsonValue::bool(true))]);
         assert!(line.contains("\"context\":{"));
@@ -760,6 +778,49 @@ mod tests {
         let result = fixture_seed(default);
         // fixture_seed always returns a u64; just verify it doesn't panic
         let _ = result;
+    }
+
+    #[test]
+    fn fixture_seed_prefers_env_then_default() {
+        // No key present -> the default is used.
+        let none = |_: &str| -> Option<String> { None };
+        assert_eq!(fixture_seed_with(7, &none), 7);
+
+        // Full precedence: FTUI_TEST_SEED wins over every lower-priority key.
+        let all = |key: &str| -> Option<String> {
+            Some(
+                match key {
+                    "FTUI_TEST_SEED" => "1",
+                    "FTUI_SEED" => "2",
+                    "FTUI_HARNESS_SEED" => "3",
+                    "E2E_SEED" => "4",
+                    "E2E_CONTEXT_SEED" => "5",
+                    _ => return None,
+                }
+                .to_string(),
+            )
+        };
+        assert_eq!(fixture_seed_with(7, &all), 1);
+
+        // When the highest-priority key is absent, the next one in order wins.
+        let no_top = |key: &str| -> Option<String> {
+            match key {
+                "FTUI_SEED" => Some("2".to_string()),
+                "FTUI_HARNESS_SEED" => Some("3".to_string()),
+                _ => None,
+            }
+        };
+        assert_eq!(fixture_seed_with(7, &no_top), 2);
+
+        // A non-numeric value is skipped in favour of the next parseable key.
+        let garbage_top = |key: &str| -> Option<String> {
+            match key {
+                "FTUI_TEST_SEED" => Some("not-a-number".to_string()),
+                "FTUI_HARNESS_SEED" => Some("9".to_string()),
+                _ => None,
+            }
+        };
+        assert_eq!(fixture_seed_with(7, &garbage_top), 9);
     }
 
     #[test]
@@ -886,7 +947,7 @@ mod tests {
 
     #[test]
     fn logger_field_override_suppresses_default() {
-        let logger = TestJsonlLogger::new("override_test", 99);
+        let logger = TestJsonlLogger::new_with("override_test", 99, true, 100);
         let line = logger.emit_line("ev", &[("seed", JsonValue::u64(7))]);
         // The explicit field should be present, and no duplicate "seed":99
         assert!(line.contains("\"seed\":7"), "overridden seed: {line}");
@@ -901,7 +962,7 @@ mod tests {
 
     #[test]
     fn logger_emit_line_is_valid_json() {
-        let mut logger = TestJsonlLogger::new("json_valid", 42);
+        let mut logger = TestJsonlLogger::new_with("json_valid", 42, true, 100);
         logger.add_context_str("suite", "test");
         let line = logger.emit_line(
             "case_end",

@@ -109,9 +109,12 @@ jsonl_init
 jsonl_assert "artifact_log_dir" "pass" "log_dir=$E2E_LOG_DIR"
 jsonl_set_context "host" "${COLUMNS:-}" "${LINES:-}" "${E2E_SEED:-0}"
 
-# Seed for deterministic runs
+# Seed for deterministic runs. In deterministic mode FTUI_HARNESS_SEED is
+# already exported by e2e_fixture_init above (via e2e_export_deterministic_env)
+# for the PTY runs; SEED is the plain value the JSONL context and render-trace
+# steps reference explicitly. No second global export here — it only ever leaked
+# into cargo test (now stripped by e2e_cargo_test_env_guard).
 SEED="${E2E_SEED:-${FTUI_HARNESS_SEED:-0}}"
-export FTUI_HARNESS_SEED="${FTUI_HARNESS_SEED:-$SEED}"
 
 RUN_END_SENT=0
 on_exit() {
@@ -478,12 +481,13 @@ run_step "Building workspace" "$LOG_DIR/01_build.log" \
 
 # Step 2: Unit Tests
 # The deterministic seed variables exported above are for the PTY runs below;
-# unit tests must see their own defaults (ftui-harness determinism tests assert
-# seed 99/42), so strip the seed env for this step only.
+# unit tests carry their own default seeds (ftui-harness asserts 99/42), so the
+# seed/time-step env must not reach cargo test. e2e_cargo_test_env_guard strips
+# it (single source of the var list in common.sh); the tests are also hardened
+# to be env-independent, so this is defense in depth.
+e2e_log_cargo_test_hermetic
 run_step "Running unit tests" "$LOG_DIR/02_tests.log" \
-    env -u FTUI_HARNESS_SEED -u FTUI_SEED -u FTUI_DEMO_SEED -u FTUI_TEST_SEED \
-        -u E2E_SEED -u E2E_CONTEXT_SEED \
-        cargo test --workspace --lib -- --test-threads=4
+    e2e_cargo_test_env_guard cargo test --workspace --lib -- --test-threads=4
 
 # Step 3: Clippy
 run_step "Running clippy" "$LOG_DIR/03_clippy.log" \
