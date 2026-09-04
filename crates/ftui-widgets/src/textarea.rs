@@ -2210,4 +2210,144 @@ mod tests {
             }
         }
     }
+
+    mod highlighter_tests {
+        use super::*;
+        use ftui_render::cell::PackedRgba;
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+        use proptest::prelude::*;
+
+        fn render(ta: &TextArea, w: u16, h: u16, mut f: impl FnMut(&Frame)) {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(w, h, &mut pool);
+            Widget::render(ta, Rect::new(0, 0, w, h), &mut frame);
+            f(&frame);
+        }
+
+        #[test]
+        fn highlighter_receives_each_visible_line_once() {
+            let seen = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+            let recorder = seen.clone();
+            let ta = TextArea::new()
+                .with_text("one\ntwo\nthree")
+                .with_highlighter(Arc::new(move |line, _text| {
+                    recorder.lock().unwrap().push(line);
+                    Vec::new()
+                }));
+            assert!(ta.has_highlighter());
+            render(&ta, 20, 3, |_| {});
+            let mut lines = seen.lock().unwrap().clone();
+            lines.sort_unstable();
+            assert_eq!(lines, vec![0, 1, 2]);
+        }
+
+        #[test]
+        fn highlighter_ranges_style_graphemes() {
+            let ta = TextArea::new().with_text("abcdef").with_highlighter(Arc::new(|_l, _t| {
+                vec![(0..3, Style::new().fg(PackedRgba::RED))]
+            }));
+            render(&ta, 10, 1, |frame| {
+                for x in 0..3 {
+                    assert_eq!(frame.buffer.get(x, 0).unwrap().fg, PackedRgba::RED, "col {x}");
+                }
+                assert_ne!(frame.buffer.get(3, 0).unwrap().fg, PackedRgba::RED);
+            });
+        }
+
+        #[test]
+        fn out_of_range_and_non_boundary_ranges_ignored() {
+            // "café": c(0) a(1) f(2) é(3..5); len 5. All three ranges are
+            // invalid (past end / splits 'é' / inverted) and are dropped.
+            let ta = TextArea::new().with_text("café").with_highlighter(Arc::new(|_l, _t| {
+                vec![
+                    (0..100, Style::new().fg(PackedRgba::RED)),
+                    (3..4, Style::new().fg(PackedRgba::GREEN)),
+                    (5..2, Style::new().fg(PackedRgba::BLUE)),
+                ]
+            }));
+            assert!(ta.line_spans(0, "café", true).is_empty());
+            render(&ta, 10, 1, |_| {}); // no panic
+        }
+
+        #[test]
+        fn multibyte_ranges_align_to_graphemes() {
+            // Highlight only the 2-byte 'é' (bytes 3..5).
+            let ta = TextArea::new().with_text("café").with_highlighter(Arc::new(|_l, _t| {
+                vec![(3..5, Style::new().fg(PackedRgba::RED))]
+            }));
+            assert_eq!(ta.line_spans(0, "café", true).len(), 1);
+            render(&ta, 10, 1, |frame| {
+                assert_eq!(frame.buffer.get(3, 0).unwrap().fg, PackedRgba::RED, "'é'");
+                assert_ne!(frame.buffer.get(0, 0).unwrap().fg, PackedRgba::RED, "'c'");
+            });
+        }
+
+        #[test]
+        fn selection_style_merges_over_highlight() {
+            let mut ta = TextArea::new()
+                .with_text("abcdef")
+                .with_focus(true)
+                .with_selection_style(Style::new().bg(PackedRgba::GREEN))
+                .with_highlighter(Arc::new(|_l, _t| {
+                    vec![(0..6, Style::new().bg(PackedRgba::RED).fg(PackedRgba::WHITE))]
+                }));
+            ta.move_to_document_start();
+            ta.select_right();
+            ta.select_right();
+            ta.select_right();
+            eprintln!("DEBUG selection = {:?}", ta.selection());
+            render(&ta, 10, 1, |frame| {
+                eprintln!(
+                    "DEBUG c0 fg={:?} bg={:?}",
+                    frame.buffer.get(0, 0).unwrap().fg,
+                    frame.buffer.get(0, 0).unwrap().bg
+                );
+                let selected = frame.buffer.get(0, 0).unwrap();
+                assert_eq!(selected.bg, PackedRgba::GREEN, "selection bg wins over highlight");
+                assert_eq!(selected.fg, PackedRgba::WHITE, "highlight fg preserved");
+                let highlighted = frame.buffer.get(3, 0).unwrap();
+                assert_eq!(highlighted.bg, PackedRgba::RED, "unselected cell keeps highlight bg");
+            });
+        }
+
+        #[test]
+        fn soft_wrap_applies_highlight_on_continuation_rows() {
+            // 10 chars wrapped at width 5 -> row 0 "abcde", row 1 "fghij"; the
+            // whole-line highlight must reach the continuation row.
+            let ta = TextArea::new()
+                .with_text("abcdefghij")
+                .with_soft_wrap(true)
+                .with_highlighter(Arc::new(|_l, _t| vec![(0..10, Style::new().fg(PackedRgba::RED))]));
+            render(&ta, 5, 2, |frame| {
+                assert_eq!(frame.buffer.get(0, 0).unwrap().fg, PackedRgba::RED, "first row");
+                assert_eq!(
+                    frame.buffer.get(0, 1).unwrap().fg,
+                    PackedRgba::RED,
+                    "continuation row highlighted"
+                );
+            });
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            /// `style_at` returns the last covering range's style and never
+            /// panics for any byte offset.
+            #[test]
+            fn style_at_returns_last_covering_range(
+                bounds in prop::collection::vec((0usize..20, 0usize..20), 0..6),
+                byte in 0usize..25,
+            ) {
+                let spans: Vec<(Range<usize>, Style)> = bounds
+                    .iter()
+                    .filter(|(a, b)| a < b)
+                    .enumerate()
+                    .map(|(i, (a, b))| (*a..*b, Style::new().fg(PackedRgba::rgb((i * 30) as u8, 1, 2))))
+                    .collect();
+                let expected = spans.iter().rev().find(|(r, _)| r.contains(&byte)).map(|(_, s)| *s);
+                prop_assert_eq!(style_at(&spans, byte), expected);
+            }
+        }
+    }
 }
