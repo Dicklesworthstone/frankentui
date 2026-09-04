@@ -378,6 +378,7 @@ fn readme_stylesheet_snippet() {
     assert_in_readme(&["stylesheet"]);
 }
 
+#[cfg(feature = "experimental")]
 #[test]
 fn readme_lens_snippet() {
     // README-SNIPPET: lens
