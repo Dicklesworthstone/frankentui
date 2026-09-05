@@ -16,18 +16,34 @@
 //! cargo bench -p ftui-layout --bench pane_persistent_bench
 //! cargo bench -p ftui-layout --bench pane_persistent_bench -- --out /tmp/persistent.json
 //! ```
+//!
+//! Add `--live` for paired execution-engine measurements, including measured
+//! observation/maintenance and solved leaf rectangles. It uses 20 measured
+//! repetitions plus one excluded warmup; `--live-repetitions 1` is an explicit
+//! diagnostic run. Live JSON reports raw timing samples, p50/p95/p99, allocator
+//! traffic, solve errors and executed-path counters. It does not measure the
+//! showcase renderer, terminal IO or browser execution.
+//! Observation tapes preserve the exact samples supplied to each engine. Their
+//! shared pair clock includes control and benchmark overhead: adaptive decisions
+//! describe coupled-harness observations, not production input cadence.
 
 use std::alloc::System;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io::Write;
+use std::process::Command;
 use std::time::Instant;
 
 use ftui_layout::{
-    PaneId, PaneInteractionTimeline, PaneLeaf, PaneNodeKind, PaneOperation, PanePlacement,
-    PaneSplitRatio, PaneTree, PaneVersionStore, PaneVersioningReport, SplitAxis, VersionedPaneTree,
+    PaneExecutionEngine, PaneExecutionPolicy, PaneExecutionSample, PaneExecutionStatus,
+    PaneHistory, PaneId, PaneInteractionTimeline, PaneLeaf, PaneMemoryStrategy, PaneModelError,
+    PaneNodeKind, PaneOperation, PaneOperationFamily, PanePlacement, PaneRetentionPolicy,
+    PaneSplitRatio, PaneTree, PaneVersionStore, PaneVersioningReport, Rect, SplitAxis,
+    VersionedPaneTree,
 };
 use serde::Serialize;
-use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
@@ -476,12 +492,644 @@ fn print_result(r: &ScenarioResult) {
     println!();
 }
 
+// Full-wrapper measurements are opt-in. The original substrate benchmark and
+// its JSON schema remain unchanged. These measurements stop at solved leaf
+// rectangles; they do not execute the showcase renderer or terminal/browser IO.
+type LeafProjection = Result<Vec<(PaneId, Rect)>, PaneModelError>;
+
+fn leaf_projection(tree: &PaneTree) -> LeafProjection {
+    let layout = tree.solve_layout(Rect::new(0, 0, 240, 80))?;
+    Ok(tree
+        .nodes()
+        .filter(|node| matches!(node.kind, PaneNodeKind::Leaf(_)))
+        .map(|node| (node.id, layout.visual_rect(node.id).expect("solved leaf")))
+        .collect())
+}
+
+#[derive(Default, Serialize)]
+struct LivePhase {
+    // Preserve acquisition order; warmup, oracle checks, and sample bookkeeping
+    // are excluded from both timing and allocator regions.
+    elapsed_ns: Vec<u128>,
+    allocations: usize,
+    deallocations: usize,
+    reallocations: usize,
+    bytes_allocated: usize,
+    bytes_deallocated: usize,
+    bytes_reallocated: isize,
+    solve_successes: usize,
+    solve_errors: BTreeMap<String, usize>,
+}
+
+impl LivePhase {
+    fn record(&mut self, ns: u128, stats: Stats, projection: &LeafProjection) {
+        self.elapsed_ns.push(ns);
+        self.allocations += stats.allocations;
+        self.deallocations += stats.deallocations;
+        self.reallocations += stats.reallocations;
+        self.bytes_allocated += stats.bytes_allocated;
+        self.bytes_deallocated += stats.bytes_deallocated;
+        self.bytes_reallocated += stats.bytes_reallocated;
+        match projection {
+            Ok(_) => self.solve_successes += 1,
+            Err(error) => *self.solve_errors.entry(error.to_string()).or_default() += 1,
+        }
+    }
+
+    fn report(self) -> LivePhaseReport {
+        let mut sorted = self.elapsed_ns.clone();
+        sorted.sort_unstable();
+        let percentile = |percent: usize| {
+            (!sorted.is_empty()).then(|| sorted[(sorted.len() * percent).div_ceil(100) - 1])
+        };
+        LivePhaseReport {
+            samples: sorted.len(),
+            p50_ns: percentile(50),
+            p95_ns: percentile(95),
+            p99_ns: percentile(99),
+            total_ns: sorted.iter().sum(),
+            measured: self,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct LivePhaseReport {
+    samples: usize,
+    p50_ns: Option<u128>,
+    p95_ns: Option<u128>,
+    p99_ns: Option<u128>,
+    total_ns: u128,
+    measured: LivePhase,
+}
+
+#[derive(Default)]
+struct LiveRun {
+    apply: LivePhase,
+    undo: LivePhase,
+    redo: LivePhase,
+    observation_tapes: Vec<LiveObservationTape>,
+}
+
+#[derive(Serialize)]
+struct LiveObservationTape {
+    repetition: usize,
+    excluded_warmup: bool,
+    samples: Vec<PaneExecutionSample>,
+}
+
+impl LiveRun {
+    fn phase(&mut self, action: &LiveAction<'_>) -> &mut LivePhase {
+        match action {
+            LiveAction::Apply(..) => &mut self.apply,
+            LiveAction::Undo => &mut self.undo,
+            LiveAction::Redo => &mut self.redo,
+        }
+    }
+
+    fn report(self) -> LiveRunReport {
+        LiveRunReport {
+            apply: self.apply.report(),
+            undo: self.undo.report(),
+            redo: self.redo.report(),
+            observation_tapes: self.observation_tapes,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct LiveRunReport {
+    apply: LivePhaseReport,
+    undo: LivePhaseReport,
+    redo: LivePhaseReport,
+    observation_tapes: Vec<LiveObservationTape>,
+}
+
+enum LiveDriver {
+    Timeline(PaneInteractionTimeline),
+    Engine(Box<PaneExecutionEngine>),
+}
+
+impl LiveDriver {
+    fn history(&mut self) -> &mut dyn PaneHistory {
+        match self {
+            Self::Timeline(timeline) => timeline,
+            Self::Engine(engine) => engine.as_mut(),
+        }
+    }
+
+    fn timeline(&self) -> &PaneInteractionTimeline {
+        match self {
+            Self::Timeline(timeline) => timeline,
+            Self::Engine(engine) => engine.timeline(),
+        }
+    }
+}
+
+enum LiveAction<'a> {
+    Apply(u64, &'a PaneOperation),
+    Undo,
+    Redo,
+}
+
+fn measure_live_step(
+    driver: &mut LiveDriver,
+    tree: &mut PaneTree,
+    action: &LiveAction<'_>,
+    retention: PaneRetentionPolicy,
+    origin: Instant,
+) -> (u128, Stats, LeafProjection, Option<PaneExecutionSample>) {
+    let mut observation = None;
+    let region = Region::new(GLOBAL);
+    let start = Instant::now();
+    let local = match action {
+        LiveAction::Apply(id, operation) => {
+            driver
+                .history()
+                .apply_and_record(tree, *id, *id, (*operation).clone())
+                .expect("full-wrapper apply");
+            operation.family() == PaneOperationFamily::Local
+        }
+        LiveAction::Undo => {
+            assert!(driver.history().undo(tree).expect("full-wrapper undo"));
+            false
+        }
+        LiveAction::Redo => {
+            assert!(driver.history().redo(tree).expect("full-wrapper redo"));
+            false
+        }
+    };
+    // The actual terminal/browser adapters observe accepted applies only.
+    // Navigation must not inject fabricated operations into the selector.
+    if matches!(action, LiveAction::Apply(..)) {
+        let elapsed_ns =
+            u64::try_from(start.elapsed().as_nanos()).expect("operation duration fits u64");
+        match driver {
+            LiveDriver::Timeline(timeline) => {
+                ftui_layout::pane_retention::apply_to_timeline(timeline, &retention);
+            }
+            LiveDriver::Engine(engine) => {
+                let sample = PaneExecutionSample {
+                    timestamp_ns: u64::try_from(origin.elapsed().as_nanos()).expect("timestamp"),
+                    elapsed_ns,
+                    local,
+                };
+                engine
+                    .observe(tree, sample)
+                    .expect("full-wrapper observation and maintenance");
+                observation = Some(sample);
+            }
+        }
+    }
+    let projection = std::hint::black_box(leaf_projection(tree));
+    let ns = start.elapsed().as_nanos();
+    let stats = region.change();
+    (ns, stats, projection, observation)
+}
+
+fn assert_live_equivalence(
+    canonical: &PaneTree,
+    timeline: &PaneInteractionTimeline,
+    tree: &PaneTree,
+    engine_timeline: &PaneInteractionTimeline,
+) {
+    assert_eq!(
+        canonical.to_snapshot(),
+        tree.to_snapshot(),
+        "full live snapshot"
+    );
+    assert_eq!(canonical.next_id(), tree.next_id(), "live allocator state");
+    assert_eq!(
+        timeline.baseline, engine_timeline.baseline,
+        "retained baseline"
+    );
+    assert_eq!(
+        timeline.entries, engine_timeline.entries,
+        "retained operations"
+    );
+    assert_eq!(
+        timeline.cursor, engine_timeline.cursor,
+        "retained redo cursor"
+    );
+}
+
+fn measured_pair_step(
+    canonical: (&mut LiveDriver, &mut PaneTree, &mut LiveRun),
+    candidate: (&mut LiveDriver, &mut PaneTree, &mut LiveRun),
+    action: LiveAction<'_>,
+    retention: PaneRetentionPolicy,
+    origin: Instant,
+    repetition: usize,
+) {
+    let mut projections = [None, None];
+    let order = if repetition.is_multiple_of(2) {
+        [0, 1]
+    } else {
+        [1, 0]
+    };
+    for index in order {
+        let (driver, tree, run) = if index == 0 {
+            (&mut *canonical.0, &mut *canonical.1, &mut *canonical.2)
+        } else {
+            (&mut *candidate.0, &mut *candidate.1, &mut *candidate.2)
+        };
+        let (ns, stats, projection, observation) =
+            measure_live_step(driver, tree, &action, retention, origin);
+        // Store the exact value passed to observe, after both measurements
+        // have ended. No second clock read or reconstructed interval is used.
+        if let Some(sample) = observation {
+            assert_eq!(index, 1, "only the engine receives observations");
+            assert!(matches!(action, LiveAction::Apply(..)));
+            run.observation_tapes
+                .last_mut()
+                .expect("engine repetition tape")
+                .samples
+                .push(sample);
+        }
+        if repetition != 0 {
+            run.phase(&action).record(ns, stats, &projection);
+        }
+        projections[index] = Some(projection);
+    }
+    assert_eq!(
+        projections[0], projections[1],
+        "solve and leaf projection parity"
+    );
+    assert_live_equivalence(
+        canonical.1,
+        canonical.0.timeline(),
+        candidate.1,
+        candidate.0.timeline(),
+    );
+}
+
+fn live_benchmark_policy(mode: &str, retention: PaneRetentionPolicy) -> PaneExecutionPolicy {
+    let policy = PaneExecutionPolicy::adaptive(retention);
+    match mode {
+        "persistent" => policy.forcing(PaneMemoryStrategy::Persistent),
+        "checkpointed" => policy.forcing(PaneMemoryStrategy::Checkpointed),
+        "conservative" => policy.conservative(),
+        "adaptive" => policy,
+        _ => unreachable!("declared live benchmark mode"),
+    }
+}
+
+#[derive(Serialize)]
+struct LivePairResult {
+    scenario: &'static str,
+    requested_mode: &'static str,
+    seed: u64,
+    leaf_count: usize,
+    operation_count: usize,
+    retention: PaneRetentionPolicy,
+    canonical: LiveRunReport,
+    engine: LiveRunReport,
+    // No canonical migration ratio: an unchanged Timeline has no equivalent
+    // substrate transition. Each direction below performs a real conversion.
+    migration_to_persistent: LivePhaseReport,
+    migration_to_checkpointed: LivePhaseReport,
+    execution_status_by_repetition: Vec<PaneExecutionStatus>,
+    final_state_hash: u64,
+}
+
+fn measure_live_migrations(
+    tree: &PaneTree,
+    timeline: &PaneInteractionTimeline,
+    retention: PaneRetentionPolicy,
+    phases: (&mut LivePhase, &mut LivePhase),
+    measured: bool,
+) {
+    // Migration setup/import is separate from the two measured transitions;
+    // the actual conversion, maintenance and solved projection are timed.
+    let mut engine =
+        PaneExecutionEngine::from_timeline(tree, timeline.clone()).expect("migration import");
+    engine
+        .set_policy(tree, live_benchmark_policy("checkpointed", retention))
+        .expect("migration setup");
+    let expected_projection = leaf_projection(tree);
+    for (strategy, phase) in [
+        (PaneMemoryStrategy::Persistent, phases.0),
+        (PaneMemoryStrategy::Checkpointed, phases.1),
+    ] {
+        assert_ne!(
+            engine.strategy(),
+            strategy,
+            "migration must change substrate"
+        );
+        let region = Region::new(GLOBAL);
+        let start = Instant::now();
+        engine
+            .set_policy(
+                tree,
+                PaneExecutionPolicy::adaptive(retention).forcing(strategy),
+            )
+            .expect("measured migration");
+        let projection = std::hint::black_box(leaf_projection(tree));
+        let ns = start.elapsed().as_nanos();
+        let stats = region.change();
+        if measured {
+            phase.record(ns, stats, &projection);
+        }
+        assert_eq!(engine.strategy(), strategy, "requested migration executed");
+        assert_eq!(projection, expected_projection);
+        assert_live_equivalence(tree, timeline, tree, engine.timeline());
+        assert_eq!(
+            engine.replay().expect("migrated replay").to_snapshot(),
+            tree.to_snapshot()
+        );
+    }
+    // Verify that both conversions preserved the complete retained redo tail.
+    let mut expected = timeline.clone();
+    let mut canonical = tree.clone();
+    let mut projected = tree.clone();
+    while expected
+        .redo(&mut canonical)
+        .expect("migration oracle redo")
+    {
+        assert!(engine.redo(&mut projected).expect("migrated redo"));
+        assert_live_equivalence(&canonical, &expected, &projected, engine.timeline());
+    }
+    assert!(!engine.redo(&mut projected).expect("migrated head"));
+}
+
+fn run_live_pair(
+    spec: (&'static str, usize, usize, u64),
+    mode: &'static str,
+    retention: PaneRetentionPolicy,
+    repetitions: usize,
+) -> LivePairResult {
+    let (scenario, leaf_count, operation_count, seed) = spec;
+    let base = grow_tree(leaf_count);
+    let operations = if scenario == "mixed_session" {
+        mixed_session_ops(&base, operation_count, seed)
+    } else {
+        resize_storm_ops(&base, operation_count, seed)
+    };
+    let mut canonical_metrics = LiveRun::default();
+    let mut engine_metrics = LiveRun::default();
+    let mut to_persistent = LivePhase::default();
+    let mut to_checkpointed = LivePhase::default();
+    let mut statuses = Vec::with_capacity(repetitions);
+    let mut final_state_hash = None;
+    for repetition in 0..=repetitions {
+        let origin = Instant::now();
+        engine_metrics.observation_tapes.push(LiveObservationTape {
+            repetition,
+            excluded_warmup: repetition == 0,
+            samples: Vec::with_capacity(operation_count),
+        });
+        let mut canonical = base.clone();
+        let mut tree = base.clone();
+        let mut timeline = LiveDriver::Timeline(
+            PaneInteractionTimeline::with_baseline(&canonical).with_max_entries(0),
+        );
+        let mut engine = PaneExecutionEngine::new(&tree);
+        engine
+            .set_policy(&tree, live_benchmark_policy(mode, retention))
+            .expect("initial live policy");
+        let mut candidate = LiveDriver::Engine(Box::new(engine));
+        for (index, operation) in operations.iter().enumerate() {
+            measured_pair_step(
+                (&mut timeline, &mut canonical, &mut canonical_metrics),
+                (&mut candidate, &mut tree, &mut engine_metrics),
+                LiveAction::Apply(index as u64 + 1, operation),
+                retention,
+                origin,
+                repetition,
+            );
+        }
+        let head = tree.state_hash();
+        if let Some(expected) = final_state_hash {
+            assert_eq!(head, expected, "same history across repetitions");
+        }
+        final_state_hash = Some(head);
+        let retained = timeline.timeline().cursor;
+        assert!(retained > 0, "navigation must execute retained history");
+        for index in 0..retained {
+            measured_pair_step(
+                (&mut timeline, &mut canonical, &mut canonical_metrics),
+                (&mut candidate, &mut tree, &mut engine_metrics),
+                LiveAction::Undo,
+                retention,
+                origin,
+                repetition,
+            );
+            if index == retained / 2 {
+                measure_live_migrations(
+                    &tree,
+                    candidate.timeline(),
+                    retention,
+                    (&mut to_persistent, &mut to_checkpointed),
+                    repetition != 0,
+                );
+            }
+        }
+        assert!(!candidate.history().undo(&mut tree).expect("live baseline"));
+        for _ in 0..retained {
+            measured_pair_step(
+                (&mut timeline, &mut canonical, &mut canonical_metrics),
+                (&mut candidate, &mut tree, &mut engine_metrics),
+                LiveAction::Redo,
+                retention,
+                origin,
+                repetition,
+            );
+        }
+        assert!(!candidate.history().redo(&mut tree).expect("live head"));
+        assert_eq!(tree.state_hash(), head);
+        assert_eq!(
+            candidate
+                .history()
+                .replay()
+                .expect("live replay")
+                .to_snapshot(),
+            canonical.to_snapshot()
+        );
+        let tape = engine_metrics
+            .observation_tapes
+            .last()
+            .expect("completed engine tape");
+        assert_eq!(
+            tape.samples.len(),
+            operation_count,
+            "one sample per accepted apply"
+        );
+        assert!(
+            tape.samples
+                .windows(2)
+                .all(|pair| pair[0].timestamp_ns <= pair[1].timestamp_ns),
+            "recorded observation timestamps are monotonic"
+        );
+        for (sample, operation) in tape.samples.iter().zip(&operations) {
+            assert_eq!(
+                sample.local,
+                operation.family() == PaneOperationFamily::Local
+            );
+        }
+        if repetition != 0 {
+            let LiveDriver::Engine(engine) = &candidate else {
+                unreachable!("engine candidate")
+            };
+            assert_eq!(engine.status().applies, operation_count as u64);
+            statuses.push(engine.status().clone());
+        }
+    }
+    assert!(canonical_metrics.observation_tapes.is_empty());
+    assert_eq!(engine_metrics.observation_tapes.len(), repetitions + 1);
+    if scenario == "resize_solve_control" {
+        assert_eq!(
+            engine_metrics.apply.solve_successes,
+            operation_count * repetitions
+        );
+        assert!(engine_metrics.apply.solve_errors.is_empty());
+    }
+    LivePairResult {
+        scenario,
+        requested_mode: mode,
+        seed,
+        leaf_count,
+        operation_count,
+        retention,
+        canonical: canonical_metrics.report(),
+        engine: engine_metrics.report(),
+        migration_to_persistent: to_persistent.report(),
+        migration_to_checkpointed: to_checkpointed.report(),
+        execution_status_by_repetition: statuses,
+        final_state_hash: final_state_hash.expect("warmup and measured histories executed"),
+    }
+}
+
+#[derive(Serialize)]
+struct LiveManifest {
+    boundary: &'static str,
+    exclusions: &'static str,
+    percentile_method: &'static str,
+    clock_profile_provenance: &'static str,
+    repetitions: usize,
+    excluded_warmup_repetitions: usize,
+    viewport: (u16, u16),
+    latency_envelope_ns: u64,
+    os: &'static str,
+    architecture: &'static str,
+    host: Option<String>,
+    available_parallelism: Option<usize>,
+    executable: String,
+    declared_build_profile: Option<String>,
+    rustc_version: Option<String>,
+    rustc_stderr: Option<String>,
+    rustc_exit: Option<i32>,
+    rustc_spawn_error: Option<String>,
+    results: Vec<LivePairResult>,
+}
+
+fn run_live_benchmark(
+    repetitions: usize,
+    out_path: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rustc = Command::new("rustc").arg("-Vv").output();
+    let mut results = Vec::new();
+    for spec in [
+        ("resize_solve_control", 2, 128, 0x4444),
+        ("resize_storm", 63, 512, 0x1111),
+        ("resize_storm", 255, 512, 0x2222),
+        ("mixed_session", 32, 256, 0x3333),
+    ] {
+        for units in [0, 64] {
+            for mode in ["persistent", "checkpointed", "conservative", "adaptive"] {
+                let result = run_live_pair(
+                    spec,
+                    mode,
+                    PaneRetentionPolicy::bounded(0, units),
+                    repetitions,
+                );
+                eprintln!(
+                    "live scenario={} leaves={} mode={} retained_edits={} repetitions={} engine_apply_p50/p95/p99={:?}/{:?}/{:?}ns timeline={:?}/{:?}/{:?}ns solve_success={} solve_error={}",
+                    spec.0,
+                    spec.1,
+                    mode,
+                    units,
+                    repetitions,
+                    result.engine.apply.p50_ns,
+                    result.engine.apply.p95_ns,
+                    result.engine.apply.p99_ns,
+                    result.canonical.apply.p50_ns,
+                    result.canonical.apply.p95_ns,
+                    result.canonical.apply.p99_ns,
+                    result.engine.apply.measured.solve_successes,
+                    result
+                        .engine
+                        .apply
+                        .measured
+                        .solve_errors
+                        .values()
+                        .sum::<usize>(),
+                );
+                results.push(result);
+            }
+        }
+    }
+    let manifest = LiveManifest {
+        boundary: "owned apply + canonical projection + measured observe/maintenance + solve_layout + visual leaf rectangles; undo/redo + projection without observe, matching host callers; migration includes set_policy reconstruction/maintenance and projection",
+        exclusions: "not showcase rendering, terminal IO, browser or allocator-peak proof; initial construction, migration setup/import, parity assertions, sample storage, serialization and one warmup excluded; bytes_allocated/deallocated are measured traffic, not peak memory; raw Timeline has no migration counterpart; byte budget is unbounded in this comparison; actual counters identify executed paths after monitor fallback",
+        percentile_method: "nearest rank over all measured phase operations, raw samples in acquisition order; paired candidate/control order alternates by repetition",
+        clock_profile_provenance: "coupled-harness observations, not production cadence: timestamp_ns uses the shared pair Instant origin for each repetition, so intervals include control execution, parity checks, sample bookkeeping and scheduling; elapsed_ns measures engine apply/record before observe/maintenance/projection. Engine tapes contain the exact samples passed to observe, in operation order, including explicitly tagged warmup; Timeline and migration helper engines receive no observations. Replaying the seeded history/policy/envelope with a tape can reproduce semantic selector decisions, not wall-clock performance",
+        repetitions,
+        excluded_warmup_repetitions: 1,
+        viewport: (240, 80),
+        latency_envelope_ns: 8_000_000,
+        os: env::consts::OS,
+        architecture: env::consts::ARCH,
+        host: env::var("HOSTNAME").ok(),
+        available_parallelism: std::thread::available_parallelism().ok().map(usize::from),
+        executable: env::current_exe()?.display().to_string(),
+        declared_build_profile: env::var("PANE_BENCH_BUILD_PROFILE").ok(),
+        rustc_version: rustc
+            .as_ref()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned()),
+        rustc_stderr: rustc
+            .as_ref()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stderr).into_owned()),
+        rustc_exit: rustc.as_ref().ok().and_then(|output| output.status.code()),
+        rustc_spawn_error: rustc.err().map(|error| error.to_string()),
+        results,
+    };
+    let json = serde_json::to_string_pretty(&manifest)?;
+    if let Some(path) = out_path {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?
+            .write_all(json.as_bytes())?;
+        eprintln!("wrote live benchmark: {path}");
+    } else {
+        println!("{json}");
+    }
+    Ok(())
+}
+
 fn main() {
     let mut out_path: Option<String> = None;
+    let mut live = false;
+    let mut live_repetitions = 20usize;
     let args: Vec<String> = env::args().collect();
     let mut i = 1;
     while i < args.len() {
-        if args[i] == "--out" && i + 1 < args.len() {
+        if args[i] == "--live" {
+            live = true;
+            i += 1;
+        } else if args[i] == "--live-repetitions" {
+            live_repetitions = args
+                .get(i + 1)
+                .and_then(|value| value.parse().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or_else(|| {
+                    eprintln!("--live-repetitions requires a positive integer");
+                    std::process::exit(2);
+                });
+            i += 2;
+        } else if args[i] == "--out" && i + 1 < args.len() {
             out_path = Some(args[i + 1].clone());
             i += 2;
         } else {
@@ -490,6 +1138,13 @@ fn main() {
     }
     if out_path.is_none() {
         out_path = env::var("PANE_PERSISTENT_BENCH_OUT").ok();
+    }
+    if live {
+        if let Err(error) = run_live_benchmark(live_repetitions, out_path.as_deref()) {
+            eprintln!("live benchmark failed: {error}");
+            std::process::exit(1);
+        }
+        return;
     }
 
     let results = vec![

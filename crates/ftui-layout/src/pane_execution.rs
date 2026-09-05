@@ -1,39 +1,800 @@
-//! Deterministic execution-policy selector for pane-history strategies (`bd-1k7ek.6`).
+//! Deterministic pane policy and live history execution.
 //!
-//! Three semantically-equivalent ways to drive pane undo/redo now exist —
-//! **baseline** (no history), the **checkpointed** [`PaneInteractionTimeline`](crate::pane::PaneInteractionTimeline),
-//! and the **persistent** [`PaneVersionStore`](crate::pane_persistent::PaneVersionStore) —
-//! proven byte-identical over lockstep histories
-//! (`tests/pane_persistent_equivalence.rs`). Once equivalent implementations
-//! exist, the system should pick the cheapest *safe* one for the observed
-//! workload rather than hard-coding one globally.
-//!
-//! This module is that policy layer, and it is deliberately **not** opaque
-//! adaptive magic:
-//!
-//! * Selection is a **pure, deterministic function** of an observed
-//!   [`PaneWorkloadProfile`] and explicit, documented thresholds — same inputs
-//!   always yield the same [`PaneExecutionDecision`].
-//! * Every decision carries a human-readable `log` and a [`PaneStrategyReason`]
-//!   explaining *why* a strategy was chosen, so profiling and regressions stay
-//!   explainable.
-//! * The checkpointed timeline is the **conservative fallback** (it is the
-//!   certified production path and the differential oracle for the persistent
-//!   spike); it is chosen whenever the persistent criteria are not all met.
-//! * Operators can **force** any strategy ([`PaneExecutionPolicy::forcing`]) or
-//!   force the conservative path ([`PaneExecutionPolicy::conservative`]) for
-//!   debugging and rollout — overrides bypass the adaptive logic entirely.
-//! * [`reselect`](PaneExecutionPolicy::reselect) applies **hysteresis** so the
-//!   selector does not thrash when the workload jitters near a threshold.
-//!
-//! Because the candidate strategies are proven equivalent, selecting among them
-//! can never change observable behavior — only cost. The selector emits the
-//! *decision*; wiring it to a live execution engine is downstream integration
-//! (the persistent store is still a prototype on no production path).
+//! [`PaneExecutionEngine`] owns the operation journal and its selected history
+//! substrate. Persistent resize operations use path copying; structural edits
+//! use the canonical transaction once. Migration reconstructs every retained
+//! entry, including redo, before publishing a new substrate. Caller-measured
+//! observations drive selection and conservative fallback at gesture boundaries.
+//! Retained bytes are a structural model, not allocator measurements; samples
+//! describe operation execution and recording, excluding subsequent maintenance.
 
-use crate::pane::{PaneOperation, PaneOperationFamily};
-use crate::pane_memory::PaneMemoryStrategy;
-use crate::pane_retention::PaneRetentionPolicy;
+use std::collections::VecDeque;
+use std::fmt;
+
+use crate::pane::{
+    PaneInteractionTimeline, PaneInteractionTimelineError, PaneOperation, PaneOperationError,
+    PaneOperationFamily, PaneOperationOutcome, PaneTree,
+};
+use crate::pane_memory::{PaneMemoryStrategy, baseline_footprint};
+use crate::pane_monitors::{
+    PaneMonitorThresholds, PaneMonitorVerdict, monitor_latency_envelope, monitor_retention_pressure,
+};
+use crate::pane_persistent::{PaneVersionStore, VersionedPaneTree};
+use crate::pane_retention::{PaneRetentionDecision, PaneRetentionOutcome, PaneRetentionPolicy};
+
+/// Failure before an edit or history transition can be published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneExecutionError {
+    /// Original operation failure, with its complete diagnostic payload.
+    Operation(Box<PaneOperationError>),
+    /// Canonical history replay failure.
+    Timeline(Box<PaneInteractionTimelineError>),
+    /// Imported history or the supplied live tree does not match the engine.
+    InvalidHistory(String),
+    /// The no-history strategy cannot serve an undo/redo consumer.
+    HistoryRequired,
+}
+
+impl fmt::Display for PaneExecutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Operation(error) => error.fmt(f),
+            Self::Timeline(error) => error.fmt(f),
+            Self::InvalidHistory(reason) => write!(f, "invalid pane history: {reason}"),
+            Self::HistoryRequired => f.write_str("pane execution requires undo/redo history"),
+        }
+    }
+}
+
+impl std::error::Error for PaneExecutionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Operation(error) => Some(error.as_ref()),
+            Self::Timeline(error) => Some(error.as_ref()),
+            Self::InvalidHistory(_) | Self::HistoryRequired => None,
+        }
+    }
+}
+
+impl From<PaneOperationError> for PaneExecutionError {
+    fn from(error: PaneOperationError) -> Self {
+        Self::Operation(Box::new(error))
+    }
+}
+
+impl From<PaneInteractionTimelineError> for PaneExecutionError {
+    fn from(error: PaneInteractionTimelineError) -> Self {
+        Self::Timeline(Box::new(error))
+    }
+}
+
+/// One measurement supplied by the terminal or browser interaction adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PaneExecutionSample {
+    /// Monotonic observation time, in nanoseconds from the adapter's origin.
+    pub timestamp_ns: u64,
+    /// Actual execution and journal-recording duration, excluding maintenance.
+    pub elapsed_ns: u64,
+    /// Whether the executed operation belongs to the local resize family.
+    pub local: bool,
+}
+
+/// Counters describe executed transitions, never proposed strategies.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PaneExecutionStatus {
+    pub strategy: PaneMemoryStrategy,
+    pub conservative: bool,
+    pub applies: u64,
+    pub persistent_applies: u64,
+    pub checkpointed_applies: u64,
+    pub conservative_applies: u64,
+    pub undos: u64,
+    pub redos: u64,
+    pub switches: u64,
+    pub fallbacks: u64,
+    /// Journal, active persistent store, and canonical render projection bytes.
+    pub retained_bytes: usize,
+    pub last_maintenance_error: Option<String>,
+    pub last_retention: Option<PaneRetentionDecision>,
+    pub last_monitor: Option<PaneMonitorVerdict>,
+}
+
+/// Shared history interface for actual hosts and canonical comparison controls.
+pub trait PaneHistory {
+    fn apply_and_record(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError>;
+    fn apply_and_record_coalesced_resize_delta(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+        boundary: u64,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError>;
+    fn undo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneExecutionError>;
+    fn redo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneExecutionError>;
+    fn replay(&self) -> Result<PaneTree, PaneExecutionError>;
+    fn applied_len(&self) -> usize;
+    /// Maintenance errors are diagnostic: the preceding accepted edit remains accepted.
+    fn observe(
+        &mut self,
+        _tree: &PaneTree,
+        _sample: PaneExecutionSample,
+    ) -> Result<(), PaneExecutionError> {
+        Ok(())
+    }
+}
+
+impl PaneHistory for PaneInteractionTimeline {
+    fn apply_and_record(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError> {
+        Ok(Self::apply_and_record(self, tree, sequence, id, operation)?)
+    }
+    fn apply_and_record_coalesced_resize_delta(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+        boundary: u64,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError> {
+        Ok(Self::apply_and_record_coalesced_resize_delta(
+            self, tree, sequence, id, operation, boundary,
+        )?)
+    }
+    fn undo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneExecutionError> {
+        Ok(Self::undo(self, tree)?)
+    }
+    fn redo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneExecutionError> {
+        Ok(Self::redo(self, tree)?)
+    }
+    fn replay(&self) -> Result<PaneTree, PaneExecutionError> {
+        Ok(Self::replay(self)?)
+    }
+    fn applied_len(&self) -> usize {
+        Self::applied_len(self)
+    }
+}
+
+/// Journal and live substrate, paired with the host's canonical render tree.
+#[derive(Debug, Clone)]
+pub struct PaneExecutionEngine {
+    timeline: PaneInteractionTimeline,
+    persistent: Option<PaneVersionStore>,
+    policy: PaneExecutionPolicy,
+    status: PaneExecutionStatus,
+    expected_hash: u64,
+    samples: VecDeque<PaneExecutionSample>,
+    gesture_active: bool,
+    fallback_pending: bool,
+    fallback_latched: bool,
+    latency_envelope_ns: u64,
+}
+
+impl PaneExecutionEngine {
+    /// Start checkpointed history with a 4096-edit bound and an 8ms observation envelope.
+    /// Adaptive and persistent execution require an explicit policy: full-wrapper
+    /// comparisons currently show workload-dependent regressions in those modes.
+    #[must_use]
+    pub fn new(tree: &PaneTree) -> Self {
+        let timeline = PaneInteractionTimeline::with_baseline(tree).with_max_entries(0);
+        let bytes = timeline
+            .retention_diagnostics()
+            .estimated_total_retained_bytes
+            .saturating_add(baseline_footprint(tree).total_retained_bytes);
+        Self {
+            timeline,
+            persistent: None,
+            policy: PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 4096))
+                .forcing(PaneMemoryStrategy::Checkpointed),
+            expected_hash: tree.history_state_hash(),
+            samples: VecDeque::new(),
+            gesture_active: false,
+            fallback_pending: false,
+            fallback_latched: false,
+            latency_envelope_ns: 8_000_000,
+            status: PaneExecutionStatus {
+                strategy: PaneMemoryStrategy::Checkpointed,
+                conservative: false,
+                applies: 0,
+                persistent_applies: 0,
+                checkpointed_applies: 0,
+                conservative_applies: 0,
+                undos: 0,
+                redos: 0,
+                switches: 0,
+                fallbacks: 0,
+                retained_bytes: bytes,
+                last_maintenance_error: None,
+                last_retention: None,
+                last_monitor: None,
+            },
+        }
+    }
+
+    /// Validate the complete imported journal and all checkpoints, including redo.
+    pub fn from_timeline(
+        tree: &PaneTree,
+        timeline: PaneInteractionTimeline,
+    ) -> Result<Self, PaneExecutionError> {
+        let mut engine = Self::new(tree);
+        let (timeline, persistent) =
+            Self::reconstruct(tree, &timeline, PaneMemoryStrategy::Checkpointed)?;
+        engine.timeline = timeline;
+        engine.persistent = persistent;
+        engine.status.retained_bytes = engine.retained_bytes(tree);
+        Ok(engine)
+    }
+
+    #[must_use]
+    pub const fn timeline(&self) -> &PaneInteractionTimeline {
+        &self.timeline
+    }
+    #[must_use]
+    pub const fn policy(&self) -> PaneExecutionPolicy {
+        self.policy
+    }
+    #[must_use]
+    pub const fn strategy(&self) -> PaneMemoryStrategy {
+        self.status.strategy
+    }
+    #[must_use]
+    pub const fn status(&self) -> &PaneExecutionStatus {
+        &self.status
+    }
+    #[must_use]
+    pub const fn applied_len(&self) -> usize {
+        self.timeline.cursor
+    }
+
+    /// Set the measured-operation envelope. Zero disables this monitor.
+    pub const fn set_latency_envelope_ns(&mut self, envelope: u64) {
+        self.latency_envelope_ns = envelope;
+    }
+
+    fn check_live(&self, tree: &PaneTree) -> Result<(), PaneExecutionError> {
+        if tree.history_state_hash() != self.expected_hash {
+            return Err(PaneExecutionError::InvalidHistory(
+                "live tree changed outside its history engine".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn apply_and_record(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError> {
+        self.apply(tree, sequence, id, operation, None)
+    }
+
+    pub fn apply_and_record_coalesced_resize_delta(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+        boundary: u64,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError> {
+        self.apply(tree, sequence, id, operation, Some(boundary))
+    }
+
+    fn apply(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+        boundary: Option<u64>,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError> {
+        self.check_live(tree)?;
+        let outcome = if let Some(store) = &mut self.persistent {
+            let (version, projection, outcome) = store.prepare_live_apply(tree, id, &operation)?;
+            let coalesced = self.timeline.record_applied(
+                &projection,
+                None,
+                sequence,
+                operation,
+                &outcome,
+                boundary,
+                false,
+            );
+            store.commit_prepared(version, coalesced);
+            *tree = projection;
+            self.status.persistent_applies = self.status.persistent_applies.saturating_add(1);
+            outcome
+        } else {
+            let outcome = if self.status.conservative {
+                tree.apply_operation_conservative(id, operation.clone())?
+            } else {
+                tree.apply_operation(id, operation.clone())?
+            };
+            self.timeline
+                .record_applied(tree, None, sequence, operation, &outcome, boundary, true);
+            if self.status.conservative {
+                self.status.conservative_applies =
+                    self.status.conservative_applies.saturating_add(1);
+            } else {
+                self.status.checkpointed_applies =
+                    self.status.checkpointed_applies.saturating_add(1);
+            }
+            outcome
+        };
+        self.expected_hash = tree.history_state_hash();
+        self.status.applies = self.status.applies.saturating_add(1);
+        Ok(outcome)
+    }
+
+    pub fn undo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneExecutionError> {
+        self.navigate(tree, false)
+    }
+    pub fn redo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneExecutionError> {
+        self.navigate(tree, true)
+    }
+
+    fn navigate(&mut self, tree: &mut PaneTree, forward: bool) -> Result<bool, PaneExecutionError> {
+        self.check_live(tree)?;
+        let cursor = self.timeline.cursor;
+        if (!forward && cursor == 0) || (forward && cursor == self.timeline.entries.len()) {
+            return Ok(false);
+        }
+        if let Some(store) = &mut self.persistent {
+            let target = if forward { cursor + 1 } else { cursor - 1 };
+            let version = store.version_at(target).ok_or_else(|| {
+                PaneExecutionError::InvalidHistory("missing persistent navigation target".into())
+            })?;
+            let projection = version
+                .to_pane_tree()
+                .map_err(|error| PaneExecutionError::InvalidHistory(error.to_string()))?;
+            store.seek(target);
+            self.timeline.cursor = target;
+            *tree = projection;
+        } else if forward {
+            self.timeline.redo(tree)?;
+        } else {
+            self.timeline.undo(tree)?;
+        }
+        self.expected_hash = tree.history_state_hash();
+        if forward {
+            self.status.redos = self.status.redos.saturating_add(1);
+        } else {
+            self.status.undos = self.status.undos.saturating_add(1);
+        }
+        Ok(true)
+    }
+
+    pub fn replay(&self) -> Result<PaneTree, PaneExecutionError> {
+        if let Some(store) = &self.persistent {
+            store
+                .current()
+                .to_pane_tree()
+                .map_err(|error| PaneExecutionError::InvalidHistory(error.to_string()))
+        } else {
+            Ok(self.timeline.replay()?)
+        }
+    }
+
+    /// Pin the pre-gesture cursor against migration and pruning until completion.
+    pub const fn begin_gesture(&mut self) {
+        self.gesture_active = true;
+    }
+    pub fn end_gesture(&mut self, tree: &PaneTree) -> Result<(), PaneExecutionError> {
+        self.gesture_active = false;
+        self.maintain_and_record(tree)
+    }
+
+    /// Install an override atomically. Active gestures defer substrate maintenance.
+    pub fn set_policy(
+        &mut self,
+        tree: &PaneTree,
+        policy: PaneExecutionPolicy,
+    ) -> Result<(), PaneExecutionError> {
+        self.check_live(tree)?;
+        if policy.forced_strategy == Some(PaneMemoryStrategy::Baseline) {
+            return Err(PaneExecutionError::HistoryRequired);
+        }
+        let mut candidate = self.clone();
+        candidate.policy = policy;
+        candidate.fallback_pending = false;
+        // An explicit reset clears a monitor latch; an operator override still wins.
+        candidate.fallback_latched = false;
+        if !candidate.gesture_active {
+            candidate.maintain(tree)?;
+        }
+        *self = candidate;
+        Ok(())
+    }
+
+    pub fn observe(
+        &mut self,
+        tree: &PaneTree,
+        sample: PaneExecutionSample,
+    ) -> Result<(), PaneExecutionError> {
+        self.check_live(tree)?;
+        if self
+            .samples
+            .back()
+            .is_some_and(|previous| sample.timestamp_ns < previous.timestamp_ns)
+        {
+            let error =
+                PaneExecutionError::InvalidHistory("observation clock moved backwards".into());
+            self.status.last_maintenance_error = Some(error.to_string());
+            return Err(error);
+        }
+        if self.samples.len() == 128 {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+        if self.latency_envelope_ns != 0 {
+            let verdict = monitor_latency_envelope(
+                self.strategy(),
+                sample.elapsed_ns as f64,
+                self.latency_envelope_ns as f64,
+                &PaneMonitorThresholds::default(),
+            );
+            self.fallback_pending |= verdict.status.is_violation();
+            self.status.last_monitor = Some(verdict);
+        }
+        self.maintain_and_record(tree)
+    }
+
+    fn profile(&self) -> PaneWorkloadProfile {
+        let mut peak = 0;
+        let mut previous = None;
+        for sample in &self.samples {
+            if let Some(timestamp) = previous {
+                let interval = sample.timestamp_ns.saturating_sub(timestamp);
+                if let Some(rate) = 1_000_000_000_u64.checked_div(interval) {
+                    peak = peak.max(u32::try_from(rate).unwrap_or(u32::MAX));
+                }
+            }
+            previous = Some(sample.timestamp_ns);
+        }
+        PaneWorkloadProfile::new(
+            self.samples.len(),
+            self.samples.iter().filter(|sample| sample.local).count(),
+            peak,
+            true,
+        )
+    }
+
+    fn maintain_and_record(&mut self, tree: &PaneTree) -> Result<(), PaneExecutionError> {
+        let result = self.maintain(tree);
+        self.status.last_maintenance_error = result.as_ref().err().map(ToString::to_string);
+        result
+    }
+
+    fn maintain(&mut self, tree: &PaneTree) -> Result<(), PaneExecutionError> {
+        self.check_live(tree)?;
+        if self.gesture_active {
+            return Ok(());
+        }
+        let conservative =
+            self.policy.conservative || self.fallback_latched || self.fallback_pending;
+        let desired = if conservative {
+            PaneMemoryStrategy::Checkpointed
+        } else {
+            self.policy
+                .reselect(self.profile(), self.strategy())
+                .strategy
+        };
+        let bytes = self.retained_bytes(tree);
+        let pressure = self
+            .policy
+            .retention
+            .budget
+            .is_exceeded_by(bytes, self.timeline.entries.len());
+        if desired != self.strategy() || pressure {
+            // Migration, pruning, and a possible pressure fallback form one
+            // publication boundary. Failure preserves the accepted edit and
+            // the substrate on which it ran.
+            let mut candidate = self.clone();
+            candidate.maintain_selected(tree, desired, conservative, bytes)?;
+            *self = candidate;
+            return Ok(());
+        }
+        self.maintain_selected(tree, desired, conservative, bytes)
+    }
+
+    fn maintain_selected(
+        &mut self,
+        tree: &PaneTree,
+        desired: PaneMemoryStrategy,
+        conservative: bool,
+        bytes_before_switch: usize,
+    ) -> Result<(), PaneExecutionError> {
+        let changed = desired != self.strategy();
+        self.switch(tree, desired, conservative)?;
+        let bytes = if changed {
+            self.retained_bytes(tree)
+        } else {
+            bytes_before_switch
+        };
+        self.retain(tree, bytes)?;
+        if self.status.last_retention.as_ref().is_some_and(|decision| {
+            matches!(
+                decision.outcome,
+                PaneRetentionOutcome::FloorReached | PaneRetentionOutcome::PruningBlocked
+            )
+        }) {
+            self.switch(tree, PaneMemoryStrategy::Checkpointed, true)?;
+            self.status.retained_bytes = self.retained_bytes(tree);
+        }
+        self.fallback_pending = false;
+        Ok(())
+    }
+
+    fn switch(
+        &mut self,
+        tree: &PaneTree,
+        strategy: PaneMemoryStrategy,
+        conservative: bool,
+    ) -> Result<(), PaneExecutionError> {
+        if strategy != self.strategy() {
+            let (timeline, persistent) = Self::reconstruct(tree, &self.timeline, strategy)?;
+            self.timeline = timeline;
+            self.persistent = persistent;
+            self.status.strategy = strategy;
+            self.status.switches = self.status.switches.saturating_add(1);
+        }
+        if conservative && !self.status.conservative {
+            self.status.fallbacks = self.status.fallbacks.saturating_add(1);
+        }
+        self.status.conservative = conservative;
+        self.fallback_latched = conservative && !self.policy.conservative;
+        Ok(())
+    }
+
+    fn retained_bytes(&self, tree: &PaneTree) -> usize {
+        self.timeline
+            .retention_diagnostics()
+            .estimated_total_retained_bytes
+            .saturating_add(baseline_footprint(tree).total_retained_bytes)
+            .saturating_add(
+                self.persistent
+                    .as_ref()
+                    .map_or(0, PaneVersionStore::retained_bytes),
+            )
+    }
+
+    fn retain(&mut self, tree: &PaneTree, bytes_before: usize) -> Result<(), PaneExecutionError> {
+        let policy = self.policy.retention;
+        let units_before = self.timeline.entries.len();
+        let mut bytes_after = bytes_before;
+        if !policy.conservative_debug
+            && policy.budget.is_exceeded_by(bytes_before, units_before)
+            && self.timeline.cursor > 0
+        {
+            // Stage both representations together. A failed baseline advance cannot
+            // leave the store at a different cursor from the operation journal.
+            let mut candidate = self.clone();
+            while policy
+                .budget
+                .is_exceeded_by(bytes_after, candidate.timeline.entries.len())
+                && candidate.timeline.cursor > 0
+            {
+                let count = candidate.timeline.entries.len();
+                // Zero means unbounded in the timeline API, so advance the last
+                // entry explicitly when pruning reaches the irreducible baseline.
+                if count == 1 {
+                    candidate.timeline =
+                        PaneInteractionTimeline::with_baseline(tree).with_max_entries(0);
+                    candidate.timeline.checkpoint_interval = self.timeline.checkpoint_interval;
+                    if candidate.persistent.is_some() {
+                        candidate.persistent = Some(PaneVersionStore::with_max_versions(
+                            VersionedPaneTree::from_pane_tree(tree),
+                            0,
+                        ));
+                    }
+                } else {
+                    if candidate.timeline.set_max_entries(count - 1) != 1 {
+                        return Err(PaneExecutionError::InvalidHistory(
+                            "retention could not advance the baseline".into(),
+                        ));
+                    }
+                    candidate.timeline.set_max_entries(0);
+                    if let Some(store) = &mut candidate.persistent {
+                        if store.set_max_versions(count) != 1 {
+                            return Err(PaneExecutionError::InvalidHistory(
+                                "persistent retention diverged from journal".into(),
+                            ));
+                        }
+                        store.set_max_versions(0);
+                    }
+                }
+                bytes_after = candidate.retained_bytes(tree);
+            }
+            self.timeline = candidate.timeline;
+            self.persistent = candidate.persistent;
+        }
+        let units_after = self.timeline.entries.len();
+        let over = policy.budget.is_exceeded_by(bytes_after, units_after);
+        let outcome = if over && policy.conservative_debug {
+            PaneRetentionOutcome::ConservativeHold
+        } else if over && units_after == 0 {
+            PaneRetentionOutcome::FloorReached
+        } else if over {
+            PaneRetentionOutcome::PruningBlocked
+        } else if units_after < units_before {
+            PaneRetentionOutcome::PrunedToFit
+        } else {
+            PaneRetentionOutcome::WithinBudget
+        };
+        let decision = PaneRetentionDecision {
+            strategy: self.strategy(),
+            budget: policy.budget,
+            conservative_debug: policy.conservative_debug,
+            units_before,
+            units_after,
+            units_pruned: units_before - units_after,
+            bytes_before,
+            bytes_after,
+            current_state_hash: tree.state_hash(),
+            outcome,
+            log: format!(
+                "live pane retention: {outcome:?}; edits {units_before}->{units_after}, modeled bytes {bytes_before}->{bytes_after}"
+            ),
+        };
+        let verdict = monitor_retention_pressure(&decision, &PaneMonitorThresholds::default());
+        if self
+            .status
+            .last_monitor
+            .as_ref()
+            .is_none_or(|previous| !previous.status.is_violation())
+            || verdict.status.is_violation()
+        {
+            self.status.last_monitor = Some(verdict);
+        }
+        self.status.last_retention = Some(decision);
+        self.status.retained_bytes = bytes_after;
+        Ok(())
+    }
+
+    fn reconstruct(
+        live: &PaneTree,
+        source: &PaneInteractionTimeline,
+        strategy: PaneMemoryStrategy,
+    ) -> Result<(PaneInteractionTimeline, Option<PaneVersionStore>), PaneExecutionError> {
+        if strategy == PaneMemoryStrategy::Baseline {
+            return Err(PaneExecutionError::HistoryRequired);
+        }
+        if source.cursor > source.entries.len() {
+            return Err(PaneExecutionError::InvalidHistory(
+                "cursor exceeds journal".into(),
+            ));
+        }
+        let baseline = source
+            .baseline
+            .clone()
+            .ok_or(PaneInteractionTimelineError::MissingBaseline)?;
+        let mut tree = PaneTree::from_snapshot(baseline)
+            .map_err(|source| PaneInteractionTimelineError::BaselineInvalid { source })?;
+        let mut timeline = PaneInteractionTimeline::with_baseline(&tree).with_max_entries(0);
+        timeline.checkpoint_interval = source.checkpoint_interval;
+        let mut persistent = (strategy == PaneMemoryStrategy::Persistent).then(|| {
+            PaneVersionStore::with_max_versions(VersionedPaneTree::from_pane_tree(&tree), 0)
+        });
+        let mut current = (source.cursor == 0).then(|| tree.to_snapshot());
+        let mut checkpoint_indices = std::collections::BTreeSet::new();
+        for checkpoint in &source.checkpoints {
+            if checkpoint.applied_len > source.entries.len()
+                || !checkpoint_indices.insert(checkpoint.applied_len)
+            {
+                return Err(PaneExecutionError::InvalidHistory(
+                    "duplicate or out-of-range checkpoint".into(),
+                ));
+            }
+        }
+        for index in 0..=source.entries.len() {
+            for checkpoint in source
+                .checkpoints
+                .iter()
+                .filter(|checkpoint| checkpoint.applied_len == index)
+            {
+                let restored = PaneTree::from_snapshot(checkpoint.snapshot.clone())
+                    .map_err(|source| PaneInteractionTimelineError::BaselineInvalid { source })?;
+                if restored.to_snapshot() != tree.to_snapshot() {
+                    return Err(PaneExecutionError::InvalidHistory(format!(
+                        "checkpoint {index} differs from journal"
+                    )));
+                }
+            }
+            let Some(entry) = source.entries.get(index) else {
+                break;
+            };
+            let outcome = if let Some(store) = &mut persistent {
+                let (version, projection, outcome) =
+                    store.prepare_live_apply(&tree, entry.operation_id, &entry.operation)?;
+                store.commit_prepared(version, false);
+                tree = projection;
+                outcome
+            } else {
+                tree.apply_operation(entry.operation_id, entry.operation.clone())?
+            };
+            if outcome.before_hash != entry.before_hash || outcome.after_hash != entry.after_hash {
+                return Err(PaneExecutionError::InvalidHistory(format!(
+                    "entry {index} hashes differ from replay"
+                )));
+            }
+            timeline.record_applied(
+                &tree,
+                None,
+                entry.sequence,
+                entry.operation.clone(),
+                &outcome,
+                None,
+                persistent.is_none(),
+            );
+            if index + 1 == source.cursor {
+                current = Some(tree.to_snapshot());
+            }
+        }
+        if current.as_ref() != Some(&live.to_snapshot()) {
+            return Err(PaneExecutionError::InvalidHistory(
+                "current snapshot differs from journal cursor".into(),
+            ));
+        }
+        timeline.cursor = source.cursor;
+        if let Some(store) = &mut persistent {
+            store.seek(source.cursor);
+        }
+        Ok((timeline, persistent))
+    }
+}
+
+impl PaneHistory for PaneExecutionEngine {
+    fn apply_and_record(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError> {
+        Self::apply_and_record(self, tree, sequence, id, operation)
+    }
+    fn apply_and_record_coalesced_resize_delta(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        id: u64,
+        operation: PaneOperation,
+        boundary: u64,
+    ) -> Result<PaneOperationOutcome, PaneExecutionError> {
+        Self::apply_and_record_coalesced_resize_delta(self, tree, sequence, id, operation, boundary)
+    }
+    fn undo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneExecutionError> {
+        Self::undo(self, tree)
+    }
+    fn redo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneExecutionError> {
+        Self::redo(self, tree)
+    }
+    fn replay(&self) -> Result<PaneTree, PaneExecutionError> {
+        Self::replay(self)
+    }
+    fn applied_len(&self) -> usize {
+        Self::applied_len(self)
+    }
+    fn observe(
+        &mut self,
+        tree: &PaneTree,
+        sample: PaneExecutionSample,
+    ) -> Result<(), PaneExecutionError> {
+        Self::observe(self, tree, sample)
+    }
+}
 
 /// Observed shape of a pane-interaction workload window — the deterministic
 /// input to strategy selection.
@@ -371,6 +1132,189 @@ mod tests {
     fn mixed_profile() -> PaneWorkloadProfile {
         // 384 ops, ~55% local, moderate rate.
         PaneWorkloadProfile::new(384, 211, 40, true)
+    }
+
+    #[test]
+    fn live_policy_change_is_deferred_until_gesture_ends() {
+        let mut tree = PaneTree::singleton("live");
+        let mut engine = PaneExecutionEngine::new(&tree);
+        let forced = PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+            .forcing(PaneMemoryStrategy::Persistent);
+        engine.set_policy(&tree, forced).unwrap();
+        engine.begin_gesture();
+        engine.set_policy(&tree, forced.conservative()).unwrap();
+        assert_eq!(engine.strategy(), PaneMemoryStrategy::Persistent);
+        assert!(!engine.status().conservative);
+        let root = tree.root();
+        engine
+            .apply_and_record(
+                &mut tree,
+                1,
+                1,
+                PaneOperation::SplitLeaf {
+                    target: root,
+                    axis: SplitAxis::Horizontal,
+                    ratio: PaneSplitRatio::new(1, 1).unwrap(),
+                    new_leaf: PaneLeaf::new("second"),
+                    placement: PanePlacement::ExistingFirst,
+                },
+            )
+            .unwrap();
+        assert_eq!(engine.status().persistent_applies, 1);
+        let accepted = tree.to_snapshot();
+        engine.end_gesture(&tree).unwrap();
+        assert_eq!(tree.to_snapshot(), accepted);
+        assert_eq!(engine.strategy(), PaneMemoryStrategy::Checkpointed);
+        assert!(engine.status().conservative);
+        assert!(engine.undo(&mut tree).unwrap());
+        assert_eq!(
+            tree.to_snapshot(),
+            PaneTree::singleton("live").to_snapshot()
+        );
+    }
+
+    #[test]
+    fn failed_maintenance_preserves_accepted_edit_and_previous_substrate() {
+        let mut tree = PaneTree::singleton("live");
+        let mut engine = PaneExecutionEngine::new(&tree);
+        engine.set_latency_envelope_ns(1);
+        engine
+            .set_policy(
+                &tree,
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                    .forcing(PaneMemoryStrategy::Persistent),
+            )
+            .unwrap();
+        engine
+            .apply_and_record(&mut tree, 1, 1, PaneOperation::NormalizeRatios)
+            .unwrap();
+        let accepted = tree.to_snapshot();
+        // A corrupted journal hash must prevent fallback publication rather
+        // than blessing the journal or rolling back the already accepted edit.
+        engine.timeline.entries[0].after_hash ^= 1;
+        let journal = engine.timeline.clone();
+        let status = engine.status.clone();
+        assert!(
+            engine
+                .observe(
+                    &tree,
+                    PaneExecutionSample {
+                        timestamp_ns: 1,
+                        elapsed_ns: 2,
+                        local: false
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(tree.to_snapshot(), accepted);
+        assert_eq!(engine.timeline, journal);
+        assert_eq!(engine.strategy(), PaneMemoryStrategy::Persistent);
+        assert_eq!(engine.status.applies, status.applies);
+        assert_eq!(engine.status.switches, status.switches);
+        assert!(engine.status.last_maintenance_error.is_some());
+        assert_eq!(engine.replay().unwrap().to_snapshot(), accepted);
+    }
+
+    #[test]
+    fn equal_observation_timestamps_do_not_invent_a_burst_rate() {
+        let tree = PaneTree::singleton("live");
+        let mut engine = PaneExecutionEngine::new(&tree);
+        for _ in 0..128 {
+            engine
+                .observe(
+                    &tree,
+                    PaneExecutionSample {
+                        timestamp_ns: 1,
+                        elapsed_ns: 0,
+                        local: true,
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(engine.profile().peak_ops_per_sec, 0);
+        assert_eq!(engine.strategy(), PaneMemoryStrategy::Checkpointed);
+    }
+
+    #[test]
+    fn live_pairing_distinguishes_raw_ratios_with_equal_semantic_hashes() {
+        let mut original = PaneTree::singleton("original");
+        for id in 1..=2 {
+            original
+                .apply_operation(
+                    id,
+                    PaneOperation::SplitLeaf {
+                        target: PaneId::MIN,
+                        axis: SplitAxis::Horizontal,
+                        ratio: PaneSplitRatio::new(1, 1).unwrap(),
+                        placement: PanePlacement::ExistingFirst,
+                        new_leaf: PaneLeaf::new(format!("sibling-{id}")),
+                    },
+                )
+                .unwrap();
+        }
+        let untouched_split = original.root();
+        let mut alias = original.to_snapshot();
+        let record = alias
+            .nodes
+            .iter_mut()
+            .find(|record| record.id == untouched_split)
+            .unwrap();
+        let crate::pane::PaneNodeKind::Split(split) = &mut record.kind else {
+            panic!("split root");
+        };
+        split.ratio = serde_json::from_str(r#"{"numerator":0,"denominator":1}"#).unwrap();
+        let alias = PaneTree::from_snapshot(alias).unwrap();
+        assert_eq!(original.state_hash(), alias.state_hash());
+        assert_ne!(original.to_snapshot(), alias.to_snapshot());
+        let resized = original
+            .nodes()
+            .find(|record| {
+                record.id != untouched_split
+                    && matches!(record.kind, crate::pane::PaneNodeKind::Split(_))
+            })
+            .unwrap()
+            .id;
+        let operation = PaneOperation::SetSplitRatio {
+            split: resized,
+            ratio: PaneSplitRatio::new(2, 3).unwrap(),
+        };
+        for strategy in [
+            PaneMemoryStrategy::Persistent,
+            PaneMemoryStrategy::Checkpointed,
+        ] {
+            let policy =
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()).forcing(strategy);
+            let mut engine = PaneExecutionEngine::new(&original);
+            engine.set_policy(&original, policy).unwrap();
+            let mut substituted = alias.clone();
+            let before = engine.timeline().clone();
+            assert!(matches!(
+                engine.apply_and_record(&mut substituted, 3, 3, operation.clone()),
+                Err(PaneExecutionError::InvalidHistory(_))
+            ));
+            assert_eq!(substituted, alias);
+            assert_eq!(engine.timeline(), &before);
+            assert_eq!(engine.status().applies, 0);
+
+            // The same raw state is valid when imported as the actual baseline.
+            // Editing a different split must retain its exact representation.
+            let mut engine = PaneExecutionEngine::new(&alias);
+            engine.set_policy(&alias, policy).unwrap();
+            let mut live = alias.clone();
+            let mut canonical = alias.clone();
+            let expected = canonical.apply_operation(3, operation.clone()).unwrap();
+            assert_eq!(
+                engine
+                    .apply_and_record(&mut live, 3, 3, operation.clone())
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(live.to_snapshot(), canonical.to_snapshot());
+            assert_eq!(
+                engine.replay().unwrap().to_snapshot(),
+                canonical.to_snapshot()
+            );
+        }
     }
 
     #[test]

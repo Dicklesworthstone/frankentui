@@ -52,10 +52,13 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use smallvec::smallvec;
+
 use crate::pane::{
     PANE_TREE_SCHEMA_VERSION, PaneConstraints, PaneId, PaneLeaf, PaneModelError, PaneNodeKind,
-    PaneNodeRecord, PaneOperation, PaneOperationKind, PanePlacement, PaneSplit, PaneSplitRatio,
-    PaneTree, PaneTreeSnapshot, SplitAxis,
+    PaneNodeRecord, PaneOperation, PaneOperationError, PaneOperationFailure, PaneOperationKind,
+    PaneOperationOutcome, PanePlacement, PaneSplit, PaneSplitRatio, PaneTree, PaneTreeSnapshot,
+    SplitAxis,
 };
 
 /// Immutable persistent pane node.
@@ -316,9 +319,9 @@ impl VersionedPaneTree {
         split: PaneId,
         ratio: PaneSplitRatio,
     ) -> Result<Self, PersistentApplyError> {
-        // `ratio` is already reduced: `PaneSplitRatio` has no non-normalizing
-        // constructor, so re-normalizing (as the baseline does) is a no-op.
-        match rebuild_set_ratio(&self.root, split, ratio)? {
+        match rebuild_set_ratio(&self.root, split, ratio)
+            .map_err(|node_id| PersistentApplyError::NotSplit { node_id })?
+        {
             Some(new_root) => Ok(self.with_root(new_root, self.next_id)),
             None => Err(PersistentApplyError::MissingNode { node_id: split }),
         }
@@ -517,12 +520,94 @@ impl PaneVersionStore {
         operation: &PaneOperation,
     ) -> Result<&VersionedPaneTree, PersistentApplyError> {
         let next = self.current().apply_operation(operation)?;
-        // Drop any redo branch, then append.
-        self.versions.truncate(self.cursor + 1);
-        self.versions.push(next);
-        self.cursor = self.versions.len() - 1;
-        self.enforce_retention();
+        self.commit_prepared(next, false);
         Ok(self.current())
+    }
+
+    /// Stage one live operation without publishing a version or changing redo.
+    ///
+    /// The caller must first verify that `live` is the current version's valid
+    /// canonical projection. Local ratio edits execute by native path copying;
+    /// structural edits execute once through the canonical operation API. The
+    /// returned canonical tree is ready for rendering and journal publication.
+    pub(crate) fn prepare_live_apply(
+        &self,
+        live: &PaneTree,
+        operation_id: u64,
+        operation: &PaneOperation,
+    ) -> Result<(VersionedPaneTree, PaneTree, PaneOperationOutcome), PaneOperationError> {
+        let PaneOperation::SetSplitRatio { split, ratio } = operation else {
+            let mut projected = live.clone();
+            let outcome = projected.apply_operation(operation_id, operation.clone())?;
+            let next = VersionedPaneTree::from_pane_tree(&projected);
+            return Ok((next, projected, outcome));
+        };
+
+        let before_hash = live.state_hash();
+        let failure = |reason| PaneOperationError {
+            operation_id,
+            kind: PaneOperationKind::SetSplitRatio,
+            touched_nodes: smallvec![*split],
+            before_hash,
+            after_hash: before_hash,
+            reason,
+        };
+        // Deserialization can bypass PaneSplitRatio::new. Match the canonical
+        // accessor-based normalization, including its zero-component fallback.
+        let normalized =
+            PaneSplitRatio::new(ratio.numerator(), ratio.denominator()).map_err(|_| {
+                failure(PaneOperationFailure::InvalidRatio {
+                    node_id: *split,
+                    numerator: ratio.numerator(),
+                    denominator: ratio.denominator(),
+                })
+            })?;
+        let current = self.current();
+        let root = rebuild_set_ratio(&current.root, *split, normalized)
+            .map_err(|node_id| failure(PaneOperationFailure::ParentNotSplit { node_id }))?
+            .ok_or_else(|| failure(PaneOperationFailure::MissingNode { node_id: *split }))?;
+        let next = current.with_root(root, current.next_id);
+        let projected = next
+            .to_pane_tree()
+            .map_err(|source| failure(PaneOperationFailure::Validation(source)))?;
+        let outcome = PaneOperationOutcome {
+            operation_id,
+            kind: PaneOperationKind::SetSplitRatio,
+            touched_nodes: smallvec![*split],
+            before_hash,
+            after_hash: projected.state_hash(),
+        };
+        Ok((next, projected, outcome))
+    }
+
+    /// Publish a prepared version, discarding redo only at this commit boundary.
+    ///
+    /// `coalesce` is permitted only after the caller proves the edit belongs to
+    /// the current gesture. Replacing the current version keeps its predecessor
+    /// intact; at cursor zero, even a coalesced edit appends after the baseline.
+    pub(crate) fn commit_prepared(&mut self, next: VersionedPaneTree, coalesce: bool) {
+        self.versions.truncate(self.cursor + 1);
+        if coalesce && self.cursor > 0 {
+            self.versions[self.cursor] = next;
+        } else {
+            self.versions.push(next);
+            self.cursor = self.versions.len() - 1;
+        }
+        self.enforce_retention();
+    }
+
+    /// Inspect a retained version before flattening and publishing navigation.
+    pub(crate) fn version_at(&self, index: usize) -> Option<&VersionedPaneTree> {
+        self.versions.get(index)
+    }
+
+    /// Select an existing retained version, leaving the cursor unchanged on error.
+    pub(crate) fn seek(&mut self, index: usize) -> bool {
+        if index >= self.versions.len() {
+            return false;
+        }
+        self.cursor = index;
+        true
     }
 
     /// Move to the previous version. Returns `false` at the oldest retained version.
@@ -627,6 +712,41 @@ impl PaneVersionStore {
     /// and allocation bookkeeping are not included.
     #[must_use]
     pub fn retention(&self) -> PaneVersionRetention {
+        let bytes = self.retained_byte_counts();
+        let total_logical_node_count: usize = self
+            .versions
+            .iter()
+            .map(VersionedPaneTree::node_count)
+            .sum();
+        let shared_nodes = total_logical_node_count.saturating_sub(bytes.distinct_node_count);
+        let sharing_ratio = if total_logical_node_count == 0 {
+            0.0
+        } else {
+            shared_nodes as f64 / total_logical_node_count as f64
+        };
+
+        PaneVersionRetention {
+            version_count: self.versions.len(),
+            distinct_node_count: bytes.distinct_node_count,
+            total_logical_node_count,
+            sharing_ratio,
+            distinct_struct_bytes: bytes.distinct_struct_bytes,
+            distinct_leaf_payload_bytes: bytes.distinct_leaf_payload_bytes,
+            distinct_extension_payload_bytes: bytes.distinct_extension_payload_bytes,
+            version_metadata_bytes: bytes.version_metadata_bytes,
+            version_extension_payload_bytes: bytes.version_extension_payload_bytes,
+            estimated_total_retained_bytes: bytes.estimated_total_retained_bytes,
+        }
+    }
+
+    /// Return the same byte model as [`retention`](Self::retention) without
+    /// walking each version's logical tree to calculate sharing statistics.
+    #[must_use]
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.retained_byte_counts().estimated_total_retained_bytes
+    }
+
+    fn retained_byte_counts(&self) -> PaneVersionByteCounts {
         // Per-distinct-node byte accounting in a single traversal.
         let mut seen: HashSet<usize> = HashSet::new();
         let mut distinct_node_count = 0usize;
@@ -662,11 +782,6 @@ impl PaneVersionStore {
             }
         }
 
-        let total_logical_node_count: usize = self
-            .versions
-            .iter()
-            .map(VersionedPaneTree::node_count)
-            .sum();
         let arc_node_bytes = std::mem::size_of::<PersistentNode>().saturating_add(ARC_HEADER_BYTES);
         let distinct_struct_bytes = distinct_node_count.saturating_mul(arc_node_bytes);
         let version_metadata_bytes = self
@@ -683,18 +798,8 @@ impl PaneVersionStore {
             .saturating_add(distinct_extension_payload_bytes)
             .saturating_add(version_metadata_bytes)
             .saturating_add(version_extension_payload_bytes);
-        let shared_nodes = total_logical_node_count.saturating_sub(distinct_node_count);
-        let sharing_ratio = if total_logical_node_count == 0 {
-            0.0
-        } else {
-            shared_nodes as f64 / total_logical_node_count as f64
-        };
-
-        PaneVersionRetention {
-            version_count: self.versions.len(),
+        PaneVersionByteCounts {
             distinct_node_count,
-            total_logical_node_count,
-            sharing_ratio,
             distinct_struct_bytes,
             distinct_leaf_payload_bytes,
             distinct_extension_payload_bytes,
@@ -720,6 +825,17 @@ impl PaneVersionStore {
         self.pruned += drop_count;
         self.cursor -= drop_count;
     }
+}
+
+/// Physical counts shared by byte-only accounting and the full sharing report.
+struct PaneVersionByteCounts {
+    distinct_node_count: usize,
+    distinct_struct_bytes: usize,
+    distinct_leaf_payload_bytes: usize,
+    distinct_extension_payload_bytes: usize,
+    version_metadata_bytes: usize,
+    version_extension_payload_bytes: usize,
+    estimated_total_retained_bytes: usize,
 }
 
 /// Structural-sharing and memory-retention diagnostics for a [`PaneVersionStore`].
@@ -828,11 +944,13 @@ fn rebuild_set_ratio(
     node: &Arc<PersistentNode>,
     target: PaneId,
     ratio: PaneSplitRatio,
-) -> Result<Option<Arc<PersistentNode>>, PersistentApplyError> {
+) -> Result<Option<Arc<PersistentNode>>, PaneId> {
+    // The only path-copy error is a matching leaf; return its id so each
+    // caller can preserve its own public error type without replaying an edit.
     match &**node {
         PersistentNode::Leaf { id, .. } => {
             if *id == target {
-                Err(PersistentApplyError::NotSplit { node_id: target })
+                Err(target)
             } else {
                 Ok(None)
             }
@@ -1153,6 +1271,351 @@ mod tests {
         v1.apply_operation(&op2).expect("split leaf 1")
     }
 
+    fn assert_live_prepare_matches_canonical(
+        live: &PaneTree,
+        operation_id: u64,
+        operation: &PaneOperation,
+    ) -> Result<PaneTree, PaneOperationError> {
+        let store = PaneVersionStore::new(VersionedPaneTree::from_pane_tree(live));
+        let before = live.to_snapshot();
+        let previous_root = Arc::clone(store.current().root());
+        let mut canonical = live.clone();
+        let expected = canonical.apply_operation(operation_id, operation.clone());
+        let prepared = store.prepare_live_apply(live, operation_id, operation);
+        assert_eq!(
+            prepared.as_ref().map(|(_, _, outcome)| outcome),
+            expected.as_ref(),
+            "complete canonical outcome/error differs for {operation:?}"
+        );
+        assert_eq!(live.to_snapshot(), before, "preparation published a tree");
+        assert_eq!(store.current().to_snapshot(), before);
+        assert!(Arc::ptr_eq(&previous_root, store.current().root()));
+        assert_eq!(store.version_count(), 1);
+        assert_eq!(store.cursor(), 0);
+        assert_eq!(store.pruned(), 0);
+        prepared.map(|(next, projected, _)| {
+            assert_eq!(projected.to_snapshot(), canonical.to_snapshot());
+            assert_eq!(next.to_snapshot(), canonical.to_snapshot());
+            assert_eq!(next.next_id(), canonical.next_id());
+            projected
+        })
+    }
+
+    #[test]
+    fn live_prepare_local_normalizes_deserialized_ratios_and_preserves_sharing() {
+        let base = build_demo();
+        let live = base.to_pane_tree().expect("valid base");
+        let store = PaneVersionStore::new(base.clone());
+        let split = PaneId::new(4).unwrap();
+        for (numerator, denominator) in [(6, 4), (0, 4), (6, 0), (0, 0)] {
+            let deserialized: PaneSplitRatio = serde_json::from_value(serde_json::json!({
+                "numerator": numerator,
+                "denominator": denominator,
+            }))
+            .expect("raw serialized ratio");
+            let operation = PaneOperation::SetSplitRatio {
+                split,
+                ratio: deserialized,
+            };
+            let expected = assert_live_prepare_matches_canonical(&live, 71, &operation)
+                .expect("canonical accessor normalization accepts the ratio");
+            let (next, projected, outcome) = store
+                .prepare_live_apply(&live, 71, &operation)
+                .expect("prepare native ratio edit");
+            assert_eq!(projected.to_snapshot(), expected.to_snapshot());
+            assert_eq!(outcome.touched_nodes.as_slice(), &[split]);
+            let before_untouched = find_subtree(base.root(), PaneId::new(3).unwrap()).unwrap();
+            let after_untouched = find_subtree(next.root(), PaneId::new(3).unwrap()).unwrap();
+            assert!(Arc::ptr_eq(&before_untouched, &after_untouched));
+            assert!(!Arc::ptr_eq(base.root(), next.root()));
+            assert_eq!(store.cursor(), 0, "prepare must not publish a version");
+        }
+    }
+
+    #[test]
+    fn live_prepare_local_rejections_preserve_exact_typed_errors() {
+        let live = build_demo().to_pane_tree().expect("valid base");
+        for (split, reason) in [
+            (
+                PaneId::MIN,
+                PaneOperationFailure::ParentNotSplit {
+                    node_id: PaneId::MIN,
+                },
+            ),
+            (
+                PaneId::new(u64::MAX).unwrap(),
+                PaneOperationFailure::MissingNode {
+                    node_id: PaneId::new(u64::MAX).unwrap(),
+                },
+            ),
+        ] {
+            let error = assert_live_prepare_matches_canonical(
+                &live,
+                72,
+                &PaneOperation::SetSplitRatio {
+                    split,
+                    ratio: ratio(3, 2),
+                },
+            )
+            .expect_err("invalid split must be rejected");
+            assert_eq!(error.reason, reason);
+            assert_eq!(error.before_hash, error.after_hash);
+        }
+    }
+
+    #[test]
+    fn live_prepare_accepts_every_structural_family_with_exact_outcomes() {
+        let mut snapshot = build_demo().to_snapshot();
+        for node in &mut snapshot.nodes {
+            if let PaneNodeKind::Split(split) = &mut node.kind {
+                split.ratio = serde_json::from_str(r#"{"numerator":6,"denominator":4}"#)
+                    .expect("non-reduced serialized ratio");
+            }
+        }
+        let live = PaneTree::from_snapshot(snapshot).expect("valid non-reduced baseline");
+        let operations = [
+            PaneOperation::SplitLeaf {
+                target: PaneId::new(3).unwrap(),
+                axis: SplitAxis::Vertical,
+                ratio: ratio(3, 2),
+                placement: PanePlacement::IncomingFirst,
+                new_leaf: PaneLeaf::new("live split"),
+            },
+            PaneOperation::CloseNode {
+                target: PaneId::new(5).unwrap(),
+            },
+            PaneOperation::MoveSubtree {
+                source: PaneId::new(3).unwrap(),
+                target: PaneId::new(5).unwrap(),
+                axis: SplitAxis::Horizontal,
+                ratio: ratio(2, 3),
+                placement: PanePlacement::IncomingFirst,
+            },
+            PaneOperation::SwapNodes {
+                first: PaneId::MIN,
+                second: PaneId::new(3).unwrap(),
+            },
+            PaneOperation::NormalizeRatios,
+        ];
+        for operation in operations {
+            let projected = assert_live_prepare_matches_canonical(&live, 73, &operation)
+                .expect("structural operation must be accepted");
+            assert_ne!(projected.to_snapshot(), live.to_snapshot());
+        }
+        // Canonical self-swap is an accepted no-op even when the id is absent.
+        let missing = PaneId::new(u64::MAX).unwrap();
+        let projected = assert_live_prepare_matches_canonical(
+            &live,
+            74,
+            &PaneOperation::SwapNodes {
+                first: missing,
+                second: missing,
+            },
+        )
+        .expect("canonical self-swap semantics");
+        assert_eq!(projected.to_snapshot(), live.to_snapshot());
+    }
+
+    #[test]
+    fn live_prepare_structural_rejections_match_complete_canonical_errors() {
+        let live = build_demo().to_pane_tree().expect("valid base");
+        let missing = PaneId::new(u64::MAX).unwrap();
+        let root = live.root();
+        let leaf = PaneId::MIN;
+        let split = PaneId::new(4).unwrap();
+        let split_leaf = |target| PaneOperation::SplitLeaf {
+            target,
+            axis: SplitAxis::Vertical,
+            ratio: ratio(1, 1),
+            placement: PanePlacement::ExistingFirst,
+            new_leaf: PaneLeaf::new("rejected"),
+        };
+        let move_subtree = |source, target| PaneOperation::MoveSubtree {
+            source,
+            target,
+            axis: SplitAxis::Vertical,
+            ratio: ratio(1, 1),
+            placement: PanePlacement::ExistingFirst,
+        };
+        let operations = [
+            split_leaf(missing),
+            split_leaf(root),
+            PaneOperation::CloseNode { target: missing },
+            PaneOperation::CloseNode { target: root },
+            move_subtree(missing, leaf),
+            move_subtree(leaf, missing),
+            move_subtree(root, leaf),
+            move_subtree(leaf, leaf),
+            move_subtree(split, leaf),
+            move_subtree(leaf, split),
+            PaneOperation::SwapNodes {
+                first: missing,
+                second: leaf,
+            },
+            PaneOperation::SwapNodes {
+                first: leaf,
+                second: missing,
+            },
+            PaneOperation::SwapNodes {
+                first: split,
+                second: leaf,
+            },
+            PaneOperation::SwapNodes {
+                first: leaf,
+                second: split,
+            },
+        ];
+        for operation in operations {
+            assert_live_prepare_matches_canonical(&live, 75, &operation)
+                .expect_err("invalid structural edit must be rejected");
+        }
+    }
+
+    #[test]
+    fn live_prepare_preserves_partial_failure_hashes_without_publishing() {
+        let mut snapshot = build_demo().to_snapshot();
+        snapshot.next_id = PaneId::new(u64::MAX - 1).unwrap();
+        let live = PaneTree::from_snapshot(snapshot.clone()).expect("one allocatable id");
+        let split = PaneOperation::SplitLeaf {
+            target: PaneId::MIN,
+            axis: SplitAxis::Horizontal,
+            ratio: ratio(1, 1),
+            placement: PanePlacement::ExistingFirst,
+            new_leaf: PaneLeaf::new("overflow"),
+        };
+        let error = assert_live_prepare_matches_canonical(&live, 76, &split)
+            .expect_err("second allocation must fail");
+        assert_ne!(error.before_hash, error.after_hash);
+        assert_eq!(
+            error.reason,
+            PaneOperationFailure::PaneIdOverflow {
+                current: PaneId::new(u64::MAX).unwrap(),
+            }
+        );
+
+        snapshot.next_id = PaneId::new(u64::MAX).unwrap();
+        let live = PaneTree::from_snapshot(snapshot).expect("exhausted but valid allocator");
+        let error = assert_live_prepare_matches_canonical(&live, 77, &split)
+            .expect_err("first allocation must fail");
+        assert_eq!(error.before_hash, error.after_hash);
+        let error = assert_live_prepare_matches_canonical(
+            &live,
+            78,
+            &PaneOperation::MoveSubtree {
+                source: PaneId::new(3).unwrap(),
+                target: PaneId::new(5).unwrap(),
+                axis: SplitAxis::Vertical,
+                ratio: ratio(1, 1),
+                placement: PanePlacement::ExistingFirst,
+            },
+        )
+        .expect_err("allocation after subtree detach must fail");
+        assert_ne!(error.before_hash, error.after_hash);
+        assert!(
+            error.touched_nodes.len() > 2,
+            "preserve the grown touched set"
+        );
+    }
+
+    #[test]
+    fn live_commit_coalesces_and_branches_without_replacing_the_baseline() {
+        let mut store = PaneVersionStore::new(build_demo());
+        let baseline = store.current().to_snapshot();
+        let mut previous_gesture = baseline.clone();
+        for (numerator, coalesce, versions) in [(3_u32, true, 2), (4, true, 2), (5, false, 3)] {
+            let live = store
+                .current()
+                .to_pane_tree()
+                .expect("valid selected version");
+            let (next, projected, _) = store
+                .prepare_live_apply(
+                    &live,
+                    u64::from(numerator),
+                    &PaneOperation::SetSplitRatio {
+                        split: PaneId::new(4).unwrap(),
+                        ratio: ratio(numerator, 1),
+                    },
+                )
+                .expect("prepare gesture edit");
+            assert_eq!(store.current().to_snapshot(), live.to_snapshot());
+            store.commit_prepared(next, coalesce);
+            assert_eq!(store.version_count(), versions);
+            assert_eq!(store.current().to_snapshot(), projected.to_snapshot());
+            assert_eq!(store.version_at(0).unwrap().to_snapshot(), baseline);
+            if numerator == 4 {
+                previous_gesture = projected.to_snapshot();
+            }
+        }
+        assert!(store.seek(1));
+        assert_eq!(store.current().to_snapshot(), previous_gesture);
+        let old_redo = store.version_at(2).unwrap().to_snapshot();
+        let live = store
+            .current()
+            .to_pane_tree()
+            .expect("selected earlier version");
+        let invalid = PaneOperation::CloseNode {
+            target: live.root(),
+        };
+        store
+            .prepare_live_apply(&live, 79, &invalid)
+            .expect_err("reject closing root");
+        assert_eq!(store.cursor(), 1);
+        assert_eq!(store.version_at(2).unwrap().to_snapshot(), old_redo);
+
+        for (numerator, coalesce, versions) in [(6_u32, true, 2), (7, false, 3), (8, false, 3)] {
+            assert!(store.seek(1));
+            let live = store.current().to_pane_tree().expect("valid branch base");
+            let (next, projected, _) = store
+                .prepare_live_apply(
+                    &live,
+                    u64::from(numerator),
+                    &PaneOperation::SetSplitRatio {
+                        split: PaneId::new(4).unwrap(),
+                        ratio: ratio(numerator, 1),
+                    },
+                )
+                .expect("prepare branch");
+            store.commit_prepared(next, coalesce);
+            assert_eq!(store.version_count(), versions);
+            assert!(!store.can_redo());
+            assert_eq!(store.current().to_snapshot(), projected.to_snapshot());
+            assert_eq!(store.version_at(0).unwrap().to_snapshot(), baseline);
+            assert_ne!(store.current().to_snapshot(), old_redo);
+        }
+        assert_eq!(store.pruned(), 0);
+    }
+
+    #[test]
+    fn live_seek_and_version_lookup_preserve_invalid_navigation_state() {
+        let mut store = PaneVersionStore::new(build_demo());
+        for numerator in [3, 4] {
+            store
+                .apply(&PaneOperation::SetSplitRatio {
+                    split: PaneId::new(4).unwrap(),
+                    ratio: ratio(numerator, 1),
+                })
+                .expect("prototype apply remains functional");
+        }
+        let head = store.current().to_snapshot();
+        assert!(store.seek(0));
+        let baseline = store.current().to_snapshot();
+        for invalid in [store.version_count(), usize::MAX] {
+            assert!(store.version_at(invalid).is_none());
+            assert!(!store.seek(invalid));
+            assert_eq!(store.cursor(), 0);
+            assert_eq!(store.current().to_snapshot(), baseline);
+            assert!(store.can_redo());
+        }
+        assert!(store.seek(2));
+        assert_eq!(store.current().to_snapshot(), head);
+        assert!(store.seek(2), "seeking the selected version is valid");
+        assert!(!store.redo());
+        assert!(store.undo());
+        assert_eq!(store.cursor(), 1);
+        assert!(store.redo());
+        assert_eq!(store.current().to_snapshot(), head);
+    }
+
     #[test]
     fn singleton_round_trips_through_canonical_tree() {
         let versioned = VersionedPaneTree::singleton("root");
@@ -1351,6 +1814,166 @@ mod tests {
                 .expect("set ratio");
         }
         store
+    }
+
+    #[test]
+    fn retained_bytes_matches_full_report_and_shared_resize_byte_model() {
+        let mut store = PaneVersionStore::new(build_demo());
+        let node_bytes = std::mem::size_of::<PersistentNode>() + ARC_HEADER_BYTES;
+        let version_bytes = std::mem::size_of::<VersionedPaneTree>();
+        for resize_count in 0..=8usize {
+            let report = store.retention();
+            // Each resize copies the root and nested split, retaining the
+            // three original leaves and their surface-key payloads.
+            let distinct_nodes = 5 + 2 * resize_count;
+            let versions = resize_count + 1;
+            let expected_bytes = std::mem::size_of::<PaneVersionStore>()
+                + distinct_nodes * node_bytes
+                + "root".len()
+                + "b".len()
+                + "c".len()
+                + versions * version_bytes;
+            assert_eq!(report.distinct_node_count, distinct_nodes);
+            assert_eq!(report.total_logical_node_count, 5 * versions);
+            assert_eq!(report.estimated_total_retained_bytes, expected_bytes);
+            assert_eq!(store.retained_bytes(), expected_bytes);
+            if resize_count < 8 {
+                store
+                    .apply(&PaneOperation::SetSplitRatio {
+                        split: PaneId::new(4).unwrap(),
+                        ratio: ratio(u32::try_from(resize_count + 1).unwrap(), 1),
+                    })
+                    .expect("shared resize");
+            }
+        }
+    }
+
+    #[test]
+    fn retained_bytes_matches_full_report_after_live_structural_preparation() {
+        let mut store = PaneVersionStore::new(build_demo());
+        let mut live = store.current().to_pane_tree().expect("live baseline");
+        let operations = [
+            PaneOperation::SplitLeaf {
+                target: PaneId::new(3).unwrap(),
+                axis: SplitAxis::Vertical,
+                ratio: ratio(3, 2),
+                new_leaf: PaneLeaf::new("measure 🦀"),
+                placement: PanePlacement::ExistingFirst,
+            },
+            PaneOperation::MoveSubtree {
+                source: PaneId::MIN,
+                target: PaneId::new(7).unwrap(),
+                axis: SplitAxis::Horizontal,
+                ratio: ratio(2, 3),
+                placement: PanePlacement::ExistingFirst,
+            },
+            PaneOperation::SwapNodes {
+                first: PaneId::MIN,
+                second: PaneId::new(5).unwrap(),
+            },
+            PaneOperation::CloseNode {
+                target: PaneId::new(7).unwrap(),
+            },
+            PaneOperation::NormalizeRatios,
+        ];
+        for (index, operation) in operations.iter().enumerate() {
+            let (version, projection, _) = store
+                .prepare_live_apply(&live, u64::try_from(index + 1).unwrap(), operation)
+                .expect("actual structural preparation");
+            store.commit_prepared(version, false);
+            live = projection;
+            let report = store.retention();
+            assert_eq!(
+                store.retained_bytes(),
+                report.estimated_total_retained_bytes
+            );
+            assert_eq!(report.version_count, index + 2);
+            assert_eq!(report.distinct_node_count, report.total_logical_node_count);
+            assert_eq!(report.sharing_ratio, 0.0);
+            assert_eq!(store.current().to_snapshot(), live.to_snapshot());
+        }
+    }
+
+    #[test]
+    fn retained_bytes_preserves_extension_costs_through_pruning_and_branching() {
+        let base = build_demo();
+        let mut snapshot = base.to_snapshot();
+        let tree_payload = "workspace".len() + "Layout Lab 🦀".len();
+        let node_payload = "record".len() + "node".len();
+        let leaf_payload = "leaf".len() + "café".len();
+        snapshot
+            .extensions
+            .insert("workspace".into(), "Layout Lab 🦀".into());
+        for node in &mut snapshot.nodes {
+            node.extensions.insert("record".into(), "node".into());
+            if let PaneNodeKind::Leaf(leaf) = &mut node.kind {
+                leaf.extensions.insert("leaf".into(), "café".into());
+            }
+        }
+        let extended = PaneTree::from_snapshot(snapshot).expect("valid extension-rich tree");
+        let mut plain = PaneVersionStore::new(base);
+        let mut extended = PaneVersionStore::new(VersionedPaneTree::from_pane_tree(&extended));
+        let check = |plain: &PaneVersionStore, extended: &PaneVersionStore| {
+            let before = plain.retention();
+            let after = extended.retention();
+            assert_eq!(
+                plain.retained_bytes(),
+                before.estimated_total_retained_bytes
+            );
+            assert_eq!(
+                extended.retained_bytes(),
+                after.estimated_total_retained_bytes
+            );
+            assert_eq!(before.distinct_node_count, after.distinct_node_count);
+            assert_eq!(
+                extended.retained_bytes() - plain.retained_bytes(),
+                after.distinct_node_count * node_payload
+                    + 3 * leaf_payload
+                    + after.version_count * tree_payload
+            );
+        };
+        check(&plain, &extended);
+        for numerator in 1..=8 {
+            let operation = PaneOperation::SetSplitRatio {
+                split: PaneId::new(4).unwrap(),
+                ratio: ratio(numerator, 1),
+            };
+            plain.apply(&operation).expect("plain resize");
+            extended.apply(&operation).expect("extended resize");
+            check(&plain, &extended);
+        }
+        let bytes_before_pruning = extended.retained_bytes();
+        let live_before_pruning = extended.current().to_snapshot();
+        for _ in 0..2 {
+            assert!(plain.undo());
+            assert!(extended.undo());
+            check(&plain, &extended);
+        }
+        let selected = extended.current().to_snapshot();
+        assert_eq!(plain.set_max_versions(3), 6);
+        assert_eq!(extended.set_max_versions(3), 6);
+        assert_eq!(extended.cursor(), 0);
+        assert!(extended.can_redo());
+        assert_eq!(extended.current().to_snapshot(), selected);
+        assert!(extended.retained_bytes() < bytes_before_pruning);
+        check(&plain, &extended);
+        assert!(plain.redo());
+        assert!(extended.redo());
+        assert!(plain.redo());
+        assert!(extended.redo());
+        assert_eq!(extended.current().to_snapshot(), live_before_pruning);
+        check(&plain, &extended);
+        assert!(plain.undo());
+        assert!(extended.undo());
+        let branch = PaneOperation::SetSplitRatio {
+            split: PaneId::new(4).unwrap(),
+            ratio: ratio(11, 2),
+        };
+        plain.apply(&branch).expect("plain branch");
+        extended.apply(&branch).expect("extended branch");
+        assert!(!extended.can_redo());
+        assert_ne!(extended.current().to_snapshot(), live_before_pruning);
+        check(&plain, &extended);
     }
 
     #[test]

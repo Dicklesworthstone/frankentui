@@ -23,10 +23,12 @@
 
 use std::sync::Arc;
 
+use ftui_layout::pane_execution::{PaneExecutionEngine, PaneExecutionError, PaneExecutionSample};
 use ftui_layout::{
-    PaneId, PaneInteractionTimeline, PaneLeaf, PaneNodeKind, PaneOperation, PanePlacement,
-    PaneSplitRatio, PaneTree, PaneVersionStore, PersistentApplyError, PersistentNode, SplitAxis,
-    VersionedPaneTree,
+    PaneAssumption, PaneExecutionPolicy, PaneId, PaneInteractionTimeline, PaneLeaf,
+    PaneMemoryStrategy, PaneNodeKind, PaneOperation, PaneOperationError, PanePlacement,
+    PaneRetentionOutcome, PaneRetentionPolicy, PaneSplitRatio, PaneTree, PaneVersionStore,
+    PersistentApplyError, PersistentNode, SplitAxis, VersionedPaneTree,
 };
 
 /// Deterministic SplitMix64 generator (mirrors `pane_operation_family_equivalence.rs`).
@@ -571,4 +573,707 @@ fn missing_node_error_surfaces_for_unknown_ids() {
             node_id: PaneId::new(999).expect("id")
         }
     );
+}
+
+fn live_policy(strategy: PaneMemoryStrategy) -> PaneExecutionPolicy {
+    PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()).forcing(strategy)
+}
+
+fn live_split(tree: &PaneTree, label: &str) -> PaneOperation {
+    let mut new_leaf = PaneLeaf::new(label);
+    new_leaf
+        .extensions
+        .insert("test-payload".to_owned(), format!("payload:{label}"));
+    PaneOperation::SplitLeaf {
+        target: leaf_ids(tree)[0],
+        axis: SplitAxis::Horizontal,
+        ratio: PaneSplitRatio::new(2, 3).expect("valid ratio"),
+        placement: PanePlacement::ExistingFirst,
+        new_leaf,
+    }
+}
+
+fn assert_live_matches(
+    engine: &PaneExecutionEngine,
+    tree: &PaneTree,
+    timeline: &PaneInteractionTimeline,
+    canonical: &PaneTree,
+) {
+    assert_eq!(tree.to_snapshot(), canonical.to_snapshot());
+    assert_eq!(tree.next_id(), canonical.next_id());
+    assert_eq!(engine.timeline().baseline, timeline.baseline);
+    assert_eq!(engine.timeline().entries, timeline.entries);
+    assert_eq!(engine.timeline().cursor, timeline.cursor);
+    assert_eq!(
+        engine.replay().expect("engine replay").to_snapshot(),
+        canonical.to_snapshot()
+    );
+    assert_eq!(
+        timeline.replay().expect("oracle replay").to_snapshot(),
+        canonical.to_snapshot()
+    );
+    tree.validate().expect("live tree remains valid");
+}
+
+#[test]
+fn live_engines_match_all_operation_kinds_and_exact_rejections() {
+    let policies = [
+        live_policy(PaneMemoryStrategy::Persistent),
+        live_policy(PaneMemoryStrategy::Checkpointed),
+        PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()).conservative(),
+    ];
+    let mut observed_kinds = [false; 6];
+    for seed in 0..12u64 {
+        let mut canonical = PaneTree::singleton("live-root");
+        let mut timeline = PaneInteractionTimeline::with_baseline(&canonical);
+        let mut engines = policies.map(|policy| {
+            let tree = canonical.clone();
+            let mut engine = PaneExecutionEngine::new(&tree);
+            engine.set_policy(&tree, policy).expect("install policy");
+            (engine, tree)
+        });
+        let mut rng = Lcg::new(seed);
+        for step in 0..48usize {
+            let operation = random_operation(&canonical, &mut rng, step);
+            let kind_index = match operation {
+                PaneOperation::SplitLeaf { .. } => 0,
+                PaneOperation::CloseNode { .. } => 1,
+                PaneOperation::MoveSubtree { .. } => 2,
+                PaneOperation::SwapNodes { .. } => 3,
+                PaneOperation::SetSplitRatio { .. } => 4,
+                PaneOperation::NormalizeRatios => 5,
+            };
+            observed_kinds[kind_index] = true;
+            let operation_id = step as u64 + 1;
+            let expected = timeline
+                .apply_and_record(
+                    &mut canonical,
+                    operation_id,
+                    operation_id,
+                    operation.clone(),
+                )
+                .expect("generated canonical operation");
+            for (engine, tree) in &mut engines {
+                assert_eq!(
+                    engine
+                        .apply_and_record(tree, operation_id, operation_id, operation.clone())
+                        .expect("live operation"),
+                    expected,
+                    "outcome diverged at seed={seed}, step={step}"
+                );
+                assert_live_matches(engine, tree, &timeline, &canonical);
+            }
+        }
+
+        // Reject while a redo branch exists: failure must preserve both the
+        // original error payload and the branch, including its allocated IDs.
+        assert!(timeline.undo(&mut canonical).expect("oracle undo"));
+        for (engine, tree) in &mut engines {
+            assert!(engine.undo(tree).expect("live undo"));
+        }
+        let missing = PaneId::new(u64::MAX).expect("nonzero id");
+        let invalid = [
+            PaneOperation::CloseNode {
+                target: canonical.root(),
+            },
+            PaneOperation::CloseNode { target: missing },
+            PaneOperation::SplitLeaf {
+                target: missing,
+                axis: SplitAxis::Vertical,
+                ratio: PaneSplitRatio::new(1, 1).expect("ratio"),
+                placement: PanePlacement::IncomingFirst,
+                new_leaf: PaneLeaf::new("rejected"),
+            },
+            PaneOperation::SetSplitRatio {
+                split: leaf_ids(&canonical)[0],
+                ratio: PaneSplitRatio::new(1, 2).expect("ratio"),
+            },
+            PaneOperation::MoveSubtree {
+                source: missing,
+                target: canonical.root(),
+                axis: SplitAxis::Vertical,
+                ratio: PaneSplitRatio::new(1, 1).expect("ratio"),
+                placement: PanePlacement::IncomingFirst,
+            },
+            PaneOperation::SwapNodes {
+                first: missing,
+                second: canonical.root(),
+            },
+        ];
+        for (index, operation) in invalid.into_iter().enumerate() {
+            let id = 100 + index as u64;
+            let before = canonical.to_snapshot();
+            let history_before = timeline.clone();
+            let expected = timeline
+                .apply_and_record(&mut canonical, id, id, operation.clone())
+                .expect_err("invalid oracle operation");
+            assert_eq!(canonical.to_snapshot(), before);
+            assert_eq!(timeline, history_before);
+            for (engine, tree) in &mut engines {
+                let applies_before = engine.status().applies;
+                let error = engine
+                    .apply_and_record(tree, id, id, operation.clone())
+                    .expect_err("invalid live operation");
+                assert_eq!(
+                    std::error::Error::source(&error)
+                        .and_then(|source| source.downcast_ref::<PaneOperationError>()),
+                    Some(&expected),
+                    "original canonical error must survive engine wrapping"
+                );
+                assert_eq!(engine.status().applies, applies_before);
+                assert_live_matches(engine, tree, &timeline, &canonical);
+            }
+        }
+        assert!(timeline.redo(&mut canonical).expect("oracle redo"));
+        for (index, (engine, tree)) in engines.iter_mut().enumerate() {
+            assert!(engine.redo(tree).expect("preserved live redo"));
+            assert_live_matches(engine, tree, &timeline, &canonical);
+            let status = engine.status();
+            assert_eq!(status.applies, 48);
+            assert_eq!(status.undos, 1);
+            assert_eq!(status.redos, 1);
+            match index {
+                0 => assert_eq!(status.persistent_applies, 48),
+                1 => assert_eq!(status.checkpointed_applies, 48),
+                2 => assert_eq!(status.conservative_applies, 48),
+                _ => unreachable!("three policies"),
+            }
+        }
+    }
+    assert_eq!(observed_kinds, [true; 6], "every operation kind ran");
+}
+
+#[test]
+fn live_strategy_switches_preserve_mid_history_and_replace_only_redo_branch() {
+    let mut canonical = PaneTree::singleton("switch-root");
+    let mut timeline = PaneInteractionTimeline::with_baseline(&canonical);
+    let mut tree = canonical.clone();
+    let mut engine = PaneExecutionEngine::new(&tree);
+    engine
+        .set_policy(&tree, live_policy(PaneMemoryStrategy::Persistent))
+        .expect("persistent policy");
+    for id in 1..=6u64 {
+        let operation = live_split(&canonical, &format!("before-switch-{id}"));
+        timeline
+            .apply_and_record(&mut canonical, id, id, operation.clone())
+            .expect("oracle split");
+        engine
+            .apply_and_record(&mut tree, id, id, operation)
+            .expect("live split");
+    }
+    for _ in 0..4 {
+        assert!(timeline.undo(&mut canonical).expect("oracle undo"));
+        assert!(engine.undo(&mut tree).expect("live undo"));
+    }
+    assert_eq!(timeline.cursor, 2);
+    let retained_history = engine.timeline().clone();
+    for strategy in [
+        PaneMemoryStrategy::Checkpointed,
+        PaneMemoryStrategy::Persistent,
+    ] {
+        engine
+            .set_policy(&tree, live_policy(strategy))
+            .expect("mid-history switch");
+        assert_eq!(engine.strategy(), strategy);
+        assert_eq!(engine.timeline(), &retained_history);
+        assert_live_matches(&engine, &tree, &timeline, &canonical);
+    }
+    // Traverse the migrated redo tail before replacing it with a real edit.
+    for _ in 0..4 {
+        assert!(timeline.redo(&mut canonical).expect("oracle redo"));
+        assert!(engine.redo(&mut tree).expect("migrated redo"));
+        assert_live_matches(&engine, &tree, &timeline, &canonical);
+    }
+    for _ in 0..3 {
+        assert!(timeline.undo(&mut canonical).expect("oracle undo"));
+        assert!(engine.undo(&mut tree).expect("live undo"));
+    }
+    engine
+        .set_policy(&tree, live_policy(PaneMemoryStrategy::Checkpointed))
+        .expect("switch before branch replacement");
+    let before = tree.to_snapshot();
+    let next_id_before = tree.next_id();
+    let operation = live_split(&canonical, "replacement-branch");
+    timeline
+        .apply_and_record(&mut canonical, 7, 7, operation.clone())
+        .expect("oracle replacement");
+    engine
+        .apply_and_record(&mut tree, 7, 7, operation)
+        .expect("live replacement");
+    assert_ne!(tree.to_snapshot(), before);
+    assert_ne!(tree.next_id(), next_id_before);
+    assert_eq!(timeline.entries.len(), 4);
+    assert!(!engine.redo(&mut tree).expect("old branch was discarded"));
+    assert!(
+        !timeline
+            .redo(&mut canonical)
+            .expect("oracle old branch discarded")
+    );
+    assert_live_matches(&engine, &tree, &timeline, &canonical);
+    engine
+        .set_policy(&tree, live_policy(PaneMemoryStrategy::Persistent))
+        .expect("migrate replacement branch");
+    while timeline
+        .undo(&mut canonical)
+        .expect("oracle walk to baseline")
+    {
+        assert!(engine.undo(&mut tree).expect("live walk to baseline"));
+        assert_live_matches(&engine, &tree, &timeline, &canonical);
+    }
+    assert!(!engine.undo(&mut tree).expect("baseline reached"));
+    while timeline
+        .redo(&mut canonical)
+        .expect("oracle walk to new head")
+    {
+        assert!(engine.redo(&mut tree).expect("live walk to new head"));
+        assert_live_matches(&engine, &tree, &timeline, &canonical);
+    }
+    assert!(!engine.redo(&mut tree).expect("new head reached"));
+    assert_eq!(engine.status().applies, 7);
+    assert_eq!(engine.status().persistent_applies, 6);
+    assert_eq!(engine.status().checkpointed_applies, 1);
+}
+
+#[test]
+fn live_coalesced_drags_keep_separate_undo_steps_across_strategies() {
+    let mut initial = PaneTree::singleton("drag-root");
+    let operation = live_split(&initial, "drag-sibling");
+    initial
+        .apply_operation(1, operation)
+        .expect("initial split");
+    let split = initial.root();
+    for policy in [
+        live_policy(PaneMemoryStrategy::Persistent),
+        live_policy(PaneMemoryStrategy::Checkpointed),
+        PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()).conservative(),
+    ] {
+        let mut canonical = initial.clone();
+        let mut timeline = PaneInteractionTimeline::with_baseline(&canonical);
+        let mut tree = canonical.clone();
+        let mut engine = PaneExecutionEngine::new(&tree);
+        engine.set_policy(&tree, policy).expect("drag policy");
+        let mut snapshots = vec![tree.to_snapshot()];
+        for gesture in 0..2u64 {
+            let boundary = timeline.next_operation_id() - 1;
+            engine.begin_gesture();
+            for delta in 1..=4u64 {
+                let id = gesture * 4 + delta;
+                let operation = PaneOperation::SetSplitRatio {
+                    split,
+                    ratio: PaneSplitRatio::new(id as u32 + 1, 3).expect("drag ratio"),
+                };
+                let expected = timeline
+                    .apply_and_record_coalesced_resize_delta(
+                        &mut canonical,
+                        id,
+                        id,
+                        operation.clone(),
+                        boundary,
+                    )
+                    .expect("oracle drag delta");
+                assert_eq!(
+                    engine
+                        .apply_and_record_coalesced_resize_delta(
+                            &mut tree, id, id, operation, boundary,
+                        )
+                        .expect("live drag delta"),
+                    expected
+                );
+                assert_live_matches(&engine, &tree, &timeline, &canonical);
+                assert_eq!(timeline.entries.len(), gesture as usize + 1);
+            }
+            engine.end_gesture(&tree).expect("finish gesture");
+            snapshots.push(tree.to_snapshot());
+        }
+        assert_eq!(engine.status().applies, 8);
+        assert_eq!(engine.timeline().entries.len(), 2);
+        for expected in snapshots[..2].iter().rev() {
+            assert!(timeline.undo(&mut canonical).expect("oracle drag undo"));
+            assert!(engine.undo(&mut tree).expect("live drag undo"));
+            assert_eq!(&tree.to_snapshot(), expected);
+            assert_live_matches(&engine, &tree, &timeline, &canonical);
+        }
+        assert!(!engine.undo(&mut tree).expect("pre-drag baseline"));
+        for expected in &snapshots[1..] {
+            assert!(timeline.redo(&mut canonical).expect("oracle drag redo"));
+            assert!(engine.redo(&mut tree).expect("live drag redo"));
+            assert_eq!(&tree.to_snapshot(), expected);
+            assert_live_matches(&engine, &tree, &timeline, &canonical);
+        }
+        assert!(!engine.redo(&mut tree).expect("post-drag head"));
+    }
+}
+
+#[test]
+fn live_measured_latency_violation_changes_the_next_execution_path() {
+    let origin = std::time::Instant::now();
+    let initial = PaneTree::singleton("latency-root");
+    let mut canonical = initial.clone();
+    let mut timeline = PaneInteractionTimeline::with_baseline(&canonical);
+    let mut engines = [1u64, u64::MAX].map(|envelope| {
+        let tree = initial.clone();
+        let mut engine = PaneExecutionEngine::new(&tree);
+        engine
+            .set_policy(&tree, live_policy(PaneMemoryStrategy::Persistent))
+            .expect("persistent latency policy");
+        engine.set_latency_envelope_ns(envelope);
+        (engine, tree)
+    });
+    let operation = live_split(&canonical, "measured-edit");
+    timeline
+        .apply_and_record(&mut canonical, 1, 1, operation.clone())
+        .expect("oracle measured edit");
+    for (engine, tree) in &mut engines {
+        let start = std::time::Instant::now();
+        engine
+            .apply_and_record(tree, 1, 1, operation.clone())
+            .expect("measured real edit");
+        let elapsed_ns = u64::try_from(start.elapsed().as_nanos()).expect("bounded elapsed");
+        assert!(
+            elapsed_ns > 1,
+            "actual edit exceeds the one-nanosecond control envelope"
+        );
+        engine
+            .observe(
+                tree,
+                PaneExecutionSample {
+                    timestamp_ns: u64::try_from(origin.elapsed().as_nanos()).expect("timestamp"),
+                    elapsed_ns,
+                    local: false,
+                },
+            )
+            .expect("record real observation");
+        assert_live_matches(engine, tree, &timeline, &canonical);
+    }
+    let fallback = &engines[0].0;
+    assert_eq!(fallback.strategy(), PaneMemoryStrategy::Checkpointed);
+    assert!(fallback.status().conservative);
+    assert_eq!(fallback.status().fallbacks, 1);
+    let violation = fallback
+        .status()
+        .last_monitor
+        .as_ref()
+        .expect("latency verdict");
+    assert_eq!(violation.assumption, PaneAssumption::LatencyEnvelope);
+    assert!(violation.status.is_violation());
+    let control = &engines[1].0;
+    assert_eq!(control.strategy(), PaneMemoryStrategy::Persistent);
+    assert!(!control.status().conservative);
+    assert_eq!(control.status().fallbacks, 0);
+    assert!(
+        !control
+            .status()
+            .last_monitor
+            .as_ref()
+            .expect("control verdict")
+            .status
+            .is_violation()
+    );
+
+    // A changed label alone cannot satisfy this test: another actual split
+    // must execute through the conservative path and preserve canonical state.
+    let before = canonical.to_snapshot();
+    let operation = live_split(&canonical, "after-latency-fallback");
+    timeline
+        .apply_and_record(&mut canonical, 2, 2, operation.clone())
+        .expect("oracle continued edit");
+    assert_ne!(canonical.to_snapshot(), before);
+    for (engine, tree) in &mut engines {
+        engine
+            .apply_and_record(tree, 2, 2, operation.clone())
+            .expect("continued real edit after observation");
+        assert_live_matches(engine, tree, &timeline, &canonical);
+    }
+    assert_eq!(engines[0].0.status().persistent_applies, 1);
+    assert_eq!(engines[0].0.status().conservative_applies, 1);
+    assert_eq!(engines[1].0.status().persistent_applies, 2);
+    assert_eq!(engines[1].0.status().conservative_applies, 0);
+}
+
+#[test]
+fn live_import_and_policy_migration_reject_invalid_history_atomically() {
+    let mut canonical = PaneTree::singleton("import-root");
+    let mut timeline = PaneInteractionTimeline::with_baseline(&canonical);
+    timeline.checkpoint_interval = 2;
+    for id in 1..=6u64 {
+        let operation = live_split(&canonical, &format!("import-{id}"));
+        timeline
+            .apply_and_record(&mut canonical, id, id, operation)
+            .expect("import source edit");
+    }
+    for _ in 0..4 {
+        assert!(timeline.undo(&mut canonical).expect("import source undo"));
+    }
+    let source_snapshot = canonical.to_snapshot();
+    let source_history = timeline.clone();
+    let mut tree = canonical.clone();
+    let mut engine = PaneExecutionEngine::from_timeline(&tree, timeline.clone())
+        .expect("valid mid-history import");
+    engine
+        .set_policy(&tree, live_policy(PaneMemoryStrategy::Persistent))
+        .expect("migrate imported history");
+    assert_live_matches(&engine, &tree, &timeline, &canonical);
+
+    let mut invalid_histories = Vec::new();
+    let mut missing_baseline = timeline.clone();
+    missing_baseline.baseline = None;
+    invalid_histories.push(missing_baseline);
+    let mut invalid_baseline = timeline.clone();
+    invalid_baseline
+        .baseline
+        .as_mut()
+        .expect("baseline")
+        .next_id = PaneId::MIN;
+    invalid_histories.push(invalid_baseline);
+    let mut invalid_cursor = timeline.clone();
+    invalid_cursor.cursor = invalid_cursor.entries.len() + 1;
+    invalid_histories.push(invalid_cursor);
+    let mut invalid_redo = timeline.clone();
+    invalid_redo.entries[5].operation = PaneOperation::CloseNode {
+        target: PaneId::new(u64::MAX).expect("missing id"),
+    };
+    invalid_histories.push(invalid_redo);
+    let mut invalid_hash = timeline.clone();
+    invalid_hash.entries[5].after_hash ^= 1;
+    invalid_histories.push(invalid_hash);
+    let mut invalid_checkpoint = timeline.clone();
+    invalid_checkpoint
+        .checkpoints
+        .last_mut()
+        .expect("checkpoint")
+        .snapshot = timeline.baseline.clone().expect("baseline");
+    invalid_histories.push(invalid_checkpoint);
+    for invalid in invalid_histories {
+        assert!(PaneExecutionEngine::from_timeline(&tree, invalid).is_err());
+        assert_eq!(tree.to_snapshot(), source_snapshot);
+        assert_eq!(timeline, source_history);
+        assert_live_matches(&engine, &tree, &timeline, &canonical);
+    }
+    let before_history = engine.timeline().clone();
+    let before_applies = engine.status().applies;
+    let before_switches = engine.status().switches;
+    let mut mismatched = tree.to_snapshot();
+    mismatched.next_id = mismatched.next_id.checked_next().expect("next id");
+    let mismatched_tree = PaneTree::from_snapshot(mismatched).expect("valid different allocator");
+    let mismatched_before = mismatched_tree.to_snapshot();
+    assert!(matches!(
+        engine.set_policy(
+            &mismatched_tree,
+            live_policy(PaneMemoryStrategy::Checkpointed)
+        ),
+        Err(PaneExecutionError::InvalidHistory(_))
+    ));
+    assert_eq!(mismatched_tree.to_snapshot(), mismatched_before);
+    assert_eq!(engine.strategy(), PaneMemoryStrategy::Persistent);
+    assert_eq!(engine.timeline(), &before_history);
+    assert_eq!(engine.status().applies, before_applies);
+    assert_eq!(engine.status().switches, before_switches);
+    assert!(matches!(
+        engine.set_policy(&tree, live_policy(PaneMemoryStrategy::Baseline)),
+        Err(PaneExecutionError::HistoryRequired)
+    ));
+    assert_eq!(engine.strategy(), PaneMemoryStrategy::Persistent);
+    assert_eq!(engine.timeline(), &before_history);
+    assert_live_matches(&engine, &tree, &timeline, &canonical);
+    // Failure must leave the already imported engine usable, including redo
+    // entries that were not applied at import time.
+    while timeline.redo(&mut canonical).expect("oracle imported redo") {
+        assert!(
+            engine
+                .redo(&mut tree)
+                .expect("live imported redo after failures")
+        );
+        assert_live_matches(&engine, &tree, &timeline, &canonical);
+    }
+    assert!(!engine.redo(&mut tree).expect("imported head reached"));
+}
+
+#[test]
+fn live_retention_pressure_preserves_full_redo_and_a_continued_edit() {
+    for strategy in [
+        PaneMemoryStrategy::Persistent,
+        PaneMemoryStrategy::Checkpointed,
+    ] {
+        for (bytes, units) in [(1, 0), (0, 2), (1, 2), (0, 0)] {
+            let pressure_expected = bytes != 0 || units != 0;
+            let mut canonical = PaneTree::singleton("pressure-root");
+            let mut timeline = PaneInteractionTimeline::with_baseline(&canonical);
+            let mut tree = canonical.clone();
+            let mut engine = PaneExecutionEngine::new(&tree);
+            engine
+                .set_policy(&tree, live_policy(strategy))
+                .expect("initial policy");
+            engine.set_latency_envelope_ns(0);
+            for id in 1..=6u64 {
+                let operation = live_split(&canonical, &format!("retained-{id}"));
+                timeline
+                    .apply_and_record(&mut canonical, id, id, operation.clone())
+                    .expect("oracle retained edit");
+                engine
+                    .apply_and_record(&mut tree, id, id, operation)
+                    .expect("live retained edit");
+            }
+            for _ in 0..6 {
+                assert!(timeline.undo(&mut canonical).expect("oracle baseline undo"));
+                assert!(engine.undo(&mut tree).expect("live baseline undo"));
+            }
+            assert_eq!(engine.timeline().cursor, 0);
+            let before = tree.to_snapshot();
+            let history_before = engine.timeline().entries.clone();
+            let policy = PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(bytes, units))
+                .forcing(strategy);
+            engine
+                .set_policy(&tree, policy)
+                .expect("apply actual retention pressure");
+            assert_eq!(tree.to_snapshot(), before);
+            assert_eq!(engine.timeline().entries, history_before);
+            assert_live_matches(&engine, &tree, &timeline, &canonical);
+            let status = engine.status();
+            let decision = status
+                .last_retention
+                .as_ref()
+                .expect("actual retention decision");
+            assert_eq!(decision.budget.max_retained_bytes, bytes);
+            assert_eq!(decision.budget.max_retained_units, units);
+            assert_eq!(decision.units_before, 6);
+            assert_eq!(decision.units_after, 6);
+            assert_eq!(decision.units_pruned, 0);
+            assert_eq!(decision.current_state_hash, tree.state_hash());
+            assert!(decision.bytes_before > 1);
+            assert_eq!(
+                decision
+                    .budget
+                    .is_exceeded_by(decision.bytes_after, decision.units_after),
+                pressure_expected
+            );
+            if pressure_expected {
+                assert_eq!(decision.outcome, PaneRetentionOutcome::PruningBlocked);
+                assert_eq!(engine.strategy(), PaneMemoryStrategy::Checkpointed);
+                assert!(status.conservative);
+                assert_eq!(status.fallbacks, 1);
+                let monitor = status.last_monitor.as_ref().expect("pressure verdict");
+                assert_eq!(monitor.assumption, PaneAssumption::RetentionPressure);
+                assert!(monitor.status.is_violation());
+            } else {
+                assert_eq!(decision.outcome, PaneRetentionOutcome::WithinBudget);
+                assert_eq!(engine.strategy(), strategy);
+                assert!(!status.conservative);
+                assert_eq!(status.fallbacks, 0);
+                assert!(
+                    !status
+                        .last_monitor
+                        .as_ref()
+                        .expect("control verdict")
+                        .status
+                        .is_violation()
+                );
+            }
+            for _ in 0..6 {
+                assert!(
+                    timeline
+                        .redo(&mut canonical)
+                        .expect("oracle protected redo")
+                );
+                assert!(engine.redo(&mut tree).expect("live protected redo"));
+                assert_live_matches(&engine, &tree, &timeline, &canonical);
+            }
+            assert!(!engine.redo(&mut tree).expect("retained head reached"));
+            let before_edit = tree.to_snapshot();
+            let next_id_before = tree.next_id();
+            let operation = live_split(&canonical, "edit-after-pressure");
+            timeline
+                .apply_and_record(&mut canonical, 7, 7, operation.clone())
+                .expect("oracle continued edit");
+            engine
+                .apply_and_record(&mut tree, 7, 7, operation)
+                .expect("live continued edit");
+            assert_ne!(tree.to_snapshot(), before_edit);
+            assert_ne!(tree.next_id(), next_id_before);
+            assert_live_matches(&engine, &tree, &timeline, &canonical);
+            assert_eq!(engine.status().applies, 7);
+            assert_eq!(
+                engine.status().conservative_applies,
+                u64::from(pressure_expected)
+            );
+            if !pressure_expected {
+                match strategy {
+                    PaneMemoryStrategy::Persistent => {
+                        assert_eq!(engine.status().persistent_applies, 7)
+                    }
+                    PaneMemoryStrategy::Checkpointed => {
+                        assert_eq!(engine.status().checkpointed_applies, 7)
+                    }
+                    PaneMemoryStrategy::Baseline => unreachable!("history strategies only"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn live_retention_prunes_to_exact_unit_cap_without_discarding_redo() {
+    for strategy in [
+        PaneMemoryStrategy::Persistent,
+        PaneMemoryStrategy::Checkpointed,
+    ] {
+        let mut canonical = PaneTree::singleton("pruning-root");
+        let mut timeline = PaneInteractionTimeline::with_baseline(&canonical);
+        let mut tree = canonical.clone();
+        let mut engine = PaneExecutionEngine::new(&tree);
+        engine
+            .set_policy(&tree, live_policy(strategy))
+            .expect("initial policy");
+        for id in 1..=6u64 {
+            let operation = live_split(&canonical, &format!("pruning-{id}"));
+            timeline
+                .apply_and_record(&mut canonical, id, id, operation.clone())
+                .expect("oracle pruning edit");
+            engine
+                .apply_and_record(&mut tree, id, id, operation)
+                .expect("live pruning edit");
+        }
+        for _ in 0..2 {
+            assert!(timeline.undo(&mut canonical).expect("oracle pruning undo"));
+            assert!(engine.undo(&mut tree).expect("live pruning undo"));
+        }
+        let before = tree.to_snapshot();
+        assert_eq!(timeline.set_max_entries(3), 3);
+        let policy =
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 3)).forcing(strategy);
+        engine
+            .set_policy(&tree, policy)
+            .expect("fit exact retained edit cap");
+        assert_eq!(tree.to_snapshot(), before);
+        assert_eq!(engine.timeline().cursor, 1);
+        assert_eq!(engine.timeline().entries.len(), 3);
+        assert_live_matches(&engine, &tree, &timeline, &canonical);
+        let decision = engine
+            .status()
+            .last_retention
+            .as_ref()
+            .expect("pruning decision");
+        assert_eq!(decision.units_pruned, 3);
+        assert_eq!(decision.units_after, 3);
+        assert_eq!(decision.outcome, PaneRetentionOutcome::PrunedToFit);
+        assert_eq!(engine.strategy(), strategy);
+        assert_eq!(engine.status().fallbacks, 0);
+        assert!(
+            timeline
+                .undo(&mut canonical)
+                .expect("oracle retained baseline")
+        );
+        assert!(engine.undo(&mut tree).expect("live retained baseline"));
+        assert_live_matches(&engine, &tree, &timeline, &canonical);
+        assert!(
+            !engine
+                .undo(&mut tree)
+                .expect("pruned history is unavailable")
+        );
+        for _ in 0..3 {
+            assert!(timeline.redo(&mut canonical).expect("oracle retained redo"));
+            assert!(engine.redo(&mut tree).expect("live retained redo"));
+            assert_live_matches(&engine, &tree, &timeline, &canonical);
+        }
+        assert!(!engine.redo(&mut tree).expect("retained head reached"));
+    }
 }

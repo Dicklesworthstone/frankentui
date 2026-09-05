@@ -256,13 +256,9 @@ pub fn pane_memory_comparison(
 /// Bytes of one `u64` state hash; the timeline stores a before/after pair per entry.
 const STATE_HASH_BYTES: usize = std::mem::size_of::<u64>();
 
-fn baseline_footprint(live: &PaneTree) -> PaneMemoryStrategyFootprint {
-    let snapshot = live.to_snapshot();
-    let (leaf_payload_bytes, extension_payload_bytes) = snapshot_payload_bytes(&snapshot);
-    let node_struct_bytes = snapshot
-        .nodes
-        .len()
-        .saturating_mul(std::mem::size_of::<PaneNodeRecord>());
+pub(crate) fn baseline_footprint(live: &PaneTree) -> PaneMemoryStrategyFootprint {
+    let (node_count, leaf_payload_bytes, extension_payload_bytes) = live_payload_bytes(live);
+    let node_struct_bytes = node_count.saturating_mul(std::mem::size_of::<PaneNodeRecord>());
     let container = std::mem::size_of::<PaneTreeSnapshot>();
     let total = node_struct_bytes
         .saturating_add(leaf_payload_bytes)
@@ -271,7 +267,7 @@ fn baseline_footprint(live: &PaneTree) -> PaneMemoryStrategyFootprint {
     PaneMemoryStrategyFootprint::assemble(
         PaneMemoryStrategy::Baseline,
         1,
-        snapshot.nodes.len(),
+        node_count,
         node_struct_bytes,
         leaf_payload_bytes,
         extension_payload_bytes,
@@ -319,11 +315,13 @@ fn persistent_footprint(store: &PaneVersionStore) -> PaneMemoryStrategyFootprint
     )
 }
 
-/// Sum measured leaf-surface and extension payload bytes, including the tree map.
-fn snapshot_payload_bytes(snapshot: &PaneTreeSnapshot) -> (usize, usize) {
+/// Count the live projection without allocating a temporary snapshot.
+fn live_payload_bytes(live: &PaneTree) -> (usize, usize, usize) {
+    let mut node_count = 0usize;
     let mut leaf_payload = 0usize;
-    let mut extension_payload = string_map_payload_bytes(&snapshot.extensions);
-    for record in &snapshot.nodes {
+    let mut extension_payload = string_map_payload_bytes(live.extensions());
+    for record in live.nodes() {
+        node_count = node_count.saturating_add(1);
         extension_payload =
             extension_payload.saturating_add(string_map_payload_bytes(&record.extensions));
         if let PaneNodeKind::Leaf(leaf) = &record.kind {
@@ -332,7 +330,7 @@ fn snapshot_payload_bytes(snapshot: &PaneTreeSnapshot) -> (usize, usize) {
                 extension_payload.saturating_add(string_map_payload_bytes(&leaf.extensions));
         }
     }
-    (leaf_payload, extension_payload)
+    (node_count, leaf_payload, extension_payload)
 }
 
 /// Pick the dominant retained-state class. Ties resolve to the earlier class in

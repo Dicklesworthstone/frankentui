@@ -1,20 +1,21 @@
 # Pane Execution-Policy Selector (bd-1k7ek.6)
 
-> Status: **specified · implemented · regression-tested · evidence captured**
+> Status: **selector and live engine implemented; adoption validation in progress**
 >
 > Library: `crates/ftui-layout/src/pane_execution.rs`
 > Builds on: persistence spike (bd-1k7ek.5), retention policy (bd-25wj7.2),
 > memory telemetry (bd-25wj7.1)
-> Tests: `pane_execution::tests` (10) · Evidence: `benches/pane_memory_telemetry.rs`
+> Tests: `pane_execution::tests`, `tests/pane_persistent_equivalence.rs`,
+> and the terminal/browser host tests. Prototype telemetry:
+> `benches/pane_memory_telemetry.rs`.
 
 ## Why
 
-Three semantically-**equivalent** ways to drive pane undo/redo now exist —
-**baseline** (no history), the **checkpointed** `PaneInteractionTimeline`, and the
-**persistent** `PaneVersionStore` — proven byte-identical over lockstep histories
-(`tests/pane_persistent_equivalence.rs`). Once equivalent implementations exist,
-the system should pick the cheapest *safe* one for the observed workload rather
-than hard-coding one globally.
+The selector compares a no-history baseline, checkpointed history, and persistent
+versions. The live `PaneExecutionEngine` supports the two history substrates and
+a conservative canonical execution mode. Differential tests compare operation
+outcomes, errors, complete snapshots, and retained history; the no-history
+baseline cannot supply undo/redo and is rejected by the live engine.
 
 Per the bead's explicit intent, this is **not opaque adaptive magic**: selection
 is a pure deterministic function of an observed profile and documented thresholds,
@@ -38,9 +39,9 @@ The checkpointed timeline is the **conservative default and fallback** — it is
 certified production path and the differential oracle for the persistent spike, so
 it is chosen whenever the persistent criteria are not *all* met.
 
-Default thresholds (explicit and tunable on the policy), derived from the
-persistence spike and memory telemetry — the persistent store earns its keep only
-on resize storms deep enough that O(1) navigation and structural sharing pay off:
+Default thresholds are explicit and tunable. They reflect the persistence
+prototype and memory telemetry, which excluded live conversion and maintenance;
+they are not validated adoption thresholds for the live engine:
 
 | Threshold | Default | Rationale |
 |-----------|---------|-----------|
@@ -59,13 +60,13 @@ on resize storms deep enough that O(1) navigation and structural sharing pay off
 Both bypass the adaptive logic entirely and are reported as `forced` in the
 decision, so an operator always knows when a choice was imposed vs inferred.
 
-## No behavior divergence
+## Behavior comparison
 
-Because the candidate strategies are **proven equivalent**, selecting among them
-changes cost, never observable behavior. The test
-`strategy_choice_never_diverges_behavior` re-asserts this at the selector boundary:
-the same operation stream driven through all three substrates yields an identical
-final state hash.
+`strategy_choice_never_diverges_behavior` compares final hashes for its selector
+corpus. The live engine tests additionally compare complete operation payloads,
+rejected edits, allocator IDs, coalesced gestures, undo/redo, migration with a
+retained redo tail, and retention under pressure. These are bounded regression
+corpora, not a universal equivalence or performance proof.
 
 ## Anti-thrash (hysteresis)
 
@@ -97,11 +98,12 @@ selector/execution[checkpointed] general_default: ops=384 local=48% burst=240/s 
   (thresholds: min_ops=64 local>=80% burst>=60/s hysteresis=10%); retention budget bytes=219626 units=0
 ```
 
-The selector routes the **resize storm** (100% local) to the persistent store —
-where the memory telemetry shows O(1) navigation and ~70% structural sharing — and
-falls the **mixed session** (48% local) back to the checkpointed default. The
-decision carries the retention budget that the bounded-retention policy
-(bd-25wj7.2) applies to the selected substrate.
+In that prototype telemetry, the selector chose persistent for the resize storm
+and checkpointed for the mixed session. Moving a persistent root cursor is O(1);
+live navigation also flattens and validates a canonical tree, so its full cost is
+larger. Prototype structural-sharing results likewise do not include the live
+journal and render projection. The decision carries a retention budget for the
+selected substrate.
 
 ## For downstream beads
 
@@ -110,6 +112,58 @@ decision carries the retention budget that the bounded-retention policy
   selection and surface rollback events.
 - **bd-1pvzq.3/.5 (replay-oracle gates / E2E soak):** the no-divergence property is
   the certification hook; the decision logs feed operator-grade soak diagnostics.
-- **Live integration:** a future execution engine holding all three substrates
-  calls `select`/`reselect` per window and `apply_retention_to_*` on the chosen
-  substrate. The persistent store remains a prototype on no production path today.
+- **Live integration (G47):** Layout Lab and the WASM `RunnerCore` now use
+  `PaneExecutionEngine` through the shared `PaneHistory` interaction adapter.
+  Actual PTY/browser execution and the complete rendering cost remain separate
+  adoption evidence; native host tests and prototype benchmarks do not establish them.
+
+## Live engine contract
+
+The engine owns one journal and the selected history substrate. Persistent
+`SetSplitRatio` operations execute through path copying and produce a validated
+canonical tree for rendering. Structural edits execute the canonical operation
+once. Conservative mode uses the full-validation canonical operation path.
+`status()` counts actual applies and transitions by execution mode.
+
+Call `observe(tree, sample)` after each successful operation, supplying measured
+execution-plus-recording latency and a monotonic timestamp. The shared host
+adapter does this using `web_time::Instant`. An observation failure leaves the
+accepted edit accepted and records `last_maintenance_error`. Samples exclude
+subsequent maintenance; performance comparisons must include that work separately
+or time the whole caller boundary.
+
+Migration rebuilds every retained journal entry, including redo, and checks the
+complete snapshot at the current cursor before publication. Import validates
+checkpoints and journal hashes. `begin_gesture` pins history until `end_gesture`;
+hosts restore the gesture-start cursor before ending a cancellation. Layout Lab
+defers cancellation requested from a read-only hidden-view render until its next
+mutable event.
+
+Live retention counts edits, with one additional baseline version in a persistent
+store. The engine prunes both representations together and includes the journal,
+store, and live canonical projection in its modeled byte total. These totals are
+structural estimates, not allocator measurements. Protected redo and the current
+state survive an impossible budget; the pressure is reported and selects
+conservative execution. Default retention is 4096 edits with no byte ceiling.
+The constructor currently forces checkpointed execution. Adaptive and persistent
+policies are explicit opt-ins: the full-wrapper diagnostic comparison exposed
+regressions on unbounded histories, so prototype timings do not justify automatic
+adoption by default.
+
+The default measured-operation envelope is 8 ms, configurable through
+`set_latency_envelope_ns`; zero disables that monitor. A violation latches
+conservative execution until an explicit `set_policy` reset. The live engine
+gives an operator's conservative override precedence over forced persistent
+selection. `set_policy` stages migration and retention atomically; during a
+gesture it defers execution-mode changes until the gesture ends.
+
+The WASM `ShowcaseRunner` exposes `paneExecutionStrategy()` for the active
+substrate and `paneExecutionStatusJson()` for counters and diagnostics.
+`paneSetExecutionPolicy(mode, maxRetainedBytes, maxRetainedEdits)` accepts
+`0=checkpointed`, `1=persistent`, `2=conservative`, or `3=adaptive`; each ceiling
+uses zero for unbounded. Arguments must be finite integer JavaScript numbers in
+the unsigned 32-bit range. Invalid arguments and requests while a pane pointer is
+active throw without changing state. Finish the gesture, or call
+`panePointerCancel` and handle its capture command, before changing policy.
+The status JSON uses Rust integer counters, which can exceed JavaScript's safe
+integer range.

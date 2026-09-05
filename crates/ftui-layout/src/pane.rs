@@ -4092,6 +4092,10 @@ impl PaneTree {
         self.nodes.values()
     }
 
+    pub(crate) const fn extensions(&self) -> &BTreeMap<String, String> {
+        &self.extensions
+    }
+
     /// Validate internal invariants.
     pub fn validate(&self) -> Result<(), PaneModelError> {
         validate_tree(self.root, self.next_id, &self.nodes)
@@ -4108,6 +4112,17 @@ impl PaneTree {
     /// This is intended for operation logs and replay diagnostics.
     #[must_use]
     pub fn state_hash(&self) -> u64 {
+        self.hash_state(false)
+    }
+
+    /// History pairing distinguishes raw serialized ratios that the public
+    /// semantic hash normalizes through its accessors. This is a diagnostic
+    /// fingerprint, not a cryptographic identity or an equality proof.
+    pub(crate) fn history_state_hash(&self) -> u64 {
+        self.hash_state(true)
+    }
+
+    fn hash_state(&self, raw_ratios: bool) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0000_0001_0000_01b3;
 
@@ -4205,8 +4220,22 @@ impl PaneTree {
                         SplitAxis::Vertical => 2,
                     };
                     mix(&mut hash, axis_byte);
-                    mix_u32(&mut hash, split.ratio.numerator());
-                    mix_u32(&mut hash, split.ratio.denominator());
+                    mix_u32(
+                        &mut hash,
+                        if raw_ratios {
+                            split.ratio.numerator
+                        } else {
+                            split.ratio.numerator()
+                        },
+                    );
+                    mix_u32(
+                        &mut hash,
+                        if raw_ratios {
+                            split.ratio.denominator
+                        } else {
+                            split.ratio.denominator()
+                        },
+                    );
                     mix_u64(&mut hash, split.first.get());
                     mix_u64(&mut hash, split.second.get());
                 }
@@ -6198,24 +6227,7 @@ impl PaneInteractionTimeline {
         // Tree application is transactional. Only a successful edit may
         // install a baseline or discard the currently retained redo branch.
         let outcome = tree.apply_operation(operation_id, operation.clone())?;
-        if let Some(baseline) = baseline {
-            self.baseline = Some(baseline);
-        }
-        if self.cursor < self.entries.len() {
-            self.entries.truncate(self.cursor);
-            self.checkpoints
-                .retain(|checkpoint| checkpoint.applied_len <= self.cursor);
-        }
-        self.entries.push(PaneInteractionTimelineEntry {
-            sequence,
-            operation_id,
-            operation,
-            before_hash: outcome.before_hash,
-            after_hash: outcome.after_hash,
-        });
-        self.cursor = self.entries.len();
-        self.enforce_entry_limit();
-        self.maybe_record_checkpoint(tree);
+        self.record_applied(tree, baseline, sequence, operation, &outcome, None, true);
         Ok(outcome)
     }
 
@@ -6236,6 +6248,31 @@ impl PaneInteractionTimeline {
     ) -> Result<PaneOperationOutcome, PaneOperationError> {
         let baseline = self.baseline.is_none().then(|| tree.to_snapshot());
         let outcome = tree.apply_operation(operation_id, operation.clone())?;
+        self.record_applied(
+            tree,
+            baseline,
+            sequence,
+            operation,
+            &outcome,
+            Some(coalesce_after_operation_id),
+            true,
+        );
+        Ok(outcome)
+    }
+
+    /// Commit an already successful operation without executing it again.
+    /// Returns whether the preceding resize entry was replaced.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_applied(
+        &mut self,
+        tree: &PaneTree,
+        baseline: Option<PaneTreeSnapshot>,
+        sequence: u64,
+        operation: PaneOperation,
+        outcome: &PaneOperationOutcome,
+        coalesce_after: Option<u64>,
+        checkpoints_enabled: bool,
+    ) -> bool {
         if let Some(baseline) = baseline {
             self.baseline = Some(baseline);
         }
@@ -6253,7 +6290,7 @@ impl PaneInteractionTimeline {
                         split: previous_split,
                         ..
                     } if previous_split == split
-                        && entry.operation_id > coalesce_after_operation_id =>
+                        && coalesce_after.is_some_and(|boundary| entry.operation_id > boundary) =>
                     {
                         Some(entry.before_hash)
                     }
@@ -6267,7 +6304,7 @@ impl PaneInteractionTimeline {
         {
             *entry = PaneInteractionTimelineEntry {
                 sequence,
-                operation_id,
+                operation_id: outcome.operation_id,
                 operation,
                 before_hash,
                 after_hash: outcome.after_hash,
@@ -6276,21 +6313,25 @@ impl PaneInteractionTimeline {
             self.checkpoints
                 .retain(|checkpoint| checkpoint.applied_len < self.cursor);
             self.enforce_entry_limit();
-            self.maybe_record_checkpoint(tree);
-            return Ok(outcome);
+            if checkpoints_enabled {
+                self.maybe_record_checkpoint(tree);
+            }
+            return true;
         }
 
         self.entries.push(PaneInteractionTimelineEntry {
             sequence,
-            operation_id,
+            operation_id: outcome.operation_id,
             operation,
             before_hash: outcome.before_hash,
             after_hash: outcome.after_hash,
         });
         self.cursor = self.entries.len();
         self.enforce_entry_limit();
-        self.maybe_record_checkpoint(tree);
-        Ok(outcome)
+        if checkpoints_enabled {
+            self.maybe_record_checkpoint(tree);
+        }
+        false
     }
 
     /// Undo the last applied entry by deterministic rebuild from baseline.

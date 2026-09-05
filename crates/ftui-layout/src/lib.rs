@@ -108,7 +108,8 @@ pub use pane_command::{
     focus_edge, focus_order, resolve as resolve_pane_command,
 };
 pub use pane_execution::{
-    PaneExecutionDecision, PaneExecutionPolicy, PaneStrategyReason, PaneWorkloadProfile,
+    PaneExecutionDecision, PaneExecutionEngine, PaneExecutionError, PaneExecutionPolicy,
+    PaneExecutionSample, PaneExecutionStatus, PaneHistory, PaneStrategyReason, PaneWorkloadProfile,
 };
 pub use pane_memory::{
     PANE_MEMORY_TELEMETRY_SCHEMA_VERSION, PaneMemoryComparison, PaneMemoryDriver,
