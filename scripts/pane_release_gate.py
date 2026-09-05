@@ -9,16 +9,17 @@ observability. The gate is deliberately mechanical -- a release is blocked
 whenever any mandatory clause fails. No subjective "looks good to me" ships the
 pane system.
 
-Two modes:
+Three modes:
 
 ``advisory``  Pre-merge / local. Requires the evidence to be structurally
               complete and free of observed red suites, but does NOT require the
               CI-only runtime artifacts (replay index, certification, soak).
               This is the gate a PR can pass before the full perf job runs.
 
-``strict``    Release. Additionally requires every runtime artifact present and
-              the differential certification to read ``certified`` -- the bar a
-              build must clear to be tagged/shipped.
+``strict``    Requires verified runtime/binary bytes, current build/run identity,
+              and a differential certificate recomputed from its verified inputs.
+
+``ga``        Additionally requires every canonical suite observed green.
 
 Inputs: the evidence bundle, and optionally the differential certification JSON
 (``differential_certification.json``) so the perf clause can assert behavioral

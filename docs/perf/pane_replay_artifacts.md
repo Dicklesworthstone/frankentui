@@ -31,7 +31,7 @@ provenance describe **one coherent run**.
 ## Bundle layout
 
 Produced under the `--out-dir` of `pane_profile.sh` (default
-`target/pane-profiling/bd-1y0ph`, CI uses `target/pane-profiling/ci`):
+`target/pane-profiling/bd-1y0ph`; CI uses a unique run-id/attempt directory):
 
 ```
 <out-dir>/

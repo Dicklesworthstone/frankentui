@@ -2436,7 +2436,7 @@ jobs:
       # sustained interaction and rolls back to the conservative path on a
       # monitor violation, with operator-grade JSONL + a self-contained bundle.
       - name: Pane soak + rollback E2E
-        run: ./scripts/pane_soak_rollback.sh --out-dir target/pane-soak/ci
+        run: ./scripts/pane_soak_rollback.sh --out-dir "$PANE_RELEASE_ROOT/soak"
 
       # bd-nqxa5: observe every declared release suite and aggregate the
       # summaries so the evidence bundle asserts observed-green end-to-end
@@ -2449,7 +2449,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/pane_test_summary_aggregate.py selftest
-          mkdir -p target/pane-test-summaries/fragments "$PANE_RELEASE_ROOT/suite-logs"
+          mkdir -p "$PANE_RELEASE_ROOT/fragments" "$PANE_RELEASE_ROOT/suite-logs"
           while IFS=$'\t' read -r crate target; do
             log="$PANE_RELEASE_ROOT/suite-logs/${crate}__${target}.log"
             echo "::group::${crate}::${target}"
@@ -2463,14 +2463,14 @@ jobs:
             python3 scripts/pane_test_summary_aggregate.py capture \
               --crate "$crate" --target "$target" --log "$log" --exit-code "$test_status" \
               --results-dir "$PANE_RELEASE_ROOT" \
-              --out "target/pane-test-summaries/fragments/${crate}__${target}.json"
+              --out "$PANE_RELEASE_ROOT/fragments/${crate}__${target}.json"
             if [[ "$test_status" -ne 0 ]]; then exit "$test_status"; fi
           done < <(python3 scripts/pane_test_summary_aggregate.py list)
           python3 scripts/pane_test_summary_aggregate.py merge \
-            target/pane-test-summaries/fragments \
-            --out target/pane-test-summaries/pane_test_summary.json
+            "$PANE_RELEASE_ROOT/fragments" \
+            --out "$PANE_RELEASE_ROOT/pane_test_summary.json"
           python3 scripts/pane_test_summary_aggregate.py check \
-            --summary target/pane-test-summaries/pane_test_summary.json \
+            --summary "$PANE_RELEASE_ROOT/pane_test_summary.json" \
             --require-all
 
       # bd-1w0w4.7: tie the six release-evidence dimensions (unit/e2e/parity/
@@ -2483,14 +2483,14 @@ jobs:
       - name: Pane release-evidence bundle (collect + validate)
         run: |
           python3 scripts/pane_release_evidence.py selftest
-          mkdir -p target/pane-release
+          mkdir -p "$PANE_RELEASE_ROOT/release"
           python3 scripts/pane_release_evidence.py collect \
-            --out target/pane-release/pane_release_evidence.json \
+            --out "$PANE_RELEASE_ROOT/release/pane_release_evidence.json" \
             --results-dir "$PANE_RELEASE_ROOT" \
-            --test-summary target/pane-test-summaries/pane_test_summary.json \
+            --test-summary "$PANE_RELEASE_ROOT/pane_test_summary.json" \
             --strict --json
           python3 scripts/pane_release_evidence.py validate \
-            --bundle target/pane-release/pane_release_evidence.json \
+            --bundle "$PANE_RELEASE_ROOT/release/pane_release_evidence.json" \
             --results-dir "$PANE_RELEASE_ROOT" \
             --json
 
@@ -2503,11 +2503,11 @@ jobs:
         run: |
           python3 scripts/pane_release_gate.py selftest
           python3 scripts/pane_release_gate.py evaluate \
-            --bundle target/pane-release/pane_release_evidence.json \
+            --bundle "$PANE_RELEASE_ROOT/release/pane_release_evidence.json" \
             --certification "$PANE_RELEASE_ROOT/differential_certification.json" \
             --results-dir "$PANE_RELEASE_ROOT" \
             --mode ga \
-            --out target/pane-release/pane_release_gate.json \
+            --out "$PANE_RELEASE_ROOT/release/pane_release_gate.json" \
             --json
 
       - name: Upload aggregated pane test summary
@@ -2515,7 +2515,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pane-test-summary
-          path: target/pane-test-summaries
+          path: |
+            ${{ env.PANE_RELEASE_ROOT }}/fragments
+            ${{ env.PANE_RELEASE_ROOT }}/pane_test_summary.json
           retention-days: 30
 
       - name: Upload pane release-evidence + gate
@@ -2523,7 +2525,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pane-release-evidence
-          path: target/pane-release
+          path: ${{ env.PANE_RELEASE_ROOT }}/release
           retention-days: 30
 
       - name: Upload pane soak + rollback bundle
@@ -2531,7 +2533,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pane-soak-rollback
-          path: target/pane-soak/ci
+          path: ${{ env.PANE_RELEASE_ROOT }}/soak
           retention-days: 30
 
       - name: Upload pane replay artifact bundle
@@ -2539,7 +2541,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pane-replay-artifacts
-          path: target/pane-profiling/ci
+          path: ${{ env.PANE_RELEASE_ROOT }}
           retention-days: 30
 
   perf-rollout-gates:

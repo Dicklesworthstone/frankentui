@@ -3,15 +3,16 @@
 
 The pane release-evidence bundle (``pane_release_evidence.py``) records each
 declared suite as ``"declared"`` unless an observed ``--test-summary`` maps
-``"crate::target"`` to ``{"passed": N, "failed": M}``. Suite results normally
+``"crate::target"`` to observed counts, verdict, exit status and artifacts. Suite results normally
 live in separate CI jobs, so the GA gate needs the summaries *aggregated
 across jobs*. This tool provides that pipeline:
 
 ``capture``
-    Parse a ``cargo test`` log into a single-suite summary fragment.
+    Parse a ``cargo test`` log and actual exit code into a summary fragment.
+    Interrupted executions retain their exit/log receipt with verdict ``incomplete``.
 ``merge``
     Merge many fragments (files or directories of ``*.json``) into one
-    aggregated summary, refusing conflicting duplicates by default.
+    aggregated summary, refusing duplicate identities by default.
 ``check``
     Verify an aggregated summary covers every suite the release-evidence
     dimensions declare, and that every covered suite is green.
@@ -32,6 +33,7 @@ import argparse
 from contextlib import nullcontext
 import json
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -70,23 +72,17 @@ def _fragment_paths(inputs: list[str]) -> list[Path]:
 def capture(log_text: str, crate: str, target: str, exit_code: int) -> dict[str, Any]:
     """Parse a cargo-test log into a one-suite summary fragment.
 
-    Multiple ``test result:`` lines (unit + doc tests) are summed; a log with
-    none is an error (the suite never ran, which must not masquerade as
-    green).
+    Multiple ``test result:`` lines are summed. A log with none is recorded as
+    incomplete, preserving the process exit while remaining ineligible for green.
     """
     matches = list(RESULT_RE.finditer(log_text))
-    if not matches:
-        raise ValueError(
-            f"no 'test result:' line found for {crate}::{target}; "
-            "the suite did not run to completion"
-        )
     passed = sum(int(m.group("passed")) for m in matches)
     failed = sum(int(m.group("failed")) for m in matches)
     verdicts = {m.group("verdict") for m in matches}
     if verdicts - {"ok", "FAILED"}:
         raise ValueError(f"unknown libtest verdict: {sorted(verdicts)}")
     record = {"passed": passed, "failed": failed, "exit_code": exit_code,
-              "verdict": "FAILED" if "FAILED" in verdicts else "ok"}
+              "verdict": "incomplete" if not matches else "FAILED" if "FAILED" in verdicts else "ok"}
     errors = observation_errors(record)
     if errors:
         raise ValueError("; ".join(errors))
@@ -98,6 +94,17 @@ def capture(log_text: str, crate: str, target: str, exit_code: int) -> dict[str,
         },
         f"{crate}::{target}": record,
     }
+
+
+def log_binary(log_text: str, target: str) -> Path:
+    text = re.sub(r"\x1b\[[0-9;]*m", "", log_text)
+    headers = re.findall(r"Running (tests/[^\s]+\.rs) \(([^()\n]+)\)", text)
+    if len(headers) != 1 or headers[0][0] != f"tests/{target}.rs":
+        raise ValueError(f"log must identify exactly the integration test tests/{target}.rs")
+    binary = Path(headers[0][1])
+    if not re.fullmatch(re.escape(target.replace("-", "_")) + r"-[0-9a-f]{16}(?:\.exe)?", binary.name):
+        raise ValueError(f"executed binary name does not match integration target {target}")
+    return binary
 
 
 def merge(fragments: list[dict[str, Any]], on_conflict: str) -> dict[str, Any]:
@@ -227,16 +234,20 @@ def cmd_capture(args: argparse.Namespace) -> int:
             relative = str(log_path.resolve().relative_to(results))
             contained_path(results, relative)
             record["log"] = {"path": relative, "sha256": sha256_file(log_path)}
-            text = re.sub(r"\x1b\[[0-9;]*m", "", log_path.read_text(errors="replace"))
-            binaries = set(re.findall(r"Running [^\n]* \(([^()\n]+)\)", text))
-            if len(binaries) != 1:
-                raise ValueError("capture requires exactly one executed integration-test binary")
-            binary = Path(next(iter(binaries)))
-            if not binary.is_absolute():
-                binary = root / binary
-            record["binary"] = archive_binary(binary, results)
             record["command"] = ["cargo", "test", "-p", args.crate, "--test",
                                   args.target, "--", "--nocapture"]
+            try:
+                binary = log_binary(log_path.read_text(errors="replace"), args.target)
+                if not binary.is_absolute():
+                    binary = root / binary
+                record["binary"] = archive_binary(binary, results)
+                record["binary"]["executed_name"] = binary.name
+            except (ValueError, OSError) as exc:
+                if record["verdict"] != "incomplete":
+                    raise
+                # A killed build may have no executable yet. Preserve its
+                # actual exit/log receipt; it can never count as green.
+                record["capture_errors"] = [str(exc)]
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -292,11 +303,11 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
     frag = capture(log, "ftui-layout", "pane_margin", 0)
     if frag["ftui-layout::pane_margin"] != {"passed": 4, "failed": 0, "verdict": "ok", "exit_code": 0}:
         failures.append(f"capture summed wrong: {frag}")
-    try:
-        capture("no summary here", "ftui-layout", "pane_margin", 0)
-        failures.append("capture accepted a log without a result line")
-    except ValueError:
-        pass
+    interrupted = capture("Killed\n", "ftui-layout", "pane_margin", 137)
+    if interrupted["ftui-layout::pane_margin"]["exit_code"] != 137 or interrupted["ftui-layout::pane_margin"]["verdict"] != "incomplete":
+        failures.append("capture lost an interrupted process's exit status")
+    if check(interrupted, require_all=False)["ok"]:
+        failures.append("incomplete execution counted as green")
 
     # merge: every duplicate identity fails by default; worst keeps red.
     a = capture("test result: ok. 5 passed; 0 failed;", "ftui-layout", "pane_margin", 0)
@@ -343,6 +354,19 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
     empty[first] = {"passed": 0, "failed": 0, "verdict": "ok", "exit_code": 0}
     if check(empty, require_all=True)["ok"]:
         failures.append("zero-passed suite must not count as green")
+    for value in (-1, True, "1", 1.0, None):
+        invalid = dict(complete)
+        invalid[first] = {**complete[first], "passed": value}
+        if check(invalid, require_all=True)["ok"]:
+            failures.append(f"invalid count accepted: {value!r}")
+    failed_verdict = capture("test result: FAILED. 3 passed; 0 failed;", "ftui-layout", "pane_margin", 0)
+    if check(failed_verdict, require_all=False)["ok"]:
+        failures.append("FAILED verdict laundered into green by zero failed count")
+    try:
+        log_binary("Running tests/unrelated.rs (/tmp/unrelated-0123456789abcdef)", "pane_margin")
+        failures.append("log attributed to the wrong integration target")
+    except ValueError:
+        pass
 
     # round-trip through the CLI surface (tempdir).
     with nullcontext(tempfile.mkdtemp(prefix="pane-summary-selftest-")) as tmp:
@@ -351,6 +375,26 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
         merged2 = merge([_load_json(p) for p in _fragment_paths([tmp])], "error")
         if "ftui-layout::pane_margin" not in merged2:
             failures.append("directory fragment discovery failed")
+        # Real capture CLI, synthetic killed-process log: retain the caller's
+        # observed status rather than losing it to a parse failure.
+        killed_log = Path(tmp) / "killed.log"
+        killed_log.write_text("Killed\n")
+        receipt = Path(tmp) / "killed-receipt.json"
+        response = subprocess.run([sys.executable, str(Path(__file__).resolve()), "capture",
+                                   "--crate", "ftui-layout", "--target", "pane_margin",
+                                   "--log", str(killed_log), "--exit-code", "137",
+                                   "--results-dir", tmp, "--out", str(receipt)], text=True, capture_output=True)
+        (Path(tmp) / "capture.stdout").write_text(response.stdout)
+        (Path(tmp) / "capture.stderr").write_text(response.stderr)
+        if response.returncode != 0 or not receipt.is_file():
+            failures.append(f"interrupted CLI receipt missing: {response.stderr}")
+        else:
+            captured = _load_json(receipt)
+            record = captured["ftui-layout::pane_margin"]
+            if record["exit_code"] != 137 or record["verdict"] != "incomplete" or not record.get("log"):
+                failures.append("interrupted CLI lost exit/log evidence")
+            if check(captured, require_all=False)["ok"]:
+                failures.append("interrupted CLI receipt accepted as green")
 
     if failures:
         for f in failures:

@@ -167,8 +167,8 @@ def observation_errors(record: Any) -> list[str]:
         value = record.get(field)
         if type(value) is not int or value < 0:
             errors.append(f"{field} must be a nonnegative integer")
-    if record.get("verdict") not in ("ok", "FAILED"):
-        errors.append("verdict must be 'ok' or 'FAILED'")
+    if record.get("verdict") not in ("ok", "FAILED", "incomplete"):
+        errors.append("verdict must be 'ok', 'FAILED', or 'incomplete'")
     return errors
 
 
@@ -300,11 +300,14 @@ def check_binary(binary: Any, results: Path) -> None:
 def validate_observation_artifacts(record: dict[str, Any], crate: str, target: str,
                                    results: Path, root: Path,
                                    expected: dict[str, Any]) -> list[str]:
-    from pane_test_summary_aggregate import capture, SCHEMA as summary_schema, SCHEMA_VERSION as summary_version
+    from pane_test_summary_aggregate import capture, log_binary, SCHEMA as summary_schema, SCHEMA_VERSION as summary_version
     errors = provenance_errors(record.get("provenance"), expected, root,
                                 "scripts/pane_test_summary_aggregate.py", summary_schema, summary_version)
     try:
         log = checked_ref(record.get("log"), results)
+        executed = log_binary(log.read_text(errors="strict"), target)
+        if not isinstance(record.get("binary"), dict) or record["binary"].get("executed_name") != executed.name:
+            errors.append(f"{crate}::{target}: archived binary identity differs from the test log")
         parsed = capture(log.read_text(errors="strict"), crate, target, record["exit_code"])
         for key in ("passed", "failed", "verdict", "exit_code"):
             if parsed[f"{crate}::{target}"][key] != record.get(key):
@@ -724,12 +727,14 @@ def _synthetic_release_fixture(*, cli_identity: bool = False) -> tuple[Path, Pat
     for spec in DIMENSIONS.values():
         for crate, target in spec["suites"]:
             log = results / f"{crate}__{target}.log"
-            log.write_text("test result: ok. 3 passed; 0 failed; 0 ignored;\n")
+            executed_name = f"{target}-0123456789abcdef"
+            log.write_text(f"Running tests/{target}.rs (target/debug/deps/{executed_name})\n"
+                           "test result: ok. 3 passed; 0 failed; 0 ignored;\n")
             key = f"{crate}::{target}"
             record = aggregate.capture(log.read_text(), crate, target, 0)[key]
             record.update({"provenance": receipt("scripts/pane_test_summary_aggregate.py", aggregate.SCHEMA, aggregate.SCHEMA_VERSION),
                            "log": {"path": log.name, "sha256": sha256_file(log)},
-                           "binary": dict(binary_ref),
+                           "binary": {**binary_ref, "executed_name": executed_name},
                            "command": ["cargo", "test", "-p", crate, "--test", target, "--", "--nocapture"]})
             summary[key] = record
     summary["_meta"] = {"schema": aggregate.SCHEMA, "schema_version": aggregate.SCHEMA_VERSION}

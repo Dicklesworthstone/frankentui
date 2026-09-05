@@ -53,6 +53,7 @@ import argparse
 from contextlib import nullcontext
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -207,14 +208,16 @@ def build_index(
     harness_dir = out_dir / HARNESS_SUBDIR
     manifest_path = harness_dir / "manifest.json"
     if not manifest_path.is_file():
-        raise SystemExit(
+        raise ValueError(
             f"replay manifest missing: {manifest_path} "
             "(did the pane_profile_harness run produce artifacts?)"
         )
     try:
-        manifest = json.loads(manifest_path.read_text())
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"replay manifest is not valid JSON: {manifest_path}: {exc}") from exc
+        manifest = load_json(manifest_path)
+    except ValueError as exc:
+        raise ValueError(f"replay manifest is not valid JSON: {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("replay manifest must be an object")
 
     def rel(path: Path) -> str:
         return str(path.relative_to(out_dir))
@@ -468,6 +471,13 @@ def validate_index(
     if any(not isinstance(b.get("label"), str) for b in binaries):
         raise ValidationError("symbolization binary labels must be strings")
     labels = {b.get("label") for b in binaries}
+    for binary in binaries:
+        for flag in ("symbolization_ready", "addr2line_ready"):
+            if type(binary.get(flag)) is not bool:
+                errors.append(f"symbolization: {flag} must be boolean")
+    all_ready = bool(binaries) and all(b.get("symbolization_ready") is True for b in binaries)
+    if type(symbolization.get("all_symbolization_ready")) is not bool or symbolization.get("all_symbolization_ready") != all_ready:
+        errors.append("symbolization: all_symbolization_ready must match binary readiness")
     if len(labels) != len(binaries) or labels - set(EXPECTED_BINARY_LABELS):
         errors.append("symbolization: unknown or duplicate binary identity")
     for expected in EXPECTED_BINARY_LABELS:
@@ -585,7 +595,7 @@ def load_golden(golden_path: Path) -> Dict[str, Any]:
     if not isinstance(golden, dict):
         raise ValueError("golden must be an object")
     if golden.get("schema") != GOLDEN_SCHEMA:
-        raise SystemExit(
+        raise ValueError(
             f"golden schema mismatch: expected {GOLDEN_SCHEMA!r}, got {golden.get('schema')!r}"
         )
     if type(golden.get("schema_version")) is not int or golden.get("schema_version") != GOLDEN_SCHEMA_VERSION:
@@ -759,10 +769,12 @@ def cmd_certify(args: argparse.Namespace) -> int:
             print(f"index not found: {index_path}", file=sys.stderr)
             return 1
         try:
-            index = json.loads(index_path.read_text())
-        except json.JSONDecodeError as exc:
+            index = load_json(index_path)
+        except ValueError as exc:
             print(f"index is not valid JSON: {index_path}: {exc}", file=sys.stderr)
             return 1
+    if not isinstance(index, dict) or not isinstance(index.get("replay"), dict):
+        raise ValueError("certification requires an object containing a replay object")
     golden_path = Path(args.golden).resolve()
 
     matrix_passed: Optional[bool] = None
@@ -935,6 +947,30 @@ def cmd_selftest(_: argparse.Namespace) -> int:
         except ValidationError as exc:
             check(f"ready bundle passes strict validation ({exc})", False)
 
+        for field in ("symbolization_ready", "addr2line_ready", "all_symbolization_ready"):
+            malformed = json.loads(json.dumps(index))
+            if field == "all_symbolization_ready":
+                malformed["symbolization"][field] = "false"
+            else:
+                malformed["symbolization"]["binaries"][0][field] = "false"
+            candidate = ready_dir / f"invalid-{field}.json"
+            candidate.write_text(json.dumps(malformed))
+            try:
+                validate_index(candidate, out_dir=ready_dir, require_symbolization=True)
+                check(f"string {field} rejected", False)
+            except ValidationError:
+                check(f"string {field} rejected", True)
+
+        malformed = json.loads(json.dumps(index))
+        malformed["replay"]["manifest"] = "wrong-type"
+        candidate = ready_dir / "invalid-manifest-reference.json"
+        candidate.write_text(json.dumps(malformed))
+        try:
+            validate_index(candidate, out_dir=ready_dir, require_symbolization=True)
+            check("malformed manifest reference rejected", False)
+        except ValidationError:
+            check("malformed manifest reference rejected", True)
+
         # Tamper: change a referenced file after emission -> checksum must fail.
         (ready_dir / HARNESS_SUBDIR / "final_snapshot.json").write_text('{"nodes": [9,9]}\n')
         try:
@@ -982,6 +1018,8 @@ def cmd_selftest(_: argparse.Namespace) -> int:
 
         cert_drift = build_certification(index, matching_golden, matrix_passed=False)
         check("failed matrix is not certified", cert_drift["classification"] == "differential_matrix_failed")
+        unobserved = build_certification(index, matching_golden, matrix_passed=None)
+        check("unobserved matrix is diagnostic only", unobserved["classification"] == "golden_matched_unverified")
 
         drift_golden = json.loads(json.dumps(matching_golden))
         drift_golden["scenarios"]["selftest-scenario"]["final_hash"] = 999
@@ -1010,8 +1048,39 @@ def cmd_selftest(_: argparse.Namespace) -> int:
                 empty_dir, test_mode=True, perf_stat=False, stack_reports=False, runner="selftest"
             )
             check("emit refuses missing replay manifest", False)
-        except SystemExit:
+        except ValueError:
             check("emit refuses missing replay manifest", True)
+
+    from pane_release_evidence import _synthetic_release_fixture
+    root, results, expected, _bundle, _cert = _synthetic_release_fixture(cli_identity=True)
+    env = {**os.environ, "PANE_RELEASE_RUN_ID": expected["run_id"]}
+    command = [sys.executable, str(root / "scripts/pane_replay_artifacts.py"), "certify",
+               "--index", str(results / INDEX_FILENAME), "--golden", str(root / "scripts/pane_replay_golden.json"),
+               "--results-dir", str(results), "--out-dir", str(results / "direct-certification"),
+               "--require-match", "--json"]
+    def cli_case(name, summary, should_pass):
+        path = results / f"direct-{name}.json"
+        path.write_text(json.dumps(summary))
+        response = subprocess.run([*command, "--differential-summary", str(path)],
+                                  env=env, text=True, capture_output=True)
+        (results / f"direct-{name}.stdout").write_text(response.stdout)
+        (results / f"direct-{name}.stderr").write_text(response.stderr)
+        try:
+            output = json.loads(response.stdout)
+        except ValueError:
+            check(f"direct certify {name} emits JSON", False)
+            return
+        check(f"direct certify {name}", response.returncode == (0 if should_pass else 1)
+              and output.get("ok") is should_pass)
+    complete = load_json(results / "differential_summary.json")
+    cli_case("complete-synthetic-evidence", complete, True)
+    cli_case("bare-counts", {"ftui-layout::pane_determinism_matrix": {
+        "passed": 1, "failed": 0, "exit_code": 0, "verdict": "ok"}}, False)
+    for field in ("provenance", "log", "binary"):
+        incomplete = json.loads(json.dumps(complete))
+        del incomplete["ftui-layout::pane_determinism_matrix"][field]
+        cli_case(f"missing-{field}", incomplete, False)
+    print(f"direct certification policy fixture retained at {root}; synthetic observations only")
 
     if failures:
         print(f"SELFTEST FAILED: {len(failures)} check(s) failed")
