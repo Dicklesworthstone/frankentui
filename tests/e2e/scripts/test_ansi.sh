@@ -31,11 +31,11 @@ run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -43,7 +43,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "ANSI assertions failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "ANSI assertions failed"
@@ -68,11 +68,11 @@ ansi_sgr_colors() {
     # SGR sequences should be present (CSI ... m)
     # At minimum, the presenter emits color codes for styled widgets.
     # Match any SGR sequence: ESC [ <params> m
-    grep -a -P -q '\x1b\[\d+(?:;\d+)*m' "$output_file" || return 1
+    grep -a -E -q $'\x1b\\[[0-9]+(;[0-9]+)*m' "$output_file" || return 1
     log_debug "SGR color sequences found in output"
 
     # Verify reset sequence appears (cleanup or style transitions)
-    grep -a -P -q '\x1b\[0?m' "$output_file" || return 1
+    grep -a -E -q $'\x1b\\[0?m' "$output_file" || return 1
     log_debug "SGR reset sequence found"
 }
 
@@ -91,7 +91,7 @@ ansi_sgr_reset() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # The output must contain SGR reset (ESC[0m or ESC[m)
-    grep -a -P -q '\x1b\[0?m' "$output_file" || return 1
+    grep -a -E -q $'\x1b\\[0?m' "$output_file" || return 1
     log_debug "SGR reset found in output"
 
     # Cursor show must also be present (general cleanup)
@@ -114,7 +114,7 @@ ansi_cursor_position() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # CUP sequence: ESC [ row ; col H  (cursor positioning)
-    grep -a -P -q '\x1b\[\d+;\d+H' "$output_file" || return 1
+    grep -a -E -q $'\x1b\\[[0-9]+;[0-9]+H' "$output_file" || return 1
     log_debug "CUP cursor position sequences found"
 }
 

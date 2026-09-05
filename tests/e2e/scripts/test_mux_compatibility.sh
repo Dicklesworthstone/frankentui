@@ -55,7 +55,7 @@ emit_jsonl() {
     local event="$1"
     shift
     local ts
-    ts="$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")"
+    ts="$("${E2E_PYTHON:-python3}" -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"))')" || return 2
 
     # Build JSON with jq if available, otherwise use printf
     if command -v jq >/dev/null 2>&1; then
@@ -150,12 +150,12 @@ run_case() {
         return 0
     fi
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
     emit_case_start "$name"
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         emit_case_end "$name" "passed" "$duration_ms"
@@ -164,7 +164,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "assertions failed"
     emit_case_end "$name" "failed" "$duration_ms"
@@ -200,7 +200,7 @@ assert_no_sync_output() {
 # Check for scroll region sequences (CSI n;m r)
 assert_has_scroll_region() {
     local output_file="$1"
-    if grep -a -o -P '\x1b\[[0-9]+;[0-9]+r' "$output_file" >/dev/null 2>&1; then
+    if grep -a -o -E $'\x1b\\[[0-9]+;[0-9]+r' "$output_file" >/dev/null 2>&1; then
         emit_assertion "has_scroll_region" "pass" "null"
         return 0
     fi
@@ -210,7 +210,7 @@ assert_has_scroll_region() {
 
 assert_no_scroll_region() {
     local output_file="$1"
-    if grep -a -o -P '\x1b\[[0-9]+;[0-9]+r' "$output_file" >/dev/null 2>&1; then
+    if grep -a -o -E $'\x1b\\[[0-9]+;[0-9]+r' "$output_file" >/dev/null 2>&1; then
         emit_assertion "no_scroll_region" "fail" "{\"reason\":\"DECSTBM found but should not be present in mux\"}"
         return 1
     fi
@@ -222,12 +222,12 @@ assert_no_scroll_region() {
 assert_no_passthrough_wrap() {
     local output_file="$1"
     # tmux passthrough: ESC P tmux; ... ESC \
-    if grep -a -o -P '\x1bPtmux;' "$output_file" >/dev/null 2>&1; then
+    if grep -a -o -F $'\x1bPtmux;' "$output_file" >/dev/null 2>&1; then
         emit_assertion "no_passthrough_wrap" "fail" "{\"reason\":\"tmux passthrough found but not expected\"}"
         return 1
     fi
     # screen passthrough: ESC P ... ESC \
-    if grep -a -o -P '\x1bP[^\x1b]*\x1b\\\\' "$output_file" >/dev/null 2>&1; then
+    if grep -a -o -E $'\x1bP[^\x1b]*\x1b[\\\\]{2}' "$output_file" >/dev/null 2>&1; then
         emit_assertion "no_passthrough_wrap" "fail" "{\"reason\":\"screen passthrough found but not expected\"}"
         return 1
     fi

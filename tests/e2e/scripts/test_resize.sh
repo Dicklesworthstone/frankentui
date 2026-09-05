@@ -31,8 +31,9 @@ fi
 RESIZE_SEED="${RESIZE_SEED:-0}"
 RESIZE_ENV_JSONL="$E2E_LOG_DIR/resize_env_$(date +%Y%m%d_%H%M%S).jsonl"
 mkdir -p "$E2E_LOG_DIR"
+RESIZE_ENV_TIMESTAMP="$("${E2E_PYTHON:-python3}" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))')" || exit 2
 cat > "$RESIZE_ENV_JSONL" <<EOF
-{"event":"env","timestamp":"$(date -Iseconds)","seed":$RESIZE_SEED,"term":"${TERM:-}","colorterm":"${COLORTERM:-}","no_color":"${NO_COLOR:-}"}
+{"event":"env","timestamp":"$RESIZE_ENV_TIMESTAMP","seed":$RESIZE_SEED,"term":"${TERM:-}","colorterm":"${COLORTERM:-}","no_color":"${NO_COLOR:-}"}
 {"event":"rust","rustc":"$(rustc --version 2>/dev/null || echo 'N/A')","cargo":"$(cargo --version 2>/dev/null || echo 'N/A')"}
 {"event":"git","commit":"$(git rev-parse HEAD 2>/dev/null || echo 'N/A')","branch":"$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'N/A')"}
 EOF
@@ -43,11 +44,11 @@ run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -55,7 +56,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "assertion failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "assertion failed"
@@ -187,7 +188,7 @@ resize_scroll_region() {
     # DECSTBM would be: ESC [ 1 ; 18 r  (hex: 1b 5b 31 3b 31 38 72)
     # Actually the exact range depends on implementation.
     # Just check for any scroll region setup (ESC [ ... r pattern)
-    if grep -a -o -P '\x1b\[\d+;\d+r' "$output_file" >/dev/null 2>&1; then
+    if grep -a -o -E $'\x1b\\[[0-9]+;[0-9]+r' "$output_file" >/dev/null 2>&1; then
         log_debug "Scroll region sequence found"
     else
         # If no scroll region found, that's ok - might be using overlay mode

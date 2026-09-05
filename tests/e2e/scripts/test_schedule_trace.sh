@@ -106,7 +106,8 @@ log_fail() {
 
 mkdir -p "$TRACE_OUTPUT_DIR" "$GOLDEN_DIR" "$EFFECT_QUEUE_DIR"
 
-START_TS="$(date +%s%3N)"
+# BSD date lacks %N; elapsed timing uses the real monotonic clock.
+START_TS="$(e2e_monotonic_ms)" || exit 2
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
 # Environment log (JSONL format)
@@ -126,14 +127,14 @@ log_info "Output dir: $TRACE_OUTPUT_DIR"
 # =============================================================================
 
 log_info "Building ftui-runtime tests..."
-BUILD_START="$(date +%s%3N)"
+BUILD_START="$(e2e_monotonic_ms)" || exit 2
 
 if ! cargo build -p ftui-runtime --tests 2>"$TRACE_OUTPUT_DIR/build.log"; then
     log_error "Build failed! See $TRACE_OUTPUT_DIR/build.log"
     exit 2
 fi
 
-BUILD_END="$(date +%s%3N)"
+BUILD_END="$(e2e_monotonic_ms)" || exit 2
 BUILD_MS=$((BUILD_END - BUILD_START))
 log_debug "Build completed in ${BUILD_MS}ms"
 
@@ -142,7 +143,7 @@ log_debug "Build completed in ${BUILD_MS}ms"
 # =============================================================================
 
 log_info "Running deterministic trace test..."
-TEST_START="$(date +%s%3N)"
+TEST_START="$(e2e_monotonic_ms)" || exit 2
 
 # Run the specific test that outputs the checksum
 # We use a special test that captures the trace and outputs checksum
@@ -155,7 +156,7 @@ else
     exit 2
 fi
 
-TEST_END="$(date +%s%3N)"
+TEST_END="$(e2e_monotonic_ms)" || exit 2
 TEST_MS=$((TEST_END - TEST_START))
 log_debug "Test completed in ${TEST_MS}ms"
 
@@ -313,7 +314,7 @@ fi
 # Final results
 # =============================================================================
 
-END_TS="$(date +%s%3N)"
+END_TS="$(e2e_monotonic_ms)" || exit 2
 TOTAL_MS=$((END_TS - START_TS))
 
 # Write results JSONL

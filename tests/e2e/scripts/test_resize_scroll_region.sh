@@ -50,11 +50,11 @@ run_case() {
         return 0
     fi
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -62,7 +62,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "resize/scroll-region assertions failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "resize/scroll-region assertions failed"
@@ -109,11 +109,13 @@ resize_scroll_region_inline_auto() {
     local seed="${FTUI_HARNESS_SEED:-0}"
     local input_mode="${FTUI_HARNESS_INPUT_MODE:-runtime}"
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
+    local start_ts_ms
+    start_ts_ms="$("${E2E_PYTHON:-python3}" -c 'import time; print(time.time_ns() // 1_000_000)')" || return 2
 
     log_test_start "resize_scroll_region_inline_auto"
 
-    jsonl_log "$jsonl_file" "{\"run_id\":\"$run_id\",\"ts_ms\":${start_ms},\"event\":\"start\",\"seed\":\"$seed\",\"initial_cols\":80,\"initial_rows\":24,\"resize_cols\":100,\"resize_rows\":30,\"capabilities\":{\"screen_mode\":\"inline\",\"auto_ui_height\":true,\"ui_height\":6,\"input_mode\":\"$input_mode\"}}"
+    jsonl_log "$jsonl_file" "{\"run_id\":\"$run_id\",\"ts_ms\":${start_ts_ms},\"event\":\"start\",\"seed\":\"$seed\",\"initial_cols\":80,\"initial_rows\":24,\"resize_cols\":100,\"resize_rows\":30,\"capabilities\":{\"screen_mode\":\"inline\",\"auto_ui_height\":true,\"ui_height\":6,\"input_mode\":\"$input_mode\"}}"
 
     TERM="xterm-256color" \
     PTY_COLS=80 \
@@ -133,14 +135,16 @@ resize_scroll_region_inline_auto() {
     local checksum
     checksum=$(sha256sum "$output_file" | awk '{print $1}')
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
+    local end_ts_ms
+    end_ts_ms="$("${E2E_PYTHON:-python3}" -c 'import time; print(time.time_ns() // 1_000_000)')" || return 2
     local content_changed=false
     if grep -a -q "Resize: 100x30" "$output_file"; then
         content_changed=true
     fi
 
-    jsonl_log "$jsonl_file" "{\"run_id\":\"$run_id\",\"ts_ms\":${end_ms},\"event\":\"summary\",\"bytes\":${size},\"checksum\":\"${checksum}\",\"duration_ms\":${duration_ms},\"content_changed\":${content_changed}}"
+    jsonl_log "$jsonl_file" "{\"run_id\":\"$run_id\",\"ts_ms\":${end_ts_ms},\"event\":\"summary\",\"bytes\":${size},\"checksum\":\"${checksum}\",\"duration_ms\":${duration_ms},\"content_changed\":${content_changed}}"
 
     # Ensure UI rendered.
     grep -a -q "claude-3.5" "$output_file" || return 1

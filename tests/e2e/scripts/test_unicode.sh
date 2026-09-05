@@ -65,11 +65,11 @@ run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -78,7 +78,7 @@ run_case() {
 
     local exit_code=$?
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     if [[ "$exit_code" -eq 2 ]]; then
         local reason="${SKIP_REASON:-skipped}"

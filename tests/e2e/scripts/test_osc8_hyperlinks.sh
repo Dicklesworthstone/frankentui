@@ -41,11 +41,11 @@ run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -53,7 +53,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "OSC 8 assertions failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "OSC 8 assertions failed"
@@ -78,7 +78,7 @@ osc8_open_sequence() {
 
     # OSC 8 open sequence: ESC ] 8 ; ; URL (BEL or ST terminator)
     # Should contain at least one OSC 8 open with URL
-    if grep -a -P -q '\x1b\]8;;https://[^\x07\x1b]+[\x07\x1b]' "$output_file"; then
+    if grep -a -E -q $'\x1b]8;;https://[^\x07\x1b]+[\x07\x1b]' "$output_file"; then
         log_debug "OSC 8 open sequence with URL found"
         return 0
     fi
@@ -105,7 +105,7 @@ osc8_close_sequence() {
 
     # OSC 8 close sequence: ESC ] 8 ; ; (empty URL) followed by BEL or ST
     # This closes any active hyperlink
-    if grep -a -P -q '\x1b\]8;;[\x07\x1b]' "$output_file"; then
+    if grep -a -E -q $'\x1b]8;;[\x07\x1b]' "$output_file"; then
         log_debug "OSC 8 close sequence found"
         return 0
     fi
@@ -132,7 +132,7 @@ osc8_multiple_links() {
 
     # Count distinct URLs in OSC 8 sequences
     local url_count
-    url_count=$(grep -a -o -P '\x1b\]8;;https://[^\x07\x1b]+' "$output_file" 2>/dev/null | sort -u | wc -l | tr -d ' ')
+    url_count=$(grep -a -o -E $'\x1b]8;;https://[^\x07\x1b]+' "$output_file" 2>/dev/null | sort -u | wc -l | tr -d ' ')
 
     if [[ "$url_count" -ge 2 ]]; then
         log_debug "Found $url_count distinct OSC 8 URLs"
@@ -161,13 +161,13 @@ osc8_reset_after_frame() {
 
     # Count opens and closes - closes should be >= opens (link transitions + frame end)
     local open_count close_count
-    open_count=$(grep -a -c -P '\x1b\]8;;https://' "$output_file" 2>/dev/null || echo "0")
-    close_count=$(grep -a -c -P '\x1b\]8;;[\x07\x1b]' "$output_file" 2>/dev/null || echo "0")
+    open_count=$(grep -a -c -F $'\x1b]8;;https://' "$output_file" 2>/dev/null || echo "0")
+    close_count=$(grep -a -c -E $'\x1b]8;;[\x07\x1b]' "$output_file" 2>/dev/null || echo "0")
 
     # Remove the URL matches from close count (they also match the pattern partially)
     # Actually, the close pattern matches empty URL only, so this should be fine
     # But we need to exclude the URL opens from the close count
-    close_count=$(grep -a -o -P '\x1b\]8;;[\x07\x1b\\]' "$output_file" 2>/dev/null | wc -l | tr -d ' ')
+    close_count=$(grep -a -o -E $'\x1b]8;;[\x07\x1b\\\\]' "$output_file" 2>/dev/null | wc -l | tr -d ' ')
 
     log_debug "OSC 8 opens: $open_count, closes: $close_count"
 

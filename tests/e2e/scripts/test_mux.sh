@@ -41,11 +41,11 @@ run_case() {
         return 0
     fi
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -53,7 +53,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "mux assertions failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "mux assertions failed"
@@ -67,7 +67,7 @@ assert_has_scroll_region() {
 
 assert_no_scroll_region() {
     local output_file="$1"
-    if grep -a -o -P '\x1b\[[0-9]+;[0-9]+r' "$output_file" >/dev/null 2>&1; then
+    if grep -a -o -E $'\x1b\\[[0-9]+;[0-9]+r' "$output_file" >/dev/null 2>&1; then
         return 1
     fi
     return 0

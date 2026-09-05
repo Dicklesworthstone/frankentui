@@ -249,11 +249,12 @@ e2e_fixture_self_test() {
         fi
     fi
     if declare -f e2e_determinism_self_test >/dev/null 2>&1; then
-        e2e_determinism_self_test
+        e2e_determinism_self_test || return 1
     else
         echo "WARN: e2e_determinism_self_test not available (logging.sh not sourced)" >&2
     fi
-    e2e_tools_self_test
+    e2e_tools_self_test || return 1
+    e2e_clock_self_test
 }
 
 e2e_tools_self_test() (

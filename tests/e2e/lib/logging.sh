@@ -91,7 +91,7 @@ e2e_timestamp() {
         printf 'T%06d' "$seq"
         return 0
     fi
-    date -Iseconds
+    "${E2E_PYTHON:-python3}" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))'
 }
 
 e2e_run_id() {
@@ -193,7 +193,7 @@ e2e_run_start_ms() {
         printf '0'
         return 0
     fi
-    date +%s%3N
+    e2e_now_ms
 }
 
 e2e_now_ms() {
@@ -204,7 +204,40 @@ e2e_now_ms() {
         printf '%s' "$seq"
         return 0
     fi
-    date +%s%3N
+    "${E2E_PYTHON:-python3}" -c 'import time; print(time.time_ns() // 1_000_000)'
+}
+
+# Elapsed durations must use the real monotonic clock, including deterministic
+# runs. e2e_now_ms is a synthetic event clock in that mode, not a stopwatch.
+e2e_monotonic_ms() {
+    "${E2E_PYTHON:-python3}" -c 'import time; print(time.monotonic_ns() // 1_000_000)'
+}
+
+e2e_clock_self_test() {
+    local start_ms end_ms mode stamp
+    local -x E2E_DETERMINISTIC=0
+    for mode in 0 1; do
+        E2E_DETERMINISTIC="$mode"
+        start_ms="$(e2e_monotonic_ms)" || return 1
+        "${E2E_PYTHON:-python3}" -c 'import time; time.sleep(0.02)' || return 1
+        end_ms="$(e2e_monotonic_ms)" || return 1
+        if [[ ! "$start_ms" =~ ^[0-9]+$ || ! "$end_ms" =~ ^[0-9]+$ ]] ||
+            (( end_ms - start_ms < 20 )); then
+            echo "Monotonic clock did not measure the real wait (deterministic=$mode)" >&2
+            return 1
+        fi
+    done
+    E2E_DETERMINISTIC=0
+    stamp="$(e2e_now_ms)" || return 1
+    "${E2E_PYTHON:-python3}" -c 'import sys, time; assert abs(time.time_ns() // 1_000_000 - int(sys.argv[1])) < 10_000' "$stamp" || return 1
+    stamp="$(e2e_timestamp)" || return 1
+    "${E2E_PYTHON:-python3}" -c 'from datetime import datetime; import sys; assert datetime.fromisoformat(sys.argv[1]).utcoffset() is not None' "$stamp" || return 1
+    # A missing interpreter must not yield an empty value treated as zero.
+    if E2E_PYTHON=/__ftui_missing_clock_python__ e2e_monotonic_ms; then
+        echo "Monotonic clock accepted a missing interpreter" >&2
+        return 1
+    fi
+    echo "E2E clocks: real elapsed time in both modes; wall time and error propagation passed"
 }
 
 e2e_log_stamp() {
@@ -1451,7 +1484,7 @@ log() {
     local level="$1"
     shift
     local ts
-    ts="$(date +"%Y-%m-%d %H:%M:%S.%3N")"
+    ts="$("${E2E_PYTHON:-python3}" -c 'from datetime import datetime; print(datetime.now().isoformat(sep=" ", timespec="milliseconds"))')" || return 2
     echo "[$ts] [$level] $*" | tee -a "$LOG_FILE"
 }
 
@@ -1513,7 +1546,9 @@ record_result() {
     mkdir -p "$E2E_RESULTS_DIR"
 
     local result_file
-    result_file="$E2E_RESULTS_DIR/${name}_$(date +%s%N)_$$.json"
+    local result_ns
+    result_ns="$("${E2E_PYTHON:-python3}" -c 'import time; print(time.time_ns())')" || return 2
+    result_file="$E2E_RESULTS_DIR/${name}_${result_ns}_$$.json"
 
     if command -v jq >/dev/null 2>&1; then
         if [[ -n "$error_msg" ]]; then

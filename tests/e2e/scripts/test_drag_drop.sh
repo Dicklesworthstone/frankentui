@@ -44,7 +44,7 @@ emit_jsonl() {
     local event="$1"
     shift
     local ts
-    ts="$(date -Iseconds)"
+    ts="$("${E2E_PYTHON:-python3}" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))')" || return 2
     local fields="\"ts\":\"$ts\",\"suite\":\"$TEST_SUITE\",\"event\":\"$event\""
     while [[ $# -gt 0 ]]; do
         local key="$1"
@@ -64,7 +64,7 @@ emit_jsonl() {
 run_rust_e2e_tests() {
     local name="rust_e2e_tests"
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     log_test_start "$name"
     emit_jsonl "test_start" "test" "$name"
@@ -76,7 +76,7 @@ run_rust_e2e_tests() {
     output=$(cargo test -p ftui-demo-showcase --test drag_drop_e2e -- --nocapture 2>&1) || exit_code=$?
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
 
     # Log output
@@ -85,8 +85,8 @@ run_rust_e2e_tests() {
     # Parse test results from cargo output
     local passed
     local failed
-    passed=$(echo "$output" | grep -E "^test result:" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
-    failed=$(echo "$output" | grep -E "^test result:" | grep -oP '\d+ failed' | grep -oP '\d+' || echo "0")
+    passed=$(echo "$output" | grep -E "^test result:" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
+    failed=$(echo "$output" | grep -E "^test result:" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
 
     if [[ $exit_code -eq 0 ]]; then
         log_test_pass "$name"
@@ -104,7 +104,7 @@ run_rust_e2e_tests() {
 run_snapshot_tests() {
     local name="snapshot_tests"
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     log_test_start "$name"
     emit_jsonl "test_start" "test" "$name"
@@ -126,7 +126,7 @@ run_snapshot_tests() {
     done
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
 
     if [[ $missing -eq 0 ]]; then
@@ -145,7 +145,7 @@ run_snapshot_tests() {
 verify_invariants() {
     local name="invariants_check"
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     log_test_start "$name"
     emit_jsonl "test_start" "test" "$name"
@@ -168,7 +168,7 @@ verify_invariants() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
 
     if [[ $invariants_documented -ge 4 ]]; then
@@ -187,7 +187,7 @@ verify_invariants() {
 check_determinism() {
     local name="determinism_check"
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     log_test_start "$name"
     emit_jsonl "test_start" "test" "$name"
@@ -199,7 +199,7 @@ check_determinism() {
     output=$(cargo test -p ftui-demo-showcase --test drag_drop_e2e e2e_deterministic -- --nocapture 2>&1) || exit_code=$?
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
 
     # Check for hash match in output
@@ -222,7 +222,7 @@ check_determinism() {
 
 main() {
     local suite_start_ms
-    suite_start_ms="$(date +%s%3N)"
+    suite_start_ms="$(e2e_monotonic_ms)" || return 2
 
     log_info "=== Drag-and-Drop E2E Test Suite (bd-1csc.6) ==="
     emit_jsonl "suite_start" "version" "1.0.0"
@@ -248,7 +248,7 @@ main() {
     done
 
     local suite_end_ms
-    suite_end_ms="$(date +%s%3N)"
+    suite_end_ms="$(e2e_monotonic_ms)" || return 2
     local suite_duration_ms=$((suite_end_ms - suite_start_ms))
 
     emit_jsonl "suite_complete" \

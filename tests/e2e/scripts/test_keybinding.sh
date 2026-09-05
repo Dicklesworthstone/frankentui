@@ -24,7 +24,8 @@ source "$LIB_DIR/pty.sh"
 
 # JSONL logging with verbose schema per bd-2vne.8 requirements
 # Schema: run_id, case, env, seed, timings, checksums, capabilities, outcome
-RUN_ID="keybind-$(date +%s%N)-$$"
+RUN_ID="$("${E2E_PYTHON:-python3}" -c 'import time; print(time.time_ns())')" || exit 2
+RUN_ID="keybind-${RUN_ID}-$$"
 JSONL_LOG="${E2E_LOG_DIR:-/tmp/ftui_e2e_logs}/keybinding_e2e.jsonl"
 mkdir -p "$(dirname "$JSONL_LOG")"
 
@@ -63,7 +64,7 @@ log_jsonl() {
     local env_json
     env_json="$(get_env_info)"
     local ts
-    ts="$(date -Iseconds)"
+    ts="$("${E2E_PYTHON:-python3}" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))')" || return 2
 
     # Escape error message for JSON
     local safe_error
@@ -77,7 +78,7 @@ log_jsonl() {
 
 if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
     LOG_FILE="$E2E_LOG_DIR/keybinding_missing.log"
-    skip_ts="$(date +%s%3N)"
+    skip_ts="$(e2e_monotonic_ms)" || exit 2
     for t in \
         keybind_ctrl_c_clears_input \
         keybind_ctrl_c_cancels_task \
@@ -99,12 +100,12 @@ run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
     local output_file="$E2E_LOG_DIR/${name}.pty"
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -113,7 +114,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "keybinding assertion failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "keybinding assertion failed"

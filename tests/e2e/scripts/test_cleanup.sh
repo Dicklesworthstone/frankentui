@@ -34,11 +34,11 @@ run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -46,7 +46,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "cleanup assertions failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "cleanup assertions failed"
@@ -125,7 +125,7 @@ cleanup_mouse_disabled() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # Mouse disable sequence must appear (CSI ? 1000 l or combined)
-    grep -a -P -q '\x1b\[\?1000' "$output_file" || return 1
+    grep -a -F -q $'\x1b[?1000' "$output_file" || return 1
     # Cursor show must still be present
     grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
 }
@@ -189,7 +189,7 @@ cleanup_altscreen_mouse_focus() {
     # All cleanup sequences must appear
     grep -a -F -q $'\x1b[?1049l' "$output_file"   || return 1  # alt-screen exit
     grep -a -F -q $'\x1b[?25h'  "$output_file"    || return 1  # cursor show
-    grep -a -P -q '\x1b\[\?1000' "$output_file"   || return 1  # mouse disable
+    grep -a -F -q $'\x1b[?1000' "$output_file"   || return 1  # mouse disable
     grep -a -F -q $'\x1b[?1004l' "$output_file"   || return 1  # focus events disable
     grep -a -F -q $'\x1b[?2004l' "$output_file"   || return 1  # bracketed paste disable
 }

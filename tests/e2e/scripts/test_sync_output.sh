@@ -52,7 +52,7 @@ jsonl_log() {
     local test_name="$2"
     shift 2
     local ts
-    ts="$(date -Iseconds)"
+    ts="$("${E2E_PYTHON:-python3}" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))')" || return 2
     printf '{"ts":"%s","event":"%s","test":"%s"' "$ts" "$event" "$test_name"
     while [[ $# -gt 0 ]]; do
         local key="$1"
@@ -73,12 +73,12 @@ run_case() {
         return 0
     fi
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
     jsonl_log "start" "$name" "seed" "$RANDOM"
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -87,7 +87,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "sync-output assertions failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "sync-output assertions failed"
@@ -292,8 +292,9 @@ sync_output_dumb_terminal_disabled() {
 }
 
 # Initialize JSONL log with run metadata
+run_start_ts="$("${E2E_PYTHON:-python3}" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))')" || exit 2
 {
-    printf '{"event":"run_start","ts":"%s","suite":"test_sync_output"' "$(date -Iseconds)"
+    printf '{"event":"run_start","ts":"%s","suite":"test_sync_output"' "$run_start_ts"
     printf ',"env":{"term":"%s","shell":"%s"}}\n' "${TERM:-unknown}" "${SHELL:-unknown}"
 } >> "$E2E_JSONL_LOG"
 
@@ -306,8 +307,9 @@ run_case "sync_output_balanced_open_close" sync_output_balanced_open_close || FA
 run_case "sync_output_dumb_terminal_disabled" sync_output_dumb_terminal_disabled || FAILURES=$((FAILURES + 1))
 
 # Finalize JSONL log
+run_end_ts="$("${E2E_PYTHON:-python3}" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat(timespec="seconds"))')" || exit 2
 {
-    printf '{"event":"run_end","ts":"%s","failures":%d}\n' "$(date -Iseconds)" "$FAILURES"
+    printf '{"event":"run_end","ts":"%s","failures":%d}\n' "$run_end_ts" "$FAILURES"
 } >> "$E2E_JSONL_LOG"
 
 exit "$FAILURES"

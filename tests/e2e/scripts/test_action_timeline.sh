@@ -143,7 +143,8 @@ run_case() {
     local send_label="$2"
     shift 2
     local start_ms
-    start_ms="$(date +%s%3N)"
+    # BSD date lacks %N; elapsed timing uses the real monotonic clock.
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local output_file="$E2E_LOG_DIR/${name}.pty"
@@ -152,7 +153,7 @@ run_case() {
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -161,7 +162,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "assertion failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "assertion failed"

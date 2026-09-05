@@ -149,7 +149,8 @@ run_case() {
     shift 3
 
     local setup_start_ms execute_start_ms assert_start_ms end_ms
-    setup_start_ms="$(date +%s%3N)"
+    # BSD date lacks %N; elapsed timing uses the real monotonic clock.
+    setup_start_ms="$(e2e_monotonic_ms)" || return 2
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local output_file="$E2E_LOG_DIR/${name}.pty"
@@ -159,17 +160,17 @@ run_case() {
 
     log_test_start "$name"
 
-    execute_start_ms="$(date +%s%3N)"
+    execute_start_ms="$(e2e_monotonic_ms)" || return 2
     local setup_ms=$((execute_start_ms - setup_start_ms))
 
     # Capture input trace if any
     local input_trace="${PTY_SEND:-}"
 
     if "$@"; then
-        assert_start_ms="$(date +%s%3N)"
+        assert_start_ms="$(e2e_monotonic_ms)" || return 2
         local execute_ms=$((assert_start_ms - execute_start_ms))
 
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local assert_ms=$((end_ms - assert_start_ms))
         local duration_ms=$((end_ms - setup_start_ms))
 
@@ -183,7 +184,7 @@ run_case() {
         return 0
     fi
 
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - setup_start_ms))
     local output_sha
     output_sha="$(sha256_file "$output_file")"

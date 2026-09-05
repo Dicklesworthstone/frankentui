@@ -17,7 +17,8 @@ JSONL_FILE="$E2E_RESULTS_DIR/terminal_quirks.jsonl"
 RUN_ID="${TERMINAL_QUIRKS_RUN_ID:-terminal_quirks_$(date +%Y%m%d_%H%M%S)_$$}"
 SEED="${TERMINAL_QUIRKS_SEED:-0}"
 DETERMINISTIC="${TERMINAL_QUIRKS_DETERMINISTIC:-0}"
-RUN_START_MS="$(date +%s%3N)"
+# This event field is epoch time, independent of the elapsed stopwatch below.
+RUN_START_MS="$("${E2E_PYTHON:-python3}" -c 'import time; print(time.time_ns() // 1_000_000)')" || exit 2
 
 if [[ "$DETERMINISTIC" == "1" ]]; then
     RUN_ID="${TERMINAL_QUIRKS_RUN_ID:-terminal_quirks_deterministic}"
@@ -64,7 +65,8 @@ run_case() {
     local expected_line0="$6"
     local expected_line1="${7:-}"
     local start_ms
-    start_ms="$(date +%s%3N)"
+    # BSD date lacks %N; elapsed timing uses the real monotonic clock.
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local input_file="$E2E_LOG_DIR/${name}.input"
@@ -80,7 +82,7 @@ run_case() {
 
     if "$CANON_BIN" --input "$input_file" --output "$output_file" --cols "$cols" --rows "$rows" --profile "$profile"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         local output_sha
         output_sha="$(sha256_file "$output_file")"
@@ -109,7 +111,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "pty_canonicalize failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "pty_canonicalize failed"

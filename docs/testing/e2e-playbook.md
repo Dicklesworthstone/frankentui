@@ -58,7 +58,12 @@ Inventory scope: this table tracks top-level scripts in `scripts/`. Nested suite
   `E2E_SELF_TEST=1 bash -c 'source tests/e2e/lib/common.sh; source tests/e2e/lib/logging.sh; e2e_fixture_init selftest'`.
   They retain diagnostic JSONL under `TMPDIR` and check both missing and present
   commands/modules using the actual shell, interpreter, and schema validator.
+  Clock checks measure a real wait in both deterministic and ordinary modes.
 - Deterministic fixtures live in `tests/e2e/lib/common.sh` and `tests/e2e/lib/logging.sh`.
+  Use `e2e_monotonic_ms` for measured elapsed time, and propagate clock failures
+  before recording a result. `e2e_now_ms` is a synthetic event clock in
+  deterministic mode; it cannot measure a performance budget. Wall timestamps
+  and measured clocks use the selected Python interpreter on Linux and macOS.
 - JSONL schema is `tests/e2e/lib/e2e_jsonl_schema.json` with validator `tests/e2e/lib/validate_jsonl.py`.
 - CI runs strict JSONL validation when `CI=1` (via `jsonl_run_end` → `jsonl_validate_current`).
 - Local validation: set `E2E_JSONL_VALIDATE=1` or `E2E_JSONL_VALIDATE_MODE=strict` when running scripts.
