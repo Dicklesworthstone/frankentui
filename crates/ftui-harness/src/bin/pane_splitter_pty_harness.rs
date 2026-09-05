@@ -15,7 +15,7 @@
 //!   -> PaneTerminalAdapter::translate{_with_handles}   (terminal hit-testing)
 //!   -> PaneDragResizeTransition
 //!   -> PaneTree::operations_for_transition             (fixed-pressure bridge)
-//!   -> PaneTree::apply_operation                       (live tree mutation)
+//!   -> PaneInteractionTimeline::apply_and_record       (live tree and history)
 //! ```
 //!
 //! Covered terminal-input paths (all genuine `PaneTerminalAdapter` contracts):
@@ -83,9 +83,9 @@ use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{
     PANE_TREE_SCHEMA_VERSION, PaneCancelReason, PaneCommandEffect, PaneDragResizeEffect,
-    PaneDragResizeState, PaneId, PaneLayout, PaneLeaf, PaneNodeKind, PaneNodeRecord, PaneOperation,
-    PanePlacement, PanePressureSnapProfile, PaneSplit, PaneSplitRatio, PaneTree, PaneTreeSnapshot,
-    SplitAxis,
+    PaneDragResizeState, PaneFocusContext, PaneId, PaneInteractionTimeline, PaneLayout, PaneLeaf,
+    PaneNodeKind, PaneNodeRecord, PaneOperation, PanePlacement, PanePressureSnapProfile, PaneSplit,
+    PaneSplitRatio, PaneTree, PaneTreeSnapshot, SplitAxis,
 };
 use ftui_render::frame::Frame;
 use ftui_runtime::pane_keymap::{PaneKeyOutcome, PaneKeyboardController};
@@ -231,9 +231,13 @@ struct Shared {
     down_resolved: bool,
     committed: bool,
     canceled: bool,
+    timed_out: bool,
     cancel_preserved_state: bool,
     post_cancel_events: u32,
     post_cancel_preserved_state: bool,
+    history_entries: usize,
+    history_cursor: usize,
+    cancel_history_undo_redo: bool,
     dragging_seen: bool,
     tree_valid: bool,
     node_count: usize,
@@ -245,17 +249,25 @@ struct Shared {
 
 struct Harness {
     tree: PaneTree,
+    timeline: PaneInteractionTimeline,
     adapter: PaneTerminalAdapter,
-    /// Production keyboard binding controller, present only in `keymap` input
-    /// mode (`PANE_HARNESS_INPUT=keymap`). When present, `Event::Key` is routed
-    /// through the real `ftui_runtime::pane_keymap` path instead of the adapter
-    /// resize / affordance paths.
-    keyboard: Option<PaneKeyboardController>,
+    /// The production controller owns pane focus in both modes. Adapter mode
+    /// routes Tab/BackTab here and resize/Escape through the pointer adapter.
+    keyboard: PaneKeyboardController,
+    keymap_mode: bool,
     op_seed: u64,
     ticks_remaining: u32,
     started_at: Instant,
-    cancel_snapshot: Option<(PaneTreeSnapshot, u64, bool)>,
+    cancel_snapshot: Option<CancelSnapshot>,
     shared: Arc<Mutex<Shared>>,
+}
+
+struct CancelSnapshot {
+    tree: PaneTreeSnapshot,
+    timeline: PaneInteractionTimeline,
+    op_seed: u64,
+    focus: PaneFocusContext,
+    window_focused: bool,
 }
 
 enum Msg {
@@ -296,11 +308,13 @@ impl Harness {
         // PaneCommand -> resolve -> apply path a focus-aware terminal host uses.
         // The scripted test sends a key sequence then `q`; the marker reports the
         // final focus + structural state. This is NOT the affordance-key path.
-        if let Some(mut keyboard) = self.keyboard.take() {
+        if self.keymap_mode
+            || matches!(event, Event::Key(key) if matches!(key.code, KeyCode::Tab | KeyCode::BackTab))
+        {
             if let Event::Key(key) = event
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             {
-                let out = keyboard.handle_key(key, &mut self.tree, &layout);
+                let out = self.keyboard.handle_key(key, &mut self.tree, &layout);
                 let applied = match &out {
                     PaneKeyOutcome::Handled { resolution, .. } => match &resolution.effect {
                         PaneCommandEffect::Structural(ops) => {
@@ -310,10 +324,11 @@ impl Harness {
                     },
                     _ => 0,
                 };
-                let active = keyboard
+                let active = self
+                    .keyboard
                     .active()
                     .map_or_else(|| "-".to_string(), |id| leaf_name(&self.tree, id));
-                let maximized = keyboard.maximized().is_some();
+                let maximized = self.keyboard.maximized().is_some();
                 if applied > 0 {
                     self.with_shared(|s| s.applied_ops += applied);
                 }
@@ -323,7 +338,6 @@ impl Harness {
                 });
                 self.record_state(false);
             }
-            self.keyboard = Some(keyboard);
             return Cmd::none();
         }
 
@@ -358,19 +372,28 @@ impl Harness {
                     });
                 self.record_state(committed);
 
-                if let Some((tree, op_seed, focused)) = self.cancel_snapshot.as_ref() {
-                    let preserved = self.tree.to_snapshot() == *tree
-                        && self.op_seed == *op_seed
-                        && self.adapter.window_focused() == *focused
-                        && self.adapter.active_pointer_id().is_none()
-                        && self.adapter.machine_state() == PaneDragResizeState::Idle
-                        && !committed;
+                if let Some(snapshot) = self.cancel_snapshot.as_ref() {
+                    let preserved = self.cancel_state_preserved(snapshot) && !committed;
                     self.with_shared(|s| {
                         s.post_cancel_preserved_state = preserved
                             && (s.post_cancel_events == 0 || s.post_cancel_preserved_state);
                         s.post_cancel_events += 1;
                     });
                     if matches!(mouse.kind, MouseEventKind::Up(_)) {
+                        // Exercise the real retained undo/redo history after
+                        // checking cancellation, leaving the final tree intact.
+                        let before = self.tree.to_snapshot();
+                        let history = self.timeline.clone();
+                        let undone = self.timeline.undo(&mut self.tree).unwrap_or(false);
+                        let changed = self.tree.to_snapshot() != before;
+                        let redone = undone && self.timeline.redo(&mut self.tree).unwrap_or(false);
+                        let roundtrip = undone
+                            && changed
+                            && redone
+                            && self.tree.to_snapshot() == before
+                            && self.timeline == history;
+                        self.with_shared(|s| s.cancel_history_undo_redo = roundtrip);
+                        self.record_state(false);
                         return Cmd::quit();
                     }
                 }
@@ -387,7 +410,11 @@ impl Harness {
                 // terminal adapter does not yet bind to input (bd-21pbi.2). These
                 // exercise operation -> render -> teardown over a real PTY.
                 if let Some(op) = affordance_operation(key) {
-                    if self.tree.apply_operation(self.op_seed, op).is_ok() {
+                    if self
+                        .timeline
+                        .apply_and_record(&mut self.tree, self.op_seed, self.op_seed, op)
+                        .is_ok()
+                    {
                         self.op_seed += 1;
                         self.with_shared(|s| s.applied_ops += 1);
                     }
@@ -399,12 +426,12 @@ impl Harness {
                 // splitter target (here, the single root splitter) and supplies it
                 // through the documented `translate(event, target_hint)` contract.
                 let target = handles.first().map(|handle| handle.target);
-                let before_cancel = matches!(key.code, KeyCode::Escape).then(|| {
-                    (
-                        self.tree.to_snapshot(),
-                        self.op_seed,
-                        self.adapter.window_focused(),
-                    )
+                let before_cancel = matches!(key.code, KeyCode::Escape).then(|| CancelSnapshot {
+                    tree: self.tree.to_snapshot(),
+                    timeline: self.timeline.clone(),
+                    op_seed: self.op_seed,
+                    focus: self.keyboard.focus(),
+                    window_focused: self.adapter.window_focused(),
                 });
                 let dispatch = self.adapter.translate(event, target);
                 let canceled = dispatch
@@ -421,16 +448,9 @@ impl Harness {
                     });
                 self.apply_dispatch(&dispatch, &layout);
                 if canceled {
-                    let preserved =
-                        before_cancel
-                            .as_ref()
-                            .is_some_and(|(tree, op_seed, focused)| {
-                                self.tree.to_snapshot() == *tree
-                                    && self.op_seed == *op_seed
-                                    && self.adapter.window_focused() == *focused
-                                    && self.adapter.active_pointer_id().is_none()
-                                    && self.adapter.machine_state() == PaneDragResizeState::Idle
-                            });
+                    let preserved = before_cancel
+                        .as_ref()
+                        .is_some_and(|snapshot| self.cancel_state_preserved(snapshot));
                     self.with_shared(|s| {
                         s.canceled = true;
                         s.cancel_preserved_state = preserved;
@@ -447,6 +467,16 @@ impl Harness {
         }
     }
 
+    fn cancel_state_preserved(&self, snapshot: &CancelSnapshot) -> bool {
+        self.tree.to_snapshot() == snapshot.tree
+            && self.timeline == snapshot.timeline
+            && self.op_seed == snapshot.op_seed
+            && self.keyboard.focus() == snapshot.focus
+            && self.adapter.window_focused() == snapshot.window_focused
+            && self.adapter.active_pointer_id().is_none()
+            && self.adapter.machine_state() == PaneDragResizeState::Idle
+    }
+
     /// Realize a dispatched transition into live pane operations (fixed pressure).
     fn apply_dispatch(&mut self, dispatch: &PaneTerminalDispatch, layout: &PaneLayout) {
         let Some(transition) = dispatch.primary_transition.as_ref() else {
@@ -456,7 +486,11 @@ impl Harness {
             .tree
             .operations_for_transition(transition, layout, FIXED_PRESSURE);
         for op in ops {
-            if self.tree.apply_operation(self.op_seed, op).is_ok() {
+            if self
+                .timeline
+                .apply_and_record(&mut self.tree, self.op_seed, self.op_seed, op)
+                .is_ok()
+            {
                 self.op_seed += 1;
                 self.with_shared(|s| s.applied_ops += 1);
             }
@@ -469,6 +503,8 @@ impl Harness {
         let node_count = self.tree.nodes().count();
         let first_leaf = root_first_leaf_name(&self.tree);
         let valid = self.tree.validate().is_ok();
+        let history_entries = self.timeline.entries.len();
+        let history_cursor = self.timeline.applied_len();
         self.with_shared(|s| {
             if let Some(bps) = bps {
                 s.final_bps = bps;
@@ -476,6 +512,8 @@ impl Harness {
             s.node_count = node_count;
             s.first_leaf = first_leaf;
             s.tree_valid = valid;
+            s.history_entries = history_entries;
+            s.history_cursor = history_cursor;
             if committed {
                 s.committed = true;
             }
@@ -520,6 +558,7 @@ impl Model for Harness {
             Msg::Tick => {
                 self.ticks_remaining = self.ticks_remaining.saturating_sub(1);
                 if self.ticks_remaining == 0 {
+                    self.with_shared(|s| s.timed_out = true);
                     Cmd::quit()
                 } else {
                     Cmd::none()
@@ -608,11 +647,10 @@ fn main() -> std::io::Result<()> {
     let initial_bps = root_first_share_bps(&tree).expect("root split has a first share");
     let node_count = tree.nodes().count();
     let first_leaf = root_first_leaf_name(&tree);
-    // In keymap mode the controller starts focused on the left leaf.
-    let keyboard = keymap_mode.then(|| PaneKeyboardController::new(Some(pane_id(LEFT))));
+    // The actual pane focus controller starts on the left leaf in both modes.
+    let keyboard = PaneKeyboardController::new(Some(pane_id(LEFT)));
     let initial_active = keyboard
-        .as_ref()
-        .and_then(PaneKeyboardController::active)
+        .active()
         .map_or_else(|| "-".to_string(), |id| leaf_name(&tree, id));
     let shared = Arc::new(Mutex::new(Shared {
         mode: mode.clone(),
@@ -623,9 +661,13 @@ fn main() -> std::io::Result<()> {
         down_resolved: false,
         committed: false,
         canceled: false,
+        timed_out: false,
         cancel_preserved_state: false,
         post_cancel_events: 0,
         post_cancel_preserved_state: false,
+        history_entries: 0,
+        history_cursor: 0,
+        cancel_history_undo_redo: false,
         dragging_seen: false,
         tree_valid: true,
         node_count,
@@ -639,9 +681,11 @@ fn main() -> std::io::Result<()> {
         .expect("valid pane terminal adapter config");
 
     let model = Harness {
+        timeline: PaneInteractionTimeline::with_baseline(&tree),
         tree,
         adapter,
         keyboard,
+        keymap_mode,
         op_seed: 1,
         ticks_remaining: exit_after_ms.div_ceil(100).max(1),
         started_at: Instant::now(),
@@ -670,7 +714,7 @@ fn main() -> std::io::Result<()> {
         println!("{line}");
     }
     println!(
-        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={} cancel_preserved_state={} dragging_seen={} termios_restored={} backend={} recovered_bytes={} post_cancel_events={} post_cancel_preserved_state={}",
+        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={} cancel_preserved_state={} dragging_seen={} termios_restored={} backend={} recovered_bytes={} post_cancel_events={} post_cancel_preserved_state={} history_entries={} history_cursor={} cancel_history_undo_redo={} timed_out={}",
         snap.mode,
         snap.initial_bps,
         snap.final_bps,
@@ -690,6 +734,10 @@ fn main() -> std::io::Result<()> {
         recovered_bytes.load(std::sync::atomic::Ordering::Relaxed),
         snap.post_cancel_events,
         snap.post_cancel_preserved_state,
+        snap.history_entries,
+        snap.history_cursor,
+        snap.cancel_history_undo_redo,
+        snap.timed_out,
     );
     let _ = std::io::stdout().flush();
 

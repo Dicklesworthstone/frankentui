@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
-//! Conformal frame guard: coverage-guaranteed prediction intervals for frame timing.
+//! Conformal frame guard for frame timing, with explicit unavailable bounds.
 //!
 //! Wraps [`ConformalPredictor`] with a frame-time time series, nonconformity
-//! score tracking, and p99 prediction intervals. When the predicted p99
-//! exceeds the frame budget, degradation is triggered.
+//! score tracking and configured-coverage prediction intervals. The configured
+//! alpha determines coverage; it is 99% only when alpha is 0.01. Coverage requires
+//! exchangeable scores, which adaptive frame timings do not establish by default.
 //!
 //! **Fallback:** before calibration reaches `min_samples`, a fixed 16 ms
 //! budget threshold is used (no conformal interval).
@@ -26,7 +27,8 @@ use std::collections::VecDeque;
 use ftui_render::budget::DegradationLevel;
 
 use crate::conformal_predictor::{
-    BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor,
+    BucketKey, ConformalConfig, ConformalConfigError, ConformalPrediction, ConformalPredictor,
+    ConformalStatus,
 };
 
 /// Default fallback budget threshold in microseconds (16 ms = 60 fps target).
@@ -71,8 +73,10 @@ pub enum GuardState {
     Warmup,
     /// Calibrated with enough samples; conformal intervals active.
     Calibrated,
-    /// Last prediction indicated p99 exceeds budget.
+    /// Last evaluation indicated a conformal or measured fallback overrun.
     AtRisk,
+    /// Warmup ended, but the requested finite bound is still unavailable.
+    Unbounded,
 }
 
 impl GuardState {
@@ -82,6 +86,7 @@ impl GuardState {
             Self::Warmup => "warmup",
             Self::Calibrated => "calibrated",
             Self::AtRisk => "at_risk",
+            Self::Unbounded => "unbounded",
         }
     }
 }
@@ -92,7 +97,7 @@ pub struct P99Prediction {
     /// Base prediction (most recent frame time or EMA estimate) in µs.
     pub y_hat_us: f64,
     /// Upper bound of the p99 prediction interval in µs.
-    pub upper_us: f64,
+    pub upper_us: Option<f64>,
     /// Frame budget in µs.
     pub budget_us: f64,
     /// Whether the p99 upper bound exceeds the budget.
@@ -105,8 +110,8 @@ pub struct P99Prediction {
     /// Current guard state.
     pub state: GuardState,
     /// Width of the prediction interval (upper - y_hat) in µs.
-    pub interval_width_us: f64,
-    /// Underlying conformal prediction (if calibrated).
+    pub interval_width_us: Option<f64>,
+    /// Underlying prediction, including unavailable-bound diagnostics.
     pub conformal: Option<ConformalPrediction>,
 }
 
@@ -114,38 +119,41 @@ impl P99Prediction {
     /// Format as a JSONL line for structured evidence logging.
     #[must_use]
     pub fn to_jsonl(&self) -> String {
+        let number = crate::conformal_predictor::finite_json_number;
         let conformal_fields = self
             .conformal
             .as_ref()
             .map(|c| {
                 format!(
-                    r#","conformal_quantile":{:.2},"conformal_bucket":"{}","conformal_confidence":{:.4}"#,
-                    c.quantile, c.bucket, c.confidence,
+                    r#","conformal_quantile":{},"conformal_bucket":"{}","conformal_confidence":{},"conformal_alpha":{},"conformal_status":"{}","required_rank":{}"#,
+                    number(c.quantile, 2), c.bucket, number(c.confidence, 17), number(Some(c.alpha), 17),
+                    c.status.as_str(), c.required_rank,
                 )
             })
             .unwrap_or_default();
 
         format!(
-            r#"{{"schema":"conformal-frame-guard-v1","y_hat_us":{:.1},"upper_us":{:.1},"budget_us":{:.1},"exceeds_budget":{},"calibration_size":{},"fallback_level":{},"state":"{}","interval_width_us":{:.1}{}}}"#,
-            self.y_hat_us,
-            self.upper_us,
-            self.budget_us,
+            r#"{{"schema":"conformal-frame-guard-v2","y_hat_us":{},"upper_us":{},"budget_us":{},"exceeds_budget":{},"calibration_size":{},"fallback_level":{},"state":"{}","interval_width_us":{}{}}}"#,
+            number(Some(self.y_hat_us), 1),
+            number(self.upper_us, 1),
+            number(Some(self.budget_us), 1),
             self.exceeds_budget,
             self.calibration_size,
             self.fallback_level,
             self.state.as_str(),
-            self.interval_width_us,
+            number(self.interval_width_us, 1),
             conformal_fields,
         )
     }
 }
 
-/// Conformal frame guard: wraps [`ConformalPredictor`] with p99 intervals.
+/// Conformal frame guard with intervals at the configured quantile.
 ///
 /// Tracks frame render times as a time series, computes nonconformity scores,
-/// and emits coverage-guaranteed prediction intervals for the next frame.
-/// When the predicted p99 exceeds the frame budget, the guard signals
-/// degradation.
+/// and predicts an upper bound for the next frame when calibration permits.
+/// The target is `1 - alpha` (p99 only for alpha 0.01); its marginal coverage
+/// requires exchangeable scores, which adaptive timings need not satisfy.
+/// A predicted or measured fallback overrun signals degradation.
 #[derive(Debug)]
 pub struct ConformalFrameGuard {
     config: ConformalFrameGuardConfig,
@@ -164,13 +172,22 @@ pub struct ConformalFrameGuard {
     observations: u64,
     /// Count of degradation triggers.
     degradation_triggers: u64,
+    calibrated: bool,
 }
 
 impl ConformalFrameGuard {
     /// Create a new guard with the given configuration.
-    pub fn new(config: ConformalFrameGuardConfig) -> Self {
-        let predictor = ConformalPredictor::new(config.conformal.clone());
-        Self {
+    pub fn new(config: ConformalFrameGuardConfig) -> Result<Self, ConformalConfigError> {
+        if !config.fallback_budget_us.is_finite() || config.fallback_budget_us <= 0.0 {
+            return Err(ConformalConfigError(
+                "frame guard fallback budget must be finite and positive",
+            ));
+        }
+        if config.time_series_window == 0 || config.nonconformity_window == 0 {
+            return Err(ConformalConfigError("frame guard windows must be positive"));
+        }
+        let predictor = ConformalPredictor::new(config.conformal.clone())?;
+        Ok(Self {
             config,
             predictor,
             frame_times: VecDeque::new(),
@@ -180,12 +197,13 @@ impl ConformalFrameGuard {
             state: GuardState::Warmup,
             observations: 0,
             degradation_triggers: 0,
-        }
+            calibrated: false,
+        })
     }
 
     /// Create a guard with default configuration.
     pub fn with_defaults() -> Self {
-        Self::new(ConformalFrameGuardConfig::default())
+        Self::new(ConformalFrameGuardConfig::default()).expect("valid default frame guard config")
     }
 
     /// Observe a realized frame time and update calibration.
@@ -197,6 +215,16 @@ impl ConformalFrameGuard {
             return;
         }
 
+        // Score against the prediction available before this observation.
+        // Updating the EMA first leaks the outcome into its own residual.
+        let y_hat = if self.observations == 0 {
+            self.config.fallback_budget_us
+        } else {
+            self.ema_us
+        };
+        let Some(residual) = self.predictor.observe(key, y_hat, frame_time_us).residual else {
+            return;
+        };
         self.observations += 1;
 
         // Update EMA
@@ -212,49 +240,49 @@ impl ConformalFrameGuard {
             self.frame_times.pop_front();
         }
 
-        // Compute and track nonconformity score (residual)
-        let y_hat = self.ema_us;
-        let residual = frame_time_us - y_hat;
+        // Track the exact accepted score, including conservative rounding.
         self.nonconformity_scores.push_back(residual);
         while self.nonconformity_scores.len() > self.config.nonconformity_window {
             self.nonconformity_scores.pop_front();
         }
 
-        // Feed the underlying conformal predictor
-        self.predictor.observe(key, y_hat, frame_time_us);
-
-        // Update state based on calibration
-        let samples = self.predictor.bucket_samples(key);
-        if samples < self.config.conformal.min_samples && self.state == GuardState::Warmup {
-            // Stay in warmup
-        } else if self.state == GuardState::Warmup {
-            self.state = GuardState::Calibrated;
-        }
+        // Refresh metadata using the same pooled population and arithmetic as
+        // prediction. Observing is not itself a degradation decision.
+        let prediction = self.evaluate(self.config.fallback_budget_us, key);
+        self.calibrated = prediction.upper_us.is_some();
+        self.state = prediction.state;
     }
 
-    /// Predict the p99 upper bound for the next frame.
+    /// Predict the configured upper quantile for the next frame (p99 at alpha 0.01).
     ///
     /// `budget_us`: current frame budget in microseconds.
     /// `key`: bucket key for the upcoming rendering context.
     ///
     /// Returns a [`P99Prediction`] with the interval and risk assessment.
     pub fn predict_p99(&mut self, budget_us: f64, key: BucketKey) -> P99Prediction {
+        let prediction = self.evaluate(budget_us, key);
+        self.calibrated = prediction.upper_us.is_some();
+        if prediction.exceeds_budget && (self.calibrated || self.state != GuardState::Warmup) {
+            self.degradation_triggers += 1;
+        }
+        self.state = prediction.state;
+        prediction
+    }
+
+    fn evaluate(&self, budget_us: f64, key: BucketKey) -> P99Prediction {
         let y_hat = if self.observations > 0 {
             self.ema_us
         } else {
-            0.0
+            // The configured prior is available before the first outcome.
+            // Zero would manufacture a large initial residual for normal work.
+            self.config.fallback_budget_us
         };
 
-        let samples = self.predictor.bucket_samples(key);
-        let is_calibrated = samples >= self.config.conformal.min_samples;
+        let prediction = self.predictor.predict(key, y_hat, budget_us);
+        if self.predictor.is_calibrated(&prediction) {
+            let exceeds = prediction.risk;
 
-        if is_calibrated {
-            // Use conformal prediction for coverage-guaranteed bound
-            let prediction = self.predictor.predict(key, y_hat, budget_us);
-            let exceeds = prediction.upper_us > budget_us;
-
-            self.state = if exceeds {
-                self.degradation_triggers += 1;
+            let state = if exceeds {
                 GuardState::AtRisk
             } else {
                 GuardState::Calibrated
@@ -267,51 +295,52 @@ impl ConformalFrameGuard {
                 exceeds_budget: exceeds,
                 calibration_size: prediction.sample_count,
                 fallback_level: prediction.fallback_level,
-                state: self.state,
-                interval_width_us: (prediction.upper_us - y_hat).max(0.0),
+                state,
+                interval_width_us: prediction.upper_us.map(|upper| (upper - y_hat).max(0.0)),
                 conformal: Some(prediction),
             }
         } else {
             // Fallback: fixed budget threshold (16ms default)
-            let fallback = self.config.fallback_budget_us;
-            let exceeds = y_hat > fallback;
-
-            if exceeds && self.state != GuardState::Warmup {
-                self.degradation_triggers += 1;
-            }
+            // Independent measured fallback: respect a smaller caller budget.
+            // It can trigger degradation, but cannot certify a recovery bound.
+            let fallback = self.config.fallback_budget_us.min(budget_us);
+            let exceeds = !budget_us.is_finite()
+                || budget_us < 0.0
+                || (self.observations > 0 && y_hat > fallback);
 
             // In warmup, signal risk only if EMA clearly exceeds fallback
             let state = if exceeds {
                 GuardState::AtRisk
-            } else {
+            } else if prediction.status == ConformalStatus::Warmup {
                 GuardState::Warmup
+            } else {
+                GuardState::Unbounded
             };
-            self.state = state;
-
             P99Prediction {
                 y_hat_us: y_hat,
-                upper_us: y_hat, // No interval in fallback mode
+                upper_us: None,
                 budget_us: fallback,
                 exceeds_budget: exceeds,
-                calibration_size: samples,
+                calibration_size: prediction.sample_count,
                 fallback_level: 4, // Frame-guard fixed fallback
                 state,
-                interval_width_us: 0.0,
-                conformal: None,
+                interval_width_us: None,
+                conformal: Some(prediction),
             }
         }
     }
 
-    /// Get the current guard state.
+    /// State of the last evaluation. After observation this uses the observed
+    /// bucket and configured fallback budget; prediction uses its caller's budget.
     #[inline]
     pub fn state(&self) -> GuardState {
         self.state
     }
 
-    /// Whether the guard has enough calibration data for conformal intervals.
+    /// Whether the last evaluation produced a finite conformal upper bound.
     #[inline]
     pub fn is_calibrated(&self) -> bool {
-        matches!(self.state, GuardState::Calibrated | GuardState::AtRisk)
+        self.calibrated
     }
 
     /// Total frame observations processed.
@@ -364,7 +393,9 @@ impl ConformalFrameGuard {
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         let n = sorted.len();
-        let mean = sorted.iter().sum::<f64>() / n as f64;
+        // Divide before summing so a finite mean does not overflow through
+        // an unnecessarily large intermediate total.
+        let mean = sorted.iter().map(|value| value / n as f64).sum::<f64>();
         let p50 = sorted[n / 2];
         let p90 = sorted[(n as f64 * 0.90).ceil() as usize - 1];
         let p99 = sorted[(n as f64 * 0.99).ceil() as usize - 1];
@@ -387,14 +418,15 @@ impl ConformalFrameGuard {
         self.nonconformity_scores.clear();
         self.ema_us = 0.0;
         self.state = GuardState::Warmup;
+        self.calibrated = false;
         self.observations = 0;
         // Preserve degradation_triggers count across resets for audit trail
     }
 
     /// Suggest what degradation action to take based on the prediction.
     ///
-    /// Returns `Some(DegradationLevel::next())` if the p99 exceeds budget
-    /// and the guard is calibrated, `None` otherwise (hold current level).
+    /// Returns `Some(DegradationLevel::next())` for a conformal or measured
+    /// fallback overrun, unless already at maximum degradation.
     pub fn suggest_action(
         &self,
         prediction: &P99Prediction,
@@ -442,9 +474,15 @@ impl NonconformitySummary {
     /// Format as a JSONL fragment (no outer braces).
     #[must_use]
     pub fn to_jsonl_fragment(&self) -> String {
+        let number = crate::conformal_predictor::finite_json_number;
         format!(
-            r#""nc_count":{},"nc_mean":{:.2},"nc_p50":{:.2},"nc_p90":{:.2},"nc_p99":{:.2},"nc_max":{:.2}"#,
-            self.count, self.mean, self.p50, self.p90, self.p99, self.max,
+            r#""nc_count":{},"nc_mean":{},"nc_p50":{},"nc_p90":{},"nc_p99":{},"nc_max":{}"#,
+            self.count,
+            number(Some(self.mean), 2),
+            number(Some(self.p50), 2),
+            number(Some(self.p90), 2),
+            number(Some(self.p99), 2),
+            number(Some(self.max), 2),
         )
     }
 }
@@ -479,11 +517,11 @@ impl ConformalFrameGuardTelemetry {
             .unwrap_or_default();
 
         format!(
-            r#"{{"schema":"conformal-frame-guard-telemetry-v1","state":"{}","observations":{},"degradation_triggers":{},"ema_us":{:.1},"frame_times_len":{},"nonconformity_len":{}{}}}"#,
+            r#"{{"schema":"conformal-frame-guard-telemetry-v1","state":"{}","observations":{},"degradation_triggers":{},"ema_us":{},"frame_times_len":{},"nonconformity_len":{}{}}}"#,
             self.state.as_str(),
             self.observations,
             self.degradation_triggers,
-            self.ema_us,
+            crate::conformal_predictor::finite_json_number(Some(self.ema_us), 1),
             self.frame_times_len,
             self.nonconformity_len,
             summary_fields,
@@ -513,8 +551,12 @@ mod tests {
         let pred = guard.predict_p99(16_000.0, key);
         assert_eq!(pred.fallback_level, 4);
         assert_eq!(pred.state, GuardState::Warmup);
-        assert!(!pred.exceeds_budget); // y_hat=0 < 16ms
-        assert!(pred.conformal.is_none());
+        assert!(!pred.exceeds_budget); // no measured overrun yet
+        assert_eq!(
+            pred.conformal.as_ref().unwrap().status,
+            ConformalStatus::Warmup
+        );
+        assert!(pred.upper_us.is_none());
     }
 
     #[test]
@@ -560,8 +602,179 @@ mod tests {
         let pred = guard.predict_p99(16_000.0, key);
         assert!(pred.conformal.is_some());
         assert!(pred.fallback_level < 4);
-        assert!(!pred.exceeds_budget); // 10ms well under 16ms budget
+        // The first residual is scored against the configured cold prior;
+        // subsequent stable observations have zero residual.
+        assert_eq!(pred.upper_us, Some(10_000.0));
+        assert!(!pred.exceeds_budget);
         assert_eq!(pred.state, GuardState::Calibrated);
+        for _ in 25..40 {
+            guard.observe(10_000.0, key);
+        }
+        let later = guard.predict_p99(16_000.0, key);
+        assert_eq!(later.upper_us, Some(10_000.0));
+        assert_eq!(later.state, GuardState::Calibrated);
+    }
+
+    #[test]
+    fn scores_use_the_baseline_before_the_observation() {
+        let mut guard = ConformalFrameGuard::with_defaults();
+        let key = test_key();
+        assert_eq!(guard.predict_p99(16_000.0, key).y_hat_us, 16_000.0);
+        guard.observe(10_000.0, key);
+        assert_eq!(guard.nonconformity_scores().back(), Some(&-6_000.0));
+        assert_eq!(guard.predict_p99(16_000.0, key).y_hat_us, 10_000.0);
+        guard.observe(20_000.0, key);
+        assert_eq!(guard.nonconformity_scores().back(), Some(&10_000.0));
+        assert_eq!(guard.ema_us(), 10_500.0);
+    }
+
+    #[test]
+    fn unavailable_rank_uses_measured_budget_without_claiming_a_bound() {
+        let mut guard = ConformalFrameGuard::new(ConformalFrameGuardConfig {
+            conformal: ConformalConfig {
+                alpha: 0.01,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("valid config");
+        let key = test_key();
+        for _ in 0..20 {
+            guard.observe(10_000.0, key);
+        }
+        let safe_measurement = guard.predict_p99(16_000.0, key);
+        assert_eq!(safe_measurement.state, GuardState::Unbounded);
+        assert!(!guard.is_calibrated());
+        assert_eq!(safe_measurement.upper_us, None);
+        assert_eq!(safe_measurement.conformal.unwrap().required_rank, 21);
+        let smaller_budget = guard.predict_p99(5_000.0, key);
+        assert!(smaller_budget.exceeds_budget);
+        assert!(!guard.is_calibrated(), "measured AtRisk is not calibrated");
+        let row: serde_json::Value =
+            serde_json::from_str(&smaller_budget.to_jsonl()).expect("valid JSON");
+        assert!(row["upper_us"].is_null());
+        assert!(row["conformal_confidence"].is_null());
+        for _ in 20..99 {
+            guard.observe(10_000.0, key);
+        }
+        assert!(guard.predict_p99(50_000.0, key).upper_us.is_some());
+        assert!(guard.is_calibrated());
+        guard.reset();
+        assert!(!guard.is_calibrated());
+        assert_eq!(guard.predict_p99(50_000.0, key).state, GuardState::Warmup);
+    }
+
+    #[test]
+    fn guard_diagnostics_retain_the_predictors_conservative_score() {
+        let mut guard = ConformalFrameGuard::new(ConformalFrameGuardConfig {
+            conformal: ConformalConfig {
+                alpha: 0.5,
+                min_samples: 1,
+                window_size: 1,
+                ..Default::default()
+            },
+            fallback_budget_us: 1.005,
+            ..Default::default()
+        })
+        .expect("valid config");
+        guard.observe(10.001, test_key());
+        let prediction = guard.predict_p99(100.0, test_key());
+        let score = prediction.conformal.unwrap().quantile.unwrap();
+        assert!(
+            score > 10.001 - 1.005,
+            "rounded-down score must be corrected"
+        );
+        assert_eq!(guard.nonconformity_scores().back(), Some(&score));
+    }
+
+    #[test]
+    fn invalid_guard_configuration_is_rejected() {
+        for fallback_budget_us in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                ConformalFrameGuard::new(ConformalFrameGuardConfig {
+                    fallback_budget_us,
+                    ..Default::default()
+                })
+                .is_err()
+            );
+        }
+        for (time_series_window, nonconformity_window) in [(0, 20), (20, 0)] {
+            assert!(
+                ConformalFrameGuard::new(ConformalFrameGuardConfig {
+                    time_series_window,
+                    nonconformity_window,
+                    ..Default::default()
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn observation_metadata_uses_pooled_calibration_and_actual_upper_bound() {
+        let config = ConformalFrameGuardConfig {
+            conformal: ConformalConfig {
+                alpha: 0.5,
+                min_samples: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut guard = ConformalFrameGuard::new(config).expect("valid config");
+        let first = test_key();
+        let second = BucketKey {
+            size_bucket: first.size_bucket + 1,
+            ..first
+        };
+        guard.observe(10_000.0, first);
+        assert!(!guard.is_calibrated());
+        guard.observe(10_000.0, second);
+        assert!(guard.is_calibrated(), "two pooled scores provide rank two");
+        assert_eq!(guard.state(), GuardState::Calibrated);
+        let prediction = guard.predict_p99(16_000.0, second);
+        assert_eq!(prediction.calibration_size, 2);
+        assert_eq!(prediction.fallback_level, 1);
+        assert_eq!(prediction.upper_us, Some(10_000.0));
+
+        let mut extreme = ConformalFrameGuard::new(ConformalFrameGuardConfig {
+            conformal: ConformalConfig {
+                alpha: 0.5,
+                min_samples: 1,
+                window_size: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("valid config");
+        extreme.observe(f64::MAX, first);
+        assert!(
+            !extreme.is_calibrated(),
+            "attainable rank cannot hide overflow"
+        );
+        assert_eq!(extreme.state(), GuardState::AtRisk);
+        assert_eq!(
+            extreme.degradation_triggers(),
+            0,
+            "observation is not a decision"
+        );
+        let prediction = extreme.predict_p99(f64::MAX, first);
+        assert_eq!(
+            prediction.conformal.unwrap().status,
+            ConformalStatus::ArithmeticOverflow
+        );
+        assert!(!extreme.is_calibrated());
+    }
+
+    #[test]
+    fn telemetry_remains_json_for_extreme_finite_observations() {
+        let mut guard = ConformalFrameGuard::with_defaults();
+        for value in [f64::MAX, 0.0, f64::MAX, 0.0] {
+            guard.observe(value, test_key());
+        }
+        let row: serde_json::Value =
+            serde_json::from_str(&guard.telemetry().to_jsonl()).expect("valid telemetry JSON");
+        assert!(row["ema_us"].is_number());
+        assert!(row["nc_mean"].is_number());
     }
 
     #[test]
@@ -641,13 +854,13 @@ mod tests {
 
         let pred = P99Prediction {
             y_hat_us: 18_000.0,
-            upper_us: 20_000.0,
+            upper_us: Some(20_000.0),
             budget_us: 16_000.0,
             exceeds_budget: true,
             calibration_size: 25,
             fallback_level: 0,
             state: GuardState::AtRisk,
-            interval_width_us: 2_000.0,
+            interval_width_us: Some(2_000.0),
             conformal: None,
         };
 
@@ -661,13 +874,13 @@ mod tests {
 
         let pred = P99Prediction {
             y_hat_us: 30_000.0,
-            upper_us: 35_000.0,
+            upper_us: Some(35_000.0),
             budget_us: 16_000.0,
             exceeds_budget: true,
             calibration_size: 25,
             fallback_level: 0,
             state: GuardState::AtRisk,
-            interval_width_us: 5_000.0,
+            interval_width_us: Some(5_000.0),
             conformal: None,
         };
 
@@ -681,13 +894,13 @@ mod tests {
 
         let pred = P99Prediction {
             y_hat_us: 10_000.0,
-            upper_us: 14_000.0,
+            upper_us: Some(14_000.0),
             budget_us: 16_000.0,
             exceeds_budget: false,
             calibration_size: 25,
             fallback_level: 0,
             state: GuardState::Calibrated,
-            interval_width_us: 4_000.0,
+            interval_width_us: Some(4_000.0),
             conformal: None,
         };
 
@@ -730,21 +943,20 @@ mod tests {
     fn jsonl_output_is_valid_json() {
         let pred = P99Prediction {
             y_hat_us: 10_000.0,
-            upper_us: 14_000.0,
+            upper_us: Some(14_000.0),
             budget_us: 16_000.0,
             exceeds_budget: false,
             calibration_size: 25,
             fallback_level: 0,
             state: GuardState::Calibrated,
-            interval_width_us: 4_000.0,
+            interval_width_us: Some(4_000.0),
             conformal: None,
         };
 
         let json_str = pred.to_jsonl();
-        // Verify it parses as JSON (basic check: starts/ends with braces, has schema)
-        assert!(json_str.starts_with('{'));
-        assert!(json_str.ends_with('}'));
-        assert!(json_str.contains("conformal-frame-guard-v1"));
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+        assert_eq!(parsed["schema"], "conformal-frame-guard-v2");
+        assert_eq!(parsed["upper_us"], 14_000.0);
     }
 
     #[test]
@@ -773,7 +985,7 @@ mod tests {
             nonconformity_window: 5,
             ..Default::default()
         };
-        let mut guard = ConformalFrameGuard::new(config);
+        let mut guard = ConformalFrameGuard::new(config).expect("valid config");
         let key = test_key();
 
         for i in 0..100 {

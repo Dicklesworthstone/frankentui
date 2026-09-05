@@ -187,12 +187,17 @@ impl EvidenceEntry {
 
     /// Format as a JSONL line (no trailing newline).
     pub fn to_jsonl(&self) -> String {
+        let number = crate::conformal_predictor::finite_json_number;
         let mut out = String::with_capacity(256);
         out.push_str("{\"schema\":\"ftui-evidence-v2\"");
         let _ = write!(out, ",\"id\":{}", self.decision_id);
         let _ = write!(out, ",\"ts_ns\":{}", self.timestamp_ns);
         let _ = write!(out, ",\"domain\":\"{}\"", self.domain.as_str());
-        let _ = write!(out, ",\"log_posterior\":{:.6}", self.log_posterior);
+        let _ = write!(
+            out,
+            ",\"log_posterior\":{}",
+            number(Some(self.log_posterior), 6)
+        );
 
         out.push_str(",\"evidence\":[");
         let mut first = true;
@@ -203,18 +208,24 @@ impl EvidenceEntry {
             first = false;
             let _ = write!(
                 out,
-                "{{\"label\":\"{}\",\"bf\":{:.6}}}",
-                term.label, term.bayes_factor
+                "{{\"label\":\"{}\",\"bf\":{}}}",
+                term.label,
+                number(Some(term.bayes_factor), 6)
             );
         }
         out.push(']');
 
         let _ = write!(out, ",\"action\":\"{}\"", self.action);
-        let _ = write!(out, ",\"loss_avoided\":{:.6}", self.loss_avoided);
         let _ = write!(
             out,
-            ",\"ci\":[{:.6},{:.6}]",
-            self.confidence_interval.0, self.confidence_interval.1
+            ",\"loss_avoided\":{}",
+            number(Some(self.loss_avoided), 6)
+        );
+        let _ = write!(
+            out,
+            ",\"ci\":[{},{}]",
+            number(Some(self.confidence_interval.0), 6),
+            number(Some(self.confidence_interval.1), 6)
         );
         out.push('}');
         out

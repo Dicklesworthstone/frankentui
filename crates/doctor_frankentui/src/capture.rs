@@ -984,6 +984,8 @@ fn build_ttyd_compat_shim_body(
     drop_client_option: bool,
     add_debug_logging: bool,
 ) -> String {
+    // doctor_frankentui:no-fake-allow: production forwarding wrapper executes the
+    // discovered ttyd binary; it does not manufacture a terminal or capture.
     format!(
         "#!/usr/bin/env bash
 set -euo pipefail
@@ -1006,7 +1008,13 @@ compat_notes=()
 }} >> \"$shim_log\"
 
 if [[ \"${{1:-}}\" == \"--version\" ]]; then
-  raw_version=\"$(\"$real_ttyd\" --version 2>/dev/null || true)\"
+  if raw_version=\"$(\"$real_ttyd\" --version)\"; then
+    :
+  else
+    status=$?
+    printf '%s\\n' \"$raw_version\"
+    exit \"$status\"
+  fi
   if [[ \"$raw_version\" =~ ([0-9]+\\.[0-9]+\\.[0-9]+) ]]; then
     printf 'ttyd %s\\n' \"${{BASH_REMATCH[1]}}\"
     exit 0
@@ -1127,6 +1135,8 @@ fn install_browser_compat_shim(run_dir: &Path) -> Result<Option<BrowserCompatShi
     let shim_dir = run_dir.join("shim_browser_bin");
     ensure_dir(&shim_dir)?;
     let shim_log = run_dir.join("browser_shim.log");
+    // doctor_frankentui:no-fake-allow: production alias logs arguments and execs
+    // the resolved Chromium executable, preserving its output and exit status.
     let shim_body = format!(
         "#!/usr/bin/env bash
 set -euo pipefail
@@ -4132,6 +4142,66 @@ mod tests {
         );
         assert!(without_debug.contains("add_debug_logging=0"));
         assert!(without_debug.contains("if [[ \"$add_debug_logging\" == \"1\" ]]; then"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ttyd_wrapper_executes_real_commands_and_preserves_version_failure() {
+        // The generated production wrapper executes the real shell here. This
+        // proves forwarding/status behavior, not a live ttyd/browser capture.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = temp.path().join("forward.sh");
+        let log = temp.path().join("forward.log");
+        let runtime_log = temp.path().join("runtime.log");
+        let body = super::build_ttyd_compat_shim_body(
+            Path::new("/bin/bash"),
+            &log,
+            &runtime_log,
+            false,
+            false,
+            false,
+        );
+        std::fs::write(&script, body).expect("generated wrapper");
+        let version = std::process::Command::new("bash")
+            .arg(&script)
+            .arg("--version")
+            .output()
+            .expect("real shell version");
+        assert!(
+            version.status.success(),
+            "{}",
+            String::from_utf8_lossy(&version.stderr)
+        );
+        assert!(String::from_utf8_lossy(&version.stdout).starts_with("ttyd "));
+        let forwarded = std::process::Command::new("bash")
+            .arg(&script)
+            .args([
+                "-c",
+                "printf '%s\\n' \"$1\"; printf 'forwarded stderr\\n' >&2; exit 23",
+                "_",
+                "argument with spaces",
+            ])
+            .output()
+            .expect("forward to actual shell");
+        assert_eq!(forwarded.status.code(), Some(23));
+        let output = std::fs::read_to_string(&runtime_log).expect("real output log");
+        assert!(output.contains("argument with spaces\n"));
+        assert!(output.contains("forwarded stderr\n"));
+
+        let missing = temp.path().join("missing-real-tool");
+        let body =
+            super::build_ttyd_compat_shim_body(&missing, &log, &runtime_log, false, false, false);
+        std::fs::write(&script, body).expect("generated missing-tool wrapper");
+        let failure = std::process::Command::new("bash")
+            .arg(&script)
+            .arg("--version")
+            .output()
+            .expect("actual missing executable error");
+        assert_eq!(failure.status.code(), Some(127));
+        assert!(
+            String::from_utf8_lossy(&failure.stderr).contains("missing-real-tool"),
+            "stderr was lost: {failure:?}"
+        );
     }
 
     #[test]

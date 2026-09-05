@@ -187,6 +187,106 @@ fn parse_stderr_json(output: &Output) -> Value {
 }
 
 #[test]
+fn supervised_report_parser_rejects_synthetic_unknown_zero_and_missing_results() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    // Exact embedded parser, synthetic libtest text: this is parser coverage,
+    // not evidence that the supervised subprocess suite ran.
+    let script = include_str!("../../../scripts/doctor_frankentui_supervised_orchestration_e2e.sh");
+    let parser = script
+        .split_once("<<'PY'\n")
+        .expect("embedded parser starts")
+        .1
+        .split_once("\nPY\n")
+        .expect("embedded parser ends")
+        .0;
+    let names: Vec<&str> = include_str!("supervised_orchestration_integration.rs")
+        .lines()
+        .filter_map(|line| line.strip_prefix("fn subprocess_"))
+        .map(|rest| rest.split_once('(').expect("test function").0)
+        .collect();
+    assert!(!names.is_empty(), "suite cases must be present");
+    let lines: Vec<String> = names
+        .iter()
+        .map(|name| format!("test subprocess_{name} ... ok\n"))
+        .collect();
+    let valid = format!(
+        "{}test result: ok. {} passed; 0 failed; 0 ignored;\n",
+        lines.concat(),
+        lines.len()
+    );
+    let temp = tempdir().expect("tempdir");
+    let stdout = temp.path().join("stdout.log");
+    let stderr = temp.path().join("stderr.log");
+    let report = temp.path().join("report.json");
+    fs::write(&stdout, "").expect("empty stdout");
+    let run_case = |text: &str, cargo_status: u8, success: bool| {
+        fs::write(&stderr, text).expect("synthetic libtest input on RCH stream");
+        let mut child = Command::new("python3")
+            .arg("-")
+            .arg(&stdout)
+            .arg(&stderr)
+            .arg(&report)
+            .arg(cargo_status.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("real report parser");
+        child
+            .stdin
+            .take()
+            .expect("parser stdin")
+            .write_all(parser.as_bytes())
+            .expect("exact parser source");
+        let output = child.wait_with_output().expect("parser exit");
+        assert_eq!(
+            output.status.success(),
+            success,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let payload: Value =
+            serde_json::from_slice(&fs::read(&report).expect("report")).expect("report JSON");
+        assert_eq!(
+            payload["validation_errors"]
+                .as_array()
+                .expect("errors")
+                .is_empty(),
+            success
+        );
+        if success {
+            assert_eq!(
+                payload["covered_contracts"]
+                    .as_array()
+                    .expect("contracts")
+                    .len(),
+                8
+            );
+        } else {
+            assert_eq!(payload["verdict"], "failed");
+        }
+    };
+    run_case(&valid, 0, true);
+    run_case("", 0, false);
+    run_case(
+        "test result: ok. 0 passed; 0 failed; 0 ignored;\n",
+        0,
+        false,
+    );
+    run_case(&valid, 17, false);
+    let missing = format!(
+        "{}test result: ok. {} passed; 0 failed; 0 ignored;\n",
+        lines[1..].concat(),
+        lines.len() - 1
+    );
+    run_case(&missing, 0, false);
+    run_case(&format!("{}{valid}", lines[0]), 0, false);
+    run_case(&valid.replacen("... ok", "... ignored", 1), 0, false);
+}
+
+#[test]
 fn doctor_subprocess_dry_and_full_smoke_generate_expected_artifacts() {
     if skip_without_real_tool_opt_in(
         "doctor_subprocess_dry_and_full_smoke_generate_expected_artifacts",
@@ -589,6 +689,9 @@ fn doctor_full_allow_degraded_ttyd_eof_succeeds_without_docker() {
     fs::create_dir_all(&project_dir).expect("project dir");
     fs::create_dir_all(&run_root).expect("run root");
     let path_env = build_path_with_selected_commands(&tool_dir, &["bash"]);
+    // doctor_frankentui:no-fake-allow: explicit negative diagnostic fault injection,
+    // not a real VHS/ttyd handshake or capture. Assertions require degraded and
+    // unhealthy output; live capture acceptance must be proved separately.
     write_executable_script(
         &tool_dir.join("vhs"),
         "#!/bin/sh\nprintf 'could not open ttyd: EOF\\n' >&2\nexit 124\n",

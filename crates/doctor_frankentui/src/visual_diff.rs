@@ -6,6 +6,7 @@
 //! perceptual classes from the semantic contract.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -516,6 +517,49 @@ pub struct VisualDiffReport {
     pub artifact_bundle: Option<VisualDiffArtifactBundle>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VisualComparisonArchive {
+    schema_version: u32,
+    replay_scope: String,
+    source_run: TerminalOutputRun,
+    translated_run: TerminalOutputRun,
+    config: VisualDiffConfig,
+    contract: SemanticEquivalenceContract,
+}
+
+/// Recompute an archived comparison; this does not capture new terminal output.
+pub fn run_visual_diff_command(input: &Path) -> crate::error::Result<()> {
+    let archive: VisualComparisonArchive = serde_json::from_slice(&std::fs::read(input)?)?;
+    if archive.schema_version != 1 || archive.replay_scope != "archived_comparison" {
+        return Err(crate::error::DoctorError::invalid(
+            "unsupported visual comparison archive",
+        ));
+    }
+    if archive.source_run.frames.is_empty() && archive.translated_run.frames.is_empty() {
+        return Err(crate::error::DoctorError::invalid(
+            "comparison archive contains no frames",
+        ));
+    }
+    let report = compare_terminal_runs_with_contract(
+        &archive.source_run,
+        &archive.translated_run,
+        &archive.config,
+        &archive.contract,
+    );
+    println!(
+        "{}",
+        serde_json::json!({"replay_scope": "archived_comparison", "report": report})
+    );
+    if report.verdict == VisualDiffVerdict::Violation {
+        return Err(crate::error::DoctorError::exit(
+            1,
+            "archived visual comparison rejected",
+        ));
+    }
+    Ok(())
+}
+
 #[must_use]
 pub fn compare_trace_render_captures(
     source_trace: &InteractionTrace,
@@ -636,9 +680,9 @@ pub fn compare_terminal_runs_with_contract(
         Some(build_artifact_bundle(
             source_run,
             translated_run,
-            config.mode,
+            config,
             &differences,
-            &contract.contract_id,
+            contract,
         ))
     };
 
@@ -1181,11 +1225,19 @@ fn clause_ids_for_class(config: &VisualDiffConfig, semantic_class: &str) -> Vec<
 fn build_artifact_bundle(
     source_run: &TerminalOutputRun,
     translated_run: &TerminalOutputRun,
-    mode: VisualDiffMode,
+    config: &VisualDiffConfig,
     differences: &[VisualDifference],
-    contract_id: &str,
+    contract: &SemanticEquivalenceContract,
 ) -> VisualDiffArtifactBundle {
-    let replay_command = replay_command(source_run, translated_run);
+    let replay_command = "doctor_frankentui visual-diff --input replay-input.json".to_string();
+    let archive = VisualComparisonArchive {
+        schema_version: 1,
+        replay_scope: "archived_comparison".to_string(),
+        source_run: source_run.clone(),
+        translated_run: translated_run.clone(),
+        config: config.clone(),
+        contract: contract.clone(),
+    };
     let diff_jsonl = differences
         .iter()
         .map(|diff| serde_json::to_string(diff).unwrap_or_default())
@@ -1203,18 +1255,25 @@ fn build_artifact_bundle(
         .unwrap_or_default();
     let summary = serde_json::json!({
         "validator_id": VISUAL_DIFF_VALIDATOR_ID,
-        "contract_id": contract_id,
+        "contract_id": contract.contract_id,
         "source_run_id": source_run.run_id,
         "translated_run_id": translated_run.run_id,
-        "mode": mode,
+        "mode": config.mode,
+        "replay_scope": "archived_comparison",
         "difference_count": differences.len(),
         "first_difference": differences.first(),
     })
     .to_string();
 
-    let replay_script = format!("#!/usr/bin/env bash\nset -euo pipefail\n{replay_command}\n");
+    // doctor_frankentui:no-fake-allow: generated replay invokes the actual CLI
+    // comparator with archived inputs/config/contract; it does not fake a capture.
+    let replay_script = "#!/usr/bin/env bash\nset -euo pipefail\n# Archived comparison replay; no new terminal capture.\narchive_dir=\"$(cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd -P)\"\nexec \"${DOCTOR_FRANKENTUI_BIN:-doctor_frankentui}\" visual-diff --input \"$archive_dir/replay-input.json\"\n";
     let files = vec![
-        artifact_file("replay.sh", replay_script),
+        artifact_file("replay.sh", replay_script.to_string()),
+        artifact_file(
+            "replay-input.json",
+            serde_json::to_string_pretty(&archive).expect("comparison archive serializes"),
+        ),
         artifact_file("diffs.jsonl", diff_jsonl),
         artifact_file("source_excerpt.txt", source_excerpt),
         artifact_file("translated_excerpt.txt", translated_excerpt),
@@ -1250,23 +1309,6 @@ fn bundle_hash(files: &[VisualDiffArtifactFile]) -> String {
         hasher.update([0]);
     }
     hex_encode(&hasher.finalize())
-}
-
-fn replay_command(source_run: &TerminalOutputRun, translated_run: &TerminalOutputRun) -> String {
-    match (&source_run.replay_command, &translated_run.replay_command) {
-        (Some(source), Some(translated)) => format!("{source} && {translated}"),
-        (Some(source), None) => source.clone(),
-        (None, Some(translated)) => translated.clone(),
-        (None, None) => match (&source_run.trace_id, &translated_run.trace_id) {
-            (Some(source_trace), Some(translated_trace)) => format!(
-                "doctor_frankentui replay --trace-id {source_trace} && doctor_frankentui replay --trace-id {translated_trace}"
-            ),
-            _ => format!(
-                "doctor_frankentui visual-diff --source-run {} --translated-run {}",
-                source_run.run_id, translated_run.run_id
-            ),
-        },
-    }
 }
 
 fn frame_map(frames: &[TerminalFrame]) -> BTreeMap<u32, TerminalFrame> {

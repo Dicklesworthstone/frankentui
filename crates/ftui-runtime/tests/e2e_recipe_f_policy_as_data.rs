@@ -160,8 +160,10 @@ impl RecipeFController {
             stage: DeliveryStage::Shadow,
             artifact,
             fallback_active: false,
-            cascade_loaded: DegradationCascade::new(loaded_cascade_config),
-            cascade_baked_in: DegradationCascade::new(baked_in_cascade_config),
+            cascade_loaded: DegradationCascade::new(loaded_cascade_config)
+                .expect("valid loaded cascade config"),
+            cascade_baked_in: DegradationCascade::new(baked_in_cascade_config)
+                .expect("valid baked-in cascade config"),
         }
     }
 

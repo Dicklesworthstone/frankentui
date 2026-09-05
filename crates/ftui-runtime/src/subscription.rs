@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn every_respects_interval() {
         let interval = Duration::from_millis(50);
-        let sub = Every::with_id(1, interval, || TestMsg::Tick);
+        let sub = Every::with_id(1, interval, Instant::now);
         let (tx, rx) = mpsc::channel();
         let (signal, trigger) = StopSignal::new();
 
@@ -1199,14 +1199,14 @@ mod tests {
         });
 
         // Wait for three ticks by receiving them rather than sleeping a
-        // fixed time: a loaded runner may deliver them late, but it must
-        // deliver them, and never closer together than the interval (G04.2).
+        // fixed time. Timestamp at the actual producer: receiver scheduling
+        // can bunch queued messages even when production respects the interval.
+        // Keep the original 50ms minimum between generated ticks (G04.2).
         let mut arrivals = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(10);
         while arrivals.len() < 3 && Instant::now() < deadline {
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(TestMsg::Tick) => arrivals.push(Instant::now()),
-                Ok(_) => {}
+                Ok(produced_at) => arrivals.push(produced_at),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -1223,7 +1223,7 @@ mod tests {
             let gap = pair[1].duration_since(pair[0]);
             assert!(
                 gap >= interval,
-                "ticks arrived {gap:?} apart, closer than the {interval:?} interval"
+                "ticks were generated {gap:?} apart, closer than the {interval:?} interval"
             );
         }
         assert!(

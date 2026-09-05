@@ -103,13 +103,17 @@ struct PaneResult {
     node_count: usize,
     first_leaf: String,
     canceled: bool,
+    timed_out: bool,
     cancel_preserved_state: bool,
     post_cancel_events: u32,
     post_cancel_preserved_state: bool,
+    history_entries: usize,
+    history_cursor: usize,
+    cancel_history_undo_redo: bool,
     dragging_seen: bool,
     termios_restored: bool,
     recovered_bytes: usize,
-    /// Focused leaf surface key (keymap mode); `-` in adapter mode.
+    /// Focused leaf surface key from the production keyboard controller.
     active_pane: String,
     /// Whether a pane is maximized (keymap mode).
     maximized: bool,
@@ -136,9 +140,13 @@ fn parse_marker(output: &[u8]) -> PaneResult {
     let mut node_count = None;
     let mut first_leaf = None;
     let mut canceled = None;
+    let mut timed_out = None;
     let mut cancel_preserved_state = None;
     let mut post_cancel_events = None;
     let mut post_cancel_preserved_state = None;
+    let mut history_entries = None;
+    let mut history_cursor = None;
+    let mut cancel_history_undo_redo = None;
     let mut dragging_seen = None;
     let mut termios_restored = None;
     let mut recovered_bytes = None;
@@ -159,9 +167,13 @@ fn parse_marker(output: &[u8]) -> PaneResult {
             "node_count" => node_count = value.parse().ok(),
             "first_leaf" => first_leaf = Some(value.to_string()),
             "canceled" => canceled = Some(value == "true"),
+            "timed_out" => timed_out = Some(value == "true"),
             "cancel_preserved_state" => cancel_preserved_state = Some(value == "true"),
             "post_cancel_events" => post_cancel_events = value.parse().ok(),
             "post_cancel_preserved_state" => post_cancel_preserved_state = Some(value == "true"),
+            "history_entries" => history_entries = value.parse().ok(),
+            "history_cursor" => history_cursor = value.parse().ok(),
+            "cancel_history_undo_redo" => cancel_history_undo_redo = Some(value == "true"),
             "dragging_seen" => dragging_seen = Some(value == "true"),
             "termios_restored" => termios_restored = Some(value == "true"),
             "recovered_bytes" => recovered_bytes = value.parse().ok(),
@@ -182,16 +194,98 @@ fn parse_marker(output: &[u8]) -> PaneResult {
         node_count: node_count.expect("node_count field"),
         first_leaf: first_leaf.expect("first_leaf field"),
         canceled: canceled.expect("canceled field"),
+        timed_out: timed_out.expect("timed_out field"),
         cancel_preserved_state: cancel_preserved_state.expect("cancel_preserved_state field"),
         post_cancel_events: post_cancel_events.expect("post_cancel_events field"),
         post_cancel_preserved_state: post_cancel_preserved_state
             .expect("post_cancel_preserved_state field"),
+        history_entries: history_entries.expect("history_entries field"),
+        history_cursor: history_cursor.expect("history_cursor field"),
+        cancel_history_undo_redo: cancel_history_undo_redo.expect("cancel_history_undo_redo field"),
         dragging_seen: dragging_seen.expect("dragging_seen field"),
         termios_restored: termios_restored.expect("termios_restored field"),
         recovered_bytes: recovered_bytes.expect("recovered_bytes field"),
-        // Back-compatible defaults for adapter-mode markers.
-        active_pane: active_pane.unwrap_or_else(|| "-".to_string()),
-        maximized: maximized.unwrap_or(false),
+        active_pane: active_pane.expect("active_pane field"),
+        maximized: maximized.expect("maximized field"),
+    }
+}
+
+/// Inspect actual DEC private-mode transitions, including combined parameters.
+/// Initial defensive resets cannot satisfy teardown after a later enable.
+fn mouse_reporting_restored(output: &[u8]) -> Result<String, String> {
+    let mut modes =
+        [9_u16, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016].map(|mode| (mode, None, None));
+    for (offset, prefix) in output.windows(3).enumerate() {
+        if prefix != b"\x1b[?" {
+            continue;
+        }
+        let tail = &output[offset + 3..];
+        let Some(end) = tail.iter().position(|byte| (0x40..=0x7e).contains(byte)) else {
+            continue;
+        };
+        let enabled = match tail[end] {
+            b'h' => true,
+            b'l' => false,
+            _ => continue,
+        };
+        let Ok(parameters) = std::str::from_utf8(&tail[..end]) else {
+            continue;
+        };
+        let Ok(parameters) = parameters
+            .split(';')
+            .map(str::parse::<u16>)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            continue;
+        };
+        for (mode, last_enable, last_disable) in &mut modes {
+            if parameters.contains(mode) {
+                if enabled {
+                    *last_enable = Some(offset);
+                } else {
+                    *last_disable = Some(offset);
+                }
+            }
+        }
+    }
+    let evidence = modes
+        .iter()
+        .filter(|(_, enable, _)| enable.is_some())
+        .map(|(mode, enable, disable)| format!("mode={mode},enable={enable:?},disable={disable:?}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (mode, enable, disable) in modes {
+        if [1000, 1002, 1006].contains(&mode) && enable.is_none() {
+            return Err(format!(
+                "required mouse mode {mode} was never enabled: {evidence}"
+            ));
+        }
+        if let Some(enable) = enable
+            && disable.is_none_or(|disable| disable < enable)
+        {
+            return Err(format!("mouse mode {mode} remains enabled: {evidence}"));
+        }
+    }
+    Ok(evidence)
+}
+
+#[test]
+fn mouse_cleanup_evaluator_requires_disable_after_every_enabled_mode() {
+    let combined = b"\x1b[?1000;1002;1006h\x1b[?1000;1002;1006l";
+    let separate = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+    assert!(mouse_reporting_restored(combined).is_ok());
+    assert!(mouse_reporting_restored(separate).is_ok());
+    for incomplete in [
+        b"".as_slice(),
+        b"\x1b[?1000;1002;1006l\x1b[?1000;1002;1006h",
+        b"\x1b[?1000;1002;1006h\x1b[?1000;1002l",
+        b"\x1b[?1000;1002;1006h\x1b[?1000;1002;1006l\x1b[?1002h",
+        b"\x1b[?1000;1002;1003;1006h\x1b[?1000;1002;1006l",
+    ] {
+        assert!(
+            mouse_reporting_restored(incomplete).is_err(),
+            "incomplete teardown accepted: {incomplete:?}"
+        );
     }
 }
 
@@ -498,6 +592,7 @@ fn pty_escape_cancels_armed_interaction_cleanly() {
             let output = run(&scenario);
             let result = parse_marker(&output);
 
+            assert!(!result.timed_out, "cancel must finish before safety expiry");
             assert_eq!(
                 result.recovered_bytes,
                 if during_probe {
@@ -548,7 +643,7 @@ fn pty_escape_cancels_armed_interaction_cleanly() {
             );
             let options = SessionOptions {
                 alternate_screen: mode == "alt",
-                mouse_capture: false,
+                mouse_capture: true,
                 bracketed_paste: false,
                 focus_events: false,
                 kitty_keyboard: false,
@@ -556,6 +651,11 @@ fn pty_escape_cancels_armed_interaction_cleanly() {
             };
             assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                 .expect("cancel restores terminal modes");
+            println!(
+                "PANE_MOUSE_CLEANUP mode={mode} probe={during_probe} armed {}",
+                mouse_reporting_restored(&output)
+                    .expect("cancel disables every enabled mouse mode")
+            );
         }
     }
 }
@@ -573,6 +673,7 @@ fn pty_escape_cancels_dragging_without_committing_or_mutating_again() {
             }
             let output = run(&scenario);
             let result = parse_marker(&output);
+            assert!(!result.timed_out, "cancel must finish before safety expiry");
             assert!(
                 result.down_resolved && result.dragging_seen,
                 "real drag not observed: {result:?}"
@@ -612,7 +713,7 @@ fn pty_escape_cancels_dragging_without_committing_or_mutating_again() {
             );
             let options = SessionOptions {
                 alternate_screen: mode == "alt",
-                mouse_capture: false,
+                mouse_capture: true,
                 bracketed_paste: false,
                 focus_events: false,
                 kitty_keyboard: false,
@@ -620,6 +721,134 @@ fn pty_escape_cancels_dragging_without_committing_or_mutating_again() {
             };
             assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
                 .expect("drag cancel restores terminal modes");
+            println!(
+                "PANE_MOUSE_CLEANUP mode={mode} probe={during_probe} dragging {}",
+                mouse_reporting_restored(&output)
+                    .expect("cancel disables every enabled mouse mode")
+            );
+        }
+    }
+}
+
+#[test]
+fn pty_cancel_preserves_real_undo_history_and_keyboard_pane_focus() {
+    for mode in ["alt", "inline"] {
+        for during_probe in [false, true] {
+            for dragging in [false, true] {
+                // Two actual resize commands create nonempty undo history,
+                // restoring the splitter before the subsequent pointer press.
+                // Tab then changes actual pane focus from left to right.
+                let mut parts = vec![KEY_RIGHT, KEY_LEFT, KEY_TAB, MOUSE_DOWN_ON_SPLITTER];
+                if dragging {
+                    parts.push(MOUSE_DRAG_SPLITTER_RIGHT);
+                }
+                parts.push(KEY_ESC);
+                let recovered_bytes = parts.iter().map(|part| part.len()).sum::<usize>();
+                let mut scenario = Scenario::new(mode, parts).exit_after_ms(4000);
+                if during_probe {
+                    scenario = scenario.during_probe();
+                }
+                let output = run(&scenario);
+                let result = parse_marker(&output);
+                assert!(!result.timed_out, "cancel must finish before safety expiry");
+                assert_eq!(
+                    result.recovered_bytes,
+                    if during_probe { recovered_bytes } else { 0 }
+                );
+                assert!(
+                    result.down_resolved && result.canceled && !result.committed,
+                    "{result:?}"
+                );
+                assert_eq!(result.dragging_seen, dragging, "{result:?}");
+                assert_eq!(
+                    result.active_pane, "right",
+                    "Tab focus did not survive cancel: {result:?}"
+                );
+                assert!(!result.maximized);
+                assert_eq!(
+                    result.history_entries,
+                    if dragging { 3 } else { 2 },
+                    "{result:?}"
+                );
+                assert_eq!(result.history_cursor, result.history_entries, "{result:?}");
+                assert!(
+                    result.cancel_preserved_state && result.post_cancel_preserved_state,
+                    "{result:?}"
+                );
+                assert_eq!(result.post_cancel_events, 2);
+                assert!(
+                    result.cancel_history_undo_redo,
+                    "actual undo/redo must change and restore tree: {result:?}"
+                );
+                assert!(result.tree_valid && result.termios_restored, "{result:?}");
+                if dragging {
+                    assert!(result.final_bps > INITIAL_BPS);
+                } else {
+                    assert_eq!(result.final_bps, INITIAL_BPS);
+                }
+                let options = SessionOptions {
+                    alternate_screen: mode == "alt",
+                    mouse_capture: true,
+                    bracketed_paste: false,
+                    focus_events: false,
+                    kitty_keyboard: false,
+                    intercept_signals: true,
+                };
+                assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
+                    .expect("history/focus cancel restores terminal modes");
+                println!(
+                    "PANE_MOUSE_CLEANUP mode={mode} probe={during_probe} history dragging={dragging} {}",
+                    mouse_reporting_restored(&output)
+                        .expect("cancel disables every enabled mouse mode")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn pty_safety_timeout_restores_terminal_with_an_uncommitted_pointer() {
+    for mode in ["alt", "inline"] {
+        for dragging in [false, true] {
+            let mut parts = vec![MOUSE_DOWN_ON_SPLITTER];
+            if dragging {
+                parts.push(MOUSE_DRAG_SPLITTER_RIGHT);
+            }
+            // No Escape, release or quit: only the actual safety heartbeat can
+            // end this session. Its exit marker distinguishes that path.
+            let output = run(&Scenario::new(mode, parts).exit_after_ms(2000));
+            let result = parse_marker(&output);
+            assert!(result.timed_out && result.down_resolved, "{result:?}");
+            assert_eq!(result.dragging_seen, dragging, "{result:?}");
+            assert!(!result.canceled && !result.committed, "{result:?}");
+            assert_eq!(result.applied_ops, u64::from(dragging), "{result:?}");
+            assert_eq!(result.history_entries, usize::from(dragging), "{result:?}");
+            assert_eq!(result.history_cursor, result.history_entries, "{result:?}");
+            assert_eq!(result.active_pane, "left", "{result:?}");
+            assert!(!result.maximized);
+            assert_eq!(result.post_cancel_events, 0);
+            assert_eq!(result.recovered_bytes, 0);
+            assert!(result.tree_valid && result.termios_restored, "{result:?}");
+            if dragging {
+                assert!(result.final_bps > INITIAL_BPS);
+            } else {
+                assert_eq!(result.final_bps, INITIAL_BPS);
+            }
+            let options = SessionOptions {
+                alternate_screen: mode == "alt",
+                mouse_capture: true,
+                bracketed_paste: false,
+                focus_events: false,
+                kitty_keyboard: false,
+                intercept_signals: true,
+            };
+            assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
+                .expect("safety expiry restores terminal modes");
+            println!(
+                "PANE_MOUSE_CLEANUP mode={mode} timeout=true dragging={dragging} {}",
+                mouse_reporting_restored(&output)
+                    .expect("safety expiry disables every enabled mouse mode")
+            );
         }
     }
 }

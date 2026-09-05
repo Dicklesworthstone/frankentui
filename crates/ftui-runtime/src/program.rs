@@ -67,7 +67,7 @@ use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
 use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, TerminalWriter, UiAnchor};
 use crate::voi_sampling::{VoiConfig, VoiSampler};
-use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor};
+use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor, ConformalStatus};
 #[cfg(feature = "asupersync-executor")]
 use asupersync::runtime::{BlockingTaskHandle, Runtime as AsupersyncRuntime, RuntimeBuilder};
 use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, ScreenReaderAnnouncement, ScreenReaderPolicy};
@@ -4421,10 +4421,12 @@ struct ConformalEvidence {
     bucket_key: String,
     n_b: usize,
     alpha: f64,
-    q_b: f64,
+    q_b: Option<f64>,
     y_hat: f64,
-    upper_us: f64,
+    upper_us: Option<f64>,
     risk: bool,
+    status: ConformalStatus,
+    required_rank: usize,
     fallback_level: u8,
     window_size: usize,
     reset_count: u64,
@@ -4432,15 +4434,16 @@ struct ConformalEvidence {
 
 impl ConformalEvidence {
     fn from_prediction(prediction: &ConformalPrediction) -> Self {
-        let alpha = (1.0 - prediction.confidence).clamp(0.0, 1.0);
         Self {
             bucket_key: prediction.bucket.to_string(),
             n_b: prediction.sample_count,
-            alpha,
+            alpha: prediction.alpha,
             q_b: prediction.quantile,
             y_hat: prediction.y_hat,
             upper_us: prediction.upper_us,
             risk: prediction.risk,
+            status: prediction.status,
+            required_rank: prediction.required_rank,
             fallback_level: prediction.fallback_level,
             window_size: prediction.window_size,
             reset_count: prediction.reset_count,
@@ -4488,18 +4491,20 @@ impl BudgetDecisionEvidence {
         let conformal = self.conformal.as_ref();
         let bucket_key = Self::opt_str(conformal.map(|c| c.bucket_key.as_str()));
         let n_b = Self::opt_usize(conformal.map(|c| c.n_b));
-        let alpha = Self::opt_f64(conformal.map(|c| c.alpha));
-        let q_b = Self::opt_f64(conformal.map(|c| c.q_b));
+        let alpha = crate::conformal_predictor::finite_json_number(conformal.map(|c| c.alpha), 17);
+        let q_b = Self::opt_f64(conformal.and_then(|c| c.q_b));
         let y_hat = Self::opt_f64(conformal.map(|c| c.y_hat));
-        let upper_us = Self::opt_f64(conformal.map(|c| c.upper_us));
+        let upper_us = Self::opt_f64(conformal.and_then(|c| c.upper_us));
         let risk = Self::opt_bool(conformal.map(|c| c.risk));
+        let conformal_status = Self::opt_str(conformal.map(|c| c.status.as_str()));
+        let required_rank = Self::opt_usize(conformal.map(|c| c.required_rank));
         let fallback_level = Self::opt_u8(conformal.map(|c| c.fallback_level));
         let window_size = Self::opt_usize(conformal.map(|c| c.window_size));
         let reset_count = Self::opt_u64(conformal.map(|c| c.reset_count));
         let queue_max_depth = Self::opt_usize(self.load_governor.queue_max_depth);
 
         format!(
-            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
+            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
             self.frame_idx,
             self.decision.as_str(),
             self.controller_decision.as_str(),
@@ -4540,6 +4545,8 @@ impl BudgetDecisionEvidence {
             y_hat,
             upper_us,
             risk,
+            conformal_status,
+            required_rank,
             fallback_level,
             window_size,
             reset_count
@@ -4547,9 +4554,7 @@ impl BudgetDecisionEvidence {
     }
 
     fn opt_f64(value: Option<f64>) -> String {
-        value
-            .map(|v| format!("{v:.6}"))
-            .unwrap_or_else(|| "null".to_string())
+        crate::conformal_predictor::finite_json_number(value, 6)
     }
 
     fn opt_u64(value: Option<u64>) -> String {
@@ -5282,7 +5287,12 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             config.load_governor.clone(),
             effect_queue_config.max_queue_depth,
         );
-        let conformal_predictor = config.conformal_config.clone().map(ConformalPredictor::new);
+        let conformal_predictor = config
+            .conformal_config
+            .clone()
+            .map(ConformalPredictor::new)
+            .transpose()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let locale_context = config.locale_context.clone();
         let locale_version = locale_context.version();
         let mut resize_coalescer =
@@ -5442,7 +5452,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             config.load_governor.clone(),
             effect_queue_config.max_queue_depth,
         );
-        let conformal_predictor = config.conformal_config.clone().map(ConformalPredictor::new);
+        let conformal_predictor = config
+            .conformal_config
+            .clone()
+            .map(ConformalPredictor::new)
+            .transpose()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let locale_context = config.locale_context.clone();
         let locale_version = locale_context.version();
         let mut resize_coalescer =
@@ -6783,23 +6798,25 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             );
             let budget_us = self.budget.total().as_secs_f64() * 1_000_000.0;
             let prediction = predictor.predict(key, baseline_us, budget_us);
-            // Warm-up rule: the prior (`q_default`) or a few pooled residuals
-            // can flag risk on the very first frame; only a calibrated
-            // interval (>= min_samples residuals on the level used) is allowed
-            // to degrade rendering. The uncalibrated verdict still reaches the
-            // evidence row so the warm-up is visible.
-            if prediction.risk && !predictor.is_calibrated(&prediction) {
+            // An unavailable bound supplies no confidence-based action. Defer
+            // explicitly to the independent measured-budget controller, which
+            // already ran in next_frame(); do not erase its degradation or
+            // stop collecting measurements by repeatedly degrading to SkipFrame.
+            if !predictor.is_calibrated(&prediction) {
                 debug!(
                     bucket = %prediction.bucket,
                     sample_count = prediction.sample_count,
                     fallback_level = prediction.fallback_level,
-                    "conformal risk ignored: predictor not calibrated yet (warm-up)"
+                    status = prediction.status.as_str(),
+                    required_rank = prediction.required_rank,
+                    action = "defer_to_budget_controller",
+                    "conformal bound unavailable"
                 );
             } else if prediction.risk {
                 self.budget.degrade();
                 info!(
                     bucket = %prediction.bucket,
-                    upper_us = prediction.upper_us,
+                    upper_us = ?prediction.upper_us,
                     budget_us = prediction.budget_us,
                     fallback_level = prediction.fallback_level,
                     degradation = self.budget.degradation().as_str(),
@@ -6813,17 +6830,21 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             }
             debug!(
                 bucket = %prediction.bucket,
-                upper_us = prediction.upper_us,
+                upper_us = ?prediction.upper_us,
                 budget_us = prediction.budget_us,
                 fallback = prediction.fallback_level,
                 risk = prediction.risk,
                 "conformal risk gate"
             );
-            debug!(
-                monotonic.histogram.conformal_prediction_interval_width_us = prediction.quantile.max(0.0),
-                bucket = %prediction.bucket,
-                "conformal prediction interval width"
-            );
+            if predictor.is_calibrated(&prediction)
+                && let Some(quantile) = prediction.quantile
+            {
+                debug!(
+                    monotonic.histogram.conformal_prediction_interval_width_us = quantile.max(0.0),
+                    bucket = %prediction.bucket,
+                    "conformal prediction interval width"
+                );
+            }
             conformal_prediction = Some(prediction);
         }
 
@@ -7114,6 +7135,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 sample_count: snapshot.n_b,
                 upper_us: snapshot.upper_us,
                 risk: snapshot.risk,
+                status: snapshot.status,
+                required_rank: snapshot.required_rank,
             });
         set_budget_snapshot(Some(BudgetDecisionSnapshot {
             frame_idx: evidence.frame_idx,
@@ -10529,6 +10552,33 @@ mod tests {
     }
 
     #[test]
+    fn program_rejects_invalid_conformal_configuration() {
+        let features = BackendFeatures::default();
+        let events = HeadlessEventSource::new(80, 24, features);
+        let writer = TerminalWriter::new(
+            Vec::<u8>::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            TerminalCapabilities::default(),
+        );
+        let result = Program::with_event_source(
+            TestModel { value: 0 },
+            events,
+            features,
+            writer,
+            ProgramConfig::default()
+                .with_signal_interception(false)
+                .with_conformal_config(ConformalConfig {
+                    alpha: f64::NAN,
+                    ..Default::default()
+                }),
+        );
+        let error = result.err().expect("invalid configuration must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("alpha"));
+    }
+
+    #[test]
     fn program_config_forced_size_clamps_minimums() {
         let config = ProgramConfig::default().with_forced_size(0, 0);
         assert_eq!(config.forced_size, Some((1, 1)));
@@ -11070,10 +11120,12 @@ mod tests {
                 bucket_key: "inline:dirty:10".to_string(),
                 n_b: 32,
                 alpha: 0.05,
-                q_b: 1000.0,
+                q_b: Some(1000.0),
                 y_hat: 12_000.0,
-                upper_us: 13_000.0,
+                upper_us: Some(13_000.0),
                 risk: true,
+                status: ConformalStatus::Calibrated,
+                required_rank: 32,
                 fallback_level: 1,
                 window_size: 256,
                 reset_count: 2,
@@ -11447,12 +11499,13 @@ mod tests {
         coalescer.decision_checksum_hex()
     }
 
-    fn conformal_trace(enabled: bool) -> Vec<(f64, bool)> {
+    fn conformal_trace(enabled: bool) -> Vec<(Option<f64>, bool)> {
         if !enabled {
             return Vec::new();
         }
 
-        let mut predictor = ConformalPredictor::new(ConformalConfig::default());
+        let mut predictor =
+            ConformalPredictor::new(ConformalConfig::default()).expect("valid config");
         let key = BucketKey::from_context(ScreenMode::AltScreen, DiffStrategy::Full, 80, 24);
         let mut trace = Vec::new();
 
@@ -12171,7 +12224,12 @@ mod tests {
             config.load_governor.clone(),
             effect_queue_config.max_queue_depth,
         );
-        let conformal_predictor = config.conformal_config.clone().map(ConformalPredictor::new);
+        let conformal_predictor = config
+            .conformal_config
+            .clone()
+            .map(ConformalPredictor::new)
+            .transpose()
+            .expect("valid headless conformal config");
         let locale_context = config.locale_context.clone();
         let locale_version = locale_context.version();
         let mut resize_coalescer =
@@ -13902,6 +13960,92 @@ mod tests {
                 .all(|r| r.contains(r#""degradation_after":"Full""#)),
             "no row may record a degradation: {contents}"
         );
+    }
+
+    #[test]
+    fn headless_unattainable_conformal_rank_keeps_rendering_and_measuring() {
+        use ftui_render::budget::DegradationLevel;
+        let path = temp_evidence_path("conformal_unattainable_rank");
+        let config = ProgramConfig::default()
+            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)))
+            .with_conformal_config(ConformalConfig {
+                alpha: 0.01,
+                min_samples: 20,
+                window_size: 128,
+                q_default: 10_000_000.0,
+            })
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&path));
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+        for _ in 0..105 {
+            program.dirty = true;
+            program
+                .render_frame()
+                .expect("render while calibration grows");
+            assert_eq!(program.budget.degradation(), DegradationLevel::Full);
+            assert!(
+                !program.dirty,
+                "unavailable rank must not strand rendering at SkipFrame"
+            );
+        }
+        let contents = std::fs::read_to_string(path).expect("actual runtime evidence");
+        let rows: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("valid evidence JSON"))
+            .filter(|row: &serde_json::Value| row["event"] == "budget_decision")
+            .collect();
+        let unavailable: Vec<_> = rows
+            .iter()
+            .filter(|row| row["conformal_status"] == "unattainable_rank")
+            .collect();
+        assert!(
+            !unavailable.is_empty(),
+            "must observe the post-warmup missing rank"
+        );
+        for row in unavailable {
+            assert!(row["upper_us"].is_null());
+            assert!(row["q_b"].is_null());
+            assert_eq!(row["risk"], true);
+            assert_eq!(row["degradation_after"], "Full");
+        }
+        assert!(
+            rows.iter()
+                .any(|row| row["conformal_status"] == "calibrated" && row["upper_us"].is_number()),
+            "continued measurements must eventually yield an available bound"
+        );
+    }
+
+    #[test]
+    fn headless_unavailable_conformal_bound_preserves_controller_degradation() {
+        use ftui_render::budget::DegradationLevel;
+        let config = ProgramConfig::default()
+            .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)))
+            .with_conformal_config(ConformalConfig {
+                alpha: 0.01,
+                min_samples: 1,
+                ..Default::default()
+            });
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+        // Controlled observations exercise the actual budget controller and
+        // runtime gate. These durations are not live performance measurements.
+        for _ in 0..15 {
+            program.budget.record_frame_time(Duration::from_secs(200));
+            program.dirty = true;
+            program
+                .render_frame()
+                .expect("real runtime/controller path");
+        }
+        assert_eq!(
+            program.budget.degradation(),
+            DegradationLevel::SimpleBorders
+        );
+        let predictor = program.conformal_predictor.as_ref().unwrap();
+        let prediction = predictor.predict(
+            BucketKey::from_context(ScreenMode::AltScreen, DiffStrategy::Full, 80, 24),
+            0.0,
+            5_000_000.0,
+        );
+        assert_eq!(prediction.upper_us, None);
+        assert!(!predictor.is_calibrated(&prediction));
     }
 
     /// With `ProgramConfig::gestures` set, raw mouse events still reach

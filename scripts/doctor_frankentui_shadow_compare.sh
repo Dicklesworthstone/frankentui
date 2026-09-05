@@ -143,6 +143,8 @@ validate_scenario_filter
 : > "${RUN_INDEX_TSV}"
 : > "${COMMAND_MANIFEST}"
 
+# doctor_frankentui:no-fake-allow: replay delegates to this real workflow, which
+# runs the happy/failure tools and preserves their exit codes and artifact logs.
 cat > "${REPLAY_SH}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail

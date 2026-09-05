@@ -21,7 +21,8 @@ workspace = true
 [dependencies]
 clap = { version = "4.6.4", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+# Archived comparison inputs must retain the exact floating-point samples/config.
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 thiserror = "2.0.19"
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }

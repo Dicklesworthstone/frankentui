@@ -167,18 +167,22 @@ Do **not** embed xterm.js as a fallback for this integration path.
 
 ## Add The Dependency
 
-Depend on the `ftui` facade from crates.io, or by path when working against a
-checkout of this repository:
+The examples in this guide target the current repository source. Depend on
+the `ftui` facade by path to use that version:
 
 ```toml
 [dependencies]
-ftui = "0.6"
-# or, against a checkout:
-# ftui = { path = "../frankentui/crates/ftui" }
+ftui = { path = "../frankentui/crates/ftui" }
 ```
 
-The default features (`runtime`, `extras`, `backend`) are what the examples in
-this guide assume. `backend` compiles the native `ftui-tty` backend on Unix and
+The latest crates.io release, **0.6.0** (August 24, 2026), has only `runtime`
+and `extras` as default features. It predates the current backend and prelude
+changes; `ftui = "0.6"` does not select this checkout. A new release with an
+isolated registry-consumer check is still needed before these examples can be
+claimed to work with the published defaults. See its [published features](https://docs.rs/crate/ftui/0.6.0/features).
+
+The checkout's default features (`runtime`, `extras`, `backend`) are what the
+examples in this guide assume. `backend` compiles the native `ftui-tty` backend on Unix and
 the Crossterm backend elsewhere; `App::run()` picks whichever was compiled and
 `ftui::DEFAULT_BACKEND` names it. Headless, WASM, or custom-backend consumers
 should use `default-features = false, features = ["runtime"]`, in which case

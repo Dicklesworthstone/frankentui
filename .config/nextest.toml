@@ -37,6 +37,7 @@ filter = '''
     | test(=height_predictor::tests::perf_prediction_overhead)
     | test(=inspector::tests::inspector_perf_budget_overlay)
     | test(=perf_full_navigation_sequence_100_nodes)
+    | test(=virtualized::tests::test_variable_heights_fenwick_scales_logarithmically)
 '''
 threads-required = "num-test-threads"
 

@@ -15,7 +15,7 @@ use ftui_runtime::{
 
 use ftui_render::diff_strategy::DiffStrategy;
 use ftui_runtime::bocpd::{BocpdEvidence, BocpdRegime};
-use ftui_runtime::conformal_predictor::{BucketKey, DiffBucket, ModeBucket};
+use ftui_runtime::conformal_predictor::{BucketKey, ConformalStatus, DiffBucket, ModeBucket};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -269,18 +269,22 @@ fn e2e_conformal_prediction_jsonl_schema() {
     let (file, sink) = tmp_sink();
 
     let prediction = ConformalPrediction {
-        upper_us: 16666.7,
+        upper_us: Some(16666.0),
         risk: false,
-        confidence: 0.95,
+        confidence: Some(0.95),
+        alpha: 0.05,
+        status: ConformalStatus::Calibrated,
+        required_rank: 123,
+        warmup_upper_us: None,
         bucket: BucketKey {
             mode: ModeBucket::AltScreen,
             diff: DiffBucket::Full,
             size_bucket: 2,
         },
         sample_count: 128,
-        quantile: 0.95,
+        quantile: Some(8666.0),
         fallback_level: 0,
-        window_size: 64,
+        window_size: 256,
         reset_count: 0,
         y_hat: 8000.0,
         budget_us: 16666.0,
@@ -291,15 +295,19 @@ fn e2e_conformal_prediction_jsonl_schema() {
     let lines = read_lines(&file);
     let v = parse_json(&lines[0]);
 
-    assert_eq!(v["schema"].as_str().unwrap(), "conformal-v1");
+    assert_eq!(v["schema"].as_str().unwrap(), "conformal-v2");
     assert!(v["upper_us"].is_f64());
     assert!(v["risk"].is_boolean());
     assert!(v["confidence"].is_f64());
+    assert_eq!(v["alpha"], 0.05);
+    assert_eq!(v["status"], "calibrated");
+    assert_eq!(v["required_rank"], 123);
+    assert!(v["warmup_upper_us"].is_null());
     assert!(v["bucket"].is_string());
     assert_eq!(v["samples"].as_u64().unwrap(), 128);
     assert!(v["quantile"].is_f64());
     assert_eq!(v["fallback_level"].as_u64().unwrap(), 0);
-    assert_eq!(v["window"].as_u64().unwrap(), 64);
+    assert_eq!(v["window"].as_u64().unwrap(), 256);
     assert_eq!(v["resets"].as_u64().unwrap(), 0);
     assert!(v["y_hat"].is_f64());
     assert!(v["budget_us"].is_f64());
@@ -501,18 +509,22 @@ fn e2e_mixed_evidence_stream_all_domains() {
 
     // 3. Conformal
     let conformal = ConformalPrediction {
-        upper_us: 12000.0,
+        upper_us: Some(12000.0),
         risk: true,
-        confidence: 0.90,
+        confidence: Some(0.90),
+        alpha: 0.10,
+        status: ConformalStatus::Calibrated,
+        required_rank: 59,
+        warmup_upper_us: None,
         bucket: BucketKey {
             mode: ModeBucket::Inline,
             diff: DiffBucket::DirtyRows,
             size_bucket: 1,
         },
         sample_count: 64,
-        quantile: 0.90,
+        quantile: Some(3000.0),
         fallback_level: 1,
-        window_size: 32,
+        window_size: 128,
         reset_count: 2,
         y_hat: 9000.0,
         budget_us: 11000.0,
@@ -616,7 +628,7 @@ fn e2e_mixed_evidence_stream_all_domains() {
     assert_eq!(v1["schema_version"].as_str().unwrap(), "bocpd-v1");
 
     let v2 = parse_json(&lines[2]);
-    assert_eq!(v2["schema"].as_str().unwrap(), "conformal-v1");
+    assert_eq!(v2["schema"].as_str().unwrap(), "conformal-v2");
 
     let v3 = parse_json(&lines[3]);
     assert_eq!(v3["schema"].as_str().unwrap(), "eprocess-throttle-v1");

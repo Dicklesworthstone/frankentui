@@ -6194,15 +6194,18 @@ impl PaneInteractionTimeline {
         operation_id: u64,
         operation: PaneOperation,
     ) -> Result<PaneOperationOutcome, PaneOperationError> {
-        if self.baseline.is_none() {
-            self.baseline = Some(tree.to_snapshot());
+        let baseline = self.baseline.is_none().then(|| tree.to_snapshot());
+        // Tree application is transactional. Only a successful edit may
+        // install a baseline or discard the currently retained redo branch.
+        let outcome = tree.apply_operation(operation_id, operation.clone())?;
+        if let Some(baseline) = baseline {
+            self.baseline = Some(baseline);
         }
         if self.cursor < self.entries.len() {
             self.entries.truncate(self.cursor);
             self.checkpoints
                 .retain(|checkpoint| checkpoint.applied_len <= self.cursor);
         }
-        let outcome = tree.apply_operation(operation_id, operation.clone())?;
         self.entries.push(PaneInteractionTimelineEntry {
             sequence,
             operation_id,
@@ -6231,8 +6234,10 @@ impl PaneInteractionTimeline {
         operation: PaneOperation,
         coalesce_after_operation_id: u64,
     ) -> Result<PaneOperationOutcome, PaneOperationError> {
-        if self.baseline.is_none() {
-            self.baseline = Some(tree.to_snapshot());
+        let baseline = self.baseline.is_none().then(|| tree.to_snapshot());
+        let outcome = tree.apply_operation(operation_id, operation.clone())?;
+        if let Some(baseline) = baseline {
+            self.baseline = Some(baseline);
         }
         if self.cursor < self.entries.len() {
             self.entries.truncate(self.cursor);
@@ -6257,7 +6262,6 @@ impl PaneInteractionTimeline {
             _ => None,
         };
 
-        let outcome = tree.apply_operation(operation_id, operation.clone())?;
         if let Some(before_hash) = coalesced_before_hash
             && let Some(entry) = self.entries.last_mut()
         {
@@ -10102,6 +10106,98 @@ mod tests {
         let replayed = timeline.replay().expect("replay should succeed");
         assert_eq!(replayed.state_hash(), tree.state_hash());
         assert_eq!(replayed.to_snapshot(), tree.to_snapshot());
+    }
+
+    #[test]
+    fn rejected_timeline_operation_preserves_redo_branch() {
+        for coalesced in [false, true] {
+            let mut tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+            let mut timeline = PaneInteractionTimeline::with_baseline(&tree);
+            timeline.checkpoint_interval = 1;
+            for (operation_id, numerator) in [(1, 4), (2, 5)] {
+                timeline
+                    .apply_and_record(
+                        &mut tree,
+                        operation_id,
+                        operation_id,
+                        PaneOperation::SetSplitRatio {
+                            split: id(1),
+                            ratio: PaneSplitRatio::new(numerator, 2).expect("valid ratio"),
+                        },
+                    )
+                    .expect("valid edit");
+            }
+            let head = tree.to_snapshot();
+            assert!(timeline.undo(&mut tree).expect("undo"));
+            let before_tree = tree.to_snapshot();
+            let before_history = timeline.clone();
+            let invalid = PaneOperation::SetSplitRatio {
+                split: id(u64::MAX),
+                ratio: PaneSplitRatio::new(1, 1).expect("valid ratio"),
+            };
+            let result = if coalesced {
+                timeline.apply_and_record_coalesced_resize_delta(&mut tree, 3, 3, invalid, 0)
+            } else {
+                timeline.apply_and_record(&mut tree, 3, 3, invalid)
+            };
+            assert!(result.is_err(), "missing split must be rejected");
+            assert_eq!(tree.to_snapshot(), before_tree);
+            assert_eq!(
+                timeline, before_history,
+                "rejection lost redo; coalesced={coalesced}"
+            );
+            assert!(timeline.redo(&mut tree).expect("redo survived rejection"));
+            assert_eq!(tree.to_snapshot(), head);
+            assert!(timeline.undo(&mut tree).expect("undo before valid branch"));
+            let replacement = PaneOperation::SetSplitRatio {
+                split: id(1),
+                ratio: PaneSplitRatio::new(7, 2).expect("valid ratio"),
+            };
+            if coalesced {
+                timeline.apply_and_record_coalesced_resize_delta(&mut tree, 4, 4, replacement, 2)
+            } else {
+                timeline.apply_and_record(&mut tree, 4, 4, replacement)
+            }
+            .expect("a valid edit replaces the redo branch");
+            assert!(
+                !timeline
+                    .redo(&mut tree)
+                    .expect("no stale redo after valid branch")
+            );
+            assert_eq!(timeline.entries.len(), 2);
+            assert_eq!(timeline.entries.last().unwrap().operation_id, 4);
+            assert_eq!(
+                timeline
+                    .replay()
+                    .expect("valid branch replay")
+                    .to_snapshot(),
+                tree.to_snapshot()
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_initial_timeline_operation_does_not_install_a_baseline() {
+        for coalesced in [false, true] {
+            let mut tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+            let before_tree = tree.to_snapshot();
+            let mut timeline = PaneInteractionTimeline::default();
+            let before_history = timeline.clone();
+            let invalid = PaneOperation::CloseNode {
+                target: id(u64::MAX),
+            };
+            let result = if coalesced {
+                timeline.apply_and_record_coalesced_resize_delta(&mut tree, 1, 1, invalid, 0)
+            } else {
+                timeline.apply_and_record(&mut tree, 1, 1, invalid)
+            };
+            assert!(result.is_err());
+            assert_eq!(tree.to_snapshot(), before_tree);
+            assert_eq!(
+                timeline, before_history,
+                "rejection changed baseline; coalesced={coalesced}"
+            );
+        }
     }
 
     #[test]

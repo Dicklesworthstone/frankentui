@@ -104,8 +104,21 @@ fn strict_mode_reports_byte_mismatch_even_when_cells_match() {
     let bundle = report
         .artifact_bundle
         .expect("failure emits artifact bundle");
-    assert!(bundle.replay_command.contains("source-run"));
-    assert!(bundle.replay_command.contains("translated-run"));
+    assert_eq!(
+        bundle.replay_command,
+        "doctor_frankentui visual-diff --input replay-input.json"
+    );
+    let archive: serde_json::Value = serde_json::from_str(
+        &bundle
+            .files
+            .iter()
+            .find(|f| f.path == "replay-input.json")
+            .expect("archived inputs")
+            .content,
+    )
+    .expect("archive JSON");
+    assert_eq!(archive["source_run"]["run_id"], "source-run");
+    assert_eq!(archive["translated_run"]["run_id"], "translated-run");
     assert!(bundle.files.iter().any(|file| file.path == "replay.sh"));
     assert!(bundle.files.iter().any(|file| file.path == "diffs.jsonl"));
 }
@@ -226,7 +239,151 @@ fn render_capture_hash_diff_uses_trace_replay_artifact() {
     let bundle = report
         .artifact_bundle
         .expect("hash mismatch emits replay bundle");
-    assert!(bundle.replay_command.contains("source-trace"));
-    assert!(bundle.replay_command.contains("translated-trace"));
+    let archive: serde_json::Value = serde_json::from_str(
+        &bundle
+            .files
+            .iter()
+            .find(|f| f.path == "replay-input.json")
+            .expect("archived inputs")
+            .content,
+    )
+    .expect("archive JSON");
+    assert_eq!(archive["source_run"]["trace_id"], "source-trace");
+    assert_eq!(archive["translated_run"]["trace_id"], "translated-trace");
     assert!(bundle.bundle_id.starts_with("visual-diff-"));
+}
+
+#[cfg(unix)]
+#[test]
+fn archived_visual_bundle_relocates_and_executes_real_comparator() {
+    use doctor_frankentui::semantic_contract::load_builtin_semantic_contract;
+    use doctor_frankentui::visual_diff::compare_terminal_runs_with_contract;
+    use std::{fs, process::Command};
+
+    // Controlled archived frames test comparison replay, not a new terminal capture.
+    let source = run(
+        "source-run",
+        vec![TerminalFrame::from_text(0, "source frame")],
+    );
+    let translated = run(
+        "translated-run",
+        vec![TerminalFrame::from_text(0, "changed frame")],
+    );
+    let mut config = VisualDiffConfig::strict();
+    config.max_perceptual_delta = 0.0125;
+    let mut contract = load_builtin_semantic_contract().expect("contract");
+    contract.contract_id = "archived-custom-contract".to_string();
+    let report = compare_terminal_runs_with_contract(&source, &translated, &config, &contract);
+    assert_eq!(report.verdict, VisualDiffVerdict::Violation);
+    let bundle = report
+        .artifact_bundle
+        .as_ref()
+        .expect("real producer bundle");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let original = temp.path().join("original");
+    std::fs::create_dir(&original).expect("artifact directory");
+    for file in &bundle.files {
+        fs::write(original.join(&file.path), &file.content).expect("materialize producer artifact");
+    }
+    let relocated = temp.path().join("relocated archive with spaces");
+    fs::rename(&original, &relocated).expect("relocate actual artifacts");
+    let binary = env!("CARGO_BIN_EXE_doctor_frankentui");
+    let output = Command::new("bash")
+        .arg(relocated.join("replay.sh"))
+        .env("DOCTOR_FRANKENTUI_BIN", binary)
+        .current_dir(temp.path())
+        .output()
+        .expect("execute generated replay");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("real CLI report");
+    assert_eq!(payload["replay_scope"], "archived_comparison");
+    assert_eq!(
+        output.stdout,
+        format!(
+            "{}\n",
+            serde_json::json!({"replay_scope": "archived_comparison", "report": report})
+        )
+        .into_bytes()
+    );
+
+    let archive_path = relocated.join("replay-input.json");
+    let mut archive: serde_json::Value =
+        serde_json::from_slice(&fs::read(&archive_path).expect("archive")).expect("archive JSON");
+    // Deserialize into the actual f32-bearing types before exact equality;
+    // widening native f32 to Value's f64 changes its decimal representation.
+    assert_eq!(
+        serde_json::from_value::<VisualDiffConfig>(archive["config"].clone())
+            .expect("archived config"),
+        config
+    );
+    assert_eq!(
+        serde_json::from_value::<doctor_frankentui::semantic_contract::SemanticEquivalenceContract>(
+            archive["contract"].clone()
+        )
+        .expect("archived custom contract"),
+        contract
+    );
+    assert_eq!(
+        archive["source_run"]["replay_command"],
+        source.replay_command.as_deref().expect("provenance")
+    );
+    archive["translated_run"] = archive["source_run"].clone();
+    let equivalent = compare_terminal_runs_with_contract(&source, &source, &config, &contract);
+    assert_eq!(equivalent.verdict, VisualDiffVerdict::Equivalent);
+    fs::write(
+        &archive_path,
+        serde_json::to_vec(&archive).expect("archive JSON"),
+    )
+    .expect("positive archive");
+    let output = Command::new("bash")
+        .arg(relocated.join("replay.sh"))
+        .env("DOCTOR_FRANKENTUI_BIN", binary)
+        .current_dir(temp.path())
+        .output()
+        .expect("positive generated comparison");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.stdout,
+        format!(
+            "{}\n",
+            serde_json::json!({"replay_scope": "archived_comparison", "report": equivalent})
+        )
+        .into_bytes()
+    );
+
+    let mut wrong_schema = archive.clone();
+    wrong_schema["schema_version"] = serde_json::json!(999);
+    let mut empty = archive;
+    empty["source_run"]["frames"] = serde_json::json!([]);
+    empty["translated_run"]["frames"] = serde_json::json!([]);
+    for invalid in [serde_json::Value::Null, wrong_schema, empty] {
+        fs::write(
+            &archive_path,
+            serde_json::to_vec(&invalid).expect("invalid JSON input"),
+        )
+        .expect("negative archive");
+        let output = Command::new(binary)
+            .args(["visual-diff", "--input"])
+            .arg(&archive_path)
+            .output()
+            .expect("negative CLI");
+        assert!(
+            !output.status.success(),
+            "invalid archive accepted: {invalid}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "invalid archive must not produce a report"
+        );
+    }
 }

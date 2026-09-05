@@ -6,6 +6,7 @@
 //! intervals and policy thresholds.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -115,8 +116,11 @@ pub enum PerformanceMetricDirection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PerformanceThreshold {
+    #[serde(with = "archive_float")]
     pub max_relative_regression: f64,
+    #[serde(with = "archive_float::optional")]
     pub max_absolute_regression: Option<f64>,
+    #[serde(with = "archive_float")]
     pub min_significant_relative_delta: f64,
     pub require_significance: bool,
     pub risk_level: TransformationRiskLevel,
@@ -125,6 +129,7 @@ pub struct PerformanceThreshold {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PerformanceDiffConfig {
     pub min_samples_per_metric: usize,
+    #[serde(with = "archive_float")]
     pub confidence_z: f64,
     pub thresholds: BTreeMap<PerformanceMetricKind, PerformanceThreshold>,
 }
@@ -219,10 +224,73 @@ pub struct PerformanceSample {
     pub scenario_id: String,
     pub metric: PerformanceMetricKind,
     pub sample_index: u32,
+    /// Nonfinite diagnostic inputs use an explicit bit-preserving JSON marker.
+    #[serde(with = "archive_float")]
     pub value: f64,
     pub deterministic_seed: u64,
     pub workload_id: String,
     pub artifact_id: Option<String>,
+}
+
+// JSON numbers cannot encode NaN/infinity. Preserve malformed measurement
+// evidence, including NaN payload/sign, instead of silently turning it into null.
+mod archive_float {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        if value.is_finite() {
+            serializer.serialize_f64(*value)
+        } else {
+            serializer.serialize_str(&format!("nonfinite:0x{:016x}", value.to_bits()))
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Encoded {
+            Number(f64),
+            Nonfinite(String),
+        }
+        match Encoded::deserialize(deserializer)? {
+            Encoded::Number(value) if value.is_finite() => Ok(value),
+            Encoded::Nonfinite(marker) => {
+                let bits = marker
+                    .strip_prefix("nonfinite:0x")
+                    .filter(|bits| bits.len() == 16 && bits.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .and_then(|bits| u64::from_str_radix(bits, 16).ok())
+                    .ok_or_else(|| serde::de::Error::custom("invalid nonfinite float marker"))?;
+                let value = f64::from_bits(bits);
+                if value.is_finite() {
+                    return Err(serde::de::Error::custom(
+                        "nonfinite marker contains finite bits",
+                    ));
+                }
+                Ok(value)
+            }
+            Encoded::Number(_) => Err(serde::de::Error::custom("nonfinite value requires marker")),
+        }
+    }
+
+    pub mod optional {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+        #[derive(Serialize, Deserialize)]
+        struct Value(#[serde(with = "super")] f64);
+
+        pub fn serialize<S: Serializer>(
+            value: &Option<f64>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            value.map(Value).serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<f64>, D::Error> {
+            Option::<Value>::deserialize(deserializer).map(|value| value.map(|value| value.0))
+        }
+    }
 }
 
 impl PerformanceSample {
@@ -281,6 +349,60 @@ impl PerformanceRun {
         self.replay_command = Some(replay_command.into());
         self
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PerformanceComparisonArchive {
+    schema_version: u32,
+    replay_scope: String,
+    source_run: PerformanceRun,
+    translated_run: PerformanceRun,
+    config: PerformanceDiffConfig,
+}
+
+/// Recompute an archived comparison; this does not rerun external measurements.
+pub fn run_performance_diff_command(input: &Path) -> crate::error::Result<()> {
+    let archive: PerformanceComparisonArchive = serde_json::from_slice(&std::fs::read(input)?)?;
+    if archive.schema_version != 1 || archive.replay_scope != "archived_comparison" {
+        return Err(crate::error::DoctorError::invalid(
+            "unsupported performance comparison archive",
+        ));
+    }
+    if archive.source_run.samples.is_empty() && archive.translated_run.samples.is_empty() {
+        return Err(crate::error::DoctorError::invalid(
+            "comparison archive contains no samples",
+        ));
+    }
+    if !archive.config.confidence_z.is_finite()
+        || archive.config.thresholds.values().any(|threshold| {
+            !threshold.max_relative_regression.is_finite()
+                || !threshold.min_significant_relative_delta.is_finite()
+                || threshold
+                    .max_absolute_regression
+                    .is_some_and(|value| !value.is_finite())
+        })
+    {
+        return Err(crate::error::DoctorError::invalid(
+            "comparison archive contains nonfinite configuration",
+        ));
+    }
+    let report = compare_performance_runs(
+        &archive.source_run,
+        &archive.translated_run,
+        &archive.config,
+    );
+    println!(
+        "{}",
+        serde_json::json!({"replay_scope": "archived_comparison", "report": report})
+    );
+    if !report.certification_passed {
+        return Err(crate::error::DoctorError::exit(
+            1,
+            "archived performance comparison rejected",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -499,12 +621,13 @@ pub fn compare_performance_runs(
     let risk_score = risk_score(successes, weighted_failures);
     let first_violated_policy = violated_policy_ids.iter().next().cloned();
     let expected_loss = expected_loss(successes, weighted_failures, first_violated_policy);
-    let artifact_bundle = if differences.is_empty() {
+    let artifact_bundle = if certification_passed {
         None
     } else {
         Some(build_artifact_bundle(
             source_run,
             translated_run,
+            config,
             &comparisons,
             &differences,
         ))
@@ -1084,10 +1207,18 @@ fn expected_loss(
 fn build_artifact_bundle(
     source_run: &PerformanceRun,
     translated_run: &PerformanceRun,
+    config: &PerformanceDiffConfig,
     comparisons: &[MetricComparison],
     differences: &[PerformanceDifference],
 ) -> PerformanceDiffArtifactBundle {
-    let replay_command = replay_command(source_run, translated_run);
+    let replay_command = "doctor_frankentui performance-diff --input replay-input.json".to_string();
+    let archive = PerformanceComparisonArchive {
+        schema_version: 1,
+        replay_scope: "archived_comparison".to_string(),
+        source_run: source_run.clone(),
+        translated_run: translated_run.clone(),
+        config: config.clone(),
+    };
     let comparisons_json =
         serde_json::to_string_pretty(comparisons).expect("metric comparisons serialize");
     let differences_jsonl = differences
@@ -1101,12 +1232,17 @@ fn build_artifact_bundle(
         "translated_run_id": translated_run.run_id,
         "difference_count": differences.len(),
         "comparison_count": comparisons.len(),
+        "replay_scope": "archived_comparison",
     })
     .to_string();
+    // doctor_frankentui:no-fake-allow: generated replay invokes the actual CLI
+    // comparator with archived inputs/config; capture commands remain provenance.
+    let replay_script = "#!/usr/bin/env bash\nset -euo pipefail\n# Archived comparison replay; no new capture or measurement.\narchive_dir=\"$(cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd -P)\"\nexec \"${DOCTOR_FRANKENTUI_BIN:-doctor_frankentui}\" performance-diff --input \"$archive_dir/replay-input.json\"\n";
     let files = vec![
+        artifact_file("replay.sh", replay_script.to_string()),
         artifact_file(
-            "replay.sh",
-            format!("#!/usr/bin/env bash\n{replay_command}\n"),
+            "replay-input.json",
+            serde_json::to_string_pretty(&archive).expect("comparison archive serializes"),
         ),
         artifact_file("metric_comparisons.json", comparisons_json),
         artifact_file("performance_diffs.jsonl", differences_jsonl),
@@ -1134,18 +1270,6 @@ fn artifact_file(path: &str, content: String) -> PerformanceDiffArtifactFile {
         sha256: sha256_hex(content.as_bytes()),
         byte_len: content.len(),
         content,
-    }
-}
-
-fn replay_command(source_run: &PerformanceRun, translated_run: &PerformanceRun) -> String {
-    match (&source_run.replay_command, &translated_run.replay_command) {
-        (Some(source), Some(translated)) => format!("{source} && {translated}"),
-        (Some(source), None) => source.clone(),
-        (None, Some(translated)) => translated.clone(),
-        (None, None) => format!(
-            "doctor_frankentui perf-replay --source-run {} --translated-run {}",
-            source_run.run_id, translated_run.run_id
-        ),
     }
 }
 

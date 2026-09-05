@@ -42,9 +42,9 @@ struct RecipeBFrameEvent {
     frame_id: u64,
     phase: &'static str,
     // Conformal
-    conformal_interval_lower: f64,
-    conformal_interval_upper: f64,
-    conformal_coverage: f64,
+    conformal_interval_lower: Option<f64>,
+    conformal_interval_upper: Option<f64>,
+    conformal_coverage: Option<f64>,
     // E-process
     e_process_value: f64,
     e_process_crossed: bool,
@@ -121,11 +121,11 @@ impl CoverageTracker {
         }
     }
 
-    fn coverage(&self) -> f64 {
+    fn coverage(&self) -> Option<f64> {
         if self.total == 0 {
-            return 1.0;
+            return None;
         }
-        self.covered as f64 / self.total as f64
+        Some(self.covered as f64 / self.total as f64)
     }
 }
 
@@ -188,7 +188,7 @@ impl RecipeBController {
         let now = Instant::now();
 
         Self {
-            cascade: DegradationCascade::new(cascade_config),
+            cascade: DegradationCascade::new(cascade_config).expect("valid cascade config"),
             bocpd: BocpdDetector::new(bocpd_config),
             eprocess: EProcessThrottle::new_at(throttle_config, now),
             p99_tracker: P99Tracker::new(200),
@@ -216,18 +216,24 @@ impl RecipeBController {
         self.p99_tracker.push(frame_time_ms);
         let p99_ms = self.p99_tracker.p99();
 
-        // 4. Coverage tracking (conformal interval)
+        // 4. Retrospective fit diagnostic: this point was already observed above.
+        // Unavailable bounds contribute no observations and are serialized as null.
+        // These synthetic adaptive scores do not prove statistical coverage.
         let (interval_lower, interval_upper) = if let Some(pred) = self
             .cascade
             .last_evidence()
             .and_then(|e| e.prediction.as_ref())
         {
-            let lower = pred.y_hat_us;
-            let upper = pred.upper_us;
-            self.coverage.record(frame_time_us, upper);
-            (lower / 1000.0, upper / 1000.0) // convert to ms
+            if let Some(upper) = pred.upper_us {
+                self.coverage.record(frame_time_us, upper);
+                // The point estimate is the start of the displayed residual interval,
+                // not a statistical lower bound.
+                (Some(pred.y_hat_us / 1000.0), Some(upper / 1000.0))
+            } else {
+                (None, None)
+            }
         } else {
-            (0.0, BUDGET_MS)
+            (None, None)
         };
 
         // 5. BOCPD: simulate inter-arrival events at frame rate
@@ -499,23 +505,26 @@ fn recovery_re_enables_adaptive_behavior() {
 }
 
 #[test]
-fn conformal_coverage_maintains_threshold() {
+fn synthetic_retrospective_fit_maintains_threshold() {
     let mut ctrl = RecipeBController::new();
 
     // Run full scenario
     phase_steady(&mut ctrl);
 
-    // Check coverage after steady state (conformal should be well-calibrated)
+    // Check the synthetic fit diagnostic after finite bounds become available.
     let steady_events: Vec<_> = ctrl.events.iter().filter(|e| e.phase == "steady").collect();
 
-    // After calibration (first ~10 frames), coverage should be high
+    // alpha=.05 needs at least 19 observations even though min_samples=10.
     let late_steady: Vec<_> = steady_events.iter().skip(20).collect();
 
     if let Some(last) = late_steady.last() {
+        let coverage = last
+            .conformal_coverage
+            .expect("steady phase must include finite predictions");
         assert!(
-            last.conformal_coverage >= 0.80,
-            "conformal coverage should be >=80% during steady state: {:.2}%",
-            last.conformal_coverage * 100.0
+            coverage >= 0.80,
+            "synthetic retrospective fit should be >=80% during steady state: {:.2}%",
+            coverage * 100.0
         );
     }
 }
@@ -602,16 +611,16 @@ fn jsonl_schema_compliance() {
         assert!(v["frame_id"].is_u64(), "line {i}: frame_id");
         assert!(v["phase"].is_string(), "line {i}: phase");
         assert!(
-            v["conformal_interval_lower"].is_f64(),
-            "line {i}: conformal_interval_lower"
+            v["conformal_interval_lower"].is_null(),
+            "line {i}: warmup has no conformal interval"
         );
         assert!(
-            v["conformal_interval_upper"].is_f64(),
-            "line {i}: conformal_interval_upper"
+            v["conformal_interval_upper"].is_null(),
+            "line {i}: warmup has no conformal upper bound"
         );
         assert!(
-            v["conformal_coverage"].is_f64(),
-            "line {i}: conformal_coverage"
+            v["conformal_coverage"].is_null(),
+            "line {i}: no finite predictions have been scored"
         );
         assert!(v["e_process_value"].is_f64(), "line {i}: e_process_value");
         assert!(
@@ -723,15 +732,39 @@ fn phase_transitions_logged_correctly() {
 fn conformal_guard_calibrates_during_warmup() {
     let mut ctrl = RecipeBController::new();
 
-    // First 10 frames should be warmup (min_samples = 10)
+    // Meeting min_samples=10 is insufficient for the requested alpha=.05 rank.
     for _ in 0..15 {
         ctrl.tick(10.0, "steady");
     }
 
-    // After 15 frames, guard should be calibrated
+    assert!(
+        !ctrl.cascade.guard().is_calibrated(),
+        "15 observations cannot support a finite 95% conformal bound"
+    );
+    assert!(
+        ctrl.events
+            .last()
+            .unwrap()
+            .conformal_interval_upper
+            .is_none(),
+        "unavailable bounds must stay absent from evidence"
+    );
+    assert_eq!(ctrl.cascade.recovery_streak(), 0);
+
+    for _ in 15..19 {
+        ctrl.tick(10.0, "steady");
+    }
+
     assert!(
         ctrl.cascade.guard().is_calibrated(),
-        "guard should be calibrated after 15 frames (min_samples=10)"
+        "19 observations support the finite rank for alpha=.05"
+    );
+    assert!(
+        ctrl.events
+            .last()
+            .unwrap()
+            .conformal_interval_upper
+            .is_some()
     );
 }
 

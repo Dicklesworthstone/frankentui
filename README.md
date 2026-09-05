@@ -136,6 +136,9 @@ Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-sho
 
 ## Minimal API Example
 
+This example targets the current checkout. Use the path dependency below;
+the published 0.6.0 archive predates the current backend and prelude changes.
+
 ```rust
 use ftui::prelude::*;
 use ftui::widgets::paragraph::Paragraph;
@@ -310,14 +313,21 @@ All 17 library crates are published on crates.io (the `ftui` facade plus
 ftui = "0.6"
 ```
 
-The default features compile a terminal backend, so `App::run()` works out of
-the box: the native `ftui-tty` backend on Unix and the Crossterm backend
-elsewhere (`ftui::DEFAULT_BACKEND` reports which one your build selected).
-Headless, WASM, or custom-backend consumers can opt out:
+The latest published facade is **0.6.0**, released August 24, 2026. Its default
+features are `runtime` and `extras`; it predates this checkout's backend and
+prelude changes. The current examples are checked against repository source,
+so use the path dependency above when following them. A new release and a
+successful isolated registry-consumer run are still required to deliver these
+changes through crates.io. See the [published feature list](https://docs.rs/crate/ftui/0.6.0/features).
+
+In the current checkout, the default features also include `backend`, selecting
+native `ftui-tty` on Unix and Crossterm elsewhere. `ftui::DEFAULT_BACKEND`
+reports the selected backend. Headless, WASM, or custom-backend consumers of
+the checkout can opt out:
 
 ```toml
 [dependencies]
-ftui = { version = "0.6", default-features = false, features = ["runtime"] }
+ftui = { path = "../frankentui/crates/ftui", default-features = false, features = ["runtime"] }
 ```
 
 Only the demo/WASM showcase targets remain workspace-local.

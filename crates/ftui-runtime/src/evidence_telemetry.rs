@@ -54,8 +54,10 @@ pub struct ResizeDecisionSnapshot {
 pub struct ConformalSnapshot {
     pub bucket_key: String,
     pub sample_count: usize,
-    pub upper_us: f64,
+    pub upper_us: Option<f64>,
     pub risk: bool,
+    pub status: crate::ConformalStatus,
+    pub required_rank: usize,
 }
 
 /// Snapshot of the most recent budget decision.
@@ -424,8 +426,10 @@ mod tests {
         snap.conformal = Some(ConformalSnapshot {
             bucket_key: "alt:DirtyRows:medium".into(),
             sample_count: 30,
-            upper_us: 20000.0,
+            upper_us: Some(20000.0),
             risk: true,
+            status: crate::ConformalStatus::Calibrated,
+            required_rank: 30,
         });
         let mut guard = BUDGET_SNAPSHOT
             .write()

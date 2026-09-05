@@ -529,16 +529,20 @@ fn full_audit_trail_via_bridges() {
 
     // 4. Conformal prediction decision (via bridge).
     let conformal_prediction = ftui_runtime::conformal_predictor::ConformalPrediction {
-        upper_us: 18_000.0,
+        upper_us: Some(18_000.0),
         risk: true,
-        confidence: 0.95,
+        confidence: Some(0.95),
+        alpha: 0.05,
+        status: ftui_runtime::conformal_predictor::ConformalStatus::Calibrated,
+        required_rank: 49,
+        warmup_upper_us: None,
         bucket: ftui_runtime::conformal_predictor::BucketKey {
             mode: ftui_runtime::conformal_predictor::ModeBucket::AltScreen,
             diff: ftui_runtime::conformal_predictor::DiffBucket::Full,
             size_bucket: 2,
         },
         sample_count: 50,
-        quantile: 15_000.0,
+        quantile: Some(6_000.0),
         fallback_level: 0,
         window_size: 100,
         reset_count: 0,

@@ -484,7 +484,31 @@ fn visual_resize_thrash(seed: u64) -> FuzzOutcome {
             .artifact_bundle
             .as_ref()
             .expect("visual violations must emit replay artifacts");
-        assert!(bundle.replay_command.contains(&seed.to_string()));
+        assert_eq!(
+            bundle.replay_command,
+            "doctor_frankentui visual-diff --input replay-input.json"
+        );
+        let archive = bundle
+            .files
+            .iter()
+            .find(|file| file.path == "replay-input.json")
+            .expect("visual replay preserves archived inputs");
+        let input: serde_json::Value =
+            serde_json::from_str(&archive.content).expect("archive JSON");
+        assert_eq!(
+            input["source_run"]["replay_command"],
+            source_run
+                .replay_command
+                .as_deref()
+                .expect("source provenance")
+        );
+        assert_eq!(
+            input["translated_run"]["replay_command"],
+            translated_run
+                .replay_command
+                .as_deref()
+                .expect("translated provenance")
+        );
 
         FuzzOutcome {
             comparator: "visual",
@@ -493,7 +517,7 @@ fn visual_resize_thrash(seed: u64) -> FuzzOutcome {
             verdict: "violation",
             original_trace_len: report.frames_compared,
             minimized_trace_len: report.differences.len(),
-            replay_key: bundle.replay_command.clone(),
+            replay_key: archive.content.clone(),
         }
     })
 }
@@ -580,7 +604,13 @@ fn performance_malformed_source(seed: u64) -> FuzzOutcome {
             replay_key: report
                 .artifact_bundle
                 .as_ref()
-                .map_or_else(String::new, |bundle| bundle.replay_command.clone()),
+                .expect("malformed performance inputs preserve replay evidence")
+                .files
+                .iter()
+                .find(|file| file.path == "replay-input.json")
+                .expect("performance archive")
+                .content
+                .clone(),
         }
     })
 }
@@ -745,8 +775,7 @@ fn comparator_failures_are_reproducible_and_minimized() {
             outcome.comparator
         );
         assert!(
-            outcome.replay_key.contains(&outcome.seed.to_string())
-                || outcome.comparator == "performance",
+            outcome.replay_key.contains(&outcome.seed.to_string()),
             "{} replay key should carry the deterministic seed",
             outcome.comparator
         );

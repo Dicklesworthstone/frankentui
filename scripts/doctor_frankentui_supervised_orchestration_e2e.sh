@@ -65,7 +65,7 @@ fi
 
 # Parse the libtest result line. Under `rch` the remote test output is surfaced
 # on stderr, so parse both streams.
-python3 - "${STDOUT_LOG}" "${STDERR_LOG}" "${REPORT_JSON}" "${STATUS}" <<'PY'
+if python3 - "${STDOUT_LOG}" "${STDERR_LOG}" "${REPORT_JSON}" "${STATUS}" <<'PY'
 import json
 import re
 import sys
@@ -112,20 +112,48 @@ report = {
         "total": passed + failed + ignored,
     },
     "cases": cases,
-    "covered_contracts": [
-        "subprocess_success",
-        "subprocess_nonzero_without_retry_is_fatal",
-        "subprocess_nonzero_with_retry_exhausts_budget",
-        "subprocess_captures_stdout",
-        "subprocess_deadline_kills_child_promptly",
-        "subprocess_cancellation_kills_child_promptly",
-        "subprocess_retries_then_succeeds",
-        "subprocess_evidence_serializable_and_triage_ready",
-    ],
 }
+required = {
+    "subprocess_success_records_ok": "subprocess_success",
+    "subprocess_nonzero_without_retry_is_fatal": "subprocess_nonzero_without_retry_is_fatal",
+    "subprocess_nonzero_with_retry_exhausts_budget": "subprocess_nonzero_with_retry_exhausts_budget",
+    "subprocess_captures_stdout": "subprocess_captures_stdout",
+    "subprocess_deadline_kills_child_promptly": "subprocess_deadline_kills_child_promptly",
+    "subprocess_cancellation_kills_child_promptly": "subprocess_cancellation_kills_child_promptly",
+    "subprocess_retries_then_succeeds": "subprocess_retries_then_succeeds",
+    "subprocess_record_evidence_is_serializable_and_triage_ready": "subprocess_evidence_serializable_and_triage_ready",
+}
+observed = {case["name"]: case["outcome"] for case in cases}
+errors = []
+if status != 0:
+    errors.append(f"cargo exited {status}")
+if result is None or verdict != "ok" or passed == 0 or failed != 0 or ignored != 0:
+    errors.append("missing or unsuccessful nonempty libtest summary")
+if len(observed) != len(cases):
+    errors.append("duplicate test case observations")
+if len(cases) != passed + failed + ignored or sum(c["outcome"] == "ok" for c in cases) != passed:
+    errors.append("case observations disagree with libtest summary")
+report["covered_contracts"] = [contract for case, contract in required.items() if observed.get(case) == "ok"]
+report["missing_contracts"] = [contract for case, contract in required.items() if observed.get(case) != "ok"]
+if report["missing_contracts"]:
+    errors.append("required contracts did not pass")
+report["validation_errors"] = errors
+if errors:
+    report["verdict"] = "failed"
 report_json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+raise SystemExit(1 if errors else 0)
 PY
+then
+  :
+else
+  validation_status=$?
+  if [[ "${STATUS}" -eq 0 ]]; then
+    STATUS="${validation_status}"
+  fi
+fi
 
+# doctor_frankentui:no-fake-allow: replay reruns this actual subprocess suite
+# workflow; its libtest observations and process statuses determine the result.
 cat > "${REPLAY_SH}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail

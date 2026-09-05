@@ -70,9 +70,22 @@ pub struct Cli {
     pub command: Commands,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct ComparisonReplayArgs {
+    /// Archived comparison inputs/config; capture commands are provenance only.
+    #[arg(long)]
+    pub input: std::path::PathBuf,
+}
+
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum Commands {
+    /// Archived comparison replay over performance samples; no remeasurement.
+    PerformanceDiff(ComparisonReplayArgs),
+
+    /// Archived comparison replay over visual frames; no new terminal capture.
+    VisualDiff(ComparisonReplayArgs),
+
     /// Replay deterministic capture workflows (legacy alias: `capture`).
     #[command(name = "replay", visible_alias = "capture")]
     Capture(CaptureArgs),
@@ -259,6 +272,10 @@ pub fn run_from_env() -> Result<()> {
 pub fn run(cli: Cli) -> Result<()> {
     set_output_mode_override(cli.machine.override_mode());
     match cli.command {
+        Commands::PerformanceDiff(args) => {
+            crate::performance_diff::run_performance_diff_command(&args.input)
+        }
+        Commands::VisualDiff(args) => crate::visual_diff::run_visual_diff_command(&args.input),
         Commands::Capture(args) => run_capture(args),
         Commands::SeedDemo(args) => run_seed_demo(args),
         Commands::Suite(args) => run_suite(args),

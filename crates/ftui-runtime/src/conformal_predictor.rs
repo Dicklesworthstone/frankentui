@@ -2,10 +2,11 @@
 
 //! Conformal predictor for frame-time risk (bd-3e1t.3.2).
 //!
-//! This module provides a distribution-free upper bound on frame time using
-//! Mondrian (bucketed) conformal prediction. It is intentionally lightweight
-//! and explainable: each prediction returns the bucket key, quantile, and
-//! fallback level used to produce the bound.
+//! Finite-sample upper bounds require exchangeable calibration and future
+//! residuals in the population being calibrated. Rolling adaptive timings and
+//! pooled fallback buckets do not by themselves establish that assumption or
+//! conditional coverage for the requested bucket. Missing ranks are explicit;
+//! a warmup estimate is never reported as a calibrated bound.
 //!
 //! See docs/spec/state-machines.md section 3.13 for the governing spec.
 
@@ -19,11 +20,12 @@ use crate::terminal_writer::ScreenMode;
 /// Configuration for conformal frame-time prediction.
 #[derive(Debug, Clone)]
 pub struct ConformalConfig {
-    /// Significance level alpha. Coverage is >= 1 - alpha.
+    /// Significance level alpha. Marginal coverage is >= 1 - alpha only when
+    /// calibration and future residuals are exchangeable.
     /// Default: 0.05.
     pub alpha: f64,
 
-    /// Minimum samples required before a bucket is considered valid.
+    /// Minimum samples before calibration, in addition to an attainable rank.
     /// Default: 20.
     pub min_samples: usize,
 
@@ -44,6 +46,45 @@ impl Default for ConformalConfig {
             window_size: 256,
             q_default: 10_000.0,
         }
+    }
+}
+
+/// Invalid conformal calibration configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConformalConfigError(pub &'static str);
+
+impl fmt::Display for ConformalConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for ConformalConfigError {}
+
+impl ConformalConfig {
+    /// Validate without silently replacing an invalid policy with defaults.
+    pub fn validate(&self) -> Result<(), ConformalConfigError> {
+        if !self.alpha.is_finite() || self.alpha <= 0.0 || self.alpha >= 1.0 {
+            return Err(ConformalConfigError(
+                "alpha must be finite and strictly between zero and one",
+            ));
+        }
+        if self.min_samples == 0 || self.window_size == 0 {
+            return Err(ConformalConfigError(
+                "calibration sample and window counts must be positive",
+            ));
+        }
+        if self.min_samples > self.window_size {
+            return Err(ConformalConfigError(
+                "minimum samples must fit in the calibration window",
+            ));
+        }
+        if !self.q_default.is_finite() || self.q_default < 0.0 {
+            return Err(ConformalConfigError(
+                "warmup residual must be finite and nonnegative",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -137,21 +178,56 @@ impl fmt::Display for BucketKey {
     }
 }
 
-/// Prediction output with full explainability.
+/// Whether a finite bound can be used for the requested calibration population.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConformalStatus {
+    /// The selected population has fewer than the configured minimum samples.
+    Warmup,
+    /// A finite order statistic exists; coverage still requires exchangeability.
+    Calibrated,
+    /// The requested order statistic lies beyond the retained residuals.
+    UnattainableRank,
+    /// The baseline or budget is nonfinite or negative.
+    InvalidInput,
+    /// Adding otherwise finite timings exceeded the finite numeric range.
+    ArithmeticOverflow,
+}
+
+impl ConformalStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Warmup => "warmup",
+            Self::Calibrated => "calibrated",
+            Self::UnattainableRank => "unattainable_rank",
+            Self::InvalidInput => "invalid_input",
+            Self::ArithmeticOverflow => "arithmetic_overflow",
+        }
+    }
+}
+
+/// Prediction output with explicit unavailable-bound evidence.
 #[derive(Debug, Clone)]
 pub struct ConformalPrediction {
-    /// Upper bound on frame time (microseconds).
-    pub upper_us: f64,
-    /// Whether the bound exceeds the current budget.
+    /// Finite upper bound, absent during warmup or when no bound is available.
+    pub upper_us: Option<f64>,
+    /// Budget risk. An unavailable post-warmup bound cannot certify low risk.
     pub risk: bool,
-    /// Coverage confidence (1 - alpha).
-    pub confidence: f64,
+    /// Requested coverage, present only for a calibrated finite bound.
+    /// This is a marginal guarantee only under exchangeability of the scores.
+    pub confidence: Option<f64>,
+    /// Requested error rate, independently of whether a bound is available.
+    pub alpha: f64,
+    pub status: ConformalStatus,
+    /// One-based rank, including the unavailable n+1 rank.
+    pub required_rank: usize,
+    /// Heuristic used during warmup, without a coverage claim.
+    pub warmup_upper_us: Option<f64>,
     /// Bucket key used for calibration (may be fallback aggregate).
     pub bucket: BucketKey,
     /// Calibration sample count used for the quantile.
     pub sample_count: usize,
-    /// Conformal quantile q_b.
-    pub quantile: f64,
+    /// Available order statistic q_b; no observed maximum substitutes for n+1.
+    pub quantile: Option<f64>,
     /// Fallback level (0 = exact, 1 = mode+diff, 2 = mode, 3 = global/default).
     pub fallback_level: u8,
     /// Rolling window size.
@@ -168,28 +244,59 @@ impl ConformalPrediction {
     /// Format this prediction as a JSONL line for structured logging.
     #[must_use]
     pub fn to_jsonl(&self) -> String {
+        let number = finite_json_number;
         format!(
-            r#"{{"schema":"conformal-v1","upper_us":{:.1},"risk":{},"confidence":{:.4},"bucket":"{}","samples":{},"quantile":{:.2},"fallback_level":{},"window":{},"resets":{},"y_hat":{:.1},"budget_us":{:.1}}}"#,
-            self.upper_us,
+            r#"{{"schema":"conformal-v2","upper_us":{},"risk":{},"confidence":{},"alpha":{},"status":"{}","required_rank":{},"warmup_upper_us":{},"bucket":"{}","samples":{},"quantile":{},"fallback_level":{},"window":{},"resets":{},"y_hat":{},"budget_us":{}}}"#,
+            number(self.upper_us, 1),
             self.risk,
-            self.confidence,
+            number(self.confidence, 17),
+            number(Some(self.alpha), 17),
+            self.status.as_str(),
+            self.required_rank,
+            number(self.warmup_upper_us, 1),
             self.bucket,
             self.sample_count,
-            self.quantile,
+            number(self.quantile, 2),
             self.fallback_level,
             self.window_size,
             self.reset_count,
-            self.y_hat,
-            self.budget_us,
+            number(Some(self.y_hat), 1),
+            number(Some(self.budget_us), 1),
         )
     }
+}
+
+pub(crate) fn finite_json_number(value: Option<f64>, precision: usize) -> String {
+    value.filter(|v| v.is_finite()).map_or_else(
+        || "null".to_string(),
+        |value| {
+            // Fixed formatting of MAX produces hundreds of digits that some
+            // JSON parsers round out of range. Tiny policy values must not
+            // round to zero either. Scientific notation preserves both ends.
+            let magnitude = value.abs();
+            if magnitude >= 1.0e16
+                || (magnitude > 0.0 && magnitude < 10.0_f64.powi(-(precision as i32)))
+            {
+                format!("{value:e}")
+            } else {
+                let fixed = format!("{value:.precision$}");
+                if fixed.parse::<f64>() == Ok(value) {
+                    fixed
+                } else {
+                    // Evidence must preserve the bound, not round it to a
+                    // display precision that could fall below an observation.
+                    format!("{value:e}")
+                }
+            }
+        },
+    )
 }
 
 /// Update metadata after observing a frame.
 #[derive(Debug, Clone)]
 pub struct ConformalUpdate {
-    /// Residual (y_t - f(x_t)).
-    pub residual: f64,
+    /// Accepted residual (y_t - f(x_t)); absent for invalid observations.
+    pub residual: Option<f64>,
     /// Bucket updated.
     pub bucket: BucketKey,
     /// New sample count in the bucket.
@@ -220,12 +327,13 @@ pub struct ConformalPredictor {
 
 impl ConformalPredictor {
     /// Create a new predictor with the given config.
-    pub fn new(config: ConformalConfig) -> Self {
-        Self {
+    pub fn new(config: ConformalConfig) -> Result<Self, ConformalConfigError> {
+        config.validate()?;
+        Ok(Self {
             config,
             buckets: HashMap::new(),
             reset_count: 0,
-        }
+        })
     }
 
     /// Access the configuration.
@@ -257,36 +365,34 @@ impl ConformalPredictor {
 
     /// Observe a realized frame time and update calibration.
     pub fn observe(&mut self, key: BucketKey, y_hat_us: f64, observed_us: f64) -> ConformalUpdate {
-        let residual = observed_us - y_hat_us;
-        if !residual.is_finite() {
+        let residual = add_up(observed_us, -y_hat_us);
+        if !y_hat_us.is_finite()
+            || y_hat_us < 0.0
+            || !observed_us.is_finite()
+            || observed_us < 0.0
+            || !residual.is_finite()
+        {
             return ConformalUpdate {
-                residual,
+                residual: None,
                 bucket: key,
                 sample_count: self.bucket_samples(key),
             };
         }
 
-        let window_size = self.config.window_size.max(1);
+        let window_size = self.config.window_size;
         let state = self.buckets.entry(key).or_default();
         state.push(residual, window_size);
         ConformalUpdate {
-            residual,
+            residual: Some(residual),
             bucket: key,
             sample_count: state.residuals.len(),
         }
     }
 
-    /// Predict a conservative upper bound for frame time.
-    /// Whether `prediction` rests on at least `min_samples` calibration
-    /// residuals (its own bucket or a pooled fallback level).
-    ///
-    /// Below that the quantile is either the `q_default` prior or a handful of
-    /// pooled residuals, so `risk` is a guess rather than a coverage
-    /// guarantee. The runtime only acts on a risky prediction when this is
-    /// true; the uncalibrated verdict is still reported in evidence rows.
+    /// Whether a finite bound with enough samples was actually obtained.
     #[must_use]
     pub fn is_calibrated(&self, prediction: &ConformalPrediction) -> bool {
-        prediction.sample_count >= self.config.min_samples.max(1)
+        prediction.status == ConformalStatus::Calibrated
     }
 
     pub fn predict(&self, key: BucketKey, y_hat_us: f64, budget_us: f64) -> ConformalPrediction {
@@ -297,6 +403,8 @@ impl ConformalPredictor {
             frame_budget_us = budget_us,
             coverage_alpha = self.config.alpha,
             gate_triggered = tracing::field::Empty,
+            bound_status = tracing::field::Empty,
+            required_rank = tracing::field::Empty,
         );
         let _guard = span.enter();
 
@@ -304,20 +412,55 @@ impl ConformalPredictor {
             quantile,
             sample_count,
             fallback_level,
+            required_rank,
+            heuristic_residual,
         } = self.quantile_for(key);
 
-        let upper_us = y_hat_us + quantile.max(0.0);
-        let risk = upper_us > budget_us;
+        let valid_input =
+            y_hat_us.is_finite() && y_hat_us >= 0.0 && budget_us.is_finite() && budget_us >= 0.0;
+        let mut status = if !valid_input {
+            ConformalStatus::InvalidInput
+        } else if sample_count < self.config.min_samples {
+            ConformalStatus::Warmup
+        } else if quantile.is_none() {
+            ConformalStatus::UnattainableRank
+        } else {
+            ConformalStatus::Calibrated
+        };
+        let mut upper_us = None;
+        let mut warmup_upper_us = None;
+        if matches!(
+            status,
+            ConformalStatus::Calibrated | ConformalStatus::Warmup
+        ) {
+            let residual = quantile.unwrap_or(heuristic_residual).max(0.0);
+            let upper = add_up(y_hat_us, residual);
+            if !upper.is_finite() {
+                status = ConformalStatus::ArithmeticOverflow;
+            } else if status == ConformalStatus::Calibrated {
+                upper_us = Some(upper);
+            } else {
+                warmup_upper_us = Some(upper);
+            }
+        }
+        let risk = upper_us
+            .or(warmup_upper_us)
+            .is_none_or(|upper| upper > budget_us);
 
         span.record("calibration_set_size", sample_count);
-        span.record("predicted_upper_bound_us", upper_us);
+        if let Some(upper) = upper_us {
+            span.record("predicted_upper_bound_us", upper);
+        }
         span.record("gate_triggered", risk);
+        span.record("bound_status", status.as_str());
+        span.record("required_rank", required_rank);
 
         tracing::debug!(
             bucket = %key,
             y_hat_us,
-            quantile,
-            interval_width_us = quantile.max(0.0),
+            quantile = ?quantile,
+            status = status.as_str(),
+            required_rank,
             fallback_level,
             sample_count,
             "prediction interval"
@@ -326,7 +469,11 @@ impl ConformalPredictor {
         ConformalPrediction {
             upper_us,
             risk,
-            confidence: 1.0 - self.config.alpha,
+            confidence: upper_us.map(|_| 1.0 - self.config.alpha),
+            alpha: self.config.alpha,
+            status,
+            required_rank,
+            warmup_upper_us,
             bucket: key,
             sample_count,
             quantile,
@@ -339,7 +486,7 @@ impl ConformalPredictor {
     }
 
     fn quantile_for(&self, key: BucketKey) -> QuantileDecision {
-        let min_samples = self.config.min_samples.max(1);
+        let min_samples = self.config.min_samples;
 
         let exact = self.collect_exact(key);
         if exact.len() >= min_samples {
@@ -362,7 +509,9 @@ impl ConformalPredictor {
         }
 
         QuantileDecision {
-            quantile: self.config.q_default,
+            quantile: None,
+            required_rank: 1,
+            heuristic_residual: self.config.q_default,
             sample_count: 0,
             fallback_level: 3,
         }
@@ -406,7 +555,9 @@ impl ConformalPredictor {
 
 #[derive(Debug)]
 struct QuantileDecision {
-    quantile: f64,
+    quantile: Option<f64>,
+    required_rank: usize,
+    heuristic_residual: f64,
     sample_count: usize,
     fallback_level: u8,
 }
@@ -416,21 +567,54 @@ impl QuantileDecision {
         let quantile = conformal_quantile(alpha, &mut residuals);
         Self {
             quantile,
+            required_rank: conformal_rank(alpha, residuals.len()),
+            heuristic_residual: residuals.last().copied().unwrap_or(0.0),
             sample_count: residuals.len(),
             fallback_level,
         }
     }
 }
 
-fn conformal_quantile(alpha: f64, residuals: &mut [f64]) -> f64 {
-    if residuals.is_empty() {
-        return 0.0;
+/// Least binary64 upper value for a sum of finite binary64 operands.
+///
+/// Magnitude-ordered FastTwoSum recovers the sign of the exact rounding error,
+/// including gradual underflow. Only downward rounding needs the next value;
+/// overflow remains nonfinite so callers report an unavailable bound.
+/// See Rump, Ogita and Oishi, Fast high precision summation, Algorithm 2.5:
+/// <https://www.tuhh.de/ti3/paper/rump/RuOgOi08.pdf>.
+fn add_up(a: f64, b: f64) -> f64 {
+    let sum = a + b;
+    if !sum.is_finite() {
+        return sum;
     }
-    residuals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = residuals.len();
-    let rank = ((n as f64 + 1.0) * (1.0 - alpha)).ceil() as usize;
-    let idx = rank.saturating_sub(1).min(n - 1);
-    residuals[idx]
+    let (large, small) = if a.abs() >= b.abs() { (a, b) } else { (b, a) };
+    let error = small - (sum - large);
+    if error > 0.0 { sum.next_up() } else { sum }
+}
+
+fn conformal_quantile(alpha: f64, residuals: &mut [f64]) -> Option<f64> {
+    residuals.sort_by(f64::total_cmp);
+    let rank = conformal_rank(alpha, residuals.len());
+    residuals.get(rank - 1).copied()
+}
+
+/// Exact ceil((n+1)*(1-alpha)) for the represented, validated binary64 alpha.
+/// Subtracting alpha from one first can round a missing rank into existence.
+pub(crate) fn conformal_rank(alpha: f64, n: usize) -> usize {
+    let bits = alpha.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as u32;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    let significand = if exponent == 0 {
+        fraction
+    } else {
+        fraction | (1_u64 << 52)
+    };
+    let shift = if exponent == 0 { 1074 } else { 1075 - exponent };
+    let count = n as u128 + 1;
+    let product = count * u128::from(significand);
+    let tail_count = if shift >= 128 { 0 } else { product >> shift };
+    // A residual Vec cannot contain usize::MAX elements; rank <= n+1 fits.
+    usize::try_from(count - tail_count).expect("rank fits addressable residual storage")
 }
 
 fn size_bucket(cols: u16, rows: u16) -> u8 {
@@ -461,7 +645,8 @@ mod tests {
             min_samples: 1,
             window_size: 10,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, 1.0);
@@ -469,7 +654,331 @@ mod tests {
         predictor.observe(key, 0.0, 3.0);
 
         let decision = predictor.predict(key, 0.0, 1_000.0);
-        assert_eq!(decision.quantile, 3.0);
+        assert_eq!(decision.quantile, None);
+        assert_eq!(decision.required_rank, 4);
+        assert_eq!(decision.status, ConformalStatus::UnattainableRank);
+        predictor.observe(key, 0.0, 4.0);
+        assert_eq!(predictor.predict(key, 0.0, 1_000.0).quantile, Some(4.0));
+    }
+
+    #[test]
+    fn unavailable_99_percent_rank_is_not_calibrated_at_twenty_samples() {
+        let mut predictor = ConformalPredictor::new(ConformalConfig {
+            alpha: 0.01,
+            min_samples: 20,
+            window_size: 256,
+            q_default: 10_000.0,
+        })
+        .expect("valid config");
+        let key = test_key(80, 24);
+        for observed_us in 1..=20 {
+            predictor.observe(key, 0.0, f64::from(observed_us));
+        }
+        let prediction = predictor.predict(key, 0.0, 100.0);
+        assert_eq!(prediction.sample_count, 20);
+        assert_eq!(prediction.status, ConformalStatus::UnattainableRank);
+        assert_eq!(prediction.required_rank, 21);
+        assert_eq!(prediction.upper_us, None);
+        assert_eq!(prediction.quantile, None);
+        assert_eq!(prediction.confidence, None);
+        assert!(prediction.risk);
+        assert!(
+            !predictor.is_calibrated(&prediction),
+            "99% requires the unavailable 21st order statistic; the observed maximum only supports 20/21 marginal coverage"
+        );
+    }
+
+    #[test]
+    fn ranks_match_exhaustive_held_out_position_oracle() {
+        // Independent finite-population oracle: hold out each of n+1 distinct
+        // observations, count coverage for every candidate calibration order
+        // statistic, and select the least rank attaining the requested count.
+        // Dyadic alpha makes the oracle's integer inequality exact.
+        for n in 0..=24 {
+            for alpha_numerator in [1, 2, 31, 128, 256, 512, 768, 1023] {
+                let alpha = f64::from(alpha_numerator) / 1024.0;
+                let oracle = (1..=n).find(|&candidate| {
+                    let covered = (0..=n)
+                        .filter(|&held_out| {
+                            let training: Vec<_> =
+                                (0..=n).filter(|&point| point != held_out).collect();
+                            held_out <= training[candidate - 1]
+                        })
+                        .count();
+                    covered * 1024 >= (n + 1) * (1024 - alpha_numerator as usize)
+                });
+                let mut residuals: Vec<_> = (0..n).rev().map(|i| i as f64).collect();
+                assert_eq!(
+                    conformal_quantile(alpha, &mut residuals),
+                    oracle.map(|rank| (rank - 1) as f64),
+                    "n={n}, alpha={alpha}"
+                );
+                assert_eq!(conformal_rank(alpha, n), oracle.unwrap_or(n + 1));
+            }
+        }
+    }
+
+    #[test]
+    fn attainable_boundaries_respect_adjacent_binary64_values() {
+        for power in 1..=10 {
+            let count = 1_usize << power;
+            let alpha = 1.0 / count as f64;
+            assert_eq!(conformal_rank(alpha.next_down(), count - 1), count);
+            assert_eq!(conformal_rank(alpha, count - 1), count - 1);
+            assert_eq!(conformal_rank(alpha.next_up(), count - 1), count - 1);
+        }
+        assert_eq!(conformal_rank(f64::from_bits(1), 20), 21);
+        assert_eq!(conformal_rank(1.0_f64.next_down(), 20), 1);
+        // Binary64's 1/3 is below the exact rational threshold for n=2.
+        assert_eq!(conformal_rank(1.0 / 3.0, 2), 3);
+        assert_eq!(conformal_rank((1.0_f64 / 3.0).next_up(), 2), 2);
+    }
+
+    #[test]
+    fn invalid_configuration_is_rejected_without_clamping() {
+        for alpha in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            0.0,
+            1.0,
+            2.0,
+        ] {
+            assert!(
+                ConformalPredictor::new(ConformalConfig {
+                    alpha,
+                    ..Default::default()
+                })
+                .is_err()
+            );
+        }
+        for (min_samples, window_size) in [(0, 20), (20, 0), (21, 20)] {
+            assert!(
+                ConformalPredictor::new(ConformalConfig {
+                    min_samples,
+                    window_size,
+                    ..Default::default()
+                })
+                .is_err()
+            );
+        }
+        for q_default in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            assert!(
+                ConformalPredictor::new(ConformalConfig {
+                    q_default,
+                    ..Default::default()
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_inputs_and_overflow_have_valid_nullable_evidence() {
+        let key = test_key(80, 24);
+        let mut predictor = ConformalPredictor::new(ConformalConfig {
+            alpha: 0.5,
+            min_samples: 1,
+            window_size: 2,
+            q_default: 0.0,
+        })
+        .expect("valid config");
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            for (baseline, observed) in [(invalid, 1.0), (1.0, invalid)] {
+                assert_eq!(predictor.observe(key, baseline, observed).residual, None);
+                assert_eq!(predictor.bucket_samples(key), 0);
+            }
+            for (baseline, budget) in [(invalid, 1.0), (1.0, invalid)] {
+                let prediction = predictor.predict(key, baseline, budget);
+                assert_eq!(prediction.status, ConformalStatus::InvalidInput);
+                assert!(prediction.risk);
+                let row: serde_json::Value = serde_json::from_str(&prediction.to_jsonl())
+                    .expect("valid JSON even for invalid input");
+                assert!(row["upper_us"].is_null());
+                assert!(row["confidence"].is_null());
+            }
+        }
+        predictor.observe(key, 0.0, f64::MAX);
+        let overflow = predictor.predict(key, f64::MAX, f64::MAX);
+        assert_eq!(overflow.status, ConformalStatus::ArithmeticOverflow);
+        assert_eq!(overflow.upper_us, None);
+        assert_eq!(overflow.confidence, None);
+        assert!(overflow.risk);
+        serde_json::from_str::<serde_json::Value>(&overflow.to_jsonl()).expect("finite JSON");
+    }
+
+    #[test]
+    fn evidence_preserves_tiny_alpha_and_finite_extreme_timings() {
+        let predictor = ConformalPredictor::new(ConformalConfig {
+            alpha: f64::from_bits(1),
+            ..Default::default()
+        })
+        .expect("valid subnormal alpha");
+        let prediction = predictor.predict(test_key(80, 24), f64::MAX, f64::MAX);
+        let row: serde_json::Value =
+            serde_json::from_str(&prediction.to_jsonl()).expect("valid extreme JSON");
+        assert_eq!(row["alpha"].as_f64(), Some(f64::from_bits(1)));
+        assert_eq!(row["y_hat"].as_f64(), Some(f64::MAX));
+    }
+
+    #[test]
+    fn tied_observations_remain_below_the_calibrated_bound_after_rounding() {
+        for (baseline, observed) in [
+            (1.005, 10.001),
+            (1.0, 10_000_000_000_000_002.0),
+            (0.0, f64::from_bits(1)),
+            (10.0, 3.0),
+            (f64::MAX, f64::MAX),
+        ] {
+            let mut predictor = ConformalPredictor::new(ConformalConfig {
+                alpha: 0.5,
+                min_samples: 1,
+                window_size: 1,
+                ..Default::default()
+            })
+            .expect("valid config");
+            let key = test_key(80, 24);
+            predictor.observe(key, baseline, observed);
+            let prediction = predictor.predict(key, baseline, f64::MAX);
+            assert_eq!(prediction.status, ConformalStatus::Calibrated);
+            assert!(
+                prediction.upper_us.unwrap() >= observed,
+                "a tied future observation must remain covered: baseline={baseline:?}, observed={observed:?}, prediction={prediction:?}"
+            );
+            let json: serde_json::Value =
+                serde_json::from_str(&prediction.to_jsonl()).expect("actual predictor JSON");
+            assert!(
+                json["upper_us"].as_f64().expect("finite upper") >= observed,
+                "default JSON reader must retain coverage for this regression: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn seeded_binary64_ties_remain_covered_or_explicitly_unbounded() {
+        let mut seed = 0x5146_7557_554f_4159_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            f64::from_bits(seed & 0x7fff_ffff_ffff_ffff)
+        };
+        let mut checked = 0;
+        for _ in 0..4_000 {
+            let baseline = next();
+            let observed = next();
+            if !baseline.is_finite() || !observed.is_finite() {
+                continue;
+            }
+            let mut predictor = ConformalPredictor::new(ConformalConfig {
+                alpha: 0.5,
+                min_samples: 1,
+                window_size: 1,
+                ..Default::default()
+            })
+            .expect("valid config");
+            let key = test_key(80, 24);
+            assert!(
+                predictor
+                    .observe(key, baseline, observed)
+                    .residual
+                    .is_some()
+            );
+            let prediction = predictor.predict(key, baseline, f64::MAX);
+            if let Some(upper) = prediction.upper_us {
+                assert!(
+                    upper >= observed,
+                    "{baseline:?}, {observed:?}: {prediction:?}"
+                );
+            } else {
+                assert_eq!(prediction.status, ConformalStatus::ArithmeticOverflow);
+                assert!(prediction.risk);
+                assert!(prediction.confidence.is_none());
+            }
+            checked += 1;
+        }
+        assert!(checked > 3_900, "finite input denominator: {checked}");
+    }
+
+    #[test]
+    fn directed_addition_preserves_exact_values_and_rounds_ties_outward() {
+        let half_ulp = 2.0_f64.powi(-53);
+        let tiny = f64::from_bits(1);
+        for (a, b, expected) in [
+            (1.0, half_ulp, 1.0_f64.next_up()),
+            (1.0_f64.next_up(), half_ulp, 1.0 + 2.0_f64.powi(-51)),
+            (-1.0, -half_ulp, -1.0),
+            ((-1.0_f64).next_down(), -half_ulp, (-1.0_f64).next_down()),
+            (f64::MAX, 0.0, f64::MAX),
+            (f64::MAX, -1.0, f64::MAX),
+            (f64::MAX, 1.0, f64::INFINITY),
+            (f64::MAX, -f64::MAX, 0.0),
+            (tiny, 2.0 * tiny, 3.0 * tiny),
+            (f64::MIN_POSITIVE, -tiny, f64::MIN_POSITIVE.next_down()),
+            (1.0, -1.0, 0.0),
+        ] {
+            assert_eq!(add_up(a, b), expected, "{a:?} + {b:?}");
+            assert_eq!(add_up(b, a), expected, "{b:?} + {a:?}");
+        }
+    }
+
+    #[test]
+    fn finite_json_numbers_preserve_fractional_bounds() {
+        for value in [10.001, 10.001_f64.next_up(), 0.995, 1.005] {
+            let json = finite_json_number(Some(value), 1);
+            // Standard binary64 parsing independently checks formatter fidelity;
+            // decoder-specific rounding behavior is a separate concern.
+            assert_eq!(json.parse::<f64>().expect("number"), value, "{json}");
+        }
+    }
+
+    #[test]
+    fn seeded_independent_trials_cover_exchangeable_data_but_not_drift() {
+        // Fresh calibration data AND a fresh held-out point on every trial.
+        // This is a reproducible synthetic experiment, not live timing proof.
+        let mut seed = 0x6a09_e667_f3bc_c909_u64;
+        let mut uniform = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1_u64 << 53) as f64
+        };
+        let key = test_key(80, 24);
+        let trials = 4000;
+        let mut covered = 0;
+        let mut drift_covered = 0;
+        for _ in 0..trials {
+            let mut predictor = ConformalPredictor::new(ConformalConfig {
+                alpha: 0.125,
+                min_samples: 15,
+                window_size: 31,
+                q_default: 0.0,
+            })
+            .expect("valid config");
+            for _ in 0..31 {
+                predictor.observe(key, 0.0, uniform());
+            }
+            let prediction = predictor.predict(key, 0.0, 2.0);
+            let upper = prediction.upper_us.expect("rank28 is available");
+            let held_out = uniform();
+            covered += usize::from(held_out <= upper);
+            drift_covered += usize::from(held_out + 1.0 <= upper);
+        }
+        let target = 28.0 / 32.0;
+        let mean = covered as f64 / trials as f64;
+        let six_sigma = 6.0 * (target * (1.0 - target) / trials as f64).sqrt();
+        eprintln!(
+            "independent synthetic conformal trials: seed=0x6a09e667f3bcc909 n=31 alpha=0.125 rank=28 trials={trials} covered={covered} coverage={mean} six_sigma={six_sigma} drift_covered={drift_covered}"
+        );
+        assert!(
+            (mean - target).abs() <= six_sigma,
+            "coverage={mean}, expected={target}, six_sigma={six_sigma}, seed=0x6a09e667f3bcc909"
+        );
+        assert_eq!(
+            drift_covered, 0,
+            "a disjoint shifted population violates exchangeability"
+        );
     }
 
     #[test]
@@ -479,7 +988,8 @@ mod tests {
             min_samples: 4,
             window_size: 16,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
         let key_a = test_key(80, 24);
         for value in [1.0, 2.0, 3.0, 4.0] {
@@ -499,7 +1009,8 @@ mod tests {
             min_samples: 3,
             window_size: 16,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
         let key_dirty = BucketKey::from_context(
             ScreenMode::Inline { ui_height: 4 },
@@ -529,7 +1040,8 @@ mod tests {
             min_samples: 1,
             window_size: 3,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for value in [1.0, 2.0, 3.0, 4.0, 5.0] {
             predictor.observe(key, 0.0, value);
@@ -544,10 +1056,13 @@ mod tests {
             min_samples: 2,
             window_size: 4,
             q_default: 42.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(120, 40);
         let prediction = predictor.predict(key, 5.0, 10_000.0);
-        assert_eq!(prediction.quantile, 42.0);
+        assert_eq!(prediction.quantile, None);
+        assert_eq!(prediction.upper_us, None);
+        assert_eq!(prediction.warmup_upper_us, Some(47.0));
         assert_eq!(prediction.sample_count, 0);
         assert_eq!(prediction.fallback_level, 3);
     }
@@ -559,7 +1074,8 @@ mod tests {
             min_samples: 2,
             window_size: 10,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
         let small = test_key(40, 10);
         predictor.observe(small, 0.0, 1.0);
@@ -572,7 +1088,12 @@ mod tests {
         let prediction = predictor.predict(large, 0.0, 1_000.0);
         assert_eq!(prediction.fallback_level, 0);
         assert_eq!(prediction.sample_count, 2);
-        assert_eq!(prediction.quantile, 12.0);
+        assert_eq!(prediction.quantile, None);
+        assert_eq!(prediction.required_rank, 3);
+        for value in [11.0, 9.0] {
+            predictor.observe(large, 0.0, value);
+        }
+        assert_eq!(predictor.predict(large, 0.0, 1_000.0).quantile, Some(12.0));
     }
 
     #[test]
@@ -582,7 +1103,8 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 7.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, 3.0);
         assert_eq!(predictor.bucket_samples(key), 1);
@@ -591,7 +1113,8 @@ mod tests {
         assert_eq!(predictor.bucket_samples(key), 0);
 
         let prediction = predictor.predict(key, 0.0, 1_000.0);
-        assert_eq!(prediction.quantile, 7.0);
+        assert_eq!(prediction.quantile, None);
+        assert_eq!(prediction.warmup_upper_us, Some(7.0));
         assert_eq!(prediction.reset_count, 1);
     }
 
@@ -602,13 +1125,15 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 9.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, 2.0);
 
         predictor.reset_all();
         let prediction = predictor.predict(key, 0.0, 1_000.0);
-        assert_eq!(prediction.quantile, 9.0);
+        assert_eq!(prediction.quantile, None);
+        assert_eq!(prediction.warmup_upper_us, Some(9.0));
         assert_eq!(prediction.sample_count, 0);
         assert_eq!(prediction.fallback_level, 3);
         assert_eq!(prediction.reset_count, 1);
@@ -649,13 +1174,14 @@ mod tests {
     #[test]
     fn conformal_quantile_empty() {
         let mut data: Vec<f64> = vec![];
-        assert_eq!(conformal_quantile(0.1, &mut data), 0.0);
+        assert_eq!(conformal_quantile(0.1, &mut data), None);
     }
 
     #[test]
     fn conformal_quantile_single_element() {
         let mut data = vec![42.0];
-        assert_eq!(conformal_quantile(0.1, &mut data), 42.0);
+        assert_eq!(conformal_quantile(0.1, &mut data), None);
+        assert_eq!(conformal_quantile(0.5, &mut data), Some(42.0));
     }
 
     #[test]
@@ -663,7 +1189,7 @@ mod tests {
         let mut data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let q = conformal_quantile(0.5, &mut data);
         // (5+1)*0.5 = 3.0 -> ceil = 3 -> idx = 2 -> data[2] = 3.0
-        assert_eq!(q, 3.0);
+        assert_eq!(q, Some(3.0));
     }
 
     #[test]
@@ -671,7 +1197,7 @@ mod tests {
         let mut data = vec![10.0, 20.0, 30.0, 40.0];
         let q = conformal_quantile(0.5, &mut data);
         // (4+1)*0.5 = 2.5 -> ceil = 3 -> idx = 2 -> data[2] = 30.0
-        assert_eq!(q, 30.0);
+        assert_eq!(q, Some(30.0));
     }
 
     // --- ModeBucket / DiffBucket ---
@@ -724,10 +1250,11 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 5.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let update = predictor.observe(key, 0.0, f64::NAN);
-        assert!(!update.residual.is_finite());
+        assert_eq!(update.residual, None);
         assert_eq!(predictor.bucket_samples(key), 0);
     }
 
@@ -738,7 +1265,8 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 5.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, f64::INFINITY);
         assert_eq!(predictor.bucket_samples(key), 0);
@@ -752,11 +1280,12 @@ mod tests {
     #[test]
     fn is_calibrated_requires_min_samples_on_the_level_used() {
         let mut predictor = ConformalPredictor::new(ConformalConfig {
-            alpha: 0.1,
+            alpha: 0.25,
             min_samples: 3,
             window_size: 8,
             q_default: 50_000.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let cold = predictor.predict(key, 16_000.0, 16_000.0);
         assert!(cold.risk, "q_default prior exceeds the budget");
@@ -796,7 +1325,8 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 50.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         // No data -> q_default = 50.0, y_hat = 0 -> upper = 50
         let p = predictor.predict(key, 0.0, 100.0);
@@ -807,15 +1337,20 @@ mod tests {
 
     #[test]
     fn prediction_confidence() {
-        let predictor = ConformalPredictor::new(ConformalConfig {
+        let mut predictor = ConformalPredictor::new(ConformalConfig {
             alpha: 0.05,
             min_samples: 1,
-            window_size: 8,
+            window_size: 32,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let p = predictor.predict(key, 0.0, 100.0);
-        assert!((p.confidence - 0.95).abs() < 1e-10);
+        assert_eq!(p.confidence, None);
+        for _ in 0..20 {
+            predictor.observe(key, 0.0, 1.0);
+        }
+        assert_eq!(predictor.predict(key, 0.0, 100.0).confidence, Some(0.95));
     }
 
     // --- global fallback with data ---
@@ -827,7 +1362,8 @@ mod tests {
             min_samples: 100, // impossibly high -> always fall through
             window_size: 256,
             q_default: 999.0,
-        });
+        })
+        .expect("valid config");
         // Use altscreen mode bucket, then query inline
         let alt_key = BucketKey::from_context(ScreenMode::AltScreen, DiffStrategy::Full, 80, 24);
         predictor.observe(alt_key, 0.0, 5.0);
@@ -837,7 +1373,8 @@ mod tests {
         // Falls all the way to global (level 3), has 1 sample
         assert_eq!(p.fallback_level, 3);
         assert_eq!(p.sample_count, 1);
-        assert_eq!(p.quantile, 5.0);
+        assert_eq!(p.quantile, None);
+        assert_eq!(p.warmup_upper_us, Some(5.0));
     }
 
     // --- ModeBucket from_screen_mode ---
@@ -880,7 +1417,7 @@ mod tests {
             window_size: 32,
             q_default: 100.0,
         };
-        let predictor = ConformalPredictor::new(config);
+        let predictor = ConformalPredictor::new(config).expect("valid config");
         assert!((predictor.config().alpha - 0.2).abs() < 1e-10);
         assert_eq!(predictor.config().min_samples, 5);
     }
@@ -890,18 +1427,20 @@ mod tests {
     #[test]
     fn negative_residual_clamped_in_prediction() {
         let mut predictor = ConformalPredictor::new(ConformalConfig {
-            alpha: 0.1,
+            alpha: 0.5,
             min_samples: 1,
             window_size: 8,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         // observed < y_hat -> negative residual
         predictor.observe(key, 10.0, 5.0);
         let p = predictor.predict(key, 10.0, 100.0);
         // quantile is -5.0, but clamped to 0.0 via .max(0.0)
         // so upper_us = 10.0 + 0.0 = 10.0
-        assert_eq!(p.upper_us, 10.0);
+        assert_eq!(p.quantile, Some(-5.0));
+        assert_eq!(p.upper_us, Some(10.0));
     }
 
     // --- ConformalUpdate fields ---
@@ -913,10 +1452,11 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let update = predictor.observe(key, 3.0, 10.0);
-        assert!((update.residual - 7.0).abs() < 1e-10);
+        assert_eq!(update.residual, Some(7.0));
         assert_eq!(update.bucket, key);
         assert_eq!(update.sample_count, 1);
     }
@@ -925,7 +1465,7 @@ mod tests {
 
     #[test]
     fn prediction_preserves_yhat_and_budget() {
-        let predictor = ConformalPredictor::new(ConformalConfig::default());
+        let predictor = ConformalPredictor::new(ConformalConfig::default()).expect("valid config");
         let key = test_key(80, 24);
         let p = predictor.predict(key, 42.5, 16666.0);
         assert!((p.y_hat - 42.5).abs() < 1e-10);
@@ -967,7 +1507,7 @@ mod tests {
         };
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let predictor = ConformalPredictor::new(ConformalConfig::default());
+        let predictor = ConformalPredictor::new(ConformalConfig::default()).expect("valid config");
         let key = test_key(80, 24);
         let _ = predictor.predict(key, 100.0, 16666.0);
 
@@ -1026,7 +1566,8 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 50_000.0, // large default to guarantee risk
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         // budget_us = 100 << q_default = 50_000 -> risk = true
         let p = predictor.predict(key, 0.0, 100.0);
@@ -1052,7 +1593,8 @@ mod tests {
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for i in 0..100 {
             predictor.observe(key, 0.0, i as f64);
@@ -1061,7 +1603,7 @@ mod tests {
         // (100+1)*0.95 = 95.95, ceil = 96, idx = 95 -> sorted[95] = 95.0
         assert_eq!(p.fallback_level, 0);
         assert_eq!(p.sample_count, 100);
-        assert!((p.quantile - 95.0).abs() < 1e-10);
+        assert_eq!(p.quantile, Some(95.0));
     }
 
     #[test]
@@ -1074,7 +1616,8 @@ mod tests {
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(120, 40);
 
         // Generate 50 residuals that approximate a symmetric distribution
@@ -1089,9 +1632,9 @@ mod tests {
         // sorted: [-24.5, -23.5, ..., 24.5], index 45 = 20.5
         assert_eq!(p.fallback_level, 0);
         assert_eq!(p.sample_count, 50);
-        assert!((p.quantile - 20.5).abs() < 1e-10);
+        assert_eq!(p.quantile, Some(20.5));
         // upper_us = 100 + max(20.5, 0) = 120.5
-        assert!((p.upper_us - 120.5).abs() < 1e-10);
+        assert_eq!(p.upper_us, Some(120.5));
     }
 
     #[test]
@@ -1102,22 +1645,23 @@ mod tests {
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for _ in 0..30 {
             predictor.observe(key, 100.0, 105.0); // residual = 5.0
         }
         let p = predictor.predict(key, 100.0, 1_000.0);
-        assert!((p.quantile - 5.0).abs() < 1e-10);
-        assert!((p.upper_us - 105.0).abs() < 1e-10);
+        assert_eq!(p.quantile, Some(5.0));
+        assert_eq!(p.upper_us, Some(105.0));
     }
 
-    // --- Prediction interval correctness (coverage property) ---
+    // --- Deterministic order-statistic checks (not statistical coverage evidence) ---
 
     #[test]
-    fn coverage_property_uniform_residuals() {
-        // Calibrate with uniform [0..N), then test with new samples.
-        // Empirical coverage should be >= 1 - alpha for a hold-out set.
+    fn quantile_covers_expected_fraction_of_uniform_grid() {
+        // A fixed calibration grid and a finer query grid check indexing only.
+        // These are not independent draws or a statistical coverage experiment.
         let alpha = 0.1;
         let n_calibrate = 100;
         let n_test = 200;
@@ -1127,7 +1671,8 @@ mod tests {
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
 
         // Calibrate: residuals are 0, 1, 2, ..., 99
@@ -1138,7 +1683,7 @@ mod tests {
         // Test coverage: for each "new" sample, check if it falls within the
         // prediction interval [0, y_hat + q].
         let prediction = predictor.predict(key, 0.0, f64::MAX);
-        let upper_bound = prediction.upper_us;
+        let upper_bound = prediction.upper_us.expect("attainable rank");
 
         let mut covered = 0;
         // Test samples: same distribution range [0..200)
@@ -1160,9 +1705,9 @@ mod tests {
     }
 
     #[test]
-    fn coverage_property_with_shifted_test_distribution() {
-        // Calibrate, then test with samples from the same range.
-        // Conformal prediction guarantees coverage for exchangeable data.
+    fn quantile_covers_expected_fraction_of_calibration_grid() {
+        // Reusing calibration points checks the order statistic, not coverage
+        // on future samples or under a distribution shift.
         let alpha = 0.05;
         let n = 200;
 
@@ -1171,7 +1716,8 @@ mod tests {
             min_samples: 1,
             window_size: 512,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
 
         // Calibrate with known residuals: 1.0, 2.0, ..., 200.0
@@ -1181,9 +1727,10 @@ mod tests {
 
         let p = predictor.predict(key, 0.0, f64::MAX);
         // (200+1)*0.95 = 190.95, ceil = 191, idx = 190 -> sorted[190] = 191.0
-        assert!((p.quantile - 191.0).abs() < 1e-10);
+        assert_eq!(p.quantile, Some(191.0));
         // At least 95% of calibration samples should be <= upper bound
-        let covered = (1..=n).filter(|&i| (i as f64) <= p.upper_us).count();
+        let upper = p.upper_us.expect("attainable rank");
+        let covered = (1..=n).filter(|&i| (i as f64) <= upper).count();
         let coverage = covered as f64 / n as f64;
         assert!(
             coverage >= 1.0 - alpha,
@@ -1198,18 +1745,19 @@ mod tests {
     fn gate_trigger_exact_boundary() {
         // When upper_us == budget_us, risk should be false (not strictly greater)
         let mut predictor = ConformalPredictor::new(ConformalConfig {
-            alpha: 0.1,
+            alpha: 0.5,
             min_samples: 1,
             window_size: 8,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, 50.0);
         // quantile = 50.0, y_hat = 0.0, upper_us = 50.0
         let p = predictor.predict(key, 0.0, 50.0);
         assert!(
             !p.risk,
-            "upper_us ({}) == budget_us ({}) should NOT trigger risk",
+            "upper_us ({:?}) == budget_us ({}) should NOT trigger risk",
             p.upper_us, p.budget_us
         );
     }
@@ -1218,11 +1766,12 @@ mod tests {
     fn gate_trigger_just_above_boundary() {
         // When upper_us is epsilon above budget, risk should be true
         let mut predictor = ConformalPredictor::new(ConformalConfig {
-            alpha: 0.1,
+            alpha: 0.5,
             min_samples: 1,
             window_size: 8,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, 50.0);
         // upper_us = 50.0, budget = 49.999
@@ -1234,11 +1783,12 @@ mod tests {
     fn gate_trigger_just_below_boundary() {
         // When upper_us is epsilon below budget, risk should be false
         let mut predictor = ConformalPredictor::new(ConformalConfig {
-            alpha: 0.1,
+            alpha: 0.5,
             min_samples: 1,
             window_size: 8,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, 50.0);
         // upper_us = 50.0, budget = 50.001
@@ -1254,7 +1804,8 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 1.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let p = predictor.predict(key, 0.0, 0.0);
         assert!(p.risk, "positive upper_us with zero budget should be risky");
@@ -1268,7 +1819,8 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 100_000.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let p = predictor.predict(key, 1_000.0, f64::MAX);
         assert!(!p.risk, "huge budget should never trigger risk");
@@ -1286,14 +1838,16 @@ mod tests {
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
         let mut predictor_wide = ConformalPredictor::new(ConformalConfig {
             alpha: 0.01, // 99% coverage -> wider interval
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
         for i in 0..100 {
             let obs = i as f64;
@@ -1305,14 +1859,14 @@ mod tests {
         let p_wide = predictor_wide.predict(key, 0.0, 10_000.0);
 
         assert!(
-            p_wide.quantile > p_tight.quantile,
-            "Lower alpha ({}) should produce wider interval: quantile {} vs {}",
+            p_wide.quantile.expect("attainable rank") > p_tight.quantile.expect("attainable rank"),
+            "Lower alpha ({}) should produce wider interval: quantile {:?} vs {:?}",
             0.01,
             p_wide.quantile,
             p_tight.quantile
         );
         assert!(
-            p_wide.upper_us > p_tight.upper_us,
+            p_wide.upper_us.expect("attainable rank") > p_tight.upper_us.expect("attainable rank"),
             "Lower alpha should produce higher upper bound"
         );
     }
@@ -1320,17 +1874,24 @@ mod tests {
     #[test]
     fn alpha_sensitivity_confidence_reflects_alpha() {
         for &alpha in &[0.01, 0.05, 0.1, 0.2, 0.5] {
-            let predictor = ConformalPredictor::new(ConformalConfig {
+            let mut predictor = ConformalPredictor::new(ConformalConfig {
                 alpha,
                 min_samples: 1,
-                window_size: 8,
+                window_size: 128,
                 q_default: 0.0,
-            });
+            })
+            .expect("valid config");
             let key = test_key(80, 24);
+            let p = predictor.predict(key, 0.0, 1_000.0);
+            assert_eq!(p.alpha, alpha);
+            assert_eq!(p.confidence, None);
+            for _ in 0..100 {
+                predictor.observe(key, 0.0, 1.0);
+            }
             let p = predictor.predict(key, 0.0, 1_000.0);
             let expected_confidence = 1.0 - alpha;
             assert!(
-                (p.confidence - expected_confidence).abs() < 1e-10,
+                (p.confidence.expect("attainable rank") - expected_confidence).abs() < 1e-10,
                 "confidence should be 1-alpha for alpha={alpha}"
             );
         }
@@ -1338,20 +1899,23 @@ mod tests {
 
     #[test]
     fn alpha_sensitivity_extreme_alpha_zero() {
-        // alpha near 0 -> coverage near 100% -> picks the max residual
+        // Very small alpha requires a rank beyond the available samples.
         let mut predictor = ConformalPredictor::new(ConformalConfig {
             alpha: 0.001,
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for i in 0..100 {
             predictor.observe(key, 0.0, i as f64);
         }
         let p = predictor.predict(key, 0.0, 10_000.0);
-        // (100+1)*0.999 = 100.899, ceil=101, idx=min(100,99)=99 -> sorted[99]=99
-        assert!((p.quantile - 99.0).abs() < 1e-10);
+        assert_eq!(p.required_rank, 101);
+        assert_eq!(p.quantile, None);
+        assert_eq!(p.upper_us, None);
+        assert_eq!(p.status, ConformalStatus::UnattainableRank);
     }
 
     #[test]
@@ -1362,14 +1926,15 @@ mod tests {
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for i in 0..100 {
             predictor.observe(key, 0.0, i as f64);
         }
         let p = predictor.predict(key, 0.0, 10_000.0);
         // (100+1)*0.01 = 1.01, ceil=2, idx=1 -> sorted[1]=1
-        assert!((p.quantile - 1.0).abs() < 1e-10);
+        assert_eq!(p.quantile, Some(1.0));
     }
 
     // --- Empty/small calibration set handling ---
@@ -1381,13 +1946,15 @@ mod tests {
             min_samples: 20,
             window_size: 256,
             q_default: 10_000.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let p = predictor.predict(key, 100.0, 16_666.0);
         assert_eq!(p.sample_count, 0);
         assert_eq!(p.fallback_level, 3);
-        assert!((p.quantile - 10_000.0).abs() < 1e-10);
-        assert!((p.upper_us - 10_100.0).abs() < 1e-10);
+        assert_eq!(p.quantile, None);
+        assert_eq!(p.upper_us, None);
+        assert_eq!(p.warmup_upper_us, Some(10_100.0));
     }
 
     #[test]
@@ -1398,7 +1965,8 @@ mod tests {
             min_samples: 20,
             window_size: 256,
             q_default: 999.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, 5.0);
         let p = predictor.predict(key, 0.0, 1_000.0);
@@ -1416,7 +1984,8 @@ mod tests {
             min_samples,
             window_size: 256,
             q_default: 999.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for i in 0..(min_samples - 1) {
             predictor.observe(key, 0.0, (i as f64) * 10.0);
@@ -1436,7 +2005,8 @@ mod tests {
             min_samples,
             window_size: 256,
             q_default: 999.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for i in 0..min_samples {
             predictor.observe(key, 0.0, (i as f64) * 10.0);
@@ -1455,7 +2025,8 @@ mod tests {
             min_samples,
             window_size: 256,
             q_default: 999.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for i in 0..=min_samples {
             predictor.observe(key, 0.0, (i as f64) * 10.0);
@@ -1473,13 +2044,15 @@ mod tests {
             min_samples: 1,
             window_size: 256,
             q_default: 999.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         predictor.observe(key, 0.0, 42.0);
         let p = predictor.predict(key, 0.0, 1_000.0);
         assert_eq!(p.fallback_level, 0);
         assert_eq!(p.sample_count, 1);
-        assert!((p.quantile - 42.0).abs() < 1e-10);
+        assert_eq!(p.quantile, None);
+        assert_eq!(p.status, ConformalStatus::UnattainableRank);
     }
 
     // --- Tracing span field assertions ---
@@ -1532,7 +2105,8 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         for i in 0..5 {
             predictor.observe(key, 0.0, i as f64);
@@ -1586,24 +2160,25 @@ mod tests {
         };
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let predictor = ConformalPredictor::new(ConformalConfig {
-            alpha: 0.1,
+        let mut predictor = ConformalPredictor::new(ConformalConfig {
+            alpha: 0.5,
             min_samples: 1,
             window_size: 8,
             q_default: 42.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let p = predictor.predict(key, 10.0, 1_000.0);
-
-        let recorded = upper.lock().unwrap();
-        assert!(
-            recorded.is_some(),
-            "predicted_upper_bound_us should be recorded"
+        assert_eq!(p.upper_us, None);
+        assert_eq!(
+            *upper.lock().unwrap(),
+            None,
+            "warmup must not emit a calibrated bound"
         );
-        assert!(
-            (recorded.unwrap() - p.upper_us).abs() < 1e-10,
-            "recorded upper bound should match prediction"
-        );
+        predictor.observe(key, 0.0, 42.0);
+        let p = predictor.predict(key, 10.0, 1_000.0);
+        assert_eq!(p.upper_us, Some(52.0));
+        assert_eq!(*upper.lock().unwrap(), p.upper_us);
     }
 
     #[test]
@@ -1654,7 +2229,8 @@ mod tests {
             min_samples: 1,
             window_size: 8,
             q_default: 1.0,
-        });
+        })
+        .expect("valid config");
         let key = test_key(80, 24);
         let p = predictor.predict(key, 0.0, 1_000_000.0);
         assert!(!p.risk);
@@ -1672,16 +2248,20 @@ mod tests {
     #[test]
     fn jsonl_output_contains_required_fields() {
         let prediction = ConformalPrediction {
-            upper_us: 150.5,
+            upper_us: Some(150.5),
             risk: true,
-            confidence: 0.95,
+            confidence: Some(0.95),
+            alpha: 0.05,
+            status: ConformalStatus::Calibrated,
+            required_rank: 41,
+            warmup_upper_us: None,
             bucket: BucketKey {
                 mode: ModeBucket::Inline,
                 diff: DiffBucket::Full,
                 size_bucket: 10,
             },
             sample_count: 42,
-            quantile: 50.5,
+            quantile: Some(50.5),
             fallback_level: 0,
             window_size: 256,
             reset_count: 1,
@@ -1689,10 +2269,11 @@ mod tests {
             budget_us: 140.0,
         };
         let jsonl = prediction.to_jsonl();
-        assert!(jsonl.contains("\"schema\":\"conformal-v1\""));
+        assert!(jsonl.contains("\"schema\":\"conformal-v2\""));
         assert!(jsonl.contains("\"upper_us\":150.5"));
         assert!(jsonl.contains("\"risk\":true"));
-        assert!(jsonl.contains("\"confidence\":0.9500"));
+        let parsed: serde_json::Value = serde_json::from_str(&jsonl).expect("valid JSON");
+        assert_eq!(parsed["confidence"].as_f64(), Some(0.95));
         assert!(jsonl.contains("\"bucket\":\"inline:full:10\""));
         assert!(jsonl.contains("\"samples\":42"));
         assert!(jsonl.contains("\"quantile\":50.50"));
@@ -1703,12 +2284,12 @@ mod tests {
         assert!(jsonl.contains("\"budget_us\":140.0"));
     }
 
-    // --- Property-based: coverage verification ---
+    // --- Deterministic calibration-grid checks ---
 
     #[test]
-    fn property_empirical_coverage_deterministic_sequences() {
-        // For multiple deterministic sequences, verify that the conformal
-        // prediction interval achieves its stated coverage guarantee.
+    fn quantile_grid_fraction_for_multiple_alphas() {
+        // These reused calibration points check indexing, not coverage of a
+        // future random observation. Independent experiments are tested below.
         for alpha in [0.05, 0.1, 0.2] {
             let n_calibrate = 100;
             let n_test = 100;
@@ -1718,7 +2299,8 @@ mod tests {
                 min_samples: 1,
                 window_size: 256,
                 q_default: 0.0,
-            });
+            })
+            .expect("valid config");
             let key = test_key(80, 24);
 
             // Calibrate with residuals 1.0, 2.0, ..., 100.0
@@ -1729,7 +2311,8 @@ mod tests {
             let p = predictor.predict(key, 0.0, f64::MAX);
 
             // Count how many calibration-like points are covered
-            let covered = (1..=n_test).filter(|&i| (i as f64) <= p.upper_us).count();
+            let upper = p.upper_us.expect("attainable rank");
+            let covered = (1..=n_test).filter(|&i| (i as f64) <= upper).count();
             let coverage = covered as f64 / n_test as f64;
 
             assert!(
@@ -1750,19 +2333,26 @@ mod tests {
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
         // First: moderate residuals
         for i in 0..50 {
             predictor.observe(key, 0.0, i as f64);
         }
-        let q_moderate = predictor.predict(key, 0.0, f64::MAX).quantile;
+        let q_moderate = predictor
+            .predict(key, 0.0, f64::MAX)
+            .quantile
+            .expect("attainable rank");
 
         // Add extreme residuals
         for _ in 0..50 {
             predictor.observe(key, 0.0, 1000.0);
         }
-        let q_extreme = predictor.predict(key, 0.0, f64::MAX).quantile;
+        let q_extreme = predictor
+            .predict(key, 0.0, f64::MAX)
+            .quantile
+            .expect("attainable rank");
 
         assert!(
             q_extreme >= q_moderate,
@@ -1772,25 +2362,39 @@ mod tests {
 
     #[test]
     fn property_quantile_bounded_by_max_residual() {
-        // The conformal quantile should never exceed the maximum residual
+        // Only an attainable finite quantile is bounded by the observed max.
         let key = test_key(80, 24);
         let mut predictor = ConformalPredictor::new(ConformalConfig {
             alpha: 0.001, // very high coverage
             min_samples: 1,
             window_size: 256,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
-        let max_residual = 100.0;
+        let max_residual = 98.0;
         for i in 0..50 {
             predictor.observe(key, 0.0, (i as f64) * 2.0); // 0, 2, 4, ..., 98
         }
 
         let p = predictor.predict(key, 0.0, f64::MAX);
+        assert_eq!(p.quantile, None);
+        assert_eq!(p.status, ConformalStatus::UnattainableRank);
+        let mut finite_predictor = ConformalPredictor::new(ConformalConfig {
+            alpha: 0.05,
+            ..predictor.config().clone()
+        })
+        .expect("valid config");
+        for i in 0..50 {
+            finite_predictor.observe(key, 0.0, f64::from(i) * 2.0);
+        }
+        let quantile = finite_predictor
+            .predict(key, 0.0, f64::MAX)
+            .quantile
+            .expect("attainable rank");
         assert!(
-            p.quantile <= max_residual,
-            "quantile {} should be <= max residual {max_residual}",
-            p.quantile
+            quantile <= max_residual,
+            "quantile {quantile} should be <= max residual {max_residual}"
         );
     }
 
@@ -1806,19 +2410,26 @@ mod tests {
             min_samples: 1,
             window_size,
             q_default: 0.0,
-        });
+        })
+        .expect("valid config");
 
         // Fill window with large residuals
         for _ in 0..window_size {
             predictor.observe(key, 0.0, 1000.0);
         }
-        let q_large = predictor.predict(key, 0.0, f64::MAX).quantile;
+        let q_large = predictor
+            .predict(key, 0.0, f64::MAX)
+            .quantile
+            .expect("attainable rank");
 
         // Evict all large residuals with small ones
         for _ in 0..window_size {
             predictor.observe(key, 0.0, 1.0);
         }
-        let q_small = predictor.predict(key, 0.0, f64::MAX).quantile;
+        let q_small = predictor
+            .predict(key, 0.0, f64::MAX)
+            .quantile
+            .expect("attainable rank");
 
         assert!(
             q_small < q_large,
@@ -1836,7 +2447,8 @@ mod tests {
             min_samples: 5,
             window_size: 256,
             q_default: 999.0,
-        });
+        })
+        .expect("valid config");
 
         // Add data to AltScreen mode
         let alt_key = BucketKey::from_context(ScreenMode::AltScreen, DiffStrategy::Full, 80, 24);
@@ -1862,7 +2474,8 @@ mod tests {
 
     #[test]
     fn reset_count_accumulates_across_resets() {
-        let mut predictor = ConformalPredictor::new(ConformalConfig::default());
+        let mut predictor =
+            ConformalPredictor::new(ConformalConfig::default()).expect("valid config");
         let key = test_key(80, 24);
 
         predictor.observe(key, 0.0, 1.0);

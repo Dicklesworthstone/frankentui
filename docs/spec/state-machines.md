@@ -311,13 +311,16 @@ Notes:
 5. **Review**: attach `trace.jsonl` + `frames/` artifacts to CI for diffing.
 
 ### 3.13 Conformal Predictor for Frame-Time Risk
-This spec defines a distribution-free, explainable predictor for frame-time risk.
-It outputs an *upper bound* on frame time with formal coverage guarantees and
-integrates cleanly with diff strategy selection and budget enforcement.
+This spec defines an explainable predictor for frame-time risk. Its finite-sample
+coverage statement requires exchangeable calibration and future residuals in the
+selected population. Rolling adaptive timings and pooled fallback buckets do not
+establish that assumption. Missing finite bounds must be visible to consumers.
 
 #### 3.13.1 Goals
 - **Coverage guarantee**: For each bucket, `P(y_t <= U_t) >= 1 - alpha` under
-  exchangeability, where `U_t` is the predicted upper bound.
+  exchangeability within the selected population, where `U_t` is the predicted
+  upper bound. A pooled fallback does not guarantee coverage conditional on the
+  original requested bucket.
 - **Explainability**: Each prediction logs the calibration set size, quantile,
   and residual statistics in the evidence ledger.
 - **Graceful degradation**: If data is sparse or drifting, fall back to broader
@@ -350,15 +353,36 @@ Fallback hierarchy if `n_b < min_samples`:
 #### 3.13.4 Prediction Rule (One-Sided)
 Given calibration residuals `{r_i}` in bucket `b` with size `n_b`:
 ```
-q_b = quantile_{k}({r_i}),  k = ceil((n_b + 1) * (1 - alpha)) / n_b
+k = ceil((n_b + 1) * (1 - alpha))   # one-based order-statistic rank
+q_b = sorted_residuals[k - 1]       # only when k <= n_b
 U_t = f(x_t) + max(0, q_b)
 ```
 Coverage guarantee (exchangeability within bucket):
 ```
 P(y_t <= U_t) >= 1 - alpha
 ```
-If `n_b < min_samples`, set `q_b = max(r_i)` from the fallback bucket, or
-use a conservative constant `q_default` (documented in config).
+If `k = n_b + 1`, the mathematical bound is infinite. The API represents its
+absence with `upper_us = None`, `confidence = None`, and `UnattainableRank` after
+warmup; it must never substitute the observed maximum. For example, 20 samples
+cannot provide a finite 99% bound. The rank is computed exactly for the configured
+binary64 alpha, including values immediately around attainable-rank boundaries.
+This follows the finite-sample construction in
+[Angelopoulos and Bates, Appendix D](https://arxiv.org/html/2107.07511v6).
+
+Residual subtraction and upper-bound addition round toward positive infinity
+for the represented binary64 inputs. Magnitude-ordered FastTwoSum identifies
+downward rounding without perturbing exact sums; this also handles gradual
+underflow ([Rump, Ogita and Oishi, Algorithm 2.5](https://www.tuhh.de/ti3/paper/rump/RuOgOi08.pdf)).
+This prevents floating-point cancellation from placing a bound below tied
+observations. A result beyond the finite range remains explicitly unavailable.
+
+When the selected fallback population has fewer than `min_samples`, status is
+`Warmup` and any finite estimate is explicitly `warmup_upper_us`, with no
+confidence claim. Empty calibration uses `q_default` only for that heuristic.
+Alpha must be finite and strictly between zero and one; sample/window counts
+must be positive with `min_samples <= window_size`; the warmup residual must be
+finite and nonnegative. Invalid baseline/budget inputs and arithmetic overflow
+produce explicit unavailable states, and nonfinite observations are rejected.
 
 #### 3.13.5 Calibration Window
 We maintain a rolling window of residuals per bucket:
@@ -369,10 +393,20 @@ We maintain a rolling window of residuals per bucket:
 
 #### 3.13.6 Outputs
 The predictor emits:
-- `upper_us`: upper bound `U_t` for frame time.
-- `risk`: boolean `upper_us > budget_us`.
-- `confidence`: `1 - alpha` (coverage, not probability).
-These outputs feed diff strategy selection and budget policy (bd-3e1t.3.3).
+- `upper_us`: optional finite upper bound `U_t` for frame time.
+- `risk`: compares an available bound or warmup heuristic to the budget;
+  unavailable post-warmup bounds cannot certify low risk.
+- `confidence`: optional `1 - alpha`, present only for a calibrated finite bound.
+- `status`, `required_rank`, `alpha`, and optional `warmup_upper_us` explain absence.
+
+`Program` explicitly defers unavailable bounds to its independent measured-budget
+controller. It keeps rendering and collecting measurements, preserves that
+controller's decisions, and avoids repeatedly degrading to `SkipFrame` solely
+because calibration is unavailable. The experimental frame guard can degrade
+from measured EMA overruns against the smaller caller/fallback budget; its
+cascade holds recovery until a finite calibrated bound exists. The guard scores
+each observation against the EMA available before that observation. These
+adaptive policies are operational heuristics, not a proof of exchangeability.
 
 #### 3.13.7 Evidence Ledger (Required Fields)
 Each prediction must log:
@@ -406,8 +440,14 @@ Disable with `ProgramConfig::without_conformal()`.
 
 The predictor returns a `ConformalPrediction` with fields:
 `upper_us`, `risk`, `confidence`, `bucket`, `sample_count`, `quantile`,
-`fallback_level`, `window_size`, `reset_count`, `y_hat`, `budget_us`.
-If you emit JSONL evidence, serialize these fields verbatim.
+`fallback_level`, `window_size`, `reset_count`, `y_hat`, `budget_us`, `alpha`,
+`status`, `required_rank`, `warmup_upper_us`. The `conformal-v2` and experimental
+`conformal-frame-guard-v2` JSONL schemas encode unavailable/nonfinite numbers as
+`null`, preserving diagnostic status. Callers handle validated constructors as
+`Result` and optional bounds directly.
+Finite JSON numbers retain enough digits to round-trip through a correctly
+rounded binary64 parser; display precision must not reduce an exported bound.
+This formatter contract does not certify every external JSON decoder's rounding.
 
 E2E tests (with JSONL logging):
 - Inline + alt-screen coverage checks across size buckets.
@@ -415,7 +455,7 @@ E2E tests (with JSONL logging):
 
 #### 3.13.9 Implementation Targets
 Likely modules:
-- Predictor core: `crates/ftui-runtime/src/conformal.rs` (new or existing module)
+- Predictor core: `crates/ftui-runtime/src/conformal_predictor.rs`
 - Config: `crates/ftui-runtime/src/program.rs` (ProgramConfig)
 - Ledger logging: shared sink (bd-3e1t.4.7)
 

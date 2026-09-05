@@ -6,7 +6,7 @@
 //! 1. Stable regime → no degradation
 //! 2. Spike regime → triggers degradation within 3 frames
 //! 3. Recovery after spike → restores within N frames
-//! 4. Conformal coverage guarantee (>95% over 1000 samples)
+//! 4. Synthetic prediction diagnostics over 1000 samples (not coverage proofs)
 //! 5. End-to-end cascade with mock widget filtering
 
 use ftui_render::budget::DegradationLevel;
@@ -86,14 +86,14 @@ fn spike_regime_triggers_degradation_quickly() {
     let config = CascadeConfig {
         guard: ConformalFrameGuardConfig {
             conformal: ConformalConfig {
-                min_samples: 5, // Low calibration threshold for fast trigger
+                min_samples: 5, // Measured fallback can trigger before finite calibration
                 ..Default::default()
             },
             ..Default::default()
         },
         ..Default::default()
     };
-    let mut cascade = DegradationCascade::new(config);
+    let mut cascade = DegradationCascade::new(config).expect("valid cascade config");
     let key = make_key();
 
     // Warm up with 5 slow frames (consistently over budget)
@@ -101,7 +101,7 @@ fn spike_regime_triggers_degradation_quickly() {
         cascade.post_render(25_000.0, key);
     }
 
-    // After calibration with slow data, degradation should trigger quickly
+    // Measured fallback should trigger quickly while the finite rank is unavailable.
     let mut degrade_frame = None;
     for i in 0..10 {
         cascade.post_render(25_000.0, key);
@@ -119,7 +119,7 @@ fn spike_regime_triggers_degradation_quickly() {
     let frame = degrade_frame.unwrap();
     assert!(
         frame <= 3,
-        "degradation should trigger within 3 frames after calibration, got frame {frame}"
+        "measured fallback should trigger within 3 frames after warmup, got frame {frame}"
     );
 }
 
@@ -137,7 +137,7 @@ fn sustained_overload_progressively_degrades() {
         degradation_floor: DegradationLevel::SkipFrame,
         ..Default::default()
     };
-    let mut cascade = DegradationCascade::new(config);
+    let mut cascade = DegradationCascade::new(config).expect("valid cascade config");
     let key = make_key();
 
     // Sustained 30ms frames (way over 16ms budget)
@@ -175,7 +175,7 @@ fn recovery_after_spike() {
         recovery_threshold,
         ..Default::default()
     };
-    let mut cascade = DegradationCascade::new(config);
+    let mut cascade = DegradationCascade::new(config).expect("valid cascade config");
     let key = make_key();
 
     // Phase 1: Trigger degradation with slow frames
@@ -220,6 +220,7 @@ fn recovery_streak_resets_on_new_spike() {
     let config = CascadeConfig {
         guard: ConformalFrameGuardConfig {
             conformal: ConformalConfig {
+                alpha: 0.125, // Finite rank is attainable within the 15-point window.
                 min_samples: 5,
                 window_size: 15,
                 ..Default::default()
@@ -229,7 +230,7 @@ fn recovery_streak_resets_on_new_spike() {
         recovery_threshold: 100, // High threshold so we never fully recover
         ..Default::default()
     };
-    let mut cascade = DegradationCascade::new(config);
+    let mut cascade = DegradationCascade::new(config).expect("valid cascade config");
     let key = make_key();
 
     // Phase 1: Establish a fast baseline (fills conformal window with fast data)
@@ -281,11 +282,11 @@ fn recovery_streak_resets_on_new_spike() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 4: Conformal coverage guarantee (>95% over 1000 samples)
+// Scenario 4: Synthetic prediction diagnostics (not statistical coverage proofs)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn conformal_coverage_guarantee_empirical() {
+fn conformal_synthetic_prediction_diagnostic() {
     let config = ConformalFrameGuardConfig {
         conformal: ConformalConfig {
             alpha: 0.05, // 95% coverage target
@@ -295,11 +296,11 @@ fn conformal_coverage_guarantee_empirical() {
         },
         ..Default::default()
     };
-    let mut guard = ConformalFrameGuard::new(config);
+    let mut guard = ConformalFrameGuard::new(config).expect("valid guard config");
     let key = make_key();
 
-    // Calibrate with 100 samples from a known distribution
-    // Using frame times normally distributed around 10ms with ~2ms spread
+    // Calibrate with 100 points on a deterministic grid around 10ms.
+    // EMA-dependent residuals and repeated grids do not establish exchangeability.
     let calibration_times: Vec<f64> = (0..100)
         .map(|i| {
             // Deterministic "spread": alternating above/below mean
@@ -312,7 +313,7 @@ fn conformal_coverage_guarantee_empirical() {
         guard.observe(t, key);
     }
 
-    // Now test: predict p99 for 1000 new samples and count coverage
+    // Predict the configured upper bound for 1000 subsequent grid points.
     // A frame is "covered" if the actual time is below the predicted upper bound
     let mut covered = 0;
     let total = 1000;
@@ -320,11 +321,14 @@ fn conformal_coverage_guarantee_empirical() {
     for i in 0..total {
         let prediction = guard.predict_p99(BUDGET_US, key);
 
-        // Generate a test frame time with same distribution
+        // Generate a point on a wider deterministic grid.
         let offset = ((i % 11) as f64 - 5.0) * 500.0;
         let actual = 10_000.0 + offset;
 
-        if actual <= prediction.upper_us {
+        let upper = prediction
+            .upper_us
+            .expect("100 calibration points support a finite bound");
+        if actual <= upper {
             covered += 1;
         }
 
@@ -334,8 +338,8 @@ fn conformal_coverage_guarantee_empirical() {
 
     let coverage = covered as f64 / total as f64;
     assert!(
-        coverage >= 0.90, // Allow some slack (theoretical is >=0.95)
-        "conformal coverage should be >=90%, got {coverage:.3} ({covered}/{total})"
+        coverage >= 0.90,
+        "synthetic prediction fit should be >=90%, got {coverage:.3} ({covered}/{total})"
     );
 }
 
@@ -350,7 +354,7 @@ fn conformal_coverage_with_regime_change() {
         },
         ..Default::default()
     };
-    let mut guard = ConformalFrameGuard::new(config);
+    let mut guard = ConformalFrameGuard::new(config).expect("valid guard config");
     let key = make_key();
 
     // Phase 1: Fast regime (10ms)
@@ -369,7 +373,10 @@ fn conformal_coverage_with_regime_change() {
     for _ in 0..50 {
         let pred = guard.predict_p99(BUDGET_US, key);
         let actual = 10_000.0;
-        if actual <= pred.upper_us {
+        let upper = pred
+            .upper_us
+            .expect("30 calibration points support a finite bound");
+        if actual <= upper {
             covered_fast += 1;
         }
         total_fast += 1;
@@ -380,7 +387,10 @@ fn conformal_coverage_with_regime_change() {
     for _ in 0..100 {
         let pred = guard.predict_p99(BUDGET_US, key);
         let actual = 18_000.0;
-        if actual <= pred.upper_us {
+        let upper = pred
+            .upper_us
+            .expect("calibration window retains enough points for a finite bound");
+        if actual <= upper {
             covered_slow += 1;
         }
         total_slow += 1;
@@ -388,8 +398,8 @@ fn conformal_coverage_with_regime_change() {
     }
 
     let fast_coverage = covered_fast as f64 / total_fast as f64;
-    // After regime change, coverage on new data should still be reasonable
-    // (conformal adapts via rolling window)
+    // This regime-change diagnostic checks adaptation; it is not a coverage
+    // guarantee for nonexchangeable observations.
     let slow_coverage = covered_slow as f64 / total_slow as f64;
 
     assert!(
@@ -421,7 +431,7 @@ fn e2e_cascade_widget_filtering() {
         recovery_threshold: 5,
         ..Default::default()
     };
-    let mut cascade = DegradationCascade::new(config);
+    let mut cascade = DegradationCascade::new(config).expect("valid cascade config");
     let key = make_key();
 
     // Phase 1: Full quality - all widgets render
@@ -484,7 +494,7 @@ fn e2e_cascade_evidence_trail() {
         },
         ..Default::default()
     };
-    let mut cascade = DegradationCascade::new(config);
+    let mut cascade = DegradationCascade::new(config).expect("valid cascade config");
     let key = make_key();
     let mut evidence_log = Vec::new();
 
@@ -584,10 +594,8 @@ fn handles_zero_budget_gracefully() {
 
     // Zero budget should always trigger risk
     let result = cascade.pre_render(0.0, key);
-    // The guard should detect exceeds_budget since any positive frame time > 0
-    // (In warmup mode with EMA ~1ms, it's compared to 16ms fallback - won't exceed)
-    // This just ensures it doesn't panic
-    assert!(result.level <= DegradationLevel::SkipFrame);
+    // Measured fallback honors the caller's stricter zero budget during warmup.
+    assert_eq!(result.decision, CascadeDecision::Degrade);
 }
 
 #[test]

@@ -197,11 +197,16 @@ pub fn from_conformal(
     prediction: &crate::conformal_predictor::ConformalPrediction,
     timestamp_ns: u64,
 ) -> EvidenceEntry {
+    let (Some(upper_us), Some(confidence)) = (prediction.upper_us, prediction.confidence) else {
+        return EvidenceEntryBuilder::new(DecisionDomain::Degradation, 0, timestamp_ns)
+            .action("defer")
+            .build();
+    };
     let action: &'static str = if prediction.risk { "degrade" } else { "hold" };
 
     // Log-odds of needing degradation.
     let risk_ratio = if prediction.budget_us > 0.0 {
-        prediction.upper_us / prediction.budget_us
+        upper_us / prediction.budget_us
     } else {
         1.0
     };
@@ -211,23 +216,23 @@ pub fn from_conformal(
         .log_posterior(log_posterior)
         .action(action)
         .loss_avoided(if prediction.risk {
-            (prediction.upper_us - prediction.budget_us).max(0.0) / prediction.budget_us.max(1.0)
+            (upper_us - prediction.budget_us).max(0.0) / prediction.budget_us.max(1.0)
         } else {
             0.0
         })
-        .confidence_interval(prediction.confidence - 0.05, prediction.confidence);
+        .confidence_interval(confidence - 0.05, confidence);
 
     // Budget headroom as BF (< 1.0 means over budget).
     if prediction.budget_us > 0.0 {
         builder = builder.evidence(
             "budget_headroom",
-            (prediction.budget_us / prediction.upper_us.max(1.0)).max(0.01),
+            (prediction.budget_us / upper_us.max(1.0)).max(0.01),
         );
     }
 
     // Conformal quantile.
-    if prediction.quantile > 0.0 {
-        builder = builder.evidence("quantile", 1.0 + prediction.quantile / 1000.0);
+    if let Some(quantile) = prediction.quantile.filter(|q| *q > 0.0) {
+        builder = builder.evidence("quantile", 1.0 + quantile / 1000.0);
     }
 
     // Sample count (more samples = stronger evidence).
@@ -395,16 +400,20 @@ mod tests {
     #[test]
     fn conformal_bridge() {
         let prediction = crate::conformal_predictor::ConformalPrediction {
-            upper_us: 18_000.0,
+            upper_us: Some(18_000.0),
             risk: true,
-            confidence: 0.95,
+            confidence: Some(0.95),
+            alpha: 0.05,
+            status: crate::ConformalStatus::Calibrated,
+            required_rank: 49,
+            warmup_upper_us: None,
             bucket: crate::conformal_predictor::BucketKey {
                 mode: crate::conformal_predictor::ModeBucket::AltScreen,
                 diff: crate::conformal_predictor::DiffBucket::Full,
                 size_bucket: 2,
             },
             sample_count: 50,
-            quantile: 15_000.0,
+            quantile: Some(15_000.0),
             fallback_level: 0,
             window_size: 100,
             reset_count: 0,
@@ -417,6 +426,44 @@ mod tests {
         assert_eq!(entry.action, "degrade");
         assert!(entry.log_posterior > 0.0, "over budget → positive log");
         assert!(entry.evidence_count() >= 2);
+    }
+
+    #[test]
+    fn conformal_extreme_bounds_roundtrip_through_unified_evidence() {
+        use crate::conformal_predictor::{
+            BucketKey, ConformalConfig, ConformalPredictor, DiffBucket, ModeBucket,
+        };
+        let key = BucketKey {
+            mode: ModeBucket::AltScreen,
+            diff: DiffBucket::Full,
+            size_bucket: 2,
+        };
+        for (observed, budget) in [(f64::MAX, 0.0), (0.0, f64::MAX)] {
+            let mut predictor = ConformalPredictor::new(ConformalConfig {
+                alpha: 0.5,
+                min_samples: 1,
+                window_size: 1,
+                q_default: 0.0,
+            })
+            .expect("valid config");
+            predictor.observe(key, 0.0, observed);
+            let prediction = predictor.predict(key, 0.0, budget);
+            assert!(predictor.is_calibrated(&prediction));
+            let entry = from_conformal(&prediction, 0);
+            let row: serde_json::Value =
+                serde_json::from_str(&entry.to_jsonl()).expect("actual predictor to bridge JSON");
+            if budget == 0.0 {
+                assert_eq!(row["loss_avoided"].as_f64(), Some(f64::MAX));
+            } else {
+                let headroom = row["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|term| term["label"] == "budget_headroom")
+                    .unwrap();
+                assert_eq!(headroom["bf"].as_f64(), Some(f64::MAX));
+            }
+        }
     }
 
     #[test]

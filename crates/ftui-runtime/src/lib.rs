@@ -208,8 +208,8 @@ pub use conformal_frame_guard::{
     NonconformitySummary, P99Prediction,
 };
 pub use conformal_predictor::{
-    BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor, ConformalUpdate,
-    DiffBucket, ModeBucket,
+    BucketKey, ConformalConfig, ConformalConfigError, ConformalPrediction, ConformalPredictor,
+    ConformalStatus, ConformalUpdate, DiffBucket, ModeBucket,
 };
 #[cfg(feature = "experimental")]
 pub use cost_model::{

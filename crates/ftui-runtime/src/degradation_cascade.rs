@@ -139,19 +139,27 @@ impl CascadeEvidence {
             .prediction
             .as_ref()
             .map(|p| {
+                let conformal_fields = p.conformal.as_ref().map(|c| {
+                    format!(
+                        r#","conformal_status":"{}","conformal_required_rank":{},"conformal_alpha":{}"#,
+                        c.status.as_str(), c.required_rank,
+                        crate::conformal_predictor::finite_json_number(Some(c.alpha), 17),
+                    )
+                }).unwrap_or_default();
                 format!(
-                    r#","p99_upper_us":{:.1},"p99_exceeds":{},"p99_fallback_level":{},"p99_calibration_size":{},"p99_interval_width_us":{:.1}"#,
-                    p.upper_us,
+                    r#","p99_upper_us":{},"p99_exceeds":{},"p99_fallback_level":{},"p99_calibration_size":{},"p99_interval_width_us":{}{}"#,
+                    crate::conformal_predictor::finite_json_number(p.upper_us, 1),
                     p.exceeds_budget,
                     p.fallback_level,
                     p.calibration_size,
-                    p.interval_width_us,
+                    crate::conformal_predictor::finite_json_number(p.interval_width_us, 1),
+                    conformal_fields,
                 )
             })
             .unwrap_or_default();
 
         format!(
-            r#"{{"schema":"degradation-cascade-v1","frame_idx":{},"decision":"{}","level_before":"{}","level_after":"{}","guard_state":"{}","recovery_streak":{},"recovery_threshold":{},"frame_time_us":{:.1},"budget_us":{:.1}{}}}"#,
+            r#"{{"schema":"degradation-cascade-v1","frame_idx":{},"decision":"{}","level_before":"{}","level_after":"{}","guard_state":"{}","recovery_streak":{},"recovery_threshold":{},"frame_time_us":{},"budget_us":{}{}}}"#,
             self.frame_idx,
             self.decision.as_str(),
             self.level_before.as_str(),
@@ -159,8 +167,8 @@ impl CascadeEvidence {
             self.guard_state.as_str(),
             self.recovery_streak,
             self.recovery_threshold,
-            self.frame_time_us,
-            self.budget_us,
+            crate::conformal_predictor::finite_json_number(Some(self.frame_time_us), 1),
+            crate::conformal_predictor::finite_json_number(Some(self.budget_us), 1),
             pred_fields,
         )
     }
@@ -190,9 +198,9 @@ pub struct DegradationCascade {
 
 impl DegradationCascade {
     /// Create a new cascade with the given configuration.
-    pub fn new(config: CascadeConfig) -> Self {
-        let guard = ConformalFrameGuard::new(config.guard.clone());
-        Self {
+    pub fn new(config: CascadeConfig) -> Result<Self, crate::ConformalConfigError> {
+        let guard = ConformalFrameGuard::new(config.guard.clone())?;
+        Ok(Self {
             config,
             guard,
             current_level: DegradationLevel::Full,
@@ -201,12 +209,12 @@ impl DegradationCascade {
             total_degrades: 0,
             total_recoveries: 0,
             last_evidence: None,
-        }
+        })
     }
 
     /// Create a cascade with default configuration.
     pub fn with_defaults() -> Self {
-        Self::new(CascadeConfig::default())
+        Self::new(CascadeConfig::default()).expect("valid default cascade config")
     }
 
     /// Pre-render check: predict p99 and decide whether to degrade.
@@ -247,6 +255,11 @@ impl DegradationCascade {
                 self.recovery_streak = 0;
                 CascadeDecision::Hold
             }
+        } else if !self.guard.is_calibrated() {
+            // Missing confidence is not a successful within-budget frame.
+            // Keep measuring at the current quality, without advancing recovery.
+            self.recovery_streak = 0;
+            CascadeDecision::Hold
         } else {
             // Within budget: track recovery streak
             self.recovery_streak += 1;
@@ -414,7 +427,7 @@ impl CascadeTelemetry {
     #[must_use]
     pub fn to_jsonl(&self) -> String {
         format!(
-            r#"{{"schema":"cascade-telemetry-v1","level":"{}","recovery_streak":{},"recovery_threshold":{},"frame_idx":{},"total_degrades":{},"total_recoveries":{},"guard_state":"{}","guard_observations":{},"guard_ema_us":{:.1}}}"#,
+            r#"{{"schema":"cascade-telemetry-v1","level":"{}","recovery_streak":{},"recovery_threshold":{},"frame_idx":{},"total_degrades":{},"total_recoveries":{},"guard_state":"{}","guard_observations":{},"guard_ema_us":{}}}"#,
             self.level.as_str(),
             self.recovery_streak,
             self.recovery_threshold,
@@ -423,7 +436,7 @@ impl CascadeTelemetry {
             self.total_recoveries,
             self.guard_state.as_str(),
             self.guard_observations,
-            self.guard_ema_us,
+            crate::conformal_predictor::finite_json_number(Some(self.guard_ema_us), 1),
         )
     }
 }
@@ -489,7 +502,7 @@ mod tests {
             recovery_threshold: 5, // Low threshold for testing
             ..Default::default()
         };
-        let mut cascade = DegradationCascade::new(config);
+        let mut cascade = DegradationCascade::new(config).expect("valid config");
         let key = test_key();
 
         // Calibrate with slow frames to trigger degradation
@@ -528,7 +541,7 @@ mod tests {
             max_degradation: DegradationLevel::NoStyling,
             ..Default::default()
         };
-        let mut cascade = DegradationCascade::new(config);
+        let mut cascade = DegradationCascade::new(config).expect("valid config");
         let key = test_key();
 
         // Feed many slow frames
@@ -592,11 +605,17 @@ mod tests {
         let mut cascade = DegradationCascade::with_defaults();
         let key = test_key();
 
-        // Build some recovery streak with fast frames in warmup
+        // Warmup cannot provide recovery evidence.
         for _ in 0..5 {
             cascade.post_render(8_000.0, key);
             cascade.pre_render(budget_us(), key);
         }
+        assert_eq!(cascade.recovery_streak(), 0);
+        // Accumulate enough calibration data, then begin a real recovery streak.
+        for _ in 5..20 {
+            cascade.post_render(8_000.0, key);
+        }
+        cascade.pre_render(budget_us(), key);
 
         let streak_before = cascade.recovery_streak();
         assert!(streak_before > 0);
@@ -681,6 +700,94 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_rank_holds_recovery_until_calibration_is_possible() {
+        let mut cascade = DegradationCascade::new(CascadeConfig {
+            guard: ConformalFrameGuardConfig {
+                conformal: crate::ConformalConfig {
+                    alpha: 0.01,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            recovery_threshold: 2,
+            ..Default::default()
+        })
+        .expect("valid config");
+        let key = test_key();
+        cascade.post_render(20_000.0, key);
+        assert_eq!(
+            cascade.pre_render(16_000.0, key).decision,
+            CascadeDecision::Degrade
+        );
+        let degraded = cascade.level();
+        for _ in 1..99 {
+            let result = cascade.pre_render(100_000.0, key);
+            assert_eq!(result.decision, CascadeDecision::Hold);
+            assert_eq!(result.level, degraded);
+            assert_eq!(cascade.recovery_streak(), 0);
+            assert_eq!(result.prediction.upper_us, None);
+            cascade.post_render(10_000.0, key);
+        }
+        assert_eq!(
+            cascade.pre_render(100_000.0, key).decision,
+            CascadeDecision::Hold
+        );
+        assert_eq!(cascade.recovery_streak(), 1);
+        cascade.post_render(10_000.0, key);
+        assert_eq!(
+            cascade.pre_render(100_000.0, key).decision,
+            CascadeDecision::Recover
+        );
+        assert_eq!(cascade.level(), DegradationLevel::Full);
+    }
+
+    #[test]
+    fn invalid_budget_and_extreme_timings_keep_cascade_evidence_valid() {
+        let mut cascade = DegradationCascade::with_defaults();
+        let key = test_key();
+        cascade.post_render(f64::MAX, key);
+        for budget in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, f64::MAX] {
+            let result = cascade.pre_render(budget, key);
+            assert_eq!(result.prediction.upper_us, None);
+            serde_json::from_str::<serde_json::Value>(&cascade.last_evidence().unwrap().to_jsonl())
+                .expect("valid cascade evidence");
+            serde_json::from_str::<serde_json::Value>(&cascade.telemetry().to_jsonl())
+                .expect("valid cascade telemetry");
+        }
+    }
+
+    #[test]
+    fn cascade_evidence_preserves_unavailable_bound_causes() {
+        for (alpha, min_samples, observation, status, rank) in [
+            (0.01, 1, 10_000.0, "unattainable_rank", 2),
+            (0.5, 1, f64::MAX, "arithmetic_overflow", 1),
+            (0.5, 2, 10_000.0, "warmup", 1),
+        ] {
+            let mut cascade = DegradationCascade::new(CascadeConfig {
+                guard: ConformalFrameGuardConfig {
+                    conformal: crate::conformal_predictor::ConformalConfig {
+                        alpha,
+                        min_samples,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .expect("valid config");
+            cascade.post_render(observation, test_key());
+            cascade.pre_render(16_000.0, test_key());
+            let row: serde_json::Value =
+                serde_json::from_str(&cascade.last_evidence().unwrap().to_jsonl())
+                    .expect("actual cascade JSON");
+            assert!(row["p99_upper_us"].is_null());
+            assert_eq!(row["conformal_status"], status);
+            assert_eq!(row["conformal_required_rank"], rank);
+            assert_eq!(row["conformal_alpha"], alpha);
+        }
+    }
+
+    #[test]
     fn min_trigger_level_enforced() {
         let config = CascadeConfig {
             min_trigger_level: DegradationLevel::NoStyling,
@@ -688,7 +795,7 @@ mod tests {
             degradation_floor: DegradationLevel::NoStyling,
             ..Default::default()
         };
-        let mut cascade = DegradationCascade::new(config);
+        let mut cascade = DegradationCascade::new(config).expect("valid config");
         let key = test_key();
 
         for _ in 0..25 {
