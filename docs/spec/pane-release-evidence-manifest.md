@@ -1,6 +1,6 @@
-# Pane Release-Evidence Manifest (`ftui.pane.release_evidence` v1)
+# Pane Release-Evidence Manifest (`ftui.pane.release_evidence` v2)
 
-The single, checksummed artifact that proves the pane workspace is shippable.
+The checksummed input to the bounded native/simulated pane release gate.
 Produced by [`scripts/pane_release_evidence.py`](../../scripts/pane_release_evidence.py)
 (`bd-1w0w4.7`) and consumed by the release gate
 ([`pane-release-gate-policy.md`](../pane-release-gate-policy.md), `bd-1w0w4.5`).
@@ -27,18 +27,30 @@ present, coherent, and checksummed. The verdict policy lives in the gate.
 | `a11y` | accessibility compliance + discoverability | `pane_a11y_compliance_a11y`, `pane_discoverability_a11y` | `tests/e2e/pane_a11y_compliance_matrix.json` |
 | `logging` | structured observability + traceability | `e2e_observability_pipeline`, `traceability_matrix` | `tests/e2e/pane_traceability_matrix.json`, `tests/e2e/lib/e2e_jsonl_schema.json` |
 
-## Schema (v1)
+## Schema (v2)
 
 ```jsonc
 {
   "schema": "ftui.pane.release_evidence",
-  "schema_version": 1,
+  "schema_version": 2,
   "feature": "pane-workspace",
+  "scope": "native terminal and Rust web-backend simulations; no real browser-engine or OS assistive-technology acceptance",
+  "provenance": { "identity": { "run_id": "...", "commit": "...", "tree": "...",
+                     "dirty": false, "lock_sha256": "...", "toolchain_sha256": "...",
+                     "compiler": "...", "target": "...", "features": ["default"] },
+                  "observed_at": 0, "producer": "scripts/pane_release_evidence.py",
+                  "producer_sha256": "...", "schema": "ftui.pane.release_evidence",
+                  "schema_version": 2 },
   "dimensions": {
     "<name>": {
       "description": "...",
       "suites": [{ "crate": "...", "target": "...",
-                   "status": "green|red|declared", "passed": 0, "failed": 0 }],
+                   "status": "green", "passed": 3, "failed": 0,
+                   "verdict": "ok", "exit_code": 0, "command": ["..."],
+                   "log": { "path": "...", "sha256": "..." },
+                   "binary": { "path": "binaries/....gz", "sha256": "...",
+                               "executable_sha256": "...", "size_bytes": 1 },
+                   "provenance": { "...": "producer receipt" } }],
       "static_artifacts":  [{ "path": "...", "present": true, "sha256": "..." }],
       "runtime_artifacts": [{ "name": "...", "present": true,
                               "path": "...", "sha256": "..." }],
@@ -61,6 +73,14 @@ present, coherent, and checksummed. The verdict policy lives in the gate.
   test but does not by itself assert it ran.
 - `static_artifacts[].sha256` lets a downstream gate confirm the bundle
   describes *this* tree; `validate` re-derives and compares them.
+- Runtime and binary references resolve under `--results-dir`; static references
+  resolve under `--repo-root`. Release validation re-derives all hashes, compares
+  current build/run identity, rejects observations older than 24 hours or in the
+  future, and recomputes certification from its checksummed inputs. Set the same
+  unique `PANE_RELEASE_RUN_ID` before each producer runs.
+- All dimensions, suite identities and artifact identities must match the shared
+  inventory. Empty, skipped, unknown, duplicate, malformed or substituted evidence
+  cannot satisfy GA. These suites do not exercise a real browser engine or OS AT.
 
 ## Usage
 
@@ -77,11 +97,13 @@ python3 scripts/pane_release_evidence.py collect \
 
 # Validate (checksums always; --require-runtime for the strict post-run gate).
 python3 scripts/pane_release_evidence.py validate \
-  --bundle target/pane-release/pane_release_evidence.json --json
+  --bundle target/pane-release/pane_release_evidence.json \
+  --results-dir target/pane-profiling/ci --require-runtime --json
 ```
 
-`--test-summary` is a JSON map of `"<crate>::<target>"` → `{ "passed": N,
-"failed": M }`; absent suites are recorded as `declared`.
+`--test-summary` is the schema-v2 output of `pane_test_summary_aggregate.py`.
+It carries `_meta` schema identity and each suite's counts, verdict, exit status,
+command, log/binary references and provenance. Absent suites remain `declared`.
 
 ## CI
 

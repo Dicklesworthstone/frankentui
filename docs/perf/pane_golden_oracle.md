@@ -41,6 +41,7 @@ against the golden and writes `differential_certification.json` into the bundle:
 ```json
 {
   "schema": "ftui.pane.differential_certification",
+  "schema_version": 2,
   "scenario": "timeline-ratios-32x2000",
   "classification": "certified",
   "golden_oracle": {
@@ -65,6 +66,7 @@ against the golden and writes `differential_certification.json` into the bundle:
 | `certified` | replay hashes match golden **and** the differential matrix passed | 0 |
 | `semantic_drift` | a replay hash changed — the optimized execution reproduces a *different* state | 1 |
 | `differential_matrix_failed` | hashes match golden but the strategies disagree (matrix failed) | 1 |
+| `golden_matched_unverified` | replay hashes match but differential execution is unobserved; local diagnostic only | 1 |
 | `scenario_not_in_golden` | the golden does not cover this scenario | 1 |
 
 Each carries an operator-readable `summary` that distinguishes **semantic drift**
@@ -76,14 +78,21 @@ ns/op — replay-friendly enough to reproduce locally (AC3).
 
 ## Where it runs
 
-- **Locally**, `scripts/pane_profile.sh` runs `certify --require-match` against
-  the committed golden after emitting the bundle (the matrix result is recorded
-  as run-separately). A golden drift fails the profiling run loudly.
+- **Locally**, `scripts/pane_profile.sh` runs `certify --require-golden-match`
+  against the committed golden. A golden drift fails the run; absent differential
+  evidence is explicitly classified `golden_matched_unverified`.
 - **In CI**, the `pane-perf-artifacts` job runs the `pane_determinism_matrix`
-  differential proof, then `certify --differential-matrix-passed true
-  --require-match`. Reaching the certify step means the matrix passed, so the
-  differential half is recorded as passed; a golden drift fails the gate. The
+  differential proof, captures its actual exit/log/binary receipt, then runs
+  `certify --differential-summary <summary.json> --results-dir <run-root>
+  --require-match`. Certification validates those artifacts and matching clean
+  source/dependency/toolchain/target/feature/run provenance. Bare success counts
+  or booleans cannot certify a run. The
   `differential_certification.json` is uploaded with the bundle.
+
+Schema v2 includes `provenance` and `inputs` bindings for the replay index,
+golden oracle and differential summary. Extra-scenario manifests must belong to
+the same verified primary index. Hashes establish identity under a trusted
+producer; they cannot make a fabricated oracle truthful.
 
 ## Updating the golden
 

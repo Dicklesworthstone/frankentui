@@ -43,6 +43,7 @@ Produced under the `--out-dir` of `pane_profile.sh` (default
 │   └── run.log                      # verbose per-iteration log
 ├── symbol_metadata.txt             # SYMBOLIZATION provenance per bench binary
 ├── executed-binaries/              # exact bench binaries when materialized locally
+├── binaries/                       # deterministic gzip archives with executable hashes
 ├── layout_bench.txt                # pane/core/* Criterion output
 ├── pane_terminal_bench.txt         # pane/terminal/* Criterion output
 ├── pane_pointer_bench.txt          # pane/web_pointer/* Criterion output
@@ -51,7 +52,7 @@ Produced under the `--out-dir` of `pane_profile.sh` (default
 
 ## Index schema (`replay_artifact_index.json`)
 
-`schema = "ftui.pane.replay_artifact_index"`, `schema_version = 1`.
+`schema = "ftui.pane.replay_artifact_index"`, `schema_version = 2`.
 
 | Top-level key   | Meaning |
 |-----------------|---------|
@@ -63,6 +64,7 @@ Produced under the `--out-dir` of `pane_profile.sh` (default
 | `replay`        | Replay evidence block (below). |
 | `symbolization` | Symbolization provenance block (below). |
 | `artifacts`     | Flat checksummed manifest of **every** file in the bundle. |
+| `provenance`    | Build/run/producer identity and observation time; required for release certification. |
 
 ### `replay`
 
@@ -94,7 +96,7 @@ can never silently drift from the evidence it summarizes.
   `pane_pointer_bench`), each carrying:
   `executed_path`, `binary_source`, `exact_binary_status`, `build_id`,
   `debug_info`, `stripped`, `addr2line_ready`, `symbolization_ready`,
-  `binary_sha256`.
+  `binary_sha256`, plus an `artifact` reference to compressed exact bytes.
 - `all_symbolization_ready` — true iff every binary is symbolization-ready.
 - `expected_labels` — the labels the contract requires to be present.
 

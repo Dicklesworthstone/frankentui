@@ -200,7 +200,10 @@ def build_identity(root: Path, run_id: str) -> dict[str, Any]:
     if not run_id:
         raise ValueError("PANE_RELEASE_RUN_ID is required for release provenance")
     def command(*argv):
-        return subprocess.check_output(argv, cwd=root, text=True).strip()
+        try:
+            return subprocess.check_output(argv, cwd=root, text=True).strip()
+        except subprocess.CalledProcessError as exc:
+            raise ValueError(f"identity command {argv[0]} failed with exit {exc.returncode}") from exc
     compiler = command("rustc", "-Vv")
     pin = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     if not isinstance(pin, str) or not re.fullmatch(r"nightly-\d{4}-\d{2}-\d{2}", pin):

@@ -1,13 +1,17 @@
 # Pane Release Gate Policy (Go / No-Go)
 
 The pane workspace ships only on an **objective, automated** verdict — never on
-subjective confidence. This document defines the gate clauses, the two gate
+subjective confidence. This document defines the gate clauses, the three gate
 modes, the override process, and the staged rollout. The gate is implemented by
 [`scripts/pane_release_gate.py`](../scripts/pane_release_gate.py) (`bd-1w0w4.5`)
 and consumes the
 [release-evidence bundle](spec/pane-release-evidence-manifest.md) (`bd-1w0w4.7`).
 
 A release is **blocked whenever any mandatory clause fails.**
+
+The suite inventory covers native terminal behavior and Rust web-backend
+simulations. A passing pane gate does not establish real browser-engine or
+operating-system assistive-technology acceptance.
 
 ---
 
@@ -16,7 +20,7 @@ A release is **blocked whenever any mandatory clause fails.**
 | Mode | When | Requires |
 |------|------|----------|
 | `advisory` | pre-merge / local | structural completeness + no observed red suites (runtime artifacts reported but not required) |
-| `strict` | release / tag | everything in `advisory` **plus** every perf runtime artifact present **and** the differential certification reads `certified` |
+| `strict` | bounded release candidate | everything in `advisory`, runtime and binary checksums, matching clean build/run provenance, and a recomputed differential certificate |
 | `ga` | GA release / CI default | everything in `strict` **plus** every declared suite **observed green** via the cross-job test-summary aggregation (bd-nqxa5) — no `declared` placeholders survive |
 
 ```bash
@@ -25,9 +29,11 @@ python3 scripts/pane_release_gate.py evaluate \
   --bundle target/pane-release/pane_release_evidence.json --mode advisory --json
 
 # release decision (perf job; CI runs `ga` = strict + observed-green suites)
+# Set the same unique PANE_RELEASE_RUN_ID before profiling and capturing suites.
 python3 scripts/pane_release_gate.py evaluate \
   --bundle target/pane-release/pane_release_evidence.json \
   --certification target/pane-profiling/ci/differential_certification.json \
+  --results-dir target/pane-profiling/ci \
   --mode ga --out target/pane-release/pane_release_gate.json --json
 ```
 
@@ -39,6 +45,9 @@ Exit code: `0` = GO, `1` = NO-GO, `2` = usage error.
 
 | Clause | Mandatory in | Passes when |
 |--------|--------------|-------------|
+| `evidence_contract` | all | exact dimensions/suites/artifacts, typed counts/verdict/exit, supported schema and scope; no duplicate identities |
+| `artifact_checksums` | all | static bytes match; release modes also verify runtime bytes using `--results-dir` |
+| `release_provenance` | strict, ga | source, dependency, compiler, target, feature, run and producer identities match; observations are at most 24 hours old and not future-dated; certificate inputs and archived executed binaries verify |
 | `all_dimensions_present` | advisory, strict | all six dimensions (unit/e2e/parity/perf/a11y/logging) are in the bundle |
 | `correctness` | advisory, strict | unit + e2e suites not red, and the e2e harness (`scripts/pane_e2e.sh`) present |
 | `parity` | advisory, strict | `pane_cross_host_parity` not red + the parity contract present |
@@ -70,8 +79,10 @@ mergeable summary fragments:
 
 ```bash
 # per suite (in whichever job runs it): parse the log into a fragment
+# test_status must be the actual cargo exit code captured immediately after execution.
 python3 scripts/pane_test_summary_aggregate.py capture \
-  --crate ftui-layout --target pane_margin --log pane_margin.log \
+  --crate ftui-layout --target pane_margin --log target/pane-profiling/ci/pane_margin.log \
+  --exit-code "$test_status" --results-dir target/pane-profiling/ci \
   --out fragments/ftui-layout__pane_margin.json
 
 # gate job: merge fragments (files, dirs, or downloaded artifacts) + verify
@@ -81,9 +92,17 @@ python3 scripts/pane_test_summary_aggregate.py check --summary pane_test_summary
 
 `list` prints the declared suites from the same table the bundler uses (no
 drift); `check --require-all` fails if any declared suite is missing, red, or
-ran zero tests; `merge` refuses conflicting duplicates unless
+ran zero tests; `merge` refuses all duplicate identities unless
 `--on-conflict=worst` (which keeps the redder record, so a flaky re-run can
-never launder a red suite). Fragments carry provenance under `_meta.sources`.
+never launder a red suite). Diagnostic worst-case merges do not manufacture
+missing artifact provenance. Each observed suite carries its actual exit code,
+libtest verdict, log digest, compressed executed binary, command and producer
+receipt. `_meta.sources` is an index, not proof of execution.
+
+The producer is trusted to execute and capture the stated command. Digests
+establish byte identity; they do not establish the truth of a fabricated oracle.
+Artifact references are relative to explicit roots, and traversal and symlink
+escapes are rejected. Relocating an unchanged run preserves verification.
 
 ---
 
@@ -127,7 +146,7 @@ Overrides are rare, logged, and never silent:
 |-------|-----|
 | **Alpha** (internal) | `advisory` GO; perf gate green in CI |
 | **Beta** (opt-in) | `strict` GO on a real run; release-evidence bundle uploaded; runbook reviewed |
-| **GA** | `strict` GO with a `--test-summary` asserting every suite `green`; parity diff empty; soak/rollback clean over the soak window |
+| **GA** | `ga` GO with every canonical suite observed green and its artifacts verified; parity diff empty; soak/rollback clean over the soak window |
 
 Promotion is one-directional per release; a regression at any stage drops the
 feature back to the conservative execution policy (see the
