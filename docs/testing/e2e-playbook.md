@@ -43,6 +43,21 @@ Inventory scope: this table tracks top-level scripts in `scripts/`. Nested suite
 
 ## Prerequisites Checklist
 
+- Entry scripts check the tools required by their selected mode before building.
+  Missing commands or Python modules return exit **2** and a `tools_present`
+  JSONL assertion; test failures return **1**. Install the reported prerequisites
+  in the runner environment and rerun the same command.
+- The main PTY runner needs Cargo, the repository's pinned Rust toolchain, Bash,
+  Python, `jq`, `rg`, `xxd`, `sha256sum`, and standard Unix text utilities.
+  `E2E_PYTHON` selects the Python interpreter used for module checks and PTY helpers.
+- Full remote suites also need the Python `websockets` module and a listener
+  inspection tool: `ss` on Linux or `lsof` on macOS. The probe does not connect to
+  the bridge, which accepts only one client. `--quick` avoids these remote
+  prerequisites. The pane traceability checks additionally require `br`.
+- Run the common helper tests with
+  `E2E_SELF_TEST=1 bash -c 'source tests/e2e/lib/common.sh; source tests/e2e/lib/logging.sh; e2e_fixture_init selftest'`.
+  They retain diagnostic JSONL under `TMPDIR` and check both missing and present
+  commands/modules using the actual shell, interpreter, and schema validator.
 - Deterministic fixtures live in `tests/e2e/lib/common.sh` and `tests/e2e/lib/logging.sh`.
 - JSONL schema is `tests/e2e/lib/e2e_jsonl_schema.json` with validator `tests/e2e/lib/validate_jsonl.py`.
 - CI runs strict JSONL validation when `CI=1` (via `jsonl_run_end` → `jsonl_validate_current`).

@@ -102,6 +102,18 @@ E2E_JSONL_FILE="${E2E_JSONL_FILE:-$LOG_DIR/demo_showcase_e2e.jsonl}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 export E2E_LOG_DIR E2E_RESULTS_DIR E2E_JSONL_FILE E2E_RUN_CMD E2E_RUN_START_MS
+required_tools=(bash cargo python3 jq awk sed wc cat)
+if $VERBOSE; then
+    required_tools+=(tee)
+fi
+if ! $QUICK; then
+    required_tools+=(script timeout stty sleep sha256sum grep sort tr tail env)
+    if [[ "${E2E_PYTHON:-python3}" != "python3" ]]; then
+        required_tools+=("$E2E_PYTHON")
+    fi
+fi
+require_tools "${required_tools[@]}" || exit 2
+
 mkdir -p "$E2E_LOG_DIR" "$E2E_RESULTS_DIR"
 jsonl_init
 jsonl_assert "artifact_log_dir" "pass" "log_dir=$LOG_DIR"

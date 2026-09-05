@@ -140,17 +140,25 @@ remote_start() {
 }
 
 # Wait until the bridge is listening (max 10s).
-# Uses ss to check the listen state without making a TCP connection,
+# Inspects the listen state without making a TCP connection,
 # since the bridge in --accept-once mode would consume the connection.
 remote_wait_ready() {
     local port="${REMOTE_PORT:-9231}"
+    local probe=(ss -tln "sport = :${port}")
+    if [[ "$OSTYPE" == darwin* ]]; then
+        probe=(lsof -nP -a -p "$REMOTE_BRIDGE_PID" -iTCP:"$port" -sTCP:LISTEN)
+    fi
+    require_tools "${probe[0]}" grep sleep || return 2
     local max_wait=100  # 100 * 100ms = 10s
     local i=0
-    while ! ss -tln "sport = :${port}" 2>/dev/null | command grep -q "LISTEN"; do
-        # Also check that the bridge process is still alive.
+    while :; do
+        # A stale listener must not hide the requested bridge's exit.
         if [[ -n "$REMOTE_BRIDGE_PID" ]] && ! kill -0 "$REMOTE_BRIDGE_PID" 2>/dev/null; then
             echo "[remote] ERROR: bridge process died (PID=$REMOTE_BRIDGE_PID)" >&2
             return 1
+        fi
+        if "${probe[@]}" 2>/dev/null | command grep -q "LISTEN"; then
+            return 0
         fi
         i=$((i + 1))
         if [[ $i -ge $max_wait ]]; then

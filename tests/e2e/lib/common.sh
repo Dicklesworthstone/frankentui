@@ -29,6 +29,52 @@ require_cmd() {
     fi
 }
 
+# Missing prerequisites are environment failures (2), distinct from test failures (1).
+# Collect the complete list before invoking any tool that might itself be absent.
+require_tools() {
+    local cmd status="pass"
+    local -x E2E_RUN_ID="${E2E_RUN_ID:-prerequisites}"
+    local missing=()
+    for cmd in "$@"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing+=("$cmd")
+        fi
+    done
+    if (( ${#missing[@]} > 0 )); then
+        status="fail"
+        printf 'Missing required tools: %s\n' "${missing[*]}" >&2
+    fi
+    if declare -f jsonl_assert >/dev/null 2>&1 && [[ -n "${E2E_JSONL_FILE:-}" ]]; then
+        if ! jsonl_assert "tools_present" "$status" "missing=${missing[*]}"; then
+            echo "Could not record prerequisite check" >&2
+            return 2
+        fi
+    fi
+    if (( ${#missing[@]} > 0 )); then
+        return 2
+    fi
+}
+
+require_python_module() {
+    local module="$1" status="pass"
+    local -x E2E_RUN_ID="${E2E_RUN_ID:-prerequisites}"
+    local python_bin="${E2E_PYTHON:-python3}"
+    require_tools "$python_bin" || return 2
+    if ! "$python_bin" -c 'import importlib, sys; importlib.import_module(sys.argv[1])' "$module"; then
+        status="fail"
+        printf 'Missing python module: %s (interpreter: %s)\n' "$module" "$python_bin" >&2
+    fi
+    if declare -f jsonl_assert >/dev/null 2>&1 && [[ -n "${E2E_JSONL_FILE:-}" ]]; then
+        if ! jsonl_assert "tools_present" "$status" "python_module=$module interpreter=$python_bin"; then
+            echo "Could not record Python prerequisite check" >&2
+            return 2
+        fi
+    fi
+    if [[ "$status" == "fail" ]]; then
+        return 2
+    fi
+}
+
 resolve_python() {
     if command -v python3 >/dev/null 2>&1; then
         echo "python3"
@@ -207,7 +253,51 @@ e2e_fixture_self_test() {
     else
         echo "WARN: e2e_determinism_self_test not available (logging.sh not sourced)" >&2
     fi
+    e2e_tools_self_test
 }
+
+e2e_tools_self_test() (
+    # Use the actual resolver, interpreter and JSONL writer. Keep diagnostic
+    # artifacts, including expected failures, without changing the caller's log.
+    local result status
+    E2E_LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ftui-tools-selftest.XXXXXX")"
+    export E2E_STATE_DIR="$E2E_LOG_DIR"
+    E2E_JSONL_FILE="$E2E_LOG_DIR/tools.jsonl"
+    E2E_RUN_ID="tools-selftest"
+    export E2E_JSONL_DISABLE=0
+    if result="$(require_tools definitely_missing_a definitely_missing_b bash 2>&1)"; then
+        echo "Prerequisite self-test accepted absent tools" >&2
+        return 1
+    else
+        status=$?
+    fi
+    [[ "$status" == 2 && "$result" == 'Missing required tools: definitely_missing_a definitely_missing_b' ]] || return 1
+    result="$(require_tools bash sh 2>&1)" || return 1
+    [[ -z "$result" ]] || return 1
+    if result="$(require_python_module no_such_module_xyz 2>&1)"; then
+        echo "Prerequisite self-test imported an absent module" >&2
+        return 1
+    else
+        status=$?
+    fi
+    [[ "$status" == 2 && "$result" == *'Missing python module: no_such_module_xyz'* ]] || return 1
+    require_python_module json || return 1
+    "$E2E_PYTHON" - "$E2E_JSONL_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as stream:
+    records = [json.loads(line) for line in stream]
+checks = [r for r in records if r.get("type") == "assert" and r.get("assertion") == "tools_present"]
+assert len(checks) == 6, checks
+assert checks[0]["status"] == "fail"
+assert checks[0]["details"] == "missing=definitely_missing_a definitely_missing_b"
+assert checks[1]["status"] == "pass" and checks[1]["details"] == "missing="
+assert checks[3]["status"] == "fail" and "python_module=no_such_module_xyz" in checks[3]["details"]
+assert checks[5]["status"] == "pass" and "python_module=json" in checks[5]["details"]
+print("Prerequisite self-tests passed: missing/present tools, missing/present module, JSONL assertions")
+PY
+    "$E2E_PYTHON" "$E2E_LIB_DIR/validate_jsonl.py" "$E2E_JSONL_FILE" \
+        --schema "$E2E_LIB_DIR/e2e_jsonl_schema.json" --strict
+)
 
 e2e_fixture_init() {
     local prefix="${1:-run}"

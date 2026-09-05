@@ -55,6 +55,27 @@ E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL E2E_JSONL_FILE E2E_RUN_CMD
 export E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 
+# Check the selected suites before a missing tool can look like an assertion failure.
+required_tools=(bash cargo "${E2E_PYTHON:-python3}" jq rg awk sed grep wc tr cat xxd sha256sum)
+if $VERBOSE; then
+    required_tools+=(tee)
+fi
+if ! $QUICK; then
+    required_tools+=(tail)
+    if [[ "$OSTYPE" == darwin* ]]; then
+        required_tools+=(lsof)
+    else
+        required_tools+=(ss)
+    fi
+    if [[ "${E2E_PYTHON:-python3}" != "python3" ]]; then
+        required_tools+=(python3)
+    fi
+fi
+require_tools "${required_tools[@]}" || exit 2
+if ! $QUICK; then
+    require_python_module websockets || exit 2
+fi
+
 # Prepare results directory without destructive cleanup
 mkdir -p "$E2E_LOG_DIR" "$E2E_RESULTS_DIR"
 jsonl_init
@@ -80,13 +101,6 @@ log_info "Mode: $([ "$QUICK" = true ] && echo quick || echo normal)"
     echo "Git commit:"
     git log -1 --oneline 2>/dev/null || echo "N/A"
 } > "$E2E_LOG_DIR/00_environment.log"
-
-# Requirements
-require_cmd cargo
-if [[ -z "$E2E_PYTHON" ]]; then
-    log_error "python3/python is required for PTY helpers"
-    exit 1
-fi
 
 log_info "Building ftui-harness..."
 if $VERBOSE; then

@@ -33,6 +33,16 @@ E2E_JSONL_FILE="${USER_E2E_JSONL_FILE:-$E2E_LOG_DIR/ws_protocol_compliance_${E2E
 REPORT_OUT="${USER_REPORT_OUT:-$E2E_RESULTS_DIR/ws_protocol_compliance_report_${E2E_RUN_ID}.json}"
 export E2E_JSONL_FILE REPORT_OUT
 
+# Observe readiness without consuming the bridge's single accepted connection.
+required_tools=(cargo "${E2E_PYTHON:-python3}" cat tail)
+if [[ "$OSTYPE" == darwin* ]]; then
+    required_tools+=(lsof)
+else
+    required_tools+=(ss)
+fi
+require_tools "${required_tools[@]}" || exit 2
+require_python_module websockets || exit 2
+
 REMOTE_TARGET_DIR="${REMOTE_TARGET_DIR:-${CARGO_TARGET_DIR:-${TMPDIR:-/tmp}/frankentui-ws-protocol-e2e}}"
 REMOTE_ALLOW_LOCAL_CARGO_FALLBACK="${REMOTE_ALLOW_LOCAL_CARGO_FALLBACK:-1}"
 export REMOTE_TARGET_DIR REMOTE_ALLOW_LOCAL_CARGO_FALLBACK
@@ -130,13 +140,17 @@ def free_port() -> int:
 
 
 def wait_listening(port: int, proc: subprocess.Popen[str]) -> None:
+    if sys.platform == "darwin":
+        probe = ["lsof", "-nP", "-a", "-p", str(proc.pid), f"-iTCP:{port}", "-sTCP:LISTEN"]
+    else:
+        probe = ["ss", "-tln", f"sport = :{port}"]
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             stderr = proc.stderr.read() if proc.stderr else ""
             raise RuntimeError(f"bridge exited before listen; rc={proc.returncode}; stderr={stderr}")
         result = subprocess.run(
-            ["ss", "-tln", f"sport = :{port}"],
+            probe,
             capture_output=True,
             text=True,
             check=False,

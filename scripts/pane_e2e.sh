@@ -133,6 +133,24 @@ E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 
 export E2E_LOG_DIR E2E_RESULTS_DIR E2E_JSONL_FILE LOG_FILE E2E_RUN_CMD E2E_RUN_START_MS
 
+# Traceability is part of every mode, including --web-only and smoke.
+required_tools=(bash cargo br jq rg awk sed mktemp sort cat cp tail)
+if command -v sha256sum >/dev/null 2>&1; then
+    required_tools+=(sha256sum)
+else
+    required_tools+=(shasum)
+fi
+if $VERBOSE; then
+    required_tools+=(tee)
+fi
+if $RUN_TERMINAL; then
+    required_tools+=("${E2E_PYTHON:-python3}" grep wc tr)
+fi
+if ! $TERMINAL_ONLY || [[ "$MODE" != "smoke" ]]; then
+    required_tools+=(env)
+fi
+require_tools "${required_tools[@]}" || exit 2
+
 mkdir -p "$E2E_LOG_DIR" "$E2E_RESULTS_DIR"
 jsonl_init
 

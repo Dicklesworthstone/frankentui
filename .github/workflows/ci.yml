@@ -71,8 +71,18 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Enforce no-mock policy (bd-2nu8.18)
+      - name: Install policy scanner
+        shell: bash
         run: |
+          cargo install ripgrep --version 15.2.0 --locked --root "$RUNNER_TEMP/ftui-policy-tools"
+          echo "$RUNNER_TEMP/ftui-policy-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Enforce no-mock policy (bd-2nu8.18)
+        shell: bash
+        run: |
+          source tests/e2e/lib/common.sh
+          require_tools rg
+          rg --version
           if rg -n -i '\b(mock|fake|stub)s?\b' crates tests -g '*.rs' \
             --glob '!crates/ftui-runtime/src/subscription.rs' \
             --glob '!crates/ftui-core/src/inline_mode.rs' \
@@ -80,6 +90,12 @@ jobs:
             --glob '!crates/ftui-render/src/sanitize.rs'; then
             echo "No-mock policy violation detected. See docs/testing/no-mock-policy.md."
             exit 1
+          else
+            scan_status=$?
+            if [[ "$scan_status" != 1 ]]; then
+              echo "No-mock scan failed with exit $scan_status; policy was not verified." >&2
+              exit 2
+            fi
           fi
 
       - name: Build workspace
@@ -623,6 +639,15 @@ jobs:
               --schema tests/e2e/lib/e2e_jsonl_schema.json \
               --registry tests/e2e/lib/e2e_hash_registry.json \
               --strict
+          done
+
+          summary_files=(/tmp/ftui_e2e_*/results/summary.json)
+          if (( ${#summary_files[@]} == 0 )); then
+            echo "No PTY E2E summaries found; prerequisite and case outcomes are unproven." >&2
+            exit 1
+          fi
+          for summary in "${summary_files[@]}"; do
+            jq -e '[.tests[] | select(.error != null and (.error | test("command not found")))] | length == 0' "$summary"
           done
 
       - name: Build PTY failure repro bundle

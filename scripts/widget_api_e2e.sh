@@ -104,6 +104,15 @@ E2E_JSONL_FILE="${E2E_JSONL_FILE:-$LOG_DIR/widget_api_e2e.jsonl}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 export E2E_LOG_DIR E2E_RESULTS_DIR E2E_JSONL_FILE E2E_RUN_CMD E2E_RUN_START_MS
+required_tools=(cargo "${E2E_PYTHON:-python3}" jq awk sed grep wc tr cat env sha256sum)
+if $VERBOSE; then
+    required_tools+=(tee)
+fi
+if ! $QUICK; then
+    required_tools+=(tail)
+fi
+require_tools "${required_tools[@]}" || exit 2
+
 mkdir -p "$E2E_LOG_DIR" "$E2E_RESULTS_DIR"
 jsonl_init
 jsonl_assert "artifact_log_dir" "pass" "log_dir=$E2E_LOG_DIR"
