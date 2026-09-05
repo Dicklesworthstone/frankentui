@@ -19,6 +19,7 @@ TEST_MODE=false
 RESOURCE_STATS=false
 PERF_STAT=false
 STACK_REPORTS=false
+SSH_CONFIG="${PANE_PROFILE_SSH_CONFIG:-}"
 declare -A BENCH_BINARY_PATHS=()
 declare -A BENCH_EXECUTED_PATHS=()
 declare -A BENCH_WORKERS=()
@@ -44,6 +45,10 @@ while [[ $# -gt 0 ]]; do
             OUT_DIR="$2"
             shift 2
             ;;
+        --ssh-config)
+            SSH_CONFIG="$2"
+            shift 2
+            ;;
         --time)
             RESOURCE_STATS=true
             shift
@@ -58,7 +63,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -h|--help)
             cat <<EOF
-Usage: $0 [--test] [--time] [--perf-stat] [--stack-reports] [--out-dir PATH]
+Usage: $0 [--test] [--time] [--perf-stat] [--stack-reports] [--out-dir PATH] [--ssh-config PATH]
 
   --test          Run Criterion targets in fast test mode.
   --time          Capture /usr/bin/time -v resource stats per bench.
@@ -66,6 +71,8 @@ Usage: $0 [--test] [--time] [--perf-stat] [--stack-reports] [--out-dir PATH]
   --stack-reports Capture representative perf record/report artifacts plus
                   post-symbolized user-space stack summaries.
   --out-dir PATH  Write captured outputs under PATH.
+  --ssh-config PATH  SSH configuration for fetching exact RCH worker binaries
+                     (also PANE_PROFILE_SSH_CONFIG).
 EOF
             exit 0
             ;;
@@ -78,6 +85,15 @@ done
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
+if [[ -n "$SSH_CONFIG" ]]; then
+    if [[ ! -f "$SSH_CONFIG" ]]; then
+        echo "ERROR: SSH configuration not found: $SSH_CONFIG" >&2
+        exit 1
+    fi
+    SSH_CONFIG="$(cd "$(dirname "$SSH_CONFIG")" && pwd -P)/$(basename "$SSH_CONFIG")"
+fi
+# Cargo must use this checkout even when the script is invoked from elsewhere.
+cd "$PROJECT_ROOT"
 EXACT_BINARY_DIR="${OUT_DIR}/executed-binaries"
 mkdir -p "$EXACT_BINARY_DIR"
 
@@ -117,6 +133,11 @@ fetch_exact_bench_binary() {
     local executed_path="$2"
     local worker="$3"
     local artifact_path
+    local scp_args=(-O -o BatchMode=yes)
+
+    if [[ -n "$SSH_CONFIG" ]]; then
+        scp_args+=(-F "$SSH_CONFIG")
+    fi
 
     artifact_path="${EXACT_BINARY_DIR}/${label}-$(basename "$executed_path")"
 
@@ -125,7 +146,7 @@ fetch_exact_bench_binary() {
         return 1
     fi
 
-    if scp -O -q "$worker:$executed_path" "$artifact_path"; then
+    if scp "${scp_args[@]}" "$worker:$executed_path" "$artifact_path"; then
         chmod u+x "$artifact_path" || true
         BENCH_EXACT_BINARY_ARTIFACTS["$label"]="$artifact_path"
         BENCH_BINARY_PATHS["$label"]="$artifact_path"
@@ -180,12 +201,14 @@ record_executed_binary_metadata() {
 
     BENCH_EXECUTED_PATHS["$label"]="$bench_binary"
 
-    if [[ -x "$bench_binary" ]]; then
+    if [[ -n "$worker" ]]; then
+        # A same-name local executable may be stale after remote compilation.
+        fetch_exact_bench_binary "$label" "$bench_binary" "$worker" || true
+    elif [[ -x "$bench_binary" ]]; then
         preserve_local_bench_binary "$label" "$bench_binary"
-        return 0
+    else
+        BENCH_FETCH_ERRORS["$label"]="local_binary_missing"
     fi
-
-    fetch_exact_bench_binary "$label" "$bench_binary" "$worker" || true
 }
 
 run_bench() {

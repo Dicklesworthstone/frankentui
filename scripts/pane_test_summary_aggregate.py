@@ -10,6 +10,8 @@ across jobs*. This tool provides that pipeline:
 ``capture``
     Parse a ``cargo test`` log and actual exit code into a summary fragment.
     Interrupted executions retain their exit/log receipt with verdict ``incomplete``.
+    ``--binary`` accepts a locally fetched copy of the executed test binary when
+    the build ran on a remote worker; its basename must match the Cargo log.
 ``merge``
     Merge many fragments (files or directories of ``*.json``) into one
     aggregated summary, refusing duplicate identities by default.
@@ -219,6 +221,9 @@ def check(summary: dict[str, Any], require_all: bool) -> dict[str, Any]:
 
 
 def cmd_capture(args: argparse.Namespace) -> int:
+    if args.binary and not args.results_dir:
+        print("error: --binary requires --results-dir", file=sys.stderr)
+        return 2
     log_path = Path(args.log)
     if not log_path.is_file():
         print(f"error: log not found: {log_path}", file=sys.stderr)
@@ -238,7 +243,12 @@ def cmd_capture(args: argparse.Namespace) -> int:
                                   args.target, "--", "--nocapture"]
             try:
                 binary = log_binary(log_path.read_text(errors="replace"), args.target)
-                if not binary.is_absolute():
+                if args.binary:
+                    fetched = Path(args.binary)
+                    if fetched.name != binary.name:
+                        raise ValueError("fetched binary basename differs from the executed test log")
+                    binary = fetched
+                elif not binary.is_absolute():
                     binary = root / binary
                 record["binary"] = archive_binary(binary, results)
                 record["binary"]["executed_name"] = binary.name
@@ -415,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     p_capture.add_argument("--exit-code", type=int, required=True,
                            help="actual exit status of the test process, including failures")
     p_capture.add_argument("--results-dir", help="archive log and binary evidence under this run root")
+    p_capture.add_argument("--binary", help="local copy of the executed binary (basename must match the test log)")
     p_capture.add_argument("--out")
     p_capture.add_argument("--json", action="store_true")
     p_capture.set_defaults(func=cmd_capture)
