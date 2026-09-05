@@ -621,7 +621,10 @@ impl PaneVersionStore {
     /// methodology — `size_of` struct estimates plus measured string payload
     /// bytes — so the two strategies are directly comparable. Because shared
     /// subtrees are counted once (via `Arc` pointer identity), node bytes scale
-    /// with *distinct* nodes, not the logical node total.
+    /// with *distinct* nodes, not the logical node total. Tree-level extension
+    /// maps are owned separately by each version and are counted per version.
+    /// This is a payload model, not an allocator measurement: spare capacity
+    /// and allocation bookkeeping are not included.
     #[must_use]
     pub fn retention(&self) -> PaneVersionRetention {
         // Per-distinct-node byte accounting in a single traversal.
@@ -670,11 +673,16 @@ impl PaneVersionStore {
             .versions
             .len()
             .saturating_mul(std::mem::size_of::<VersionedPaneTree>());
+        let version_extension_payload_bytes =
+            self.versions.iter().fold(0usize, |total, version| {
+                total.saturating_add(string_map_payload_bytes(&version.extensions))
+            });
         let estimated_total_retained_bytes = std::mem::size_of::<Self>()
             .saturating_add(distinct_struct_bytes)
             .saturating_add(distinct_leaf_payload_bytes)
             .saturating_add(distinct_extension_payload_bytes)
-            .saturating_add(version_metadata_bytes);
+            .saturating_add(version_metadata_bytes)
+            .saturating_add(version_extension_payload_bytes);
         let shared_nodes = total_logical_node_count.saturating_sub(distinct_node_count);
         let sharing_ratio = if total_logical_node_count == 0 {
             0.0
@@ -691,6 +699,7 @@ impl PaneVersionStore {
             distinct_leaf_payload_bytes,
             distinct_extension_payload_bytes,
             version_metadata_bytes,
+            version_extension_payload_bytes,
             estimated_total_retained_bytes,
         }
     }
@@ -763,6 +772,9 @@ pub struct PaneVersionRetention {
     pub distinct_extension_payload_bytes: usize,
     /// `version_count × size_of::<VersionedPaneTree>()` (the per-version handles).
     pub version_metadata_bytes: usize,
+    /// Tree-level extension-map payload bytes summed over all retained versions.
+    /// These maps are cloned per version, even when every node is shared.
+    pub version_extension_payload_bytes: usize,
     /// Estimated total retained bytes (container + structs + payload + metadata).
     pub estimated_total_retained_bytes: usize,
 }
@@ -1360,10 +1372,138 @@ mod tests {
             + r.distinct_struct_bytes
             + r.distinct_leaf_payload_bytes
             + r.distinct_extension_payload_bytes
-            + r.version_metadata_bytes;
+            + r.version_metadata_bytes
+            + r.version_extension_payload_bytes;
         assert_eq!(r.estimated_total_retained_bytes, class_sum);
         assert_eq!(r.version_count, 9);
         assert!(r.distinct_node_count < r.total_logical_node_count);
+    }
+
+    fn tree_extension_stores() -> (PaneVersionStore, PaneVersionStore, usize) {
+        let plain = build_demo();
+        let mut snapshot = plain.to_snapshot();
+        let key = "workspace";
+        let value = "Layout Lab 🦀";
+        snapshot.extensions.insert(key.into(), value.into());
+        let canonical = PaneTree::from_snapshot(snapshot).expect("valid extended tree");
+        let extended = VersionedPaneTree::from_pane_tree(&canonical);
+        (
+            PaneVersionStore::new(plain),
+            PaneVersionStore::new(extended),
+            key.len() + value.len(),
+        )
+    }
+
+    #[test]
+    fn retention_counts_tree_extensions_even_when_all_nodes_are_shared() {
+        let (mut plain, mut extended, payload_bytes) = tree_extension_stores();
+        let noop = PaneOperation::SwapNodes {
+            first: PaneId::MIN,
+            second: PaneId::MIN,
+        };
+        for version_count in 1..=4 {
+            let before = plain.retention();
+            let after = extended.retention();
+            assert_eq!(after.version_count, version_count);
+            assert_eq!(after.distinct_node_count, extended.current().node_count());
+            assert_eq!(after.distinct_struct_bytes, before.distinct_struct_bytes);
+            assert_eq!(
+                after.distinct_extension_payload_bytes,
+                before.distinct_extension_payload_bytes
+            );
+            assert_eq!(
+                after.estimated_total_retained_bytes - before.estimated_total_retained_bytes,
+                version_count * payload_bytes,
+                "each version owns its tree extension map even when its root is shared"
+            );
+            if version_count < 4 {
+                plain.apply(&noop).expect("plain no-op");
+                let previous = Arc::clone(extended.current().root());
+                extended.apply(&noop).expect("extended no-op");
+                assert!(Arc::ptr_eq(&previous, extended.current().root()));
+            }
+        }
+    }
+
+    #[test]
+    fn retention_counts_cloned_tree_extensions_and_releases_pruned_versions() {
+        let (mut plain, mut extended, payload_bytes) = tree_extension_stores();
+        for n in 2..=4 {
+            let operation = PaneOperation::SetSplitRatio {
+                split: PaneId::new(4).unwrap(),
+                ratio: ratio(n, 1),
+            };
+            plain.apply(&operation).expect("plain ratio change");
+            extended.apply(&operation).expect("extended ratio change");
+        }
+        let mut plain_clone = plain.clone();
+        let mut extended_clone = extended.clone();
+        assert_eq!(extended_clone.retention(), extended.retention());
+        assert!(Arc::ptr_eq(
+            extended_clone.current().root(),
+            extended.current().root()
+        ));
+        assert_eq!(plain_clone.set_max_versions(2), 2);
+        assert_eq!(extended_clone.set_max_versions(2), 2);
+        assert_eq!(extended_clone.version_count(), 2);
+        assert_eq!(
+            extended_clone.retention().estimated_total_retained_bytes
+                - plain_clone.retention().estimated_total_retained_bytes,
+            2 * payload_bytes
+        );
+        assert_eq!(extended.version_count(), 4, "cloning isolates retention");
+        assert_eq!(
+            extended.retention().estimated_total_retained_bytes
+                - plain.retention().estimated_total_retained_bytes,
+            4 * payload_bytes
+        );
+        assert_eq!(
+            extended_clone.current().to_snapshot(),
+            extended.current().to_snapshot(),
+            "pruning preserves the selected tree, including its extensions"
+        );
+    }
+
+    #[test]
+    fn retention_counts_tree_extensions_in_pinned_redo_until_branch_replacement() {
+        let (mut plain, mut extended, payload_bytes) = tree_extension_stores();
+        let noop = PaneOperation::SwapNodes {
+            first: PaneId::MIN,
+            second: PaneId::MIN,
+        };
+        for _ in 0..3 {
+            plain.apply(&noop).expect("plain no-op");
+            extended.apply(&noop).expect("extended no-op");
+        }
+        for _ in 0..2 {
+            assert!(plain.undo());
+            assert!(extended.undo());
+        }
+        assert_eq!(plain.set_max_versions(1), 1);
+        assert_eq!(extended.set_max_versions(1), 1);
+        assert_eq!(extended.version_count(), 3);
+        assert!(extended.can_redo());
+        assert_eq!(
+            extended.retention().estimated_total_retained_bytes
+                - plain.retention().estimated_total_retained_bytes,
+            3 * payload_bytes,
+            "current and redo versions still retain their independent maps"
+        );
+        let branch = PaneOperation::SetSplitRatio {
+            split: PaneId::new(4).unwrap(),
+            ratio: ratio(5, 1),
+        };
+        plain.apply(&branch).expect("plain branch replacement");
+        extended
+            .apply(&branch)
+            .expect("extended branch replacement");
+        assert_eq!(extended.version_count(), 1);
+        assert!(!extended.can_redo());
+        assert_eq!(
+            extended.retention().estimated_total_retained_bytes
+                - plain.retention().estimated_total_retained_bytes,
+            payload_bytes
+        );
     }
 
     #[test]

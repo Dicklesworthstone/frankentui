@@ -311,17 +311,18 @@ fn persistent_footprint(store: &PaneVersionStore) -> PaneMemoryStrategyFootprint
         r.distinct_node_count,
         r.distinct_struct_bytes,
         r.distinct_leaf_payload_bytes,
-        r.distinct_extension_payload_bytes,
+        r.distinct_extension_payload_bytes
+            .saturating_add(r.version_extension_payload_bytes),
         0,
         0,
         r.estimated_total_retained_bytes,
     )
 }
 
-/// Sum measured leaf-surface and extension payload bytes over a snapshot's nodes.
+/// Sum measured leaf-surface and extension payload bytes, including the tree map.
 fn snapshot_payload_bytes(snapshot: &PaneTreeSnapshot) -> (usize, usize) {
     let mut leaf_payload = 0usize;
-    let mut extension_payload = 0usize;
+    let mut extension_payload = string_map_payload_bytes(&snapshot.extensions);
     for record in &snapshot.nodes {
         extension_payload =
             extension_payload.saturating_add(string_map_payload_bytes(&record.extensions));
@@ -467,6 +468,50 @@ mod tests {
         assert_footprint_sums(&cmp.checkpointed);
         assert_footprint_sums(&cmp.persistent);
         assert_eq!(cmp.schema_version, PANE_MEMORY_TELEMETRY_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn comparison_counts_tree_extension_payload_in_every_retained_copy() {
+        let key = "workspace";
+        let value = "編集🦀";
+        let payload = key.len() + value.len();
+        let compare = |include_extensions| {
+            let mut snapshot = PaneTree::singleton("root").to_snapshot();
+            if include_extensions {
+                snapshot.extensions.insert(key.to_owned(), value.to_owned());
+            }
+            let mut tree = PaneTree::from_snapshot(snapshot).expect("valid tree");
+            let mut timeline = PaneInteractionTimeline::with_baseline(&tree);
+            timeline.checkpoint_interval = 1;
+            let mut store = PaneVersionStore::new(VersionedPaneTree::from_pane_tree(&tree));
+            for id in 0..3 {
+                timeline
+                    .apply_and_record(&mut tree, id, id, PaneOperation::NormalizeRatios)
+                    .expect("record operation");
+                store
+                    .apply(&PaneOperation::NormalizeRatios)
+                    .expect("persist operation");
+            }
+            pane_memory_comparison(&tree, &timeline, &store)
+        };
+        let plain = compare(false);
+        let extended = compare(true);
+        for (before, after, copies) in [
+            (&plain.baseline, &extended.baseline, 1),
+            (&plain.checkpointed, &extended.checkpointed, 4),
+            (&plain.persistent, &extended.persistent, 4),
+        ] {
+            assert_eq!(after.extension_payload_bytes, copies * payload);
+            assert_eq!(
+                after.total_retained_bytes - before.total_retained_bytes,
+                copies * payload
+            );
+            assert_eq!(
+                after.container_and_metadata_bytes,
+                before.container_and_metadata_bytes
+            );
+            assert_footprint_sums(after);
+        }
     }
 
     #[test]

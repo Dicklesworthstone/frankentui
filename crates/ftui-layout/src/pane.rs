@@ -6294,47 +6294,50 @@ impl PaneInteractionTimeline {
     }
 
     /// Undo the last applied entry by deterministic rebuild from baseline.
+    /// Replay failure leaves both the tree and timeline unchanged.
     pub fn undo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneInteractionTimelineError> {
         if self.cursor == 0 {
             return Ok(false);
         }
+        *tree = self.replay_at(self.cursor - 1)?;
         self.cursor -= 1;
-        self.rebuild(tree)?;
         Ok(true)
     }
 
     /// Redo one entry by deterministic rebuild from baseline.
+    /// Replay failure leaves both the tree and timeline unchanged.
     pub fn redo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneInteractionTimelineError> {
         if self.cursor >= self.entries.len() {
             return Ok(false);
         }
+        *tree = self.replay_at(self.cursor + 1)?;
         self.cursor += 1;
-        self.rebuild(tree)?;
         Ok(true)
     }
 
     /// Rebuild a new tree from baseline and currently-applied entries.
     pub fn replay(&self) -> Result<PaneTree, PaneInteractionTimelineError> {
-        let (mut tree, start_idx) = self.restore_replay_start()?;
-        for entry in self.entries.iter().take(self.cursor).skip(start_idx) {
+        self.replay_at(self.cursor)
+    }
+
+    fn replay_at(&self, cursor: usize) -> Result<PaneTree, PaneInteractionTimelineError> {
+        let (mut tree, start_idx) = self.restore_replay_start(cursor)?;
+        for entry in self.entries.iter().take(cursor).skip(start_idx) {
             tree.apply_operation_in_place_for_replay(entry.operation_id, &entry.operation)
                 .map_err(|source| PaneInteractionTimelineError::ApplyFailed { source })?;
         }
         Ok(tree)
     }
 
-    fn rebuild(&self, tree: &mut PaneTree) -> Result<(), PaneInteractionTimelineError> {
-        let replayed = self.replay()?;
-        *tree = replayed;
-        Ok(())
-    }
-
-    fn restore_replay_start(&self) -> Result<(PaneTree, usize), PaneInteractionTimelineError> {
+    fn restore_replay_start(
+        &self,
+        cursor: usize,
+    ) -> Result<(PaneTree, usize), PaneInteractionTimelineError> {
         if let Some(checkpoint) = self
             .checkpoints
             .iter()
             .rev()
-            .find(|checkpoint| checkpoint.applied_len <= self.cursor)
+            .find(|checkpoint| checkpoint.applied_len <= cursor)
         {
             let tree = PaneTree::from_snapshot(checkpoint.snapshot.clone())
                 .map_err(|source| PaneInteractionTimelineError::BaselineInvalid { source })?;
@@ -10106,6 +10109,158 @@ mod tests {
         let replayed = timeline.replay().expect("replay should succeed");
         assert_eq!(replayed.state_hash(), tree.state_hash());
         assert_eq!(replayed.to_snapshot(), tree.to_snapshot());
+    }
+
+    fn timeline_with_redo_entry(
+        checkpoint_interval: usize,
+    ) -> (PaneTree, PaneInteractionTimeline, Vec<PaneTreeSnapshot>) {
+        let mut tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let mut timeline = PaneInteractionTimeline::with_baseline(&tree);
+        timeline.checkpoint_interval = checkpoint_interval;
+        let mut states = vec![tree.to_snapshot()];
+        for (operation_id, numerator) in [(1, 4), (2, 5), (3, 6), (4, 7)] {
+            timeline
+                .apply_and_record(
+                    &mut tree,
+                    operation_id,
+                    operation_id,
+                    PaneOperation::SetSplitRatio {
+                        split: id(1),
+                        ratio: PaneSplitRatio::new(numerator, 10).expect("valid ratio"),
+                    },
+                )
+                .expect("valid recorded edit");
+            states.push(tree.to_snapshot());
+        }
+        assert!(timeline.undo(&mut tree).expect("retain a redo entry"));
+        assert_eq!(timeline.applied_len(), 3);
+        assert_eq!(tree.to_snapshot(), states[3]);
+        (tree, timeline, states)
+    }
+
+    fn assert_timeline_navigation_failure_is_atomic(redo: bool, invalid_operation: bool) {
+        let (mut tree, mut timeline, states) = timeline_with_redo_entry(0);
+        let valid_history = timeline.clone();
+        let missing = id(u64::MAX);
+        let expected_error = if invalid_operation {
+            // Replay must execute the first valid edit before rejecting the
+            // second one, without publishing that partial tree to the caller.
+            timeline.entries[1].operation = PaneOperation::CloseNode { target: missing };
+            let before_hash = timeline.entries[0].after_hash;
+            PaneInteractionTimelineError::ApplyFailed {
+                source: PaneOperationError {
+                    operation_id: 2,
+                    kind: PaneOperationKind::CloseNode,
+                    touched_nodes: smallvec![missing],
+                    before_hash,
+                    after_hash: before_hash,
+                    reason: PaneOperationFailure::MissingNode { node_id: missing },
+                },
+            }
+        } else {
+            timeline.baseline.as_mut().expect("baseline").root = missing;
+            PaneInteractionTimelineError::BaselineInvalid {
+                source: PaneModelError::MissingRoot { root: missing },
+            }
+        };
+        let before_tree = tree.to_snapshot();
+        let before_history = timeline.clone();
+        let before_redo = timeline.entries[timeline.cursor..].to_vec();
+        let error = if redo {
+            timeline.redo(&mut tree)
+        } else {
+            timeline.undo(&mut tree)
+        }
+        .expect_err("invalid replay input must be rejected");
+        assert_eq!(error, expected_error, "original replay error must survive");
+        assert_eq!(
+            tree.to_snapshot(),
+            before_tree,
+            "failed navigation changed tree"
+        );
+        assert_eq!(timeline.cursor, 3, "failed navigation changed cursor");
+        assert_eq!(timeline.entries[timeline.cursor..], before_redo);
+        assert_eq!(
+            timeline, before_history,
+            "failed navigation changed history"
+        );
+
+        // Repair only the rejected input; navigation must resume from the
+        // exact same cursor, retaining the original redo branch.
+        if invalid_operation {
+            timeline.entries[1] = valid_history.entries[1].clone();
+        } else {
+            timeline.baseline = valid_history.baseline;
+        }
+        let target = if redo { 4 } else { 2 };
+        assert!(if redo {
+            timeline.redo(&mut tree).expect("redo after input repair")
+        } else {
+            timeline.undo(&mut tree).expect("undo after input repair")
+        });
+        assert_eq!(timeline.cursor, target);
+        assert_eq!(tree.to_snapshot(), states[target]);
+        assert!(if redo {
+            timeline.undo(&mut tree).expect("undo restored navigation")
+        } else {
+            timeline.redo(&mut tree).expect("redo restored navigation")
+        });
+        assert_eq!(timeline.cursor, 3);
+        assert_eq!(tree.to_snapshot(), before_tree);
+        assert_eq!(timeline.entries[timeline.cursor..], before_redo);
+    }
+
+    #[test]
+    fn interaction_timeline_undo_invalid_baseline_is_atomic() {
+        assert_timeline_navigation_failure_is_atomic(false, false);
+    }
+
+    #[test]
+    fn interaction_timeline_redo_invalid_baseline_is_atomic() {
+        assert_timeline_navigation_failure_is_atomic(true, false);
+    }
+
+    #[test]
+    fn interaction_timeline_undo_invalid_operation_is_atomic() {
+        assert_timeline_navigation_failure_is_atomic(false, true);
+    }
+
+    #[test]
+    fn interaction_timeline_redo_invalid_operation_is_atomic() {
+        assert_timeline_navigation_failure_is_atomic(true, true);
+    }
+
+    #[test]
+    fn interaction_timeline_navigation_boundaries_preserve_state() {
+        let mut empty_tree = PaneTree::singleton("empty history");
+        let mut empty_timeline = PaneInteractionTimeline::default();
+        let empty_snapshot = empty_tree.to_snapshot();
+        assert_eq!(empty_timeline.undo(&mut empty_tree), Ok(false));
+        assert_eq!(empty_timeline.redo(&mut empty_tree), Ok(false));
+        assert_eq!(empty_tree.to_snapshot(), empty_snapshot);
+        assert_eq!(empty_timeline, PaneInteractionTimeline::default());
+
+        for checkpoint_interval in [0, 1] {
+            let (mut tree, mut timeline, states) = timeline_with_redo_entry(checkpoint_interval);
+            for cursor in (0..3).rev() {
+                assert_eq!(timeline.undo(&mut tree), Ok(true));
+                assert_eq!(timeline.applied_len(), cursor);
+                assert_eq!(tree.to_snapshot(), states[cursor]);
+            }
+            let before_history = timeline.clone();
+            assert_eq!(timeline.undo(&mut tree), Ok(false));
+            assert_eq!(timeline, before_history);
+            assert_eq!(tree.to_snapshot(), states[0]);
+            for (cursor, state) in states.iter().enumerate().skip(1) {
+                assert_eq!(timeline.redo(&mut tree), Ok(true));
+                assert_eq!(timeline.applied_len(), cursor);
+                assert_eq!(&tree.to_snapshot(), state);
+            }
+            let before_history = timeline.clone();
+            assert_eq!(timeline.redo(&mut tree), Ok(false));
+            assert_eq!(timeline, before_history);
+            assert_eq!(tree.to_snapshot(), states[4]);
+        }
     }
 
     #[test]

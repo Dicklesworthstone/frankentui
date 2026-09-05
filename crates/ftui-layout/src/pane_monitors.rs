@@ -126,7 +126,7 @@ pub struct PaneMonitorThresholds {
     pub replay_depth_degraded_ratio: f64,
     /// `replay_depth / interval` above this is a violation.
     pub replay_depth_violated_ratio: f64,
-    /// Retained-bytes utilization (% of budget) above this is degraded.
+    /// Maximum byte/unit utilization (% of a bounded axis) above this is degraded.
     pub retention_degraded_util_pct: f64,
     /// Strategy-switch rate (% of transitions) above this is degraded.
     pub selector_churn_degraded_pct: f64,
@@ -328,19 +328,33 @@ pub fn monitor_retention_pressure(
     thresholds: &PaneMonitorThresholds,
 ) -> PaneMonitorVerdict {
     let budget_bytes = decision.budget.max_retained_bytes;
-    let after = decision.bytes_after as f64;
-    // Utilization as a percentage of budget (0 budget = unbounded = no pressure).
-    let util_pct = if budget_bytes == 0 {
+    let budget_units = decision.budget.max_retained_units;
+    // Each zero bound is independently unbounded. Observe the tighter axis;
+    // a byte-unbounded policy can still have a violated version/entry cap.
+    let byte_util_pct = if budget_bytes == 0 {
         0.0
     } else {
-        after / budget_bytes as f64 * 100.0
+        decision.bytes_after as f64 / budget_bytes as f64 * 100.0
     };
+    let unit_util_pct = if budget_units == 0 {
+        0.0
+    } else {
+        decision.units_after as f64 / budget_units as f64 * 100.0
+    };
+    let util_pct = byte_util_pct.max(unit_util_pct);
 
     let status = match decision.outcome {
-        PaneRetentionOutcome::FloorReached => PaneMonitorStatus::Violated,
+        PaneRetentionOutcome::FloorReached | PaneRetentionOutcome::PruningBlocked => {
+            PaneMonitorStatus::Violated
+        }
         PaneRetentionOutcome::ConservativeHold => PaneMonitorStatus::Degraded,
         PaneRetentionOutcome::WithinBudget | PaneRetentionOutcome::PrunedToFit => {
-            if budget_bytes != 0 && util_pct > thresholds.retention_degraded_util_pct {
+            if decision
+                .budget
+                .is_exceeded_by(decision.bytes_after, decision.units_after)
+            {
+                PaneMonitorStatus::Violated
+            } else if util_pct > thresholds.retention_degraded_util_pct {
                 PaneMonitorStatus::Degraded
             } else {
                 PaneMonitorStatus::Healthy
@@ -356,22 +370,30 @@ small for this workspace.",
             decision.bytes_after, budget_bytes
         ),
         PaneRetentionOutcome::ConservativeHold => format!(
-            "Retention is holding {} byte(s) over its {}-byte budget in conservative-debug mode \
-— memory pressure is unbounded; this should not run in production.",
-            decision.bytes_after, budget_bytes
+            "Retention is holding {} byte(s) and {} unit(s) in conservative-debug mode \
+(budgets: {budget_bytes} bytes, {budget_units} units; zero means unbounded).",
+            decision.bytes_after, decision.units_after
+        ),
+        PaneRetentionOutcome::PruningBlocked => format!(
+            "Retention remains over budget: {} byte(s), {} unit(s) after pruning {} unit(s) \
+(budgets: {budget_bytes} bytes, {budget_units} units; zero means unbounded). \
+Protected history or failed replay prevents further pruning; current state and redo are retained.",
+            decision.bytes_after, decision.units_after, decision.units_pruned
         ),
         PaneRetentionOutcome::PrunedToFit => format!(
-            "Retention pruned {} unit(s) to fit the {}-byte budget ({:.0}% utilized) — undo \
-history beyond the kept window is gone.",
-            decision.units_pruned, budget_bytes, util_pct
+            "Retention pruned {} unit(s); {:.0}% maximum byte/unit utilization \
+(budgets: {budget_bytes} bytes, {budget_units} units; zero means unbounded). \
+Undo history beyond the kept window is gone.",
+            decision.units_pruned, util_pct
         ),
-        PaneRetentionOutcome::WithinBudget if budget_bytes == 0 => format!(
+        PaneRetentionOutcome::WithinBudget if budget_bytes == 0 && budget_units == 0 => format!(
             "Retention is unbounded ({} byte(s) retained) — full undo history kept.",
             decision.bytes_after
         ),
         PaneRetentionOutcome::WithinBudget => format!(
-            "Retention is within budget ({:.0}% of {} bytes used) — full undo history retained.",
-            util_pct, budget_bytes
+            "Retention uses {:.0}% of its tightest bound \
+(budgets: {budget_bytes} bytes, {budget_units} units; zero means unbounded); no history pruned.",
+            util_pct
         ),
     };
 
@@ -648,6 +670,36 @@ mod tests {
             &PaneMonitorThresholds::default(),
         );
         assert_eq!(v.status, PaneMonitorStatus::Healthy);
+    }
+
+    #[test]
+    fn retention_monitor_observes_both_budget_axes() {
+        let thresholds = PaneMonitorThresholds::default();
+        let mut decision = retention_decision(PaneRetentionOutcome::WithinBudget, 0, 1024, 0);
+        decision.budget.max_retained_units = 20;
+        for (units, expected) in [
+            (18, PaneMonitorStatus::Healthy),
+            (19, PaneMonitorStatus::Degraded),
+            (20, PaneMonitorStatus::Degraded),
+            (21, PaneMonitorStatus::Violated),
+        ] {
+            decision.units_after = units;
+            let verdict = monitor_retention_pressure(&decision, &thresholds);
+            assert_eq!(verdict.status, expected);
+            assert_eq!(verdict.observed, units as f64 * 5.0);
+            assert!(!verdict.explanation.contains("Retention is unbounded"));
+        }
+        // Even a stale successful outcome must not hide actual byte pressure.
+        decision.units_after = 1;
+        decision.budget.max_retained_bytes = 512;
+        let verdict = monitor_retention_pressure(&decision, &thresholds);
+        assert_eq!(verdict.status, PaneMonitorStatus::Violated);
+        assert_eq!(verdict.observed, 200.0);
+        decision.budget.max_retained_bytes = 0;
+        decision.budget.max_retained_units = 0;
+        let verdict = monitor_retention_pressure(&decision, &thresholds);
+        assert_eq!(verdict.status, PaneMonitorStatus::Healthy);
+        assert_eq!(verdict.observed, 0.0);
     }
 
     #[test]

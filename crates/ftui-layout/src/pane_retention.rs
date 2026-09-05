@@ -21,14 +21,14 @@
 //!
 //! `0` on either axis means unbounded on that axis. The policy applies both: it
 //! first installs the unit cap, then prunes the oldest history one unit at a
-//! time until the byte budget is met — always keeping the newest unit, so the
-//! **current state is never discarded** (its state hash is preserved and carried
+//! time until the byte budget is met — protecting the current cursor and its
+//! redo tail, so the **current state is never discarded** (its state hash is carried
 //! in the [`PaneRetentionDecision`]).
 //!
 //! # Determinism & fallback
 //!
 //! Pruning is a pure function of the policy and the current retained state, so it
-//! is deterministic and reproducible. Two fallbacks are explicit and observable:
+//! is deterministic and reproducible. Fallbacks are explicit and observable:
 //!
 //! * **Conservative debugging** ([`PaneRetentionPolicy::conservative`]) disables
 //!   pruning entirely. Over-budget state is *held*, not discarded, and the
@@ -38,13 +38,17 @@
 //!   the timeline's irreducible baseline snapshot), pruning stops at one unit and
 //!   reports [`PaneRetentionOutcome::FloorReached`]: the live state is never
 //!   sacrificed to a byte budget.
+//! * **Blocked pruning** — protected redo history or an unreplayable timeline
+//!   can prevent further pruning. [`PaneRetentionOutcome::PruningBlocked`]
+//!   reports that either budget remains exceeded; it never reports a fit merely
+//!   because some older history was removed.
 //!
 //! Every application returns a [`PaneRetentionDecision`] — a serializable
 //! telemetry record plus a human-readable `log` line — covering the retained-state
 //! totals before/after, units pruned, the preserved current-state hash, and the
 //! outcome.
 
-use crate::pane::PaneInteractionTimeline;
+use crate::pane::{PaneInteractionTimeline, PaneTree};
 use crate::pane_memory::PaneMemoryStrategy;
 use crate::pane_persistent::PaneVersionStore;
 
@@ -135,6 +139,9 @@ pub enum PaneRetentionOutcome {
     /// Pruned to the minimum single retained unit, yet still over the byte
     /// budget — the deterministic floor. The live state is never discarded.
     FloorReached,
+    /// Still over a byte or unit budget because protected history or failed
+    /// baseline replay prevents further pruning. Current state and redo survive.
+    PruningBlocked,
 }
 
 impl PaneRetentionOutcome {
@@ -146,6 +153,7 @@ impl PaneRetentionOutcome {
             Self::PrunedToFit => "pruned_to_fit",
             Self::ConservativeHold => "conservative_hold",
             Self::FloorReached => "floor_reached",
+            Self::PruningBlocked => "pruning_blocked",
         }
     }
 }
@@ -232,9 +240,12 @@ fn classify(
     bytes_after: usize,
     budget: PaneRetentionBudget,
 ) -> PaneRetentionOutcome {
-    let byte_over = budget.max_retained_bytes != 0 && bytes_after > budget.max_retained_bytes;
-    if byte_over && units_after <= 1 {
-        PaneRetentionOutcome::FloorReached
+    if budget.is_exceeded_by(bytes_after, units_after) {
+        if units_after <= 1 {
+            PaneRetentionOutcome::FloorReached
+        } else {
+            PaneRetentionOutcome::PruningBlocked
+        }
     } else if units_pruned > 0 {
         PaneRetentionOutcome::PrunedToFit
     } else {
@@ -254,6 +265,9 @@ pub fn apply_to_version_store(
     let current_state_hash = store.current().state_hash().unwrap_or(0);
 
     if policy.conservative_debug {
+        // The store also enforces its installed cap on subsequent applies.
+        // Holding history must disable that earlier cap, not just skip this call.
+        store.set_max_versions(0);
         let outcome = if policy.budget.is_exceeded_by(bytes_before, units_before) {
             PaneRetentionOutcome::ConservativeHold
         } else {
@@ -271,9 +285,7 @@ pub fn apply_to_version_store(
         );
     }
 
-    if policy.budget.max_retained_units != 0 {
-        store.set_max_versions(policy.budget.max_retained_units);
-    }
+    store.set_max_versions(policy.budget.max_retained_units);
     if policy.budget.max_retained_bytes != 0 {
         while store.version_count() > 1
             && store.retention().estimated_total_retained_bytes > policy.budget.max_retained_bytes
@@ -310,7 +322,7 @@ pub fn apply_to_version_store(
 
 /// Apply a retention policy to a checkpointed [`PaneInteractionTimeline`],
 /// pruning the oldest entries (advancing the replay baseline and re-basing
-/// checkpoints) to fit the budget while preserving the head state.
+/// checkpoints) to fit the budget while preserving the current state and redo.
 ///
 /// Note the timeline's irreducible floor is its baseline snapshot: pruning
 /// entries advances the baseline, so a byte budget below the baseline-snapshot
@@ -329,10 +341,16 @@ pub fn apply_to_timeline(
     // must come from the cursor position — `entries.last()` is the head of the
     // full history, which is NOT the current state after an undo.
     let current_state_hash = if timeline.cursor == 0 {
-        timeline
-            .entries
-            .first()
-            .map_or(0, |entry| entry.before_hash)
+        timeline.entries.first().map_or_else(
+            || {
+                timeline
+                    .baseline
+                    .as_ref()
+                    .and_then(|snapshot| PaneTree::from_snapshot(snapshot.clone()).ok())
+                    .map_or(0, |tree| tree.state_hash())
+            },
+            |entry| entry.before_hash,
+        )
     } else {
         timeline
             .entries
@@ -341,6 +359,8 @@ pub fn apply_to_timeline(
     };
 
     if policy.conservative_debug {
+        // Clear any cap installed by a previous policy so later edits are held too.
+        timeline.set_max_entries(0);
         let outcome = if policy.budget.is_exceeded_by(bytes_before, units_before) {
             PaneRetentionOutcome::ConservativeHold
         } else {
@@ -358,9 +378,7 @@ pub fn apply_to_timeline(
         );
     }
 
-    if policy.budget.max_retained_units != 0 {
-        timeline.set_max_entries(policy.budget.max_retained_units);
-    }
+    timeline.set_max_entries(policy.budget.max_retained_units);
     if policy.budget.max_retained_bytes != 0 {
         while timeline.entries.len() > 1
             && timeline
@@ -524,6 +542,164 @@ mod tests {
         let decision = apply_to_timeline(&mut timeline, &PaneRetentionPolicy::bounded(1, 0));
         assert_eq!(timeline.entries.len(), before);
         assert_eq!(decision.units_pruned, 0);
+        assert_eq!(decision.outcome, PaneRetentionOutcome::PruningBlocked);
+    }
+
+    #[test]
+    fn pinned_history_reports_unmet_budgets_and_keeps_redo() {
+        use crate::pane_monitors::{PaneMonitorThresholds, monitor_retention_pressure};
+
+        for budget in [(0, 2), (1, 0), (1, 2)] {
+            // At cursor zero nothing can be removed; at cursor two some older
+            // history can be removed, but the redo tail still exceeds the cap.
+            for cursor in [0, 2] {
+                let mut store = build_store(6);
+                let mut timeline = build_timeline(6);
+                let mut tree = timeline.replay().expect("valid history");
+                while timeline.cursor > cursor {
+                    assert!(timeline.undo(&mut tree).expect("undo"));
+                    assert!(store.undo());
+                }
+                let current = tree.to_snapshot();
+                let mut expected_redo = timeline.clone();
+                let policy = PaneRetentionPolicy::bounded(budget.0, budget.1);
+                let persistent = apply_to_version_store(&mut store, &policy);
+                let checkpointed = apply_to_timeline(&mut timeline, &policy);
+                for decision in [&persistent, &checkpointed] {
+                    assert_eq!(decision.outcome.as_str(), "pruning_blocked");
+                    assert_eq!(decision.units_pruned, cursor);
+                    assert!(
+                        policy
+                            .budget
+                            .is_exceeded_by(decision.bytes_after, decision.units_after)
+                    );
+                    assert_eq!(decision.current_state_hash, tree.state_hash());
+                    assert!(
+                        monitor_retention_pressure(decision, &PaneMonitorThresholds::default())
+                            .status
+                            .is_violation()
+                    );
+                }
+                assert_eq!(
+                    timeline.replay().expect("current replay").to_snapshot(),
+                    current
+                );
+                assert_eq!(store.current().to_snapshot(), current);
+                while expected_redo.redo(&mut tree).expect("expected redo") {
+                    let expected = tree.to_snapshot();
+                    assert!(timeline.redo(&mut tree).expect("retained redo"));
+                    assert!(store.redo());
+                    assert_eq!(tree.to_snapshot(), expected);
+                    assert_eq!(store.current().to_snapshot(), expected);
+                }
+                assert!(!timeline.redo(&mut tree).expect("end of redo"));
+                assert!(!store.redo());
+
+                // Retention pressure must not disable the next real edit.
+                let before_edit = tree.to_snapshot();
+                let operation = PaneOperation::SplitLeaf {
+                    target: PaneId::MIN,
+                    axis: SplitAxis::Horizontal,
+                    ratio: ratio_of(1, 1),
+                    placement: PanePlacement::ExistingFirst,
+                    new_leaf: PaneLeaf::new("continued editing"),
+                };
+                timeline
+                    .apply_and_record(&mut tree, 100, 100, operation.clone())
+                    .expect("continue editing");
+                store
+                    .apply(&operation)
+                    .expect("continue persistent editing");
+                assert_ne!(tree.to_snapshot(), before_edit);
+                assert_eq!(store.current().to_snapshot(), tree.to_snapshot());
+            }
+        }
+    }
+
+    #[test]
+    fn pinned_history_that_fits_does_not_report_pressure() {
+        use crate::pane_monitors::{
+            PaneMonitorStatus, PaneMonitorThresholds, monitor_retention_pressure,
+        };
+
+        let mut store = build_store(6);
+        let mut timeline = build_timeline(6);
+        let mut tree = timeline.replay().expect("history");
+        while timeline.undo(&mut tree).expect("undo") {
+            assert!(store.undo());
+        }
+        let snapshot = tree.to_snapshot();
+        let history = timeline.clone();
+        let policy = PaneRetentionPolicy::bounded(usize::MAX, 100);
+        let persistent = apply_to_version_store(&mut store, &policy);
+        let checkpointed = apply_to_timeline(&mut timeline, &policy);
+        for decision in [persistent, checkpointed] {
+            assert_eq!(decision.outcome, PaneRetentionOutcome::WithinBudget);
+            assert_eq!(decision.units_pruned, 0);
+            assert_eq!(
+                monitor_retention_pressure(&decision, &PaneMonitorThresholds::default()).status,
+                PaneMonitorStatus::Healthy
+            );
+        }
+        assert_eq!(tree.to_snapshot(), snapshot);
+        assert_eq!(store.current().to_snapshot(), snapshot);
+        assert_eq!(timeline.entries, history.entries);
+        assert_eq!(timeline.cursor, history.cursor);
+    }
+
+    #[test]
+    fn baseline_only_timeline_reports_actual_current_hash() {
+        let tree = PaneTree::singleton("baseline without edits");
+        for policy in [
+            PaneRetentionPolicy::unbounded(),
+            PaneRetentionPolicy::bounded(1, 0),
+        ] {
+            let mut timeline = PaneInteractionTimeline::with_baseline(&tree);
+            let mut expected = timeline.clone();
+            expected.max_entries = 0;
+            let decision = apply_to_timeline(&mut timeline, &policy);
+            assert_eq!(decision.current_state_hash, tree.state_hash());
+            assert_eq!(decision.units_pruned, 0);
+            assert_eq!(timeline, expected);
+        }
+    }
+
+    #[test]
+    fn relaxed_policy_clears_previous_caps_for_subsequent_edits() {
+        for initial in [
+            PaneRetentionPolicy::bounded(0, 2),
+            PaneRetentionPolicy::bounded(1, 0),
+        ] {
+            for relaxed in [
+                PaneRetentionPolicy::unbounded(),
+                PaneRetentionPolicy::bounded(1, 1).conservative(),
+            ] {
+                let mut store = build_store(6);
+                let mut timeline = build_timeline(6);
+                let mut tree = timeline.replay().expect("valid history");
+                apply_to_version_store(&mut store, &initial);
+                apply_to_timeline(&mut timeline, &initial);
+                let versions = store.version_count();
+                let entries = timeline.entries.len();
+                let before = tree.to_snapshot();
+                assert_eq!(apply_to_version_store(&mut store, &relaxed).units_pruned, 0);
+                assert_eq!(apply_to_timeline(&mut timeline, &relaxed).units_pruned, 0);
+                for id in 20..23 {
+                    let operation = PaneOperation::SetSplitRatio {
+                        split: PaneId::new(4).expect("split id"),
+                        ratio: ratio_of(id as u32, 1),
+                    };
+                    timeline
+                        .apply_and_record(&mut tree, id, id, operation.clone())
+                        .expect("continued edit");
+                    store.apply(&operation).expect("persistent continued edit");
+                    assert_eq!(store.current().to_snapshot(), tree.to_snapshot());
+                }
+                assert_ne!(tree.to_snapshot(), before);
+                assert_eq!(store.version_count(), versions + 3);
+                assert_eq!(timeline.entries.len(), entries + 3);
+            }
+        }
     }
 
     fn build_timeline(storm: u32) -> PaneInteractionTimeline {
