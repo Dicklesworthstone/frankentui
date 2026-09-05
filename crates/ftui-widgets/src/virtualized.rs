@@ -350,14 +350,14 @@ impl<T> Virtualized<T> {
                 // O(log n) using Fenwick tree
                 let len = self.len();
                 let start = self.scroll_offset.min(len.saturating_sub(1));
-                let total = tracker.total_height();
-                let suffix = total.saturating_sub(tracker.offset_of_item(start));
-                if suffix < u32::from(viewport_height) {
+                let total = tracker.total_height_exact();
+                let suffix = total.saturating_sub(tracker.offset_of_item_exact(start));
+                if suffix < u64::from(viewport_height) {
                     // Same bottom anchoring as the Variable arm, in O(log n):
                     // when the last screenful is shown, its first (possibly
                     // partially visible) item contains offset total-viewport.
-                    let anchor = total.saturating_sub(u32::from(viewport_height));
-                    len.saturating_sub(tracker.find_item_at_offset(anchor))
+                    let anchor = total.saturating_sub(u64::from(viewport_height));
+                    len.saturating_sub(tracker.find_item_at_offset_exact(anchor))
                         .max(1)
                 } else {
                     tracker.visible_count(start, viewport_height).max(1)
@@ -689,7 +689,6 @@ impl HeightCache {
 // VariableHeightsFenwick - O(log n) scroll-to-index mapping
 // ============================================================================
 
-use crate::fenwick::FenwickTree;
 use crate::height_predictor::{HeightPredictor, PredictorConfig};
 
 /// Variable height tracker using Fenwick tree for O(log n) prefix sum queries.
@@ -708,13 +707,14 @@ use crate::height_predictor::{HeightPredictor, PredictorConfig};
 ///
 /// # Invariants
 ///
-/// 1. `tree.prefix(i)` == sum of heights [0..=i]
-/// 2. `find_item_at_offset(offset)` returns largest i where prefix(i-1) < offset
-/// 3. Heights are u32 internally (u16 input widened for large lists)
+/// 1. Internal prefix sums are exact u64 sums of u16 item heights.
+/// 2. Inverse lookup searches these monotone sums without allocating.
+/// 3. Public u32 offsets and totals saturate at u32::MAX; internal layout
+///    continues to use exact offsets beyond that boundary.
 #[derive(Debug, Clone)]
 pub struct VariableHeightsFenwick {
-    /// Fenwick tree storing item heights.
-    tree: FenwickTree,
+    /// One-indexed Fenwick tree storing exact aggregate heights.
+    tree: Vec<u64>,
     /// Default height for items not yet measured.
     default_height: u16,
     /// Number of items tracked.
@@ -740,13 +740,7 @@ impl VariableHeightsFenwick {
     /// Create a new height tracker with given default height and initial capacity.
     #[must_use]
     pub fn new(default_height: u16, capacity: usize) -> Self {
-        let tree = if capacity > 0 {
-            // Initialize with default heights
-            let heights: Vec<u32> = vec![u32::from(default_height); capacity];
-            FenwickTree::from_values(&heights)
-        } else {
-            FenwickTree::new(0)
-        };
+        let tree = Self::build_height_tree(std::iter::repeat_n(default_height, capacity));
         Self {
             tree,
             default_height,
@@ -761,9 +755,8 @@ impl VariableHeightsFenwick {
     /// Create from a slice of heights (all of them count as measured).
     #[must_use]
     pub fn from_heights(heights: &[u16], default_height: u16) -> Self {
-        let heights_u32: Vec<u32> = heights.iter().map(|&h| u32::from(h)).collect();
         Self {
-            tree: FenwickTree::from_values(&heights_u32),
+            tree: Self::build_height_tree(heights.iter().copied()),
             default_height,
             len: heights.len(),
             measured: vec![true; heights.len()],
@@ -771,6 +764,76 @@ impl VariableHeightsFenwick {
             predictor: None,
             fill_height: default_height,
         }
+    }
+
+    /// Build in O(n), bounding the item count so every possible height update
+    /// also fits in u64. This limit exceeds any practically allocatable list.
+    fn build_height_tree(heights: impl ExactSizeIterator<Item = u16>) -> Vec<u64> {
+        let len = heights.len();
+        assert!(
+            u64::try_from(len).is_ok_and(|n| n <= u64::MAX / u64::from(u16::MAX)),
+            "too many items for exact height aggregates"
+        );
+        let mut tree = vec![0; len + 1];
+        for (slot, height) in tree[1..].iter_mut().zip(heights) {
+            *slot = u64::from(height);
+        }
+        for idx in 1..=len {
+            let parent = idx + idx.isolate_lowest_one();
+            if parent <= len {
+                tree[parent] += tree[idx];
+            }
+        }
+        tree
+    }
+
+    fn set_tracked_height(&mut self, idx: usize, height: u16) {
+        let old = self.get(idx);
+        let mut node = idx + 1;
+        while node <= self.len {
+            if height >= old {
+                self.tree[node] += u64::from(height - old);
+            } else {
+                self.tree[node] -= u64::from(old - height);
+            }
+            node += node.isolate_lowest_one();
+        }
+    }
+
+    fn offset_of_item_exact(&self, idx: usize) -> u64 {
+        let mut node = idx.min(self.len);
+        let mut sum = 0;
+        while node > 0 {
+            sum += self.tree[node];
+            node &= node - 1;
+        }
+        sum
+    }
+
+    fn total_height_exact(&self) -> u64 {
+        self.offset_of_item_exact(self.len)
+    }
+
+    fn find_item_at_offset_exact(&self, offset: u64) -> usize {
+        // Preserve the origin convention even when leading items have height 0.
+        if self.len == 0 || offset == 0 {
+            return 0;
+        }
+        let mut idx = 0;
+        let mut sum = 0;
+        let mut step = 1usize << (usize::BITS - self.len.leading_zeros() - 1);
+        while step > 0 {
+            if step <= self.len - idx {
+                let next = idx + step;
+                let prefix = sum + self.tree[next];
+                if prefix <= offset {
+                    idx = next;
+                    sum = prefix;
+                }
+            }
+            step >>= 1;
+        }
+        idx
     }
 
     /// Attach a Bayesian height predictor ([`HeightPredictor`]).
@@ -819,11 +882,10 @@ impl VariableHeightsFenwick {
     /// Rewrite every unmeasured slot with the current fill height.
     /// Returns the number of slots rewritten.
     fn refill_unmeasured(&mut self) -> usize {
-        let fill = u32::from(self.fill_height);
         let mut rewritten = 0;
         for idx in 0..self.len {
             if !self.measured[idx] {
-                self.tree.set(idx, fill);
+                self.set_tracked_height(idx, self.fill_height);
                 rewritten += 1;
             }
         }
@@ -857,8 +919,7 @@ impl VariableHeightsFenwick {
         if idx >= self.len {
             return self.fill_height;
         }
-        // Fenwick get returns the individual value at idx
-        self.tree.get(idx).min(u32::from(u16::MAX)) as u16
+        (self.offset_of_item_exact(idx + 1) - self.offset_of_item_exact(idx)) as u16
     }
 
     /// Set (measure) the height of a specific item. O(log n), plus a refill
@@ -867,9 +928,9 @@ impl VariableHeightsFenwick {
     pub fn set(&mut self, idx: usize, height: u16) {
         if idx >= self.len {
             // Need to resize
-            self.resize(idx + 1);
+            self.resize(idx.checked_add(1).expect("height index exceeds usize"));
         }
-        self.tree.set(idx, u32::from(height));
+        self.set_tracked_height(idx, height);
         if !self.measured[idx] {
             self.measured[idx] = true;
             self.unmeasured -= 1;
@@ -886,18 +947,11 @@ impl VariableHeightsFenwick {
 
     /// Get the y-offset (in pixels/rows) of an item. O(log n).
     ///
-    /// Returns the sum of heights of all items before `idx`.
+    /// Returns the sum of heights of all items before `idx`, saturated at
+    /// `u32::MAX`. Indices beyond the tracked length return the total height.
     #[must_use]
     pub fn offset_of_item(&self, idx: usize) -> u32 {
-        if idx == 0 || self.len == 0 {
-            return 0;
-        }
-        let clamped = idx.min(self.len);
-        if clamped > 0 {
-            self.tree.prefix(clamped - 1)
-        } else {
-            0
-        }
+        self.offset_of_item_exact(idx).min(u64::from(u32::MAX)) as u32
     }
 
     /// Find the item index at a given scroll offset. O(log n).
@@ -905,34 +959,13 @@ impl VariableHeightsFenwick {
     /// Returns the index of the item that occupies the given offset.
     /// If offset is beyond all items, returns `self.len`.
     ///
-    /// Item i occupies offsets [offset_of_item(i), offset_of_item(i+1)).
+    /// Item i occupies the interval between its exact prefix sums, including
+    /// when the total exceeds `u32::MAX`. Offset zero returns item zero even
+    /// if leading items have zero height. Saturated public offsets above the
+    /// u32 boundary cannot be used to address those later items.
     #[must_use]
     pub fn find_item_at_offset(&self, offset: u32) -> usize {
-        if self.len == 0 {
-            return 0;
-        }
-        if offset == 0 {
-            return 0;
-        }
-        // find_prefix returns largest i where prefix(i) <= offset
-        // prefix(i) = sum of heights [0..=i] = y-coordinate just past item i
-        // If prefix(i) <= offset, then offset is at or past the end of item i,
-        // so offset is in item i+1.
-        //
-        // We use `offset` directly (not `offset - 1`). When `offset == prefix(i)` exactly,
-        // `find_prefix` returns `i`, and we correctly map that to item `i+1` below.
-        match self.tree.find_prefix(offset) {
-            Some(i) => {
-                // prefix(i) <= offset
-                // Item i spans [prefix(i-1), prefix(i)), so offset >= prefix(i)
-                // means offset is in item i+1 or beyond
-                (i + 1).min(self.len)
-            }
-            None => {
-                // offset < prefix(0), so offset is within item 0
-                0
-            }
-        }
+        self.find_item_at_offset_exact(u64::from(offset))
     }
 
     /// Count how many items are visible within a viewport starting at `start_idx`. O(log n).
@@ -948,11 +981,11 @@ impl VariableHeightsFenwick {
             return 0;
         }
         let start = start_idx.min(self.len);
-        let start_offset = self.offset_of_item(start);
-        let end_offset = start_offset.saturating_add(u32::from(viewport_height));
+        let start_offset = self.offset_of_item_exact(start);
+        let end_offset = start_offset.saturating_add(u64::from(viewport_height));
 
         // Find last item that fits
-        let end_idx = self.find_item_at_offset(end_offset);
+        let end_idx = self.find_item_at_offset_exact(end_offset);
 
         // Count items from start to end (including partially visible trailing item)
         if end_idx > start {
@@ -962,7 +995,7 @@ impl VariableHeightsFenwick {
                 return self.len.saturating_sub(start);
             }
             // Check if end_idx item is visible (partially or fully)
-            let end_item_start = self.offset_of_item(end_idx);
+            let end_item_start = self.offset_of_item_exact(end_idx);
             if end_offset > end_item_start {
                 end_idx - start + 1
             } else {
@@ -978,10 +1011,10 @@ impl VariableHeightsFenwick {
         }
     }
 
-    /// Get total height of all items. O(log n).
+    /// Get total height of all items, saturated at `u32::MAX`. O(log n).
     #[must_use]
     pub fn total_height(&self) -> u32 {
-        self.tree.total()
+        self.total_height_exact().min(u64::from(u32::MAX)) as u32
     }
 
     /// Resize the tracker to accommodate `new_len` items.
@@ -992,11 +1025,8 @@ impl VariableHeightsFenwick {
         if new_len == self.len {
             return;
         }
-        self.tree.resize(new_len);
+        self.tree = Self::build_height_tree((0..new_len).map(|idx| self.get(idx)));
         if new_len > self.len {
-            for i in self.len..new_len {
-                self.tree.set(i, u32::from(self.fill_height));
-            }
             self.unmeasured += new_len - self.len;
             self.measured.resize(new_len, false);
         } else {
@@ -1032,7 +1062,7 @@ impl VariableHeightsFenwick {
 
     /// Clear all height data (an attached predictor keeps what it learned).
     pub fn clear(&mut self) {
-        self.tree = FenwickTree::new(0);
+        self.tree = vec![0];
         self.len = 0;
         self.measured.clear();
         self.unmeasured = 0;
@@ -1041,8 +1071,7 @@ impl VariableHeightsFenwick {
     /// Rebuild from a fresh set of heights; all of them count as measured and
     /// train an attached predictor.
     pub fn rebuild(&mut self, heights: &[u16]) {
-        let heights_u32: Vec<u32> = heights.iter().map(|&h| u32::from(h)).collect();
-        self.tree = FenwickTree::from_values(&heights_u32);
+        self.tree = Self::build_height_tree(heights.iter().copied());
         self.len = heights.len();
         self.measured = vec![true; heights.len()];
         self.unmeasured = 0;
@@ -1717,12 +1746,44 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
 /// First item that starts at or after `offset` (the item containing
 /// `offset` when it starts exactly there, the next one otherwise), clamped
 /// to the last item.
-fn first_item_from_offset(heights: &VariableHeightsFenwick, offset: u32) -> usize {
-    let mut idx = heights.find_item_at_offset(offset);
-    if heights.offset_of_item(idx) < offset {
+fn first_item_from_offset(heights: &VariableHeightsFenwick, offset: u64) -> usize {
+    let mut idx = heights.find_item_at_offset_exact(offset);
+    if heights.offset_of_item_exact(idx) < offset {
         idx += 1;
     }
     idx.min(heights.len().saturating_sub(1))
+}
+
+/// Preserve exact row metrics when they fit, otherwise scale both thumb size
+/// and scroll progress into the target's representable range. `capacity` is
+/// usize::MAX in production and permits exercising the 32-bit boundary on a
+/// 64-bit test host. Independent saturation of position and total loses the
+/// scroll ratio and can put a halfway-scrolled list's thumb at the bottom.
+fn scrollbar_state_for_rows(
+    total: u64,
+    position: u64,
+    viewport: u16,
+    capacity: usize,
+) -> ScrollbarState {
+    let limit = capacity as u64;
+    if total <= limit {
+        return ScrollbarState::new(
+            total as usize,
+            position.min(total) as usize,
+            viewport.into(),
+        );
+    }
+    let scaled_viewport = (u128::from(viewport) * u128::from(limit))
+        .div_ceil(u128::from(total))
+        .min(u128::from(limit)) as usize;
+    let max_position = total.saturating_sub(u64::from(viewport));
+    let scaled_position = if max_position == 0 {
+        0
+    } else {
+        (u128::from(position.min(max_position)) * (capacity - scaled_viewport) as u128
+            / u128::from(max_position)) as usize
+    };
+    ScrollbarState::new(capacity, scaled_position, scaled_viewport)
 }
 
 impl<T: RenderItem> VirtualizedList<'_, T> {
@@ -1773,19 +1834,19 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
                 state.scroll_offset = selected;
             } else {
                 measure_screenful(heights, state.scroll_offset);
-                let top = heights.offset_of_item(state.scroll_offset);
-                let bottom = heights.offset_of_item(selected) + u32::from(heights.get(selected));
-                if bottom.saturating_sub(top) > u32::from(viewport) {
-                    let anchor = bottom.saturating_sub(u32::from(viewport));
+                let top = heights.offset_of_item_exact(state.scroll_offset);
+                let bottom = heights.offset_of_item_exact(selected + 1);
+                if bottom.saturating_sub(top) > u64::from(viewport) {
+                    let anchor = bottom.saturating_sub(u64::from(viewport));
                     state.scroll_offset = first_item_from_offset(heights, anchor).min(selected);
                 }
             }
         }
 
         // Clamp so the last screenful is as full as item alignment allows.
-        let total_height = heights.total_height();
-        let max_start = if total_height > u32::from(viewport) {
-            first_item_from_offset(heights, total_height - u32::from(viewport))
+        let total_height = heights.total_height_exact();
+        let max_start = if total_height > u64::from(viewport) {
+            first_item_from_offset(heights, total_height - u64::from(viewport))
         } else {
             0
         };
@@ -1794,8 +1855,8 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
         let visible = measure_screenful(heights, state.scroll_offset).min(total_items);
         state.visible_count = visible;
 
-        let total_height = heights.total_height();
-        let needs_scrollbar = self.show_scrollbar && total_height > u32::from(viewport);
+        let total_height = heights.total_height_exact();
+        let needs_scrollbar = self.show_scrollbar && total_height > u64::from(viewport);
         let content_width = if needs_scrollbar {
             area.width.saturating_sub(1)
         } else {
@@ -1826,11 +1887,12 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
 
         if needs_scrollbar {
             let scrollbar_area = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
-            let position =
-                usize::try_from(heights.offset_of_item(state.scroll_offset)).unwrap_or(usize::MAX);
-            let content_length = usize::try_from(total_height).unwrap_or(usize::MAX);
-            let mut scrollbar_state =
-                ScrollbarState::new(content_length, position, usize::from(viewport));
+            let mut scrollbar_state = scrollbar_state_for_rows(
+                total_height,
+                heights.offset_of_item_exact(state.scroll_offset),
+                viewport,
+                usize::MAX,
+            );
             scrollbar_state.drag_anchor = state.scrollbar_drag_anchor;
             let mut scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
             if let Some(id) = self.hit_id {
@@ -2772,6 +2834,184 @@ mod tests {
         assert_eq!(tracker.find_item_at_offset(11), 4);
         // Offset 15 should be end (beyond all items)
         assert_eq!(tracker.find_item_at_offset(15), 5);
+    }
+
+    #[test]
+    fn fenwick_large_height_totals_do_not_wrap() {
+        let heights = vec![u16::MAX; 131_072];
+        let tracker = VariableHeightsFenwick::from_heights(&heights, 1);
+        let offset = 4_294_836_224_u32;
+        assert_eq!(
+            tracker.find_item_at_offset(offset),
+            (u64::from(offset) / u64::from(u16::MAX)) as usize,
+            "a wrapped root aggregate must not skip the entire list"
+        );
+        assert_eq!(tracker.total_height(), u32::MAX);
+        assert_eq!(tracker.offset_of_item(131_072), u32::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "height index exceeds usize")]
+    fn fenwick_rejects_unrepresentable_index() {
+        VariableHeightsFenwick::default().set(usize::MAX, 1);
+    }
+
+    #[test]
+    fn fenwick_large_updates_and_resize_match_u64_oracle() {
+        fn check(tracker: &VariableHeightsFenwick, heights: &[u16]) {
+            let mut prefixes = Vec::with_capacity(heights.len() + 1);
+            prefixes.push(0u64);
+            for &height in heights {
+                prefixes.push(prefixes.last().copied().unwrap() + u64::from(height));
+            }
+            let total = prefixes.last().copied().unwrap();
+            assert_eq!(tracker.len(), heights.len());
+            assert_eq!(tracker.total_height_exact(), total);
+            assert_eq!(
+                tracker.total_height(),
+                total.min(u64::from(u32::MAX)) as u32
+            );
+            let mut queries = vec![0, 1, u64::from(u32::MAX) - 1, u64::from(u32::MAX), total];
+            for idx in (0..=heights.len()).step_by(1_024).chain([heights.len()]) {
+                assert_eq!(tracker.offset_of_item_exact(idx), prefixes[idx]);
+                assert_eq!(
+                    tracker.offset_of_item(idx),
+                    prefixes[idx].min(u64::from(u32::MAX)) as u32
+                );
+                queries.extend([
+                    prefixes[idx].saturating_sub(1),
+                    prefixes[idx],
+                    prefixes[idx] + 1,
+                ]);
+            }
+            for offset in queries {
+                let expected = if offset == 0 {
+                    0
+                } else {
+                    prefixes[1..].partition_point(|&prefix| prefix <= offset)
+                };
+                assert_eq!(tracker.find_item_at_offset_exact(offset), expected);
+                if let Ok(offset) = u32::try_from(offset) {
+                    assert_eq!(tracker.find_item_at_offset(offset), expected);
+                }
+            }
+        }
+
+        // The middle length totals exactly u32::MAX; neighboring lengths
+        // exercise both sides of the public saturation boundary.
+        for len in [65_536, 65_537, 65_538, 131_072] {
+            let mut heights = vec![u16::MAX; len];
+            let mut tracker = VariableHeightsFenwick::new(u16::MAX, len);
+            check(&tracker, &heights);
+            for idx in [0, 1, 32_768, 65_535, len - 1] {
+                tracker.set(idx, 0);
+                heights[idx] = 0;
+                assert_eq!(tracker.get(idx), 0);
+            }
+            check(&tracker, &heights);
+            tracker.set(0, u16::MAX);
+            heights[0] = u16::MAX;
+            tracker.resize(65_536);
+            heights.truncate(65_536);
+            check(&tracker, &heights);
+            tracker.resize(65_540);
+            heights.resize(65_540, u16::MAX);
+            check(&tracker, &heights);
+        }
+
+        // Deterministic varied heights and repeated signed updates exercise
+        // aggregate values that uniform-height arithmetic alone cannot cover.
+        let mut seed = 0xa076_1d64_78bd_642fu64;
+        let mut heights: Vec<u16> = (0..131_072)
+            .map(|_| {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                32_768 + ((seed >> 48) as u16 / 2)
+            })
+            .collect();
+        let mut tracker = VariableHeightsFenwick::from_heights(&heights, 1);
+        for idx in (0..heights.len()).step_by(997) {
+            heights[idx] = (idx % 65_536) as u16;
+            tracker.set(idx, heights[idx]);
+            assert_eq!(tracker.get(idx), heights[idx]);
+        }
+        check(&tracker, &heights);
+        tracker.drop_front(3);
+        check(&tracker, &heights[3..]);
+        heights.fill(u16::MAX);
+        tracker.rebuild(&heights);
+        check(&tracker, &heights);
+        tracker.clear();
+        check(&tracker, &[]);
+        tracker.resize(4);
+        check(&tracker, &[1; 4]);
+    }
+
+    #[test]
+    fn fenwick_large_visible_range_keeps_tail_reachable() {
+        let len = 65_548;
+        let mut virt: Virtualized<()> =
+            Virtualized::external(len, 10).with_variable_heights_fenwick(u16::MAX, len);
+        for idx in 65_538..len {
+            virt.observe_height(idx, 1);
+        }
+        virt.scroll_to_bottom();
+        assert_eq!(virt.visible_range(5), len - 5..len);
+        virt.scroll_to(len - 8);
+        assert_eq!(virt.visible_range(5), len - 8..len - 3);
+    }
+
+    #[test]
+    fn fenwick_large_scrollbar_renders_proportionally_at_32_bit_capacity() {
+        fn thumb_rows(mut state: ScrollbarState) -> Vec<u16> {
+            let scrollbar =
+                Scrollbar::new(ScrollbarOrientation::VerticalRight).symbols(".", "T", None, None);
+            let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+            let mut frame = Frame::new(1, 21, &mut pool);
+            scrollbar.render(Rect::new(0, 0, 1, 21), &mut frame, &mut state);
+            (0..21)
+                .filter(|&y| frame.buffer.get(0, y).unwrap().content.as_char() == Some('T'))
+                .collect()
+        }
+
+        // Execute the production scaling helper and real scrollbar renderer
+        // with a simulated 32-bit capacity; this is not a wasm execution.
+        let capacity = u32::MAX as usize;
+        let total = 131_072 * u64::from(u16::MAX);
+        let viewport = 20;
+        let max_position = total - u64::from(viewport);
+        for (position, expected_row) in [
+            (0, 0),
+            (max_position / 4, 5),
+            (max_position / 2, 10),
+            (max_position / 4 * 3, 15),
+            (max_position, 20),
+            (total, 20),
+        ] {
+            let scaled = scrollbar_state_for_rows(total, position, viewport, capacity);
+            assert_eq!(scaled.content_length, capacity);
+            assert!(scaled.viewport_length > 0);
+            assert_eq!(thumb_rows(scaled), vec![expected_row]);
+        }
+
+        let position = u64::from(u32::MAX) + u64::from(u16::MAX);
+        let scaled = scrollbar_state_for_rows(total, position, viewport, capacity);
+        assert_eq!(thumb_rows(scaled), vec![10]);
+        // The former independent saturation gives the wrong actual geometry.
+        let saturated = ScrollbarState::new(capacity, capacity, viewport.into());
+        assert_eq!(thumb_rows(saturated), vec![20]);
+
+        for (total, position, viewport) in [(0, 0, 0), (100, 50, 20), (u64::from(u32::MAX), 7, 5)] {
+            let exact = scrollbar_state_for_rows(total, position, viewport, capacity);
+            assert_eq!(exact.content_length, total as usize);
+            assert_eq!(exact.position, position as usize);
+            assert_eq!(exact.viewport_length, usize::from(viewport));
+        }
+        if usize::BITS > 32 {
+            let exact = scrollbar_state_for_rows(total, position, viewport, usize::MAX);
+            assert_eq!(exact.content_length as u64, total);
+            assert_eq!(exact.position as u64, position);
+            assert_eq!(exact.viewport_length, usize::from(viewport));
+        }
     }
 
     #[test]
@@ -4114,6 +4354,65 @@ mod tests {
             "the last column belongs to the scrollbar"
         );
         assert_eq!(column(&frame), "12233");
+    }
+
+    #[test]
+    fn fenwick_large_list_renders_selection_and_scroll_beyond_u32() {
+        #[derive(Clone, Copy)]
+        struct Row(u16, char);
+        impl RenderItem for Row {
+            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, _skip_rows: u16) {
+                for y in area.y..area.bottom() {
+                    frame.buffer.set(area.x, y, Cell::from_char(self.1));
+                }
+            }
+
+            fn height(&self) -> u16 {
+                self.0
+            }
+        }
+
+        let mut items = vec![Row(u16::MAX, 'X'); 65_538];
+        items.extend([Row(1, '.'); 9]);
+        items.push(Row(1, 'Z'));
+        let list = VirtualizedList::new(&items).variable_heights();
+        let mut state = VirtualizedListState::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        {
+            let mut frame = Frame::new(4, 5, &mut pool);
+            StatefulWidget::render(&list, Rect::new(0, 0, 4, 5), &mut frame, &mut state);
+            assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('X'));
+        }
+        // Populate off-screen measurements through the real list-state API.
+        for (idx, row) in items.iter().enumerate() {
+            state.measure(idx, row.height());
+        }
+        assert_eq!(state.heights().unwrap().total_height(), u32::MAX);
+        state.select(Some(items.len() - 1));
+        {
+            let mut frame = Frame::new(4, 5, &mut pool);
+            StatefulWidget::render(&list, Rect::new(0, 0, 4, 5), &mut frame, &mut state);
+            assert_eq!(state.scroll_offset(), items.len() - 5);
+            assert_eq!(state.visible_count(), 5);
+            let column: String = (0..5)
+                .map(|y| frame.buffer.get(0, y).unwrap().content.as_char().unwrap())
+                .collect();
+            assert_eq!(column, "....Z");
+            assert_ne!(frame.buffer.get(3, 4).unwrap().content.as_char(), Some('Z'));
+        }
+        state.select(None);
+        state.scroll_to_top();
+        {
+            let mut frame = Frame::new(4, 5, &mut pool);
+            StatefulWidget::render(&list, Rect::new(0, 0, 4, 5), &mut frame, &mut state);
+            assert_eq!(state.scroll_offset(), 0);
+            assert_eq!(frame.buffer.get(0, 4).unwrap().content.as_char(), Some('X'));
+        }
+        state.scroll_to_bottom(items.len());
+        let mut frame = Frame::new(4, 5, &mut pool);
+        StatefulWidget::render(&list, Rect::new(0, 0, 4, 5), &mut frame, &mut state);
+        assert_eq!(state.scroll_offset(), items.len() - 5);
+        assert_eq!(frame.buffer.get(0, 4).unwrap().content.as_char(), Some('Z'));
     }
 
     // ── VirtualizedStorage Debug/Clone ───────────────────────────────────
