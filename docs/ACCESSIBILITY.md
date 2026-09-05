@@ -99,6 +99,7 @@ What is **not** done:
 | Widget | Role | Key properties exposed |
 |---|---|---|
 | `TextInput` | TextInput | value/placeholder, focus, mask state |
+| `TextArea` | TextInput | full multiline value or placeholder, focus, multiline description |
 | `List` | List + ListItem children | block title, item text, item count |
 | `Table` | Table | block title, row/column counts |
 | `Tabs` | Group + Tab children | tab titles, selected index |

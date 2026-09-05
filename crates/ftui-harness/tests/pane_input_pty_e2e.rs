@@ -71,6 +71,7 @@ const KEY_ESC: &[u8] = b"\x1b";
 // vertical splitter boundary at 0-based column 40 => SGR column 41; SGR row 3.
 const MOUSE_DOWN_ON_SPLITTER: &[u8] = b"\x1b[<0;41;3M";
 const MOUSE_DRAG_SPLITTER_RIGHT: &[u8] = b"\x1b[<32;61;3M";
+const STALE_DRAG_AND_RELEASE: &[u8] = b"\x1b[<32;71;3M\x1b[<0;71;3m";
 const SCROLL_UP_ON_SPLITTER: &[u8] = b"\x1b[<64;41;3M";
 const SCROLL_DOWN_ON_SPLITTER: &[u8] = b"\x1b[<65;41;3M";
 
@@ -103,6 +104,8 @@ struct PaneResult {
     first_leaf: String,
     canceled: bool,
     cancel_preserved_state: bool,
+    post_cancel_events: u32,
+    post_cancel_preserved_state: bool,
     dragging_seen: bool,
     termios_restored: bool,
     recovered_bytes: usize,
@@ -134,6 +137,8 @@ fn parse_marker(output: &[u8]) -> PaneResult {
     let mut first_leaf = None;
     let mut canceled = None;
     let mut cancel_preserved_state = None;
+    let mut post_cancel_events = None;
+    let mut post_cancel_preserved_state = None;
     let mut dragging_seen = None;
     let mut termios_restored = None;
     let mut recovered_bytes = None;
@@ -155,6 +160,8 @@ fn parse_marker(output: &[u8]) -> PaneResult {
             "first_leaf" => first_leaf = Some(value.to_string()),
             "canceled" => canceled = Some(value == "true"),
             "cancel_preserved_state" => cancel_preserved_state = Some(value == "true"),
+            "post_cancel_events" => post_cancel_events = value.parse().ok(),
+            "post_cancel_preserved_state" => post_cancel_preserved_state = Some(value == "true"),
             "dragging_seen" => dragging_seen = Some(value == "true"),
             "termios_restored" => termios_restored = Some(value == "true"),
             "recovered_bytes" => recovered_bytes = value.parse().ok(),
@@ -176,6 +183,9 @@ fn parse_marker(output: &[u8]) -> PaneResult {
         first_leaf: first_leaf.expect("first_leaf field"),
         canceled: canceled.expect("canceled field"),
         cancel_preserved_state: cancel_preserved_state.expect("cancel_preserved_state field"),
+        post_cancel_events: post_cancel_events.expect("post_cancel_events field"),
+        post_cancel_preserved_state: post_cancel_preserved_state
+            .expect("post_cancel_preserved_state field"),
         dragging_seen: dragging_seen.expect("dragging_seen field"),
         termios_restored: termios_restored.expect("termios_restored field"),
         recovered_bytes: recovered_bytes.expect("recovered_bytes field"),
@@ -309,6 +319,20 @@ fn run(scn: &Scenario) -> Vec<u8> {
             started.elapsed().as_micros()
         );
         session.send_input(part).expect("send input chunk");
+    }
+
+    if scn.parts.last() == Some(&KEY_ESC) {
+        session
+            .read_until(b"cancel-ready", Duration::from_secs(5))
+            .expect("actual post-cancel frame must render before stale input");
+        eprintln!(
+            "PANE_SEND mode={} post_cancel=true elapsed_us={} bytes={STALE_DRAG_AND_RELEASE:02x?}",
+            scn.mode,
+            started.elapsed().as_micros()
+        );
+        session
+            .send_input(STALE_DRAG_AND_RELEASE)
+            .expect("stale drag and release after cancel");
     }
 
     let status = session
@@ -510,6 +534,14 @@ fn pty_escape_cancels_armed_interaction_cleanly() {
                 "[{mode}] cancel changed tree/history/focus or kept pointer active"
             );
             assert!(!result.dragging_seen, "armed test unexpectedly dragged");
+            assert_eq!(
+                result.post_cancel_events, 2,
+                "stale drag and release must reach the runtime"
+            );
+            assert!(
+                result.post_cancel_preserved_state,
+                "stale input changed canceled state"
+            );
             assert!(
                 result.termios_restored,
                 "[{mode}] kernel termios not restored"
@@ -565,6 +597,14 @@ fn pty_escape_cancels_dragging_without_committing_or_mutating_again() {
             assert!(
                 result.cancel_preserved_state && result.tree_valid,
                 "cancel changed tree/history/focus or retained pointer: {result:?}"
+            );
+            assert_eq!(
+                result.post_cancel_events, 2,
+                "stale drag and release must reach the runtime"
+            );
+            assert!(
+                result.post_cancel_preserved_state,
+                "stale input changed canceled state"
             );
             assert!(
                 result.termios_restored,

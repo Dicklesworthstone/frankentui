@@ -1337,6 +1337,10 @@ impl Widget for TextArea {
             return;
         }
 
+        if frame.a11y_enabled() {
+            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
+        }
+
         self.last_viewport_height.set(area.height as usize);
 
         let deg = frame.buffer.degradation;
@@ -1649,6 +1653,31 @@ impl Widget for TextArea {
     }
 }
 
+impl ftui_a11y::Accessible for TextArea {
+    fn accessibility_nodes(&self, area: Rect) -> Vec<ftui_a11y::node::A11yNodeInfo> {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState};
+
+        if area.is_empty() {
+            return Vec::new();
+        }
+        let text = self.text();
+        let name = if text.is_empty() {
+            self.placeholder.clone()
+        } else {
+            text
+        };
+        vec![
+            A11yNodeInfo::new(crate::a11y_node_id(area), A11yRole::TextInput, area)
+                .with_name(name)
+                .with_description("multi-line text input")
+                .with_state(A11yState {
+                    focused: self.focused,
+                    ..A11yState::default()
+                }),
+        ]
+    }
+}
+
 impl StatefulWidget for TextArea {
     type State = TextAreaState;
 
@@ -1681,6 +1710,63 @@ mod tests {
         assert!(ta.is_empty());
         assert_eq!(ta.text(), "");
         assert_eq!(ta.line_count(), 1); // empty rope has 1 line
+    }
+
+    #[test]
+    fn accessibility_preserves_multiline_content_and_focus() {
+        use ftui_a11y::Accessible;
+        use ftui_a11y::node::A11yRole;
+
+        let area = Rect::new(3, 4, 20, 2);
+        let mut textarea = TextArea::new().with_text("first é\nsecond 日");
+        let initial = textarea.accessibility_nodes(area);
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].role, A11yRole::TextInput);
+        assert_eq!(initial[0].name.as_deref(), Some("first é\nsecond 日"));
+        assert!(!initial[0].state.focused);
+        textarea.set_focused(true);
+        let focused = textarea.accessibility_nodes(area);
+        assert!(focused[0].state.focused);
+        assert_eq!(focused[0].id, initial[0].id);
+        assert_eq!(focused[0].bounds, area);
+        assert!(
+            textarea
+                .accessibility_nodes(Rect::new(0, 0, 0, 2))
+                .is_empty()
+        );
+        let empty = TextArea::new().with_placeholder("Write a message");
+        assert_eq!(
+            empty.accessibility_nodes(area)[0].name.as_deref(),
+            Some("Write a message")
+        );
+    }
+
+    #[test]
+    fn render_collects_textarea_accessibility_only_when_enabled() {
+        use ftui_a11y::tree::A11yTreeBuilder;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let textarea = TextArea::new()
+            .with_text("line one\nline two")
+            .with_focus(true);
+        let area = Rect::new(2, 1, 12, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
+        Widget::render(&textarea, area, &mut frame);
+        assert!(frame.a11y_order().is_empty());
+
+        let mut builder = A11yTreeBuilder::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
+        frame.set_a11y(&mut builder);
+        Widget::render(&textarea, area, &mut frame);
+        frame.finish_a11y();
+        drop(frame);
+        let tree = builder.build();
+        assert_eq!(tree.nodes().count(), 1);
+        assert_eq!(
+            tree.focused().and_then(|node| node.name.as_deref()),
+            Some("line one\nline two")
+        );
     }
 
     #[test]

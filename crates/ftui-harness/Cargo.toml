@@ -38,6 +38,7 @@ tracing-subscriber = { version = "0.3.20", features = ["registry"] }
 proptest = "1.7.0"
 
 [dev-dependencies]
+ftui-a11y = { path = "../ftui-a11y", version = "0.6.0" }
 ftui-pty = { path = "../ftui-pty", version = "0.6.0" }
 portable-pty = "0.9.0"
 ratatui = "0.30.2"

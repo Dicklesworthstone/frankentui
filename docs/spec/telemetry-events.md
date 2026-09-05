@@ -102,14 +102,15 @@ collects no tree and emits nothing here.
 | Event Name | Description | Fields |
 |------------|-------------|--------|
 | `ftui.a11y` (`a11y tree changed`, debug) | The frame's accessibility tree differs from the previous frame's | `frame_idx`, `nodes`, `added`, `removed`, `changed`, `focus_changed`, `announcements`, `dropped` |
-| `ftui.a11y` (`screen reader announcement`, info) | One bounded screen-reader announcement derived from the tree diff | `frame_idx`, `node_id`, `urgency` (`polite` \| `assertive`), `reason`, `text` |
+| `ftui.a11y` (`screen reader announcement`, info) | Metadata for one bounded screen-reader announcement derived from the tree diff | `frame_idx`, `node_id`, `urgency` (`polite` \| `assertive`), `reason`, `text_chars` |
 
-`text` is the announcement string built from the node's role, name,
-description and state (bounded by `ScreenReaderPolicy::max_text_chars`).
-It can carry user-visible widget text (input values are masked by the
-widget when `TextInput` is in password mode); treat it like the
-`ftui.input.event` payload under the redaction policy in Section 5 when
-forwarding it beyond the local evidence sink.
+Announcement text is available to the local `Model::on_accessibility`
+callback and runtime accessors. Ordinary tracing and its OpenTelemetry
+export contain metadata only. A configured evidence sink also omits content
+by default; `ProgramConfig::with_accessibility_evidence_text(true)` explicitly
+enables text in that sink. This setting does not enable text in tracing.
+The local text is bounded by `ScreenReaderPolicy::max_text_chars` and may
+contain widget labels and edited values; `TextInput` masks password values.
 
 ## 4) Field Schema
 
@@ -489,12 +490,14 @@ Required fields:
 - `node_id` (u64 or `null`)
 - `urgency` (`polite` | `assertive`)
 - `reason` (`FocusChanged` | `LiveRegionAdded` | `LiveContentChanged` | `LiveRegionChanged`)
-- `text` (string, JSON-escaped, bounded by `ScreenReaderPolicy::max_text_chars`)
+- `text` (`null` by default; a JSON-escaped string bounded by
+  `ScreenReaderPolicy::max_text_chars` when local evidence text is explicitly enabled)
+- `text_chars` (number of characters in the local announcement, including when `text` is `null`)
 
 Example:
 
 ```json
-{"event":"a11y_announcement","frame_idx":9,"node_id":12185758060053980160,"urgency":"polite","reason":"FocusChanged","text":"textInput: Password. password input. focused"}
+{"event":"a11y_announcement","frame_idx":9,"node_id":12185758060053980160,"urgency":"polite","reason":"FocusChanged","text":null,"text_chars":43}
 ```
 
 ### 9.3 Runtime Mode Contract Additions

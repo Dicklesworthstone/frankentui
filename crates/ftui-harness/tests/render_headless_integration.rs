@@ -50,8 +50,16 @@ fn present_into_headless(prev: &Buffer, next: &Buffer) -> HeadlessTerm {
     term
 }
 
-#[test]
-fn widget_accessibility_content_stays_local_by_default() {
+const WIDGET_CANARIES: [&str; 5] = [
+    "INPUT_SECRET_450512_é日",
+    "TEXTAREA_SECRET_450512_é日",
+    "LABEL_SECRET_450512_é日",
+    "MODAL_SECRET_450512_é日",
+    "LIVE_SECRET_450512_é日",
+];
+
+fn exercise_widget_accessibility(enabled: bool, include_text: bool, focus_textarea: bool) {
+    use ftui_a11y::node::LiveRegion;
     use ftui_core::event::Event;
     use ftui_runtime::evidence_sink::EvidenceSinkConfig;
     use ftui_runtime::program::{AccessibilityFrame, HeadlessEventSource, Program, ProgramConfig};
@@ -65,7 +73,6 @@ fn widget_accessibility_content_stays_local_by_default() {
     use ftui_widgets::textarea::TextArea;
     use std::time::Duration;
 
-    const SECRET: &str = "WIDGET_SECRET_450512_é日";
     struct PrivateWidgets {
         input: TextInput,
         textarea: TextArea,
@@ -86,9 +93,27 @@ fn widget_accessibility_content_stays_local_by_default() {
         fn view(&self, frame: &mut Frame) {
             self.input.render(Rect::new(0, 0, 80, 1), frame);
             self.textarea.render(Rect::new(0, 2, 80, 2), frame);
-            Paragraph::new(format!("label {SECRET}")).render(Rect::new(0, 5, 80, 1), frame);
-            Modal::new(Paragraph::new(format!("modal {SECRET}")))
-                .render(Rect::new(0, 7, 80, 10), frame);
+            Paragraph::new(WIDGET_CANARIES[2]).render(Rect::new(0, 5, 80, 1), frame);
+            Modal::new(Paragraph::new(WIDGET_CANARIES[3])).render(Rect::new(0, 7, 80, 10), frame);
+            Paragraph::new(WIDGET_CANARIES[4]).render(Rect::new(0, 18, 80, 1), frame);
+
+            // Applications designate live regions through the public frame
+            // builder. Decorate the nodes emitted by the actual widgets;
+            // their names still come from widget rendering, not test nodes.
+            let order = frame.a11y_order().to_vec();
+            if let Some(builder) = frame.a11y.as_deref_mut() {
+                for id in order {
+                    if let Some(node) = builder.node_mut(id)
+                        && node.name.as_deref().is_some_and(|name| {
+                            WIDGET_CANARIES[2..]
+                                .iter()
+                                .any(|canary| name.contains(canary))
+                        })
+                    {
+                        node.live_region = Some(LiveRegion::Polite);
+                    }
+                }
+            }
         }
 
         fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Event> {
@@ -99,84 +124,248 @@ fn widget_accessibility_content_stays_local_by_default() {
         }
     }
 
+    let mut input = TextInput::new().with_focused(!focus_textarea);
+    input.set_value(WIDGET_CANARIES[0]);
+    let mut textarea =
+        TextArea::new().with_text(&format!("{}\nsecond \"line\" \\ end", WIDGET_CANARIES[1]));
+    textarea.set_focused(focus_textarea);
+    let model = PrivateWidgets {
+        input,
+        textarea,
+        local_tree: String::new(),
+        local_announcements: Vec::new(),
+    };
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "ftui-widget-privacy-{}-{suffix}-{enabled}-{include_text}-{focus_textarea}.jsonl",
+        std::process::id()
+    ));
+    let features = BackendFeatures::default();
+    let writer = TerminalWriter::new(
+        Vec::new(),
+        ScreenMode::AltScreen,
+        UiAnchor::Bottom,
+        TerminalCapabilities::default(),
+    );
+    let mut config = ProgramConfig::default()
+        .with_accessibility_evidence_text(include_text)
+        .with_evidence_sink(EvidenceSinkConfig::enabled_file(&path));
+    if enabled {
+        config = config.with_accessibility(ScreenReaderPolicy::default());
+    }
+    let mut program = Program::with_event_source(
+        model,
+        HeadlessEventSource::new(80, 20, features),
+        features,
+        writer,
+        config,
+    )
+    .expect("construct actual runtime");
+    program
+        .run()
+        .expect("run actual widget and presentation pipeline");
+    let model = program.model();
+    if enabled {
+        for canary in WIDGET_CANARIES {
+            assert!(
+                model.local_tree.contains(canary),
+                "missing actual widget node: {canary}"
+            );
+        }
+        for index in [usize::from(focus_textarea), 2, 3, 4] {
+            assert!(
+                model
+                    .local_announcements
+                    .iter()
+                    .any(|text| text.contains(WIDGET_CANARIES[index])),
+                "local channel did not announce {}",
+                WIDGET_CANARIES[index]
+            );
+        }
+    } else {
+        assert!(model.local_tree.is_empty());
+        assert!(model.local_announcements.is_empty());
+    }
+    let evidence = std::fs::read_to_string(&path).expect("read runtime evidence");
+    let announcements: Vec<serde_json::Value> = evidence
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid evidence JSONL"))
+        .filter(|row: &serde_json::Value| row["event"] == "a11y_announcement")
+        .collect();
+    assert_eq!(announcements.len(), model.local_announcements.len());
+    if enabled && include_text {
+        for text in &model.local_announcements {
+            assert!(
+                announcements
+                    .iter()
+                    .any(|row| row["text"].as_str() == Some(text.as_str()))
+            );
+        }
+    } else {
+        assert_no_widget_content(&evidence);
+        assert!(announcements.iter().all(|row| row["text"].is_null()));
+    }
+}
+
+fn assert_no_widget_content(output: &str) {
+    for canary in WIDGET_CANARIES {
+        let escaped = serde_json::to_string(canary).expect("serialize canary");
+        assert!(!output.contains(canary), "raw widget content leaked");
+        assert!(
+            !output.contains(escaped.trim_matches('"')),
+            "escaped widget content leaked"
+        );
+        let marker = canary.split('_').next().unwrap();
+        assert!(
+            !output.contains(&format!("{marker}_SECRET_450512")),
+            "widget content marker leaked"
+        );
+    }
+}
+
+#[derive(Clone, Default)]
+struct WidgetTraceBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for WidgetTraceBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("trace buffer lock")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn widget_accessibility_content_stays_local_by_default() {
     for enabled in [false, true] {
         for include_text in [false, true] {
-            let mut input = TextInput::new().with_focused(true);
-            input.set_value(format!("input {SECRET}"));
-            let model = PrivateWidgets {
-                input,
-                textarea: TextArea::new().with_text(&format!("textarea {SECRET}")),
-                local_tree: String::new(),
-                local_announcements: Vec::new(),
-            };
-            let suffix = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "ftui-widget-privacy-{}-{suffix}-{enabled}-{include_text}.jsonl",
-                std::process::id()
-            ));
-            let features = BackendFeatures::default();
-            let writer = TerminalWriter::new(
-                Vec::new(),
-                ScreenMode::AltScreen,
-                UiAnchor::Bottom,
-                TerminalCapabilities::default(),
-            );
-            let mut config = ProgramConfig::default()
-                .with_accessibility_evidence_text(include_text)
-                .with_evidence_sink(EvidenceSinkConfig::enabled_file(&path));
-            if enabled {
-                config = config.with_accessibility(ScreenReaderPolicy::default());
-            }
-            let mut program = Program::with_event_source(
-                model,
-                HeadlessEventSource::new(80, 20, features),
-                features,
-                writer,
-                config,
-            )
-            .expect("construct actual runtime");
-            program
-                .run()
-                .expect("run actual widget and presentation pipeline");
-            let model = program.model();
-            if enabled {
-                for kind in ["input", "label", "modal"] {
-                    assert!(model.local_tree.contains(&format!("{kind} {SECRET}")));
-                }
-                assert!(
-                    model
-                        .local_announcements
-                        .iter()
-                        .any(|text| text.contains(SECRET))
-                );
-                // TextArea currently emits no semantic nodes. It is rendered
-                // here, but complete TextArea AT semantics remain G09 work.
-            } else {
-                assert!(model.local_tree.is_empty());
-                assert!(model.local_announcements.is_empty());
-            }
-            let evidence = std::fs::read_to_string(&path).expect("read runtime evidence");
-            let announcements: Vec<serde_json::Value> = evidence
-                .lines()
-                .map(|line| serde_json::from_str(line).expect("valid evidence JSONL"))
-                .filter(|row: &serde_json::Value| row["event"] == "a11y_announcement")
-                .collect();
-            assert_eq!(announcements.len(), model.local_announcements.len());
-            if enabled && include_text {
-                assert!(announcements.iter().any(|row| {
-                    row["text"]
-                        .as_str()
-                        .is_some_and(|text| text.contains(SECRET))
-                }));
-            } else {
-                assert!(!evidence.contains(SECRET));
-                assert!(announcements.iter().all(|row| row["text"].is_null()));
+            for focus_textarea in [false, true] {
+                let capture = WidgetTraceBuffer::default();
+                let writer = capture.clone();
+                let subscriber = tracing_subscriber::fmt()
+                    .with_ansi(false)
+                    .without_time()
+                    .with_max_level(tracing::Level::TRACE)
+                    .with_writer(move || writer.clone())
+                    .finish();
+                tracing::subscriber::with_default(subscriber, || {
+                    exercise_widget_accessibility(enabled, include_text, focus_textarea);
+                });
+                let bytes = capture.0.lock().expect("trace buffer lock");
+                let trace = std::str::from_utf8(&bytes).expect("UTF-8 tracing");
+                assert_no_widget_content(trace);
+                assert_eq!(trace.contains("screen reader announcement"), enabled);
             }
         }
     }
+}
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn widget_accessibility_content_stays_out_of_real_otlp_exports() {
+    use ftui_runtime::telemetry::{SpanProcessorKind, TelemetryConfig};
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    use tracing_subscriber::prelude::*;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local collector");
+    listener.set_nonblocking(true).expect("bounded accept");
+    let endpoint = format!("http://{}/v1/traces", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let collector_stop = stop.clone();
+    let collector = std::thread::spawn(move || {
+        let start = Instant::now();
+        let mut payloads = Vec::new();
+        while !collector_stop.load(Ordering::Acquire) && start.elapsed() < Duration::from_secs(30) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("collector accept failed: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("bounded request read");
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).expect("read HTTP headers");
+                headers.push(byte[0]);
+                assert!(headers.len() <= 32_768, "bounded HTTP headers");
+            }
+            let headers = std::str::from_utf8(&headers).expect("HTTP header text");
+            assert!(headers.starts_with("POST /v1/traces "));
+            let length: usize = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .expect("OTLP content length")
+                .1
+                .trim()
+                .parse()
+                .expect("numeric content length");
+            assert!(length <= 2 * 1024 * 1024, "bounded request body");
+            let mut body = vec![0; length];
+            stream
+                .read_exact(&mut body)
+                .expect("read actual OTLP protobuf");
+            payloads.push(body);
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").expect("acknowledge export");
+        }
+        payloads
+    });
+
+    let mut config = TelemetryConfig::from_env_with(|key| match key {
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" => Some(endpoint.clone()),
+        "OTEL_TRACES_EXPORTER" => Some("otlp".into()),
+        _ => None,
+    });
+    config.processor = SpanProcessorKind::Simple;
+    config.headers.push((
+        "User-Agent".into(),
+        "OpenAI File Downloader, XaiImageApiFetch/1.0".into(),
+    ));
+    let (layer, provider) = config.build_layer().expect("real OTLP exporter");
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        for include_text in [false, true] {
+            for focus_textarea in [false, true] {
+                let _span =
+                    tracing::info_span!("widget_privacy_export", include_text, focus_textarea)
+                        .entered();
+                exercise_widget_accessibility(true, include_text, focus_textarea);
+            }
+        }
+    });
+    provider.force_flush().expect("flush actual export");
+    provider.shutdown().expect("shutdown exporter");
+    stop.store(true, Ordering::Release);
+    let payloads = collector.join().expect("collector finished");
+    assert!(!payloads.is_empty(), "zero exports is not a privacy pass");
+    let exported = payloads.concat();
+    let text = String::from_utf8_lossy(&exported);
+    assert!(
+        text.contains("widget_privacy_export"),
+        "actual span must be exported"
+    );
+    assert!(
+        text.contains("screen reader announcement"),
+        "actual announcement metadata must be exported"
+    );
+    assert_no_widget_content(&text);
 }
 
 // ============================================================================

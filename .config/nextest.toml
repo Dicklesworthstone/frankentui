@@ -17,6 +17,29 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # Keep going after a failure so one hang cannot hide the rest of the results.
 fail-fast = false
 
+# These measured latency/throughput budgets failed in the concurrent workspace
+# run. Reserve the runner while measuring them, so unrelated test processes do
+# not consume the budget. Isolation results remain separate from loaded runs.
+# Every case and its original threshold still runs; functional concurrency
+# tests keep the normal scheduler. This does not isolate other host processes.
+[[profile.default.overrides]]
+filter = '''
+    test(=e2e_focus_change_storm_performance)
+    | test(=perf_catalog_lookup_latency)
+    | test(=stress_overlay_render_widget_bounds_many_widgets)
+    | test(=stress_combined_worst_case)
+    | test(=proof_performance_budget)
+    | test(=inspector_overlay_stress_perf)
+    | test(=soak_sparklines_200_frames)
+    | test(=soak_1000_widgets_sustained_rendering)
+    | test(=regression_plan_row_quadratic_perf)
+    | test(=style::performance_tests::test_style_merge_performance)
+    | test(=height_predictor::tests::perf_prediction_overhead)
+    | test(=inspector::tests::inspector_perf_budget_overlay)
+    | test(=perf_full_navigation_sequence_100_nodes)
+'''
+threads-required = "num-test-threads"
+
 [profile.ci]
 slow-timeout = { period = "60s", terminate-after = 2 }
 fail-fast = false

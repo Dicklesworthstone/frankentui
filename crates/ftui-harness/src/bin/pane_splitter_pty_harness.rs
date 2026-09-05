@@ -232,6 +232,8 @@ struct Shared {
     committed: bool,
     canceled: bool,
     cancel_preserved_state: bool,
+    post_cancel_events: u32,
+    post_cancel_preserved_state: bool,
     dragging_seen: bool,
     tree_valid: bool,
     node_count: usize,
@@ -252,6 +254,7 @@ struct Harness {
     op_seed: u64,
     ticks_remaining: u32,
     started_at: Instant,
+    cancel_snapshot: Option<(PaneTreeSnapshot, u64, bool)>,
     shared: Arc<Mutex<Shared>>,
 }
 
@@ -347,9 +350,30 @@ impl Harness {
                     self.with_shared(|s| s.dragging_seen = true);
                 }
 
-                let committed = matches!(mouse.kind, MouseEventKind::Up(_))
-                    && dispatch.primary_transition.is_some();
+                let committed = dispatch
+                    .primary_transition
+                    .as_ref()
+                    .is_some_and(|transition| {
+                        matches!(transition.effect, PaneDragResizeEffect::Committed { .. })
+                    });
                 self.record_state(committed);
+
+                if let Some((tree, op_seed, focused)) = self.cancel_snapshot.as_ref() {
+                    let preserved = self.tree.to_snapshot() == *tree
+                        && self.op_seed == *op_seed
+                        && self.adapter.window_focused() == *focused
+                        && self.adapter.active_pointer_id().is_none()
+                        && self.adapter.machine_state() == PaneDragResizeState::Idle
+                        && !committed;
+                    self.with_shared(|s| {
+                        s.post_cancel_preserved_state = preserved
+                            && (s.post_cancel_events == 0 || s.post_cancel_preserved_state);
+                        s.post_cancel_events += 1;
+                    });
+                    if matches!(mouse.kind, MouseEventKind::Up(_)) {
+                        return Cmd::quit();
+                    }
+                }
 
                 if committed {
                     // Gesture finished: quit promptly so the test reads a stable result.
@@ -397,27 +421,27 @@ impl Harness {
                     });
                 self.apply_dispatch(&dispatch, &layout);
                 if canceled {
-                    let preserved = before_cancel.is_some_and(|(tree, op_seed, focused)| {
-                        self.tree.to_snapshot() == tree
-                            && self.op_seed == op_seed
-                            && self.adapter.window_focused() == focused
-                            && self.adapter.active_pointer_id().is_none()
-                            && self.adapter.machine_state() == PaneDragResizeState::Idle
-                    });
+                    let preserved =
+                        before_cancel
+                            .as_ref()
+                            .is_some_and(|(tree, op_seed, focused)| {
+                                self.tree.to_snapshot() == *tree
+                                    && self.op_seed == *op_seed
+                                    && self.adapter.window_focused() == *focused
+                                    && self.adapter.active_pointer_id().is_none()
+                                    && self.adapter.machine_state() == PaneDragResizeState::Idle
+                            });
                     self.with_shared(|s| {
                         s.canceled = true;
                         s.cancel_preserved_state = preserved;
                     });
+                    self.cancel_snapshot = before_cancel;
                 }
                 self.record_state(false);
 
-                if canceled {
-                    // Interaction canceled: quit so the test reads a stable result
-                    // without depending on the safety auto-quit timer.
-                    Cmd::quit()
-                } else {
-                    Cmd::none()
-                }
+                // Continue the real session after cancel. The next frame exposes
+                // readiness; stale drag/release input must leave state unchanged.
+                Cmd::none()
             }
             _ => Cmd::none(),
         }
@@ -529,9 +553,14 @@ impl Model for Harness {
             if let PaneNodeKind::Leaf(leaf) = &record.kind
                 && let Some(rect) = layout.rect(record.id)
             {
+                let title = if self.cancel_snapshot.is_some() && leaf.surface_key == "left" {
+                    "cancel-ready"
+                } else {
+                    leaf.surface_key.as_str()
+                };
                 Block::new()
                     .borders(Borders::ALL)
-                    .title(leaf.surface_key.as_str())
+                    .title(title)
                     .render(rect, frame);
             }
         }
@@ -595,6 +624,8 @@ fn main() -> std::io::Result<()> {
         committed: false,
         canceled: false,
         cancel_preserved_state: false,
+        post_cancel_events: 0,
+        post_cancel_preserved_state: false,
         dragging_seen: false,
         tree_valid: true,
         node_count,
@@ -614,6 +645,7 @@ fn main() -> std::io::Result<()> {
         op_seed: 1,
         ticks_remaining: exit_after_ms.div_ceil(100).max(1),
         started_at: Instant::now(),
+        cancel_snapshot: None,
         shared: Arc::clone(&shared),
     };
 
@@ -638,7 +670,7 @@ fn main() -> std::io::Result<()> {
         println!("{line}");
     }
     println!(
-        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={} cancel_preserved_state={} dragging_seen={} termios_restored={} backend={} recovered_bytes={}",
+        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={} cancel_preserved_state={} dragging_seen={} termios_restored={} backend={} recovered_bytes={} post_cancel_events={} post_cancel_preserved_state={}",
         snap.mode,
         snap.initial_bps,
         snap.final_bps,
@@ -656,6 +688,8 @@ fn main() -> std::io::Result<()> {
         termios_restored,
         ftui_runtime::DEFAULT_BACKEND,
         recovered_bytes.load(std::sync::atomic::Ordering::Relaxed),
+        snap.post_cancel_events,
+        snap.post_cancel_preserved_state,
     );
     let _ = std::io::stdout().flush();
 
