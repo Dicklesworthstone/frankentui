@@ -987,12 +987,12 @@ impl TtyEventSource {
     }
 
     #[inline]
-    fn parser_timeout_event_if_due(&mut self) -> Option<Event> {
+    fn parser_timeout_event_if_due(&mut self, now: Instant) -> Option<Event> {
         if !self.parser.has_pending_timeout_state() {
             return None;
         }
         if let Some(last) = self.last_input_byte_at
-            && last.elapsed() < PARSER_TIMEOUT_GRACE
+            && now.saturating_duration_since(last) < PARSER_TIMEOUT_GRACE
         {
             return None;
         }
@@ -1243,7 +1243,7 @@ impl BackendEventSource for TtyEventSource {
             if !ready && self.drain_ready_bytes_before_parser_timeout()? {
                 return Ok(true);
             }
-            if !ready && let Some(event) = self.parser_timeout_event_if_due() {
+            if !ready && let Some(event) = self.parser_timeout_event_if_due(Instant::now()) {
                 self.event_queue.push_back(event);
                 return Ok(true);
             }
@@ -1267,7 +1267,7 @@ impl BackendEventSource for TtyEventSource {
                 if self.drain_ready_bytes_before_parser_timeout()? {
                     return Ok(true);
                 }
-                if let Some(event) = self.parser_timeout_event_if_due() {
+                if let Some(event) = self.parser_timeout_event_if_due(Instant::now()) {
                     self.event_queue.push_back(event);
                     return Ok(true);
                 }
@@ -1313,7 +1313,7 @@ impl BackendEventSource for TtyEventSource {
             return Ok(Some(event));
         }
 
-        Ok(self.parser_timeout_event_if_due())
+        Ok(self.parser_timeout_event_if_due(Instant::now()))
     }
 }
 
@@ -2398,6 +2398,45 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn escape_grace_boundary_and_fragment_completion_are_deterministic() {
+        use ftui_core::event::{KeyCode, KeyEvent};
+        let start = Instant::now();
+        let mut src = TtyEventSource::new(80, 24);
+        assert!(src.parser.parse(b"\x1b").is_empty());
+        src.last_input_byte_at = Some(start);
+        assert!(src.parser_timeout_event_if_due(start).is_none());
+        assert!(
+            src.parser_timeout_event_if_due(start + PARSER_TIMEOUT_GRACE - Duration::from_nanos(1))
+                .is_none()
+        );
+        assert_eq!(
+            src.parser_timeout_event_if_due(start + PARSER_TIMEOUT_GRACE),
+            Some(Event::Key(KeyEvent::new(KeyCode::Escape)))
+        );
+        assert!(
+            src.parser_timeout_event_if_due(start + PARSER_TIMEOUT_GRACE * 2)
+                .is_none(),
+            "expired Escape must be delivered only once"
+        );
+
+        // A fragmented CSI completes during grace; it must not also emit Escape.
+        assert!(src.parser.parse(b"\x1b").is_empty());
+        src.last_input_byte_at = Some(start);
+        assert!(
+            src.parser_timeout_event_if_due(start + PARSER_TIMEOUT_GRACE / 2)
+                .is_none()
+        );
+        assert_eq!(
+            src.parser.parse(b"[C"),
+            vec![Event::Key(KeyEvent::new(KeyCode::Right))]
+        );
+        assert!(
+            src.parser_timeout_event_if_due(start + PARSER_TIMEOUT_GRACE)
+                .is_none()
+        );
     }
 
     #[cfg(unix)]

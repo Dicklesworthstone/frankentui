@@ -661,6 +661,7 @@ const TTY_READ_POLL: Duration = Duration::from_millis(1);
 /// arrived while a probe was waiting). Process-global like the tty itself.
 static PROBE_LEFTOVER_INPUT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
+#[cfg(unix)]
 fn stash_probe_leftover(bytes: &[u8]) {
     if bytes.is_empty() {
         return;

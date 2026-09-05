@@ -5171,6 +5171,8 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     /// off the tty while waiting for terminal replies; delivered before the
     /// main loop so a key or click during startup is not lost.
     startup_events: Vec<Event>,
+    /// Preserve sequence state across successive recovered byte chunks.
+    startup_parser: ftui_core::input_parser::InputParser,
     /// Per-frame bump arena for temporary render-path allocations.
     frame_arena: FrameArena,
     /// Unified frame guardrails (memory/queue limits).
@@ -5340,6 +5342,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
+            startup_parser: ftui_core::input_parser::InputParser::new(),
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5489,6 +5492,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
+            startup_parser: ftui_core::input_parser::InputParser::new(),
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -5713,8 +5717,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         if bytes.is_empty() {
             return;
         }
-        let mut parser = ftui_core::input_parser::InputParser::new();
-        let events = parser.parse(bytes);
+        let events = self.startup_parser.parse(bytes);
         debug!(
             bytes = bytes.len(),
             events = events.len(),
@@ -5725,6 +5728,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
     /// Deliver the queued startup events in arrival order.
     fn drain_startup_events(&mut self) -> io::Result<()> {
+        // The probe-read batch is complete. Resolve an ambiguous trailing key
+        // before handing input ownership back to the live event source; dropping
+        // the parser here used to silently lose a lone Escape.
+        if let Some(event) = self.startup_parser.timeout() {
+            self.startup_events.push(event);
+        }
         let events = std::mem::take(&mut self.startup_events);
         for event in events {
             if !self.running {
@@ -12211,6 +12220,7 @@ mod tests {
             a11y_changed: false,
             a11y_dropped: 0,
             startup_events: Vec::new(),
+            startup_parser: ftui_core::input_parser::InputParser::new(),
             widget_refresh_config: config.widget_refresh,
             widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
@@ -13246,6 +13256,7 @@ mod tests {
         #[derive(Default)]
         struct RecorderModel {
             seen: Vec<String>,
+            keys: Vec<KeyEvent>,
         }
 
         #[derive(Debug)]
@@ -13270,6 +13281,7 @@ mod tests {
                     }
                     RecMsg::Event(Event::Key(key)) => {
                         self.seen.push(format!("key:{:?}", key.code));
+                        self.keys.push(key);
                     }
                     RecMsg::Event(_) => {}
                 }
@@ -13306,6 +13318,31 @@ mod tests {
         assert_eq!(program.model().seen.len(), 3);
         program.queue_startup_input(b"");
         assert!(program.startup_events.is_empty());
+
+        // A probe can consume the final lone Escape before timing out. The
+        // startup handoff must deliver that key, even with no subsequent input.
+        program.queue_startup_input(b"\x1b[<0;2;1M\x1b");
+        program
+            .drain_startup_events()
+            .expect("deliver trailing ESC");
+        assert_eq!(program.model().seen.len(), 5);
+        assert_eq!(program.model().seen[4], "key:Escape");
+        program.drain_startup_events().expect("no duplicate ESC");
+        assert_eq!(program.model().seen.len(), 5);
+
+        // Recovery may arrive in chunks. A pending prefix is not a key until
+        // the batch is drained, so arrows and Alt+UTF-8 keep their identity.
+        program.queue_startup_input(b"\x1b");
+        program.queue_startup_input(b"[C\x1b\xc3");
+        program.queue_startup_input(b"\xa9");
+        program.drain_startup_events().expect("fragmented recovery");
+        assert_eq!(&program.model().seen[5..], &["key:Right", "key:Char('é')"]);
+        assert_eq!(
+            program.model().keys.last(),
+            Some(
+                &KeyEvent::new(KeyCode::Char('é')).with_modifiers(ftui_core::event::Modifiers::ALT)
+            )
+        );
     }
 
     /// With `ProgramConfig::accessibility` set, every rendered frame builds

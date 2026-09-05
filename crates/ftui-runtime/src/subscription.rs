@@ -1901,8 +1901,15 @@ mod tests {
 
         mgr.reconcile(vec![Box::new(PanickingSub)]);
 
-        // Give the thread time to panic and be caught.
-        thread::sleep(Duration::from_millis(50));
+        // The real failure notification is sent after the panic flag is stored.
+        // Waiting for it establishes completion without guessing how quickly
+        // the worker will be scheduled under the full workspace test load.
+        let failure = mgr
+            .failure_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("subscription panic must be caught and reported");
+        assert_eq!(failure.id, 0xDEAD);
+        assert_eq!(failure.error, "intentional test panic in subscription");
 
         // The manager should still be functional.
         assert_eq!(

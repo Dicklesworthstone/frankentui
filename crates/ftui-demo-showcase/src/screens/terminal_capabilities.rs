@@ -57,6 +57,8 @@ mod caps_probe_stub {
         Da2Response,
         DecrpmResponse,
         OscResponse,
+        XtgettcapResponse,
+        Operator,
         Timeout,
         Prior,
     }

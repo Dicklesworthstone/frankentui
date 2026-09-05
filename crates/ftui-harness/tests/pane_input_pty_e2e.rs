@@ -40,7 +40,7 @@
 //!
 //! Starting state is always a 1:1 root split (5000 bps first-pane share).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ftui_core::terminal_session::SessionOptions;
 use ftui_pty::{CleanupExpectations, PtyConfig, assert_terminal_restored, spawn_command};
@@ -70,6 +70,7 @@ const KEY_ESC: &[u8] = b"\x1b";
 // press/scroll, `m` = release. The 1:1 split over an 80-wide area puts the
 // vertical splitter boundary at 0-based column 40 => SGR column 41; SGR row 3.
 const MOUSE_DOWN_ON_SPLITTER: &[u8] = b"\x1b[<0;41;3M";
+const MOUSE_DRAG_SPLITTER_RIGHT: &[u8] = b"\x1b[<32;61;3M";
 const SCROLL_UP_ON_SPLITTER: &[u8] = b"\x1b[<64;41;3M";
 const SCROLL_DOWN_ON_SPLITTER: &[u8] = b"\x1b[<65;41;3M";
 
@@ -101,6 +102,10 @@ struct PaneResult {
     node_count: usize,
     first_leaf: String,
     canceled: bool,
+    cancel_preserved_state: bool,
+    dragging_seen: bool,
+    termios_restored: bool,
+    recovered_bytes: usize,
     /// Focused leaf surface key (keymap mode); `-` in adapter mode.
     active_pane: String,
     /// Whether a pane is maximized (keymap mode).
@@ -128,6 +133,10 @@ fn parse_marker(output: &[u8]) -> PaneResult {
     let mut node_count = None;
     let mut first_leaf = None;
     let mut canceled = None;
+    let mut cancel_preserved_state = None;
+    let mut dragging_seen = None;
+    let mut termios_restored = None;
+    let mut recovered_bytes = None;
     let mut active_pane = None;
     let mut maximized = None;
     for pair in kv.split_whitespace() {
@@ -145,6 +154,10 @@ fn parse_marker(output: &[u8]) -> PaneResult {
             "node_count" => node_count = value.parse().ok(),
             "first_leaf" => first_leaf = Some(value.to_string()),
             "canceled" => canceled = Some(value == "true"),
+            "cancel_preserved_state" => cancel_preserved_state = Some(value == "true"),
+            "dragging_seen" => dragging_seen = Some(value == "true"),
+            "termios_restored" => termios_restored = Some(value == "true"),
+            "recovered_bytes" => recovered_bytes = value.parse().ok(),
             "active_pane" => active_pane = Some(value.to_string()),
             "maximized" => maximized = Some(value == "true"),
             _ => {}
@@ -162,6 +175,10 @@ fn parse_marker(output: &[u8]) -> PaneResult {
         node_count: node_count.expect("node_count field"),
         first_leaf: first_leaf.expect("first_leaf field"),
         canceled: canceled.expect("canceled field"),
+        cancel_preserved_state: cancel_preserved_state.expect("cancel_preserved_state field"),
+        dragging_seen: dragging_seen.expect("dragging_seen field"),
+        termios_restored: termios_restored.expect("termios_restored field"),
+        recovered_bytes: recovered_bytes.expect("recovered_bytes field"),
         // Back-compatible defaults for adapter-mode markers.
         active_pane: active_pane.unwrap_or_else(|| "-".to_string()),
         maximized: maximized.unwrap_or(false),
@@ -178,6 +195,7 @@ struct Scenario {
     /// (for example) a lone trailing ESC is decoded on its own.
     parts: Vec<&'static [u8]>,
     exit_after_ms: u32,
+    during_probe: bool,
 }
 
 impl Scenario {
@@ -189,6 +207,7 @@ impl Scenario {
             input: "adapter",
             parts,
             exit_after_ms: 3000,
+            during_probe: false,
         }
     }
 
@@ -212,6 +231,11 @@ impl Scenario {
         self.exit_after_ms = ms;
         self
     }
+
+    fn during_probe(mut self) -> Self {
+        self.during_probe = true;
+        self
+    }
 }
 
 /// Spawn the harness under a real PTY, deliver the scripted input chunks, and
@@ -224,6 +248,28 @@ fn run(scn: &Scenario) -> Vec<u8> {
     cmd.env("PANE_HARNESS_INPUT", scn.input);
     cmd.env("PANE_HARNESS_UI_HEIGHT", "12");
     cmd.env("PANE_HARNESS_EXIT_AFTER_MS", scn.exit_after_ms.to_string());
+    if scn.during_probe {
+        // Force a real unanswered RGB capability probe independently of the
+        // invoking terminal's inherited capabilities. Input goes over the PTY
+        // while the production probe reader owns it.
+        for key in [
+            "NO_COLOR",
+            "COLORTERM",
+            "TERM_PROGRAM",
+            "LC_TERMINAL",
+            "TMUX",
+            "STY",
+            "ZELLIJ",
+            "WEZTERM_UNIX_SOCKET",
+            "WEZTERM_PANE",
+            "WEZTERM_EXECUTABLE",
+            "KITTY_WINDOW_ID",
+            "WT_SESSION",
+        ] {
+            cmd.env_remove(key);
+        }
+        cmd.env("FTUI_CAPS_PROBE", "1");
+    }
 
     let mut config = PtyConfig::default()
         .with_size(PTY_COLS, PTY_ROWS)
@@ -235,13 +281,33 @@ fn run(scn: &Scenario) -> Vec<u8> {
 
     let mut session = spawn_command(config, cmd).expect("spawn pane PTY harness");
 
-    // Let the runtime enter raw mode and render its first frame (so the pane area
-    // is captured) before the scripted input arrives.
-    std::thread::sleep(Duration::from_millis(350));
+    let started = Instant::now();
+    let ready: &[u8] = if scn.during_probe {
+        b"\x1bP+q524742\x1b\\"
+    } else {
+        // A title from the actual initial frame: raw mode and capability
+        // probing have completed and the pane geometry has been recorded.
+        b"left"
+    };
+    session
+        .read_until(ready, Duration::from_secs(5))
+        .unwrap_or_else(|err| {
+            panic!(
+                "[{}] readiness {ready:?} failed: {err}; output={:?}",
+                scn.mode,
+                String::from_utf8_lossy(session.output())
+            )
+        });
     for (idx, part) in scn.parts.iter().enumerate() {
-        if idx > 0 {
+        if idx > 0 && !scn.during_probe {
             std::thread::sleep(Duration::from_millis(150));
         }
+        eprintln!(
+            "PANE_SEND mode={} during_probe={} elapsed_us={} bytes={part:02x?}",
+            scn.mode,
+            scn.during_probe,
+            started.elapsed().as_micros()
+        );
         session.send_input(part).expect("send input chunk");
     }
 
@@ -249,6 +315,14 @@ fn run(scn: &Scenario) -> Vec<u8> {
         .wait_and_drain(Duration::from_secs(10))
         .expect("wait_and_drain harness");
     assert!(status.success(), "harness exited with failure: {status:?}");
+    for line in String::from_utf8_lossy(session.output()).lines() {
+        if let Some(start) = line
+            .find("PANE_INPUT ")
+            .or_else(|| line.find("PANE_RESULT "))
+        {
+            eprintln!("{}", &line[start..]);
+        }
+    }
     session.output().to_vec()
 }
 
@@ -388,34 +462,125 @@ fn pty_wheel_nudge_resize_in_both_modes() {
 #[test]
 fn pty_escape_cancels_armed_interaction_cleanly() {
     for mode in ["alt", "inline"] {
-        // Arm a pointer on the splitter, then send a lone ESC. The adapter must
-        // route ESC to the cancel path, applying no operations and leaving the
-        // tree at its initial ratio.
-        let result = run_result(
-            &Scenario::new(mode, vec![MOUSE_DOWN_ON_SPLITTER, KEY_ESC]).exit_after_ms(4000),
-        );
+        for during_probe in [false, true] {
+            // Arm a pointer on the splitter, then send a lone ESC. The adapter must
+            // route ESC to the cancel path, applying no operations and leaving the
+            // tree at its initial ratio.
+            let mut scenario =
+                Scenario::new(mode, vec![MOUSE_DOWN_ON_SPLITTER, KEY_ESC]).exit_after_ms(4000);
+            if during_probe {
+                scenario = scenario.during_probe();
+            }
+            let output = run(&scenario);
+            let result = parse_marker(&output);
 
-        assert!(
-            result.down_resolved,
-            "[{mode}] mouse-down did not arm the splitter (hit-test failed)"
-        );
-        assert!(
-            result.canceled,
-            "[{mode}] ESC did not reach the adapter cancel path"
-        );
-        assert!(
-            !result.committed,
-            "[{mode}] canceled interaction must not commit"
-        );
-        assert_eq!(
-            result.applied_ops, 0,
-            "[{mode}] canceled interaction must apply no operations"
-        );
-        assert_eq!(
-            result.final_bps, INITIAL_BPS,
-            "[{mode}] canceled interaction must leave the ratio unchanged"
-        );
-        assert!(result.tree_valid, "[{mode}] pane tree invalid after cancel");
+            assert_eq!(
+                result.recovered_bytes,
+                if during_probe {
+                    MOUSE_DOWN_ON_SPLITTER.len() + KEY_ESC.len()
+                } else {
+                    0
+                },
+                "scenario did not exercise the intended probe/live input path"
+            );
+
+            assert!(
+                result.down_resolved,
+                "[{mode}] mouse-down did not arm the splitter (hit-test failed)"
+            );
+            assert!(
+                result.canceled,
+                "[{mode}] ESC did not reach the adapter cancel path"
+            );
+            assert!(
+                !result.committed,
+                "[{mode}] canceled interaction must not commit"
+            );
+            assert_eq!(
+                result.applied_ops, 0,
+                "[{mode}] canceled interaction must apply no operations"
+            );
+            assert_eq!(
+                result.final_bps, INITIAL_BPS,
+                "[{mode}] canceled interaction must leave the ratio unchanged"
+            );
+            assert!(result.tree_valid, "[{mode}] pane tree invalid after cancel");
+            assert!(
+                result.cancel_preserved_state,
+                "[{mode}] cancel changed tree/history/focus or kept pointer active"
+            );
+            assert!(!result.dragging_seen, "armed test unexpectedly dragged");
+            assert!(
+                result.termios_restored,
+                "[{mode}] kernel termios not restored"
+            );
+            let options = SessionOptions {
+                alternate_screen: mode == "alt",
+                mouse_capture: false,
+                bracketed_paste: false,
+                focus_events: false,
+                kitty_keyboard: false,
+                intercept_signals: true,
+            };
+            assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
+                .expect("cancel restores terminal modes");
+        }
+    }
+}
+
+#[test]
+fn pty_escape_cancels_dragging_without_committing_or_mutating_again() {
+    for mode in ["alt", "inline"] {
+        for during_probe in [false, true] {
+            let mut scenario = Scenario::new(
+                mode,
+                vec![MOUSE_DOWN_ON_SPLITTER, MOUSE_DRAG_SPLITTER_RIGHT, KEY_ESC],
+            );
+            if during_probe {
+                scenario = scenario.during_probe();
+            }
+            let output = run(&scenario);
+            let result = parse_marker(&output);
+            assert!(
+                result.down_resolved && result.dragging_seen,
+                "real drag not observed: {result:?}"
+            );
+            assert_eq!(
+                result.recovered_bytes,
+                if during_probe {
+                    MOUSE_DOWN_ON_SPLITTER.len() + MOUSE_DRAG_SPLITTER_RIGHT.len() + KEY_ESC.len()
+                } else {
+                    0
+                },
+                "scenario did not exercise the intended probe/live input path"
+            );
+            assert!(
+                result.applied_ops > 0 && result.final_bps > INITIAL_BPS,
+                "drag preview did not move: {result:?}"
+            );
+            assert!(
+                result.canceled && !result.committed,
+                "Escape did not cancel active drag: {result:?}"
+            );
+            assert!(
+                result.cancel_preserved_state && result.tree_valid,
+                "cancel changed tree/history/focus or retained pointer: {result:?}"
+            );
+            assert!(
+                result.termios_restored,
+                "kernel termios not restored: {result:?}"
+            );
+            let options = SessionOptions {
+                alternate_screen: mode == "alt",
+                mouse_capture: false,
+                bracketed_paste: false,
+                focus_events: false,
+                kitty_keyboard: false,
+                intercept_signals: true,
+            };
+            assert_terminal_restored(&output, &CleanupExpectations::for_session(&options))
+                .expect("drag cancel restores terminal modes");
+        }
     }
 }
 

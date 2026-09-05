@@ -77,24 +77,63 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{
-    PANE_TREE_SCHEMA_VERSION, PaneCommandEffect, PaneId, PaneLayout, PaneLeaf, PaneNodeKind,
-    PaneNodeRecord, PaneOperation, PanePlacement, PanePressureSnapProfile, PaneSplit,
-    PaneSplitRatio, PaneTree, PaneTreeSnapshot, SplitAxis,
+    PANE_TREE_SCHEMA_VERSION, PaneCancelReason, PaneCommandEffect, PaneDragResizeEffect,
+    PaneDragResizeState, PaneId, PaneLayout, PaneLeaf, PaneNodeKind, PaneNodeRecord, PaneOperation,
+    PanePlacement, PanePressureSnapProfile, PaneSplit, PaneSplitRatio, PaneTree, PaneTreeSnapshot,
+    SplitAxis,
 };
 use ftui_render::frame::Frame;
 use ftui_runtime::pane_keymap::{PaneKeyOutcome, PaneKeyboardController};
 use ftui_runtime::{
     App, Cmd, Every, Model, PaneTerminalAdapter, PaneTerminalAdapterConfig, PaneTerminalDispatch,
-    PaneTerminalLifecyclePhase, ScreenMode, Subscription, UiAnchor, pane_terminal_splitter_handles,
+    ScreenMode, Subscription, UiAnchor, pane_terminal_splitter_handles,
 };
 use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::Borders;
+use tracing_subscriber::{Layer, layer::SubscriberExt};
+
+/// Observe the existing production startup-recovery event. This distinguishes
+/// input recovered by probes from input arriving through the live backend.
+struct StartupRecoveryTrace(Arc<std::sync::atomic::AtomicU64>);
+
+impl<S: tracing::Subscriber> Layer<S> for StartupRecoveryTrace {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        #[derive(Default)]
+        struct RecoveryFields {
+            is_recovery: bool,
+            bytes: u64,
+        }
+        impl tracing::field::Visit for RecoveryFields {
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                if field.name() == "bytes" {
+                    self.bytes = value;
+                }
+            }
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.is_recovery = format!("{value:?}")
+                        == "queued startup input recovered from the capability probes";
+                }
+            }
+        }
+        let mut fields = RecoveryFields::default();
+        event.record(&mut fields);
+        if fields.is_recovery {
+            self.0
+                .fetch_add(fields.bytes, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
 
 /// Root split node id.
 const ROOT: u64 = 1;
@@ -192,11 +231,14 @@ struct Shared {
     down_resolved: bool,
     committed: bool,
     canceled: bool,
+    cancel_preserved_state: bool,
+    dragging_seen: bool,
     tree_valid: bool,
     node_count: usize,
     first_leaf: String,
     active_pane: String,
     maximized: bool,
+    input_trace: Vec<String>,
 }
 
 struct Harness {
@@ -209,6 +251,7 @@ struct Harness {
     keyboard: Option<PaneKeyboardController>,
     op_seed: u64,
     ticks_remaining: u32,
+    started_at: Instant,
     shared: Arc<Mutex<Shared>>,
 }
 
@@ -297,6 +340,12 @@ impl Harness {
                 }
 
                 self.apply_dispatch(&dispatch, &layout);
+                if matches!(
+                    self.adapter.machine_state(),
+                    PaneDragResizeState::Dragging { .. }
+                ) {
+                    self.with_shared(|s| s.dragging_seen = true);
+                }
 
                 let committed = matches!(mouse.kind, MouseEventKind::Up(_))
                     && dispatch.primary_transition.is_some();
@@ -326,11 +375,39 @@ impl Harness {
                 // splitter target (here, the single root splitter) and supplies it
                 // through the documented `translate(event, target_hint)` contract.
                 let target = handles.first().map(|handle| handle.target);
+                let before_cancel = matches!(key.code, KeyCode::Escape).then(|| {
+                    (
+                        self.tree.to_snapshot(),
+                        self.op_seed,
+                        self.adapter.window_focused(),
+                    )
+                });
                 let dispatch = self.adapter.translate(event, target);
-                let canceled = dispatch.log.phase == PaneTerminalLifecyclePhase::KeyCancel;
+                let canceled = dispatch
+                    .primary_transition
+                    .as_ref()
+                    .is_some_and(|transition| {
+                        matches!(
+                            transition.effect,
+                            PaneDragResizeEffect::Canceled {
+                                reason: PaneCancelReason::EscapeKey,
+                                ..
+                            }
+                        )
+                    });
                 self.apply_dispatch(&dispatch, &layout);
                 if canceled {
-                    self.with_shared(|s| s.canceled = true);
+                    let preserved = before_cancel.is_some_and(|(tree, op_seed, focused)| {
+                        self.tree.to_snapshot() == tree
+                            && self.op_seed == op_seed
+                            && self.adapter.window_focused() == focused
+                            && self.adapter.active_pointer_id().is_none()
+                            && self.adapter.machine_state() == PaneDragResizeState::Idle
+                    });
+                    self.with_shared(|s| {
+                        s.canceled = true;
+                        s.cancel_preserved_state = preserved;
+                    });
                 }
                 self.record_state(false);
 
@@ -424,7 +501,20 @@ impl Model for Harness {
                     Cmd::none()
                 }
             }
-            Msg::Input(event) => self.handle_event(&event),
+            Msg::Input(event) => {
+                let before = self.adapter.machine_state();
+                let cmd = self.handle_event(&event);
+                self.with_shared(|s| {
+                    if s.input_trace.len() < 64 {
+                        s.input_trace.push(format!(
+                            "PANE_INPUT elapsed_us={} event={event:?} before={before:?} after={:?}",
+                            self.started_at.elapsed().as_micros(),
+                            self.adapter.machine_state(),
+                        ));
+                    }
+                });
+                cmd
+            }
         }
     }
 
@@ -464,6 +554,8 @@ fn env_u16(key: &str, default: u16) -> u16 {
 }
 
 fn main() -> std::io::Result<()> {
+    #[cfg(unix)]
+    let initial_termios = terminal_attributes()?;
     let mode = std::env::var("PANE_HARNESS_SCREEN_MODE").unwrap_or_else(|_| "alt".to_string());
     let axis = match std::env::var("PANE_HARNESS_AXIS").as_deref() {
         Ok("vertical") => SplitAxis::Vertical,
@@ -502,11 +594,14 @@ fn main() -> std::io::Result<()> {
         down_resolved: false,
         committed: false,
         canceled: false,
+        cancel_preserved_state: false,
+        dragging_seen: false,
         tree_valid: true,
         node_count,
         first_leaf,
         active_pane: initial_active,
         maximized: false,
+        input_trace: Vec::new(),
     }));
 
     let adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default())
@@ -518,19 +613,32 @@ fn main() -> std::io::Result<()> {
         keyboard,
         op_seed: 1,
         ticks_remaining: exit_after_ms.div_ceil(100).max(1),
+        started_at: Instant::now(),
         shared: Arc::clone(&shared),
     };
 
-    let run_result = App::new(model)
-        .screen_mode(screen_mode)
-        .anchor(anchor)
-        .with_mouse()
-        .run();
+    let recovered_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let subscriber =
+        tracing_subscriber::registry().with(StartupRecoveryTrace(Arc::clone(&recovered_bytes)));
+    let run_result = tracing::subscriber::with_default(subscriber, || {
+        App::new(model)
+            .screen_mode(screen_mode)
+            .anchor(anchor)
+            .with_mouse()
+            .run()
+    });
 
     // Terminal is restored here. Emit the deterministic, greppable result line.
+    #[cfg(unix)]
+    let termios_restored = terminal_attributes()? == initial_termios;
+    #[cfg(not(unix))]
+    let termios_restored = false;
     let snap = shared.lock().expect("shared state lock").clone();
+    for line in &snap.input_trace {
+        println!("{line}");
+    }
     println!(
-        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={}",
+        "PANE_RESULT mode={} initial_bps={} final_bps={} applied_ops={} down_resolved={} committed={} tree_valid={} node_count={} first_leaf={} canceled={} active_pane={} maximized={} cancel_preserved_state={} dragging_seen={} termios_restored={} backend={} recovered_bytes={}",
         snap.mode,
         snap.initial_bps,
         snap.final_bps,
@@ -543,8 +651,30 @@ fn main() -> std::io::Result<()> {
         snap.canceled,
         snap.active_pane,
         snap.maximized,
+        snap.cancel_preserved_state,
+        snap.dragging_seen,
+        termios_restored,
+        ftui_runtime::DEFAULT_BACKEND,
+        recovered_bytes.load(std::sync::atomic::Ordering::Relaxed),
     );
     let _ = std::io::stdout().flush();
 
     run_result
+}
+
+/// Read actual kernel terminal attributes, independently of backend bookkeeping.
+#[cfg(unix)]
+fn terminal_attributes() -> std::io::Result<Vec<u8>> {
+    let tty = std::fs::File::open("/dev/tty")?;
+    let output = std::process::Command::new("stty")
+        .arg("-g")
+        .stdin(tty)
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "stty -g failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(output.stdout)
 }
