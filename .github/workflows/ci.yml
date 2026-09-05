@@ -2342,6 +2342,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PANE_RELEASE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      PANE_RELEASE_ROOT: target/pane-profiling/${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout
@@ -2373,12 +2374,12 @@ jobs:
           done
 
       - name: Emit symbolized pane replay artifacts
-        run: ./scripts/pane_profile.sh --test --out-dir target/pane-profiling/ci
+        run: ./scripts/pane_profile.sh --test --out-dir "$PANE_RELEASE_ROOT"
 
       - name: Validate replay artifact contract (strict)
         run: |
           python3 scripts/pane_replay_artifacts.py validate \
-            --index target/pane-profiling/ci/replay_artifact_index.json \
+            --index "$PANE_RELEASE_ROOT/replay_artifact_index.json" \
             --require-symbolization \
             --json
 
@@ -2391,25 +2392,25 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          cargo test -p ftui-layout --test pane_determinism_matrix -- --nocapture 2>&1 | tee target/pane-profiling/ci/differential.log
+          cargo test -p ftui-layout --test pane_determinism_matrix -- --nocapture 2>&1 | tee "$PANE_RELEASE_ROOT/differential.log"
           pipeline_status=("${PIPESTATUS[@]}")
           test_status=${pipeline_status[0]}
           set -e
           if [[ "${pipeline_status[1]}" -ne 0 ]]; then exit "${pipeline_status[1]}"; fi
           python3 scripts/pane_test_summary_aggregate.py capture \
             --crate ftui-layout --target pane_determinism_matrix \
-            --log target/pane-profiling/ci/differential.log --exit-code "$test_status" \
-            --results-dir target/pane-profiling/ci \
-            --out target/pane-profiling/ci/differential_summary.json
+            --log "$PANE_RELEASE_ROOT/differential.log" --exit-code "$test_status" \
+            --results-dir "$PANE_RELEASE_ROOT" \
+            --out "$PANE_RELEASE_ROOT/differential_summary.json"
           exit "$test_status"
 
       - name: Certify against golden replay-oracle (semantic + differential)
         run: |
           python3 scripts/pane_replay_artifacts.py certify \
-            --index target/pane-profiling/ci/replay_artifact_index.json \
+            --index "$PANE_RELEASE_ROOT/replay_artifact_index.json" \
             --golden scripts/pane_replay_golden.json \
-            --differential-summary target/pane-profiling/ci/differential_summary.json \
-            --results-dir target/pane-profiling/ci \
+            --differential-summary "$PANE_RELEASE_ROOT/differential_summary.json" \
+            --results-dir "$PANE_RELEASE_ROOT" \
             --require-match \
             --json
 
@@ -2422,12 +2423,12 @@ jobs:
           set -euo pipefail
           for mix in structural mixed; do
             python3 scripts/pane_replay_artifacts.py certify \
-              --manifest "target/pane-profiling/ci/pane_extra_harness_${mix}/manifest.json" \
+              --manifest "$PANE_RELEASE_ROOT/pane_extra_harness_${mix}/manifest.json" \
               --golden scripts/pane_replay_golden.json \
-              --differential-summary target/pane-profiling/ci/differential_summary.json \
-              --results-dir target/pane-profiling/ci \
+              --differential-summary "$PANE_RELEASE_ROOT/differential_summary.json" \
+              --results-dir "$PANE_RELEASE_ROOT" \
               --require-match \
-              --out-dir "target/pane-profiling/ci/pane_extra_harness_${mix}" \
+              --out-dir "$PANE_RELEASE_ROOT/pane_extra_harness_${mix}" \
               --json
           done
 
@@ -2448,9 +2449,9 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/pane_test_summary_aggregate.py selftest
-          mkdir -p target/pane-test-summaries/fragments target/pane-profiling/ci/suite-logs
+          mkdir -p target/pane-test-summaries/fragments "$PANE_RELEASE_ROOT/suite-logs"
           while IFS=$'\t' read -r crate target; do
-            log="target/pane-profiling/ci/suite-logs/${crate}__${target}.log"
+            log="$PANE_RELEASE_ROOT/suite-logs/${crate}__${target}.log"
             echo "::group::${crate}::${target}"
             set +e
             cargo test -p "$crate" --test "$target" -- --nocapture 2>&1 | tee "$log"
@@ -2461,7 +2462,7 @@ jobs:
             echo "::endgroup::"
             python3 scripts/pane_test_summary_aggregate.py capture \
               --crate "$crate" --target "$target" --log "$log" --exit-code "$test_status" \
-              --results-dir target/pane-profiling/ci \
+              --results-dir "$PANE_RELEASE_ROOT" \
               --out "target/pane-test-summaries/fragments/${crate}__${target}.json"
             if [[ "$test_status" -ne 0 ]]; then exit "$test_status"; fi
           done < <(python3 scripts/pane_test_summary_aggregate.py list)
@@ -2485,12 +2486,12 @@ jobs:
           mkdir -p target/pane-release
           python3 scripts/pane_release_evidence.py collect \
             --out target/pane-release/pane_release_evidence.json \
-            --results-dir target/pane-profiling/ci \
+            --results-dir "$PANE_RELEASE_ROOT" \
             --test-summary target/pane-test-summaries/pane_test_summary.json \
             --strict --json
           python3 scripts/pane_release_evidence.py validate \
             --bundle target/pane-release/pane_release_evidence.json \
-            --results-dir target/pane-profiling/ci \
+            --results-dir "$PANE_RELEASE_ROOT" \
             --json
 
       # bd-1w0w4.5 + bd-nqxa5: render the objective go/no-go verdict from the
@@ -2503,8 +2504,8 @@ jobs:
           python3 scripts/pane_release_gate.py selftest
           python3 scripts/pane_release_gate.py evaluate \
             --bundle target/pane-release/pane_release_evidence.json \
-            --certification target/pane-profiling/ci/differential_certification.json \
-            --results-dir target/pane-profiling/ci \
+            --certification "$PANE_RELEASE_ROOT/differential_certification.json" \
+            --results-dir "$PANE_RELEASE_ROOT" \
             --mode ga \
             --out target/pane-release/pane_release_gate.json \
             --json
