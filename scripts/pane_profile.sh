@@ -77,6 +77,7 @@ EOF
 done
 
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
 EXACT_BINARY_DIR="${OUT_DIR}/executed-binaries"
 mkdir -p "$EXACT_BINARY_DIR"
 
@@ -776,7 +777,7 @@ emit_and_validate_replay_index() {
         python3 "${SCRIPT_DIR}/pane_replay_artifacts.py" certify \
             --index "${OUT_DIR}/replay_artifact_index.json" \
             --golden "$golden" \
-            --require-match
+            --require-golden-match
     fi
 }
 

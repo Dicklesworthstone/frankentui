@@ -29,6 +29,7 @@ mode).
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import re
 import sys
@@ -36,8 +37,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from pane_release_evidence import (archive_binary, contained_path, load_json, observation_errors,
+                                    provenance, sha256_file)
+
 SCHEMA = "ftui.pane.test_summary"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # The libtest summary line: "test result: ok. 12 passed; 0 failed; ..."
 RESULT_RE = re.compile(
@@ -47,7 +51,7 @@ RESULT_RE = re.compile(
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
+    return load_json(path)
 
 
 def _fragment_paths(inputs: list[str]) -> list[Path]:
@@ -63,7 +67,7 @@ def _fragment_paths(inputs: list[str]) -> list[Path]:
     return paths
 
 
-def capture(log_text: str, crate: str, target: str) -> dict[str, Any]:
+def capture(log_text: str, crate: str, target: str, exit_code: int) -> dict[str, Any]:
     """Parse a cargo-test log into a one-suite summary fragment.
 
     Multiple ``test result:`` lines (unit + doc tests) are summed; a log with
@@ -78,50 +82,67 @@ def capture(log_text: str, crate: str, target: str) -> dict[str, Any]:
         )
     passed = sum(int(m.group("passed")) for m in matches)
     failed = sum(int(m.group("failed")) for m in matches)
+    verdicts = {m.group("verdict") for m in matches}
+    if verdicts - {"ok", "FAILED"}:
+        raise ValueError(f"unknown libtest verdict: {sorted(verdicts)}")
+    record = {"passed": passed, "failed": failed, "exit_code": exit_code,
+              "verdict": "FAILED" if "FAILED" in verdicts else "ok"}
+    errors = observation_errors(record)
+    if errors:
+        raise ValueError("; ".join(errors))
     return {
         "_meta": {
             "schema": SCHEMA,
             "schema_version": SCHEMA_VERSION,
             "sources": [f"{crate}::{target}"],
         },
-        f"{crate}::{target}": {"passed": passed, "failed": failed},
+        f"{crate}::{target}": record,
     }
 
 
 def merge(fragments: list[dict[str, Any]], on_conflict: str) -> dict[str, Any]:
     """Merge summary fragments into one aggregated summary.
 
-    Duplicate suite keys with identical numbers are collapsed; disagreeing
-    duplicates are an error (``on_conflict="error"``) or resolved toward the
+    Duplicate suite keys are an error (``on_conflict="error"``) or resolved toward the
     redder record (``on_conflict="worst"``) so a flaky re-run can never
     launder a red suite into green.
     """
     merged: dict[str, Any] = {}
     sources: list[str] = []
+    if on_conflict not in ("error", "worst"):
+        raise ValueError(f"unknown merge conflict policy: {on_conflict}")
     for fragment in fragments:
+        if not isinstance(fragment, dict):
+            raise ValueError("fragment must be an object")
         meta = fragment.get("_meta", {})
+        if not isinstance(meta, dict) or meta.get("schema") != SCHEMA or type(meta.get("schema_version")) is not int or meta.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError("fragment schema/version mismatch")
+        if not isinstance(meta.get("sources", []), list) or any(not isinstance(s, str) for s in meta.get("sources", [])):
+            raise ValueError("fragment sources must be a list of strings")
         sources.extend(meta.get("sources", []))
         for key, value in fragment.items():
             if key == "_meta":
                 continue
-            if "::" not in key:
-                raise ValueError(f"malformed suite key (want crate::target): {key!r}")
-            record = {
-                "passed": int(value.get("passed", 0)),
-                "failed": int(value.get("failed", 0)),
-            }
+            if key not in declared_suites():
+                raise ValueError(f"unknown suite identity: {key!r}")
+            errors = observation_errors(value)
+            if errors:
+                raise ValueError(f"{key}: {'; '.join(errors)}")
+            record = dict(value)
             existing = merged.get(key)
-            if existing is None or existing == record:
+            if existing is None:
                 merged[key] = record
                 continue
             if on_conflict == "worst":
                 merged[key] = {
                     "passed": min(existing["passed"], record["passed"]),
                     "failed": max(existing["failed"], record["failed"]),
+                    "exit_code": max(existing["exit_code"], record["exit_code"]),
+                    "verdict": "ok" if existing["verdict"] == record["verdict"] == "ok" else "FAILED",
                 }
             else:
                 raise ValueError(
-                    f"conflicting summaries for {key}: {existing} vs {record} "
+                    f"duplicate summaries for {key}: {existing} vs {record} "
                     "(pass --on-conflict=worst to keep the redder record)"
                 )
     merged["_meta"] = {
@@ -148,6 +169,15 @@ def declared_suites() -> list[str]:
 def check(summary: dict[str, Any], require_all: bool) -> dict[str, Any]:
     """Cross-check an aggregated summary against the declared suite list."""
     declared = declared_suites()
+    errors = []
+    if not isinstance(summary, dict):
+        return {"ok": False, "errors": ["summary must be an object"]}
+    meta = summary.get("_meta")
+    if not isinstance(meta, dict) or meta.get("schema") != SCHEMA or type(meta.get("schema_version")) is not int or meta.get("schema_version") != SCHEMA_VERSION:
+        errors.append("summary schema/version mismatch")
+    unknown = set(summary) - set(declared) - {"_meta"}
+    if unknown:
+        errors.append(f"unknown suite identities: {sorted(unknown)}")
     missing = [k for k in declared if k not in summary]
     red = []
     empty = []
@@ -155,11 +185,14 @@ def check(summary: dict[str, Any], require_all: bool) -> dict[str, Any]:
         record = summary.get(key)
         if record is None:
             continue
-        if int(record.get("failed", 0)) > 0:
+        invalid = observation_errors(record)
+        if invalid:
+            errors.append(f"{key}: {'; '.join(invalid)}")
+        elif record["failed"] > 0 or record["exit_code"] != 0 or record["verdict"] != "ok":
             red.append(key)
-        elif int(record.get("passed", 0)) == 0:
+        elif record["passed"] == 0:
             empty.append(key)
-    ok = not red and not empty and (not require_all or not missing)
+    ok = not errors and not red and not empty and (not require_all or not missing)
     return {
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -169,6 +202,7 @@ def check(summary: dict[str, Any], require_all: bool) -> dict[str, Any]:
         "missing": missing,
         "red": red,
         "empty": empty,
+        "errors": errors,
     }
 
 
@@ -183,7 +217,26 @@ def cmd_capture(args: argparse.Namespace) -> int:
         print(f"error: log not found: {log_path}", file=sys.stderr)
         return 2
     try:
-        fragment = capture(log_path.read_text(errors="replace"), args.crate, args.target)
+        fragment = capture(log_path.read_text(errors="replace"), args.crate, args.target,
+                           args.exit_code)
+        record = fragment[f"{args.crate}::{args.target}"]
+        root = Path(__file__).resolve().parent.parent
+        record["provenance"] = provenance(root, "scripts/pane_test_summary_aggregate.py", SCHEMA, SCHEMA_VERSION)
+        if args.results_dir:
+            results = Path(args.results_dir).resolve()
+            relative = str(log_path.resolve().relative_to(results))
+            contained_path(results, relative)
+            record["log"] = {"path": relative, "sha256": sha256_file(log_path)}
+            text = re.sub(r"\x1b\[[0-9;]*m", "", log_path.read_text(errors="replace"))
+            binaries = set(re.findall(r"Running [^\n]* \(([^()\n]+)\)", text))
+            if len(binaries) != 1:
+                raise ValueError("capture requires exactly one executed integration-test binary")
+            binary = Path(next(iter(binaries)))
+            if not binary.is_absolute():
+                binary = root / binary
+            record["binary"] = archive_binary(binary, results)
+            record["command"] = ["cargo", "test", "-p", args.crate, "--test",
+                                  args.target, "--", "--nocapture"]
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -236,39 +289,46 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
         "   Doc-tests demo\n"
         "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured\n"
     )
-    frag = capture(log, "ftui-layout", "pane_margin")
-    if frag["ftui-layout::pane_margin"] != {"passed": 4, "failed": 0}:
+    frag = capture(log, "ftui-layout", "pane_margin", 0)
+    if frag["ftui-layout::pane_margin"] != {"passed": 4, "failed": 0, "verdict": "ok", "exit_code": 0}:
         failures.append(f"capture summed wrong: {frag}")
     try:
-        capture("no summary here", "c", "t")
+        capture("no summary here", "ftui-layout", "pane_margin", 0)
         failures.append("capture accepted a log without a result line")
     except ValueError:
         pass
 
-    # merge: identical dupes collapse; conflicts error; worst keeps red.
-    a = {"_meta": {"sources": ["a"]}, "c::t": {"passed": 5, "failed": 0}}
-    b = {"_meta": {"sources": ["b"]}, "c::u": {"passed": 2, "failed": 0}}
-    merged = merge([a, b, a], "error")
-    if merged["c::t"] != {"passed": 5, "failed": 0} or merged["c::u"]["passed"] != 2:
+    # merge: every duplicate identity fails by default; worst keeps red.
+    a = capture("test result: ok. 5 passed; 0 failed;", "ftui-layout", "pane_margin", 0)
+    b = capture("test result: ok. 2 passed; 0 failed;", "ftui-layout", "pane_monitor_gates", 0)
+    key = "ftui-layout::pane_margin"
+    merged = merge([a, b], "error")
+    if merged[key] != a[key] or merged["ftui-layout::pane_monitor_gates"]["passed"] != 2:
         failures.append(f"merge wrong: {merged}")
-    conflict = {"c::t": {"passed": 4, "failed": 1}}
+    try:
+        merge([a, a], "error")
+        failures.append("merge accepted duplicate identities with identical counts")
+    except ValueError:
+        pass
+    conflict = capture("test result: FAILED. 4 passed; 1 failed;", "ftui-layout", "pane_margin", 101)
     try:
         merge([a, conflict], "error")
         failures.append("merge accepted a conflicting duplicate")
     except ValueError:
         pass
     worst = merge([a, conflict], "worst")
-    if worst["c::t"] != {"passed": 4, "failed": 1}:
+    if worst[key] != conflict[key]:
         failures.append(f"worst-merge must keep the redder record: {worst}")
 
     # check: green-complete passes; red/missing/empty are named.
-    complete = {k: {"passed": 1, "failed": 0} for k in declared_suites()}
+    complete = {k: {"passed": 1, "failed": 0, "verdict": "ok", "exit_code": 0} for k in declared_suites()}
+    complete["_meta"] = {"schema": SCHEMA, "schema_version": SCHEMA_VERSION}
     report = check(complete, require_all=True)
     if not report["ok"] or report["missing"]:
         failures.append(f"complete-green check failed: {report}")
     first = declared_suites()[0]
     red = dict(complete)
-    red[first] = {"passed": 1, "failed": 2}
+    red[first] = {"passed": 1, "failed": 2, "verdict": "FAILED", "exit_code": 101}
     report = check(red, require_all=True)
     if report["ok"] or report["red"] != [first]:
         failures.append(f"red suite not detected: {report}")
@@ -280,12 +340,12 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
     if not check(partial, require_all=False)["ok"]:
         failures.append("partial summary must pass without --require-all")
     empty = dict(complete)
-    empty[first] = {"passed": 0, "failed": 0}
+    empty[first] = {"passed": 0, "failed": 0, "verdict": "ok", "exit_code": 0}
     if check(empty, require_all=True)["ok"]:
         failures.append("zero-passed suite must not count as green")
 
     # round-trip through the CLI surface (tempdir).
-    with tempfile.TemporaryDirectory() as tmp:
+    with nullcontext(tempfile.mkdtemp(prefix="pane-summary-selftest-")) as tmp:
         frag_path = Path(tmp) / "frag.json"
         frag_path.write_text(json.dumps(frag))
         merged2 = merge([_load_json(p) for p in _fragment_paths([tmp])], "error")
@@ -308,6 +368,9 @@ def main(argv: list[str] | None = None) -> int:
     p_capture.add_argument("--crate", required=True)
     p_capture.add_argument("--target", required=True)
     p_capture.add_argument("--log", required=True)
+    p_capture.add_argument("--exit-code", type=int, required=True,
+                           help="actual exit status of the test process, including failures")
+    p_capture.add_argument("--results-dir", help="archive log and binary evidence under this run root")
     p_capture.add_argument("--out")
     p_capture.add_argument("--json", action="store_true")
     p_capture.set_defaults(func=cmd_capture)
@@ -337,7 +400,11 @@ def main(argv: list[str] | None = None) -> int:
     p_self.set_defaults(func=cmd_selftest)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (ValueError, OSError) as exc:
+        print(json.dumps({"ok": False, "errors": [str(exc)]}))
+        return 1
 
 
 if __name__ == "__main__":

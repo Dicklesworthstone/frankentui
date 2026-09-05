@@ -41,14 +41,16 @@ Subcommands
     Build a synthetic bundle in a temp dir, emit, validate (lenient + strict),
     and assert that a tampered checksum is rejected. No cargo build required.
 
-Determinism: the index lists artifacts by path (sorted) with content hashes and
-omits volatile fields like mtimes, so the replay/symbolization *evidence* is
-stable for identical inputs even though absolute executed paths are provenance.
+Determinism: artifact listings and compressed binary bytes are stable for
+identical inputs. Run provenance deliberately includes an observation time;
+absolute executed paths remain diagnostic provenance, while verified artifact
+references are relative to the relocated bundle root.
 """
 
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import sys
@@ -56,8 +58,13 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from pane_release_evidence import (archive_binary, check_binary, contained_path, load_json,
+                                    build_identity, observed_green, provenance, provenance_errors,
+                                    validate_observation_artifacts)
+import os
+
 SCHEMA = "ftui.pane.replay_artifact_index"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BEAD = "bd-1pvzq.1"
 
 INDEX_FILENAME = "replay_artifact_index.json"
@@ -68,7 +75,7 @@ SYMBOL_METADATA_FILENAME = "symbol_metadata.txt"
 GOLDEN_SCHEMA = "ftui.pane.replay_golden"
 GOLDEN_SCHEMA_VERSION = 1
 DIFF_CERT_SCHEMA = "ftui.pane.differential_certification"
-DIFF_CERT_SCHEMA_VERSION = 1
+DIFF_CERT_SCHEMA_VERSION = 2
 DIFF_CERT_FILENAME = "differential_certification.json"
 # The substrates the bd-1pvzq.4 determinism matrix proves observationally
 # identical; the certification records them as the differential proof.
@@ -269,6 +276,11 @@ def build_index(
                     entry[key] = block[key]
             entry["symbolization_ready"] = _is_truthy(block.get("symbolization_ready"))
             entry["addr2line_ready"] = _is_truthy(block.get("addr2line_ready"))
+            exact = Path(block.get("exact_binary_local", "missing"))
+            if not exact.is_absolute():
+                exact = out_dir / exact
+            if exact.is_file():
+                entry["artifact"] = archive_binary(exact, out_dir)
             binaries.append(entry)
 
     all_ready = bool(binaries) and all(b.get("symbolization_ready") for b in binaries)
@@ -325,6 +337,8 @@ def cmd_emit(args: argparse.Namespace) -> int:
         runner=args.runner,
     )
     index_path = out_dir / INDEX_FILENAME
+    index["provenance"] = provenance(Path(__file__).resolve().parent.parent,
+                                     "scripts/pane_replay_artifacts.py", SCHEMA, SCHEMA_VERSION)
     index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
     print(f"replay_artifact_index={index_path}")
     print(f"replay_scenario={index['replay'].get('scenario', 'unknown')}")
@@ -357,34 +371,45 @@ def validate_index(
     if not index_path.is_file():
         raise ValidationError(f"index not found: {index_path}")
     try:
-        index = json.loads(index_path.read_text())
-    except json.JSONDecodeError as exc:
+        index = load_json(index_path)
+    except ValueError as exc:
         raise ValidationError(f"index is not valid JSON: {exc}") from exc
 
     base = out_dir.resolve() if out_dir is not None else index_path.parent.resolve()
     errors: List[str] = []
 
+    if not isinstance(index, dict):
+        raise ValidationError("index must be an object")
     if index.get("schema") != SCHEMA:
         errors.append(f"schema mismatch: expected {SCHEMA!r}, got {index.get('schema')!r}")
-    if index.get("schema_version") != SCHEMA_VERSION:
+    if type(index.get("schema_version")) is not int or index.get("schema_version") != SCHEMA_VERSION:
         errors.append(
             f"schema_version mismatch: expected {SCHEMA_VERSION}, got {index.get('schema_version')}"
         )
     for key in ("replay", "symbolization", "artifacts"):
         if key not in index:
             errors.append(f"missing top-level key: {key!r}")
+    for key in ("replay", "symbolization"):
+        if not isinstance(index.get(key), dict):
+            errors.append(f"{key} must be an object")
+    if not isinstance(index.get("artifacts"), list):
+        errors.append("artifacts must be a list")
     if errors:
         raise ValidationError("; ".join(errors))
 
     def check_ref(ref: Optional[Dict[str, Any]], what: str) -> None:
-        if ref is None:
+        if not isinstance(ref, dict):
             errors.append(f"{what}: missing file reference")
             return
         rel = ref.get("path")
         if not rel:
             errors.append(f"{what}: reference has no path")
             return
-        target = base / rel
+        try:
+            target = contained_path(base, rel)
+        except ValueError as exc:
+            errors.append(f"{what}: {exc}")
+            return
         if not target.is_file():
             errors.append(f"{what}: file does not exist: {rel}")
             return
@@ -402,6 +427,8 @@ def validate_index(
         if field not in replay:
             errors.append(f"replay: missing summary field {field!r}")
     snapshots = replay.get("snapshots") or []
+    if not isinstance(snapshots, list):
+        raise ValidationError("replay.snapshots must be a list")
     if len(snapshots) < 2:
         errors.append(f"replay: expected >=2 snapshots, got {len(snapshots)}")
     for idx, snap in enumerate(snapshots):
@@ -411,12 +438,20 @@ def validate_index(
     # Cross-check: the index replay hashes must agree with the manifest itself,
     # so the index can never drift from the evidence it claims to summarize.
     manifest_ref = replay.get("manifest") or {}
+    if not isinstance(manifest_ref, dict):
+        raise ValidationError("replay.manifest must be a file reference object")
     manifest_rel = manifest_ref.get("path")
-    if manifest_rel and (base / manifest_rel).is_file():
+    try:
+        manifest_path = contained_path(base, manifest_rel)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    if manifest_path.is_file():
         try:
-            manifest = json.loads((base / manifest_rel).read_text())
-        except json.JSONDecodeError as exc:
+            manifest = load_json(manifest_path)
+        except ValueError as exc:
             raise ValidationError(f"replay manifest is not valid JSON: {manifest_rel}: {exc}") from exc
+        if not isinstance(manifest, dict):
+            raise ValidationError("replay manifest must be an object")
         for field in ("baseline_hash", "final_hash", "aggregate_hash", "scenario"):
             if field in replay and field in manifest and replay[field] != manifest[field]:
                 errors.append(
@@ -428,7 +463,13 @@ def validate_index(
     symbolization = index["symbolization"]
     check_ref(symbolization.get("metadata"), "symbolization.metadata")
     binaries = symbolization.get("binaries") or []
+    if not isinstance(binaries, list) or any(not isinstance(b, dict) for b in binaries):
+        raise ValidationError("symbolization binaries must be a list of objects")
+    if any(not isinstance(b.get("label"), str) for b in binaries):
+        raise ValidationError("symbolization binary labels must be strings")
     labels = {b.get("label") for b in binaries}
+    if len(labels) != len(binaries) or labels - set(EXPECTED_BINARY_LABELS):
+        errors.append("symbolization: unknown or duplicate binary identity")
     for expected in EXPECTED_BINARY_LABELS:
         if expected not in labels:
             errors.append(f"symbolization: missing expected binary label {expected!r}")
@@ -438,6 +479,12 @@ def validate_index(
             if field not in binary:
                 errors.append(f"symbolization[{label}]: missing field {field!r}")
         if require_symbolization:
+            try:
+                check_binary(binary.get("artifact"), base)
+                if binary["artifact"]["executable_sha256"] != binary.get("binary_sha256"):
+                    errors.append(f"symbolization[{label}]: executable differs from symbol metadata")
+            except (ValueError, OSError, EOFError) as exc:
+                errors.append(f"symbolization[{label}]: {exc}")
             if not binary.get("symbolization_ready"):
                 errors.append(
                     f"symbolization[{label}]: not symbolization-ready "
@@ -458,7 +505,11 @@ def validate_index(
     listed_paths = set()
     for ref in artifacts:
         check_ref(ref, "artifacts")
-        if ref.get("path"):
+        if not isinstance(ref, dict):
+            continue
+        if isinstance(ref.get("path"), str) and ref["path"]:
+            if ref["path"] in listed_paths:
+                errors.append(f"artifacts: duplicate path: {ref['path']}")
             listed_paths.add(ref["path"])
     # Completeness: the core replay + symbolization files must be in the list.
     required_in_manifest = [
@@ -528,13 +579,24 @@ def load_golden(golden_path: Path) -> Dict[str, Any]:
     if not golden_path.is_file():
         raise SystemExit(f"golden oracle not found: {golden_path}")
     try:
-        golden = json.loads(golden_path.read_text())
-    except json.JSONDecodeError as exc:
+        golden = load_json(golden_path)
+    except ValueError as exc:
         raise SystemExit(f"golden oracle is not valid JSON: {golden_path}: {exc}") from exc
+    if not isinstance(golden, dict):
+        raise ValueError("golden must be an object")
     if golden.get("schema") != GOLDEN_SCHEMA:
         raise SystemExit(
             f"golden schema mismatch: expected {GOLDEN_SCHEMA!r}, got {golden.get('schema')!r}"
         )
+    if type(golden.get("schema_version")) is not int or golden.get("schema_version") != GOLDEN_SCHEMA_VERSION:
+        raise ValueError("golden schema version mismatch")
+    if not isinstance(golden.get("scenarios"), dict):
+        raise ValueError("golden scenarios must be an object")
+    for scenario, expected in golden["scenarios"].items():
+        if not scenario or not isinstance(expected, dict):
+            raise ValueError("invalid golden scenario")
+        if any(type(expected.get(key)) is not int or expected[key] < 0 for key in PINNED_GOLDEN_HASHES):
+            raise ValueError(f"golden scenario {scenario!r} requires integer replay hashes")
     return golden
 
 
@@ -576,6 +638,8 @@ def build_certification(
         classification = "semantic_drift"
     elif matrix_passed is False:
         classification = "differential_matrix_failed"
+    elif matrix_passed is None:
+        classification = "golden_matched_unverified"
     else:
         classification = "certified"
 
@@ -612,6 +676,9 @@ def _certification_summary(
     ns_per_iteration: Any,
     matrix_passed: Optional[bool],
 ) -> str:
+    if classification == "golden_matched_unverified":
+        return (f"Scenario {scenario!r} matches the golden replay hashes; "
+                "differential execution is unobserved. This is local diagnostic evidence.")
     if classification == "certified":
         if matrix_passed is True:
             diff = f"and the {DETERMINISM_MATRIX_TEST} differential proof passed"
@@ -674,8 +741,8 @@ def cmd_certify(args: argparse.Namespace) -> int:
             print(f"manifest not found: {manifest_path}", file=sys.stderr)
             return 1
         try:
-            manifest = json.loads(manifest_path.read_text())
-        except json.JSONDecodeError as exc:
+            manifest = load_json(manifest_path)
+        except ValueError as exc:
             print(f"manifest is not valid JSON: {manifest_path}: {exc}", file=sys.stderr)
             return 1
         index = {
@@ -699,10 +766,37 @@ def cmd_certify(args: argparse.Namespace) -> int:
     golden_path = Path(args.golden).resolve()
 
     matrix_passed: Optional[bool] = None
-    if args.differential_matrix_passed == "true":
-        matrix_passed = True
-    elif args.differential_matrix_passed == "false":
-        matrix_passed = False
+    summary_path = Path(args.differential_summary).resolve() if args.differential_summary else None
+    root = Path(__file__).resolve().parent.parent
+    results = Path(args.results_dir).resolve() if args.results_dir else index_path.parent
+    if summary_path is not None:
+        from pane_test_summary_aggregate import SCHEMA as summary_schema, SCHEMA_VERSION as summary_version
+        expected = build_identity(root, os.environ.get("PANE_RELEASE_RUN_ID", ""))
+        summary = load_json(summary_path)
+        key = "ftui-layout::pane_determinism_matrix"
+        if not isinstance(summary, dict) or set(summary) != {"_meta", key}:
+            raise ValueError("differential summary must contain exactly the matrix suite")
+        meta = summary["_meta"]
+        if not isinstance(meta, dict) or meta.get("schema") != summary_schema or type(meta.get("schema_version")) is not int or meta.get("schema_version") != summary_version:
+            raise ValueError("differential summary schema/version mismatch")
+        record = summary[key]
+        if not isinstance(record, dict):
+            raise ValueError("differential observation must be an object")
+        errors = validate_observation_artifacts(record, "ftui-layout", "pane_determinism_matrix", results, root, expected)
+        replay_index_path = results / INDEX_FILENAME if args.manifest else index_path
+        validate_index(replay_index_path, out_dir=results, require_symbolization=True)
+        replay_index = load_json(replay_index_path)
+        errors.extend(provenance_errors(replay_index.get("provenance"), expected, root,
+                                        "scripts/pane_replay_artifacts.py", SCHEMA, SCHEMA_VERSION))
+        if args.manifest:
+            rel = str(index_path.relative_to(results))
+            contained_path(results, rel)
+            if not any(ref.get("path") == rel and ref.get("sha256") == sha256_file(index_path)
+                       for ref in replay_index["artifacts"]):
+                errors.append("extra scenario manifest is not bound to the verified primary replay index")
+        if errors:
+            raise ValueError("; ".join(errors))
+        matrix_passed = observed_green(record)
 
     if args.update_golden:
         golden = load_golden(golden_path) if golden_path.is_file() else {
@@ -716,6 +810,14 @@ def cmd_certify(args: argparse.Namespace) -> int:
 
     golden = load_golden(golden_path)
     cert = build_certification(index, golden, matrix_passed=matrix_passed)
+    cert["provenance"] = provenance(root, "scripts/pane_replay_artifacts.py", DIFF_CERT_SCHEMA, DIFF_CERT_SCHEMA_VERSION)
+    cert["inputs"] = {"index_sha256": sha256_file(index_path),
+                      "golden_sha256": sha256_file(golden_path)}
+    if summary_path is not None:
+        relative = str(summary_path.relative_to(results))
+        contained_path(results, relative)
+        cert["inputs"]["differential_summary"] = {"path": relative,
+                                                  "sha256": sha256_file(summary_path)}
 
     out_dir = Path(args.out_dir).resolve() if args.out_dir else index_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -732,6 +834,8 @@ def cmd_certify(args: argparse.Namespace) -> int:
         print(f"  {cert['summary']}")
         print(f"  artifact={cert_path}")
 
+    if args.require_golden_match and not cert["golden_oracle"]["matched"]:
+        return 1
     if not ok and args.require_match:
         return 1
     return 0
@@ -773,6 +877,9 @@ def _write_synthetic_bundle(out_dir: Path, *, symbolization_ready: bool) -> None
     stripped = "false" if symbolization_ready else "true"
     blocks = []
     for label in EXPECTED_BINARY_LABELS:
+        binary = out_dir / "executed-binaries" / f"{label}-deadbeef"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(f"synthetic symbolization fixture {label}".encode())
         blocks.append(
             "\n".join(
                 [
@@ -789,7 +896,7 @@ def _write_synthetic_bundle(out_dir: Path, *, symbolization_ready: bool) -> None
                     f"debug_info={debug}",
                     f"stripped={stripped}",
                     f"addr2line_ready={ready}",
-                    "binary_sha256=00",
+                    f"binary_sha256={sha256_file(binary)}",
                     f"symbolization_ready={ready}",
                     "",
                 ]
@@ -807,7 +914,7 @@ def cmd_selftest(_: argparse.Namespace) -> int:
         if not condition:
             failures.append(name)
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with nullcontext(tempfile.mkdtemp(prefix="pane-replay-selftest-")) as tmp:
         # Strict-ready bundle.
         ready_dir = Path(tmp) / "ready"
         _write_synthetic_bundle(ready_dir, symbolization_ready=True)
@@ -962,16 +1069,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="where to write differential_certification.json (default: index's directory)",
     )
     certify.add_argument(
-        "--differential-matrix-passed",
-        choices=("true", "false", "unknown"),
-        default="unknown",
-        help="result of the bd-1pvzq.4 determinism matrix for this run",
+        "--differential-summary",
+        help="captured result and artifact references for the actual differential matrix run",
     )
+    certify.add_argument("--results-dir", help="root for differential summary references")
     certify.add_argument(
         "--require-match",
         action="store_true",
         help="exit non-zero unless the run is fully certified (CI gate)",
     )
+    certify.add_argument("--require-golden-match", action="store_true",
+                         help="local diagnostic: require replay hashes to match, without claiming differential certification")
     certify.add_argument(
         "--update-golden",
         action="store_true",
@@ -989,7 +1097,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (ValueError, OSError, ValidationError) as exc:
+        print(json.dumps({"ok": False, "errors": [str(exc)]}))
+        return 1
 
 
 if __name__ == "__main__":

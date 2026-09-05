@@ -2340,6 +2340,8 @@ jobs:
   pane-perf-artifacts:
     name: Pane Perf Replay Artifacts
     runs-on: ubuntu-latest
+    env:
+      PANE_RELEASE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout
@@ -2386,14 +2388,26 @@ jobs:
       # matrix passed, so the differential half is recorded as passed; a golden
       # drift (semantic regression) fails the gate with an actionable report.
       - name: Differential determinism proof (baseline vs optimized strategies)
-        run: cargo test -p ftui-layout --test pane_determinism_matrix -- --nocapture
+        run: |
+          set -euo pipefail
+          set +e
+          cargo test -p ftui-layout --test pane_determinism_matrix -- --nocapture 2>&1 | tee target/pane-profiling/ci/differential.log
+          test_status=${PIPESTATUS[0]}
+          set -e
+          python3 scripts/pane_test_summary_aggregate.py capture \
+            --crate ftui-layout --target pane_determinism_matrix \
+            --log target/pane-profiling/ci/differential.log --exit-code "$test_status" \
+            --results-dir target/pane-profiling/ci \
+            --out target/pane-profiling/ci/differential_summary.json
+          exit "$test_status"
 
       - name: Certify against golden replay-oracle (semantic + differential)
         run: |
           python3 scripts/pane_replay_artifacts.py certify \
             --index target/pane-profiling/ci/replay_artifact_index.json \
             --golden scripts/pane_replay_golden.json \
-            --differential-matrix-passed true \
+            --differential-summary target/pane-profiling/ci/differential_summary.json \
+            --results-dir target/pane-profiling/ci \
             --require-match \
             --json
 
@@ -2408,7 +2422,8 @@ jobs:
             python3 scripts/pane_replay_artifacts.py certify \
               --manifest "target/pane-profiling/ci/pane_extra_harness_${mix}/manifest.json" \
               --golden scripts/pane_replay_golden.json \
-              --differential-matrix-passed true \
+              --differential-summary target/pane-profiling/ci/differential_summary.json \
+              --results-dir target/pane-profiling/ci \
               --require-match \
               --out-dir "target/pane-profiling/ci/pane_extra_harness_${mix}" \
               --json
@@ -2431,15 +2446,20 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/pane_test_summary_aggregate.py selftest
-          mkdir -p target/pane-test-summaries/fragments target/pane-test-summaries/logs
+          mkdir -p target/pane-test-summaries/fragments target/pane-profiling/ci/suite-logs
           while IFS=$'\t' read -r crate target; do
-            log="target/pane-test-summaries/logs/${crate}__${target}.log"
+            log="target/pane-profiling/ci/suite-logs/${crate}__${target}.log"
             echo "::group::${crate}::${target}"
+            set +e
             cargo test -p "$crate" --test "$target" -- --nocapture 2>&1 | tee "$log"
+            test_status=${PIPESTATUS[0]}
+            set -e
             echo "::endgroup::"
             python3 scripts/pane_test_summary_aggregate.py capture \
-              --crate "$crate" --target "$target" --log "$log" \
+              --crate "$crate" --target "$target" --log "$log" --exit-code "$test_status" \
+              --results-dir target/pane-profiling/ci \
               --out "target/pane-test-summaries/fragments/${crate}__${target}.json"
+            if [[ "$test_status" -ne 0 ]]; then exit "$test_status"; fi
           done < <(python3 scripts/pane_test_summary_aggregate.py list)
           python3 scripts/pane_test_summary_aggregate.py merge \
             target/pane-test-summaries/fragments \
@@ -2466,6 +2486,7 @@ jobs:
             --strict --json
           python3 scripts/pane_release_evidence.py validate \
             --bundle target/pane-release/pane_release_evidence.json \
+            --results-dir target/pane-profiling/ci \
             --json
 
       # bd-1w0w4.5 + bd-nqxa5: render the objective go/no-go verdict from the
@@ -2479,6 +2500,7 @@ jobs:
           python3 scripts/pane_release_gate.py evaluate \
             --bundle target/pane-release/pane_release_evidence.json \
             --certification target/pane-profiling/ci/differential_certification.json \
+            --results-dir target/pane-profiling/ci \
             --mode ga \
             --out target/pane-release/pane_release_gate.json \
             --json
