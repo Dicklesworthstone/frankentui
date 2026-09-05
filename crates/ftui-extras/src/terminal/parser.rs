@@ -66,9 +66,9 @@ pub enum HookRejectReason {
     CapabilityDisabled,
     /// Parse-time quota exceeded.
     QuotaExceeded,
-    /// Hook callback ran longer than the configured max runtime.
+    /// Hook callback returned normally after the configured max runtime.
     TimeoutExceeded,
-    /// Hook callback panicked and was isolated.
+    /// Hook callback panicked and was isolated, even if it exceeded its runtime budget.
     HookPanicked,
     /// Hook explicitly rejected processing.
     HookRejected,
@@ -372,7 +372,10 @@ where
             Some(elapsed),
         );
 
-        if elapsed > max_runtime {
+        // Preserve a caught panic as the rejection cause. Unwinding and panic
+        // backtrace output can exceed the budget too; elapsed remains in the
+        // trace so that cost is observable without disguising the panic.
+        if outcome.is_ok() && elapsed > max_runtime {
             push_hook_trace(
                 traces,
                 next_correlation_id,
@@ -1650,6 +1653,48 @@ mod tests {
                 && event.stage == HookTraceStage::PolicyRejected
                 && event.reject_reason == Some(HookRejectReason::TimeoutExceeded)
         }));
+    }
+
+    #[test]
+    fn slow_hook_panic_preserves_cause_and_parser_continues() {
+        let mut parser = AnsiParser::new();
+        let mut handler = TestHandler::default();
+        let budget = Duration::from_millis(1);
+        parser.set_hook_policy(HookPolicy {
+            max_hook_runtime: budget,
+            ..HookPolicy::default()
+        });
+        let hook = parser.register_csi_hook(|_event| {
+            // Reproduce the elapsed time of a slow callback or panic backtrace
+            // without replacing the process-global panic hook.
+            thread::sleep(Duration::from_millis(3));
+            panic!("slow hook panic must remain observable");
+        });
+
+        for sequence in [b"\x1b[3A", b"\x1b[4B"] {
+            parser.parse(sequence, &mut handler);
+            let trace = parser.drain_hook_trace();
+            let rejected: Vec<_> = trace
+                .iter()
+                .filter(|event| event.stage == HookTraceStage::PolicyRejected)
+                .collect();
+            assert_eq!(rejected.len(), 1);
+            assert_eq!(rejected[0].hook_id, Some(hook));
+            assert_eq!(
+                rejected[0].reject_reason,
+                Some(HookRejectReason::HookPanicked)
+            );
+            assert!(u128::from(rejected[0].elapsed_us.unwrap()) >= budget.as_micros());
+            assert_eq!(
+                trace.iter().map(|event| event.stage).collect::<Vec<_>>(),
+                [
+                    HookTraceStage::HookInvoked,
+                    HookTraceStage::PolicyRejected,
+                    HookTraceStage::FallbackDispatched,
+                ]
+            );
+        }
+        assert_eq!(handler.csi_calls.borrow().len(), 2);
     }
 
     // ── SGR parsing tests ─────────────────────────────────────────────
