@@ -3230,11 +3230,18 @@ pub struct ProgramConfig {
     /// Accessibility tree collection. When set, every rendered frame builds
     /// an [`A11yTree`] from the nodes widgets push into the [`Frame`], diffs
     /// it against the previous frame and derives screen-reader
-    /// announcements under this policy (exported as `a11y_tree` /
-    /// `a11y_announcement` evidence rows and on the `ftui.a11y` tracing
-    /// target). `None` (the default) collects nothing and adds no per-frame
-    /// work.
+    /// announcements under this policy. Tracing and evidence export metadata
+    /// only by default; [`Model::on_accessibility`] receives the complete
+    /// local announcements. `None` (the default) collects nothing and adds
+    /// no per-frame work.
     pub accessibility: Option<ScreenReaderPolicy>,
+    /// Include announcement text in the explicitly configured evidence sink.
+    ///
+    /// Defaults to `false`: evidence rows contain `"text": null`. Enable only
+    /// for an intentional local content capture; labels and edited text may
+    /// be sensitive. Ordinary tracing never includes announcement content,
+    /// and this setting does not change the local accessibility callback.
+    pub accessibility_evidence_text: bool,
     /// Widget refresh selection configuration.
     pub widget_refresh: WidgetRefreshConfig,
     /// Effect queue scheduling configuration.
@@ -3296,6 +3303,7 @@ impl Default for ProgramConfig {
             inline_auto_remeasure: None,
             gestures: None,
             accessibility: None,
+            accessibility_evidence_text: false,
             widget_refresh: WidgetRefreshConfig::default(),
             effect_queue: EffectQueueConfig::default(),
             guardrails: GuardrailsConfig::default(),
@@ -3352,6 +3360,14 @@ impl ProgramConfig {
     #[must_use]
     pub fn with_accessibility(mut self, policy: ScreenReaderPolicy) -> Self {
         self.accessibility = Some(policy);
+        self
+    }
+
+    /// Opt into announcement content in the configured evidence sink.
+    /// See [`Self::accessibility_evidence_text`] for the privacy contract.
+    #[must_use]
+    pub fn with_accessibility_evidence_text(mut self, include_text: bool) -> Self {
+        self.accessibility_evidence_text = include_text;
         self
     }
 
@@ -5135,6 +5151,8 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     gesture_recognizer: Option<ftui_core::gesture::GestureRecognizer>,
     /// Screen-reader policy when `ProgramConfig::accessibility` is set.
     a11y_policy: Option<ScreenReaderPolicy>,
+    /// Explicit content capture policy for accessibility evidence only.
+    a11y_evidence_text: bool,
     /// Accessibility tree built from the last rendered frame.
     a11y_tree: Option<A11yTree>,
     /// Reading order (node IDs, push order) of the last accessibility tree.
@@ -5314,6 +5332,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             tick_count: 0,
             widget_signals: Vec::new(),
             a11y_policy: config.accessibility,
+            a11y_evidence_text: config.accessibility_evidence_text,
             a11y_tree: None,
             a11y_order: Vec::new(),
             a11y_announcements: Vec::new(),
@@ -5462,6 +5481,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             tick_count: 0,
             widget_signals: Vec::new(),
             a11y_policy: config.accessibility,
+            a11y_evidence_text: config.accessibility_evidence_text,
             a11y_tree: None,
             a11y_order: Vec::new(),
             a11y_announcements: Vec::new(),
@@ -7169,7 +7189,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
     /// Diff the accessibility tree collected by the last `render_buffer`
     /// against the previous frame's tree, derive screen-reader
-    /// announcements, and export them (evidence rows + `ftui.a11y` tracing).
+    /// announcements, and export their metadata. Full text stays local unless
+    /// explicitly included in the evidence sink; tracing never contains it.
     ///
     /// No-op unless `ProgramConfig::accessibility` is set.
     fn process_a11y_frame(&mut self) {
@@ -7219,13 +7240,22 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                     let node_id = announcement
                         .node_id
                         .map_or_else(|| "null".to_string(), |id| id.to_string());
+                    let text = if self.a11y_evidence_text {
+                        format!(
+                            "\"{}\"",
+                            crate::queueing_scheduler::escape_json(&announcement.text)
+                        )
+                    } else {
+                        "null".to_string()
+                    };
                     let _ = sink.write_jsonl(&format!(
-                        r#"{{"event":"a11y_announcement","frame_idx":{},"node_id":{},"urgency":"{}","reason":"{:?}","text":"{}"}}"#,
+                        r#"{{"event":"a11y_announcement","frame_idx":{},"node_id":{},"urgency":"{}","reason":"{:?}","text":{},"text_chars":{}}}"#,
                         self.frame_idx,
                         node_id,
                         announcement.urgency,
                         announcement.reason,
-                        crate::queueing_scheduler::escape_json(&announcement.text),
+                        text,
+                        announcement.text.chars().count(),
                     ));
                 }
             }
@@ -7237,7 +7267,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 node_id = announcement.node_id,
                 urgency = %announcement.urgency,
                 reason = ?announcement.reason,
-                text = %announcement.text,
+                text_chars = announcement.text.chars().count(),
                 "screen reader announcement"
             );
         }
@@ -12173,6 +12203,7 @@ mod tests {
             tick_count: 0,
             widget_signals: Vec::new(),
             a11y_policy: config.accessibility,
+            a11y_evidence_text: config.accessibility_evidence_text,
             a11y_tree: None,
             a11y_order: Vec::new(),
             a11y_announcements: Vec::new(),
@@ -13446,6 +13477,303 @@ mod tests {
             2,
             "only the two changing frames export a11y_tree rows; got: {contents}"
         );
+        assert!(
+            !contents.contains("Saved"),
+            "ordinary evidence must not contain accessibility content"
+        );
+    }
+
+    const A11Y_PRIVACY_CANARY: &str = "A11Y_SECRET_450512_\"é\\\n日";
+    // Screen-reader text already normalizes whitespace before delivery.
+    const A11Y_NORMALIZED_CANARY: &str = "A11Y_SECRET_450512_\"é\\ 日";
+
+    fn exercise_a11y_privacy(config: ProgramConfig) -> (Vec<String>, usize) {
+        use ftui_a11y::node::{A11yNodeInfo, A11yRole, A11yState, LiveRegion};
+        use ftui_core::geometry::Rect;
+
+        #[derive(Default)]
+        struct ContentModel {
+            received: Vec<String>,
+            dropped: usize,
+        }
+
+        impl Model for ContentModel {
+            type Message = Event;
+
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('A'));
+                for (index, (role, source)) in [
+                    (A11yRole::TextInput, "input"),
+                    (A11yRole::TextInput, "textarea"),
+                    (A11yRole::Label, "label"),
+                    (A11yRole::Dialog, "modal"),
+                    (A11yRole::Label, "live-region"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    frame.push_a11y(
+                        A11yNodeInfo::new(
+                            index as u64 + 1,
+                            role,
+                            Rect::new(0, index as u16, 20, 1),
+                        )
+                        .with_name(format!("{source}: {A11Y_PRIVACY_CANARY}"))
+                        .with_state(A11yState {
+                            focused: index == 0,
+                            ..A11yState::default()
+                        })
+                        .with_live_region(LiveRegion::Polite),
+                    );
+                }
+            }
+
+            fn on_accessibility(&mut self, frame: AccessibilityFrame<'_>) -> Cmd<Event> {
+                self.received
+                    .extend(frame.announcements.iter().map(|a| a.text.clone()));
+                self.dropped += frame.dropped;
+                Cmd::none()
+            }
+        }
+
+        let mut program = headless_program_with_config(ContentModel::default(), config);
+        program.render_frame().expect("render private a11y content");
+        let received = program.model.received.clone();
+        let dropped = program.model.dropped;
+        program.render_frame().expect("render unchanged a11y tree");
+        assert_eq!(
+            program.model.received, received,
+            "no duplicate announcements"
+        );
+        (received, dropped)
+    }
+
+    #[derive(Clone, Default)]
+    struct A11yTraceCapture(std::sync::Arc<std::sync::Mutex<String>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for A11yTraceCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields<'a>(&'a mut String);
+            impl tracing::field::Visit for Fields<'_> {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    use std::fmt::Write as _;
+                    write!(self.0, "{}={value:?};", field.name()).expect("write capture");
+                }
+            }
+            let mut output = self.0.lock().expect("capture lock");
+            output.push_str(event.metadata().target());
+            event.record(&mut Fields(&mut output));
+            output.push('\n');
+        }
+    }
+
+    #[test]
+    fn headless_a11y_privacy_preserves_local_content_and_explicit_capture() {
+        use tracing_subscriber::prelude::*;
+
+        for enabled in [false, true] {
+            for include_text in [false, true] {
+                for max_announcements in [2, 8] {
+                    let path = temp_evidence_path("a11y_privacy");
+                    let capture = A11yTraceCapture::default();
+                    let subscriber = tracing_subscriber::registry().with(capture.clone());
+                    let mut config = ProgramConfig::default()
+                        .with_accessibility_evidence_text(include_text)
+                        .with_evidence_sink(EvidenceSinkConfig::enabled_file(&path));
+                    if enabled {
+                        config = config.with_accessibility(ScreenReaderPolicy {
+                            max_announcements,
+                            ..ScreenReaderPolicy::default()
+                        });
+                    }
+                    let (local, dropped) = tracing::subscriber::with_default(subscriber, || {
+                        exercise_a11y_privacy(config)
+                    });
+                    let trace = capture.0.lock().expect("capture lock").clone();
+                    assert!(
+                        !trace.contains("A11Y_SECRET_450512"),
+                        "content entered tracing"
+                    );
+                    let contents = std::fs::read_to_string(&path).expect("read evidence");
+                    let rows: Vec<serde_json::Value> = contents
+                        .lines()
+                        .map(|line| serde_json::from_str(line).expect("valid JSONL"))
+                        .filter(|row: &serde_json::Value| row["event"] == "a11y_announcement")
+                        .collect();
+                    assert_eq!(rows.len(), local.len());
+                    if enabled {
+                        assert!(!local.is_empty(), "local accessibility received nothing");
+                        assert!(local.len() <= max_announcements);
+                        assert!(
+                            local
+                                .iter()
+                                .all(|text| text.contains(A11Y_NORMALIZED_CANARY))
+                        );
+                        assert!(trace.contains("screen reader announcement"));
+                        assert_eq!(dropped > 0, max_announcements == 2);
+                        for (row, text) in rows.iter().zip(&local) {
+                            assert_eq!(row["text_chars"], text.chars().count());
+                            if include_text {
+                                assert_eq!(row["text"], *text, "explicit content round trip");
+                            } else {
+                                assert!(row["text"].is_null());
+                            }
+                        }
+                    } else {
+                        assert!(local.is_empty());
+                        assert_eq!(dropped, 0);
+                        assert!(!trace.contains("screen reader announcement"));
+                    }
+                    if !include_text {
+                        assert!(!contents.contains("A11Y_SECRET_450512"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_a11y_privacy_preserves_callback_when_evidence_write_fails() {
+        use tracing_subscriber::prelude::*;
+
+        let capture = A11yTraceCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let config = ProgramConfig::default()
+            .with_accessibility(ScreenReaderPolicy::default())
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file("/dev/full"));
+        let (local, _) =
+            tracing::subscriber::with_default(subscriber, || exercise_a11y_privacy(config));
+        assert!(!local.is_empty());
+        assert!(
+            local
+                .iter()
+                .all(|text| text.contains(A11Y_NORMALIZED_CANARY))
+        );
+        let trace = capture.0.lock().expect("capture lock");
+        assert!(trace.contains("screen reader announcement"));
+        assert!(!trace.contains("A11Y_SECRET_450512"));
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    fn headless_a11y_privacy_through_real_otlp_http_exporter() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tracing_subscriber::prelude::*;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local collector");
+        listener.set_nonblocking(true).expect("bounded accept");
+        let endpoint = format!("http://{}/v1/traces", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let collector_stop = stop.clone();
+        let collector = std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let mut payloads = Vec::new();
+            while !collector_stop.load(Ordering::Acquire)
+                && start.elapsed() < std::time::Duration::from_secs(30)
+            {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("collector accept failed: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .expect("bounded request read");
+                let mut request = Vec::new();
+                let (header_end, content_len) = loop {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).expect("read HTTP headers");
+                    request.push(byte[0]);
+                    assert!(request.len() <= 32_768, "bounded HTTP headers");
+                    if request.ends_with(b"\r\n\r\n") {
+                        let headers = std::str::from_utf8(&request).expect("HTTP header text");
+                        assert!(headers.starts_with("POST /v1/traces "));
+                        let length: usize = headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .expect("OTLP request content length")
+                            .1
+                            .trim()
+                            .parse()
+                            .expect("numeric content length");
+                        assert!(length <= 2 * 1024 * 1024, "bounded request body");
+                        break (request.len(), length);
+                    }
+                };
+                request.resize(header_end + content_len, 0);
+                stream
+                    .read_exact(&mut request[header_end..])
+                    .expect("read actual OTLP protobuf");
+                payloads.push(request[header_end..].to_vec());
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .expect("acknowledge export");
+            }
+            payloads
+        });
+
+        let mut telemetry = crate::telemetry::TelemetryConfig::from_env_with(|key| match key {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" => Some(endpoint.clone()),
+            "OTEL_TRACES_EXPORTER" => Some("otlp".into()),
+            _ => None,
+        });
+        telemetry.processor = crate::telemetry::SpanProcessorKind::Simple;
+        telemetry.headers.push((
+            "User-Agent".into(),
+            "OpenAI File Downloader, XaiImageApiFetch/1.0".into(),
+        ));
+        let (layer, provider) = telemetry.build_layer().expect("real OTLP exporter");
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let evidence_path = temp_evidence_path("a11y_otlp_private");
+        let (local, _) = tracing::subscriber::with_default(subscriber, || {
+            let _span = tracing::info_span!("a11y_privacy_live_export").entered();
+            exercise_a11y_privacy(
+                ProgramConfig::default()
+                    .with_accessibility(ScreenReaderPolicy::default())
+                    .with_accessibility_evidence_text(true)
+                    .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path)),
+            )
+        });
+        provider.force_flush().expect("flush actual export");
+        provider.shutdown().expect("shutdown exporter");
+        stop.store(true, Ordering::Release);
+        let payloads = collector.join().expect("local collector finished");
+        assert!(
+            !local.is_empty(),
+            "accessibility callback must receive text"
+        );
+        assert!(
+            local
+                .iter()
+                .all(|text| text.contains(A11Y_NORMALIZED_CANARY))
+        );
+        assert!(!payloads.is_empty(), "zero exports is not a privacy pass");
+        let exported = payloads.concat();
+        let exported_text = String::from_utf8_lossy(&exported);
+        assert!(exported_text.contains("screen reader announcement"));
+        assert!(!exported_text.contains("A11Y_SECRET_450512"));
+        let evidence = std::fs::read_to_string(evidence_path).expect("explicit local evidence");
+        assert!(evidence.contains("A11Y_SECRET_450512"));
     }
 
     /// Conformal gating is on by default, so its warm-up must be harmless:

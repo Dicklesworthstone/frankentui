@@ -13,7 +13,7 @@ set -euo pipefail
 #   FUZZ_MAX_LEN        — max input length (default: 4096)
 #   FUZZ_JOBS            — parallel jobs per target (default: 1)
 #   LOG_DIR              — output directory for logs and JSONL
-#   NIGHTLY_TOOLCHAIN    — nightly toolchain name (default: nightly)
+#   The nightly toolchain is read from rust-toolchain.toml.
 #   RUN_ID               — deterministic run id override
 #   FUZZ_TARGET_FILTER   — optional exact target name for focused smoke runs
 #   FUZZ_ARTIFACT_ROOT   — crash artifact root (default: fuzz/artifacts)
@@ -30,7 +30,7 @@ FUZZ_DIR="$PROJECT_ROOT/fuzz"
 FUZZ_DURATION_SECS="${FUZZ_DURATION_SECS:-30}"
 FUZZ_MAX_LEN="${FUZZ_MAX_LEN:-4096}"
 FUZZ_JOBS="${FUZZ_JOBS:-1}"
-NIGHTLY_TOOLCHAIN="${NIGHTLY_TOOLCHAIN:-nightly}"
+NIGHTLY_TOOLCHAIN="$(bash "$SCRIPT_DIR/ci/parse_toolchain_pin.sh" "$PROJECT_ROOT/rust-toolchain.toml")"
 FUZZ_TARGET_FILTER="${FUZZ_TARGET_FILTER:-}"
 LOG_DIR="${LOG_DIR:-/tmp/fuzz_campaign_e2e_$(date +%Y%m%d_%H%M%S)}"
 LOG_JSONL="$LOG_DIR/fuzz_campaign_e2e.jsonl"
@@ -134,9 +134,9 @@ emit_event "env" \
 # Check nightly toolchain
 # ---------------------------------------------------------------------------
 
-if ! rustup toolchain list 2>/dev/null | grep -q "$NIGHTLY_TOOLCHAIN"; then
+if ! rustup run "$NIGHTLY_TOOLCHAIN" rustc --version; then
     echo "WARNING: Nightly toolchain '$NIGHTLY_TOOLCHAIN' not found."
-    echo "Install with: rustup toolchain install nightly"
+    echo "Install with: rustup toolchain install $NIGHTLY_TOOLCHAIN"
     emit_event "error" ",\"message\":\"nightly toolchain not found\",\"toolchain\":\"$NIGHTLY_TOOLCHAIN\""
     # Exit gracefully so CI can detect and handle
     emit_event "run_end" \

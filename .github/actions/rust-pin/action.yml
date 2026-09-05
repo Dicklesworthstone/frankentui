@@ -1,0 +1,64 @@
+name: Install the workspace Rust pin
+description: Install and verify the dated nightly selected by rust-toolchain.toml.
+inputs:
+  components:
+    description: Additional components for this job (rustfmt and clippy are always installed).
+    required: false
+    default: ""
+  targets:
+    description: Additional comma-separated target triples for this job.
+    required: false
+    default: ""
+outputs:
+  channel:
+    description: The validated channel read from rust-toolchain.toml.
+    value: ${{ steps.pin.outputs.channel }}
+runs:
+  using: composite
+  steps:
+    - name: Install Python for the TOML parser
+      id: python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+    - name: Parse the workspace pin
+      id: pin
+      shell: bash
+      env:
+        PYTHON_BIN: ${{ steps.python.outputs.python-path }}
+      run: |
+        set -euo pipefail
+        channel="$(bash scripts/ci/parse_toolchain_pin.sh rust-toolchain.toml)"
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+    - name: Install the pinned Rust toolchain
+      uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: rustfmt, clippy, ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+    - name: Assert the active toolchain and report versions
+      shell: bash
+      env:
+        EXPECTED_RUST_CHANNEL: ${{ steps.pin.outputs.channel }}
+      run: |
+        set -euo pipefail
+        active="$(rustup show active-toolchain)"
+        echo "active toolchain: $active"
+        host="$(rustc +"$EXPECTED_RUST_CHANNEL" -vV | sed -n 's/^host: //p')"
+        if [[ -z "$host" || "${active%% *}" != "$EXPECTED_RUST_CHANNEL-$host" ]]; then
+          echo "::error::Active toolchain does not match rust-toolchain.toml: expected $EXPECTED_RUST_CHANNEL-$host, got $active" >&2
+          exit 1
+        fi
+        # Also detect a PATH shadowing rustup's rustc or cargo proxies.
+        if [[ "$(rustc -vV)" != "$(rustc +"$EXPECTED_RUST_CHANNEL" -vV)" ||
+              "$(cargo -V)" != "$(cargo +"$EXPECTED_RUST_CHANNEL" -V)" ]]; then
+          echo "::error::The active compiler or Cargo differs from the workspace pin" >&2
+          exit 1
+        fi
+        rustc -vV
+        cargo -V
+        {
+          echo "toolchain: $EXPECTED_RUST_CHANNEL ($(rustc -V))"
+          echo "active toolchain: $active"
+          echo "cargo: $(cargo -V)"
+        } >> "$GITHUB_STEP_SUMMARY"

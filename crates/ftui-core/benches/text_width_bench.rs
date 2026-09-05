@@ -91,6 +91,31 @@ fn bench_width(c: &mut Criterion) {
         },
     );
     group.finish();
+
+    // More distinct clusters than the production cache can retain. Include
+    // insertion, key allocation and eviction in the cached timing; this is
+    // the countermetric to the repeated-screen steady-state measurement.
+    let scan: Vec<String> = (0..5_000)
+        .map(|index| {
+            let base = char::from_u32(0x4e00 + index).expect("CJK scalar");
+            format!("{base}\u{0301}")
+        })
+        .collect();
+    let mut group = c.benchmark_group("text_width/scan_pressure");
+    group.throughput(Throughput::Elements(scan.len() as u64));
+    for (name, measure) in [
+        ("uncached", grapheme_width_uncached as fn(&str) -> usize),
+        ("cached", grapheme_width as fn(&str) -> usize),
+    ] {
+        group.bench_with_input(BenchmarkId::new(name, scan.len()), &scan, |b, cl| {
+            clear_width_cache();
+            b.iter(|| {
+                let total: usize = cl.iter().map(|g| measure(black_box(g))).sum();
+                black_box(total)
+            });
+        });
+    }
+    group.finish();
 }
 
 criterion_group!(benches, bench_width);

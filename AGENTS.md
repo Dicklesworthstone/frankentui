@@ -50,6 +50,7 @@ If I tell you to do something, even if it goes against what follows below, YOU M
 We only use **Cargo** in this project, NEVER any other package manager.
 
 - **Edition:** Rust 2024 (nightly required — see `rust-toolchain.toml`)
+- **CI toolchain:** CI installs exactly the channel in `rust-toolchain.toml` via `.github/actions/rust-pin`; change the pin there, nowhere else.
 - **Dependency versions:** Explicit versions for stability
 - **Configuration:** Cargo.toml workspace with `workspace = true` pattern
 - **Unsafe code:** Forbidden (`#![forbid(unsafe_code)]`)

@@ -50,6 +50,135 @@ fn present_into_headless(prev: &Buffer, next: &Buffer) -> HeadlessTerm {
     term
 }
 
+#[test]
+fn widget_accessibility_content_stays_local_by_default() {
+    use ftui_core::event::Event;
+    use ftui_runtime::evidence_sink::EvidenceSinkConfig;
+    use ftui_runtime::program::{AccessibilityFrame, HeadlessEventSource, Program, ProgramConfig};
+    use ftui_runtime::{
+        BackendFeatures, Cmd, Model, ScreenMode, ScreenReaderPolicy, TerminalWriter, UiAnchor,
+    };
+    use ftui_widgets::Widget;
+    use ftui_widgets::input::TextInput;
+    use ftui_widgets::modal::Modal;
+    use ftui_widgets::paragraph::Paragraph;
+    use ftui_widgets::textarea::TextArea;
+    use std::time::Duration;
+
+    const SECRET: &str = "WIDGET_SECRET_450512_é日";
+    struct PrivateWidgets {
+        input: TextInput,
+        textarea: TextArea,
+        local_tree: String,
+        local_announcements: Vec<String>,
+    }
+    impl Model for PrivateWidgets {
+        type Message = Event;
+
+        fn init(&mut self) -> Cmd<Event> {
+            Cmd::tick(Duration::from_millis(10))
+        }
+
+        fn update(&mut self, _: Event) -> Cmd<Event> {
+            Cmd::Quit
+        }
+
+        fn view(&self, frame: &mut Frame) {
+            self.input.render(Rect::new(0, 0, 80, 1), frame);
+            self.textarea.render(Rect::new(0, 2, 80, 2), frame);
+            Paragraph::new(format!("label {SECRET}")).render(Rect::new(0, 5, 80, 1), frame);
+            Modal::new(Paragraph::new(format!("modal {SECRET}")))
+                .render(Rect::new(0, 7, 80, 10), frame);
+        }
+
+        fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Event> {
+            self.local_tree = a11y.dump();
+            self.local_announcements
+                .extend(a11y.announcements.iter().map(|item| item.text.clone()));
+            Cmd::Quit
+        }
+    }
+
+    for enabled in [false, true] {
+        for include_text in [false, true] {
+            let mut input = TextInput::new().with_focused(true);
+            input.set_value(format!("input {SECRET}"));
+            let model = PrivateWidgets {
+                input,
+                textarea: TextArea::new().with_text(&format!("textarea {SECRET}")),
+                local_tree: String::new(),
+                local_announcements: Vec::new(),
+            };
+            let suffix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "ftui-widget-privacy-{}-{suffix}-{enabled}-{include_text}.jsonl",
+                std::process::id()
+            ));
+            let features = BackendFeatures::default();
+            let writer = TerminalWriter::new(
+                Vec::new(),
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                TerminalCapabilities::default(),
+            );
+            let mut config = ProgramConfig::default()
+                .with_accessibility_evidence_text(include_text)
+                .with_evidence_sink(EvidenceSinkConfig::enabled_file(&path));
+            if enabled {
+                config = config.with_accessibility(ScreenReaderPolicy::default());
+            }
+            let mut program = Program::with_event_source(
+                model,
+                HeadlessEventSource::new(80, 20, features),
+                features,
+                writer,
+                config,
+            )
+            .expect("construct actual runtime");
+            program
+                .run()
+                .expect("run actual widget and presentation pipeline");
+            let model = program.model();
+            if enabled {
+                for kind in ["input", "label", "modal"] {
+                    assert!(model.local_tree.contains(&format!("{kind} {SECRET}")));
+                }
+                assert!(
+                    model
+                        .local_announcements
+                        .iter()
+                        .any(|text| text.contains(SECRET))
+                );
+                // TextArea currently emits no semantic nodes. It is rendered
+                // here, but complete TextArea AT semantics remain G09 work.
+            } else {
+                assert!(model.local_tree.is_empty());
+                assert!(model.local_announcements.is_empty());
+            }
+            let evidence = std::fs::read_to_string(&path).expect("read runtime evidence");
+            let announcements: Vec<serde_json::Value> = evidence
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("valid evidence JSONL"))
+                .filter(|row: &serde_json::Value| row["event"] == "a11y_announcement")
+                .collect();
+            assert_eq!(announcements.len(), model.local_announcements.len());
+            if enabled && include_text {
+                assert!(announcements.iter().any(|row| {
+                    row["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(SECRET))
+                }));
+            } else {
+                assert!(!evidence.contains(SECRET));
+                assert!(announcements.iter().all(|row| row["text"].is_null()));
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Snapshot test workflow
 // ============================================================================

@@ -53,10 +53,19 @@ Per rendered frame the runtime then:
 3. derives bounded screen-reader announcements (`ScreenReaderPolicy`
    caps count and text length): focus changes, live-region additions and
    live-content changes;
-4. exports `a11y_tree` and `a11y_announcement` rows to the evidence sink,
-   logs on the `ftui.a11y` tracing target, and calls
+4. exports `a11y_tree` and `a11y_announcement` metadata to the evidence sink,
+   logs metadata on the `ftui.a11y` tracing target, and calls
    `Model::on_accessibility(AccessibilityFrame)` when the tree changed
    (one extra frame is scheduled so state changed there is rendered).
+
+Announcement text remains available to the local `Model::on_accessibility`
+callback and the accessors below. Ordinary tracing, including OpenTelemetry
+export, never receives that text. Evidence rows default to `"text": null`
+and retain node ID, reason, urgency and character count. To deliberately
+capture content in a configured evidence sink, use
+`ProgramConfig::with_accessibility_evidence_text(true)`. This opt-in may record
+application labels or edited text; use it only for a destination intended to
+receive that content. It does not enable text in ordinary tracing.
 
 `Program::accessibility_tree()`, `accessibility_order()`,
 `accessibility_announcements()` and `accessibility_dump()` expose the same

@@ -335,6 +335,66 @@ pub mod text_width {
     /// stream of unique emoji) from evicting the hot set.
     const WIDTH_CACHE_CAPACITY: usize = 4096;
 
+    /// Bound retained key bytes even for arbitrarily long combining clusters.
+    /// Larger graphemes remain valid input and use the uncached width tables.
+    const WIDTH_CACHE_MAX_GRAPHEME_BYTES: usize = 128;
+
+    struct CachedGraphemeWidth {
+        grapheme: Box<str>,
+        width: usize,
+    }
+
+    struct GraphemeWidthCache {
+        entries: crate::s3_fifo::S3Fifo<u64, CachedGraphemeWidth>,
+        hits: u64,
+        misses: u64,
+    }
+
+    impl GraphemeWidthCache {
+        fn new(capacity: usize) -> Self {
+            Self {
+                entries: crate::s3_fifo::S3Fifo::new(capacity),
+                hits: 0,
+                misses: 0,
+            }
+        }
+
+        fn width(&mut self, grapheme: &str, key: u64) -> usize {
+            if let Some(entry) = self.entries.get(&key)
+                && entry.grapheme.as_ref() == grapheme
+            {
+                self.hits += 1;
+                return entry.width;
+            }
+
+            self.misses += 1;
+            let width = grapheme_width_uncached(grapheme);
+            self.entries.insert(
+                key,
+                CachedGraphemeWidth {
+                    grapheme: grapheme.into(),
+                    width,
+                },
+            );
+            width
+        }
+
+        fn stats(&self) -> crate::s3_fifo::S3FifoStats {
+            let mut stats = self.entries.stats();
+            // A matching hash is only a hit after exact byte verification.
+            // Collisions replace that hash's entry and count as width misses.
+            stats.hits = self.hits;
+            stats.misses = self.misses;
+            stats
+        }
+
+        fn clear(&mut self) {
+            self.entries.clear();
+            self.hits = 0;
+            self.misses = 0;
+        }
+    }
+
     /// Whether the grapheme width cache is enabled (`FTUI_WIDTH_CACHE=0`,
     /// `false`, `off`, or `no` disables it; anything else keeps it on).
     #[inline]
@@ -358,11 +418,10 @@ pub mod text_width {
         /// Non-ASCII width lookups (`unicode_display_width`, VS16 stripping,
         /// zero-width scans) are the expensive part of measuring text; every
         /// wrap, table column, and diff of a CJK or emoji screen repeats them
-        /// for the same handful of clusters. Keyed by a 64-bit hash of the
-        /// cluster bytes; a collision would misreport a width, which is why
-        /// the hasher is seeded deterministically and the space is 2^64.
-        static WIDTH_CACHE: std::cell::RefCell<crate::s3_fifo::S3Fifo<u64, u8>> =
-            std::cell::RefCell::new(crate::s3_fifo::S3Fifo::new(WIDTH_CACHE_CAPACITY));
+        /// for the same handful of clusters. A hash selects the candidate;
+        /// exact cluster bytes decide whether its width can be reused.
+        static WIDTH_CACHE: std::cell::RefCell<GraphemeWidthCache> =
+            std::cell::RefCell::new(GraphemeWidthCache::new(WIDTH_CACHE_CAPACITY));
     }
 
     #[inline]
@@ -377,6 +436,10 @@ pub mod text_width {
 
     /// Snapshot of the calling thread's grapheme width cache statistics,
     /// or `None` when the cache is disabled.
+    ///
+    /// Hits require exact grapheme equality; hash collisions count as misses.
+    /// ASCII and clusters exceeding the retained-key byte limit bypass the
+    /// cache and do not contribute to either counter.
     #[must_use]
     pub fn width_cache_stats() -> Option<crate::s3_fifo::S3FifoStats> {
         if !use_width_cache() {
@@ -401,19 +464,16 @@ pub mod text_width {
         if grapheme.is_ascii() {
             return ascii_display_width(grapheme);
         }
-        if !use_width_cache() {
+        if !use_width_cache() || grapheme.len() > WIDTH_CACHE_MAX_GRAPHEME_BYTES {
             return grapheme_width_uncached(grapheme);
         }
         let key = grapheme_cache_key(grapheme);
-        if let Some(width) = WIDTH_CACHE.with(|cache| cache.borrow_mut().get(&key).copied()) {
-            return usize::from(width);
-        }
-        let width = grapheme_width_uncached(grapheme);
-        let stored = u8::try_from(width).unwrap_or(u8::MAX);
-        WIDTH_CACHE.with(|cache| {
-            cache.borrow_mut().insert(key, stored);
-        });
-        width
+        cached_grapheme_width(grapheme, key)
+    }
+
+    #[inline]
+    fn cached_grapheme_width(grapheme: &str, key: u64) -> usize {
+        WIDTH_CACHE.with(|cache| cache.borrow_mut().width(grapheme, key))
     }
 
     /// Width of a non-ASCII grapheme cluster, computed from the Unicode
@@ -510,6 +570,109 @@ pub mod text_width {
             "→",
             "…",
         ];
+
+        #[test]
+        fn width_cache_rejects_hash_collisions() {
+            clear_width_cache();
+            // Route distinct real clusters through the same production lookup
+            // with a deliberately colliding hash, independent of hash quality.
+            for grapheme in ["\u{200B}", "日", "é", "👨‍👩‍👧‍👦", "\u{200B}"] {
+                for _ in 0..2 {
+                    assert_eq!(
+                        cached_grapheme_width(grapheme, 0),
+                        grapheme_width_uncached(grapheme),
+                        "collision changed the width of {grapheme:?}"
+                    );
+                }
+            }
+            let stats = WIDTH_CACHE.with(|cache| cache.borrow().stats());
+            assert_eq!(stats.hits, 5, "only exact repeats are cache hits");
+            assert_eq!(stats.misses, 5, "collisions are cache misses");
+            assert_eq!(stats.small_size + stats.main_size, 1);
+        }
+
+        #[test]
+        fn width_cache_collision_and_eviction_order_preserves_corpus() {
+            let mut cache = GraphemeWidthCache::new(4);
+            for round in 0..32 {
+                for offset in 0..CORPUS.len() {
+                    let index = (round + offset) % CORPUS.len();
+                    let grapheme = CORPUS[index];
+                    // Six hashes pressure a four-entry cache; each hash also
+                    // has multiple byte-distinct graphemes competing for it.
+                    let key = (index % 6) as u64;
+                    let expected = grapheme_width_uncached(grapheme);
+                    assert_eq!(cache.width(grapheme, key), expected);
+                    assert_eq!(cache.width(grapheme, key), expected);
+                    let stats = cache.stats();
+                    assert!(stats.small_size + stats.main_size <= 4);
+                    assert!(stats.ghost_size <= 1);
+                }
+            }
+        }
+
+        #[test]
+        fn width_cache_bypasses_unbounded_combining_clusters() {
+            clear_width_cache();
+            let grapheme = format!("a{}", "\u{0301}".repeat(WIDTH_CACHE_MAX_GRAPHEME_BYTES));
+            assert_eq!(grapheme.graphemes(true).count(), 1);
+            assert!(grapheme.len() > WIDTH_CACHE_MAX_GRAPHEME_BYTES);
+            let before = WIDTH_CACHE.with(|cache| cache.borrow().stats());
+            for _ in 0..3 {
+                assert_eq!(
+                    grapheme_width(&grapheme),
+                    grapheme_width_uncached(&grapheme)
+                );
+            }
+            assert_eq!(WIDTH_CACHE.with(|cache| cache.borrow().stats()), before);
+        }
+
+        #[test]
+        fn width_cache_retained_key_boundary() {
+            clear_width_cache();
+            let grapheme = format!("é{}", "\u{0301}".repeat(63));
+            assert_eq!(grapheme.len(), WIDTH_CACHE_MAX_GRAPHEME_BYTES);
+            assert_eq!(grapheme.graphemes(true).count(), 1);
+            for _ in 0..2 {
+                assert_eq!(
+                    grapheme_width(&grapheme),
+                    grapheme_width_uncached(&grapheme)
+                );
+            }
+            if let Some(stats) = width_cache_stats() {
+                assert_eq!(stats.hits, 1);
+                assert_eq!(stats.misses, 1);
+            }
+        }
+
+        #[test]
+        fn width_cache_is_thread_local_and_clear_resets_identity() {
+            clear_width_cache();
+            assert_eq!(
+                cached_grapheme_width("日", 0),
+                grapheme_width_uncached("日")
+            );
+            let parent_stats = WIDTH_CACHE.with(|cache| cache.borrow().stats());
+            std::thread::spawn(|| {
+                let initial = WIDTH_CACHE.with(|cache| cache.borrow().stats());
+                assert_eq!(initial.hits + initial.misses, 0);
+                assert_eq!(cached_grapheme_width("\u{200B}", 0), 0);
+                clear_width_cache();
+                let cleared = WIDTH_CACHE.with(|cache| cache.borrow().stats());
+                assert_eq!(cleared.hits + cleared.misses, 0);
+                assert_eq!(cleared.small_size + cleared.main_size, 0);
+            })
+            .join()
+            .expect("thread-local cache checks");
+            assert_eq!(
+                WIDTH_CACHE.with(|cache| cache.borrow().stats()),
+                parent_stats
+            );
+            assert_eq!(
+                cached_grapheme_width("日", 0),
+                grapheme_width_uncached("日")
+            );
+        }
 
         /// The cache must be invisible: cached answers equal the uncached
         /// computation for every cluster, and repeated lookups are hits.

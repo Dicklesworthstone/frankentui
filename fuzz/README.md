@@ -20,17 +20,21 @@ This directory contains cargo-fuzz targets for FrankenTUI.
 
 ## Run
 
+Run these commands from the repository or this directory; `rust-toolchain.toml`
+selects the dated nightly used by CI. The campaign script also requires Python
+3.11+ to parse that same pin.
+
 ```bash
 # Run a single target
-cargo +nightly fuzz run fuzz_layout_constraints -- -max_len=256
-cargo +nightly fuzz run fuzz_widget_render -- -max_len=512
-cargo +nightly fuzz run fuzz_text_wrap -- -max_len=512
-cargo +nightly fuzz run fuzz_vt_parser -- -max_len=4096
+cargo fuzz run fuzz_layout_constraints -- -max_len=256
+cargo fuzz run fuzz_widget_render -- -max_len=512
+cargo fuzz run fuzz_text_wrap -- -max_len=512
+cargo fuzz run fuzz_vt_parser -- -max_len=4096
 
 # Run all targets briefly (smoke test)
-for target in $(cargo +nightly fuzz list 2>/dev/null); do
+for target in $(cargo fuzz list); do
   echo "--- $target ---"
-  cargo +nightly fuzz run "$target" -- -max_total_time=10 -max_len=512
+  cargo fuzz run "$target" -- -max_total_time=10 -max_len=512
 done
 ```
 

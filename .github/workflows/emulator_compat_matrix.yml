@@ -28,8 +28,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Must match rust-toolchain.toml (ci.yml's toolchain-pin job guards the pin).
-  RUST_TOOLCHAIN: nightly-2026-08-25
 
 jobs:
   # ==========================================================================
@@ -49,9 +47,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - id: rust
+        uses: ./.github/actions/rust-pin
 
       - uses: actions/setup-python@v6
         with:
@@ -63,8 +60,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-pty-matrix-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-pty-matrix-
+          key: ${{ runner.os }}-pty-matrix-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-pty-matrix-${{ steps.rust.outputs.channel }}-
 
       - name: Build the demo showcase
         run: cargo build -p ftui-demo-showcase
@@ -98,9 +95,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - id: rust
+        uses: ./.github/actions/rust-pin
 
       - uses: actions/cache@v6
         with:
@@ -108,8 +104,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-compat-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-compat-
+          key: ${{ runner.os }}-compat-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-compat-${{ steps.rust.outputs.channel }}-
 
       - name: Run conformance matrix tests
         env:
@@ -143,15 +139,17 @@ jobs:
 
       - name: Generate summary
         run: |
-          echo "## Terminal Emulator Compatibility Matrix" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Emulator | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          for profile in xterm-256color screen kitty modern; do
-            log="compat-results/compat-results-${profile}/compat_${profile}.log"
-            if [ -f "$log" ] && grep -q "test result: ok" "$log"; then
-              echo "| ${profile} | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "| ${profile} | :x: Fail |" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
+          {
+            echo "## Terminal Emulator Compatibility Matrix"
+            echo ""
+            echo "| Emulator | Status |"
+            echo "|----------|--------|"
+            for profile in xterm-256color screen kitty modern; do
+              log="compat-results/compat-results-${profile}/compat_${profile}.log"
+              if [ -f "$log" ] && grep -q "test result: ok" "$log"; then
+                echo "| ${profile} | :white_check_mark: Pass |"
+              else
+                echo "| ${profile} | :x: Fail |"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -2,7 +2,7 @@
 # bd-2nu8.13: Continuous integration for code quality and testing
 #
 # Runs on every PR and push to main branch.
-# Matrix tests across OS and Rust versions.
+# Matrix tests across operating systems using the workspace Rust pin.
 
 name: CI
 
@@ -15,11 +15,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # The one toolchain every job uses. It must equal the `channel` pinned in
-  # rust-toolchain.toml (the `toolchain-pin` job fails the run if it drifts);
-  # jobs used to install a floating `nightly` while the repo pin was dated,
-  # so CI and local builds could silently diverge.
-  RUST_TOOLCHAIN: nightly-2026-08-25
 
 jobs:
   # ==========================================================================
@@ -31,16 +26,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      - name: Compare RUST_TOOLCHAIN with rust-toolchain.toml
-        run: |
-          set -euo pipefail
-          pinned="$(grep -E '^channel = ' rust-toolchain.toml | sed -E 's/channel = "([^"]+)"/\1/')"
-          echo "rust-toolchain.toml channel: $pinned"
-          echo "workflow RUST_TOOLCHAIN:     $RUST_TOOLCHAIN"
-          if [ "$pinned" != "$RUST_TOOLCHAIN" ]; then
-            echo "::error::RUST_TOOLCHAIN in .github/workflows/ci.yml ($RUST_TOOLCHAIN) does not match rust-toolchain.toml ($pinned); update both together."
-            exit 1
-          fi
+      - name: Install Rust toolchain
+        id: rust
+        uses: ./.github/actions/rust-pin
+      - name: Test the toolchain pin parser
+        run: bash scripts/ci/parse_toolchain_pin_test.sh
 
   # ==========================================================================
   # Check Job: Format, Clippy, Tests
@@ -58,10 +48,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt, clippy
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -73,9 +61,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-
+            ${{ runner.os }}-cargo-${{ steps.rust.outputs.channel }}-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -130,9 +118,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -141,9 +128,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-docs-nightly-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-docs-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-docs-nightly-
+            ${{ runner.os }}-cargo-docs-${{ steps.rust.outputs.channel }}-
 
       - name: Run rustdoc tests
         run: cargo test --doc --workspace
@@ -163,10 +150,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt, clippy
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -175,7 +160,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-features-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-features-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Test ftui-extras features
         run: |
@@ -205,9 +190,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        id: rust
+        uses: ./.github/actions/rust-pin
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
@@ -220,7 +205,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-coverage-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Generate coverage
         run: cargo llvm-cov --workspace --all-targets --all-features --lcov --output-path lcov.info
@@ -339,9 +324,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -350,7 +334,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-bench-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run perf gates (bd-3cwi, bd-lff4p.5.5)
         # CI bench runs are noisy: --quick uses sample-size 10 and
@@ -383,9 +367,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -394,7 +377,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-docs-build-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build documentation
         run: cargo doc --workspace --no-deps
@@ -420,9 +403,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -436,7 +418,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-e2e-widget-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-e2e-widget-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run Widget API E2E tests
         env:
@@ -493,10 +475,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt, clippy
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -510,7 +490,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-demo-showcase-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-demo-showcase-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run demo showcase E2E tests
         env:
@@ -587,9 +567,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -618,7 +597,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-e2e-pty-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-e2e-pty-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run native PTY E2E suite (run_all.sh)
         env:
@@ -770,9 +749,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -790,7 +768,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-golden-trace-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-golden-trace-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Core replay gate (schedule trace checksums)
         run: ./tests/e2e/scripts/test_schedule_trace.sh
@@ -1188,9 +1166,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        id: rust
+        uses: ./.github/actions/rust-pin
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: llvm-tools-preview
 
       - name: Setup Python
@@ -1229,7 +1207,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-doctor-frankentui-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-doctor-frankentui-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run doctor_frankentui no-fake realism gate
         run: |
@@ -2155,9 +2133,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
@@ -2169,7 +2146,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-fuzz-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build fuzz targets
         run: cargo fuzz build
@@ -2220,9 +2197,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -2236,7 +2212,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-frankenterm-gates-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-frankenterm-gates-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Conformance — VT support-matrix gate (bd-2vr05.10.1)
         run: |
@@ -2309,10 +2285,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          # Using nightly as MSRV since project requires edition 2024
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Check MSRV
         run: cargo check --workspace
@@ -2329,12 +2303,10 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        id: rust
+        uses: ./.github/actions/rust-pin
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      - name: Install wasm32 target
-        run: rustup target add wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -2343,7 +2315,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-wasm-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Check host-agnostic crates for wasm32-unknown-unknown
         run: |
@@ -2374,9 +2346,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -2390,7 +2361,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-pane-perf-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-pane-perf-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Verify symbolization toolchain
         run: |
@@ -2553,9 +2524,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+        id: rust
+        uses: ./.github/actions/rust-pin
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -2564,7 +2534,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-perf-rollout-gates-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-perf-rollout-gates-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
 
       # The three suites share one artifact contract (bd-cpwfc AC1): the
       # tail-regime monitor self-test proves the alerting can fire
