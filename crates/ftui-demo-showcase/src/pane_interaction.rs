@@ -5,13 +5,17 @@
 //! This module intentionally contains host-agnostic behavior policy and
 //! preview-state shaping used by both terminal and web adapters.
 
+use std::sync::OnceLock;
+
+use ftui_layout::pane_execution::{PaneExecutionError, PaneExecutionSample, PaneHistory};
 use ftui_layout::{
     PANE_SNAP_DEFAULT_HYSTERESIS_BPS, PANE_SNAP_DEFAULT_STEP_BPS, PaneDockPreview, PaneDockZone,
-    PaneId, PaneInertialThrow, PaneInteractionTimeline, PaneInteractionTimelineError, PaneLayout,
-    PaneLeaf, PaneMotionVector, PaneNodeKind, PaneOperation, PanePlacement, PanePointerPosition,
-    PanePressureSnapProfile, PaneResizeGrip, PaneResizeTarget, PaneSelectionState, PaneSplitRatio,
-    PaneTree, Rect, SplitAxis,
+    PaneId, PaneInertialThrow, PaneLayout, PaneLeaf, PaneMotionVector, PaneNodeKind, PaneOperation,
+    PaneOperationFamily, PanePlacement, PanePointerPosition, PanePressureSnapProfile,
+    PaneResizeGrip, PaneResizeTarget, PaneSelectionState, PaneSplitRatio, PaneTree, Rect,
+    SplitAxis,
 };
+use web_time::Instant;
 
 pub const PANE_MAGNETIC_FIELD_MIN_CELLS: f64 = 3.5;
 pub const PANE_MAGNETIC_FIELD_MAX_CELLS: f64 = 11.0;
@@ -23,6 +27,7 @@ pub const LIVE_REFLOW_SWITCH_ADVANTAGE_MAX_BPS: u16 = 1_650;
 pub const DEFAULT_SPRING_BLEND_BPS: u16 = 3_500;
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
+static PANE_SAMPLE_CLOCK_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
 /// Live preview metadata consumed by host renderers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -123,14 +128,14 @@ pub struct PaneGestureArmState<'a> {
 
 pub struct PaneTimelineApplyState<'a> {
     pub layout_tree: &'a mut PaneTree,
-    pub timeline: &'a mut PaneInteractionTimeline,
+    pub timeline: &'a mut dyn PaneHistory,
     pub next_operation_id: &'a mut u64,
     pub workspace_generation: &'a mut u64,
 }
 
 pub struct PaneLiveReflowState<'a> {
     pub layout_tree: &'a mut PaneTree,
-    pub timeline: &'a mut PaneInteractionTimeline,
+    pub timeline: &'a mut dyn PaneHistory,
     pub next_operation_id: &'a mut u64,
     pub workspace_generation: &'a mut u64,
     pub live_reflow_signature: &'a mut Option<u64>,
@@ -138,7 +143,7 @@ pub struct PaneLiveReflowState<'a> {
 
 pub struct PaneDragSemanticsContext<'a> {
     pub layout_tree: &'a mut PaneTree,
-    pub timeline: &'a mut PaneInteractionTimeline,
+    pub timeline: &'a mut dyn PaneHistory,
     pub next_operation_id: &'a mut u64,
     pub workspace_generation: &'a mut u64,
     pub selection: &'a PaneSelectionState,
@@ -1141,6 +1146,9 @@ fn apply_operations_with_timeline_recording(
         );
         let operation_id = *next_operation_id;
         *next_operation_id = next_operation_id.saturating_add(1);
+        let local = operation.family() == PaneOperationFamily::Local;
+        let origin = PANE_SAMPLE_CLOCK_ORIGIN.get_or_init(Instant::now);
+        let started = Instant::now();
         let result =
             if let Some(coalesce_after_operation_id) = coalesce_resize_deltas_after_operation_id {
                 timeline.apply_and_record_coalesced_resize_delta(
@@ -1155,6 +1163,26 @@ fn apply_operations_with_timeline_recording(
             };
         if result.is_ok() {
             applied = applied.saturating_add(1);
+            let finished = Instant::now();
+            // Measure execution and journal recording. Maintenance/conversion
+            // below is deliberately outside this sample's elapsed interval.
+            let sample = PaneExecutionSample {
+                timestamp_ns: u64::try_from(finished.duration_since(*origin).as_nanos())
+                    .unwrap_or(u64::MAX),
+                elapsed_ns: u64::try_from(finished.duration_since(started).as_nanos())
+                    .unwrap_or(u64::MAX),
+                local,
+            };
+            if let Err(err) = timeline.observe(layout_tree, sample) {
+                // The operation already succeeded. A failed maintenance step
+                // must not erase its applied count or generation advancement.
+                tracing::warn!(
+                    target: "ftui_demo_showcase::pane_interaction",
+                    operation_id,
+                    error = %err,
+                    "pane execution maintenance failed after an accepted operation"
+                );
+            }
         }
     }
     if applied > 0 {
@@ -1204,15 +1232,15 @@ pub fn apply_live_reflow_if_needed(
 
 pub fn rollback_timeline_to_cursor(
     layout_tree: &mut PaneTree,
-    timeline: &mut PaneInteractionTimeline,
+    timeline: &mut dyn PaneHistory,
     start_cursor: Option<usize>,
     workspace_generation: &mut u64,
-) -> Result<bool, PaneInteractionTimelineError> {
+) -> Result<bool, PaneExecutionError> {
     let Some(start_cursor) = start_cursor else {
         return Ok(false);
     };
     let mut rolled_back = false;
-    while timeline.cursor > start_cursor {
+    while timeline.applied_len() > start_cursor {
         match timeline.undo(layout_tree)? {
             true => rolled_back = true,
             false => break,
@@ -1630,6 +1658,7 @@ fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_layout::{PaneInteractionTimeline, PaneRetentionPolicy};
 
     #[test]
     fn adaptive_dock_strength_rewards_fast_confident_commits() {
@@ -1966,6 +1995,170 @@ mod tests {
         assert_eq!(timeline.entries.len(), 1);
         assert_eq!(next_operation_id, 2);
         assert_eq!(generation, 1);
+    }
+
+    #[test]
+    fn shared_adapter_executes_persistent_history_and_preserves_rejected_operation_ids() {
+        use ftui_layout::pane_execution::{PaneExecutionEngine, PaneExecutionPolicy};
+        use ftui_layout::pane_memory::PaneMemoryStrategy;
+
+        let mut tree = default_pane_layout_tree();
+        let mut control_tree = tree.clone();
+        let mut engine = PaneExecutionEngine::new(&tree);
+        engine
+            .set_policy(
+                &tree,
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                    .forcing(PaneMemoryStrategy::Persistent),
+            )
+            .expect("persistent history policy");
+        engine.begin_gesture();
+        let mut control = PaneInteractionTimeline::with_baseline(&control_tree);
+        let split = tree
+            .nodes()
+            .find_map(|node| matches!(node.kind, PaneNodeKind::Split(_)).then_some(node.id))
+            .expect("default split");
+        let operations = [
+            PaneOperation::SetSplitRatio {
+                split,
+                ratio: PaneSplitRatio::new(7, 3).expect("valid ratio"),
+            },
+            PaneOperation::CloseNode {
+                target: PaneId::new(999).expect("missing node id"),
+            },
+            PaneOperation::SetSplitRatio {
+                split,
+                ratio: PaneSplitRatio::new(8, 2).expect("valid ratio"),
+            },
+        ];
+        let pressure = PanePressureSnapProfile {
+            strength_bps: 7_500,
+            hysteresis_bps: 330,
+        };
+        let mut next_id = 41;
+        let mut control_next_id = 41;
+        let mut generation = 0;
+        let mut control_generation = 0;
+        let applied = apply_operations_with_timeline(
+            PaneTimelineApplyState {
+                layout_tree: &mut tree,
+                timeline: &mut engine,
+                next_operation_id: &mut next_id,
+                workspace_generation: &mut generation,
+            },
+            7,
+            &operations,
+            pressure,
+            true,
+        );
+        let control_applied = apply_operations_with_timeline(
+            PaneTimelineApplyState {
+                layout_tree: &mut control_tree,
+                timeline: &mut control,
+                next_operation_id: &mut control_next_id,
+                workspace_generation: &mut control_generation,
+            },
+            7,
+            &operations,
+            pressure,
+            true,
+        );
+        assert_eq!(applied, 2);
+        assert_eq!(applied, control_applied);
+        assert_eq!(generation, 1);
+        assert_eq!(generation, control_generation);
+        assert_eq!(
+            next_id, 44,
+            "a rejected attempt still consumes its operation id"
+        );
+        assert_eq!(next_id, control_next_id);
+        assert_eq!(tree.to_snapshot(), control_tree.to_snapshot());
+        assert_eq!(engine.timeline().entries, control.entries);
+        assert_eq!(engine.status().persistent_applies, 2);
+        assert_eq!(engine.status().checkpointed_applies, 0);
+        assert_eq!(engine.status().conservative_applies, 0);
+        engine.end_gesture(&tree).expect("finish observed gesture");
+        assert!(engine.status().last_monitor.is_some());
+        assert!(engine.undo(&mut tree).expect("persistent undo"));
+        assert!(control.undo(&mut control_tree).expect("control undo"));
+        assert_eq!(tree.to_snapshot(), control_tree.to_snapshot());
+        assert!(engine.redo(&mut tree).expect("persistent redo"));
+        assert!(control.redo(&mut control_tree).expect("control redo"));
+        assert_eq!(tree.to_snapshot(), control_tree.to_snapshot());
+    }
+
+    #[test]
+    fn shared_adapter_keeps_accepted_edit_when_synthetic_clock_regression_rejects_observation() {
+        use ftui_layout::pane_execution::{PaneExecutionEngine, PaneExecutionPolicy};
+        use ftui_layout::pane_memory::PaneMemoryStrategy;
+
+        let mut tree = default_pane_layout_tree();
+        let baseline = tree.to_snapshot();
+        let mut engine = PaneExecutionEngine::new(&tree);
+        engine
+            .set_policy(
+                &tree,
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                    .forcing(PaneMemoryStrategy::Persistent),
+            )
+            .expect("persistent policy");
+        // Deliberately invalid caller clock history, not a live timing sample.
+        // The real adapter's subsequent monotonic observation must be rejected.
+        engine
+            .observe(
+                &tree,
+                PaneExecutionSample {
+                    timestamp_ns: u64::MAX,
+                    elapsed_ns: 0,
+                    local: true,
+                },
+            )
+            .expect("install synthetic future observation");
+        let split = tree
+            .nodes()
+            .find_map(|node| matches!(node.kind, PaneNodeKind::Split(_)).then_some(node.id))
+            .expect("default split");
+        let mut next_id = 41;
+        let mut generation = 0;
+        let applied = apply_operations_with_timeline(
+            PaneTimelineApplyState {
+                layout_tree: &mut tree,
+                timeline: &mut engine,
+                next_operation_id: &mut next_id,
+                workspace_generation: &mut generation,
+            },
+            7,
+            &[PaneOperation::SetSplitRatio {
+                split,
+                ratio: PaneSplitRatio::new(7, 3).expect("valid ratio"),
+            }],
+            PanePressureSnapProfile {
+                strength_bps: 7_500,
+                hysteresis_bps: 330,
+            },
+            false,
+        );
+        assert_eq!(applied, 1);
+        assert_eq!(generation, 1);
+        assert_eq!(next_id, 42);
+        assert_ne!(tree.to_snapshot(), baseline);
+        assert_eq!(engine.applied_len(), 1);
+        assert_eq!(engine.status().persistent_applies, 1);
+        assert_eq!(engine.strategy(), PaneMemoryStrategy::Persistent);
+        assert!(
+            engine
+                .status()
+                .last_maintenance_error
+                .as_deref()
+                .is_some_and(|error| error.contains("observation clock moved backwards"))
+        );
+        assert_eq!(
+            engine
+                .replay()
+                .expect("accepted history remains replayable")
+                .to_snapshot(),
+            tree.to_snapshot()
+        );
     }
 
     #[test]

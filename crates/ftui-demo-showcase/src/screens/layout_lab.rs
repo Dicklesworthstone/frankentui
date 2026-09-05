@@ -9,6 +9,8 @@ use ftui_core::event::{
     Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ftui_core::geometry::{Rect, Sides};
+use ftui_layout::pane_execution::{PaneExecutionEngine, PaneExecutionPolicy, PaneExecutionStatus};
+use ftui_layout::pane_memory::PaneMemoryStrategy;
 use ftui_layout::{
     Alignment as FlexAlignment, Constraint, Flex, PANE_EDGE_GRIP_INSET_CELLS,
     PANE_MAGNETIC_FIELD_CELLS, PaneId, PaneInertialThrow, PaneInteractionTimeline,
@@ -116,14 +118,16 @@ pub struct LayoutLab {
     pane_preview: Cell<Rect>,
     /// Interactive pane workspace tree.
     pane_tree: PaneTree,
-    /// Persistent interaction timeline for undo/redo/replay.
-    pane_timeline: PaneInteractionTimeline,
+    /// Selected execution engine and its shared undo/redo/replay history.
+    pane_timeline: PaneExecutionEngine,
     /// Multi-pane selection state (shift-click cluster).
     pane_selection: PaneSelectionState,
     /// Active pointer gesture state.
     pane_active_gesture: Cell<Option<ActivePaneGesture>>,
     /// Timeline cursor at gesture start for rollback on cancel.
     pane_gesture_timeline_cursor_start: Option<usize>,
+    /// Read-only render paths request cancellation at the next mutable event.
+    pane_deferred_cancel: Cell<bool>,
     /// Last applied live-reflow signature for dedupe.
     pane_live_reflow_signature: Option<u64>,
     /// Current docking ghost/alternatives preview.
@@ -280,11 +284,12 @@ impl LayoutLab {
             layout_preview: Cell::new(Rect::default()),
             layout_controls: Cell::new(Rect::default()),
             pane_preview: Cell::new(Rect::default()),
-            pane_timeline: PaneInteractionTimeline::with_baseline(&pane_tree),
+            pane_timeline: PaneExecutionEngine::new(&pane_tree),
             pane_tree,
             pane_selection,
             pane_active_gesture: Cell::new(None),
             pane_gesture_timeline_cursor_start: None,
+            pane_deferred_cancel: Cell::new(false),
             pane_live_reflow_signature: None,
             pane_preview_state: PanePreviewState::default(),
             pane_next_operation_id: 1,
@@ -368,8 +373,8 @@ impl LayoutLab {
 
     fn pane_timeline_status(&self) -> PaneTimelineStatus {
         PaneTimelineStatus {
-            cursor: self.pane_timeline.cursor,
-            len: self.pane_timeline.entries.len(),
+            cursor: self.pane_timeline.timeline().cursor,
+            len: self.pane_timeline.timeline().entries.len(),
         }
     }
 
@@ -397,6 +402,9 @@ impl LayoutLab {
         y: u16,
         modifiers: Modifiers,
     ) {
+        if !self.resolve_deferred_pane_cancel() {
+            return;
+        }
         if self.pane_workspace_wants_mouse(x, y) {
             self.handle_mouse(kind, x, y, modifiers);
         }
@@ -411,6 +419,9 @@ impl LayoutLab {
     /// Clear cached pane workspace bounds when the embedding screen no longer
     /// renders the pane studio panel.
     pub fn clear_embedded_pane_workspace_bounds(&self) {
+        if self.pane_gesture_timeline_cursor_start.is_some() {
+            self.pane_deferred_cancel.set(true);
+        }
         self.pane_preview.set(Rect::default());
         self.pane_active_gesture.set(None);
         self.pane_hover_pointer.set(None);
@@ -425,6 +436,9 @@ impl LayoutLab {
 impl LayoutLab {
     /// Handle mouse interactions.
     fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16, modifiers: Modifiers) {
+        if !self.resolve_deferred_pane_cancel() {
+            return;
+        }
         let preview = self.layout_preview.get();
         let controls = self.layout_controls.get();
         let pane_preview = self.pane_preview.get();
@@ -511,6 +525,9 @@ impl Screen for LayoutLab {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if !self.resolve_deferred_pane_cancel() {
+            return Cmd::None;
+        }
         if let Event::Mouse(mouse) = event {
             self.handle_mouse(mouse.kind, mouse.x, mouse.y, mouse.modifiers);
             return Cmd::None;
@@ -634,7 +651,7 @@ impl Screen for LayoutLab {
         if area.height < 4 || area.width < 8 {
             self.layout_preview.set(Rect::default());
             self.layout_controls.set(Rect::default());
-            self.pane_preview.set(Rect::default());
+            self.clear_embedded_pane_workspace_bounds();
             Paragraph::new("Terminal too small for Layout Lab")
                 .style(theme::muted())
                 .render(area, frame);
@@ -1138,6 +1155,9 @@ impl LayoutLab {
     }
 
     fn handle_pane_pointer_down(&mut self, pointer: PanePointerPosition, shift: bool) {
+        if !self.cancel_pane_gesture() {
+            return;
+        }
         let viewport = self.pane_preview.get();
         if viewport.is_empty() {
             return;
@@ -1152,6 +1172,8 @@ impl LayoutLab {
         };
 
         update_selection_for_pointer_down(&mut self.pane_selection, context.leaf, shift);
+        self.pane_hover_pointer.set(Some(pointer));
+        self.pane_timeline.begin_gesture();
         let mut active_gesture = self.pane_active_gesture.get();
         arm_active_gesture(
             PaneGestureArmState {
@@ -1160,7 +1182,7 @@ impl LayoutLab {
                 live_reflow_signature: &mut self.pane_live_reflow_signature,
                 preview_state: &mut self.pane_preview_state,
             },
-            self.pane_timeline.cursor,
+            self.pane_timeline.timeline().cursor,
             self.pane_next_operation_id.saturating_sub(1),
             1,
             context.leaf,
@@ -1354,9 +1376,33 @@ impl LayoutLab {
         &self.pane_tree
     }
 
+    /// Execution substrate currently serving pane operations and history navigation.
+    #[must_use]
+    pub fn pane_execution_strategy(&self) -> PaneMemoryStrategy {
+        self.pane_timeline.strategy()
+    }
+
+    /// Actual engine execution counters and maintenance diagnostics.
+    #[must_use]
+    pub fn pane_execution_status(&self) -> &PaneExecutionStatus {
+        self.pane_timeline.status()
+    }
+
+    /// Change execution policy after canceling any uncommitted gesture.
+    pub fn pane_set_execution_policy(&mut self, policy: PaneExecutionPolicy) -> Result<(), String> {
+        if !self.cancel_pane_gesture() {
+            return Err("pane gesture cancellation failed; execution policy unchanged".into());
+        }
+        self.pane_timeline
+            .set_policy(&self.pane_tree, policy)
+            .map_err(|err| err.to_string())
+    }
+
     fn finish_pane_gesture(&mut self) {
+        let was_pinned = self.pane_gesture_timeline_cursor_start.is_some();
         self.pane_active_gesture.set(None);
         self.pane_gesture_timeline_cursor_start = None;
+        self.pane_deferred_cancel.set(false);
         self.pane_live_reflow_signature = None;
         self.pane_preview_state = PanePreviewState::default();
         self.pane_last_pointer = None;
@@ -1366,19 +1412,41 @@ impl LayoutLab {
         // Clear any latched adapter state so the next gesture arms cleanly.
         let _ = self.pane_terminal_adapter.force_cancel_all();
         self.pane_resize_target = None;
+        if was_pinned && let Err(err) = self.pane_timeline.end_gesture(&self.pane_tree) {
+            tracing::warn!(
+                target: "ftui_demo_showcase::layout_lab",
+                error = %err,
+                "pane gesture completed but execution maintenance failed"
+            );
+        }
     }
 
-    fn cancel_pane_gesture(&mut self) {
-        let _ = rollback_timeline_to_cursor(
+    fn cancel_pane_gesture(&mut self) -> bool {
+        if let Err(err) = rollback_timeline_to_cursor(
             &mut self.pane_tree,
             &mut self.pane_timeline,
             self.pane_gesture_timeline_cursor_start,
             &mut self.pane_workspace_generation,
-        );
+        ) {
+            tracing::warn!(
+                target: "ftui_demo_showcase::layout_lab",
+                error = %err,
+                "pane cancellation failed; retaining the gesture rollback cursor"
+            );
+            return false;
+        }
         self.finish_pane_gesture();
+        true
+    }
+
+    fn resolve_deferred_pane_cancel(&mut self) -> bool {
+        !self.pane_deferred_cancel.get() || self.cancel_pane_gesture()
     }
 
     fn pane_undo(&mut self) {
+        if !self.cancel_pane_gesture() {
+            return;
+        }
         if matches!(self.pane_timeline.undo(&mut self.pane_tree), Ok(true)) {
             self.pane_workspace_generation = self.pane_workspace_generation.saturating_add(1);
             self.sanitize_pane_selection();
@@ -1387,6 +1455,9 @@ impl LayoutLab {
     }
 
     fn pane_redo(&mut self) {
+        if !self.cancel_pane_gesture() {
+            return;
+        }
         if matches!(self.pane_timeline.redo(&mut self.pane_tree), Ok(true)) {
             self.pane_workspace_generation = self.pane_workspace_generation.saturating_add(1);
             self.sanitize_pane_selection();
@@ -1395,10 +1466,15 @@ impl LayoutLab {
     }
 
     fn pane_replay(&mut self) {
+        if !self.cancel_pane_gesture() {
+            return;
+        }
         if let Ok(tree) = self.pane_timeline.replay() {
             self.pane_tree = tree;
             self.pane_workspace_generation = self.pane_workspace_generation.saturating_add(1);
-            self.pane_next_operation_id = self.pane_timeline.next_operation_id();
+            self.pane_next_operation_id = self
+                .pane_next_operation_id
+                .max(self.pane_timeline.timeline().next_operation_id());
             self.sanitize_pane_selection();
             self.finish_pane_gesture();
         }
@@ -1454,7 +1530,7 @@ impl LayoutLab {
         let mut metadata = WorkspaceMetadata::new("layout-lab");
         metadata.saved_generation = self.pane_workspace_generation;
         let mut snapshot = WorkspaceSnapshot::new(self.pane_tree.to_snapshot(), metadata);
-        snapshot.interaction_timeline = self.pane_timeline.clone();
+        snapshot.interaction_timeline = self.pane_timeline.timeline().clone();
         snapshot.active_pane_id = self.pane_selection.anchor;
         to_canonical_workspace_snapshot_json(&snapshot).map_err(|err| err.to_string())
     }
@@ -1480,9 +1556,14 @@ impl LayoutLab {
         if let Some(baseline) = timeline.baseline.as_mut() {
             baseline.canonicalize();
         }
-        if timeline.baseline.is_none() {
+        if timeline.baseline.is_none() && timeline.entries.is_empty() && timeline.cursor == 0 {
             timeline = PaneInteractionTimeline::with_baseline(&tree);
         }
+        let mut engine = PaneExecutionEngine::from_timeline(&tree, timeline)
+            .map_err(|err| format!("pane history restore failed: {err}"))?;
+        engine
+            .set_policy(&tree, self.pane_timeline.policy())
+            .map_err(|err| format!("pane execution policy restore failed: {err}"))?;
         let mut selection = PaneSelectionState::default();
         if let Some(anchor) = snapshot.active_pane_id {
             selection.anchor = Some(anchor);
@@ -1490,12 +1571,15 @@ impl LayoutLab {
         }
 
         self.pane_tree = tree;
-        self.pane_timeline = timeline;
+        self.pane_timeline = engine;
+        self.pane_gesture_timeline_cursor_start = None;
         self.pane_selection = selection;
         self.pane_workspace_generation = snapshot.metadata.saved_generation;
         self.pane_last_saved_workspace_generation = self.pane_workspace_generation;
         self.pane_clear_workspace_recovery_notice();
-        self.pane_next_operation_id = self.pane_timeline.next_operation_id();
+        self.pane_next_operation_id = self
+            .pane_next_operation_id
+            .max(self.pane_timeline.timeline().next_operation_id());
         self.sanitize_pane_selection();
         self.finish_pane_gesture();
         Ok(())
@@ -1512,6 +1596,9 @@ impl LayoutLab {
     }
 
     fn apply_pane_intelligence_mode(&mut self, mode: PaneLayoutIntelligenceMode) {
+        if !self.cancel_pane_gesture() {
+            return;
+        }
         let primary = self
             .pane_selection
             .anchor
@@ -1549,7 +1636,8 @@ impl LayoutLab {
 
     fn reset_pane_workspace(&mut self) {
         self.pane_tree = default_pane_layout_tree();
-        self.pane_timeline = PaneInteractionTimeline::with_baseline(&self.pane_tree);
+        self.pane_timeline = PaneExecutionEngine::new(&self.pane_tree);
+        self.pane_gesture_timeline_cursor_start = None;
         self.pane_next_operation_id = 1;
         self.pane_workspace_generation = 0;
         self.pane_last_saved_workspace_generation = 0;
@@ -2069,7 +2157,7 @@ pub fn solve_flex_horizontal(area: Rect, constraints: &[Constraint]) -> ftui_lay
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_layout::{PaneOperation, PaneSplitRatio};
+    use ftui_layout::{PaneOperation, PaneRetentionPolicy, PaneSplitRatio};
 
     // ==========================================================================
     // Basic Layout Tests
@@ -3131,7 +3219,7 @@ mod tests {
         );
 
         assert!(
-            !lab.pane_timeline.entries.is_empty(),
+            !lab.pane_timeline.timeline().entries.is_empty(),
             "drag interaction should record timeline operations"
         );
     }
@@ -3258,7 +3346,7 @@ mod tests {
             "focus requests are best-effort and should preserve the prior mode when no new ops apply"
         );
         assert!(
-            lab.pane_timeline.entries.len() >= 3,
+            lab.pane_timeline.timeline().entries.len() >= 3,
             "successful mode transitions should record timeline entries"
         );
     }
@@ -3313,7 +3401,8 @@ mod tests {
 
         let initial_hash = lab.pane_tree.state_hash();
         assert_eq!(
-            lab.pane_timeline.cursor, 0,
+            lab.pane_timeline.timeline().cursor,
+            0,
             "timeline should start at baseline"
         );
 
@@ -3323,12 +3412,12 @@ mod tests {
             compare_hash, initial_hash,
             "compare mode should materially change the pane workspace"
         );
-        let entry_count = lab.pane_timeline.entries.len();
+        let entry_count = lab.pane_timeline.timeline().entries.len();
         assert!(
             entry_count > 0,
             "mode application should record timeline entries"
         );
-        assert_eq!(lab.pane_timeline.cursor, entry_count);
+        assert_eq!(lab.pane_timeline.timeline().cursor, entry_count);
 
         lab.update(&press(KeyCode::Char('u')));
         assert_eq!(
@@ -3337,7 +3426,8 @@ mod tests {
             "undo should restore the baseline workspace state"
         );
         assert_eq!(
-            lab.pane_timeline.cursor, 0,
+            lab.pane_timeline.timeline().cursor,
+            0,
             "undo should rewind the timeline cursor"
         );
 
@@ -3348,7 +3438,8 @@ mod tests {
             "redo should restore the compare-mode workspace state"
         );
         assert_eq!(
-            lab.pane_timeline.cursor, entry_count,
+            lab.pane_timeline.timeline().cursor,
+            entry_count,
             "redo should move the cursor back to the applied head"
         );
 
@@ -3360,7 +3451,7 @@ mod tests {
         );
         assert_eq!(
             lab.pane_next_operation_id,
-            (lab.pane_timeline.entries.len() as u64).saturating_add(1),
+            (lab.pane_timeline.timeline().entries.len() as u64).saturating_add(1),
             "replay should realign the next operation id with the journal"
         );
     }
@@ -3401,12 +3492,187 @@ mod tests {
                 40,
             )
             .expect("second resize delta should apply");
-        assert_eq!(lab.pane_timeline.entries.len(), 1);
+        assert_eq!(lab.pane_timeline.timeline().entries.len(), 1);
 
         lab.pane_next_operation_id = 1;
         lab.pane_replay();
 
         assert_eq!(lab.pane_next_operation_id, 43);
+    }
+
+    #[test]
+    fn pane_live_engine_switch_preserves_redo_and_uses_selected_executor() {
+        let mut lab = LayoutLab::new();
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                .forcing(PaneMemoryStrategy::Checkpointed),
+        )
+        .expect("checkpointed policy");
+        let baseline = lab.pane_tree.to_snapshot();
+        lab.update(&press(KeyCode::Char('c')));
+        let edited = lab.pane_tree.to_snapshot();
+        assert_ne!(edited, baseline);
+        assert!(lab.pane_execution_status().checkpointed_applies > 0);
+        lab.update(&press(KeyCode::Char('u')));
+        assert_eq!(lab.pane_tree.to_snapshot(), baseline);
+        let journal = lab.pane_timeline.timeline().clone();
+        let next_id = lab.pane_next_operation_id;
+
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                .forcing(PaneMemoryStrategy::Persistent),
+        )
+        .expect("switch with retained redo");
+        assert_eq!(
+            lab.pane_execution_strategy(),
+            PaneMemoryStrategy::Persistent
+        );
+        assert_eq!(lab.pane_tree.to_snapshot(), baseline);
+        assert_eq!(lab.pane_timeline.timeline().entries, journal.entries);
+        assert_eq!(lab.pane_timeline.timeline().cursor, journal.cursor);
+        assert_eq!(lab.pane_next_operation_id, next_id);
+        lab.update(&press(KeyCode::Char('y')));
+        assert_eq!(lab.pane_tree.to_snapshot(), edited);
+        let persistent_before = lab.pane_execution_status().persistent_applies;
+        lab.update(&press(KeyCode::Char('f')));
+        assert!(lab.pane_execution_status().persistent_applies > persistent_before);
+
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()).conservative(),
+        )
+        .expect("conservative execution policy");
+        assert!(lab.pane_execution_status().conservative);
+        let conservative_before = lab.pane_execution_status().conservative_applies;
+        lab.update(&press(KeyCode::Char('c')));
+        assert!(lab.pane_execution_status().conservative_applies > conservative_before);
+        lab.pane_next_operation_id = 100;
+        lab.update(&press(KeyCode::Char('R')));
+        assert_eq!(
+            lab.pane_next_operation_id, 100,
+            "replay keeps the high-water mark"
+        );
+    }
+
+    #[test]
+    fn pane_hidden_drag_cancels_before_next_mutable_event_and_releases_history_pin() {
+        let mut lab = LayoutLab::new();
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                .forcing(PaneMemoryStrategy::Persistent),
+        )
+        .expect("persistent policy");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(140, 40, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 140, 40));
+        let viewport = lab.pane_preview.get();
+        let layout = lab.pane_tree.solve_layout(viewport).expect("pane geometry");
+        let splitter = collect_splitter_primitives(&lab.pane_tree, &layout, viewport, None, None)
+            .into_iter()
+            .find(|splitter| splitter.axis == ftui_layout::SplitAxis::Horizontal)
+            .expect("horizontal splitter");
+        let x = splitter.handle_rect.x;
+        let y = splitter.handle_rect.y;
+        let baseline = lab.pane_tree.to_snapshot();
+        lab.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            Modifiers::NONE,
+        );
+        assert!(lab.pane_active_gesture.get().is_some());
+        assert!(
+            lab.pane_active_gesture
+                .get()
+                .is_some_and(|gesture| matches!(gesture.mode, PaneGestureMode::Resize(_)))
+        );
+        lab.handle_mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            x.saturating_add(4),
+            y,
+            Modifiers::NONE,
+        );
+        let dragged = lab.pane_tree.to_snapshot();
+        assert_ne!(
+            dragged, baseline,
+            "the actual adapter must have resized a pane"
+        );
+        assert!(lab.pane_execution_status().persistent_applies > 0);
+        let next_id = lab.pane_next_operation_id;
+
+        lab.clear_embedded_pane_workspace_bounds();
+        assert!(lab.pane_active_gesture.get().is_none());
+        assert!(lab.pane_deferred_cancel.get());
+        assert_eq!(
+            lab.pane_tree.to_snapshot(),
+            dragged,
+            "read-only hide defers rollback"
+        );
+        lab.update_embedded_pane_workspace_mouse(MouseEventKind::Moved, 0, 0, Modifiers::NONE);
+        assert_eq!(lab.pane_tree.to_snapshot(), baseline);
+        assert!(!lab.pane_deferred_cancel.get());
+        assert!(lab.pane_gesture_timeline_cursor_start.is_none());
+        assert_eq!(lab.pane_timeline.timeline().cursor, 0);
+        assert_eq!(lab.pane_next_operation_id, next_id);
+        lab.handle_mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            x.saturating_add(4),
+            y,
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            lab.pane_tree.to_snapshot(),
+            baseline,
+            "stale release cannot recommit"
+        );
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                .forcing(PaneMemoryStrategy::Checkpointed),
+        )
+        .expect("completed cancellation permits a substrate switch");
+        assert_eq!(
+            lab.pane_execution_strategy(),
+            PaneMemoryStrategy::Checkpointed
+        );
+        lab.pane_redo();
+        assert_eq!(lab.pane_tree.to_snapshot(), dragged);
+    }
+
+    #[test]
+    fn pane_import_rejects_invalid_redo_without_replacing_live_engine() {
+        let mut lab = LayoutLab::new();
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                .forcing(PaneMemoryStrategy::Persistent),
+        )
+        .expect("persistent policy");
+        lab.update(&press(KeyCode::Char('c')));
+        lab.pane_undo();
+        let before = lab
+            .pane_export_workspace_snapshot_json()
+            .expect("export current workspace");
+        let next_id = lab.pane_next_operation_id;
+        let mut invalid: WorkspaceSnapshot = serde_json::from_str(&before).expect("workspace JSON");
+        assert!(!invalid.interaction_timeline.entries.is_empty());
+        invalid.interaction_timeline.entries[0].operation = PaneOperation::CloseNode {
+            target: PaneId::new(999).expect("missing node id"),
+        };
+        let json = serde_json::to_string(&invalid).expect("encode invalid redo");
+        assert!(lab.pane_import_workspace_snapshot_json(&json).is_err());
+        assert_eq!(
+            lab.pane_export_workspace_snapshot_json()
+                .expect("export after refusal"),
+            before
+        );
+        assert_eq!(lab.pane_next_operation_id, next_id);
+        assert_eq!(
+            lab.pane_execution_strategy(),
+            PaneMemoryStrategy::Persistent
+        );
+        lab.pane_redo();
+        assert!(
+            lab.pane_timeline.timeline().cursor > 0,
+            "the original redo remains usable"
+        );
     }
 
     #[test]
@@ -3883,7 +4149,7 @@ mod tests {
             "splitter drag must mutate the live split ratio"
         );
         assert!(
-            !lab.pane_timeline.entries.is_empty(),
+            !lab.pane_timeline.timeline().entries.is_empty(),
             "adapter resize must record timeline entries for undo"
         );
     }

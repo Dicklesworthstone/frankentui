@@ -19,6 +19,8 @@ use ftui_demo_showcase::pane_interaction::{
     rollback_timeline_to_cursor as rollback_timeline_to_cursor_shared,
     update_selection_for_pointer_down,
 };
+use ftui_layout::pane_execution::{PaneExecutionEngine, PaneExecutionPolicy, PaneExecutionStatus};
+use ftui_layout::pane_memory::PaneMemoryStrategy;
 use ftui_layout::{
     PANE_EDGE_GRIP_INSET_CELLS, PANE_MAGNETIC_FIELD_CELLS, PaneDragResizeEffect, PaneId,
     PaneInteractionTimeline, PaneLayoutIntelligenceMode, PaneModifierSnapshot, PaneMotionVector,
@@ -55,8 +57,8 @@ pub struct RunnerCore {
     pane_logs: Vec<PaneLogRecord>,
     /// Interactive pane topology model used for advanced pane semantics.
     layout_tree: PaneTree,
-    /// Persistent structural timeline for undo/redo/replay.
-    timeline: PaneInteractionTimeline,
+    /// Selected execution engine and shared undo/redo/replay history.
+    timeline: PaneExecutionEngine,
     /// Current multi-pane selection cluster.
     selection: PaneSelectionState,
     /// Active drag gesture context.
@@ -179,7 +181,7 @@ impl RunnerCore {
             flat_spans_buf: Vec::new(),
             pane_adapter,
             pane_logs: Vec::new(),
-            timeline: PaneInteractionTimeline::with_baseline(&layout_tree),
+            timeline: PaneExecutionEngine::new(&layout_tree),
             layout_tree,
             selection: PaneSelectionState::default(),
             active_gesture: None,
@@ -386,9 +388,31 @@ impl RunnerCore {
     #[must_use]
     pub fn pane_timeline_status(&self) -> PaneTimelineStatus {
         PaneTimelineStatus {
-            cursor: self.timeline.cursor,
-            len: self.timeline.entries.len(),
+            cursor: self.timeline.timeline().cursor,
+            len: self.timeline.timeline().entries.len(),
         }
+    }
+
+    /// Execution substrate currently serving pane operations and history navigation.
+    #[must_use]
+    pub fn pane_execution_strategy(&self) -> PaneMemoryStrategy {
+        self.timeline.strategy()
+    }
+
+    /// Actual engine execution counters and maintenance diagnostics.
+    #[must_use]
+    pub fn pane_execution_status(&self) -> &PaneExecutionStatus {
+        self.timeline.status()
+    }
+
+    /// Change execution policy after canceling any uncommitted gesture.
+    pub fn pane_set_execution_policy(&mut self, policy: PaneExecutionPolicy) -> Result<(), String> {
+        if !self.cancel_active_pane_gesture() {
+            return Err("pane gesture cancellation failed; execution policy unchanged".into());
+        }
+        self.timeline
+            .set_policy(&self.layout_tree, policy)
+            .map_err(|err| err.to_string())
     }
 
     /// Selected pane IDs in deterministic order.
@@ -476,7 +500,7 @@ impl RunnerCore {
         let mut metadata = WorkspaceMetadata::new("showcase-runner");
         metadata.saved_generation = self.workspace_generation;
         let mut snapshot = WorkspaceSnapshot::new(self.layout_tree.to_snapshot(), metadata);
-        snapshot.interaction_timeline = self.timeline.clone();
+        snapshot.interaction_timeline = self.timeline.timeline().clone();
         if let Some(baseline) = snapshot.interaction_timeline.baseline.as_mut() {
             baseline.canonicalize();
         }
@@ -495,15 +519,23 @@ impl RunnerCore {
         snapshot
             .validate()
             .map_err(|err| format!("workspace snapshot invalid: {err}"))?;
-        self.layout_tree = PaneTree::from_snapshot(snapshot.pane_tree.clone())
+        let tree = PaneTree::from_snapshot(snapshot.pane_tree.clone())
             .map_err(|err| format!("pane tree restore failed: {err}"))?;
-        self.timeline = snapshot.interaction_timeline;
-        if let Some(baseline) = self.timeline.baseline.as_mut() {
+        let mut timeline = snapshot.interaction_timeline;
+        if let Some(baseline) = timeline.baseline.as_mut() {
             baseline.canonicalize();
         }
-        if self.timeline.baseline.is_none() {
-            self.timeline = PaneInteractionTimeline::with_baseline(&self.layout_tree);
+        if timeline.baseline.is_none() && timeline.entries.is_empty() && timeline.cursor == 0 {
+            timeline = PaneInteractionTimeline::with_baseline(&tree);
         }
+        let mut engine = PaneExecutionEngine::from_timeline(&tree, timeline)
+            .map_err(|err| format!("pane history restore failed: {err}"))?;
+        engine
+            .set_policy(&tree, self.timeline.policy())
+            .map_err(|err| format!("pane execution policy restore failed: {err}"))?;
+        self.layout_tree = tree;
+        self.timeline = engine;
+        self.gesture_timeline_cursor_start = None;
         self.refresh_next_operation_id_from_timeline();
         self.selection = PaneSelectionState::default();
         if let Some(anchor) = snapshot.active_pane_id {
@@ -520,6 +552,9 @@ impl RunnerCore {
 
     /// Undo one pane structural mutation from the timeline.
     pub fn pane_undo(&mut self) -> bool {
+        if !self.cancel_active_pane_gesture() {
+            return false;
+        }
         match self.timeline.undo(&mut self.layout_tree) {
             Ok(changed) => {
                 if changed {
@@ -541,6 +576,9 @@ impl RunnerCore {
 
     /// Redo one pane structural mutation from the timeline.
     pub fn pane_redo(&mut self) -> bool {
+        if !self.cancel_active_pane_gesture() {
+            return false;
+        }
         match self.timeline.redo(&mut self.layout_tree) {
             Ok(changed) => {
                 if changed {
@@ -562,6 +600,9 @@ impl RunnerCore {
 
     /// Deterministically rebuild pane topology from timeline baseline + cursor.
     pub fn pane_replay(&mut self) -> bool {
+        if !self.cancel_active_pane_gesture() {
+            return false;
+        }
         match self.timeline.replay() {
             Ok(tree) => {
                 self.layout_tree = tree;
@@ -587,6 +628,9 @@ impl RunnerCore {
         mode: PaneLayoutIntelligenceMode,
         primary: PaneId,
     ) -> bool {
+        if !self.cancel_active_pane_gesture() {
+            return false;
+        }
         let operations = match self.layout_tree.plan_intelligence_mode(mode, primary) {
             Ok(operations) => operations,
             Err(err) => {
@@ -831,17 +875,12 @@ impl RunnerCore {
             }
             PaneDragResizeEffect::Committed { end, .. } => {
                 self.apply_drag_semantics(sequence, end, dispatch, true);
-                self.active_gesture = None;
-                self.gesture_timeline_cursor_start = None;
-                self.live_reflow_signature = None;
-                self.preview_state = PanePreviewState::default();
+                self.clear_transient_pane_interaction_state();
             }
             PaneDragResizeEffect::Canceled { .. } => {
-                self.rollback_active_gesture_mutations();
-                self.active_gesture = None;
-                self.gesture_timeline_cursor_start = None;
-                self.live_reflow_signature = None;
-                self.preview_state = PanePreviewState::default();
+                if self.rollback_active_gesture_mutations() {
+                    self.clear_transient_pane_interaction_state();
+                }
             }
             PaneDragResizeEffect::Noop { .. }
             | PaneDragResizeEffect::Armed { .. }
@@ -920,6 +959,7 @@ impl RunnerCore {
     }
 
     fn arm_gesture(&mut self, pointer_id: u32, leaf: PaneId, mode: PaneGestureMode) {
+        self.timeline.begin_gesture();
         arm_active_gesture_shared(
             PaneGestureArmState {
                 active_gesture: &mut self.active_gesture,
@@ -927,7 +967,7 @@ impl RunnerCore {
                 live_reflow_signature: &mut self.live_reflow_signature,
                 preview_state: &mut self.preview_state,
             },
-            self.timeline.cursor,
+            self.timeline.timeline().cursor,
             self.next_operation_id.saturating_sub(1),
             pointer_id,
             leaf,
@@ -935,28 +975,47 @@ impl RunnerCore {
         );
     }
 
-    fn rollback_active_gesture_mutations(&mut self) {
+    fn rollback_active_gesture_mutations(&mut self) -> bool {
         match rollback_timeline_to_cursor_shared(
             &mut self.layout_tree,
             &mut self.timeline,
             self.gesture_timeline_cursor_start,
             &mut self.workspace_generation,
         ) {
-            Ok(_) => {}
+            Ok(_) => true,
             Err(err) => {
                 self.pane_logs.push(PaneLogRecord::Line(format!(
                     "pane_timeline cancel_rollback error: {err}"
                 )));
+                false
             }
         }
     }
 
+    fn cancel_active_pane_gesture(&mut self) -> bool {
+        if self.gesture_timeline_cursor_start.is_none() {
+            return true;
+        }
+        if !self.rollback_active_gesture_mutations() {
+            return false;
+        }
+        self.clear_transient_pane_interaction_state();
+        self.reset_pointer_capture_adapter();
+        true
+    }
+
     fn clear_transient_pane_interaction_state(&mut self) {
+        let was_pinned = self.gesture_timeline_cursor_start.is_some();
         self.preview_state = PanePreviewState::default();
         self.active_gesture = None;
         self.hover_pointer = None;
         self.gesture_timeline_cursor_start = None;
         self.live_reflow_signature = None;
+        if was_pinned && let Err(err) = self.timeline.end_gesture(&self.layout_tree) {
+            self.pane_logs.push(PaneLogRecord::Line(format!(
+                "pane_execution gesture maintenance error: {err}"
+            )));
+        }
     }
 
     fn sanitize_selection_to_layout(&mut self) {
@@ -992,7 +1051,9 @@ impl RunnerCore {
     }
 
     fn refresh_next_operation_id_from_timeline(&mut self) {
-        self.next_operation_id = self.timeline.next_operation_id();
+        self.next_operation_id = self
+            .next_operation_id
+            .max(self.timeline.timeline().next_operation_id());
     }
 
     fn refresh_cached_patch_meta_from_live_outputs(&mut self) {
@@ -1234,7 +1295,7 @@ mod tests {
         dynamic_live_reflow_threshold_bps, dynamic_preview_switch_advantage_bps,
         edge_fling_projection,
     };
-    use ftui_layout::{PaneDockPreview, PaneDockZone, PaneResizeGrip};
+    use ftui_layout::{PaneDockPreview, PaneDockZone, PaneResizeGrip, PaneRetentionPolicy};
 
     #[test]
     fn live_reflow_threshold_drops_for_fast_confident_motion() {
@@ -1347,6 +1408,173 @@ mod tests {
         assert!(!summary.accepted());
         assert!(runner.active_gesture.is_none());
         assert_eq!(runner.selection, before);
+    }
+
+    #[test]
+    fn live_pane_engine_switch_preserves_redo_and_executes_conservative_policy() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        runner
+            .pane_set_execution_policy(
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                    .forcing(PaneMemoryStrategy::Checkpointed),
+            )
+            .expect("checkpointed policy");
+        let baseline = runner.layout_tree.to_snapshot();
+        let primary =
+            PaneId::new(runner.pane_primary_id().expect("primary pane")).expect("valid primary id");
+        assert!(runner.pane_apply_intelligence_mode(PaneLayoutIntelligenceMode::Compare, primary));
+        let edited = runner.layout_tree.to_snapshot();
+        assert_ne!(edited, baseline);
+        assert!(runner.pane_execution_status().checkpointed_applies > 0);
+        assert!(runner.pane_undo());
+        let journal = runner.timeline.timeline().clone();
+        let next_id = runner.next_operation_id;
+        runner
+            .pane_set_execution_policy(
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                    .forcing(PaneMemoryStrategy::Persistent),
+            )
+            .expect("switch with redo retained");
+        assert_eq!(
+            runner.pane_execution_strategy(),
+            PaneMemoryStrategy::Persistent
+        );
+        assert_eq!(runner.layout_tree.to_snapshot(), baseline);
+        assert_eq!(runner.timeline.timeline().entries, journal.entries);
+        assert_eq!(runner.timeline.timeline().cursor, journal.cursor);
+        assert_eq!(runner.next_operation_id, next_id);
+        assert!(runner.pane_redo());
+        assert_eq!(runner.layout_tree.to_snapshot(), edited);
+        let persistent_before = runner.pane_execution_status().persistent_applies;
+        assert!(runner.pane_apply_intelligence_mode(PaneLayoutIntelligenceMode::Focus, primary));
+        assert!(runner.pane_execution_status().persistent_applies > persistent_before);
+
+        runner
+            .pane_set_execution_policy(
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()).conservative(),
+            )
+            .expect("conservative policy");
+        assert!(runner.pane_execution_status().conservative);
+        let conservative_before = runner.pane_execution_status().conservative_applies;
+        assert!(runner.pane_apply_intelligence_mode(PaneLayoutIntelligenceMode::Compare, primary));
+        assert!(runner.pane_execution_status().conservative_applies > conservative_before);
+        runner.next_operation_id = 100;
+        assert!(runner.pane_replay());
+        assert_eq!(runner.next_operation_id, 100);
+    }
+
+    #[test]
+    fn live_persistent_drag_blur_restores_tree_and_allows_engine_switch() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        runner
+            .pane_set_execution_policy(
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                    .forcing(PaneMemoryStrategy::Persistent),
+            )
+            .expect("persistent policy");
+        let splitter = runner
+            .pane_splitter_primitives()
+            .into_iter()
+            .find(|splitter| splitter.axis == SplitAxis::Horizontal)
+            .expect("horizontal splitter");
+        let x = i32::from(splitter.handle_rect.x);
+        let y = i32::from(splitter.handle_rect.y);
+        let baseline = runner.layout_tree.to_snapshot();
+        let down = runner.pane_pointer_down_at(
+            71,
+            PanePointerButton::Primary,
+            x,
+            y,
+            PaneModifierSnapshot::default(),
+        );
+        assert!(down.accepted());
+        assert!(runner.active_gesture.is_some());
+        assert!(
+            runner
+                .active_gesture
+                .is_some_and(|gesture| matches!(gesture.mode, PaneGestureMode::Resize(_)))
+        );
+        let moved = runner.pane_pointer_move_at(71, x + 5, y, PaneModifierSnapshot::default());
+        assert!(moved.accepted());
+        let dragged = runner.layout_tree.to_snapshot();
+        assert_ne!(
+            dragged, baseline,
+            "the actual web adapter must resize the pane"
+        );
+        assert!(runner.pane_execution_status().persistent_applies > 0);
+        let next_id = runner.next_operation_id;
+        let canceled = runner.pane_blur();
+        assert!(canceled.accepted());
+        assert_eq!(runner.layout_tree.to_snapshot(), baseline);
+        assert!(runner.active_gesture.is_none());
+        assert!(runner.gesture_timeline_cursor_start.is_none());
+        assert_eq!(runner.pane_active_pointer_id(), None);
+        assert_eq!(runner.next_operation_id, next_id);
+        let _ = runner.pane_pointer_up_at(
+            71,
+            PanePointerButton::Primary,
+            x + 5,
+            y,
+            PaneModifierSnapshot::default(),
+        );
+        assert_eq!(
+            runner.layout_tree.to_snapshot(),
+            baseline,
+            "stale release cannot recommit"
+        );
+        runner
+            .pane_set_execution_policy(
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                    .forcing(PaneMemoryStrategy::Checkpointed),
+            )
+            .expect("completed cancellation permits switching");
+        assert_eq!(
+            runner.pane_execution_strategy(),
+            PaneMemoryStrategy::Checkpointed
+        );
+        assert!(runner.pane_redo());
+        assert_eq!(runner.layout_tree.to_snapshot(), dragged);
+    }
+
+    #[test]
+    fn pane_import_rejects_invalid_redo_without_replacing_runner_engine() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        runner
+            .pane_set_execution_policy(
+                PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                    .forcing(PaneMemoryStrategy::Persistent),
+            )
+            .expect("persistent policy");
+        let primary =
+            PaneId::new(runner.pane_primary_id().expect("primary pane")).expect("valid primary id");
+        assert!(runner.pane_apply_intelligence_mode(PaneLayoutIntelligenceMode::Compare, primary));
+        assert!(runner.pane_undo());
+        let before = runner
+            .export_workspace_snapshot_json()
+            .expect("export current workspace");
+        let next_id = runner.next_operation_id;
+        let mut invalid: WorkspaceSnapshot = serde_json::from_str(&before).expect("workspace JSON");
+        assert!(!invalid.interaction_timeline.entries.is_empty());
+        invalid.interaction_timeline.entries[0].operation = PaneOperation::CloseNode {
+            target: PaneId::new(999).expect("missing node id"),
+        };
+        let json = serde_json::to_string(&invalid).expect("encode invalid redo");
+        assert!(runner.import_workspace_snapshot_json(&json).is_err());
+        assert_eq!(
+            runner
+                .export_workspace_snapshot_json()
+                .expect("export after refusal"),
+            before
+        );
+        assert_eq!(runner.next_operation_id, next_id);
+        assert_eq!(
+            runner.pane_execution_strategy(),
+            PaneMemoryStrategy::Persistent
+        );
+        assert!(runner.pane_redo(), "original redo remains usable");
     }
 
     #[test]

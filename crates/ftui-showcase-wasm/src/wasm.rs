@@ -14,8 +14,8 @@ use ftui_demo_showcase::pane_interaction::{
     PanePreviewState, PaneSplitterPrimitive, PaneSplitterVisualState, PaneTimelineStatus,
 };
 use ftui_layout::{
-    PaneId, PaneLayoutIntelligenceMode, PaneModifierSnapshot, PanePointerButton, PaneResizeTarget,
-    SplitAxis,
+    PaneExecutionPolicy, PaneId, PaneLayoutIntelligenceMode, PaneMemoryStrategy,
+    PaneModifierSnapshot, PanePointerButton, PaneResizeTarget, PaneRetentionPolicy, SplitAxis,
 };
 use ftui_web::pane_pointer_capture::{PanePointerCaptureCommand, PanePointerIgnoredReason};
 
@@ -57,6 +57,17 @@ fn install_panic_hook() {
 
 fn set_js(obj: &Object, key: &str, value: JsValue) {
     let _ = Reflect::set(obj, &JsValue::from_str(key), &value);
+}
+
+fn pane_unsigned_integer(value: &JsValue, name: &str) -> Result<u32, JsValue> {
+    let Some(number) = value.as_f64().filter(|number| {
+        number.is_finite() && number.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(number)
+    }) else {
+        return Err(JsValue::from_str(&format!(
+            "{name} must be a finite integer number in 0..=4294967295"
+        )));
+    };
+    Ok(number as u32)
 }
 
 fn pane_axis_from_u8(axis: u8) -> Option<SplitAxis> {
@@ -910,6 +921,64 @@ impl ShowcaseRunner {
     #[wasm_bindgen(js_name = paneLayoutState)]
     pub fn pane_layout_state(&self) -> JsValue {
         pane_state_to_js(&self.inner)
+    }
+
+    /// Actual history substrate: `checkpointed` or `persistent`.
+    /// Conservative execution uses the checkpointed substrate; see status JSON.
+    #[wasm_bindgen(js_name = paneExecutionStrategy)]
+    pub fn pane_execution_strategy(&self) -> String {
+        self.inner.pane_execution_strategy().as_str().to_owned()
+    }
+
+    /// Serialize actual execution counters, retention, and maintenance diagnostics.
+    /// Counter values are JSON integers and can exceed JavaScript's safe integer range.
+    #[wasm_bindgen(js_name = paneExecutionStatusJson)]
+    pub fn pane_execution_status_json(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self.inner.pane_execution_status())
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    /// Change live execution policy when no pane pointer is active.
+    ///
+    /// `mode`: `0=checkpointed`, `1=persistent`, `2=conservative`, `3=adaptive`.
+    /// All arguments must be finite integer JavaScript numbers in the `u32` range.
+    /// Each retention ceiling uses `0` for unbounded. Retention counts edits.
+    /// Invalid arguments and active pointers throw without changing state. Finish
+    /// the gesture, or call `panePointerCancel` and handle its capture command,
+    /// before changing policy. Migration errors preserve the previous policy.
+    #[wasm_bindgen(js_name = paneSetExecutionPolicy)]
+    pub fn pane_set_execution_policy(
+        &mut self,
+        mode: JsValue,
+        max_retained_bytes: JsValue,
+        max_retained_edits: JsValue,
+    ) -> Result<(), JsValue> {
+        let mode = pane_unsigned_integer(&mode, "mode")?;
+        let max_retained_bytes = pane_unsigned_integer(&max_retained_bytes, "maxRetainedBytes")?;
+        let max_retained_edits = pane_unsigned_integer(&max_retained_edits, "maxRetainedEdits")?;
+        let policy = PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(
+            max_retained_bytes as usize,
+            max_retained_edits as usize,
+        ));
+        let policy = match mode {
+            0 => policy.forcing(PaneMemoryStrategy::Checkpointed),
+            1 => policy.forcing(PaneMemoryStrategy::Persistent),
+            2 => policy.conservative(),
+            3 => policy,
+            _ => {
+                return Err(JsValue::from_str(
+                    "invalid pane execution mode (expected 0..=3)",
+                ));
+            }
+        };
+        if self.inner.pane_active_pointer_id().is_some() {
+            return Err(JsValue::from_str(
+                "finish the pane gesture or handle panePointerCancel before changing policy",
+            ));
+        }
+        self.inner
+            .pane_set_execution_policy(policy)
+            .map_err(|error| JsValue::from_str(&error))
     }
 
     /// Shared splitter/handle primitives for host-specific renderers.
