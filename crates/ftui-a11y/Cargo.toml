@@ -1,6 +1,6 @@
 [package]
 name = "ftui-a11y"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Accessibility layer for FrankenTUI"
@@ -20,7 +20,7 @@ experimental = []
 workspace = true
 
 [dependencies]
-ftui-core = { path = "../ftui-core", version = "0.6.0" }
+ftui-core = { path = "../ftui-core", version = "0.6.1" }
 ahash = "0.8"
 
 [dev-dependencies]

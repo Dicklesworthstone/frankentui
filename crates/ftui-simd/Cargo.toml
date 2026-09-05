@@ -1,6 +1,6 @@
 [package]
 name = "ftui-simd"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Optional safe SIMD-friendly optimizations for FrankenTUI."

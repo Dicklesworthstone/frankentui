@@ -15,10 +15,10 @@ path to a working inline (scrollback-preserving) UI.
 ## Stability Notes
 
 - Expect breaking API changes: this is pre-1.0 and moving fast.
-- All 17 library crates (the `ftui` facade and every `ftui-*` crate except the
-  demo and WASM showcase targets) are published on crates.io at the workspace
-  version; a path dependency on this checkout works the same way.
-- The facade's default features compile a terminal backend (native `ftui-tty`
+- The workspace version, 0.6.1, is an unpublished candidate. The 17 library
+  crates have older crates.io releases; these examples use the current source
+  through the path dependency below.
+- The source facade's default features compile a terminal backend (native `ftui-tty`
   on Unix, Crossterm elsewhere) so `App::run()` works without configuration.
 
 ## Crate Map (Core vs Optional)
@@ -167,7 +167,7 @@ Do **not** embed xterm.js as a fallback for this integration path.
 
 ## Add The Dependency
 
-The examples in this guide target the current repository source. Depend on
+The examples in this guide target the unpublished 0.6.1 repository source. Depend on
 the `ftui` facade by path to use that version:
 
 ```toml

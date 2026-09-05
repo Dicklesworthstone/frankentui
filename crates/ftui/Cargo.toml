@@ -1,6 +1,6 @@
 [package]
 name = "ftui"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "FrankenTUI public facade and prelude."
@@ -31,12 +31,12 @@ serde = ["ftui-core/serde"]
 workspace = true
 
 [dependencies]
-ftui-a11y = { path = "../ftui-a11y", version = "0.6.0" }
-ftui-core = { path = "../ftui-core", version = "0.6.0" }
-ftui-render = { path = "../ftui-render", version = "0.6.0" }
-ftui-style = { path = "../ftui-style", version = "0.6.0" }
-ftui-text = { path = "../ftui-text", version = "0.6.0" }
-ftui-layout = { path = "../ftui-layout", version = "0.6.0" }
-ftui-runtime = { path = "../ftui-runtime", version = "0.6.0", optional = true }
-ftui-widgets = { path = "../ftui-widgets", version = "0.6.0" }
-ftui-extras = { path = "../ftui-extras", version = "0.6.0", optional = true }
+ftui-a11y = { path = "../ftui-a11y", version = "0.6.1" }
+ftui-core = { path = "../ftui-core", version = "0.6.1" }
+ftui-render = { path = "../ftui-render", version = "0.6.1" }
+ftui-style = { path = "../ftui-style", version = "0.6.1" }
+ftui-text = { path = "../ftui-text", version = "0.6.1" }
+ftui-layout = { path = "../ftui-layout", version = "0.6.1" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.6.1", optional = true }
+ftui-widgets = { path = "../ftui-widgets", version = "0.6.1" }
+ftui-extras = { path = "../ftui-extras", version = "0.6.1", optional = true }

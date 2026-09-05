@@ -1,6 +1,6 @@
 [package]
 name = "ftui-backend"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Backend traits for FrankenTUI: platform abstraction for input, presentation, and time."
@@ -20,5 +20,5 @@ experimental = []
 workspace = true
 
 [dependencies]
-ftui-core = { path = "../ftui-core", version = "0.6.0" }
-ftui-render = { path = "../ftui-render", version = "0.6.0" }
+ftui-core = { path = "../ftui-core", version = "0.6.1" }
+ftui-render = { path = "../ftui-render", version = "0.6.1" }

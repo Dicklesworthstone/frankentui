@@ -136,7 +136,7 @@ Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-sho
 
 ## Minimal API Example
 
-This example targets the current checkout. Use the path dependency below;
+This example targets the unpublished 0.6.1 checkout. Use the path dependency below;
 the published 0.6.0 archive predates the current backend and prelude changes.
 
 ```rust
@@ -310,7 +310,7 @@ All 17 library crates are published on crates.io (the `ftui` facade plus
 
 ```toml
 [dependencies]
-ftui = "0.6"
+ftui = "=0.6.0"
 ```
 
 The latest published facade is **0.6.0**, released August 24, 2026. Its default
@@ -318,7 +318,8 @@ features are `runtime` and `extras`; it predates this checkout's backend and
 prelude changes. The current examples are checked against repository source,
 so use the path dependency above when following them. A new release and a
 successful isolated registry-consumer run are still required to deliver these
-changes through crates.io. See the [published feature list](https://docs.rs/crate/ftui/0.6.0/features).
+changes through crates.io. The workspace version, **0.6.1**, is an unpublished
+candidate. See the [published feature list](https://docs.rs/crate/ftui/0.6.0/features).
 
 In the current checkout, the default features also include `backend`, selecting
 native `ftui-tty` on Unix and Crossterm elsewhere. `ftui::DEFAULT_BACKEND`
@@ -330,7 +331,7 @@ the checkout can opt out:
 ftui = { path = "../frankentui/crates/ftui", default-features = false, features = ["runtime"] }
 ```
 
-Only the demo/WASM showcase targets remain workspace-local.
+The doctor, demo, and WASM showcase targets are not published.
 
 ---
 
