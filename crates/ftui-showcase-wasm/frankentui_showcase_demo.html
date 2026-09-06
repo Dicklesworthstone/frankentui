@@ -925,8 +925,21 @@ function applyPaneCaptureCommand(dispatch, options = {}) {
   return dispatch;
 }
 
+function touchStartsOnPaneHandle(e) {
+  // Pane bodies cover the viewport, including terminal tabs and scrollable
+  // content. Only an explicit splitter handle may own a touch gesture.
+  const splitters = paneStateSnapshot()?.splitters;
+  if (!Array.isArray(splitters)) return false;
+  const point = domMouseToInput(e, "down");
+  return splitters.some(({ handle_rect: rect }) => rect &&
+    point.x >= rect.x && point.x < rect.x + rect.width &&
+    point.y >= rect.y && point.y < rect.y + rect.height);
+}
+
 function paneDispatchPointerDown(e, activeTouchPoints = 1) {
   if (typeof runner.panePointerDownAt !== "function") return null;
+  if (e.pointerType && e.pointerType !== "mouse" && activeTouchPoints === 1 &&
+      !touchStartsOnPaneHandle(e)) return null;
   const point = domMouseToInput(e, "down");
   const pointerId = panePointerIdFromEvent(e);
   const touchPoints = Number.isFinite(activeTouchPoints)
@@ -1728,7 +1741,7 @@ if ("PointerEvent" in window) {
 	    dragButton = e.pointerType === "mouse" ? e.button : dragButton;
 	    const dispatch = paneDispatchPointerDown(e, activeTouchPoints);
 	    const yieldedToNativeTouch = touchLikePointer && paneDispatchYieldedToNativeTouch(dispatch);
-	    const paneAccepted = !yieldedToNativeTouch && (!dispatch || dispatch.accepted !== false);
+	    const paneAccepted = !yieldedToNativeTouch && dispatch?.accepted === true;
 	    if (!yieldedToNativeTouch) {
 	      e.preventDefault();
 	    }
@@ -2175,6 +2188,17 @@ function pinchDistance(t0, t1) {
 canvas.addEventListener("touchstart", (e) => {
   e.preventDefault();
   focusTerminalInputTarget(useMobileKeyboardForPointer("touch"));
+  if (e.touches.length > 1) {
+    cancelKeyboardLongPressTracker();
+    for (const pointerId of paneTouchPointers) {
+      const dispatch = runner.panePointerCancel(pointerId);
+      applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
+      paneActivePointers.delete(pointerId);
+    }
+    paneTouchPointers.clear();
+    touchGestureSuppressedByPane = false;
+    syncPaneOverlayFromRunner();
+  }
   if (!("PointerEvent" in window) && e.touches.length === 1) {
     const t0 = e.touches[0];
     const pointerId = clampPointerId(Number(t0.identifier ?? 0) + 1);
@@ -2354,11 +2378,8 @@ canvas.addEventListener("touchend", (e) => {
     touchScrollAccY = 0;
     pinchStartDist = 0;
   } else if (e.touches.length === 1 && touchState === TOUCH_PINCHING) {
-    // Went from two fingers to one — restart tracking from current position.
-    touchState = TOUCH_TRACKING;
-    touchStartX = touchLastX = e.touches[0].clientX;
-    touchStartY = touchLastY = e.touches[0].clientY;
-    touchStartTime = Date.now();
+    // The remaining finger still belongs to the pinch. Do not turn its
+    // release into a tap on whichever control is now underneath it.
     touchScrollAccX = 0;
     touchScrollAccY = 0;
   }
