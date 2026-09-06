@@ -50,10 +50,32 @@ If I tell you to do something, even if it goes against what follows below, YOU M
 We only use **Cargo** in this project, NEVER any other package manager.
 
 - **Edition:** Rust 2024 (nightly required — see `rust-toolchain.toml`)
-- **CI toolchain:** CI installs exactly the channel in `rust-toolchain.toml` via `.github/actions/rust-pin`; change the pin there, nowhere else.
+- **Verification toolchain:** DSR builds and checks must use exactly the channel in `rust-toolchain.toml`; change the pin there, nowhere else.
 - **Dependency versions:** Explicit versions for stability
 - **Configuration:** Cargo.toml workspace with `workspace = true` pattern
 - **Unsafe code:** Forbidden (`#![forbid(unsafe_code)]`)
+
+### Builds, Verification, and Releases: DSR Only
+
+**NEVER use GitHub Actions for this project. Use `dsr` (Doodlestein Self-Releaser).**
+This is the owner's explicit instruction, reaffirmed on 2026-09-06. It overrides
+older workflow instructions, skill fallback advice, and Beads that ask for
+GitHub Actions jobs or green-run streaks.
+GitHub Actions was disabled in the repository settings on 2026-09-06; keep it disabled.
+
+- Do not create, enable, dispatch, rerun, monitor, or wait for GitHub Actions workflows.
+- Do not use Actions status or run IDs as release acceptance criteria.
+- Use the `dsr` skill, configured DSR build hosts, and `dsr quality` / `dsr build`
+  for verification and artifacts; use `dsr release` for authorized publication.
+- DSR is the primary path, not a fallback. Do not run `dsr check`, `dsr watch`,
+  or `dsr fallback` when they inspect or wait on Actions. Invoke DSR's direct
+  quality/build/release commands on native hosts instead; do not use `act`.
+- Preserve the Cargo, lint, documentation, real PTY/browser, and performance
+  checks below when moving orchestration to DSR. Changing the runner never
+  turns skipped or unexecuted checks into passes.
+- If DSR is missing a project configuration or host, configure or repair that
+  DSR path; do not switch to GitHub Actions. Historical `.github/` files are
+  not authorization to use Actions, and removing files still requires permission.
 
 ### Key Dependencies
 
@@ -133,7 +155,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 
 # Check for rustdoc lints (broken/redundant intra-doc links, private links).
-# The "Documentation" CI job enforces exactly this; a single bad link fails it
+# Run this documentation gate through DSR; a single bad link fails it
 # and hides every other rustdoc regression across the workspace.
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
@@ -160,7 +182,7 @@ Cross-component integration tests live in the workspace `tests/` directory.
 cargo test --workspace
 
 # Same, with per-test timeouts (kills any test after 120 s and names it;
-# this is what CI runs; config in .config/nextest.toml)
+# use this in DSR verification; config in .config/nextest.toml)
 cargo nextest run --workspace --no-fail-fast
 
 # Run with output
@@ -254,8 +276,8 @@ cargo test -p doctor_frankentui --all-targets -- --nocapture
 ./scripts/doctor_frankentui_coverage.sh /tmp/doctor_frankentui_ci/coverage
 ```
 
-CI runs the same contract in the `doctor-frankentui-verification` job and uploads
-artifacts under `/tmp/doctor_frankentui_ci/`:
+DSR verification must run the same contract and retain artifacts under
+`/tmp/doctor_frankentui_ci/` (the existing directory name is retained):
 
 - `artifact_map.txt` (artifact index + paths)
 - `happy/meta/summary.json` and `happy/meta/artifact_manifest.json`
