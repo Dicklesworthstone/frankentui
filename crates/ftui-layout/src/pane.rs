@@ -5146,21 +5146,71 @@ impl PaneTree {
     /// Deterministic tie-break rule:
     /// - Desired split size is `floor(available * ratio)`.
     /// - If clamping is required by constraints, we clamp into the feasible
-    ///   interval for the first child; remainder goes to the second child.
+    ///   interval for the first child's entire subtree; remainder goes to the
+    ///   second child. Descendant bounds are propagated before placing nodes.
     ///
     /// Complexity:
-    /// - Time: `O(node_count)` (single DFS over split tree)
-    /// - Space: `O(node_count)` (output rectangle map)
+    /// - Time: `O(node_count * log(node_count))` (two DFS passes with map lookups)
+    /// - Space: `O(node_count)` (subtree bounds and output rectangle maps)
     pub fn solve_layout(&self, area: Rect) -> Result<PaneLayout, PaneModelError> {
+        let mut bounds = BTreeMap::new();
+        self.subtree_constraints(self.root, &mut bounds)?;
         let mut rects = BTreeMap::new();
-        self.solve_node(self.root, area, &mut rects)?;
+        self.solve_node(self.root, area, &bounds, &mut rects)?;
         Ok(PaneLayout { area, rects })
+    }
+
+    fn subtree_constraints(
+        &self,
+        node_id: PaneId,
+        bounds: &mut BTreeMap<PaneId, PaneConstraints>,
+    ) -> Result<PaneConstraints, PaneModelError> {
+        let node = self
+            .nodes
+            .get(&node_id)
+            .ok_or(PaneModelError::MissingRoot { root: node_id })?;
+        let mut constraints = node.constraints;
+        if let PaneNodeKind::Split(split) = &node.kind {
+            for child in [split.first, split.second] {
+                if !self.nodes.contains_key(&child) {
+                    return Err(PaneModelError::MissingChild {
+                        parent: node_id,
+                        child,
+                    });
+                }
+            }
+            let first = self.subtree_constraints(split.first, bounds)?;
+            let second = self.subtree_constraints(split.second, bounds)?;
+            let width = subtree_axis_bounds(
+                node_id,
+                SplitAxis::Horizontal,
+                split.axis,
+                constraints,
+                first,
+                second,
+            )?;
+            let height = subtree_axis_bounds(
+                node_id,
+                SplitAxis::Vertical,
+                split.axis,
+                constraints,
+                first,
+                second,
+            )?;
+            constraints.min_width = width.min;
+            constraints.max_width = width.max;
+            constraints.min_height = height.min;
+            constraints.max_height = height.max;
+        }
+        bounds.insert(node_id, constraints);
+        Ok(constraints)
     }
 
     fn solve_node(
         &self,
         node_id: PaneId,
         area: Rect,
+        bounds: &BTreeMap<PaneId, PaneConstraints>,
         rects: &mut BTreeMap<PaneId, Rect>,
     ) -> Result<(), PaneModelError> {
         let Some(node) = self.nodes.get(&node_id) else {
@@ -5174,32 +5224,22 @@ impl PaneTree {
             return Ok(());
         };
 
-        let first_node = self
-            .nodes
+        let first_constraints = bounds
             .get(&split.first)
             .ok_or(PaneModelError::MissingChild {
                 parent: node_id,
                 child: split.first,
             })?;
-        let second_node = self
-            .nodes
+        let second_constraints = bounds
             .get(&split.second)
             .ok_or(PaneModelError::MissingChild {
                 parent: node_id,
                 child: split.second,
             })?;
 
-        let (first_bounds, second_bounds, available) = match split.axis {
-            SplitAxis::Horizontal => (
-                axis_bounds(first_node.constraints, split.axis),
-                axis_bounds(second_node.constraints, split.axis),
-                area.width,
-            ),
-            SplitAxis::Vertical => (
-                axis_bounds(first_node.constraints, split.axis),
-                axis_bounds(second_node.constraints, split.axis),
-                area.height,
-            ),
+        let available = match split.axis {
+            SplitAxis::Horizontal => area.width,
+            SplitAxis::Vertical => area.height,
         };
 
         let (first_size, second_size) = solve_split_sizes(
@@ -5207,8 +5247,8 @@ impl PaneTree {
             split.axis,
             available,
             split.ratio,
-            first_bounds,
-            second_bounds,
+            axis_bounds(*first_constraints, split.axis),
+            axis_bounds(*second_constraints, split.axis),
         )?;
 
         let (first_rect, second_rect) = match split.axis {
@@ -5232,8 +5272,8 @@ impl PaneTree {
             ),
         };
 
-        self.solve_node(split.first, first_rect, rects)?;
-        self.solve_node(split.second, second_rect, rects)?;
+        self.solve_node(split.first, first_rect, bounds, rects)?;
+        self.solve_node(split.second, second_rect, bounds, rects)?;
         Ok(())
     }
 
@@ -6673,6 +6713,13 @@ pub enum PaneModelError {
         second_min: u16,
         second_max: u16,
     },
+    /// Descendant bounds and the containing node have no common feasible size.
+    InfeasibleSubtree {
+        node_id: PaneId,
+        axis: SplitAxis,
+        min: u32,
+        max: u16,
+    },
     CycleDetected {
         node_id: PaneId,
     },
@@ -6783,6 +6830,16 @@ impl fmt::Display for PaneModelError {
                 f,
                 "overconstrained {:?} split at node {} (available={}): first[min={}, max={}], second[min={}, max={}]",
                 axis, node_id.0, available, first_min, first_max, second_min, second_max
+            ),
+            Self::InfeasibleSubtree {
+                node_id,
+                axis,
+                min,
+                max,
+            } => write!(
+                f,
+                "infeasible {axis:?} subtree at node {}: required minimum {min} exceeds maximum {max}",
+                node_id.0
             ),
             Self::CycleDetected { node_id } => {
                 write!(f, "cycle detected at node {}", node_id.0)
@@ -7501,6 +7558,48 @@ fn axis_bounds(constraints: PaneConstraints, axis: SplitAxis) -> AxisBounds {
     }
 }
 
+fn subtree_axis_bounds(
+    node_id: PaneId,
+    axis: SplitAxis,
+    split_axis: SplitAxis,
+    own: PaneConstraints,
+    first: PaneConstraints,
+    second: PaneConstraints,
+) -> Result<AxisBounds, PaneModelError> {
+    let own = axis_bounds(own, axis);
+    let first = axis_bounds(first, axis);
+    let second = axis_bounds(second, axis);
+    let first_max = u32::from(first.max.unwrap_or(u16::MAX));
+    let second_max = u32::from(second.max.unwrap_or(u16::MAX));
+    // Children partition the split axis, and share the full perpendicular axis.
+    // Widen before adding: a 65536-cell minimum must never become 0 or 65535.
+    let (min, max) = if axis == split_axis {
+        (
+            u32::from(first.min) + u32::from(second.min),
+            first_max + second_max,
+        )
+    } else {
+        (
+            u32::from(first.min.max(second.min)),
+            first_max.min(second_max),
+        )
+    };
+    let min = min.max(u32::from(own.min));
+    let max = max.min(u32::from(own.max.unwrap_or(u16::MAX))) as u16;
+    if min > u32::from(max) {
+        return Err(PaneModelError::InfeasibleSubtree {
+            node_id,
+            axis,
+            min,
+            max,
+        });
+    }
+    Ok(AxisBounds {
+        min: min as u16,
+        max: Some(max),
+    })
+}
+
 fn validate_area_against_constraints(
     node_id: PaneId,
     area: Rect,
@@ -7909,6 +8008,193 @@ mod tests {
             .solve_layout(Rect::new(0, 0, 79, 17))
             .expect("second solve should succeed");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn solver_reserves_space_for_nested_minima() {
+        for axis in [SplitAxis::Horizontal, SplitAxis::Vertical] {
+            let mut snapshot = make_nested_snapshot();
+            for node in &mut snapshot.nodes {
+                if let PaneNodeKind::Split(split) = &mut node.kind {
+                    split.axis = axis;
+                    split.ratio = PaneSplitRatio::new(3, 2).expect("ratio");
+                }
+                if node.id == id(4) || node.id == id(5) {
+                    node.constraints.min_width = 2;
+                    node.constraints.min_height = 2;
+                }
+            }
+            let tree = PaneTree::from_snapshot(snapshot).expect("nested tree");
+            let before = tree.to_snapshot();
+            let layout = tree
+                .solve_layout(Rect::new(10, 20, 7, 7))
+                .expect("three leaves fit when descendant minima are respected");
+            let (left, nested) = match axis {
+                SplitAxis::Horizontal => (Rect::new(10, 20, 3, 7), Rect::new(13, 20, 4, 7)),
+                SplitAxis::Vertical => (Rect::new(10, 20, 7, 3), Rect::new(10, 23, 7, 4)),
+            };
+            assert_eq!(layout.rect(id(2)), Some(left));
+            assert_eq!(layout.rect(id(3)), Some(nested));
+            assert_eq!(
+                tree.to_snapshot(),
+                before,
+                "solving does not mutate history"
+            );
+        }
+    }
+
+    #[test]
+    fn solver_respects_nested_maxima_across_axes() {
+        for axis in [SplitAxis::Horizontal, SplitAxis::Vertical] {
+            let mut snapshot = make_nested_snapshot();
+            for node in &mut snapshot.nodes {
+                if let PaneNodeKind::Split(split) = &mut node.kind {
+                    split.axis = if node.id == id(1) {
+                        axis
+                    } else if axis == SplitAxis::Horizontal {
+                        SplitAxis::Vertical
+                    } else {
+                        SplitAxis::Horizontal
+                    };
+                    split.ratio = PaneSplitRatio::new(1, 1).expect("ratio");
+                }
+                if node.id == id(4) || node.id == id(5) {
+                    match axis {
+                        SplitAxis::Horizontal => node.constraints.max_width = Some(3),
+                        SplitAxis::Vertical => node.constraints.max_height = Some(3),
+                    }
+                }
+            }
+            let tree = PaneTree::from_snapshot(snapshot).expect("nested tree");
+            let layout = tree
+                .solve_layout(Rect::new(0, 0, 10, 10))
+                .expect("remaining space belongs to the uncapped sibling");
+            let nested = layout.rect(id(3)).expect("nested rectangle");
+            assert_eq!(
+                match axis {
+                    SplitAxis::Horizontal => nested.width,
+                    SplitAxis::Vertical => nested.height,
+                },
+                3
+            );
+        }
+    }
+
+    #[test]
+    fn solver_descendant_bounds_cover_zero_and_u16_limits() {
+        for axis in [SplitAxis::Horizontal, SplitAxis::Vertical] {
+            for (first, second, extent, fits) in [
+                (0, 0, 0, true),
+                (32_767, 32_768, u16::MAX, true),
+                (32_767, 32_768, u16::MAX - 1, false),
+                (32_768, 32_768, u16::MAX, false),
+            ] {
+                let mut snapshot = make_nested_snapshot();
+                for node in &mut snapshot.nodes {
+                    node.constraints.min_width = 0;
+                    node.constraints.min_height = 0;
+                    if let PaneNodeKind::Split(split) = &mut node.kind {
+                        split.axis = axis;
+                    }
+                    let minimum = if node.id == id(4) {
+                        first
+                    } else if node.id == id(5) {
+                        second
+                    } else {
+                        0
+                    };
+                    match axis {
+                        SplitAxis::Horizontal => node.constraints.min_width = minimum,
+                        SplitAxis::Vertical => node.constraints.min_height = minimum,
+                    }
+                }
+                let tree = PaneTree::from_snapshot(snapshot).expect("valid bounds");
+                let area = match axis {
+                    SplitAxis::Horizontal => Rect::new(0, 0, extent, 1),
+                    SplitAxis::Vertical => Rect::new(0, 0, 1, extent),
+                };
+                assert_eq!(
+                    tree.solve_layout(area).is_ok(),
+                    fits,
+                    "{axis:?}: {first}+{second} in {extent}"
+                );
+            }
+        }
+    }
+
+    // Independent feasibility oracle: enumerate every integer partition, without
+    // using the production bounds propagation or its ratio/clamping algorithm.
+    fn exhaustive_pane_feasibility(
+        tree: &PaneTree,
+        node_id: PaneId,
+        width: u16,
+        height: u16,
+    ) -> bool {
+        let node = tree.node(node_id).expect("oracle node");
+        let c = node.constraints;
+        if width < c.min_width
+            || height < c.min_height
+            || c.max_width.is_some_and(|max| width > max)
+            || c.max_height.is_some_and(|max| height > max)
+        {
+            return false;
+        }
+        match &node.kind {
+            PaneNodeKind::Leaf(_) => true,
+            PaneNodeKind::Split(split) => match split.axis {
+                SplitAxis::Horizontal => (0..=width).any(|first| {
+                    exhaustive_pane_feasibility(tree, split.first, first, height)
+                        && exhaustive_pane_feasibility(tree, split.second, width - first, height)
+                }),
+                SplitAxis::Vertical => (0..=height).any(|first| {
+                    exhaustive_pane_feasibility(tree, split.first, width, first)
+                        && exhaustive_pane_feasibility(tree, split.second, width, height - first)
+                }),
+            },
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn solver_matches_exhaustive_nested_feasibility(
+            bounds in prop::collection::vec((0u16..5, 0u16..5, prop::option::of(0u16..5), prop::option::of(0u16..5)), 5),
+            axes in any::<[bool; 2]>(),
+            weights in prop::array::uniform4(1u32..9),
+        ) {
+            let mut snapshot = make_nested_snapshot();
+            let mut split_index = 0;
+            for (node, (min_width, min_height, width_slack, height_slack)) in snapshot.nodes.iter_mut().zip(bounds) {
+                node.constraints.min_width = min_width;
+                node.constraints.min_height = min_height;
+                node.constraints.max_width = width_slack.map(|slack| min_width + slack);
+                node.constraints.max_height = height_slack.map(|slack| min_height + slack);
+                if let PaneNodeKind::Split(split) = &mut node.kind {
+                    split.axis = if axes[split_index] { SplitAxis::Horizontal } else { SplitAxis::Vertical };
+                    split.ratio = PaneSplitRatio::new(weights[split_index * 2], weights[split_index * 2 + 1]).expect("positive weights");
+                    split_index += 1;
+                }
+            }
+            let tree = PaneTree::from_snapshot(snapshot).expect("valid individual constraints");
+            let before = tree.to_snapshot();
+            for width in 0..=12 {
+                for height in 0..=12 {
+                    let expected = exhaustive_pane_feasibility(&tree, tree.root(), width, height);
+                    let actual = tree.solve_layout(Rect::new(2, 3, width, height));
+                    prop_assert_eq!(actual.is_ok(), expected, "viewport {}x{}, result {:?}, tree {:?}", width, height, actual, before);
+                    if let Ok(layout) = actual {
+                        for node in tree.nodes() {
+                            let rect = layout.rect(node.id).expect("every node has a rectangle");
+                            prop_assert!(rect.x >= 2 && rect.y >= 3);
+                            prop_assert!(rect.right() <= 2 + width && rect.bottom() <= 3 + height);
+                            prop_assert!(exhaustive_pane_feasibility(&tree, node.id, rect.width, rect.height));
+                        }
+                    }
+                }
+            }
+            prop_assert_eq!(tree.to_snapshot(), before);
+        }
     }
 
     #[test]

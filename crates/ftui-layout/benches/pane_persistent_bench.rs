@@ -120,8 +120,9 @@ fn placement(rng: &mut Lcg) -> PanePlacement {
     }
 }
 
-/// Grow a balanced-ish tree to roughly `leaf_count` leaves by splitting the
-/// smallest-id leaf each step (deterministic).
+/// Grow a deterministic deep chain by repeatedly splitting the smallest-id
+/// leaf (splitting preserves that leaf's ID). This legacy stress workload is
+/// intentionally retained; it is not a balanced or representative layout.
 fn grow_tree(leaf_count: usize) -> PaneTree {
     let mut tree = PaneTree::singleton("root");
     let mut id = 1u64;

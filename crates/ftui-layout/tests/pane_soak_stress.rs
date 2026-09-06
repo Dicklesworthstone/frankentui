@@ -559,6 +559,8 @@ fn pane_stress_deep_and_wide_trees() {
     check_tree_invariants(&deep).expect("deep tree valid");
     // Give every level room: extent scales with depth.
     let extent = (depth as u16).saturating_mul(2).saturating_add(16);
+    deep.solve_layout(Rect::new(0, 0, extent, extent))
+        .expect("the depth-scaled viewport must fit every descendant");
     check_layout(&deep, Rect::new(0, 0, extent, extent)).expect("deep tree solves in bounds");
     assert_eq!(
         deep.solve_layout(Rect::new(0, 0, extent, extent)),
@@ -588,6 +590,8 @@ fn pane_stress_deep_and_wide_trees() {
     }
     check_tree_invariants(&wide).expect("wide tree valid");
     let wextent = (width as u16).saturating_mul(2).saturating_add(16);
+    wide.solve_layout(Rect::new(0, 0, wextent, wextent))
+        .expect("the width-scaled viewport must fit every descendant");
     check_layout(&wide, Rect::new(0, 0, wextent, wextent)).expect("wide tree solves in bounds");
 
     emit_evidence("stress_deep_wide", depth as u64, width, wide.state_hash());
