@@ -269,6 +269,105 @@ mod native_execution {
     }
 
     #[test]
+    fn pty_execution_workspace_reset_autosaves_before_quit() {
+        use ftui_demo_showcase::screens::layout_lab::LayoutLab;
+        use ftui_layout::decode_workspace_snapshot_json;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!(
+            "ftui-pane-reset-pty-{}-{nonce}.json",
+            std::process::id()
+        ));
+        let workspace_flag = format!("--pane-workspace={}", workspace.display());
+        let baseline = LayoutLab::new().pane_tree().to_snapshot();
+        let (mut session, mut terminal, mut offset) =
+            start(&["--pane-strategy=persistent", &workspace_flag]);
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "reset startup",
+            |s| s.contains("exec:persistent"),
+        );
+        session.send_input(b"c").expect("edit before reset");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "edited workspace",
+            |s| number_after(s, " p:") > 0,
+        );
+        let edited = decode_workspace_snapshot_json(
+            &std::fs::read_to_string(&workspace).expect("autosaved edit"),
+        )
+        .expect("valid edited snapshot")
+        .snapshot;
+        assert_ne!(edited.pane_tree, baseline);
+        assert!(!edited.interaction_timeline.entries.is_empty());
+
+        session
+            .send_input(b"x")
+            .expect("reset through real terminal input");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "reset workspace",
+            |s| {
+                s.contains("exec:persistent")
+                    && s.contains("History: 0/0")
+                    && number_after(s, "Edits: ") == 0
+            },
+        );
+        let json = std::fs::read_to_string(&workspace).expect("read before quit or forced save");
+        let reset = decode_workspace_snapshot_json(&json)
+            .expect("valid reset snapshot")
+            .snapshot;
+        assert_eq!(
+            reset.pane_tree, baseline,
+            "reset must reach disk before quitting"
+        );
+        assert!(reset.interaction_timeline.entries.is_empty());
+        assert_eq!(
+            reset.metadata.saved_generation,
+            edited.metadata.saved_generation + 1
+        );
+        eprintln!("PTY_RESET_AUTOSAVE {}\n{json}", workspace.display());
+        finish(&mut session);
+
+        let (mut restarted, mut terminal, mut offset) =
+            start(&["--pane-strategy=checkpointed", &workspace_flag]);
+        wait_screen(
+            &mut restarted,
+            &mut terminal,
+            &mut offset,
+            "reset restored",
+            |s| s.contains("exec:checkpointed") && s.contains("History: 0/0"),
+        );
+        restarted
+            .send_input(b"c")
+            .expect("editing after reset restart");
+        wait_screen(
+            &mut restarted,
+            &mut terminal,
+            &mut offset,
+            "restart edit",
+            |s| number_after(s, " c:") > 0,
+        );
+        let resumed = decode_workspace_snapshot_json(
+            &std::fs::read_to_string(&workspace).expect("autosaved restart edit"),
+        )
+        .expect("valid resumed snapshot")
+        .snapshot;
+        assert_ne!(resumed.pane_tree, baseline);
+        assert!(resumed.metadata.saved_generation > reset.metadata.saved_generation);
+        finish(&mut restarted);
+    }
+
+    #[test]
     fn pty_execution_sgr_drag_persists_and_migrates_on_restart() {
         use ftui_core::geometry::Rect;
         use ftui_demo_showcase::app::{AppModel, ScreenId};

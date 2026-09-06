@@ -5828,6 +5828,50 @@ mod tests {
     }
 
     #[test]
+    fn pane_workspace_reset_autosaves_before_shutdown() -> Result<(), Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ftui-pane-reset-{}-{nanos}.json",
+            std::process::id()
+        ));
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::LayoutLab;
+        app.enable_pane_workspace_persistence(path.clone());
+        let baseline = app.screens.layout_lab.pane_tree().to_snapshot();
+        app.update(Event::Key(KeyEvent::new(KeyCode::Char('c'))).into());
+        let edited: ftui_layout::WorkspaceSnapshot =
+            serde_json::from_str(&fs::read_to_string(&path)?)?;
+        assert_ne!(edited.pane_tree, baseline);
+        assert!(!edited.interaction_timeline.entries.is_empty());
+
+        app.update(Event::Key(KeyEvent::new(KeyCode::Char('x'))).into());
+        // Read the real file while the original model is still running: a
+        // shutdown/forced save would mask the missing autosave this checks.
+        let reset: ftui_layout::WorkspaceSnapshot =
+            serde_json::from_str(&fs::read_to_string(&path)?)?;
+        assert_eq!(reset.pane_tree, baseline);
+        assert!(reset.interaction_timeline.entries.is_empty());
+        assert_eq!(
+            reset.metadata.saved_generation,
+            edited.metadata.saved_generation + 1
+        );
+        assert!(!app.screens.layout_lab.pane_workspace_dirty());
+
+        let mut restored = AppModel::new();
+        restored.enable_pane_workspace_persistence(path);
+        restored.init();
+        assert_eq!(
+            restored.screens.layout_lab.pane_tree().to_snapshot(),
+            baseline
+        );
+        assert_eq!(
+            restored.screens.layout_lab.pane_workspace_generation(),
+            reset.metadata.saved_generation
+        );
+        Ok(())
+    }
+
+    #[test]
     fn pane_workspace_writer_does_not_clobber_legacy_tmp_file()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut path = std::env::temp_dir();

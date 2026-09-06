@@ -1696,6 +1696,12 @@ impl LayoutLab {
     }
 
     fn reset_pane_workspace(&mut self) {
+        let Some(generation) = self.pane_workspace_generation.checked_add(1) else {
+            self.pane_execution_details = true;
+            self.pane_execution_error =
+                Some("pane workspace generation exhausted; reset refused".to_string());
+            return;
+        };
         let tree = default_pane_layout_tree();
         let mut timeline = PaneExecutionEngine::new(&tree);
         if let Err(error) = timeline.set_policy(&tree, self.pane_timeline.policy()) {
@@ -1707,8 +1713,9 @@ impl LayoutLab {
         self.pane_execution_error = None;
         self.pane_gesture_timeline_cursor_start = None;
         self.pane_next_operation_id = 1;
-        self.pane_workspace_generation = 0;
-        self.pane_last_saved_workspace_generation = 0;
+        // Reset is an edit, not a save acknowledgement. Keep the durable
+        // generation so autosave sees the reset and old saves remain stale.
+        self.pane_workspace_generation = generation;
         self.pane_sequence = 0;
         self.pane_last_applied_ops = 0;
         self.pane_intelligence_mode = PaneLayoutIntelligenceMode::Focus;
@@ -3879,6 +3886,101 @@ mod tests {
             lab.pane_timeline.timeline().cursor > 0,
             "the original redo remains usable"
         );
+    }
+
+    #[test]
+    fn pane_workspace_reset_advances_generation_and_rejects_old_acks() {
+        for policy in [
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()),
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                .forcing(PaneMemoryStrategy::Checkpointed),
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded())
+                .forcing(PaneMemoryStrategy::Persistent),
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()).conservative(),
+        ] {
+            let mut lab = LayoutLab::new();
+            lab.pane_set_execution_policy(policy)
+                .expect("execution policy");
+            let baseline = lab.pane_tree.to_snapshot();
+            lab.update(&press(KeyCode::Char('c')));
+            assert_ne!(lab.pane_tree.to_snapshot(), baseline);
+            let saved_generation = lab.pane_workspace_generation();
+            assert!(lab.pane_mark_workspace_saved(saved_generation));
+
+            lab.update(&press(KeyCode::Char('x')));
+            assert_eq!(lab.pane_tree.to_snapshot(), baseline);
+            assert!(lab.pane_timeline.timeline().entries.is_empty());
+            assert_eq!(lab.pane_timeline.policy(), policy);
+            let reset_generation = lab.pane_workspace_generation();
+            assert_eq!(reset_generation, saved_generation + 1);
+            assert_eq!(lab.pane_saved_workspace_generation(), saved_generation);
+            assert!(!lab.pane_mark_workspace_saved(saved_generation));
+            assert!(lab.pane_workspace_dirty());
+            lab.pane_export_workspace_snapshot_json()
+                .expect("export reset");
+            assert!(lab.pane_workspace_dirty(), "export is not a durable save");
+
+            // A second reset must not let an in-flight save of the first reset
+            // acknowledge the newer generation, even when the trees are equal.
+            lab.update(&press(KeyCode::Char('x')));
+            assert_eq!(lab.pane_workspace_generation(), reset_generation + 1);
+            assert!(!lab.pane_mark_workspace_saved(reset_generation));
+            assert!(lab.pane_workspace_dirty());
+            assert!(lab.pane_mark_workspace_saved(lab.pane_workspace_generation()));
+            assert!(!lab.pane_workspace_dirty());
+            lab.update(&press(KeyCode::Char('c')));
+            assert_ne!(lab.pane_tree.to_snapshot(), baseline);
+            assert!(lab.pane_workspace_dirty(), "editing continues after reset");
+        }
+    }
+
+    #[test]
+    fn pane_workspace_reset_at_generation_limit_preserves_state() {
+        let mut lab = LayoutLab::new();
+        lab.update(&press(KeyCode::Char('c')));
+        let mut snapshot: WorkspaceSnapshot = serde_json::from_str(
+            &lab.pane_export_workspace_snapshot_json()
+                .expect("export edited workspace"),
+        )
+        .expect("workspace snapshot");
+        snapshot.metadata.saved_generation = u64::MAX - 1;
+        lab.pane_import_workspace_snapshot_json(
+            &to_canonical_workspace_snapshot_json(&snapshot).expect("encode near-limit workspace"),
+        )
+        .expect("import near-limit workspace");
+
+        lab.update(&press(KeyCode::Char('x')));
+        assert_eq!(lab.pane_workspace_generation(), u64::MAX);
+        assert!(lab.pane_workspace_dirty());
+        assert!(!lab.pane_mark_workspace_saved(u64::MAX - 1));
+        assert!(lab.pane_mark_workspace_saved(u64::MAX));
+        // Refuse atomically even for a non-default workspace with real history.
+        snapshot.metadata.saved_generation = u64::MAX;
+        lab.pane_import_workspace_snapshot_json(
+            &to_canonical_workspace_snapshot_json(&snapshot).expect("encode exhausted workspace"),
+        )
+        .expect("restore edited workspace at limit");
+        assert!(!lab.pane_timeline.timeline().entries.is_empty());
+        let before = lab
+            .pane_export_workspace_snapshot_json()
+            .expect("export at limit");
+        let status = lab.pane_execution_status().clone();
+        let policy = lab.pane_timeline.policy();
+
+        lab.update(&press(KeyCode::Char('x')));
+        assert_eq!(
+            lab.pane_export_workspace_snapshot_json()
+                .expect("export after refusal"),
+            before
+        );
+        assert_eq!(lab.pane_execution_status(), &status);
+        assert_eq!(lab.pane_timeline.policy(), policy);
+        assert!(!lab.pane_workspace_dirty());
+        assert_eq!(
+            lab.pane_execution_error.as_deref(),
+            Some("pane workspace generation exhausted; reset refused")
+        );
+        assert!(lab.pane_execution_details, "the refusal must be visible");
     }
 
     #[test]
