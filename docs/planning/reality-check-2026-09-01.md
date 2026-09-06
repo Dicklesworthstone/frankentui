@@ -9,40 +9,53 @@ The owner's September 6 instruction supersedes every GitHub Actions direction
 in this document, its historical sections, and the existing Beads descriptions.
 Do not dispatch, rerun, monitor, or wait on Actions, including through DSR's
 check/watch/fallback commands. Use direct DSR commands and native hosts.
-GitHub Actions was disabled in the repository settings during this turn; a
+GitHub Actions was disabled in the repository settings during the preceding turn; a
 subsequent settings read returned `enabled: false`. This prevents the existing
 push-triggered workflows from starting when the policy commit is pushed. No
 workflow file was deleted or workflow run dispatched.
+The fresh pre-push settings-only read again returned `enabled: false`; no
+workflow or run logs were fetched during this pass.
 
-Baseline: `183024e6f6b364223180b0a43b09e74aa9ac703a` on `main`. All 863 lines of
-the pre-edit AGENTS.md and all 2,864 lines of README.md were read this turn. The
-reality-check skill and all five references were read, along with the
-anti-ceremony skill and its worksheets. The original 71-goal inventory and
-G01–G47 bridge below were checked against current callers, tests and delivery
-boundaries. The original plans, ADRs, browser/importer specifications and
-accessibility documentation informed that comparison. This turn inventoried
-the subsidiary specification corpus and read selected relevant sections; it
-did **not** freshly read every paragraph of its more than 21,000 lines. The
-September 4 corpus review remains historical evidence, not a fresh full read.
+Fresh baseline: `2fa9c438252450c9a1675ca8c43c4f91c93880be` on `main`.
+All **885 lines of AGENTS.md and 2,864 lines of README.md** were freshly read.
+This pass also read the complete 62-file, **21,905-line** corpus in
+`docs/planning`, `docs/spec`, `docs/specs` and `docs/adr`, plus the historical
+spec-diff report. This supersedes the preceding pass's explicitly partial
+subsidiary-document read. The reality-check skill and its five references,
+DSR, and anti-ceremony instructions governed the assessment. The 71-goal
+inventory and G01–G47 bridge remain the coverage map; fresh source tracing
+and execution below refine their actual acceptance boundaries. Historical
+test and deployed-touch evidence retains its original revision and host limits.
+
+FrankenTUI is now registered in this machine's DSR quality registry, with five
+required Cargo checks. **The complete DSR baseline did not pass.** Formatting
+and the workspace compiler check passed on the first worker; pressure refusal
+and remote source-verification timeouts prevented the other checks from running.
+No new full-suite, browser, physical-device or controlled performance pass is
+claimed. Native build/release configuration and the full host/profile inventory
+remain open. No runtime source was changed by this assessment.
 
 ### The five questions
 
 1. **What works?** The render kernel, native runtime, inline output, widgets,
    subscriptions, deterministic harness and actual pane interaction are
-   substantial implementations. The new full default-workspace test execution
-   passed all 25,375 selected tests. Previously delivered source repairs now
+   substantial implementations. The preceding default-workspace execution
+   passed all 25,375 selected tests at its recorded snapshot. Previously delivered source repairs now
    include exact live width-cache identity, finite-sample conformal boundaries,
    accessibility announcement redaction, non-vacuous pane release validation,
    live pane engine selection/rollback, nested-layout feasibility, and safe
    reset/autosave generations. Mobile touch routing was repaired and deployed
    while retaining the desktop mouse path.
 2. **What is incomplete?** crates.io still serves `ftui` 0.6.0 while the workspace
-   is 0.6.1. DSR is installed here but FrankenTUI is not registered. Browser
+   is 0.6.1. DSR quality registration is now present, but complete verification
+   and native build/release delivery remain incomplete. Browser
    input proof does not establish physical iPhone/Safari or GPU pixel parity.
    Accessibility has no demonstrated real assistive-technology journey.
    Asupersync still resolves to Structured; experimental algorithms are not
    default runtime behavior. RTL/formatting, editor and widget commitments,
    the flagship subprocess example and total-cost performance proof remain.
+   Fresh tracing also found an unbounded browser event queue and line-buffered,
+   unbounded subprocess forwarding that the intended complete journeys must fix.
 3. **What blocks delivery?** Reproducible DSR verification and artifact delivery,
    a registry-only consumer run on the new published version, remaining real
    host failures, and integration of existing pieces into complete journeys.
@@ -52,25 +65,45 @@ September 4 corpus review remains historical evidence, not a fresh full read.
    source-only or partial execution, and several descriptions name defects
    already repaired. Preserve the substantive requirements, replace the runner,
    and require the intended user journey before closing the original task.
-5. **What was uncovered?** DSR registration/native-host orchestration was absent
-   from this machine; existing G04 topology tasks now own it. Current failure
-   signatures below refine existing tasks. The fuzz manifest task was falsely
-   closed against its broader execution acceptance and has been reopened.
-   None of these findings requires another report framework or parallel backlog.
+5. **What was uncovered?** The full read exposes contradictory browser input-loss
+   and capability contracts, a wrong README VOI formula, and overly broad
+   statistical/scheduler claims. Source tracing sharpens the bounded-input and
+   subprocess acceptance requirements. Existing G23/G26/G45 tasks now contain
+   those concrete cases. G04 owns the DSR transport/timing findings. No vision
+   goal lacked an owning workstream after refinement; generic prior wording
+   was insufficient proof. The earlier false fuzz closure remains reopened.
 
 ### Fresh evidence and retained proof
 
 | Evidence | Observation and exact limit |
 |---|---|
+| Fresh DSR attempt 1 | `dsr --json quality --tool frankentui --work-dir /data/projects/frankentui`, run directory `20260906T155214-2717902`: **2/5 passed, overall exit 1**. Formatting and remote workspace check passed; Clippy, rustdoc and nextest returned RCH exit 103 before Cargo execution because worker `vmi1227854` reached critical disk pressure. Source-before and source-after match baseline `2fa9c438`. |
+| Fresh DSR attempt 2 | Same five checks on admitted worker `vmi1264463`, run directory `20260906T160150-2782528`: **1/5 passed, overall exit 1**. Formatting passed; each remote command returned exit 1 / `RCH-E104` after the 180-second SSH timeout in source verification, before Cargo started. Source-before and source-after match. A third host was inspected and also had high load; no third build attempt ran. |
+| Receipt limits | Both complete receipts and all ten check logs are retained under `/dev/shm/ftui-dsr-reality-0906/frankentui/`. DSR's `executed` means its command wrapper was invoked, not that Cargo ran. Its `duration_ms` values include implausible magnitudes and a negative value; they are not accepted as timing evidence. The successful compiler run's RCH receipt root is `19dc4e4ce3036a0ab24cf68823d6b9ef9b3a1cc101038a1ccfbef06777cf7efc`. |
 | Full workspace execution | `cargo nextest run --workspace --no-fail-fast`, via RCH before the DSR-only correction: **25,375 passed, 7 skipped**, 162.594 seconds of test execution. Remote Cargo exit 0. RCH exit **103** because AGENTS.md changed during the run; its barrier identified exactly that one delta. This is a pass for the earlier source snapshot, **not** a successful current-tree receipt or a DSR acceptance run. |
 | Source/test log | `/dev/shm/ftui-reality-0906-nextest.log`; worker `vmi1227854`; snapshot `/data/tmp/rch/source-content-30005575332922490-0426c75f2136e4a5/frankentui`. The raw log is retained in the archive below. No failed attempt or skip is erased. |
-| DSR direct preflight | `dsr quality --tool frankentui --work-dir /data/projects/frankentui --dry-run` exits 4: tool not configured in `/home/ubuntu/.config/dsr/repos.yaml`. `dsr repos info frankentui` likewise reports absent. `quality` reads the registry; `build/release` additionally require `repos.d/frankentui.yaml`. Neither configuration absence nor a dry run is a pass. |
+| DSR bootstrap | The preceding missing-tool preflight is superseded: `/home/ubuntu/.config/dsr/repos.yaml` now contains FrankenTUI's five `required_checks`. Final registry SHA256 `e899372fdef7c89cfc8c3641bc4d479e33aa133e387807bb978f98237c2725a3`. Native `repos.d/frankentui.yaml` build/release configuration remains absent. The local registry is an operational change outside this Git checkout, not a published/reproducible native build recipe yet. |
 | Registry | The crates.io API returned latest, non-yanked `ftui` **0.6.0**, published August 24. Current source is **0.6.1**. No new package was published during this assessment. |
 | Website | `https://frankentui.com/web/` returned 200. Current public asset version remains `2026-02-20.4`; the September 6 host touch correction is distinct from shipping every newer Rust/WASM change. |
 | Previously executed touch proof | Root `3b0da562`, website `5187a402`: four Chromium/CDP tests passed on local production build, live deployment and canonical host; the old host failed three touch cases while its mouse case passed. Proves touch/swipe/pinch recovery and desktop input/cell-text behavior. Headless GPU pixels were white; no physical iPhone/Safari proof. Archive `/data/projects/frankentui-touch-3b0da562-evidence.tar.gz`, SHA256 `c3235be49d3e725d7a14a3343174a7f94047cc049bdf56287907203cc7b00f92`. |
 | Previously executed reset proof | `22446ba0`: 1,928 showcase/library integration tests and four real PTY reset/restart cases passed; four new regressions failed before the fix. All four compiler/lint/doc/format gates and WASM check passed on the pinned toolchain. Archive `/data/projects/frankentui-reset-22446ba0-evidence.tar.gz`, SHA256 `67b7fe72c9fe34e085120b5fd3bd5c4d0039cb5031c1a01f198a008597f7cefa`. This proof is tied to that source revision. |
 | Performance | No fresh controlled total-cost benchmark was run. Prior small persistent-store comparisons included regressions. G47 remains open until equal-history, equal-output, successful-layout comparisons include conversion, rendering/I/O, peak memory and maintenance costs. |
 | Static/behavioral audit | AST searches found no `todo!` or `unimplemented!` macro invocations in crates. That is not completeness proof: `pane_margin.rs` still contains a vacuous test without a pane operation/assertion; existing `bd-nt3st` owns it. Public experimental modules can be valid APIs without an in-tree caller, but cannot substantiate default-runtime claims. |
+
+Fresh evidence archive:
+`/data/projects/frankentui-reality-2fa9c438-dsr-evidence.tar.gz`, SHA256
+`6962bf471243608acd55a512d029871c69f61a152bbd35880b29798835023eb6`.
+Its 14 members preserve both receipts, all ten check logs, the exact graph/task
+review and the FrankenTUI DSR registry entry. Every receipt's log digest was
+validated before archiving. It is a local evidence bundle, not a release asset.
+It preserves failed outcomes; it does not convert them to acceptance.
+
+Current patch checks: `git diff --check` passes. The 71 ordered vision rows and
+both verbatim frozen skill prompts are present; the exact scheduling traversal
+visits all 3,042 nodes over 4,360 blocking edges with no missing IDs or cycle.
+UBS on the three changed Markdown/JSONL files exits **3**: no supported language,
+no scanner ran. That is not a pass. No Rust, dependency, test, snapshot or workflow
+file changed. The DSR configuration lives outside the Git checkout.
 
 Historical hosted-run logs were inspected **before** the owner's prohibition;
 no workflows were started or rerun. That inspection stopped on the correction.
@@ -85,13 +118,14 @@ The test log itself hashes to
 The archive preserves failed/rejected evidence; its existence does not change
 those verdicts. It is a local durable artifact, not a published release asset.
 
-For this Markdown/Beads patch, `git diff --check` passes. UBS was invoked on all
+For the preceding Markdown/Beads patch, `git diff --check` passed. UBS was invoked on all
 four changed files and exited **3**, explicitly reporting no supported languages
 and nothing scanned. That is **not** a UBS pass; no override was used. No Rust
 source, test, snapshot, dependency or workflow file changed in this patch.
 
 | Current diagnostic | Existing owner and required DSR proof |
 |---|---|
+| DSR remote pressure refusal, then source-verification SSH timeouts; invalid timing units | `.6.19–.6.24`: preserve the five-check inventory, source barrier and remote admission. Diagnose host load/transport, record the actual remote compiler and flags, and validate receipt timing before relying on it. No third full run or cleanup was performed. |
 | Fuzz target 5 crashes on byte `0x0b`: `fuzz_text_cluster_map.rs:37`, `back <= entry.byte_start` | `.6.9` reopened; `.6.10` verifies all 11 targets. `cell_to_byte` explicitly maps an end column to total bytes, including zero-width-only input; settle that endpoint oracle without masking interior mapping errors. Preserve the minimized input and actual fuzz execution. |
 | macOS shell fails before PTY tests: `common.sh:48`, `missing[*]: unbound variable` | `.6.11/.6.12`, `.6.17.6`: Bash 3.2 empty-array behavior, successful and missing-tool cases, then the real macOS suite. |
 | Windows Clippy now fails at an unused `Duration` import in `tests/terminal_e2e.rs:14` | `.6.5/.6.6`: fix current cfg ownership, retain the prior ftui-tty repair and `-D warnings`, run on Windows. |
@@ -102,6 +136,21 @@ source, test, snapshot, dependency or workflow file changed in this patch.
 | Linux PTY aggregate is 123 passed / 40 failed / 3 skipped of 166 | `.6.17/.6.18`: current host failures remain despite the green default nextest union; distinguish script suite from Rust integration tests. |
 | Coverage exhausts disk; the no-mock word gate also rejects legitimate comments | `.6.23/.6.24`: capacity-aware DSR scheduling with the full check inventory. Classify actual fake behavior, including the vacuous pane test, instead of renaming words to pass a keyword gate. |
 | Historical benchmark job has 15 passes, 73 skips; all 15 confidence results uncertain | G25: an executed job is not proof of the advertised performance envelope. Preserve denominator, confidence and skipped workloads. |
+
+### Findings sharpened by the complete specification read
+
+| Boundary | Current source or contract evidence | Existing implementation / proof |
+|---|---|---|
+| Browser overload | `ftui-web/src/lib.rs:126–156` stores an unbounded `VecDeque<Event>`; `StepProgram::push_event` forwards directly. Browser API specifies dropping oldest encoded inputs while WebSocket §4.5 forbids dropping keyboard/paste/focus. Define bounded admission and byte budgets, preserve accepted FIFO content, and test delayed consumers, 4,097+ inputs, large paste/IME and recovery. Source finding; no fresh dynamic flood run. | `.29.8/.29.9` |
+| Subprocess stream | `process_subscription.rs:172–320` uses `BufRead::lines`, an unbounded sender, null child stdin and immediate-child kill/wait. Reuse the lifecycle, but test newline-free/huge/invalid-UTF-8 output, blocked consumers, descendant pipes and cancellation. Explicitly choose command-launching prompt versus interactive stdin. Bounded reader join is not proof that descendants terminate. | `.32.1–.32.3`, `.33.1/.33.2` |
+| VOI equation and guarantees | README lines 961/1922 advance the posterior total by two; the weighted implementation at `voi_sampling.rs:777` is correct. Exact independent arithmetic with α=β=1 gives variance 1/12 → 1/18, reduction 1/36. Its e-value update floors/clamps at lines 751–755, so the anytime-valid claim needs the actual conditional-null, predictable-sampling and reset assumptions. | `.43.3/.43.4` |
+| Scheduler theorem versus executor | `queueing_scheduler.rs:13–54` asserts optimality and a backlog-independent waiting bound. Simulation preemption and a live `FnOnce` task are distinct. Require a many-equal-jobs counterexample, explicit objective/load/size assumptions, and a long closure with short arrivals. | G24/G25, `.43.3/.43.4` |
+| Capability advertisement | The capability spec advertises printer, Sixel and selective erase while admitting they are unsupported. The in-tree `virtual_terminal.rs:633` instead emits `ESC[?62;22c`. Verify the pinned adjacent renderer's actual replies and advertise only supported behavior; do not implement explicit non-goals to preserve a false reply. This is a contract gap, not a demonstrated current in-tree failure. | `.29.8/.29.9` |
+| Cleanup and fidelity | Both native and Crossterm panic hooks already exist. The architecture sketch's atexit-for-abort suggestion is not their implementation. Verify release panic and handled termination, with explicit limits for direct abort/SIGKILL. The proposed style-only diff omission is absent from the live selector; preserve exact rendering instead of inventing a repair. | `.17.8`, G32, G06 |
+
+Deferred CT-FRP, proposed FFI boundaries and reserved Mermaid configuration
+fields remain explicit design dispositions. They are not missing default
+runtime features merely because a historical spec contains pseudocode.
 
 ### Bridge order and detailed remaining work
 
@@ -163,6 +212,10 @@ missing GPU/AT work remains visible without preventing useful native delivery.
 Implementation and its essential regressions close together; companion acceptance
 tasks retain cross-component and host proof, not unfinished core behavior.
 
+The fresh regeneration adds the concrete ProcessSubscription framing, queue,
+stdin and descendant tests above. An example that only handles short complete
+lines would still miss the original agent-harness promise.
+
 ### Ambition round 2: real host behavior and recovery
 
 The first revision still allowed host-shaped evidence to stand in for the host.
@@ -177,6 +230,10 @@ browser captures and semantic-tree snapshots remain supporting tests only.
 
 These requirements refine G23/G46's existing host tasks. They do not reopen the
 bounded, already accepted touch repair or require another browser abstraction.
+
+Fresh regeneration additionally resolves accepted-input loss and byte limits at
+both host and runner queues, and checks capability replies against the actual
+renderer. A capacity constant or API-contract snapshot is not an overload test.
 
 ### Ambition round 3: stronger oracles and measured adoption
 
@@ -202,17 +259,23 @@ microbenchmark cannot hide slower flattening or store maintenance. Let a measure
 conservative winner remain the default. This deepens existing G25/G45/G47 tasks;
 it does not add speculative algorithm modules or a second benchmark framework.
 
+Fresh regeneration adds the exact Beta variance oracle, the real VOI clipping
+boundary, reset/error-budget assumptions, and the scheduler backlog/service
+counterexamples above. These sharpen existing G45 proof rather than add research
+machinery. The conservative implementation remains a valid outcome.
+
 ### Skill execution and tracking
 
 - [x] Read both root documents completely; read the selected skills/references.
 - [x] Reconcile the 71 vision goals with current source, tests and shipped state.
 - [x] Examine the existing 305-item bridge and its gaps; reuse its implementation
       and companion-test obligations rather than create duplicate workstreams.
-- [x] Execute the full default workspace suite; disclose seven skips and the
-      rejected moving-source wrapper receipt. Reuse prior real-host evidence only
-      at its recorded revision and proof level.
-- [x] Revise the bridge and Beads using the frozen Phase 3a prompt below. Reopen
-      `.6.9`; append the owner's DSR override to every non-closed bridge item.
+- [x] Register the five-check DSR baseline and execute two complete attempts;
+      disclose the actual Cargo execution boundary, pressure/transport failures
+      and invalid timing fields. Retain earlier test/host evidence as historical.
+- [x] Revise the bridge and Beads using the frozen Phase 3a prompt below. Rewrite
+      the four active DSR toolchain/topology descriptions; retain the previously
+      reopened `.6.9` and the DSR override on every non-closed bridge item.
 - [x] Complete three ambition rounds and regenerate the affected Beads in place.
 - [x] Complete five refinement passes, then inspect fresh bv output and the exact
       `blocks` graph independently of containment edges.
@@ -226,35 +289,33 @@ this document does not pre-certify those future commands.
 
 ### Refinement results and final graph
 
-1. **Coverage:** all 71 current rows remain ordered and every G01–G47 gap retains
-   existing task ownership. The 305-item bridge has 44 epic workstreams plus a
-   directly parented Fenwick-overflow bug; counting all direct children as epics
-   would overstate the workstream count. No new or duplicate issues were needed.
-2. **Ordering:** `.6.31` previously depended on implementation without all its
-   explicit companion proofs. Added the 15 missing dependencies on `.6.2`,
-   `.6.4`, …, `.6.30`. Native acceptance already depends on `.6.31`; preserve the
-   real output-trust prerequisite before `agent_shell`.
-3. **Executable tests:** recorded current Windows cfg, Bash 3.2/tooling, doctor
-   snapshot, event-producer, fuzz endpoint and widget JSONL failures in their
-   existing tasks, including positive outcomes and specific failure cases. The
-   widget producer belongs to `.23.19`; `.23.20` is documentation, not its proof.
-4. **Scope and provenance:** retained all platform/feature/performance obligations,
-   replaced Actions orchestration throughout non-closed bridge tasks, and kept
-   rejected/partial/physical-host evidence explicit. Semantic test-double review
-   must address the actual vacuous pane test, not merely rename comments.
-5. **Final convergence:** rechecked the exported graph, task state changes,
-   unchanged original descriptions and the current checklist. No further
-   structural change was justified in this pass. This is a convergence result
-   for the reviewed plan, not proof that the implementation has no undiscovered
-   defects or that every subsidiary specification was freshly reread.
+1. **Executable DSR plan:** replaced the obsolete Actions implementation and
+   companion-proof descriptions in `.6.19/.6.20/.6.23/.6.24`. Preserved the exact
+   pin, all profiles/hosts, timeout, capacity, repeated all-feature and artifact
+   requirements. Removed destructive cleanup prescriptions; capacity elsewhere
+   is the permitted remedy. Existing assignments remain intact.
+2. **Ambition coverage:** regenerated the browser, math, cleanup and flagship
+   journey tasks with actual contract contradictions and independent negative
+   cases. The 71 current rows and G01–G47 obligations retain their owners.
+3. **Concrete overload boundary:** traced the browser runner's unbounded queue
+   and added both count and cumulative-byte admission tests to `.29.8/.29.9`.
+   FIFO accepted-input semantics must survive overload and recovery.
+4. **Consumer completeness and ordering:** traced ProcessSubscription's line
+   framing, sender, null stdin and child lifetime; sharpened `.32.1–.32.3`.
+   Checked their output-trust and implementation/proof dependencies. The 15
+   companion dependencies added to `.6.31` in the preceding pass remain present;
+   native acceptance still waits for them. No additional edge was justified.
+5. **Final convergence:** reviewed the changed task contracts, complete issue
+   inventory, vision mapping and exact prerequisite graph. No further change
+   was justified in this pass. This is plan-review convergence, not a claim of
+   complete implementation or an exhaustive bug proof.
 
-Final inventory: **3,042 issues: 2,805 closed, 222 open, 15 in progress**. The
-bridge contains **70 closed, 220 open, 15 in progress**. This turn changed 235
-existing bridge items, created/deleted none, reopened `.6.9`, and claimed the
-explicitly requested AGENTS policy slice of `.5.6`; its broader rewrite stays
-in progress. Original descriptions were preserved, 21 titles were updated, and
-the DSR override is present on every non-closed bridge item. No feature was
-closed or accepted through this audit.
+Final inventory: **3,042 issues: 2,805 closed, 221 open, 16 in progress**. The
+305-item bridge contains **70 closed, 219 open, 16 in progress**, with 44 epic
+workstreams and a directly parented Fenwick-overflow bug. This pass revised
+**14 existing issues** and claimed only the independent DSR registry/bootstrap slice of
+`.6.23`; its complete topology remains unfinished. No issue was created, deleted
+or closed. The prior `.6.9` reopening and all other assignments are preserved.
 
 The final exact scheduling check visited all 3,042 nodes over **4,360 `blocks`
 edges**, with no missing IDs or scheduling cycle. Parent-child containment is
@@ -265,7 +326,48 @@ task `.6.19` as the largest immediate unblocker. The graph score also ranks the
 claims ledger `.5.2` highly; that is a dependency heuristic, not a reason to put
 another documentation artifact ahead of the DSR delivery path and user journeys.
 
-### Anti-ceremony and honesty inventory: this assessment window
+### Anti-ceremony and honesty inventory: fresh assessment window
+
+**Creation worksheet:** the owner explicitly requested the comprehensive reality
+check. Its consumer is the owner choosing implementation work; its gate is this
+assessment's completion claim. Observed defects are missing DSR configuration,
+stale executable plans and concrete specification/consumer mismatches. Revise
+this report and existing Beads only. Retire its current verdict when new source
+or execution evidence supersedes it; no deletion is implied.
+
+**Real-work worksheet:** window begins at `2fa9c438`. The DSR registry is a small
+operational ENABLER used by real commands; the report and Beads are PROCESS.
+There is no new user-facing runtime capability. Two complete DSR attempts yielded
+one successful remote compiler check and infrastructure failures, not a working
+release. The owner requested this audit, but further audit expansion would delay
+the named user journeys. Finish the handoff and return to DSR/consumer defects.
+
+**Written honesty answers (this window; retained history is separate below):**
+
+| # | Answer and evidence |
+|---|---|
+| 1–3 | No test weakening, new mocks or golden blessing: no source/test/fixture changes or bless commands. |
+| 4 | Added five required DSR checks, without changing their assertions or bypassing admission/source verification. No product feature was edited with its gate. |
+| 5 | No hardcoded success or narrowed denominator: both attempts retain all five commands and every failure. |
+| 6 | No zero-run green: distinguish wrapper invocation from actual Cargo execution; only fmt/check passed in attempt 1 and fmt in attempt 2. |
+| 7 | Full corpus reading and source tracing were performed; dynamic browser floods, physical hosts and a fresh full-suite pass are expressly unclaimed. |
+| 8 | Earlier touch/PTY captures retain their revisions and limits; no replay was promoted to live GPU/AT proof. |
+| 9–10 | Preserve pressure refusals, SSH timeouts, raw logs, invalid duration fields and unsuccessful tool probes. One log redirection was blocked; the command ran directly without that redirect. A heredoc scratch probe failed on quota and was rerun with `python3 -c`. |
+| 11 | No closures or follow-up laundering: `.6.23` stays in progress and the prior false fuzz closure remains reopened. |
+| 12 | DSR descriptions were rewritten under explicit owner authority; host/feature/test requirements were preserved. No implementation was relabelled complete. |
+| 13–15 | Solo execution: no delegated closures, gameable dispatch or unverified agent reports. Self-review is not independent verification. |
+| 16 | No refusal farming: failed DSR execution earns no positive-capability closure. No new guard framework. |
+| 17 | No correlated-agreement claim; source inspection, receipts and historical tests remain distinct evidence. |
+| 18 | The five-check denominator preceded execution; broader feature/host obligations remain open. |
+| 19 | DSR's timing fields are unreliable and the second worker timed out before Cargo. The local DSR registry is outside this repository and does not make builds reproducible on another machine. |
+| 20 | Strongest fresh execution evidence is the source-bound remote workspace-check receipt; strongest new integration evidence is the actual unbounded browser/subprocess code path. Neither certifies the full vision. |
+
+Disposition: no new product completion claim. All discovered obligations were
+added to existing implementation/proof tasks. The preceding CASS sampling and
+historical false-closure investigation below were not rerun or represented as
+a complete audit of older sessions.
+
+### Historical honesty inventory: preceding September 6 assessment
 
 **Creation worksheet.** The consumer is the owner who explicitly requested the
 full reality check and DSR policy. The existing report and Beads inform the next
@@ -503,8 +605,8 @@ guarantee is not established. Source improvements do not establish shipped parit
 | 67 | Windows support | PARTIAL; Crossterm fallback, current test-import lint and native DSR host proof pending | G31 |
 | 68 | Doctor verification | PARTIAL; real core/importer code; capture artifact and full DSR journey incomplete | G22 |
 | 69 | Cross-component test location | PARTIAL docs; tests largely in crate test directories | G39 |
-| 70 | Mandatory quality gates | PARTIAL; default workspace tests pass; DSR registration absent and host/fuzz/artifact failures remain | G04/G42 |
-| 71 | Main/legacy branch synchronization | WORKING at audit start: both remote refs `183024e6`; recheck after any push without using Actions | G41 |
+| 70 | Mandatory quality gates | PARTIAL; DSR registry added, fmt/check passed; full DSR attempt fails on remote infrastructure, broader host/fuzz/artifact failures remain | G04/G42 |
+| 71 | Main/legacy branch synchronization | WORKING at fresh audit start: both remote refs `2fa9c438`; recheck after any push without using Actions | G41 |
 
 Plans add subprocess output under stable inline chrome (G26/G27), suspend/resume
 (G32), terminal protocol/resource caps (G36), reproducible optimization budgets
