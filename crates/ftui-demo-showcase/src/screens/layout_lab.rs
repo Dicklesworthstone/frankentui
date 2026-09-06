@@ -120,6 +120,9 @@ pub struct LayoutLab {
     pane_tree: PaneTree,
     /// Selected execution engine and its shared undo/redo/replay history.
     pane_timeline: PaneExecutionEngine,
+    /// Show execution diagnostics after an explicit policy selection.
+    pane_execution_details: bool,
+    pane_execution_error: Option<String>,
     /// Multi-pane selection state (shift-click cluster).
     pane_selection: PaneSelectionState,
     /// Active pointer gesture state.
@@ -285,6 +288,8 @@ impl LayoutLab {
             layout_controls: Cell::new(Rect::default()),
             pane_preview: Cell::new(Rect::default()),
             pane_timeline: PaneExecutionEngine::new(&pane_tree),
+            pane_execution_details: false,
+            pane_execution_error: None,
             pane_tree,
             pane_selection,
             pane_active_gesture: Cell::new(None),
@@ -562,6 +567,9 @@ impl Screen for LayoutLab {
                 (KeyCode::Char('u'), Modifiers::NONE) => {
                     self.pane_undo();
                 }
+                (KeyCode::Char('e'), Modifiers::NONE) => {
+                    self.cycle_pane_execution_policy();
+                }
                 (KeyCode::Char('y'), Modifiers::NONE) => {
                     self.pane_redo();
                 }
@@ -729,6 +737,10 @@ impl Screen for LayoutLab {
             HelpEntry {
                 key: "u/y/R",
                 action: "Pane undo/redo/replay",
+            },
+            HelpEntry {
+                key: "e",
+                action: "Cycle pane execution strategy",
             },
             HelpEntry {
                 key: "f/c/n/k",
@@ -1015,7 +1027,7 @@ impl LayoutLab {
 
         let mode_label = pane_mode_label(self.pane_intelligence_mode);
         let timeline_status = self.pane_timeline_status();
-        let status = format!(
+        let mut status = format!(
             "mode:{mode_label} sel:{} tl:{}/{} ops:{} sp:{}/h{}/a{}",
             self.pane_selection.selected.len(),
             timeline_status.cursor,
@@ -1025,7 +1037,28 @@ impl LayoutLab {
             self.pane_splitter_hovered.get(),
             self.pane_splitter_active.get(),
         );
-        let status_area = Rect::new(inner.x, inner.y, inner.width.min(48), 1);
+        if self.pane_execution_details {
+            let execution = self.pane_execution_status();
+            let active = if execution.conservative {
+                "conservative"
+            } else {
+                match execution.strategy {
+                    PaneMemoryStrategy::Persistent => "persistent",
+                    PaneMemoryStrategy::Checkpointed => "checkpointed",
+                    PaneMemoryStrategy::Baseline => "baseline",
+                }
+            };
+            status = format!(
+                "exec:{active} (e) fb:{} tl:{}/{}",
+                execution.fallbacks, timeline_status.cursor, timeline_status.len,
+            );
+        }
+        let status_width = if self.pane_execution_details {
+            inner.width
+        } else {
+            inner.width.min(48)
+        };
+        let status_area = Rect::new(inner.x, inner.y, status_width, 1);
         Paragraph::new(truncate_to_width(&status, usize::from(status_area.width)))
             .style(theme::muted())
             .render(status_area, frame);
@@ -1390,12 +1423,40 @@ impl LayoutLab {
 
     /// Change execution policy after canceling any uncommitted gesture.
     pub fn pane_set_execution_policy(&mut self, policy: PaneExecutionPolicy) -> Result<(), String> {
+        self.pane_execution_details = true;
         if !self.cancel_pane_gesture() {
-            return Err("pane gesture cancellation failed; execution policy unchanged".into());
+            let error = "pane gesture cancellation failed; execution policy unchanged".to_string();
+            self.pane_execution_error = Some(error.clone());
+            return Err(error);
         }
-        self.pane_timeline
+        let result = self
+            .pane_timeline
             .set_policy(&self.pane_tree, policy)
-            .map_err(|err| err.to_string())
+            .map_err(|err| err.to_string());
+        self.pane_execution_error = result.as_ref().err().cloned();
+        result
+    }
+
+    fn cycle_pane_execution_policy(&mut self) {
+        let mut policy = self.pane_timeline.policy();
+        if policy.conservative {
+            policy.conservative = false;
+            policy.forced_strategy = Some(PaneMemoryStrategy::Checkpointed);
+        } else {
+            match policy.forced_strategy {
+                Some(PaneMemoryStrategy::Checkpointed | PaneMemoryStrategy::Baseline) => {
+                    policy.forced_strategy = Some(PaneMemoryStrategy::Persistent);
+                }
+                Some(PaneMemoryStrategy::Persistent) => policy.forced_strategy = None,
+                None => {
+                    policy.conservative = true;
+                    policy.forced_strategy = Some(PaneMemoryStrategy::Checkpointed);
+                }
+            }
+        }
+        if let Err(error) = self.pane_set_execution_policy(policy) {
+            tracing::warn!(%error, "pane execution policy change failed");
+        }
     }
 
     fn finish_pane_gesture(&mut self) {
@@ -1635,8 +1696,15 @@ impl LayoutLab {
     }
 
     fn reset_pane_workspace(&mut self) {
-        self.pane_tree = default_pane_layout_tree();
-        self.pane_timeline = PaneExecutionEngine::new(&self.pane_tree);
+        let tree = default_pane_layout_tree();
+        let mut timeline = PaneExecutionEngine::new(&tree);
+        if let Err(error) = timeline.set_policy(&tree, self.pane_timeline.policy()) {
+            self.pane_execution_error = Some(error.to_string());
+            return;
+        }
+        self.pane_tree = tree;
+        self.pane_timeline = timeline;
+        self.pane_execution_error = None;
         self.pane_gesture_timeline_cursor_start = None;
         self.pane_next_operation_id = 1;
         self.pane_workspace_generation = 0;
@@ -1897,7 +1965,7 @@ impl LayoutLab {
             .as_ref()
             .map_or_else(String::new, PaneWorkspaceRecoveryNotice::summary);
 
-        let info = format!(
+        let mut info = format!(
             "Preset: [{}] {}\n\
              Direction: {} (d)\n\
              Alignment: {} (a)\n\
@@ -1938,6 +2006,43 @@ impl LayoutLab {
             recovery,
         );
 
+        if self.pane_execution_details {
+            let status = self.pane_execution_status();
+            let policy = self.pane_timeline.policy();
+            let requested = if policy.conservative {
+                "conservative"
+            } else {
+                match policy.forced_strategy {
+                    None => "adaptive",
+                    Some(PaneMemoryStrategy::Persistent) => "persistent",
+                    Some(PaneMemoryStrategy::Checkpointed) => "checkpointed",
+                    Some(PaneMemoryStrategy::Baseline) => "baseline",
+                }
+            };
+            let retention = status.last_retention.as_ref().map_or_else(
+                || "not measured".to_string(),
+                |decision| format!("{:?}", decision.outcome),
+            );
+            info = format!(
+                "Policy: {requested} (e)\nEdits: {} p:{} c:{} safe:{}\nUndo:{} Redo:{} Fallbacks:{}\nHistory: {}/{} (u/y/R)\nRetention: {retention}\nModeled bytes: {} / {} (0=unbounded)\nEdit limit: {} (0=unbounded)\n{}\n{info}",
+                status.applies,
+                status.persistent_applies,
+                status.checkpointed_applies,
+                status.conservative_applies,
+                status.undos,
+                status.redos,
+                status.fallbacks,
+                timeline_status.cursor,
+                timeline_status.len,
+                status.retained_bytes,
+                policy.retention.budget.max_retained_bytes,
+                policy.retention.budget.max_retained_units,
+                self.pane_execution_error
+                    .as_deref()
+                    .or(status.last_maintenance_error.as_deref())
+                    .unwrap_or(""),
+            );
+        }
         Paragraph::new(info)
             .style(Style::new().fg(theme::fg::SECONDARY))
             .render(inner, frame);
@@ -3498,6 +3603,107 @@ mod tests {
         lab.pane_replay();
 
         assert_eq!(lab.pane_next_operation_id, 43);
+    }
+
+    #[test]
+    fn pane_keyboard_policy_cycle_preserves_history_budget_and_reset_policy() {
+        let mut lab = LayoutLab::new();
+        lab.update(&press(KeyCode::Char('c')));
+        let edited = lab.pane_tree.to_snapshot();
+        lab.update(&press(KeyCode::Char('u')));
+        let journal = lab.pane_timeline.timeline().clone();
+        for (strategy, conservative, forced) in [
+            (PaneMemoryStrategy::Persistent, false, true),
+            (PaneMemoryStrategy::Checkpointed, false, false),
+            (PaneMemoryStrategy::Checkpointed, true, true),
+            (PaneMemoryStrategy::Checkpointed, false, true),
+        ] {
+            lab.update(&press(KeyCode::Char('e')));
+            let policy = lab.pane_timeline.policy();
+            assert_eq!(lab.pane_execution_strategy(), strategy);
+            assert_eq!(policy.conservative, conservative);
+            assert_eq!(policy.forced_strategy.is_some(), forced);
+            assert_eq!(policy.retention, PaneRetentionPolicy::bounded(0, 4096));
+            assert_eq!(lab.pane_timeline.timeline().entries, journal.entries);
+            assert_eq!(lab.pane_timeline.timeline().cursor, journal.cursor);
+        }
+        lab.update(&press(KeyCode::Char('e')));
+        lab.update(&press(KeyCode::Char('y')));
+        assert_eq!(lab.pane_tree.to_snapshot(), edited);
+        lab.update(&press(KeyCode::Char('f')));
+        assert!(lab.pane_execution_status().persistent_applies > 0);
+        let policy = lab.pane_timeline.policy();
+        lab.update(&press(KeyCode::Char('x')));
+        assert_eq!(lab.pane_timeline.policy(), policy);
+        assert_eq!(
+            lab.pane_execution_strategy(),
+            PaneMemoryStrategy::Persistent
+        );
+        assert_eq!(lab.pane_timeline.timeline().cursor, 0);
+        lab.update(&press(KeyCode::Char('c')));
+        assert!(lab.pane_execution_status().persistent_applies > 0);
+    }
+
+    #[test]
+    fn pane_keyboard_editing_survives_real_retention_floor_fallback() {
+        let mut lab = LayoutLab::new();
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(1, 17))
+                .forcing(PaneMemoryStrategy::Persistent),
+        )
+        .expect("valid but impossible byte ceiling reports floor");
+        assert!(lab.pane_execution_status().conservative);
+        assert!(
+            lab.pane_execution_status()
+                .last_monitor
+                .as_ref()
+                .is_some_and(|v| v.status.is_violation())
+        );
+        let baseline = lab.pane_tree.to_snapshot();
+        lab.update(&press(KeyCode::Char('c')));
+        let edited = lab.pane_tree.to_snapshot();
+        assert_ne!(edited, baseline);
+        assert!(lab.pane_execution_status().conservative_applies > 0);
+        lab.update(&press(KeyCode::Char('u')));
+        assert_eq!(
+            lab.pane_tree.to_snapshot(),
+            edited,
+            "an impossible byte ceiling prunes undo history"
+        );
+        assert_eq!(lab.pane_timeline.timeline().entries.len(), 0);
+        lab.update(&press(KeyCode::Char('f')));
+        assert_ne!(
+            lab.pane_tree.to_snapshot(),
+            edited,
+            "editing continues after history was pruned"
+        );
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::unbounded()).conservative(),
+        )
+        .expect("raise budget for subsequent history");
+        let baseline = lab.pane_tree.to_snapshot();
+        lab.update(&press(KeyCode::Char('c')));
+        let edited = lab.pane_tree.to_snapshot();
+        assert_ne!(edited, baseline);
+        lab.update(&press(KeyCode::Char('u')));
+        assert_eq!(
+            lab.pane_tree.to_snapshot(),
+            baseline,
+            "new retained history supports undo"
+        );
+        lab.update(&press(KeyCode::Char('y')));
+        assert_eq!(lab.pane_tree.to_snapshot(), edited);
+        lab.pane_set_execution_policy(
+            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(1, 17))
+                .forcing(PaneMemoryStrategy::Persistent),
+        )
+        .expect("restore bounded policy before reset");
+        lab.update(&press(KeyCode::Char('x')));
+        assert_eq!(
+            lab.pane_timeline.policy().retention,
+            PaneRetentionPolicy::bounded(1, 17)
+        );
+        assert!(lab.pane_execution_status().conservative);
     }
 
     #[test]

@@ -142,6 +142,12 @@ fn main() -> ExitCode {
     model.mouse_capture_enabled = mouse_policy.resolve(screen_mode);
     model.current_screen = start_screen;
     model.exit_after_ms = opts.exit_after_ms;
+    if let Some(policy) = opts.pane_execution_policy
+        && let Err(error) = model.screens.layout_lab.pane_set_execution_policy(policy)
+    {
+        eprintln!("Pane execution configuration failed: {error}");
+        return ExitCode::FAILURE;
+    }
     if let Some(path) = opts.pane_workspace.as_deref() {
         model.enable_pane_workspace_persistence(path);
     }

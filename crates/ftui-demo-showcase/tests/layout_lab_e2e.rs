@@ -55,6 +55,355 @@ use ftui_harness::assert_snapshot;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 
+// These cases launch the shipped binary in a real PTY. The virtual terminal
+// only decodes its ANSI output; it never supplies application state or frames.
+#[cfg(unix)]
+mod native_execution {
+    use std::time::{Duration, Instant};
+
+    use ftui_pty::virtual_terminal::VirtualTerminal;
+    use ftui_pty::{PtyConfig, PtySession, spawn_command};
+    use portable_pty::CommandBuilder;
+
+    fn start(extra_args: &[&str]) -> (PtySession, VirtualTerminal, usize) {
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_ftui-demo-showcase"));
+        command.args([
+            "--screen=6",
+            "--screen-mode=alt",
+            "--mouse=on",
+            "--exit-after-ms=60000",
+        ]);
+        command.args(extra_args);
+        let session = spawn_command(
+            PtyConfig::default()
+                .with_size(240, 80)
+                .with_test_name("layout_lab_native_execution"),
+            command,
+        )
+        .expect("spawn real showcase in PTY");
+        (session, VirtualTerminal::new(240, 80), 0)
+    }
+
+    fn wait_screen(
+        session: &mut PtySession,
+        terminal: &mut VirtualTerminal,
+        offset: &mut usize,
+        step: &str,
+        expected: impl Fn(&str) -> bool,
+    ) -> String {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let bytes = session
+                .read_output_result()
+                .expect("read actual PTY output");
+            terminal.feed(&bytes[*offset..]);
+            *offset = bytes.len();
+            let screen = terminal.screen_text();
+            if expected(&screen) {
+                eprintln!("PTY_STEP {step}\n{screen}");
+                return screen;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY step {step} timed out; actual screen:\n{screen}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn number_after(screen: &str, label: &str) -> u64 {
+        screen
+            .split_once(label)
+            .and_then(|(_, tail)| {
+                tail.split(|c: char| !c.is_ascii_digit())
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or(0)
+    }
+
+    fn finish(session: &mut PtySession) {
+        session
+            .send_input(b"q")
+            .expect("quit through terminal input");
+        assert!(
+            session
+                .wait_and_drain(Duration::from_secs(3))
+                .expect("child exit")
+                .success()
+        );
+        assert!(
+            session
+                .output()
+                .windows(8)
+                .any(|bytes| bytes == b"\x1b[?1049l"),
+            "alternate screen restored"
+        );
+    }
+
+    #[test]
+    fn pty_execution_keyboard_migration_and_history() {
+        let (mut session, mut terminal, mut offset) = start(&["--pane-strategy=checkpointed"]);
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "checkpointed startup",
+            |s| s.contains("exec:checkpointed"),
+        );
+        session.send_input(b"e").expect("select persistent");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "persistent selection",
+            |s| s.contains("exec:persistent"),
+        );
+        session.send_input(b"c").expect("compare layout edit");
+        let edited = wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "persistent edit",
+            |s| number_after(s, "Edits: ") > 0,
+        );
+        assert_eq!(
+            number_after(&edited, "Edits: "),
+            number_after(&edited, " p:")
+        );
+        session.send_input(b"u").expect("undo");
+        wait_screen(&mut session, &mut terminal, &mut offset, "undo", |s| {
+            number_after(s, "Undo:") == 1
+        });
+        session
+            .send_input(b"e")
+            .expect("migrate with retained redo");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "adaptive policy",
+            |s| s.contains("Policy: adaptive"),
+        );
+        session.send_input(b"y").expect("redo after migration");
+        wait_screen(&mut session, &mut terminal, &mut offset, "redo", |s| {
+            number_after(s, "Redo:") == 1
+        });
+        session.send_input(b"e").expect("select conservative");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "conservative selection",
+            |s| s.contains("exec:conservative"),
+        );
+        session.send_input(b"f").expect("focus layout edit");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "conservative edit",
+            |s| number_after(s, " safe:") > 0,
+        );
+        session.send_input(b"e").expect("return to checkpointed");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "checkpointed selection",
+            |s| s.contains("exec:checkpointed") && s.contains("Policy: checkpointed"),
+        );
+        finish(&mut session);
+    }
+
+    #[test]
+    fn pty_execution_real_budget_fallback_keeps_editing() {
+        let (mut session, mut terminal, mut offset) = start(&[
+            "--pane-strategy=persistent",
+            "--pane-max-bytes=1",
+            "--pane-max-edits=17",
+        ]);
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "retention floor fallback",
+            |s| {
+                s.contains("exec:conservative")
+                    && s.contains("Policy: persistent")
+                    && number_after(s, "Fallbacks:") == 1
+            },
+        );
+        session.send_input(b"c").expect("edit after fallback");
+        let edited = wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "fallback edit",
+            |s| number_after(s, " safe:") > 0,
+        );
+        assert_eq!(
+            number_after(&edited, "Edits: "),
+            number_after(&edited, " safe:")
+        );
+        assert!(
+            edited.contains("History: 0/0"),
+            "history is pruned by the impossible budget"
+        );
+        assert!(edited.contains("Retention: FloorReached"));
+        session
+            .send_input(b"u")
+            .expect("undo with no retained history");
+        session
+            .send_input(b"f")
+            .expect("another edit after pruned undo");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "continued fallback editing",
+            |s| number_after(s, " safe:") > number_after(&edited, " safe:"),
+        );
+        finish(&mut session);
+    }
+
+    #[test]
+    fn pty_execution_sgr_drag_persists_and_migrates_on_restart() {
+        use ftui_core::geometry::Rect;
+        use ftui_demo_showcase::app::{AppModel, ScreenId};
+        use ftui_demo_showcase::pane_interaction::{
+            PaneGestureMode, collect_splitter_primitives, pointer_down_context_at,
+        };
+        use ftui_layout::{
+            PANE_EDGE_GRIP_INSET_CELLS, PanePointerPosition, decode_workspace_snapshot_json,
+        };
+        use ftui_render::{frame::Frame, grapheme_pool::GraphemePool};
+        use ftui_runtime::Model;
+
+        // Derive an input coordinate from the production layout at the actual
+        // PTY size. All effects and saved history below come from the child.
+        let mut model = AppModel::new();
+        model.current_screen = ScreenId::LayoutLab;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(240, 80, &mut pool);
+        model.view(&mut frame);
+        let lab = &model.screens.layout_lab;
+        let bounds: Rect = lab.embedded_pane_workspace_bounds();
+        let layout = lab
+            .pane_tree()
+            .solve_layout(bounds)
+            .expect("production layout");
+        let (x, y) = collect_splitter_primitives(lab.pane_tree(), &layout, bounds, None, None)
+            .iter()
+            .find_map(|splitter| {
+                let x = splitter.rail_rect.x + splitter.rail_rect.width / 2;
+                let y = splitter.rail_rect.y + splitter.rail_rect.height / 2;
+                pointer_down_context_at(
+                    lab.pane_tree(),
+                    bounds,
+                    PanePointerPosition::new(i32::from(x), i32::from(y)),
+                    PANE_EDGE_GRIP_INSET_CELLS,
+                )
+                .filter(|context| matches!(context.mode, PaneGestureMode::Resize(_)))
+                .map(|_| (x + 1, y + 1)) // SGR positions are one-based.
+            })
+            .expect("real splitter resize target");
+        let baseline_hash = lab.pane_tree().state_hash();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let workspace =
+            std::env::temp_dir().join(format!("ftui-pane-pty-{}-{nonce}.json", std::process::id()));
+        let workspace_flag = format!("--pane-workspace={}", workspace.display());
+        let (mut session, mut terminal, mut offset) =
+            start(&["--pane-strategy=persistent", &workspace_flag]);
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "persistent drag startup",
+            |s| s.contains("exec:persistent"),
+        );
+        session
+            .send_input(format!("\x1b[<0;{x};{y}M").as_bytes())
+            .expect("SGR pointer down");
+        session
+            .send_input(format!("\x1b[<32;{};{}M", x + 6, y + 3).as_bytes())
+            .expect("SGR drag");
+        session
+            .send_input(format!("\x1b[<0;{};{}m", x + 6, y + 3).as_bytes())
+            .expect("SGR pointer release");
+        let screen = wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "real SGR resize",
+            |s| number_after(s, " p:") > 0,
+        );
+        assert!(number_after(&screen, "History: ") > 0);
+        finish(&mut session);
+        let json = std::fs::read_to_string(&workspace).expect("workspace saved by actual child");
+        let saved = decode_workspace_snapshot_json(&json)
+            .expect("valid saved workspace")
+            .snapshot;
+        let saved_tree =
+            ftui_layout::PaneTree::from_snapshot(saved.pane_tree.clone()).expect("saved tree");
+        assert_ne!(
+            saved_tree.state_hash(),
+            baseline_hash,
+            "drag changes real pane geometry"
+        );
+        assert!(saved.interaction_timeline.cursor > 0);
+        eprintln!("PTY_WORKSPACE {}\n{json}", workspace.display());
+
+        let (mut session, mut terminal, mut offset) =
+            start(&["--pane-strategy=checkpointed", &workspace_flag]);
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "restored checkpointed history",
+            |s| {
+                s.contains("exec:checkpointed")
+                    && number_after(s, "History: ") == saved.interaction_timeline.cursor as u64
+            },
+        );
+        session.send_input(b"u").expect("undo restored drag");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "restored undo",
+            |s| number_after(s, "Undo:") == 1,
+        );
+        session.send_input(b"y").expect("redo restored drag");
+        wait_screen(
+            &mut session,
+            &mut terminal,
+            &mut offset,
+            "restored redo",
+            |s| number_after(s, "Redo:") == 1,
+        );
+        finish(&mut session);
+        let restored = decode_workspace_snapshot_json(
+            &std::fs::read_to_string(&workspace).expect("saved after restart"),
+        )
+        .expect("valid restarted workspace")
+        .snapshot;
+        assert_eq!(restored.pane_tree, saved.pane_tree);
+        assert_eq!(
+            restored.interaction_timeline.entries,
+            saved.interaction_timeline.entries
+        );
+        assert_eq!(
+            restored.interaction_timeline.cursor,
+            saved.interaction_timeline.cursor
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // JSONL Logging Helpers
 // ---------------------------------------------------------------------------

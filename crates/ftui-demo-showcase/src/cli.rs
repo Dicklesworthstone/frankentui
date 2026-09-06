@@ -8,6 +8,9 @@
 use std::env;
 use std::process;
 
+use ftui_layout::pane_execution::PaneExecutionPolicy;
+use ftui_layout::pane_memory::PaneMemoryStrategy;
+use ftui_layout::pane_retention::PaneRetentionPolicy;
 use ftui_runtime::MouseCapturePolicy;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,6 +33,9 @@ OPTIONS:
     --mouse=MODE         Mouse capture mode: 'on', 'off', or 'auto' (default: auto)
     --no-mouse           Alias for --mouse=off
     --pane-workspace=PATH Persist Layout Lab pane workspace JSON
+    --pane-strategy=MODE  Layout Lab: checkpointed (default), persistent, adaptive, conservative
+    --pane-max-bytes=N   Modeled pane history byte limit (default: 0 = unbounded)
+    --pane-max-edits=N   Retained pane edit limit (default: 4096; 0 = unbounded)
     --vfx-harness        Run deterministic VFX harness (locks effect/size/tick)
     --vfx-effect=NAME    VFX harness effect name (e.g., doom, quake, plasma)
     --vfx-tick-ms=N      VFX harness tick cadence in ms (default: 16)
@@ -165,6 +171,8 @@ pub struct Opts {
     pub exit_after_ms: u64,
     /// Optional Layout Lab pane workspace JSON path for terminal persistence.
     pub pane_workspace: Option<String>,
+    /// Explicit Layout Lab execution configuration; absent uses the engine default.
+    pub pane_execution_policy: Option<PaneExecutionPolicy>,
     /// Enable deterministic VFX harness mode.
     pub vfx_harness: bool,
     /// VFX harness effect name (None = default).
@@ -223,6 +231,7 @@ impl Default for Opts {
             mouse_mode: "auto".into(),
             exit_after_ms: 0,
             pane_workspace: None,
+            pane_execution_policy: None,
             vfx_harness: false,
             vfx_effect: None,
             vfx_tick_ms: 16,
@@ -537,6 +546,47 @@ impl Opts {
                         if !val.trim().is_empty() {
                             opts.pane_workspace = Some(val.to_string());
                         }
+                    } else if let Some(val) = other.strip_prefix("--pane-strategy=") {
+                        let policy = opts.pane_execution_policy.get_or_insert_with(|| {
+                            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 4096))
+                                .forcing(PaneMemoryStrategy::Checkpointed)
+                        });
+                        policy.conservative = val == "conservative";
+                        policy.forced_strategy = match val {
+                            "checkpointed" | "conservative" => {
+                                Some(PaneMemoryStrategy::Checkpointed)
+                            }
+                            "persistent" => Some(PaneMemoryStrategy::Persistent),
+                            "adaptive" => None,
+                            _ => {
+                                return Err(ParseError::InvalidValue {
+                                    flag: "--pane-strategy",
+                                    value: val.to_string(),
+                                });
+                            }
+                        };
+                    } else if let Some((flag, val)) = other
+                        .strip_prefix("--pane-max-bytes=")
+                        .map(|val| ("--pane-max-bytes", val))
+                        .or_else(|| {
+                            other
+                                .strip_prefix("--pane-max-edits=")
+                                .map(|val| ("--pane-max-edits", val))
+                        })
+                    {
+                        let limit = val.parse::<usize>().map_err(|_| ParseError::InvalidValue {
+                            flag,
+                            value: val.to_string(),
+                        })?;
+                        let policy = opts.pane_execution_policy.get_or_insert_with(|| {
+                            PaneExecutionPolicy::adaptive(PaneRetentionPolicy::bounded(0, 4096))
+                                .forcing(PaneMemoryStrategy::Checkpointed)
+                        });
+                        if flag == "--pane-max-bytes" {
+                            policy.retention.budget.max_retained_bytes = limit;
+                        } else {
+                            policy.retention.budget.max_retained_units = limit;
+                        }
                     } else if let Some(val) = other.strip_prefix("--vfx-effect=") {
                         if !val.trim().is_empty() {
                             opts.vfx_effect = Some(val.to_string());
@@ -729,6 +779,7 @@ mod tests {
         assert_eq!(opts.mouse_mode, "auto");
         assert_eq!(opts.exit_after_ms, 0);
         assert!(opts.pane_workspace.is_none());
+        assert!(opts.pane_execution_policy.is_none());
         assert!(!opts.vfx_harness);
         assert!(opts.vfx_effect.is_none());
         assert_eq!(opts.vfx_tick_ms, 16);
@@ -744,6 +795,87 @@ mod tests {
     #[test]
     fn version_string_nonempty() {
         assert!(!VERSION.is_empty());
+    }
+
+    #[test]
+    fn pane_execution_flags_preserve_limits_in_either_order() {
+        for args in [
+            vec![
+                "--pane-strategy=persistent",
+                "--pane-max-bytes=8192",
+                "--pane-max-edits=17",
+            ],
+            vec![
+                "--pane-max-edits=17",
+                "--pane-max-bytes=8192",
+                "--pane-strategy=persistent",
+            ],
+        ] {
+            let policy = parse_with_env(args, &[])
+                .expect("valid pane options")
+                .pane_execution_policy
+                .expect("explicit policy");
+            assert_eq!(policy.forced_strategy, Some(PaneMemoryStrategy::Persistent));
+            assert!(!policy.conservative);
+            assert_eq!(policy.retention, PaneRetentionPolicy::bounded(8192, 17));
+        }
+        let policy = parse_with_env(["--pane-max-bytes=0", "--pane-max-edits=0"], &[])
+            .expect("unbounded limits")
+            .pane_execution_policy
+            .expect("explicit policy");
+        assert_eq!(policy.retention, PaneRetentionPolicy::unbounded());
+        assert_eq!(
+            policy.forced_strategy,
+            Some(PaneMemoryStrategy::Checkpointed)
+        );
+    }
+
+    #[test]
+    fn pane_execution_last_strategy_wins_without_sticky_conservative_override() {
+        for (mode, strategy, conservative) in [
+            (
+                "checkpointed",
+                Some(PaneMemoryStrategy::Checkpointed),
+                false,
+            ),
+            ("persistent", Some(PaneMemoryStrategy::Persistent), false),
+            ("adaptive", None, false),
+            ("conservative", Some(PaneMemoryStrategy::Checkpointed), true),
+        ] {
+            let flag = format!("--pane-strategy={mode}");
+            let policy = parse_with_env(["--pane-strategy=conservative", &flag], &[])
+                .expect("valid strategy")
+                .pane_execution_policy
+                .expect("explicit policy");
+            assert_eq!(policy.forced_strategy, strategy);
+            assert_eq!(policy.conservative, conservative);
+            assert_eq!(policy.retention, PaneRetentionPolicy::bounded(0, 4096));
+        }
+    }
+
+    #[test]
+    fn pane_execution_rejects_invalid_options_and_accepts_usize_boundary() {
+        for flag in ["--pane-max-bytes", "--pane-max-edits"] {
+            for value in ["", "-1", "1.5", "NaN", "18446744073709551616"] {
+                let arg = format!("{flag}={value}");
+                assert!(matches!(
+                    parse_with_env([arg], &[]),
+                    Err(ParseError::InvalidValue { .. })
+                ));
+            }
+            let arg = format!("{flag}={}", usize::MAX);
+            assert!(parse_with_env([arg], &[]).is_ok());
+        }
+        for value in ["", "baseline", "Persistent", "fast"] {
+            let arg = format!("--pane-strategy={value}");
+            assert!(matches!(
+                parse_with_env([arg], &[]),
+                Err(ParseError::InvalidValue {
+                    flag: "--pane-strategy",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]
