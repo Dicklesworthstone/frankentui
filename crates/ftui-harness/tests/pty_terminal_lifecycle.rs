@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![cfg(unix)]
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ftui_core::terminal_session::SessionOptions;
 use ftui_harness::ADVERSARIAL_PAYLOADS;
@@ -131,7 +131,16 @@ fn run_log_injection(mode: &str, strategy: &str, anchor: &str) -> Vec<u8> {
     let captured = &output[..end];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/pty_injection");
     std::fs::create_dir_all(&root).expect("create PTY capture directory");
-    let name = format!("{}-{mode}-{strategy}-{anchor}", std::process::id());
+    // Captures survive repeated runs; a recycled PID must not collide with a
+    // previous run's artifacts (which create_new deliberately never replaces).
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("artifact timestamp")
+        .as_nanos();
+    let name = format!(
+        "{}-{timestamp}-{mode}-{strategy}-{anchor}",
+        std::process::id()
+    );
     let mut model = VirtualTerminal::new(80, 24);
     model.feed(captured);
     let state = serde_json::json!({

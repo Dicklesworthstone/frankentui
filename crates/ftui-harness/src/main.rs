@@ -1781,7 +1781,7 @@ fn run_log_injection(mode: &str) -> io::Result<()> {
         writer.write_log("LOG_ACTIVE")?;
         let mut ack = [0];
         io::stdin().read_exact(&mut ack)?;
-        if ack != [b'g'] {
+        if ack != *b"g" {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "missing raw acknowledgement",
