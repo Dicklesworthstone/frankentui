@@ -61,6 +61,12 @@ fn pty_inline_mode_restores_terminal_and_uses_cursor_save_restore() {
     let expectations = CleanupExpectations::for_session(&options);
     assert_terminal_restored(&output, &expectations)
         .expect("inline mode terminal cleanup verification failed");
+    for entry in [b"\x1b[?1049h".as_slice(), b"\x1b[?47h"] {
+        assert!(
+            find_sequence(&output, entry).is_none(),
+            "inline entered alternate screen: {entry:?}"
+        );
+    }
 
     let save_idx = find_sequence(&output, CURSOR_SAVE).expect("missing cursor save");
     let restore_idx = find_sequence(&output, CURSOR_RESTORE).expect("missing cursor restore");
@@ -89,6 +95,23 @@ fn pty_alt_screen_restores_terminal() {
     let expectations = CleanupExpectations::for_session(&options);
     assert_terminal_restored(&output, &expectations)
         .expect("alt-screen terminal cleanup verification failed");
+    let entry = b"\x1b[?1049h";
+    let exit = b"\x1b[?1049l";
+    assert_eq!(
+        output.windows(entry.len()).filter(|w| *w == entry).count(),
+        1,
+        "session must enter alternate screen exactly once"
+    );
+    assert_eq!(
+        output.windows(exit.len()).filter(|w| *w == exit).count(),
+        1,
+        "session must leave alternate screen exactly once"
+    );
+    assert!(find_sequence(&output, entry).unwrap() < find_sequence(&output, exit).unwrap());
+    assert!(
+        find_sequence(&output, b"\x1b[?47h").is_none(),
+        "unexpected legacy alternate-screen entry"
+    );
 }
 
 fn run_log_injection(mode: &str, strategy: &str, anchor: &str) -> Vec<u8> {

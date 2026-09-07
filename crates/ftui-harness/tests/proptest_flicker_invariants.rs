@@ -19,11 +19,177 @@
 //! 15. Full erase (ED/EL mode 2) in sync frame does NOT increment partial_clears
 
 use ftui_harness::flicker_detection::{AnalysisStats, EventType, FlickerDetector, analyze_stream};
+use ftui_pty::virtual_terminal::VirtualTerminal;
 use proptest::prelude::*;
+use std::{cell::RefCell, io, ops::Range, rc::Rc};
+
+#[derive(Clone, Default)]
+struct RecordedOutput(Rc<RefCell<Vec<u8>>>);
+
+impl io::Write for RecordedOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum EraseOperation {
+    Present,
+    Log,
+    Other,
+}
+
+/// Observe actual erase positions, without trusting the writer's region state.
+/// Each operation must establish an absolute position before erasing. In
+/// particular, a fresh model after resize does not pretend to emulate reflow.
+fn check_erases(
+    model: &mut VirtualTerminal,
+    bytes: &[u8],
+    size: (u16, u16),
+    pending: &Range<u16>,
+    displayed: Option<&Range<u16>>,
+    operation: EraseOperation,
+) -> Result<usize, String> {
+    let (width, height) = size;
+    let in_ui = |row| pending.contains(&row) || displayed.is_some_and(|r| r.contains(&row));
+    let mut known_position = false;
+    let mut erases = 0;
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if bytes[offset..].starts_with(b"\x1b[") {
+            let start = offset;
+            let final_offset = bytes[offset + 2..]
+                .iter()
+                .position(|b| (0x40..=0x7e).contains(b))
+                .map(|n| offset + 2 + n)
+                .ok_or_else(|| format!("incomplete CSI at byte {start}"))?;
+            let params = &bytes[offset + 2..final_offset];
+            let command = bytes[final_offset];
+            if matches!(command, b'H' | b'f') {
+                let numbers = std::str::from_utf8(params)
+                    .map_err(|e| e.to_string())?
+                    .split(';')
+                    .map(|s| {
+                        if s.is_empty() {
+                            Ok(1)
+                        } else {
+                            s.parse::<u16>().map(|n| n.max(1))
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                let row = numbers[0];
+                let col = numbers.get(1).copied().unwrap_or(1);
+                // Check the wire coordinates before the model clamps them.
+                if numbers.len() > 2 || row > height || col > width {
+                    return Err(format!(
+                        "out-of-bounds CUP {row};{col} for {size:?} at byte {start}"
+                    ));
+                }
+                known_position = true;
+            } else if matches!(command, b'J' | b'K') {
+                if !known_position {
+                    return Err(format!("erase without known cursor at byte {start}"));
+                }
+                let row = model.cursor().1;
+                let valid = match (operation, command, params) {
+                    (EraseOperation::Present, b'J', b"" | b"0") => (row..height).all(in_ui),
+                    (EraseOperation::Present, b'K', b"" | b"0" | b"1" | b"2") => in_ui(row),
+                    (EraseOperation::Log, b'K', b"" | b"0" | b"1" | b"2") => !in_ui(row),
+                    _ => false,
+                };
+                if !valid {
+                    return Err(format!(
+                        "erase {:?} on row {row} outside permitted scope at byte {start}; pending={pending:?}, displayed={displayed:?}",
+                        &bytes[start..=final_offset]
+                    ));
+                }
+                erases += 1;
+            } else if matches!(command, b'r' | b'u') {
+                known_position = false;
+            }
+            model.feed(&bytes[start..=final_offset]);
+            offset = final_offset + 1;
+        } else if bytes[offset] == 0x1b {
+            let command = *bytes.get(offset + 1).ok_or("incomplete ESC")?;
+            // Sanitized log output cannot contain control strings. Reject one
+            // instead of interpreting an embedded CSI as a terminal command.
+            if matches!(command, b']' | b'P' | b'_' | b'^' | b'X') {
+                return Err(format!("unexpected control string at byte {offset}"));
+            }
+            if matches!(command, b'8' | b'c') {
+                known_position = false;
+            }
+            model.feed(&bytes[offset..offset + 2]);
+            offset += 2;
+        } else {
+            model.feed(&bytes[offset..offset + 1]);
+            offset += 1;
+        }
+    }
+    Ok(erases)
+}
+
+#[test]
+fn erase_scope_observer_accepts_ui_erases_and_rejects_planted_violations() {
+    let check = |bytes: &[u8], pending: Range<u16>, operation| {
+        check_erases(
+            &mut VirtualTerminal::new(20, 10),
+            bytes,
+            (20, 10),
+            &pending,
+            None,
+            operation,
+        )
+    };
+    assert_eq!(
+        check(b"\x1b[8;1H\x1b[K\x1b[J", 7..10, EraseOperation::Present),
+        Ok(2)
+    );
+    assert_eq!(
+        check(b"\x1b[7;1H\x1b[2K", 7..10, EraseOperation::Log),
+        Ok(1)
+    );
+    for bytes in [
+        b"\x1b[7;1H\x1b[K".as_slice(), // Above the bottom UI.
+        b"\x1b[0J",                    // No known cursor.
+        b"\x1b[11;1H\x1b[K",           // Model would clamp to a valid UI row.
+        b"\x1b[8;21H\x1b[K",           // Out-of-bounds column.
+        b"\x1b[8;1H\x1b[2J",           // Whole screen.
+    ] {
+        assert!(
+            check(bytes, 7..10, EraseOperation::Present).is_err(),
+            "{bytes:?}"
+        );
+    }
+    assert!(check(b"\x1b[1;1H\x1b[J", 0..3, EraseOperation::Present).is_err());
+    assert!(check(b"\x1b[8;1H\x1b[K", 7..10, EraseOperation::Log).is_err());
+    assert!(check(b"\x1b[1;1H\x1b[K", 7..10, EraseOperation::Other).is_err());
+    // Shrinking leaves the old UI on screen until the next present. Its
+    // obsolete rows may be erased by present, but not used for logs yet.
+    for (operation, valid) in [
+        (EraseOperation::Present, true),
+        (EraseOperation::Log, false),
+    ] {
+        let result = check_erases(
+            &mut VirtualTerminal::new(20, 10),
+            b"\x1b[6;1H\x1b[K",
+            (20, 10),
+            &(8..10),
+            Some(&(5..10)),
+            operation,
+        );
+        assert_eq!(result.is_ok(), valid);
+    }
+}
 
 // Exercise the actual writer across interleaved present/resize/log operations.
-// This checks emitted full-screen clears and alternate-screen entry, not the
-// simplified model's unsupported interpretation of every erase sequence.
+// Check both forbidden sequences and where each permitted erase takes effect.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2_000))]
 
@@ -50,12 +216,19 @@ proptest! {
             ScreenMode::Inline { ui_height: 3 }
         };
         let anchor = if top { UiAnchor::Top } else { UiAnchor::Bottom };
+        let output = RecordedOutput::default();
         let mut writer = TerminalWriter::new(
-            Vec::new(), mode, anchor, TerminalCapabilities::from_profile(profiles[profile]),
+            output.clone(), mode, anchor, TerminalCapabilities::from_profile(profiles[profile]),
         );
         let mut width = 80;
-        writer.set_size(width, 24);
-        for (kind, cols, rows, height, fragment, bytes) in &operations {
+        let mut terminal_rows = 24;
+        let mut expected_height: u16 = if auto { 1 } else { 3 };
+        let mut displayed = None;
+        let mut model = VirtualTerminal::new(width, terminal_rows);
+        let mut ranges = Vec::new();
+        writer.set_size(width, terminal_rows);
+        for (index, (kind, cols, rows, height, fragment, bytes)) in operations.iter().enumerate() {
+            let start = output.0.borrow().len();
             match kind {
                 0 => {
                     let mut frame = Buffer::new(width, writer.ui_height());
@@ -64,6 +237,10 @@ proptest! {
                 }
                 1 => {
                     width = *cols;
+                    terminal_rows = *rows;
+                    if auto { expected_height = 1; }
+                    displayed = None;
+                    model = VirtualTerminal::new(width, terminal_rows);
                     writer.set_size(*cols, *rows);
                 }
                 2 | 3 => {
@@ -75,10 +252,33 @@ proptest! {
                         writer.write_log_sgr_only(&text)?;
                     }
                 }
-                _ => writer.set_auto_ui_height(*height),
+                _ => {
+                    if auto { expected_height = (*height).clamp(1, 10.min(terminal_rows)); }
+                    writer.set_auto_ui_height(*height);
+                }
             }
+            writer.flush()?;
+            prop_assert_eq!(writer.ui_height(), expected_height);
+            let height = expected_height.min(terminal_rows);
+            let pending = if top { 0..height } else { terminal_rows - height..terminal_rows };
+            let operation = match kind {
+                0 => EraseOperation::Present,
+                2 | 3 => EraseOperation::Log,
+                _ => EraseOperation::Other,
+            };
+            let captured = output.0.borrow();
+            ranges.push(start..captured.len());
+            let result = check_erases(&mut model, &captured[start..], (width, terminal_rows),
+                &pending, displayed.as_ref(), operation);
+            prop_assert!(result.is_ok(), "{result:?}; operation={index}; ranges={ranges:?}; operations={operations:?}; bytes={:?}", &captured[start..]);
+            if *kind == 0 { displayed = Some(pending); }
         }
-        let output = writer.into_inner().expect("Vec writer available");
+        let cleanup_start = output.0.borrow().len();
+        drop(writer);
+        let output = output.0.borrow();
+        let cleanup = check_erases(&mut model, &output[cleanup_start..], (width, terminal_rows),
+            &(0..0), None, EraseOperation::Other);
+        prop_assert!(cleanup.is_ok(), "cleanup={cleanup:?}; operations={operations:?}");
         for forbidden in [b"\x1b[2J".as_slice(), b"\x1b[3J", b"\x1b[?1049h", b"\x1b[?47h"] {
             prop_assert!(!output.windows(forbidden.len()).any(|window| window == forbidden),
                 "forbidden {:?}; operations={:?}; output={:?}", forbidden, operations, output);
