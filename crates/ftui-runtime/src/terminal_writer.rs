@@ -5593,7 +5593,7 @@ mod tests {
     #[test]
     fn sgr_log_write_failure_keeps_reset_pending_and_reports_the_error() {
         let state = Rc::new(RefCell::new(FaultState::default()));
-        let output = SingleWriteFaultWriter::new(Rc::clone(&state), usize::MAX, usize::MAX);
+        let output = SingleWriteFaultWriter::new(Rc::clone(&state), usize::MAX, 10);
         let mut writer = TerminalWriter::new(
             output,
             ScreenMode::Inline { ui_height: 2 },
@@ -5604,15 +5604,16 @@ mod tests {
         writer.present_ui(&Buffer::new(80, 2), None, true).unwrap();
         writer.flush().unwrap();
         assert!(writer.scroll_region_active());
-        // The first underlying call drains the cursor/reset prefix; the next
-        // sends a payload larger than BufWriter's capacity and fails once.
-        let fail_on_call = state.borrow().write_calls + 2;
+        // Two short writes drain the cursor/reset prefix; the third writes
+        // the red SGR and some text. Fail on the fourth, with styling active.
+        let fail_on_call = state.borrow().write_calls + 4;
         writer.writer().inner_mut().get_mut().fail_on_call = fail_on_call;
         let error = writer
             .write_log_sgr_only(&format!("\x1b[31m{}", "x".repeat(100_000)))
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert!(state.borrow().injected_failure_triggered);
+        assert!(contains_bytes(&state.borrow().bytes, b"\x1b[31mxxxxx"));
         writer.flush().unwrap();
         assert!(state.borrow().bytes.ends_with(SGR_RESET));
     }
