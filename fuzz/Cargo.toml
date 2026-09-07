@@ -120,6 +120,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "fuzz_sanitize_sgr_only"
+path = "fuzz_targets/fuzz_sanitize_sgr_only.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 opt-level = 3
 debug = true

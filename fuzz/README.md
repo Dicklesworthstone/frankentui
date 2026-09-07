@@ -17,6 +17,7 @@ This directory contains cargo-fuzz targets for FrankenTUI.
 | `fuzz_text_hyphenation` | ftui-text | Hyphenation break points |
 | `fuzz_layout_constraints` | ftui-layout | Constraint solver (Flex split) |
 | `fuzz_widget_render` | ftui-widgets | Widget rendering (Block/Paragraph/Sparkline/ProgressBar) |
+| `fuzz_sanitize_sgr_only` | ftui-render | Log sanitizer idempotence, raw passthrough, and bounded SGR-only output |
 
 ## Run
 
