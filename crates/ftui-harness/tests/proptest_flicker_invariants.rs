@@ -20,6 +20,10 @@
 
 use ftui_harness::flicker_detection::{AnalysisStats, EventType, FlickerDetector, analyze_stream};
 use ftui_pty::virtual_terminal::VirtualTerminal;
+use ftui_render::{
+    buffer::Buffer,
+    cell::{Cell, CellAttrs, StyleFlags},
+};
 use proptest::prelude::*;
 use std::{cell::RefCell, io, ops::Range, rc::Rc};
 
@@ -188,6 +192,48 @@ fn erase_scope_observer_accepts_ui_erases_and_rejects_planted_violations() {
     }
 }
 
+/// Compare requested ASCII cells with the separately parsed terminal output.
+/// Color quantization and Unicode shaping are outside this observer's scope.
+fn check_frame(model: &VirtualTerminal, frame: &Buffer, start_row: u16) -> Result<(), String> {
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            let expected = frame.get_unchecked(x, y);
+            let actual = model
+                .cell_at(x, start_row + y)
+                .ok_or_else(|| format!("missing terminal cell at ({x}, {})", start_row + y))?;
+            let ch = expected.content.as_char().unwrap_or(' ');
+            let bold = expected.attrs.flags().contains(StyleFlags::BOLD);
+            if actual.ch != ch || actual.style.bold != bold {
+                return Err(format!(
+                    "cell ({x}, {}) expected {ch:?}, bold={bold}; actual={actual:?}",
+                    start_row + y
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn frame_observer_rejects_missing_text_stale_cells_and_wrong_style() {
+    let mut frame = Buffer::new(20, 2);
+    frame.set(19, 1, Cell::from_char('X'));
+    let mut model = VirtualTerminal::new(20, 10);
+    assert!(check_frame(&model, &frame, 8).is_err());
+    model.feed(b"\x1b[10;20HX");
+    assert!(check_frame(&model, &frame, 8).is_ok());
+    model.feed(b"\x1b[9;1Hstale");
+    assert!(check_frame(&model, &frame, 8).is_err());
+    model.feed(b"\x1b[9;1H\x1b[2K\x1b[10;20H\x1b[1mX");
+    assert!(check_frame(&model, &frame, 8).is_err());
+    frame.set(
+        19,
+        1,
+        Cell::from_char('X').with_attrs(CellAttrs::new(StyleFlags::BOLD, 0)),
+    );
+    assert!(check_frame(&model, &frame, 8).is_ok());
+}
+
 // Exercise the actual writer across interleaved present/resize/log operations.
 // Check both forbidden sequences and where each permitted erase takes effect.
 proptest! {
@@ -201,12 +247,12 @@ proptest! {
         operations in proptest::collection::vec(
             (0u8..5, 20u16..=200, 5u16..=60, 1u16..=10,
              0usize..ftui_harness::ADVERSARIAL_PAYLOADS.len(),
-             proptest::collection::vec(any::<u8>(), 0..32)),
+             proptest::collection::vec(any::<u8>(), 0..32),
+             proptest::collection::vec((0u16..200, 0u16..10, 0x20u8..=0x7e, any::<bool>()), 0..=32)),
             1..=200,
         ),
     ) {
         use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
-        use ftui_render::{buffer::Buffer, cell::Cell};
         use ftui_runtime::{ScreenMode, TerminalWriter, UiAnchor};
 
         let profiles = [TerminalProfile::Kitty, TerminalProfile::Xterm256Color, TerminalProfile::Tmux];
@@ -224,22 +270,29 @@ proptest! {
         let mut terminal_rows = 24;
         let mut expected_height: u16 = if auto { 1 } else { 3 };
         let mut displayed = None;
+        let mut displayed_frame = None;
         let mut model = VirtualTerminal::new(width, terminal_rows);
         let mut ranges = Vec::new();
         writer.set_size(width, terminal_rows);
-        for (index, (kind, cols, rows, height, fragment, bytes)) in operations.iter().enumerate() {
+        for (index, (kind, cols, rows, height, fragment, bytes, cells)) in operations.iter().enumerate() {
             let start = output.0.borrow().len();
             match kind {
                 0 => {
                     let mut frame = Buffer::new(width, writer.ui_height());
-                    frame.set(0, 0, Cell::from_char('U'));
+                    for &(x, y, ch, bold) in cells {
+                        let flags = if bold { StyleFlags::BOLD } else { StyleFlags::empty() };
+                        frame.set(x % width, y % frame.height(),
+                            Cell::from_char(char::from(ch)).with_attrs(CellAttrs::new(flags, 0)));
+                    }
                     writer.present_ui(&frame, None, false)?;
+                    displayed_frame = Some(frame);
                 }
                 1 => {
                     width = *cols;
                     terminal_rows = *rows;
                     if auto { expected_height = 1; }
                     displayed = None;
+                    displayed_frame = None;
                     model = VirtualTerminal::new(width, terminal_rows);
                     writer.set_size(*cols, *rows);
                 }
@@ -272,6 +325,10 @@ proptest! {
                 &pending, displayed.as_ref(), operation);
             prop_assert!(result.is_ok(), "{result:?}; operation={index}; ranges={ranges:?}; operations={operations:?}; bytes={:?}", &captured[start..]);
             if *kind == 0 { displayed = Some(pending); }
+            if let (Some(frame), Some(region)) = (&displayed_frame, &displayed) {
+                let result = check_frame(&model, frame, region.start);
+                prop_assert!(result.is_ok(), "{result:?}; operation={index}; ranges={ranges:?}; operations={operations:?}; bytes={:?}", &captured[start..]);
+            }
         }
         let cleanup_start = output.0.borrow().len();
         drop(writer);
