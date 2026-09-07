@@ -106,6 +106,37 @@ pub use lab_integration::{
 };
 pub use time_travel_inspector::TimeTravelInspector;
 
+/// Adversarial log fragments paired with independently specified visible text.
+///
+/// Used by the real PTY log scenario and randomized writer tests. C1 controls
+/// themselves are removed; their printable suffixes follow the sanitizer's
+/// existing policy and remain visible.
+pub const ADVERSARIAL_PAYLOADS: &[(&str, &str)] = &[
+    ("\x1b[38;2;255;0;0mC\x1b[0m", "C"),
+    ("\x1b[2JA", "A"),
+    ("\x1b[3JB", "B"),
+    ("\x1b[Hc", "c"),
+    ("\x1b[?1049hd", "d"),
+    ("\x1b[?47he", "e"),
+    ("\x1b[?25lf", "f"),
+    ("\x1b[2;10rg", "g"),
+    ("\x1b[?6hh", "h"),
+    ("\x1b[?7li", "i"),
+    ("\x1b[4hj", "j"),
+    ("\x1b]0;evil\x07k", "k"),
+    ("\x1b]52;c;aGk=\x07l", "l"),
+    ("\x1b]8;;https://invalid.example\x1b\\m", "m"),
+    ("\x1bP+q\x1b\\n", "n"),
+    ("\x1b_Gf=100\x1b\\o", "o"),
+    ("\x1b^pm\x1b\\p", "p"),
+    ("\x1bXsos\x1b\\q", "q"),
+    ("\x1b7r\x1bcs", "rs"),
+    ("\u{009b}2Jt", "2Jt"),
+    ("\u{009d}0;bad\u{009c}u", "0;badu"),
+    ("\x07\x08\x0cv", "v"),
+    ("\x1b[31", ""),
+];
+
 // Validation infrastructure re-exports.
 pub use benchmark_gate::{BenchmarkGate, GateResult, Measurement, MetricVerdict, Threshold};
 pub use rollout_scorecard::{

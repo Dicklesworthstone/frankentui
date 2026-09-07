@@ -21,6 +21,71 @@
 use ftui_harness::flicker_detection::{AnalysisStats, EventType, FlickerDetector, analyze_stream};
 use proptest::prelude::*;
 
+// Exercise the actual writer across interleaved present/resize/log operations.
+// This checks emitted full-screen clears and alternate-screen entry, not the
+// simplified model's unsupported interpretation of every erase sequence.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+    #[test]
+    fn inline_never_clears_screen(
+        profile in 0usize..3,
+        top in any::<bool>(),
+        auto in any::<bool>(),
+        operations in proptest::collection::vec(
+            (0u8..5, 20u16..=200, 5u16..=60, 1u16..=10,
+             0usize..ftui_harness::ADVERSARIAL_PAYLOADS.len(),
+             proptest::collection::vec(any::<u8>(), 0..32)),
+            1..=200,
+        ),
+    ) {
+        use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
+        use ftui_render::{buffer::Buffer, cell::Cell};
+        use ftui_runtime::{ScreenMode, TerminalWriter, UiAnchor};
+
+        let profiles = [TerminalProfile::Kitty, TerminalProfile::Xterm256Color, TerminalProfile::Tmux];
+        let mode = if auto {
+            ScreenMode::InlineAuto { min_height: 1, max_height: 10 }
+        } else {
+            ScreenMode::Inline { ui_height: 3 }
+        };
+        let anchor = if top { UiAnchor::Top } else { UiAnchor::Bottom };
+        let mut writer = TerminalWriter::new(
+            Vec::new(), mode, anchor, TerminalCapabilities::from_profile(profiles[profile]),
+        );
+        let mut width = 80;
+        writer.set_size(width, 24);
+        for (kind, cols, rows, height, fragment, bytes) in &operations {
+            match kind {
+                0 => {
+                    let mut frame = Buffer::new(width, writer.ui_height());
+                    frame.set(0, 0, Cell::from_char('U'));
+                    writer.present_ui(&frame, None, false)?;
+                }
+                1 => {
+                    width = *cols;
+                    writer.set_size(*cols, *rows);
+                }
+                2 | 3 => {
+                    let text = format!("{}{}\n", ftui_harness::ADVERSARIAL_PAYLOADS[*fragment].0,
+                        String::from_utf8_lossy(bytes));
+                    if *kind == 2 {
+                        writer.write_log(&text)?;
+                    } else {
+                        writer.write_log_sgr_only(&text)?;
+                    }
+                }
+                _ => writer.set_auto_ui_height(*height),
+            }
+        }
+        let output = writer.into_inner().expect("Vec writer available");
+        for forbidden in [b"\x1b[2J".as_slice(), b"\x1b[3J", b"\x1b[?1049h", b"\x1b[?47h"] {
+            prop_assert!(!output.windows(forbidden.len()).any(|window| window == forbidden),
+                "forbidden {:?}; operations={:?}; output={:?}", forbidden, operations, output);
+        }
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";

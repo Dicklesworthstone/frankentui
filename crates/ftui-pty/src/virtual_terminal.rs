@@ -432,6 +432,30 @@ impl VirtualTerminal {
         self.alternate_screen
     }
 
+    /// Active scrolling margins, as zero-based inclusive rows.
+    #[must_use]
+    pub const fn scroll_region(&self) -> (u16, u16) {
+        (self.scroll_top, self.scroll_bottom)
+    }
+
+    /// Whether cursor addressing is relative to the scrolling region (DECOM).
+    #[must_use]
+    pub const fn origin_mode(&self) -> bool {
+        self.origin_mode
+    }
+
+    /// Whether printing inserts cells instead of replacing them (IRM).
+    #[must_use]
+    pub const fn insert_mode(&self) -> bool {
+        self.insert_mode
+    }
+
+    /// Whether printing at the right margin wraps to the next line (DECAWM).
+    #[must_use]
+    pub const fn autowrap(&self) -> bool {
+        self.autowrap
+    }
+
     /// Current window title (set via OSC 0/2).
     #[must_use]
     pub fn title(&self) -> &str {

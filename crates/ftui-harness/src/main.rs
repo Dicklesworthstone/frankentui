@@ -1705,7 +1705,119 @@ fn default_minimize_ledger_path(trace_path: &Path) -> PathBuf {
     trace_path.with_extension("min.report.jsonl")
 }
 
+/// Deterministic, externally handshaken PTY scenario for the public log APIs.
+/// The environment selects this harness scenario only; it cannot change the
+/// library's default sanitization policy.
+fn run_log_injection(mode: &str) -> io::Result<()> {
+    use ftui_core::terminal_capabilities::TerminalCapabilities;
+    use ftui_render::buffer::Buffer;
+    use ftui_runtime::{TerminalWriter, UiAnchor};
+
+    if !matches!(mode, "strip" | "sgr" | "raw" | "control") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unknown log mode",
+        ));
+    }
+    let scroll = match std::env::var("FTUI_HARNESS_LOG_STRATEGY").as_deref() {
+        Ok("scroll") => true,
+        Ok("overlay") => false,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown log strategy",
+            ));
+        }
+    };
+    let anchor = match std::env::var("FTUI_HARNESS_LOG_ANCHOR").as_deref() {
+        Ok("top") => UiAnchor::Top,
+        Ok("bottom") => UiAnchor::Bottom,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown log anchor",
+            ));
+        }
+    };
+
+    // The parent observes cooked attributes before allowing raw-mode entry.
+    println!("LOG_BASELINE");
+    io::stdout().flush()?;
+    let mut ack = String::new();
+    io::stdin().read_line(&mut ack)?;
+    if ack != "go\n" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing start acknowledgement",
+        ));
+    }
+    {
+        let session = TerminalSession::new(SessionOptions {
+            alternate_screen: false,
+            mouse_capture: false,
+            bracketed_paste: false,
+            focus_events: false,
+            kitty_keyboard: false,
+            intercept_signals: false,
+        })?;
+        let (width, height) = session.size()?;
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = scroll;
+        let mut writer = TerminalWriter::new(
+            io::stdout(),
+            ScreenMode::Inline { ui_height: 3 },
+            anchor,
+            caps,
+        );
+        writer.set_size(width, height);
+        let mut frame = Buffer::new(width, 3);
+        for (x, ch) in (0u16..).zip("CHROME".chars()) {
+            frame.set(x, 0, Cell::from_char(ch));
+        }
+        writer.present_ui(&frame, None, false)?;
+        if writer.scroll_region_active() != scroll {
+            return Err(io::Error::other("requested inline strategy is not active"));
+        }
+        writer.write_log("LOG_ACTIVE")?;
+        let mut ack = [0];
+        io::stdin().read_exact(&mut ack)?;
+        if ack != [b'g'] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "missing raw acknowledgement",
+            ));
+        }
+        let payload: String = ftui_harness::ADVERSARIAL_PAYLOADS
+            .iter()
+            .map(|&(input, expected)| if mode == "control" { expected } else { input })
+            .collect();
+        match mode {
+            "strip" | "control" => writer.write_log(&payload)?,
+            "sgr" => writer.write_log_sgr_only(&payload)?,
+            "raw" => writer.write_log_raw(&payload)?,
+            _ => unreachable!("mode validated above"),
+        }
+        writer.flush()?;
+        // Writer drops before the session and restores its scroll region.
+    }
+    println!("LOG_RESTORED");
+    io::stdout().flush()?;
+    // Keep the slave alive while the parent reads back the restored attributes.
+    let mut ack = String::new();
+    io::stdin().read_line(&mut ack)?;
+    if ack != "done\n" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing finish acknowledgement",
+        ));
+    }
+    Ok(())
+}
+
 fn main() -> std::io::Result<()> {
+    if let Ok(mode) = std::env::var("FTUI_HARNESS_LOG_INJECTION") {
+        return run_log_injection(&mode);
+    }
     if std::env::var("FTUI_HARNESS_FLICKER_ANALYZE").is_ok() {
         let input_path = std::env::var("FTUI_HARNESS_FLICKER_INPUT").map_err(|_| {
             io::Error::new(

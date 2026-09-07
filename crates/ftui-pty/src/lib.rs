@@ -343,6 +343,7 @@ enum ReaderMsg {
 
 /// A spawned PTY session with captured output.
 pub struct PtySession {
+    master: Box<dyn portable_pty::MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     input_writer: PtyInputWriter,
     rx: mpsc::Receiver<ReaderMsg>,
@@ -414,6 +415,7 @@ pub fn spawn_command(mut config: PtyConfig, mut cmd: CommandBuilder) -> io::Resu
     });
 
     Ok(PtySession {
+        master: pair.master,
         child,
         input_writer,
         rx,
@@ -425,6 +427,14 @@ pub fn spawn_command(mut config: PtyConfig, mut cmd: CommandBuilder) -> io::Resu
 }
 
 impl PtySession {
+    /// Inspect or resize the live PTY, including Unix terminal attributes.
+    ///
+    /// The session owns the input writer; callers must use [`Self::send_input`]
+    /// rather than attempting to take another writer from the master.
+    pub fn master(&self) -> &dyn portable_pty::MasterPty {
+        self.master.as_ref()
+    }
+
     /// Read any available output without blocking.
     pub fn read_output(&mut self) -> Vec<u8> {
         match self.read_output_result() {
