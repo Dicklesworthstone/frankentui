@@ -45,6 +45,7 @@ pub use ftui_render::frame::Frame;
 pub use ftui_render::grapheme_pool::GraphemePool;
 pub use ftui_render::link_registry::LinkRegistry;
 pub use ftui_render::presenter::Presenter;
+pub use ftui_render::sanitize::{SanitizeMode, Text};
 
 // --- Style re-exports ------------------------------------------------------
 

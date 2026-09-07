@@ -23,7 +23,7 @@
 //! ```
 
 use crate::TerminalWriter;
-use ftui_render::sanitize::sanitize;
+use ftui_render::sanitize::SanitizeMode;
 use std::io::{self, Write};
 
 /// A write adapter that routes output to the terminal's log scrollback.
@@ -33,14 +33,35 @@ use std::io::{self, Write};
 pub struct LogSink<'a, W: Write> {
     writer: &'a mut TerminalWriter<W>,
     buffer: Vec<u8>,
+    mode: SanitizeMode,
 }
 
 impl<'a, W: Write> LogSink<'a, W> {
     /// Create a new log sink wrapping the given terminal writer.
     pub fn new(writer: &'a mut TerminalWriter<W>) -> Self {
+        Self::with_mode(writer, SanitizeMode::Strip)
+    }
+
+    /// Preserve SGR styling while filtering terminal commands.
+    /// Styling resets at each emitted line or flushed partial line.
+    pub fn sgr_only(writer: &'a mut TerminalWriter<W>) -> Self {
+        Self::with_mode(writer, SanitizeMode::SgrOnly)
+    }
+
+    /// Pass through trusted output, including terminal commands.
+    ///
+    /// Cursor movement, mode changes and clearing can corrupt inline UI.
+    /// Prefer [`Self::sgr_only`] for colored tool output. Like the other modes,
+    /// this adapter converts invalid UTF-8 to replacement characters.
+    pub fn raw(writer: &'a mut TerminalWriter<W>) -> Self {
+        Self::with_mode(writer, SanitizeMode::Raw)
+    }
+
+    fn with_mode(writer: &'a mut TerminalWriter<W>, mode: SanitizeMode) -> Self {
         Self {
             writer,
             buffer: Vec::with_capacity(1024),
+            mode,
         }
     }
 }
@@ -51,11 +72,10 @@ impl<W: Write> Write for LogSink<'_, W> {
             if byte == b'\n' {
                 // Found a newline, flush the buffer
                 let line = String::from_utf8_lossy(&self.buffer);
-                let safe_line = sanitize(&line);
-
-                // Write line + newline to terminal writer
-                // We format manually to ensure we own the string if needed
-                self.writer.write_log(&format!("{}\n", safe_line))?;
+                // Sanitize once, at the writer boundary, after assembling
+                // escape sequences and UTF-8 split across write calls.
+                self.writer
+                    .write_log_with_mode(&format!("{line}\n"), self.mode)?;
 
                 self.buffer.clear();
             } else {
@@ -69,8 +89,7 @@ impl<W: Write> Write for LogSink<'_, W> {
         if !self.buffer.is_empty() {
             // Flush remaining buffer as a partial line
             let line = String::from_utf8_lossy(&self.buffer);
-            let safe_line = sanitize(&line);
-            self.writer.write_log(&safe_line)?;
+            self.writer.write_log_with_mode(&line, self.mode)?;
             self.buffer.clear();
         }
         self.writer.flush()
@@ -135,6 +154,36 @@ mod tests {
 
         assert!(output_str.contains("Unsafe red text"));
         assert!(!output_str.contains("\x1b[31m"));
+    }
+
+    #[test]
+    fn sgr_sink_assembles_split_escapes_and_utf8_before_filtering() {
+        let mut writer = create_writer();
+        {
+            let mut sink = LogSink::sgr_only(&mut writer);
+            for bytes in [b"\x1b[3".as_slice(), b"1m\xe7", b"\x95\x8c\x1b[2", b"J!\n"] {
+                sink.write_all(bytes).unwrap();
+            }
+            sink.write_all(b"\x1b[32mgreen").unwrap();
+            sink.flush().unwrap();
+        }
+        let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
+        assert!(output.contains("\x1b[31m界!\x1b[0m"));
+        assert!(output.contains("\x1b[32mgreen\x1b[0m"));
+        assert!(!output.contains("\x1b[2J"));
+        assert!(!output.contains('\n'), "overlay must not scroll the UI");
+    }
+
+    #[test]
+    fn raw_sink_retains_explicit_trusted_commands_and_newlines() {
+        let mut writer = create_writer();
+        {
+            let mut sink = LogSink::raw(&mut writer);
+            sink.write_all(b"\x1b[2").unwrap();
+            sink.write_all(b"Jtrusted\n").unwrap();
+        }
+        let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
+        assert!(output.contains("\x1b[2Jtrusted\n"));
     }
 
     #[test]

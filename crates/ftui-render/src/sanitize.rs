@@ -45,6 +45,42 @@ use std::borrow::Cow;
 
 use memchr::memchr;
 
+/// Terminal control policy for log output. Stripping is the default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SanitizeMode {
+    /// Remove all escape sequences and forbidden controls.
+    #[default]
+    Strip,
+    /// Preserve bounded SGR styling sequences, but no terminal commands.
+    SgrOnly,
+    /// Pass through trusted text unchanged, including terminal commands.
+    Raw,
+}
+
+/// Apply an explicit terminal control policy.
+pub fn sanitize_with(input: &str, mode: SanitizeMode) -> Cow<'_, str> {
+    match mode {
+        SanitizeMode::Strip => sanitize(input),
+        SanitizeMode::SgrOnly => sanitize_sgr_only(input),
+        SanitizeMode::Raw => Cow::Borrowed(input),
+    }
+}
+
+/// Preserve SGR styling in semi-trusted text while removing terminal commands.
+///
+/// Only `ESC [ <params> m` is allowed, with parameters consisting exclusively
+/// of ASCII digits, semicolons and colons, and a total sequence length of at
+/// most 64 bytes. Other controls follow [`sanitize`]. Unchanged input is
+/// borrowed. Styling may still conceal or recolor text; use [`sanitize`] when
+/// even that is undesirable. The log writer resets styling at line boundaries.
+pub fn sanitize_sgr_only(input: &str) -> Cow<'_, str> {
+    if is_plain_text(input.as_bytes()) {
+        Cow::Borrowed(input)
+    } else {
+        sanitize_slow(input, SanitizeMode::SgrOnly)
+    }
+}
+
 /// Sanitize untrusted text for safe terminal display.
 ///
 /// # Fast Path
@@ -67,20 +103,20 @@ use memchr::memchr;
 /// - All valid UTF-8 sequences above U+009F
 #[inline]
 pub fn sanitize(input: &str) -> Cow<'_, str> {
-    let bytes = input.as_bytes();
-
-    // Fast path: check for any ESC byte, forbidden C0 controls, DEL, or C1 controls.
-    // C1 controls (U+0080..U+009F) are encoded in UTF-8 as \xC2\x80..\xC2\x9F.
-    if memchr(0x1B, bytes).is_none()
-        && memchr(0x7F, bytes).is_none()
-        && !has_forbidden_c0(bytes)
-        && !has_c1_controls(bytes)
-    {
+    if is_plain_text(input.as_bytes()) {
         return Cow::Borrowed(input);
     }
 
     // Slow path: strip escape sequences
-    Cow::Owned(sanitize_slow(input))
+    sanitize_slow(input, SanitizeMode::Strip)
+}
+
+#[inline]
+fn is_plain_text(bytes: &[u8]) -> bool {
+    memchr(0x1B, bytes).is_none()
+        && memchr(0x7F, bytes).is_none()
+        && !has_forbidden_c0(bytes)
+        && !has_c1_controls(bytes)
 }
 
 /// Check if any forbidden C0 control characters are present.
@@ -114,54 +150,63 @@ fn has_c1_controls(bytes: &[u8]) -> bool {
 }
 
 /// Slow path: strip escape sequences and forbidden controls.
-fn sanitize_slow(input: &str) -> String {
+fn sanitize_slow(input: &str, mode: SanitizeMode) -> Cow<'_, str> {
     let bytes = input.as_bytes();
-    let mut output = String::with_capacity(input.len());
+    // Allocate only at the first removal, including on the SGR-only path.
+    let mut output: Option<String> = None;
+    let mut kept_from = 0;
     let mut i = 0;
 
     while i < bytes.len() {
         let b = bytes[i];
-        match b {
+        let (end, keep) = match b {
             // ESC - start of escape sequence
             0x1B => {
-                i = skip_escape_sequence(bytes, i);
+                let end = skip_escape_sequence(bytes, i);
+                let sequence = &bytes[i..end];
+                let sgr = sequence.len() >= 3
+                    && sequence.len() <= 64
+                    && sequence.starts_with(b"\x1b[")
+                    && sequence.ends_with(b"m")
+                    && sequence[2..sequence.len() - 1]
+                        .iter()
+                        .all(|b| b.is_ascii_digit() || matches!(b, b';' | b':'));
+                (end, mode == SanitizeMode::SgrOnly && sgr)
             }
             // Allowed C0 controls: TAB, LF, CR
-            0x09 | 0x0A | 0x0D => {
-                output.push(b as char);
-                i += 1;
-            }
-            // Forbidden C0 controls - skip
-            0x00..=0x08 | 0x0B..=0x0C | 0x0E..=0x1A | 0x1C..=0x1F => {
-                i += 1;
-            }
-            // DEL - skip
-            0x7F => {
-                i += 1;
-            }
+            0x09 | 0x0A | 0x0D => (i + 1, true),
+            // Forbidden C0 controls and DEL
+            0x00..=0x08 | 0x0B..=0x0C | 0x0E..=0x1A | 0x1C..=0x1F | 0x7F => (i + 1, false),
             // Printable ASCII
-            0x20..=0x7E => {
-                output.push(b as char);
-                i += 1;
-            }
+            0x20..=0x7E => (i + 1, true),
             // Start of UTF-8 sequence (high bit set)
             0x80..=0xFF => {
                 if let Some((c, len)) = decode_utf8_char(&bytes[i..]) {
                     // Skip C1 controls (U+0080..U+009F) — these are the 8-bit
                     // equivalents of ESC-prefixed sequences (CSI, OSC, DCS, etc.)
-                    if !('\u{0080}'..='\u{009F}').contains(&c) {
-                        output.push(c);
-                    }
-                    i += len;
+                    (i + len, !('\u{0080}'..='\u{009F}').contains(&c))
                 } else {
                     // Invalid UTF-8, skip byte
-                    i += 1;
+                    (i + 1, false)
                 }
             }
+        };
+        if !keep {
+            output
+                .get_or_insert_with(|| String::with_capacity(input.len()))
+                .push_str(&input[kept_from..i]);
+            kept_from = end;
         }
+        i = end;
     }
 
-    output
+    match output {
+        Some(mut output) => {
+            output.push_str(&input[kept_from..]);
+            Cow::Owned(output)
+        }
+        None => Cow::Borrowed(input),
+    }
 }
 
 /// Skip over escape sequence, returning index after it.
@@ -172,6 +217,7 @@ fn sanitize_slow(input: &str) -> String {
 /// - DCS: ESC P ... ST
 /// - PM: ESC ^ ... ST
 /// - APC: ESC _ ... ST
+/// - SOS: ESC X ... ST
 /// - Single-char escapes: ESC char
 fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
     let mut i = start + 1; // Skip ESC
@@ -231,8 +277,8 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
                 i += 1;
             }
         }
-        // DCS/PM/APC: ESC P/^/_ ... ST
-        b'P' | b'^' | b'_' => {
+        // DCS/PM/APC/SOS: ESC P/^/_/X ... ST
+        b'P' | b'^' | b'_' | b'X' => {
             i += 1;
             while i < bytes.len() {
                 let b = bytes[i];
@@ -320,6 +366,9 @@ pub enum Text<'a> {
     /// Sanitized text (escape sequences stripped).
     Sanitized(Cow<'a, str>),
 
+    /// Text allowing SGR styling but no terminal commands.
+    SgrOnly(Cow<'a, str>),
+
     /// Trusted text (may contain ANSI sequences).
     /// Only use with content from trusted sources.
     Trusted(Cow<'a, str>),
@@ -330,6 +379,21 @@ impl<'a> Text<'a> {
     #[inline]
     pub fn sanitized(s: &'a str) -> Self {
         Text::Sanitized(sanitize(s))
+    }
+
+    /// Create text allowing only bounded SGR styling sequences.
+    pub fn sgr_only(s: &'a str) -> Self {
+        Text::SgrOnly(sanitize_sgr_only(s))
+    }
+
+    /// Control policy to apply again at the final emission boundary.
+    #[must_use]
+    pub const fn mode(&self) -> SanitizeMode {
+        match self {
+            Self::Sanitized(_) => SanitizeMode::Strip,
+            Self::SgrOnly(_) => SanitizeMode::SgrOnly,
+            Self::Trusted(_) => SanitizeMode::Raw,
+        }
     }
 
     /// Create from a trusted source (ANSI sequences allowed).
@@ -362,8 +426,7 @@ impl<'a> Text<'a> {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            Text::Sanitized(cow) => cow.as_ref(),
-            Text::Trusted(cow) => cow.as_ref(),
+            Text::Sanitized(cow) | Text::SgrOnly(cow) | Text::Trusted(cow) => cow.as_ref(),
         }
     }
 
@@ -385,6 +448,7 @@ impl<'a> Text<'a> {
     pub fn into_owned(self) -> Text<'static> {
         match self {
             Text::Sanitized(cow) => Text::Sanitized(Cow::Owned(cow.into_owned())),
+            Text::SgrOnly(cow) => Text::SgrOnly(Cow::Owned(cow.into_owned())),
             Text::Trusted(cow) => Text::Trusted(Cow::Owned(cow.into_owned())),
         }
     }
@@ -405,6 +469,84 @@ impl std::fmt::Display for Text<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sgr_only_borrows_allowed_styles_and_plain_text() {
+        for input in [
+            "",
+            "plain 世界\ttext\n",
+            "\x1b[mreset",
+            "\x1b[1;31mred\x1b[0m",
+            "\x1b[38;2;255;128;0mRGB",
+            "\x1b[38:2::255:128:0mRGB\x1b[4:3munderline",
+        ] {
+            let result = sanitize_sgr_only(input);
+            assert!(matches!(result, Cow::Borrowed(_)), "{input:?}");
+            assert_eq!(result, input);
+        }
+    }
+
+    #[test]
+    fn sgr_only_rejects_terminal_commands_and_non_sgr_parameters() {
+        for command in [
+            "\x1b[2J",
+            "\x1b[3J",
+            "\x1b[H",
+            "\x1b[?1049h",
+            "\x1b[?25l",
+            "\x1b[1;20r",
+            "\x1b[?31m",
+            "\x1b[>4m",
+            "\x1b[1 m",
+            "\x1b]0;title\x07",
+            "\x1b]52;c;secret\x1b\\",
+            "\x1b]8;;https://example.com\x1b\\",
+            "\x1bPsecret\x1b\\",
+            "\x1b_secret\x1b\\",
+            "\x1b^secret\x1b\\",
+            "\x1bXsecret\x1b\\",
+            "\x1bXsecret\u{009c}",
+            "\x1b7",
+            "\x1bc",
+            "\x00\x08\x0b\x0c\x1f\x7f\u{0080}\u{009b}\u{009f}",
+        ] {
+            let input = format!("before{command}\x1b[32mafter");
+            assert_eq!(
+                sanitize_sgr_only(&input),
+                "before\x1b[32mafter",
+                "{command:?}"
+            );
+            assert_eq!(sanitize(&input), "beforeafter", "{command:?}");
+        }
+    }
+
+    #[test]
+    fn sgr_only_bounds_whole_sequences_and_drops_incomplete_ones() {
+        let allowed = format!("\x1b[{}m", "1".repeat(61));
+        assert_eq!(allowed.len(), 64);
+        assert!(matches!(sanitize_sgr_only(&allowed), Cow::Borrowed(_)));
+        let too_long = format!("\x1b[{}m", "1".repeat(62));
+        assert_eq!(sanitize_sgr_only(&format!("{too_long}text")), "text");
+        for input in ["text\x1b", "text\x1b[", "text\x1b[31", "text\x1b]title"] {
+            assert_eq!(sanitize_sgr_only(input), "text");
+        }
+        assert_eq!(sanitize_sgr_only("\x1b[31\ntext"), "\ntext");
+        assert_eq!(sanitize_sgr_only("\x1b[31世界"), "世界");
+    }
+
+    #[test]
+    fn text_modes_and_owned_sgr_preserve_the_selected_policy() {
+        let input = "\x1b[31mred\x1b[2J";
+        let styled = Text::sgr_only(input).into_owned();
+        assert_eq!(styled.as_str(), "\x1b[31mred");
+        assert_eq!(styled.mode(), SanitizeMode::SgrOnly);
+        assert!(!styled.is_trusted());
+        assert_eq!(Text::sanitized(input).mode(), SanitizeMode::Strip);
+        assert_eq!(Text::trusted(input).mode(), SanitizeMode::Raw);
+        assert_eq!(sanitize_with(input, SanitizeMode::default()), "red");
+        assert_eq!(sanitize_with(input, SanitizeMode::SgrOnly), styled.as_str());
+        assert!(matches!(sanitize_with(input, SanitizeMode::Raw), Cow::Borrowed(s) if s == input));
+    }
 
     // ============== Fast Path Tests ==============
 
@@ -1425,6 +1567,48 @@ mod tests {
         use proptest::prelude::*;
 
         proptest! {
+            #[test]
+            fn sgr_only_lossy_bytes_are_idempotent_and_preserve_plain_projection(
+                bytes in proptest::collection::vec(any::<u8>(), 0..1024)
+            ) {
+                let input = String::from_utf8_lossy(&bytes);
+                let styled = sanitize_sgr_only(&input);
+                let second = sanitize_sgr_only(&styled);
+                let plain_styled = sanitize(&styled);
+                let plain_input = sanitize(&input);
+                prop_assert_eq!(second.as_ref(), styled.as_ref());
+                prop_assert_eq!(plain_styled.as_ref(), plain_input.as_ref());
+            }
+
+            #[test]
+            fn sgr_only_mixed_escapes_allow_only_bounded_sgr(input in mixed_adversarial_input()) {
+                let styled = sanitize_sgr_only(&input);
+                let second = sanitize_sgr_only(&styled);
+                let plain_styled = sanitize(&styled);
+                let plain_input = sanitize(&input);
+                prop_assert_eq!(second.as_ref(), styled.as_ref());
+                prop_assert_eq!(plain_styled.as_ref(), plain_input.as_ref());
+                // Independent recognizer: no shared escape parser/allowlist helper.
+                let mut chars = styled.chars();
+                while let Some(ch) = chars.next() {
+                    if ch == '\x1b' {
+                        prop_assert_eq!(chars.next(), Some('['));
+                        let mut length = 2;
+                        loop {
+                            let parameter = chars.next();
+                            length += 1;
+                            prop_assert!(length <= 64);
+                            if parameter == Some('m') {
+                                break;
+                            }
+                            prop_assert!(matches!(parameter, Some('0'..='9' | ';' | ':')));
+                        }
+                    } else {
+                        prop_assert!(!ch.is_control() || matches!(ch, '\t' | '\n' | '\r'));
+                    }
+                }
+            }
+
             #[test]
             fn sanitize_never_panics(input in ".*") {
                 let _ = sanitize(&input);

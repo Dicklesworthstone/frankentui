@@ -124,7 +124,7 @@ use ftui_render::presenter::Presenter;
 use ftui_render::render_certificate::{
     RenderCertificate, RenderCertificateInputs, RenderCertificateLevel, evaluate_render_certificate,
 };
-use ftui_render::sanitize::sanitize;
+use ftui_render::sanitize::{SanitizeMode, Text, sanitize, sanitize_with};
 use tracing::{debug_span, info, info_span, trace, warn};
 
 /// Size of the internal write buffer (64KB).
@@ -136,6 +136,39 @@ const CURSOR_SAVE: &[u8] = b"\x1b7";
 
 /// DEC cursor restore (ESC 8) - more portable than CSI u.
 const CURSOR_RESTORE: &[u8] = b"\x1b8";
+
+/// Reset SGR before returning control to the UI renderer.
+const SGR_RESET: &[u8] = b"\x1b[0m";
+
+/// Clamp the plain projection using the same policy as unstyled overlay logs,
+/// then retain the SGR sequences interspersed through that visible prefix.
+/// `text` must already have passed SGR-only sanitization.
+fn sgr_overlay_log_line(text: &str, max_cols: usize) -> String {
+    let plain = sanitize(text);
+    let line = sanitize_overlay_log_line(&plain, max_cols);
+    let mut visible = line.chars();
+    let mut next_visible = visible.next();
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while next_visible.is_some() {
+        let Some(ch) = chars.next() else {
+            break;
+        };
+        if ch == '\x1b' {
+            out.push(ch);
+            for sgr_char in chars.by_ref() {
+                out.push(sgr_char);
+                if sgr_char == 'm' {
+                    break;
+                }
+            }
+        } else if Some(ch) == next_visible {
+            out.push(ch);
+            next_visible = visible.next();
+        }
+    }
+    out
+}
 
 /// Synchronized output begin (DEC 2026).
 const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
@@ -2314,18 +2347,50 @@ impl<W: Write> TerminalWriter<W> {
     ///
     /// In AltScreen mode, logs are typically not shown (returns Ok silently).
     pub fn write_log(&mut self, text: &str) -> io::Result<()> {
+        self.write_log_with_mode(text, SanitizeMode::Strip)
+    }
+
+    /// Write colored log text, allowing only bounded SGR sequences.
+    ///
+    /// Cursor commands, terminal modes and other controls are filtered at the
+    /// emission boundary. Inline overlay logs retain the first-line and visible
+    /// width limits of [`Self::write_log`]. Styling resets at every line/write;
+    /// callers must repeat styling on subsequent lines. Alt-screen logs are
+    /// suppressed, as with the default mode.
+    pub fn write_log_sgr_only(&mut self, text: &str) -> io::Result<()> {
+        self.write_log_with_mode(text, SanitizeMode::SgrOnly)
+    }
+
+    /// Write trusted log text without sanitization or overlay clamping.
+    ///
+    /// **Trusted input only:** cursor movement, mode changes, clearing and
+    /// wrapping/newlines can corrupt inline UI or terminal state. Prefer
+    /// [`Self::write_log_sgr_only`] for colored compiler/test output. This still
+    /// uses the terminal output lock and log region, and suppresses alt-screen
+    /// logs, but arbitrary commands can defeat cursor restoration.
+    pub fn write_log_raw(&mut self, text: &str) -> io::Result<()> {
+        self.write_log_with_mode(text, SanitizeMode::Raw)
+    }
+
+    /// Write annotated text, reapplying its policy at the emission boundary.
+    pub fn write_log_text(&mut self, text: &Text<'_>) -> io::Result<()> {
+        self.write_log_with_mode(text.as_str(), text.mode())
+    }
+
+    pub(crate) fn write_log_with_mode(&mut self, text: &str, mode: SanitizeMode) -> io::Result<()> {
         // One-writer discipline vs teardown paths (bd-kdn7n item 2).
         let _output_guard = terminal_output_lock();
-        // Defense in depth: callers usually sanitize before logging, but the
-        // terminal writer is the final emission boundary and must never pass
-        // through escape/control injection payloads.
-        let sanitized = sanitize(text);
+        if mode == SanitizeMode::Raw {
+            tracing::debug!(target: "ftui.runtime.log", mode = "raw", bytes = text.len());
+        }
+        // Even publicly constructed Text variants must cross this boundary.
+        let sanitized = sanitize_with(text, mode);
         let text = sanitized.as_ref();
         match self.screen_mode {
-            ScreenMode::Inline { ui_height } => self.write_log_inline(ui_height, text),
+            ScreenMode::Inline { ui_height } => self.write_log_inline(ui_height, text, mode),
             ScreenMode::InlineAuto { .. } => {
                 let ui_height = self.effective_ui_height();
-                self.write_log_inline(ui_height, text)
+                self.write_log_inline(ui_height, text, mode)
             }
             ScreenMode::AltScreen => {
                 // AltScreen: no scrollback, logs are typically handled differently
@@ -2341,7 +2406,12 @@ impl<W: Write> TerminalWriter<W> {
     /// `ui_height` is the *effective* (pending) UI height; the physically
     /// displayed region may differ until the next `present_ui`, which is why
     /// the overlay arm anchors against `last_inline_region`.
-    fn write_log_inline(&mut self, ui_height: u16, text: &str) -> io::Result<()> {
+    fn write_log_inline(
+        &mut self,
+        ui_height: u16,
+        text: &str,
+        mode: SanitizeMode,
+    ) -> io::Result<()> {
         let visible_height = ui_height.min(self.term_height);
         if visible_height >= self.term_height {
             // No log region available when UI fills the terminal
@@ -2355,7 +2425,7 @@ impl<W: Write> TerminalWriter<W> {
             if !self.position_cursor_for_log(visible_height)? {
                 return Ok(());
             }
-            self.writer().write_all(text.as_bytes())?;
+            self.write_log_payload(text, mode)?;
             return self.writer().flush();
         }
 
@@ -2385,7 +2455,16 @@ impl<W: Write> TerminalWriter<W> {
             }
         };
 
-        let line = sanitize_overlay_log_line(text, usize::from(self.term_width));
+        let line = match mode {
+            SanitizeMode::Strip => std::borrow::Cow::Owned(sanitize_overlay_log_line(
+                text,
+                usize::from(self.term_width),
+            )),
+            SanitizeMode::SgrOnly => {
+                std::borrow::Cow::Owned(sgr_overlay_log_line(text, usize::from(self.term_width)))
+            }
+            SanitizeMode::Raw => std::borrow::Cow::Borrowed(text),
+        };
         if line.is_empty() {
             return Ok(());
         }
@@ -2395,7 +2474,7 @@ impl<W: Write> TerminalWriter<W> {
         self.writer().write_all(CURSOR_SAVE)?;
         let write_result = write!(self.writer(), "\x1b[{log_row};1H")
             .and_then(|()| self.writer().write_all(ERASE_LINE))
-            .and_then(|()| self.writer().write_all(line.as_bytes()));
+            .and_then(|()| self.write_log_payload(&line, mode));
         let restore_result = self.writer().write_all(CURSOR_RESTORE);
 
         // Restoration failures must not be swallowed by a successful body
@@ -2403,6 +2482,30 @@ impl<W: Write> TerminalWriter<W> {
         write_result?;
         restore_result?;
         self.writer().flush()
+    }
+
+    /// Isolate SGR styling, including best-effort reset after a write failure.
+    fn write_log_payload(&mut self, text: &str, mode: SanitizeMode) -> io::Result<()> {
+        if mode != SanitizeMode::SgrOnly {
+            return self.writer().write_all(text.as_bytes());
+        }
+        let write_result: io::Result<()> = (|| {
+            self.writer().write_all(SGR_RESET)?;
+            for line in text.split_inclusive(['\n', '\r']) {
+                if line.ends_with(['\n', '\r']) {
+                    let (body, newline) = line.split_at(line.len() - 1);
+                    self.writer().write_all(body.as_bytes())?;
+                    self.writer().write_all(SGR_RESET)?;
+                    self.writer().write_all(newline.as_bytes())?;
+                } else {
+                    self.writer().write_all(line.as_bytes())?;
+                }
+            }
+            Ok(())
+        })();
+        let reset_result = self.writer().write_all(SGR_RESET);
+        write_result?;
+        reset_result
     }
 
     /// Position cursor at the bottom margin of the active DECSTBM log region.
@@ -5304,6 +5407,215 @@ mod tests {
     }
 
     // --- Overlay log discipline regressions (bd-th0p6 / bd-le0q8) ---
+
+    #[test]
+    fn sgr_overlay_matches_plain_width_policy_for_unicode_and_controls() {
+        for text in [
+            "\x1b[31m界界界!",
+            "\x1b[31me\u{301}\x1b[32mclair",
+            "\x1b[31m\u{301}leading\tspace\nignored",
+            "\x1b[4:3m👩\u{200d}💻 work\rignored",
+            "\x1b[31m\t\nignored",
+        ] {
+            for width in 0..12 {
+                let styled = sgr_overlay_log_line(text, width);
+                assert_eq!(
+                    sanitize(&styled),
+                    sanitize_overlay_log_line(&sanitize(text), width),
+                    "text={text:?}, width={width}"
+                );
+                assert_eq!(sanitize_with(&styled, SanitizeMode::SgrOnly), styled);
+            }
+        }
+    }
+
+    #[test]
+    fn log_modes_route_through_both_inline_strategies_and_anchors() {
+        for mode in [
+            SanitizeMode::Strip,
+            SanitizeMode::SgrOnly,
+            SanitizeMode::Raw,
+        ] {
+            for anchor in [UiAnchor::Top, UiAnchor::Bottom] {
+                for scroll_region in [false, true] {
+                    let caps = if scroll_region {
+                        scroll_region_caps()
+                    } else {
+                        basic_caps()
+                    };
+                    let mut writer = TerminalWriter::new(
+                        Vec::new(),
+                        ScreenMode::Inline { ui_height: 2 },
+                        anchor,
+                        caps,
+                    );
+                    writer.set_size(10, 8);
+                    if scroll_region {
+                        writer.present_ui(&Buffer::new(10, 2), None, true).unwrap();
+                        assert!(writer.scroll_region_active());
+                    }
+                    writer.flush().unwrap();
+                    let start = writer.writer().inner().get_ref().len();
+                    let payload = "\x1b[31mcolored\x1b[2J\nsecond";
+                    match mode {
+                        SanitizeMode::Strip => writer.write_log(payload),
+                        SanitizeMode::SgrOnly => writer.write_log_sgr_only(payload),
+                        SanitizeMode::Raw => writer.write_log_raw(payload),
+                    }
+                    .unwrap();
+                    writer.flush().unwrap();
+                    let output = &writer.writer().inner().get_ref()[start..];
+                    let output = std::str::from_utf8(output).unwrap();
+                    assert!(output.contains("colored"));
+                    assert_eq!(output.contains("\x1b[31m"), mode != SanitizeMode::Strip);
+                    assert_eq!(output.contains("\x1b[2J"), mode == SanitizeMode::Raw);
+                    assert_eq!(
+                        output.contains('\n'),
+                        scroll_region || mode == SanitizeMode::Raw
+                    );
+                    assert_eq!(
+                        output.contains("second"),
+                        scroll_region || mode == SanitizeMode::Raw
+                    );
+                    let log_row = if anchor == UiAnchor::Top { 8 } else { 6 };
+                    assert!(output.contains(&format!("\x1b[{log_row};1H")));
+                    if mode == SanitizeMode::SgrOnly {
+                        assert!(output.contains("colored\x1b[0m"));
+                        if scroll_region {
+                            assert!(output.contains("\x1b[0m\nsecond\x1b[0m"));
+                        } else {
+                            assert!(output.ends_with("\x1b[0m\x1b8"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sgr_overlay_clamps_colored_payload_by_visible_columns() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        writer
+            .write_log_sgr_only(&format!("\x1b[38:2::255:0:0m{}\nignored", "x".repeat(200)))
+            .unwrap();
+        let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
+        assert_eq!(output.matches('x').count(), 80);
+        assert!(output.contains("\x1b[38:2::255:0:0m"));
+        assert!(!output.contains('\n'));
+        assert!(!output.contains("ignored"));
+        assert!(output.contains(&format!("{}\x1b[0m\x1b8", "x".repeat(80))));
+    }
+
+    #[test]
+    fn log_modes_remain_noops_without_a_log_region() {
+        for screen_mode in [ScreenMode::AltScreen, ScreenMode::Inline { ui_height: 24 }] {
+            for mode in [
+                SanitizeMode::Strip,
+                SanitizeMode::SgrOnly,
+                SanitizeMode::Raw,
+            ] {
+                let mut writer =
+                    TerminalWriter::new(Vec::new(), screen_mode, UiAnchor::Bottom, basic_caps());
+                writer.set_size(80, 24);
+                writer
+                    .write_log_with_mode("\x1b[2J\x1b[31mhidden\n", mode)
+                    .unwrap();
+                writer.flush().unwrap();
+                assert!(writer.writer().inner().get_ref().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn annotated_logs_are_resanitized_even_for_public_variants() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        let payload = "\x1b[31mtext\x1b[2J";
+        for text in [
+            Text::Sanitized(std::borrow::Cow::Borrowed(payload)),
+            Text::SgrOnly(std::borrow::Cow::Borrowed(payload)),
+            Text::trusted(payload),
+        ] {
+            writer.flush().unwrap();
+            let start = writer.writer().inner().get_ref().len();
+            writer.write_log_text(&text).unwrap();
+            writer.flush().unwrap();
+            let output = std::str::from_utf8(&writer.writer().inner().get_ref()[start..]).unwrap();
+            assert_eq!(
+                output.contains("\x1b[31m"),
+                text.mode() != SanitizeMode::Strip
+            );
+            assert_eq!(output.contains("\x1b[2J"), text.mode() == SanitizeMode::Raw);
+        }
+    }
+
+    #[test]
+    fn sgr_logs_render_color_and_leave_following_output_unstyled() {
+        use ftui_harness::terminal_model::{ModelStyle, Rgb, TerminalModel};
+
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 2,
+                max_height: 4,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(20, 8);
+        writer
+            .write_log_sgr_only("\x1b[1;38;2;255;0;0mred\x1b[2J")
+            .unwrap();
+        writer.flush().unwrap();
+        let mut terminal = TerminalModel::new(20, 8);
+        terminal.feed(writer.writer().inner().get_ref());
+        let row = writer.ui_start_row() - 1;
+        assert!(terminal.row_text(row).starts_with("red"));
+        assert_eq!(terminal.style_at(0, row).fg, Some(Rgb::new(255, 0, 0)));
+        assert!(terminal.style_at(0, row).bold);
+        // This model ignores DEC save/restore. Explicitly position subsequent
+        // output: this checks SGR rendering/reset, not physical cursor restore.
+        terminal.feed(b"\x1b[1;1Hplain");
+        assert!(terminal.row_text(0).starts_with("plain"));
+        assert_eq!(terminal.style_at(0, 0), ModelStyle::default());
+    }
+
+    #[test]
+    fn sgr_log_write_failure_keeps_reset_pending_and_reports_the_error() {
+        let state = Rc::new(RefCell::new(FaultState::default()));
+        let output = SingleWriteFaultWriter::new(Rc::clone(&state), usize::MAX, usize::MAX);
+        let mut writer = TerminalWriter::new(
+            output,
+            ScreenMode::Inline { ui_height: 2 },
+            UiAnchor::Bottom,
+            scroll_region_caps(),
+        );
+        writer.set_size(80, 24);
+        writer.present_ui(&Buffer::new(80, 2), None, true).unwrap();
+        writer.flush().unwrap();
+        assert!(writer.scroll_region_active());
+        // The first underlying call drains the cursor/reset prefix; the next
+        // sends a payload larger than BufWriter's capacity and fails once.
+        let fail_on_call = state.borrow().write_calls + 2;
+        writer.writer().inner_mut().get_mut().fail_on_call = fail_on_call;
+        let error = writer
+            .write_log_sgr_only(&format!("\x1b[31m{}", "x".repeat(100_000)))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(state.borrow().injected_failure_triggered);
+        writer.flush().unwrap();
+        assert!(state.borrow().bytes.ends_with(SGR_RESET));
+    }
 
     /// CONTRACT: without a scroll region, write_log must never emit an
     /// unqualified LF (it would scroll the whole screen and displace the UI)
