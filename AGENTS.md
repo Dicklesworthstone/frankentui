@@ -652,6 +652,17 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 
 ## RCH — Remote Compilation Helper
 
+**No-deletion constraint (observed 2026-09-07):** the installed RCH transfer
+wrapper runs cache-pruning `find ... -exec rm -rf` commands and `rsync --delete`
+implicitly. Setting `reaper_enabled = false` does not disable transfer-start
+pruning. These operations are not authorized by a build request. Until RCH has
+a verified mode that disables all such cleanup, run verification through DSR
+using direct SSH Cargo commands on the native build host and explicit file
+copies without deletion flags. Keep builds remote, check source hashes and the
+toolchain pin, and retain command results. Track the tooling fix in
+`bd-g00-root-epic-ewths.6.24`; the examples below apply only once this constraint
+is satisfied.
+
 RCH offloads `cargo build`, `cargo test`, `cargo clippy`, and other compilation commands to a fleet of 8 remote Contabo VPS workers instead of building locally. This prevents compilation storms from overwhelming csd when many agents run simultaneously.
 
 **RCH is installed at `~/.local/bin/rch` and is hooked into Claude Code's PreToolUse automatically.** Most of the time you don't need to do anything if you are Claude Code — builds are intercepted and offloaded transparently.
