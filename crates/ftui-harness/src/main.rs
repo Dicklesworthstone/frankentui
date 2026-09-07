@@ -1814,7 +1814,175 @@ fn run_log_injection(mode: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Run generated writer operations inside the real terminal lifecycle owner.
+fn run_writer_session(mode: &str) -> io::Result<()> {
+    use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
+    use ftui_harness::proptest_support::WriterOperation;
+    use ftui_render::{
+        buffer::Buffer,
+        cell::{CellAttrs, StyleFlags},
+    };
+    use ftui_runtime::{TerminalWriter, UiAnchor};
+    use std::io::BufRead;
+
+    let screen_mode = match mode {
+        "alt" => ScreenMode::AltScreen,
+        "inline" => ScreenMode::InlineAuto {
+            min_height: 1,
+            max_height: 10,
+        },
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown session mode",
+            ));
+        }
+    };
+    let profile = match std::env::var("FTUI_HARNESS_WRITER_PROFILE").as_deref() {
+        Ok("kitty") => TerminalProfile::Kitty,
+        Ok("xterm") => TerminalProfile::Xterm256Color,
+        Ok("tmux") => TerminalProfile::Tmux,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown session profile",
+            ));
+        }
+    };
+    let anchor = match std::env::var("FTUI_HARNESS_WRITER_ANCHOR").as_deref() {
+        Ok("top") => UiAnchor::Top,
+        Ok("bottom") => UiAnchor::Bottom,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown session anchor",
+            ));
+        }
+    };
+    println!("SESSION_BASELINE");
+    io::stdout().flush()?;
+    let mut ack = String::new();
+    io::stdin().read_line(&mut ack)?;
+    if ack != "go\n" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing start acknowledgement",
+        ));
+    }
+    {
+        let session = TerminalSession::new(SessionOptions {
+            alternate_screen: mode == "alt",
+            mouse_capture: false,
+            bracketed_paste: false,
+            focus_events: false,
+            kitty_keyboard: false,
+            intercept_signals: false,
+        })?;
+        // OSC markers cannot be forged by the sanitized logs or ASCII frames.
+        io::stdout().write_all(b"\x1b]777;SESSION_ACTIVE\x07")?;
+        io::stdout().flush()?;
+        let mut request = String::new();
+        io::stdin()
+            .lock()
+            .take(256 * 1024)
+            .read_line(&mut request)?;
+        if !request.ends_with('\n') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "missing or oversized operation request",
+            ));
+        }
+        let operations: Vec<WriterOperation> = serde_json::from_str(&request)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        if operations.is_empty()
+            || operations.len() > 200
+            || operations
+                .iter()
+                .any(|(kind, cols, rows, height, fragment, bytes, cells)| {
+                    *kind > 4
+                        || !(20..=200).contains(cols)
+                        || !(5..=60).contains(rows)
+                        || !(1..=10).contains(height)
+                        || *fragment >= ftui_harness::ADVERSARIAL_PAYLOADS.len()
+                        || bytes.len() > 32
+                        || cells.len() > 32
+                        || cells.iter().any(|(x, y, ch, _)| {
+                            *x >= 200 || *y >= 10 || !(0x20..=0x7e).contains(ch)
+                        })
+                })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "operation outside generator bounds",
+            ));
+        }
+        let (mut width, mut rows) = session.size()?;
+        let mut writer = TerminalWriter::new(
+            io::stdout(),
+            screen_mode,
+            anchor,
+            TerminalCapabilities::from_profile(profile),
+        );
+        writer.set_size(width, rows);
+        for (kind, cols, new_rows, height, fragment, bytes, cells) in operations {
+            match kind {
+                0 => {
+                    let mut frame = Buffer::new(width, writer.ui_height().min(10));
+                    for (x, y, ch, bold) in cells {
+                        let flags = if bold {
+                            StyleFlags::BOLD
+                        } else {
+                            StyleFlags::empty()
+                        };
+                        frame.set(
+                            x % width,
+                            y % frame.height(),
+                            Cell::from_char(char::from(ch)).with_attrs(CellAttrs::new(flags, 0)),
+                        );
+                    }
+                    writer.present_ui(&frame, None, false)?;
+                }
+                1 => {
+                    width = cols;
+                    rows = new_rows;
+                    // This changes writer geometry; the parent test does not
+                    // claim to emulate physical terminal resize/reflow.
+                    writer.set_size(width, rows);
+                }
+                2 | 3 => {
+                    let text = format!(
+                        "{}{}\n",
+                        ftui_harness::ADVERSARIAL_PAYLOADS[fragment].0,
+                        String::from_utf8_lossy(&bytes)
+                    );
+                    if kind == 2 {
+                        writer.write_log(&text)?;
+                    } else {
+                        writer.write_log_sgr_only(&text)?;
+                    }
+                }
+                _ => writer.set_auto_ui_height(height),
+            }
+            writer.flush()?;
+        }
+    }
+    io::stdout().write_all(b"\x1b]777;SESSION_RESTORED\x07")?;
+    io::stdout().flush()?;
+    let mut ack = String::new();
+    io::stdin().read_line(&mut ack)?;
+    if ack != "done\n" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing finish acknowledgement",
+        ));
+    }
+    Ok(())
+}
+
 fn main() -> std::io::Result<()> {
+    if let Ok(mode) = std::env::var("FTUI_HARNESS_WRITER_SESSION") {
+        return run_writer_session(&mode);
+    }
     if let Ok(mode) = std::env::var("FTUI_HARNESS_LOG_INJECTION") {
         return run_log_injection(&mode);
     }

@@ -610,6 +610,15 @@ bv --robot-insights | jq '.Cycles'                         # Circular deps (must
 
 ## UBS — Ultimate Bug Scanner
 
+**No-deletion constraint (observed 2026-09-07):** the installed UBS wrapper
+unconditionally removes its temporary shadow workspace through an EXIT trap.
+This was observed during a scan and conflicts with Rule 1, including for
+temporary files. Do not invoke that version until a verified retain-files mode
+or execution route is available. While unavailable, perform manual code review
+and the required DSR compiler/lint/test checks, and report UBS as unavailable;
+do not fabricate a passing scanner result. Rule 1 takes precedence over the
+invocation examples below. Inspect wrapper cleanup before using a replacement.
+
 **Golden Rule:** `ubs <changed-files>` before every commit. Exit 0 = safe. Exit >0 = fix & re-run.
 
 ### Commands

@@ -13,6 +13,27 @@ use ftui_render::cell::PackedRgba;
 use ftui_style::{Style, StyleFlags};
 use proptest::prelude::*;
 
+/// Writer operation: kind (present/resize/strip/SGR/height), columns, rows,
+/// UI height, adversarial fragment index, log bytes, and ASCII frame cells.
+/// Each frame cell contains x, y, character byte, and bold flag.
+pub type WriterOperation = (u8, u16, u16, u16, usize, Vec<u8>, Vec<(u16, u16, u8, bool)>);
+
+/// The same operation distribution for headless invariants and real PTY sessions.
+pub fn arb_writer_operations() -> impl Strategy<Value = Vec<WriterOperation>> {
+    proptest::collection::vec(
+        (
+            0u8..5,
+            20u16..=200,
+            5u16..=60,
+            1u16..=10,
+            0usize..crate::ADVERSARIAL_PAYLOADS.len(),
+            proptest::collection::vec(any::<u8>(), 0..32),
+            proptest::collection::vec((0u16..200, 0u16..10, 0x20u8..=0x7e, any::<bool>()), 0..=32),
+        ),
+        1..=200,
+    )
+}
+
 /// Minimal synthetic widget tree used by property tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WidgetTree {

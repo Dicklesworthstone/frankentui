@@ -244,13 +244,7 @@ proptest! {
         profile in 0usize..3,
         top in any::<bool>(),
         auto in any::<bool>(),
-        operations in proptest::collection::vec(
-            (0u8..5, 20u16..=200, 5u16..=60, 1u16..=10,
-             0usize..ftui_harness::ADVERSARIAL_PAYLOADS.len(),
-             proptest::collection::vec(any::<u8>(), 0..32),
-             proptest::collection::vec((0u16..200, 0u16..10, 0x20u8..=0x7e, any::<bool>()), 0..=32)),
-            1..=200,
-        ),
+        operations in ftui_harness::proptest_support::arb_writer_operations(),
     ) {
         use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
         use ftui_runtime::{ScreenMode, TerminalWriter, UiAnchor};

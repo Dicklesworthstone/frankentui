@@ -8,6 +8,7 @@ use ftui_harness::ADVERSARIAL_PAYLOADS;
 use ftui_pty::virtual_terminal::VirtualTerminal;
 use ftui_pty::{CleanupExpectations, PtyConfig, assert_terminal_restored, spawn_command};
 use portable_pty::CommandBuilder;
+use proptest::prelude::*;
 
 const CURSOR_SAVE: &[u8] = b"\x1b7";
 const CURSOR_RESTORE: &[u8] = b"\x1b8";
@@ -112,6 +113,157 @@ fn pty_alt_screen_restores_terminal() {
         find_sequence(&output, b"\x1b[?47h").is_none(),
         "unexpected legacy alternate-screen entry"
     );
+}
+
+const SESSION_ACTIVE: &[u8] = b"\x1b]777;SESSION_ACTIVE\x07";
+const SESSION_RESTORED: &[u8] = b"\x1b]777;SESSION_RESTORED\x07";
+
+fn check_session_entries(output: &[u8], alternate: bool) -> Result<(), String> {
+    let count = |seq: &[u8]| output.windows(seq.len()).filter(|w| *w == seq).count();
+    let expected = usize::from(alternate);
+    if count(b"\x1b[?1049h") != expected
+        || count(b"\x1b[?1049l") != expected
+        || count(b"\x1b[?47h") != 0
+        || count(b"\x1b[?47l") != 0
+    {
+        return Err(format!(
+            "unexpected alternate-screen transitions; alternate={alternate}"
+        ));
+    }
+    let active = find_sequence(output, SESSION_ACTIVE).ok_or("missing active marker")?;
+    let restored = find_sequence(output, SESSION_RESTORED).ok_or("missing restored marker")?;
+    if active >= restored {
+        return Err("session markers out of order".into());
+    }
+    if alternate {
+        let entry = find_sequence(output, b"\x1b[?1049h").ok_or("missing entry")?;
+        let exit = find_sequence(output, b"\x1b[?1049l").ok_or("missing exit")?;
+        if !(entry < active && active < exit && exit < restored) {
+            return Err("alternate screen must enclose the active session".into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn session_entry_observer_rejects_missing_duplicate_and_late_entries() {
+    let stream =
+        |entry: &[u8], exit: &[u8]| [entry, SESSION_ACTIVE, exit, SESSION_RESTORED].concat();
+    assert!(check_session_entries(&stream(b"", b""), false).is_ok());
+    assert!(check_session_entries(&stream(b"\x1b[?1049h", b"\x1b[?1049l"), true).is_ok());
+    assert!(check_session_entries(&stream(b"", b""), true).is_err());
+    assert!(check_session_entries(&stream(b"\x1b[?1049h", b"\x1b[?1049l"), false).is_err());
+    assert!(
+        check_session_entries(&stream(b"\x1b[?1049h\x1b[?1049h", b"\x1b[?1049l"), true).is_err()
+    );
+    assert!(check_session_entries(&stream(b"", b"\x1b[?1049h\x1b[?1049l"), true).is_err());
+    assert!(check_session_entries(&stream(b"\x1b[?47h", b"\x1b[?47l"), false).is_err());
+}
+
+fn run_generated_session(
+    mode: &str,
+    profile: &str,
+    top: bool,
+    operations: &[ftui_harness::proptest_support::WriterOperation],
+) -> Vec<u8> {
+    use std::io::Write;
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_ftui-harness"));
+    cmd.env("FTUI_HARNESS_WRITER_SESSION", mode);
+    cmd.env("FTUI_HARNESS_WRITER_PROFILE", profile);
+    cmd.env(
+        "FTUI_HARNESS_WRITER_ANCHOR",
+        if top { "top" } else { "bottom" },
+    );
+    let mut session = spawn_command(
+        PtyConfig::default()
+            .with_size(80, 24)
+            .with_test_name(format!("generated_{mode}_{profile}_{top}")),
+        cmd,
+    )
+    .expect("spawn generated session in PTY");
+    let timeout = Duration::from_secs(10);
+    session
+        .read_until(b"SESSION_BASELINE", timeout)
+        .expect("baseline handshake");
+    let baseline = session
+        .master()
+        .get_termios()
+        .expect("read baseline termios");
+    session.send_input(b"go\n").expect("acknowledge baseline");
+    session
+        .read_until(SESSION_ACTIVE, timeout)
+        .expect("active handshake");
+    let active = session.master().get_termios().expect("read active termios");
+    assert_ne!(
+        active.local_flags, baseline.local_flags,
+        "real raw-mode transition required"
+    );
+    let mut request = serde_json::to_vec(operations).expect("encode operations");
+    request.push(b'\n');
+    session
+        .send_input(&request)
+        .expect("send generated operations");
+    let restored_result = session.read_until(SESSION_RESTORED, timeout);
+    let output = session.output().to_vec();
+    // Keep the actual transcript and replayable input even if cleanup timed out.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/pty_injection");
+    std::fs::create_dir_all(&root).expect("create capture directory");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("timestamp")
+        .as_nanos();
+    let name = format!(
+        "session-{}-{timestamp}-{mode}-{profile}-{top}",
+        std::process::id()
+    );
+    for (extension, bytes) in [
+        ("raw", output.as_slice()),
+        ("request.json", request.as_slice()),
+    ] {
+        let path = root.join(format!("{name}.{extension}"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("create unique session capture");
+        file.write_all(bytes).expect("write session capture");
+        eprintln!("PTY_SESSION_ARTIFACT {}", path.display());
+    }
+    restored_result.expect("restored handshake");
+    assert_eq!(
+        session
+            .master()
+            .get_termios()
+            .expect("read restored termios"),
+        baseline,
+        "raw/cooked attributes must be restored exactly"
+    );
+    session.send_input(b"done\n").expect("acknowledge cleanup");
+    assert!(
+        session
+            .wait_and_drain(timeout)
+            .expect("drain generated session")
+            .success()
+    );
+    output
+}
+
+proptest! {
+    // PTY process/lifecycle coverage complements the unchanged 2,000-case
+    // headless property. Every generated case runs in both screen modes.
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn alt_screen_mode_is_the_only_path_to_1049h(
+        profile in 0usize..3,
+        top in any::<bool>(),
+        operations in ftui_harness::proptest_support::arb_writer_operations(),
+    ) {
+        for mode in ["inline", "alt"] {
+            let output = run_generated_session(mode, ["kitty", "xterm", "tmux"][profile], top, &operations);
+            let result = check_session_entries(&output, mode == "alt");
+            prop_assert!(result.is_ok(), "{result:?}; mode={mode}; operations={operations:?}; output={output:?}");
+        }
+    }
 }
 
 fn run_log_injection(mode: &str, strategy: &str, anchor: &str) -> Vec<u8> {
