@@ -1225,7 +1225,10 @@ impl<W: Write> TerminalWriter<W> {
         }
 
         let ui_height = ui_height.min(self.term_height);
-        if ui_height >= self.term_height {
+        if self.term_height.saturating_sub(ui_height) < 2 {
+            // DECSTBM requires top < bottom. A one-row log area must use
+            // overlay writes; treating a rejected region as active would
+            // allow an ordinary LF to scroll the entire screen.
             return Ok(());
         }
 
@@ -2448,9 +2451,15 @@ impl<W: Write> TerminalWriter<W> {
                 anchor
             }
             UiAnchor::Top => {
-                // Log region sits below the top-anchored UI; the screen's
-                // bottom row is always inside it and safe because this path
-                // never emits LF.
+                // A pending shrink does not free a row until it is presented.
+                // The old UI may still occupy even the screen's bottom row.
+                if self.last_inline_region.is_some_and(|displayed| {
+                    displayed.start.saturating_add(displayed.height) >= self.term_height
+                }) {
+                    return Ok(());
+                }
+                // Both displayed and pending UI leave this row free. This
+                // path never emits LF, so the log cannot scroll either UI.
                 self.term_height
             }
         };
@@ -5771,6 +5780,115 @@ mod tests {
             );
         }
         assert!(contains_bytes(&output, b"mid-flight"));
+    }
+
+    #[test]
+    fn inline_auto_single_log_row_uses_overlay_until_more_space_is_presented() {
+        for anchor in [UiAnchor::Top, UiAnchor::Bottom] {
+            let mut writer = TerminalWriter::new(
+                Vec::new(),
+                ScreenMode::InlineAuto {
+                    min_height: 1,
+                    max_height: 5,
+                },
+                anchor,
+                scroll_region_caps(),
+            );
+            writer.set_size(20, 5);
+            // Establish a valid region first, then replace it with geometry
+            // that has only one free log row.
+            writer.present_ui(&Buffer::new(20, 1), None, false).unwrap();
+            assert!(writer.scroll_region_active());
+            writer.set_auto_ui_height(4);
+            writer.present_ui(&Buffer::new(20, 4), None, false).unwrap();
+            assert!(
+                !writer.scroll_region_active(),
+                "DECSTBM cannot describe a single row"
+            );
+            let before = writer.writer().inner().get_ref().len();
+            writer
+                .write_log_sgr_only("\x1b[31mfirst\nsecond\n")
+                .unwrap();
+            writer.flush().unwrap();
+            let output = &writer.writer().inner().get_ref()[before..];
+            assert!(contains_bytes(output, b"first"));
+            assert!(!contains_bytes(output, b"second"));
+            assert!(
+                !output.contains(&b'\n'),
+                "single-row log must not scroll the screen"
+            );
+            let row = if anchor == UiAnchor::Top { 5 } else { 1 };
+            assert!(contains_bytes(output, format!("\x1b[{row};1H").as_bytes()));
+
+            writer.set_auto_ui_height(3);
+            writer.present_ui(&Buffer::new(20, 3), None, false).unwrap();
+            assert!(
+                writer.scroll_region_active(),
+                "two-row log area supports DECSTBM again"
+            );
+            let before = writer.writer().inner().get_ref().len();
+            writer.write_log("first\nsecond\n").unwrap();
+            writer.flush().unwrap();
+            assert!(contains_bytes(
+                &writer.writer().inner().get_ref()[before..],
+                b"first\nsecond\n"
+            ));
+        }
+    }
+
+    #[test]
+    fn inline_auto_full_height_shrink_keeps_logs_out_until_present() {
+        for caps in [basic_caps(), scroll_region_caps()] {
+            for anchor in [UiAnchor::Top, UiAnchor::Bottom] {
+                for clear_height in [false, true] {
+                    for mode in [
+                        SanitizeMode::Strip,
+                        SanitizeMode::SgrOnly,
+                        SanitizeMode::Raw,
+                    ] {
+                        let mut writer = TerminalWriter::new(
+                            Vec::new(),
+                            ScreenMode::InlineAuto {
+                                min_height: 1,
+                                max_height: 5,
+                            },
+                            anchor,
+                            caps,
+                        );
+                        writer.set_size(20, 5);
+                        writer.set_auto_ui_height(5);
+                        writer.present_ui(&Buffer::new(20, 5), None, false).unwrap();
+                        if clear_height {
+                            writer.clear_auto_ui_height();
+                        } else {
+                            writer.set_auto_ui_height(1);
+                        }
+                        writer.flush().unwrap();
+                        let before = writer.writer().inner().get_ref().len();
+                        writer
+                            .write_log_with_mode("\x1b[31mwaiting\n", mode)
+                            .unwrap();
+                        writer.flush().unwrap();
+                        assert_eq!(
+                            writer.writer().inner().get_ref().len(),
+                            before,
+                            "displayed UI still fills the screen: {anchor:?}, {mode:?}, clear={clear_height}"
+                        );
+
+                        // Suppression ends when the smaller UI is actually
+                        // displayed, for both scroll and overlay strategies.
+                        writer.present_ui(&Buffer::new(20, 1), None, false).unwrap();
+                        let before = writer.writer().inner().get_ref().len();
+                        writer.write_log_with_mode("resumed", mode).unwrap();
+                        writer.flush().unwrap();
+                        assert!(contains_bytes(
+                            &writer.writer().inner().get_ref()[before..],
+                            b"resumed"
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     /// CONTRACT: set_size invalidates the displayed-region cache — old
