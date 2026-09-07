@@ -950,26 +950,45 @@ Interpretation:
 
 ### Value-of-Information (VOI) Sampling
 
-Expensive operations (height remeasurement, full diff) use **VOI analysis** to decide when to sample:
+Inline-auto height remeasurement uses **VOI analysis** to decide when to take another height measurement:
 
 ```
 Beta posterior over violation probability:
     p ~ Beta(α, β)
 
 VOI computation:
-    variance_before = αβ / ((α+β)² × (α+β+1))
-    variance_after  = (α+1)β / ((α+β+2)² × (α+β+3))  [if success]
-    VOI = variance_before - E[variance_after]
+    n = α + β
+    p_hat = α / n
+    variance_before       = αβ / (n² × (n+1))
+    variance_if_violation = (α+1)β / ((n+1)² × (n+2))
+    variance_if_no_violation = α(β+1) / ((n+1)² × (n+2))
+    expected_after = p_hat × variance_if_violation
+                   + (1-p_hat) × variance_if_no_violation
+    VOI = variance_before - expected_after
+        = αβ / (n² × (n+1)²)
 
 Decision:
-    sample iff (max_interval exceeded) OR (VOI × value_scale ≥ sample_cost)
+    score = VOI × value_scale × (1 + boundary_weight × boundary_score)
+    forced = an enabled maximum time/event interval has been reached
+    blocked = after the first sample, an enabled minimum interval is unmet
+    sample iff forced OR (NOT blocked AND score ≥ sample_cost)
 ```
 
-**Tuned defaults for TUI:**
+`boundary_score` measures proximity to the sampler's e-value threshold. Initial
+height measurement runs whenever the runtime has no height estimate, independently
+of this sampling decision.
+
+**Inline-auto defaults:**
+
 - `prior_alpha=1.0, prior_beta=9.0` (expect 10% violation rate)
-- `max_interval_ms=1000` (latency bound)
+- `max_interval_ms=1000` (force sampling at the next decision after one second)
 - `min_interval_ms=100` (prevent over-sampling)
-- `sample_cost=0.08` (moderately expensive)
+- `sample_cost=0.08`, `value_scale=1.0`, `boundary_weight=1.0`
+
+These defaults rely on forced intervals: since `n ≥ 10` and `boundary_score ≤ 1`,
+the VOI score is at most `1/242 ≈ 0.00413`, below `sample_cost`. The cost comparison
+therefore requests no extra samples with this configuration. Other `VoiConfig`
+settings can enable sampling between forced intervals.
 
 ### E-Process: Anytime-Valid Testing
 
@@ -1682,14 +1701,14 @@ Intuition: small problems that persist trigger quickly, while isolated noise is 
 
 ### Value‑of‑Information (VOI) Sampling
 
-Expensive measurements are taken only when the expected information gain is worth the cost.
+The sampler weighs expected variance reduction against measurement cost, with minimum and maximum sampling intervals.
 
 $$
 \mathrm{Var}(p)=\frac{\alpha\beta}{(\alpha+\beta)^2(\alpha+\beta+1)},\quad
 \mathrm{VOI}=\mathrm{Var}(p)-\mathbb{E}[\mathrm{Var}(p\mid 1\ \text{sample})]
 $$
 
-Intuition: if a measurement won’t change our decision, we skip it and stay fast.
+Intuition: sample when uncertainty reduction is worth the configured cost, or when the maximum interval forces a measurement.
 
 ### Jain’s Fairness Index (Input Guarding)
 
@@ -1911,22 +1930,19 @@ Key Property:
 
 ### VOI Sampling: Value of Information
 
-The runtime decides when to sample expensive metrics using VOI:
+The runtime's inline-auto height policy uses the [VOI sampling rule above](#value-of-information-voi-sampling).
+For a uniform `Beta(1,1)` prior, one Bernoulli observation gives this exact check:
 
 ```
-Beta posterior over violation probability:
-    p ~ Beta(α, β)
-
-VOI computation:
-    variance_before = αβ / ((α+β)² × (α+β+1))
-    variance_after  = (α+1)β / ((α+β+2)² × (α+β+3))  [if success]
-    VOI = variance_before - E[variance_after]
-
-Decision:
-    sample iff (max_interval exceeded) OR (VOI × value_scale ≥ sample_cost)
+variance_before = 1/12
+variance_after_violation = Var[Beta(2,1)] = 1/18
+variance_after_no_violation = Var[Beta(1,2)] = 1/18
+expected_after = (1/2) × (1/18) + (1/2) × (1/18) = 1/18
+VOI = 1/12 - 1/18 = 1/36
 ```
 
-This ensures expensive operations (like full diff computation) only run when the information gain justifies the cost.
+Both possible observations contribute to the expectation. The sampler compares
+the scaled gain with cost, subject to its minimum and maximum sampling intervals.
 
 ---
 

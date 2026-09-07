@@ -1,45 +1,166 @@
 use ftui_core::geometry::Rect;
-use ftui_layout::pane::PaneId;
-use std::collections::BTreeMap;
+use ftui_layout::pane::{PaneConstraints, PaneId, PaneTree};
 
 #[test]
 fn visual_rect_uses_defaults() {
-    // Create a mock layout
-    let mut rects = BTreeMap::new();
-    let id = PaneId::new(1).unwrap();
-    let outer = Rect::new(0, 0, 10, 10);
-    rects.insert(id, outer);
+    let tree = PaneTree::singleton("editor");
+    let outer = Rect::new(10, 20, 30, 12);
+    let layout = tree.solve_layout(outer).expect("valid pane layout");
 
-    // Construct PaneLayout manually (it has private fields but maybe we can't?
-    // PaneLayout fields are pub in pane.rs but we are in integration test)
-    // Wait, PaneLayout struct definition:
-    // pub struct PaneLayout {
-    //     pub area: Rect,
-    //     rects: BTreeMap<PaneId, Rect>,
-    // }
-    // rects is private (crate-visible? no, no pub).
-    // So we can't construct it directly in integration test.
-    // We need to use `PaneTree::layout` or similar to generate it.
+    assert_eq!(layout.rect(tree.root()), Some(outer));
+    assert_eq!(
+        layout.visual_rect(tree.root()),
+        Some(Rect::new(12, 22, 26, 8))
+    );
+    assert_eq!(
+        layout.visual_rect_with_constraints(tree.root(), &PaneConstraints::default()),
+        layout.visual_rect(tree.root())
+    );
 }
 
-// Since we can't easily construct PaneLayout from integration tests due to private fields,
-// we will rely on the fact that we modify the code and the logic is straightforward.
-// However, I can add a unit test module inside `src/pane.rs` if I append it.
-// Or I can just trust the logic changes.
-//
-// Let's try to verify via `visual_rect_with_constraints` if we can get a layout.
-//
-// Actually, `PaneLayout` struct definition in `pane.rs` has `rects` field.
-// If it's not pub, I can't write an integration test that constructs it.
-//
-// I'll skip the test file creation since I can't easily construct the object.
-// The changes are simple enough:
-// 1. Added fields to struct (derived Default handles them).
-// 2. Added method using those fields.
-//
-// I will verify that `PaneConstraints` deserialization works with the new fields (they are optional).
-//
-// I'll add a test to `crates/ftui-layout/src/pane.rs` by appending.
-// But appending is risky if I don't know where the file ends.
-//
-// I'll skip the test. I'm confident in the change.
+#[test]
+fn custom_insets_and_explicit_zero_are_respected() {
+    let tree = PaneTree::singleton("editor");
+    let outer = Rect::new(10, 20, 30, 12);
+    let layout = tree.solve_layout(outer).expect("valid pane layout");
+    for (margin, padding, expected) in [
+        (Some(2), Some(3), Rect::new(15, 25, 20, 2)),
+        (Some(0), Some(0), outer),
+        (Some(0), Some(2), Rect::new(12, 22, 26, 8)),
+        (Some(2), Some(0), Rect::new(12, 22, 26, 8)),
+        (None, Some(2), Rect::new(13, 23, 24, 6)),
+        (Some(2), None, Rect::new(13, 23, 24, 6)),
+        (None, None, Rect::new(12, 22, 26, 8)),
+    ] {
+        let constraints = PaneConstraints {
+            margin,
+            padding,
+            ..PaneConstraints::default()
+        };
+        assert_eq!(
+            layout.visual_rect_with_constraints(tree.root(), &constraints),
+            Some(expected),
+            "margin={margin:?}, padding={padding:?}"
+        );
+        // Visual insets must never change the solver's outer allocation.
+        assert_eq!(layout.rect(tree.root()), Some(outer));
+    }
+}
+
+#[test]
+fn tiny_panes_drop_padding_when_either_content_dimension_would_be_empty() {
+    let tree = PaneTree::singleton("editor");
+    for (width, height, expected) in [
+        (3, 8, Rect::new(11, 21, 1, 6)),
+        (8, 3, Rect::new(11, 21, 6, 1)),
+        (4, 4, Rect::new(11, 21, 2, 2)),
+        (5, 5, Rect::new(12, 22, 1, 1)),
+        (1, 1, Rect::new(11, 21, 0, 0)),
+        (2, 2, Rect::new(11, 21, 0, 0)),
+    ] {
+        let layout = tree
+            .solve_layout(Rect::new(10, 20, width, height))
+            .expect("small pane layout");
+        assert_eq!(layout.visual_rect(tree.root()), Some(expected));
+        assert_eq!(
+            layout.visual_rect_with_constraints(tree.root(), &PaneConstraints::default()),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn oversized_custom_insets_do_not_wrap() {
+    let tree = PaneTree::singleton("editor");
+    let layout = tree
+        .solve_layout(Rect::new(10, 20, 30, 12))
+        .expect("valid pane layout");
+    for (margin, padding, expected) in [
+        (1, u16::MAX, Rect::new(11, 21, 28, 10)),
+        (u16::MAX, 1, Rect::new(u16::MAX, u16::MAX, 0, 0)),
+    ] {
+        let constraints = PaneConstraints {
+            margin: Some(margin),
+            padding: Some(padding),
+            ..PaneConstraints::default()
+        };
+        assert_eq!(
+            layout.visual_rect_with_constraints(tree.root(), &constraints),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn missing_pane_has_no_visual_rectangle() {
+    let tree = PaneTree::singleton("editor");
+    let layout = tree
+        .solve_layout(Rect::new(0, 0, 10, 10))
+        .expect("valid pane layout");
+    let absent = PaneId::new(99).expect("nonzero pane id");
+    assert_eq!(layout.visual_rect(absent), None);
+    assert_eq!(
+        layout.visual_rect_with_constraints(absent, &PaneConstraints::default()),
+        None
+    );
+}
+
+#[test]
+fn serialized_constraints_preserve_defaults_and_explicit_insets() {
+    let tree = PaneTree::singleton("editor");
+    let layout = tree
+        .solve_layout(Rect::new(10, 20, 30, 12))
+        .expect("valid pane layout");
+    for (fields, margin, padding, expected) in [
+        ("", None, None, Rect::new(12, 22, 26, 8)),
+        (
+            r#", "margin": null, "padding": null"#,
+            None,
+            None,
+            Rect::new(12, 22, 26, 8),
+        ),
+        (
+            r#", "margin": 0, "padding": 0"#,
+            Some(0),
+            Some(0),
+            Rect::new(10, 20, 30, 12),
+        ),
+        (
+            r#", "margin": 2, "padding": 3"#,
+            Some(2),
+            Some(3),
+            Rect::new(15, 25, 20, 2),
+        ),
+    ] {
+        let json = format!(
+            r#"{{"min_width":1,"min_height":1,"max_width":null,"max_height":null,"collapsible":false{fields}}}"#
+        );
+        let constraints: PaneConstraints = serde_json::from_str(&json).expect("valid constraints");
+        assert_eq!(constraints.margin, margin);
+        assert_eq!(constraints.padding, padding);
+        assert_eq!(
+            layout.visual_rect_with_constraints(tree.root(), &constraints),
+            Some(expected)
+        );
+        let encoded = serde_json::to_string(&constraints).expect("serialize constraints");
+        assert_eq!(
+            serde_json::from_str::<PaneConstraints>(&encoded).expect("deserialize constraints"),
+            constraints
+        );
+    }
+}
+
+#[test]
+fn serialized_insets_reject_negative_and_out_of_range_values() {
+    for field in ["margin", "padding"] {
+        for value in [-1, 65_536] {
+            let json = format!(
+                r#"{{"min_width":1,"min_height":1,"max_width":null,"max_height":null,"collapsible":false,"{field}":{value}}}"#
+            );
+            assert!(
+                serde_json::from_str::<PaneConstraints>(&json).is_err(),
+                "invalid {field}={value} must be rejected"
+            );
+        }
+    }
+}
