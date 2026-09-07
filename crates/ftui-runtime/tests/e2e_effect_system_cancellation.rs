@@ -175,36 +175,151 @@ fn ensure_global_trace_level() {
 
 #[test]
 fn multiple_subscriptions_all_start() {
-    let started_flags: Vec<_> = (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
-    let stop = Arc::new(AtomicBool::new(false));
+    use ftui_core::event::Event;
+    use ftui_core::terminal_capabilities::TerminalCapabilities;
+    use ftui_render::frame::Frame;
+    use ftui_runtime::BackendFeatures;
+    use ftui_runtime::program::{Cmd, HeadlessEventSource, Model, Program, ProgramConfig};
+    use ftui_runtime::subscription::{StopSignal, SubId, Subscription};
+    use ftui_runtime::terminal_writer::TerminalWriter;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
-    let mut handles = Vec::new();
-    for flag in &started_flags {
-        let f = flag.clone();
-        let s = stop.clone();
-        let handle = std::thread::spawn(move || {
-            f.store(true, Ordering::Release);
-            while !s.load(Ordering::Acquire) {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+    #[derive(Default)]
+    struct Lifecycle {
+        declarations: AtomicUsize,
+        starts: [AtomicUsize; 3],
+        cancelled: [AtomicBool; 3],
+    }
+
+    enum Msg {
+        Started(u8),
+        Poll,
+    }
+
+    impl From<Event> for Msg {
+        fn from(_: Event) -> Self {
+            Self::Poll
+        }
+    }
+
+    // A real application subscription, owned and stopped by Program. The
+    // test never spawns its thread or supplies its cancellation signal.
+    struct Worker {
+        id: u8,
+        lifecycle: Arc<Lifecycle>,
+    }
+
+    impl Subscription<Msg> for Worker {
+        fn id(&self) -> SubId {
+            u64::from(self.id)
+        }
+
+        fn run(&self, sender: mpsc::Sender<Msg>, stop: StopSignal) {
+            let index = usize::from(self.id);
+            self.lifecycle.starts[index].fetch_add(1, Ordering::AcqRel);
+            if sender.send(Msg::Started(self.id)).is_ok() {
+                // A watchdog bounds even a broken cancellation path. Expiry
+                // is not successful cleanup: only the real signal sets true.
+                let cancelled = stop.wait_timeout(Duration::from_secs(10));
+                self.lifecycle.cancelled[index].store(cancelled, Ordering::Release);
             }
-        });
-        handles.push(handle);
+        }
     }
 
-    // Give threads time to start
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    struct App {
+        received: [usize; 3],
+        lifecycle: Arc<Lifecycle>,
+        deadline: Instant,
+        timed_out: bool,
+    }
 
-    for (i, flag) in started_flags.iter().enumerate() {
-        assert!(
-            flag.load(Ordering::Acquire),
-            "subscription {i} should have started"
+    impl Model for App {
+        type Message = Msg;
+
+        fn init(&mut self) -> Cmd<Msg> {
+            Cmd::tick(Duration::from_millis(10))
+        }
+
+        fn update(&mut self, msg: Msg) -> Cmd<Msg> {
+            if let Msg::Started(id) = msg {
+                self.received[usize::from(id)] += 1;
+            }
+            // All three messages may arrive in one drained batch. Keep the
+            // model alive until Program has reconciled the same IDs again.
+            if self.received.iter().all(|count| *count > 0)
+                && self.lifecycle.declarations.load(Ordering::Acquire) >= 2
+            {
+                return Cmd::quit();
+            }
+            if Instant::now() >= self.deadline {
+                self.timed_out = true;
+                return Cmd::quit();
+            }
+            Cmd::none()
+        }
+
+        fn view(&self, _: &mut Frame) {}
+
+        fn subscriptions(&self) -> Vec<Box<dyn Subscription<Msg>>> {
+            self.lifecycle.declarations.fetch_add(1, Ordering::AcqRel);
+            (0..3)
+                .map(|id| {
+                    Box::new(Worker {
+                        id,
+                        lifecycle: Arc::clone(&self.lifecycle),
+                    }) as Box<dyn Subscription<Msg>>
+                })
+                .collect()
+        }
+    }
+
+    let lifecycle = Arc::new(Lifecycle::default());
+    let config = ProgramConfig {
+        intercept_signals: false,
+        ..ProgramConfig::default().with_forced_size(20, 4)
+    };
+    let features = BackendFeatures::default();
+    let writer = TerminalWriter::with_diff_config(
+        Vec::<u8>::new(),
+        config.screen_mode,
+        config.ui_anchor,
+        TerminalCapabilities::basic(),
+        config.diff_config.clone(),
+    );
+    let mut program = Program::with_event_source(
+        App {
+            received: [0; 3],
+            lifecycle: Arc::clone(&lifecycle),
+            deadline: Instant::now() + Duration::from_secs(5),
+            timed_out: false,
+        },
+        HeadlessEventSource::new(20, 4, features),
+        features,
+        writer,
+        config,
+    )
+    .expect("construct subscription lifecycle program");
+    program.run().expect("run subscription lifecycle program");
+
+    assert!(
+        !program.model().timed_out,
+        "subscription readiness timed out"
+    );
+    assert_eq!(program.model().received, [1; 3]);
+    assert!(lifecycle.declarations.load(Ordering::Acquire) >= 2);
+    assert!(!program.is_running());
+    for id in 0..3 {
+        assert_eq!(
+            lifecycle.starts[id].load(Ordering::Acquire),
+            1,
+            "subscription {id} must start once across reconciliations"
         );
-    }
-
-    // Clean up
-    stop.store(true, Ordering::Release);
-    for handle in handles {
-        let _ = handle.join();
+        assert!(
+            lifecycle.cancelled[id].load(Ordering::Acquire),
+            "subscription {id} must observe runtime cancellation before return"
+        );
     }
 }
 
