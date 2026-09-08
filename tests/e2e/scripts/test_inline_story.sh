@@ -42,6 +42,11 @@ if [[ -z "$E2E_PYTHON" ]]; then
 fi
 
 ensure_demo_bin() {
+    if [[ -n "${E2E_DEMO_BIN:-}" ]]; then
+        [[ -x "$E2E_DEMO_BIN" ]] || return 1
+        printf '%s\n' "$E2E_DEMO_BIN"
+        return 0
+    fi
     local target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
     local bin="$target_dir/debug/ftui-demo-showcase"
     if [[ -x "$bin" ]]; then
@@ -261,8 +266,15 @@ if [[ -z "$CANON_BIN" ]]; then
 fi
 export PTY_CANONICALIZE_BIN="$CANON_BIN"
 
-# Screen list is 1-indexed; InlineModeStory is index 33 (0-based) → 34 here.
-INLINE_STORY_SCREEN="${INLINE_STORY_SCREEN:-34}"
+# Resolve the numbered screen entry so inserting another screen cannot silently
+# turn this into a test of an unrelated demo.
+if [[ -z "${INLINE_STORY_SCREEN:-}" ]]; then
+    INLINE_STORY_SCREEN="$("$DEMO_BIN" --help | awk '$1 ~ /^[0-9]+$/ && $2 == "Inline" && $3 == "Mode" {print $1; exit}')"
+fi
+if [[ ! "$INLINE_STORY_SCREEN" =~ ^[0-9]+$ ]]; then
+    log_error "Inline Mode screen not registered in --help"
+    exit 1
+fi
 INLINE_STORY_UI_HEIGHT="${INLINE_STORY_UI_HEIGHT:-12}"
 
 FAILURES=0

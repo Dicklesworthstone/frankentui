@@ -441,6 +441,11 @@ ENV_JSON="$(collect_env_json)"
 CAPS_JSON="$(detect_capabilities_json)"
 
 ensure_demo_bin() {
+    if [[ -n "${E2E_DEMO_BIN:-}" ]]; then
+        [[ -x "$E2E_DEMO_BIN" ]] || return 1
+        printf '%s\n' "$E2E_DEMO_BIN"
+        return 0
+    fi
     local target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
     local bin="$target_dir/debug/ftui-demo-showcase"
     if [[ -x "$bin" ]]; then
@@ -459,12 +464,12 @@ ensure_demo_bin() {
 detect_layout_screen() {
     local bin="$1"
     local help
-    help="$($bin --help 2>/dev/null || true)"
+    help="$("$bin" --help 2>/dev/null || true)"
     if [[ -z "$help" ]]; then
         return 1
     fi
     local line
-    line=$(printf '%s\n' "$help" | command grep -E "Layout Lab|Layout Laboratory" | head -n 1 || true)
+    line=$(printf '%s\n' "$help" | command grep -E '^[[:space:]]+[0-9]+[[:space:]]+Layout (Lab|Laboratory)([[:space:]]|$)' | head -n 1 || true)
     if [[ -z "$line" ]]; then
         return 1
     fi

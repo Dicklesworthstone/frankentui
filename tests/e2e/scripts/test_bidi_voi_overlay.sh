@@ -48,6 +48,11 @@ if [[ -z "$E2E_PYTHON" ]]; then
 fi
 
 ensure_demo_bin() {
+    if [[ -n "${E2E_DEMO_BIN:-}" ]]; then
+        [[ -x "$E2E_DEMO_BIN" ]] || return 1
+        printf '%s\n' "$E2E_DEMO_BIN"
+        return 0
+    fi
     local target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
     local bin="$target_dir/debug/ftui-demo-showcase"
     if [[ -x "$bin" ]]; then
@@ -214,8 +219,13 @@ if [[ -z "$DEMO_BIN" ]]; then
     exit 0
 fi
 
-BIDI_SCREEN=31
-VOI_SCREEN=32
+DEMO_HELP="$("$DEMO_BIN" --help)"
+BIDI_SCREEN="$(printf '%s\n' "$DEMO_HELP" | awk '$1 ~ /^[0-9]+$/ && $2 == "i18n" && $3 == "Stress" && $4 == "Lab" {print $1; exit}')"
+VOI_SCREEN="$(printf '%s\n' "$DEMO_HELP" | awk '$1 ~ /^[0-9]+$/ && $2 == "VOI" && $3 == "Overlay" {print $1; exit}')"
+if [[ ! "$BIDI_SCREEN" =~ ^[0-9]+$ || ! "$VOI_SCREEN" =~ ^[0-9]+$ ]]; then
+    log_error "i18n Stress Lab or VOI Overlay screen not registered in --help"
+    exit 1
+fi
 
 RIGHT=$'\x1b[C'
 BIDI_SEND="${RIGHT}${RIGHT}${RIGHT}${RIGHT}"
