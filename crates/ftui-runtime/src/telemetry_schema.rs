@@ -34,6 +34,9 @@
 /// Runtime lifecycle events (startup, shutdown, lane resolution).
 pub const TARGET_RUNTIME: &str = "ftui.runtime";
 
+/// Terminal log emission policy and byte counts.
+pub const TARGET_RUNTIME_LOG: &str = "ftui.runtime.log";
+
 /// Effect/command execution and queue telemetry.
 pub const TARGET_EFFECT: &str = "ftui.effect";
 
@@ -238,6 +241,7 @@ pub const SCHEMA_VERSION: &str = "1.0.0";
 /// Complete list of registered tracing targets.
 pub const ALL_TARGETS: &[&str] = &[
     TARGET_RUNTIME,
+    TARGET_RUNTIME_LOG,
     TARGET_EFFECT,
     TARGET_PROCESS,
     TARGET_RESIZE,

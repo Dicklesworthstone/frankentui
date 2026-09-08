@@ -2384,7 +2384,7 @@ impl<W: Write> TerminalWriter<W> {
         // One-writer discipline vs teardown paths (bd-kdn7n item 2).
         let _output_guard = terminal_output_lock();
         if mode == SanitizeMode::Raw {
-            tracing::debug!(target: "ftui.runtime.log", mode = "raw", bytes = text.len());
+            tracing::debug!(target: crate::telemetry_schema::TARGET_RUNTIME_LOG, mode = "raw", bytes = text.len());
         }
         // Even publicly constructed Text variants must cross this boundary.
         let sanitized = sanitize_with(text, mode);
