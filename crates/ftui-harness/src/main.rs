@@ -32,9 +32,9 @@
 //! ActionMapper from ftui-core. See `docs/spec/keybinding-policy.md` for details.
 
 use std::cell::RefCell;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use ftui_core::event::{
@@ -51,10 +51,11 @@ use ftui_render::cell::Cell;
 use ftui_render::frame::{Frame, HitId, HitRegion, WidgetSignal};
 #[cfg(feature = "telemetry")]
 use ftui_runtime::TelemetryConfig;
+use ftui_runtime::cancellation::CancellationToken;
 use ftui_runtime::locale::{Locale, LocaleContext, detect_system_locale, set_locale};
 use ftui_runtime::{
     Cmd, ConformalConfig, Every, EvidenceSinkConfig, Model, MouseCapturePolicy, Program,
-    ProgramConfig, RenderTraceConfig, ScreenMode, Subscription, TaskSpec,
+    ProgramConfig, RenderTraceConfig, ScreenMode, StopSignal, Subscription, TaskSpec,
 };
 use ftui_style::Style;
 use ftui_text::WrapMode;
@@ -92,7 +93,7 @@ struct AgentHarness {
     task_running: bool,
     /// Tick counter for simulated task progress.
     task_tick_count: u32,
-    /// Optional auto-quit countdown in spinner ticks (100ms each).
+    /// Auto-quit countdown in 100ms ticks, or presented frames for trace fixtures.
     auto_quit_ticks: Option<u32>,
     /// Which view layout to render.
     view_mode: HarnessView,
@@ -121,6 +122,8 @@ struct AgentHarness {
     locale_switch_target: Option<Locale>,
     /// Whether effect-queue tasks have been enqueued.
     effect_queue_seeded: bool,
+    /// Advance traced diff fixtures only after a successful presentation.
+    trace_fixture_clock: Option<TraceFixtureClock>,
 }
 
 /// Messages for the agent harness.
@@ -131,6 +134,8 @@ enum Msg {
     Key(KeyEvent),
     /// Tick for spinner animation.
     SpinnerTick,
+    /// Successful presentation recorded by the traced diff fixture.
+    TraceFramePresented(u64),
     /// A log line was received.
     LogLine(String),
     /// Terminal resized.
@@ -184,6 +189,185 @@ enum HarnessView {
     #[allow(dead_code)]
     EffectQueue,
     LocaleContext,
+}
+
+// The trace writer records only successful presentations. Using those records
+// prevents timer batching or budget retries from skipping fixture states.
+#[derive(Clone)]
+struct TraceFixtureClock {
+    path: PathBuf,
+    failure: Arc<Mutex<Option<String>>>,
+}
+
+impl TraceFixtureClock {
+    fn from_config(view: HarnessView, trace: &RenderTraceConfig) -> io::Result<Option<Self>> {
+        if !trace.enabled
+            || !matches!(
+                view,
+                HarnessView::SpanDiff | HarnessView::SelectorStorm | HarnessView::TileSkip
+            )
+        {
+            return Ok(None);
+        }
+        if !trace.flush_on_write {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "traced diff fixtures require FTUI_HARNESS_RENDER_TRACE_FLUSH=1",
+            ));
+        }
+        Ok(Some(Self {
+            path: trace.output_path.clone(),
+            failure: Arc::new(Mutex::new(None)),
+        }))
+    }
+
+    fn fail(&self, error: impl ToString) {
+        self.failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert_with(|| error.to_string());
+    }
+
+    fn check(&self) -> io::Result<()> {
+        match self
+            .failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            Some(error) => Err(io::Error::other(error.clone())),
+            None => Ok(()),
+        }
+    }
+
+    fn follow(&self, sender: &mpsc::Sender<Msg>, stop: &CancellationToken) -> io::Result<()> {
+        let file = std::fs::File::open(&self.path)?;
+        Self::follow_reader(&mut io::BufReader::new(file), sender, stop)
+    }
+
+    fn follow_reader(
+        reader: &mut impl BufRead,
+        sender: &mpsc::Sender<Msg>,
+        stop: &CancellationToken,
+    ) -> io::Result<()> {
+        let mut records = TraceFixtureRecords::default();
+        while !stop.is_cancelled() {
+            if let Some(frame_idx) = records.read_next(reader)? {
+                if sender.send(Msg::TraceFramePresented(frame_idx)).is_err() {
+                    return Ok(());
+                }
+            } else {
+                stop.wait_timeout(Duration::from_millis(25));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Subscription<Msg> for TraceFixtureClock {
+    fn id(&self) -> u64 {
+        0x4654_5549_5452_4143 // "FTUITRAC"
+    }
+
+    fn run(&self, sender: mpsc::Sender<Msg>, stop: StopSignal) {
+        if let Err(error) = self.follow(&sender, stop.cancellation_token()) {
+            self.fail(format!(
+                "trace fixture clock {}: {error}",
+                self.path.display()
+            ));
+            let _ = sender.send(Msg::Quit);
+        }
+    }
+}
+
+#[derive(Default)]
+struct TraceFixtureRecords {
+    pending: Vec<u8>,
+    saw_header: bool,
+    finished: bool,
+    next_frame: u64,
+}
+
+impl TraceFixtureRecords {
+    fn read_next(&mut self, reader: &mut impl BufRead) -> io::Result<Option<u64>> {
+        const MAX_LINE_BYTES: usize = 64 * 1024;
+        loop {
+            let limit = (MAX_LINE_BYTES + 1 - self.pending.len()) as u64;
+            let read = (&mut *reader)
+                .take(limit)
+                .read_until(b'\n', &mut self.pending)?;
+            if self.pending.len() > MAX_LINE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "trace record exceeds 64 KiB",
+                ));
+            }
+            if read == 0 {
+                return Ok(None);
+            }
+            if !self.pending.ends_with(b"\n") {
+                continue;
+            }
+            let value: serde_json::Value = serde_json::from_slice(&self.pending)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            self.pending.clear();
+            if self.finished {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "record after trace summary",
+                ));
+            }
+            match value.get("event").and_then(serde_json::Value::as_str) {
+                Some("trace_header") if !self.saw_header => {
+                    if value
+                        .get("schema_version")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(ftui_runtime::RENDER_TRACE_SCHEMA_VERSION)
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unexpected trace schema",
+                        ));
+                    }
+                    self.saw_header = true;
+                }
+                Some("frame") if self.saw_header => {
+                    let frame_idx = value.get("frame_idx").and_then(serde_json::Value::as_u64);
+                    if frame_idx != Some(self.next_frame) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "expected trace frame {}, got {frame_idx:?}",
+                                self.next_frame
+                            ),
+                        ));
+                    }
+                    let frame_idx = self.next_frame;
+                    self.next_frame = self.next_frame.checked_add(1).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "trace frame index overflow")
+                    })?;
+                    return Ok(Some(frame_idx));
+                }
+                Some("trace_summary") if self.saw_header => {
+                    if value.get("total_frames").and_then(serde_json::Value::as_u64)
+                        != Some(self.next_frame)
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "trace summary frame count mismatch",
+                        ));
+                    }
+                    self.finished = true;
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unexpected trace record",
+                    ));
+                }
+            }
+        }
+    }
 }
 
 struct BudgetCardSpec {
@@ -367,6 +551,7 @@ impl AgentHarness {
             locale_switch_ticks,
             locale_switch_target,
             effect_queue_seeded: false,
+            trace_fixture_clock: None,
         }
     }
 
@@ -698,6 +883,19 @@ impl Model for AgentHarness {
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
         match msg {
             Msg::Key(key) => self.handle_key(key),
+            Msg::TraceFramePresented(frame_idx) => {
+                let Some(clock) = self.trace_fixture_clock.as_ref() else {
+                    return Cmd::None;
+                };
+                if frame_idx != self.spinner_state.current_frame as u64 {
+                    clock.fail(format!(
+                        "trace frame {frame_idx} does not acknowledge fixture frame {}",
+                        self.spinner_state.current_frame
+                    ));
+                    return Cmd::Quit;
+                }
+                self.update(Msg::SpinnerTick)
+            }
             Msg::SpinnerTick => {
                 self.spinner_state.tick();
 
@@ -832,6 +1030,9 @@ impl Model for AgentHarness {
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
+        if let Some(clock) = self.trace_fixture_clock.as_ref() {
+            return vec![Box::new(clock.clone())];
+        }
         // Tick every 100ms for spinner animation
         vec![Box::new(Every::new(Duration::from_millis(100), || {
             Msg::SpinnerTick
@@ -977,6 +1178,15 @@ impl AgentHarness {
         let prev_spans = Self::tile_skip_spans(prev_idx, width, height);
         let curr_spans = Self::tile_skip_spans(frame_idx, width, height);
 
+        // The previous frame also painted a default-colored erase trail. Its
+        // return to the theme base changes cells outside the two spans below.
+        let base = *frame.buffer.get_unchecked(0, 0);
+        for (x, y, len) in Self::tile_skip_spans(prev_idx.wrapping_sub(1), width, height) {
+            for dx in 0..len {
+                frame.buffer.set_raw(x.saturating_add(dx), y, base);
+            }
+        }
+
         for (x, y, len) in prev_spans {
             for dx in 0..len {
                 frame
@@ -1030,40 +1240,50 @@ impl AgentHarness {
 
         let frame_idx = self.spinner_state.current_frame as u16;
         let phase_len = 6_u16;
-        let phase = (frame_idx / phase_len) % 2;
 
-        if phase == 0 {
-            let span_len = (width / 10).clamp(2, 12);
-            let rows = [0, height / 2, height.saturating_sub(1)];
-            for (i, row) in rows.iter().enumerate() {
-                if *row >= height {
+        // Dirty hints must cover erased cells as well as newly drawn ones.
+        // Re-mark the previous phase's footprint with the unchanged theme base
+        // before painting this phase. This keeps sparse frames sparse while
+        // covering the border and interior erasures at phase transitions.
+        let base = *frame.buffer.get_unchecked(0, 0);
+        for (phase_frame, erase) in [(frame_idx.wrapping_sub(1), true), (frame_idx, false)] {
+            let phase = (phase_frame / phase_len) % 2;
+            if phase == 0 {
+                let cell = if erase { base } else { Cell::from_char('x') };
+                let span_len = (width / 10).clamp(2, 12);
+                let rows = [0, height / 2, height.saturating_sub(1)];
+                for (i, row) in rows.iter().enumerate() {
+                    let offset = phase_frame.wrapping_add((i as u16).saturating_mul(7));
+                    let start = offset % width;
+                    for dx in 0..span_len {
+                        let x = start.saturating_add(dx);
+                        if x >= width {
+                            break;
+                        }
+                        frame.buffer.set_raw(x, *row, cell);
+                    }
+                }
+            } else {
+                let fill_char = if phase_frame.is_multiple_of(2) {
+                    '#'
+                } else {
+                    '@'
+                };
+                let cell = if erase {
+                    base
+                } else {
+                    Cell::from_char(fill_char)
+                };
+                if width <= 1 || height <= 1 {
+                    frame.buffer.set_raw(0, 0, cell);
                     continue;
                 }
-                let offset = frame_idx.wrapping_add((i as u16).saturating_mul(7));
-                let start = offset % width;
-                for dx in 0..span_len {
-                    let x = start.saturating_add(dx);
-                    if x >= width {
-                        break;
+                let x_end = width.saturating_sub(1);
+                let y_end = height.saturating_sub(1);
+                for y in 1..y_end {
+                    for x in 1..x_end {
+                        frame.buffer.set_raw(x, y, cell);
                     }
-                    frame.buffer.set_raw(x, *row, Cell::from_char('x'));
-                }
-            }
-        } else {
-            let fill_char = if frame_idx.is_multiple_of(2) {
-                '#'
-            } else {
-                '@'
-            };
-            if width <= 1 || height <= 1 {
-                frame.buffer.set_raw(0, 0, Cell::from_char(fill_char));
-                return;
-            }
-            let x_end = width.saturating_sub(1);
-            let y_end = height.saturating_sub(1);
-            for y in 1..y_end {
-                for x in 1..x_end {
-                    frame.buffer.set_raw(x, y, Cell::from_char(fill_char));
                 }
             }
         }
@@ -1371,6 +1591,8 @@ impl AgentHarness {
                     signal.priority = spec.priority;
                     signal.staleness_ms = spec.staleness_ms;
                     signal.cost_estimate_us = spec.cost_us;
+                    // Synthetic fixtures have no measured cost history; use the estimate.
+                    signal.recent_cost_us = 0.0;
                     signal.focus_boost = spec.focus_boost;
                     signal.interaction_boost = spec.interaction_boost;
 
@@ -2217,6 +2439,10 @@ fn main() -> std::io::Result<()> {
     if let Some(enabled) = env_flag("FTUI_HARNESS_DIFF_BAYESIAN") {
         config.diff_config = config.diff_config.with_bayesian_enabled(enabled);
     }
+    if matches!(view_mode, HarnessView::TileSkip) {
+        // This fixture exercises the tile path; certified row scans bypass it.
+        config.diff_config.certified_skips = false;
+    }
     if let Some(enabled) = env_flag("FTUI_HARNESS_BOCPD") {
         config.resize_coalescer = if enabled {
             config.resize_coalescer.with_bocpd()
@@ -2247,6 +2473,7 @@ fn main() -> std::io::Result<()> {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             config = config.with_evidence_sink(EvidenceSinkConfig::enabled_file(trimmed));
+            config.resize_coalescer = config.resize_coalescer.with_logging(true);
         }
     }
     if let Some(path) = env_string("FTUI_HARNESS_RENDER_TRACE_JSONL") {
@@ -2274,13 +2501,280 @@ fn main() -> std::io::Result<()> {
         .ok()
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
-    let mut program = Program::with_config(AgentHarness::new(view_mode, log_keys), config)?;
-    program.run()
+    let clock = TraceFixtureClock::from_config(view_mode, &config.render_trace)?;
+    let mut model = AgentHarness::new(view_mode, log_keys);
+    model.trace_fixture_clock = clock.clone();
+    let mut program = Program::with_config(model, config)?;
+    program.run()?;
+    if let Some(clock) = clock {
+        clock.check()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn trace_fixture_header() -> String {
+        format!(
+            "{{\"event\":\"trace_header\",\"schema_version\":\"{}\"}}\n",
+            ftui_runtime::RENDER_TRACE_SCHEMA_VERSION
+        )
+    }
+
+    #[test]
+    fn trace_fixture_waits_for_complete_records() {
+        let mut reader = io::Cursor::new(trace_fixture_header().into_bytes());
+        let mut records = TraceFixtureRecords::default();
+        assert_eq!(records.read_next(&mut reader).unwrap(), None);
+        reader
+            .get_mut()
+            .extend_from_slice(b"{\"event\":\"frame\",\"frame_idx\":0");
+        assert_eq!(records.read_next(&mut reader).unwrap(), None);
+        reader.get_mut().extend_from_slice(b"}");
+        assert_eq!(records.read_next(&mut reader).unwrap(), None);
+        reader.get_mut().extend_from_slice(b"\n");
+        assert_eq!(records.read_next(&mut reader).unwrap(), Some(0));
+        assert_eq!(records.read_next(&mut reader).unwrap(), None);
+        reader.get_mut().extend_from_slice(
+            b"{\"event\":\"frame\",\"frame_idx\":1}\n{\"event\":\"trace_summary\",\"total_frames\":2}\n",
+        );
+        assert_eq!(records.read_next(&mut reader).unwrap(), Some(1));
+        assert_eq!(records.read_next(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn trace_fixture_rejects_malformed_and_out_of_order_records() {
+        let header = trace_fixture_header();
+        for input in [
+            "{\"event\":\"frame\",\"frame_idx\":0}\n".to_string(),
+            format!("{header}invalid json\n"),
+            format!("{header}{header}"),
+            "{\"event\":\"trace_header\",\"schema_version\":\"unknown\"}\n".to_string(),
+            format!("{header}{{\"event\":\"frame\"}}\n"),
+            format!("{header}{{\"event\":\"frame\",\"frame_idx\":-1}}\n"),
+            format!("{header}{{\"event\":\"frame\",\"frame_idx\":1}}\n"),
+            format!(
+                "{header}{{\"event\":\"frame\",\"frame_idx\":0}}\n{{\"event\":\"frame\",\"frame_idx\":0}}\n"
+            ),
+            format!("{header}{{\"event\":\"trace_summary\",\"total_frames\":2}}\n"),
+            format!(
+                "{header}{{\"event\":\"trace_summary\",\"total_frames\":0}}\n{{\"event\":\"frame\",\"frame_idx\":0}}\n"
+            ),
+            format!("{header}{}", "x".repeat(64 * 1024 + 1)),
+        ] {
+            let mut reader = io::Cursor::new(input.as_bytes());
+            let mut records = TraceFixtureRecords::default();
+            loop {
+                match records.read_next(&mut reader) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => panic!("invalid trace was accepted: {input}"),
+                    Err(error) => {
+                        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn trace_fixture_cancellation_stops_waiting_on_partial_record() {
+        let source = ftui_runtime::cancellation::CancellationSource::new();
+        let stop = source.token();
+        let (sender, receiver) = mpsc::channel();
+        let input = format!(
+            "{}{{\"event\":\"frame\",\"frame_idx\":0}}\n{{\"event\":\"frame\",\"frame_idx\":1",
+            trace_fixture_header()
+        );
+        let worker = std::thread::spawn(move || {
+            let mut reader = io::Cursor::new(input.into_bytes());
+            TraceFixtureClock::follow_reader(&mut reader, &sender, &stop)
+        });
+        assert!(matches!(receiver.recv().unwrap(), Msg::TraceFramePresented(0)));
+        source.cancel();
+        worker.join().expect("clock worker").expect("cancel cleanly");
+        assert!(receiver.try_recv().is_err(), "partial frame must not advance");
+    }
+
+    #[test]
+    fn trace_fixture_requires_flushing_only_for_traced_diff_views() {
+        let mut trace = RenderTraceConfig::enabled_file("unused-trace.jsonl");
+        for view in [HarnessView::SpanDiff, HarnessView::SelectorStorm, HarnessView::TileSkip] {
+            assert!(TraceFixtureClock::from_config(view, &trace).unwrap().is_some());
+        }
+        trace.flush_on_write = false;
+        assert!(TraceFixtureClock::from_config(HarnessView::SpanDiff, &trace).is_err());
+        assert!(TraceFixtureClock::from_config(HarnessView::Default, &trace).unwrap().is_none());
+        trace.enabled = false;
+        assert!(TraceFixtureClock::from_config(HarnessView::SpanDiff, &trace).unwrap().is_none());
+    }
+
+    #[test]
+    fn trace_fixture_propagates_missing_trace_error() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ftui-trace-fixture-missing-{}-{nonce}.jsonl",
+            std::process::id()
+        ));
+        assert!(!path.exists());
+        let trace = RenderTraceConfig::enabled_file(path);
+        let clock = TraceFixtureClock::from_config(HarnessView::SpanDiff, &trace)
+            .unwrap()
+            .unwrap();
+        let source = ftui_runtime::cancellation::CancellationSource::new();
+        let (sender, _receiver) = mpsc::channel();
+        let error = clock.follow(&sender, &source.token()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        clock.fail(error);
+        assert!(clock.check().is_err());
+    }
+
+    #[test]
+    fn trace_fixture_advances_once_per_acknowledgment_and_preserves_frame_limits() {
+        let trace = RenderTraceConfig::enabled_file("unused-trace.jsonl");
+        for (view, frame_count) in [
+            (HarnessView::SpanDiff, 12),
+            (HarnessView::TileSkip, 12),
+            (HarnessView::SelectorStorm, 18),
+        ] {
+            let mut app = AgentHarness::new(view, false);
+            let clock = TraceFixtureClock::from_config(view, &trace).unwrap().unwrap();
+            app.trace_fixture_clock = Some(clock.clone());
+            app.auto_quit_ticks = Some(frame_count);
+            for frame_idx in 0..frame_count {
+                let cmd = app.update(Msg::TraceFramePresented(u64::from(frame_idx)));
+                assert_eq!(matches!(cmd, Cmd::Quit), frame_idx + 1 == frame_count);
+                assert_eq!(app.spinner_state.current_frame, frame_idx as usize + 1);
+            }
+            clock.check().unwrap();
+        }
+        let mut app = AgentHarness::new(HarnessView::SpanDiff, false);
+        let clock = TraceFixtureClock::from_config(HarnessView::SpanDiff, &trace)
+            .unwrap()
+            .unwrap();
+        app.trace_fixture_clock = Some(clock.clone());
+        assert!(matches!(app.update(Msg::TraceFramePresented(1)), Cmd::Quit));
+        assert_eq!(app.spinner_state.current_frame, 0);
+        assert!(clock.check().is_err());
+    }
+
+    #[test]
+    fn tile_skip_dirty_diff_matches_full_including_erase_trail() {
+        use ftui_render::buffer::Buffer;
+        use ftui_render::diff::BufferDiff;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let _theme = theme::ScopedThemeLock::new(theme::ThemeId::CyberpunkAurora);
+        let mut app = AgentHarness::new(HarnessView::TileSkip, false);
+        for (width, height) in [
+            (0, 0),
+            (0, 7),
+            (7, 0),
+            (1, 1),
+            (1, 7),
+            (7, 1),
+            (2, 2),
+            (7, 5),
+            (200, 60),
+            (201, 61),
+        ] {
+            for first_tick in [0, usize::from(u16::MAX) - 1] {
+                let mut pool = GraphemePool::new();
+                let mut previous: Option<Buffer> = None;
+                for tick in first_tick..first_tick + 25 {
+                    app.spinner_state.current_frame = tick;
+                    let mut frame = Frame::new(width, height, &mut pool);
+                    app.view_tile_skip(&mut frame);
+                    if let Some(old) = previous.as_ref() {
+                        let full = BufferDiff::compute(old, &frame.buffer);
+                        let dirty = BufferDiff::compute_dirty(old, &frame.buffer);
+                        assert_eq!(
+                            dirty.changes(),
+                            full.changes(),
+                            "dirty hints omitted changes at tick {tick} for {width}x{height}"
+                        );
+                        if (width, height) == (200, 60) {
+                            let stats = dirty.last_tile_stats().expect("tile statistics");
+                            assert!(stats.fallback.is_none(), "tile path must run: {stats:?}");
+                            assert!(stats.skipped_tiles > 0, "clean tiles must remain skippable");
+                            assert!(frame.buffer.dirty_row_count() < usize::from(height));
+                        }
+                    }
+                    if (width, height) == (200, 60) && tick <= 1 {
+                        // These are the original fixture's captured full-frame
+                        // checksums, including its default-colored erase trail.
+                        let expected = if tick == 0 {
+                            0x4a13_d7da_c3f7_0bf2
+                        } else {
+                            0x5c83_3a94_f1c3_8165
+                        };
+                        assert_eq!(
+                            ftui_runtime::render_trace::checksum_buffer(&frame.buffer, frame.pool),
+                            expected
+                        );
+                    }
+                    previous = Some(frame.buffer);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selector_storm_dirty_diff_matches_full_across_phases() {
+        use ftui_render::buffer::Buffer;
+        use ftui_render::diff::BufferDiff;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let _theme = theme::ScopedThemeLock::new(theme::ThemeId::CyberpunkAurora);
+        let mut app = AgentHarness::new(HarnessView::SelectorStorm, false);
+        for (width, height) in [
+            (0, 0),
+            (0, 7),
+            (7, 0),
+            (1, 1),
+            (1, 7),
+            (7, 1),
+            (2, 2),
+            (7, 5),
+            (160, 60),
+        ] {
+            let mut pool = GraphemePool::new();
+            let mut previous: Option<Buffer> = None;
+            for tick in 0..25 {
+                app.spinner_state.current_frame = tick;
+                let mut frame = Frame::new(width, height, &mut pool);
+                app.view_selector_storm(&mut frame);
+                if let Some(old) = previous.as_ref() {
+                    let full = BufferDiff::compute(old, &frame.buffer);
+                    let dirty = BufferDiff::compute_dirty(old, &frame.buffer);
+                    assert_eq!(
+                        dirty.changes(),
+                        full.changes(),
+                        "dirty hints omitted changes at tick {tick} for {width}x{height}"
+                    );
+                }
+                if (width, height) == (160, 60) {
+                    if tick == 6 || tick == 8 {
+                        // Captured full-frame checksum from the original fixture;
+                        // fixing dirty hints must preserve its intended rendering.
+                        assert_eq!(
+                            ftui_runtime::render_trace::checksum_buffer(&frame.buffer, frame.pool),
+                            0x0b3f_e445_a66a_26d1
+                        );
+                    }
+                    if tick > 0 && (tick / 6) % 2 == 0 && ((tick - 1) / 6) % 2 == 0 {
+                        assert_eq!(frame.buffer.dirty_row_count(), 3);
+                    }
+                }
+                previous = Some(frame.buffer);
+            }
+        }
+    }
 
     #[test]
     fn theme_cycle_advances_and_restores() {

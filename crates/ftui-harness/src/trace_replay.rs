@@ -1626,7 +1626,8 @@ mod tests {
 
         let options = MinimizeOptions {
             max_attempts: 256,
-            max_duration: Some(Duration::from_secs(2)),
+            // Verify completed reduction independently of concurrent test load.
+            max_duration: None,
             ..MinimizeOptions::default()
         };
         let report = minimize_failing_trace(&input, &output, options).expect("minimize succeeds");
@@ -1670,7 +1671,8 @@ mod tests {
 
         let options = MinimizeOptions {
             max_attempts: 256,
-            max_duration: Some(Duration::from_secs(2)),
+            // A fixed attempt budget gives both runs the same stopping condition.
+            max_duration: None,
             ..MinimizeOptions::default()
         };
         let report_a =
@@ -1683,6 +1685,44 @@ mod tests {
         assert_eq!(bytes_a, bytes_b, "minimized traces must be byte-identical");
         assert_eq!(report_a.minimized_lines, report_b.minimized_lines);
         assert_eq!(report_a.baseline_class, report_b.baseline_class);
+    }
+
+    #[test]
+    fn minimizer_zero_duration_preserves_input_without_attempts() {
+        let dir = unique_test_dir("zero-duration");
+        let input = dir.join("input.jsonl");
+        let output = dir.join("output.min.jsonl");
+        let checksum = TraceGrid::new(1, 1).checksum();
+        let lines = vec![
+            header_line(),
+            frame_line(0, 1, 1, checksum),
+            frame_line(1, 1, 1, 0xBAD0BAD0BAD0BAD0),
+            frame_line(2, 1, 1, checksum),
+        ];
+        write_lines(&input, &lines);
+
+        let options = MinimizeOptions {
+            max_attempts: 256,
+            max_duration: Some(Duration::ZERO),
+            ..MinimizeOptions::default()
+        };
+        let report = minimize_failing_trace(&input, &output, options).expect("minimize succeeds");
+
+        assert_eq!(report.attempts, 0);
+        assert_eq!(report.preserved_attempts, 0);
+        assert!(report.ledger.is_empty());
+        assert_eq!(report.original_lines, lines.len());
+        assert_eq!(report.minimized_lines, lines.len());
+        assert_eq!(
+            std::fs::read(&input).expect("read input"),
+            std::fs::read(&output).expect("read output"),
+            "an expired budget must preserve the input trace"
+        );
+        assert_eq!(report.baseline_class, "checksum_mismatch");
+        assert_eq!(
+            classify_replay_error(&report.final_error),
+            "checksum_mismatch"
+        );
     }
 
     #[test]
