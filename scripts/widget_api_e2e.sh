@@ -544,10 +544,9 @@ jsonl_step_start "feature_combinations"
         if $CMD 2>&1; then
             echo "  [PASS] $feature"
         else
+            status=$?
             echo "  [FAIL] $feature"
-            echo "  Exit code: $?"
-            echo "  Last 200 lines of output:"
-            tail -200
+            echo "  Exit code: $status"
             exit 1
         fi
     done
@@ -691,7 +690,8 @@ policy_log="$LOG_DIR/08_policy.log"
     mkdir -p "$policy_dir"
     : > "$policy_dir/policy_runs.jsonl"
 
-    harness_bin="$PROJECT_ROOT/target/debug/ftui-harness"
+    target_dir="$(cargo metadata --format-version=1 --no-deps | jq -er '.target_directory')"
+    harness_bin="$target_dir/debug/ftui-harness"
     if [[ ! -x "$harness_bin" ]]; then
         echo "ftui-harness binary not found; building..."
         cargo build -p ftui-harness --bin ftui-harness

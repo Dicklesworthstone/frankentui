@@ -304,27 +304,49 @@ def journey(binary, name):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     before = termios.tcgetattr(slave)
+    status_read, status_write = os.pipe()
+    release_read, release_write = os.pipe()
     pid = os.fork()
     if pid == 0:
         try:
+            os.close(status_read)
+            os.close(release_write)
             os.setsid()
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
             for fd in (0, 1, 2):
                 os.dup2(slave, fd)
             os.close(master)
             os.close(slave)
-            os.execve(str(binary), [str(binary)], env)
+            consumer = os.fork()
+            if consumer == 0:
+                os.close(status_write)
+                os.close(release_read)
+                os.execve(str(binary), [str(binary)], env)
+            # Darwin revokes the slave when its session leader exits. Keep
+            # that leader alive, without touching termios, until the parent
+            # has inspected the actual state left by the exited consumer.
+            _, observed = os.waitpid(consumer, 0)
+            os.write(status_write, struct.pack("!i", observed))
+            os.close(status_write)
+            while os.read(release_read, 1):
+                pass
+            os._exit(0)
         except OSError as exc:
             os.write(2, str(exc).encode())
             os._exit(127)
+    os.close(status_write)
+    os.close(release_read)
     data = bytearray()
+    reported = bytearray()
     start = time.monotonic()
     deadline = start + 10
     status, sent, timed_out = None, [], False
+    supervisor_reaped, termios_error, after = False, None, None
+    raw = out / (name + ".pty.bin")
     try:
         while time.monotonic() < deadline:
-            ready, _, _ = select.select([master], [], [], 0.03)
-            if ready:
+            ready, _, _ = select.select([master, status_read], [], [], 0.03)
+            if master in ready:
                 try:
                     data.extend(os.read(master, 65536))
                 except OSError:
@@ -341,16 +363,20 @@ def journey(binary, name):
                     elif len(sent) == 1 and b"Key: Char('x')" in plain:
                         os.write(master, b"\x03")
                         sent.append({"input": "Ctrl+C", "after_seconds": time.monotonic() - start})
-            waited, observed = os.waitpid(pid, os.WNOHANG)
-            if waited == pid:
-                status = observed
-                break
+            if status_read in ready:
+                chunk = os.read(status_read, 4 - len(reported))
+                require(bool(chunk), "PTY supervisor exited without reporting consumer status")
+                reported.extend(chunk)
+                if len(reported) == 4:
+                    status = struct.unpack("!i", reported)[0]
+                    break
             if len(data) > 16 * 1024 * 1024:
                 break
         if status is None:
             timed_out = True
             os.killpg(pid, signal.SIGKILL)
             _, status = os.waitpid(pid, 0)
+            supervisor_reaped = True
         drain_until = time.monotonic() + 0.15
         while time.monotonic() < drain_until:
             ready, _, _ = select.select([master], [], [], 0.02)
@@ -359,22 +385,29 @@ def journey(binary, name):
                     data.extend(os.read(master, 65536))
                 except OSError:
                     break
-        after = termios.tcgetattr(slave)
+        try:
+            after = termios.tcgetattr(slave)
+        except termios.error as exc:
+            termios_error = str(exc)
     finally:
         if status is None:
             try:
                 os.killpg(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        os.close(release_write)
+        if not supervisor_reaped:
             os.waitpid(pid, 0)
+        os.close(status_read)
         os.close(master)
         os.close(slave)
-    raw = out / (name + ".pty.bin")
-    raw.write_bytes(data)
+        raw.write_bytes(data)
     plain = ANSI.sub(b"", bytes(data))
     code = os.waitstatus_to_exitcode(status)
     normal = args.features != "no-backend"
     errors, transitions = cleanup_modes(bytes(data), normal)
+    if termios_error is not None:
+        errors.append(f"could not inspect actual termios: {termios_error}")
     if before != after:
         errors.append("actual termios changed")
     if timed_out:
@@ -392,7 +425,7 @@ def journey(binary, name):
     return {"name": name, "outcome": "PASS" if normal and not errors else "EXPECTED_UNSUPPORTED" if not normal and not errors else "FAIL",
             "normal_journey_passed": normal and not errors, "exit_code": code, "timed_out": timed_out,
             "seconds": time.monotonic() - start, "inputs": sent, "termios_before": encode_termios(before),
-            "termios_after": encode_termios(after), "dec_transitions": transitions, "errors": errors,
+            "termios_after": encode_termios(after) if after is not None else None, "dec_transitions": transitions, "errors": errors,
             "pty": raw.name, "pty_sha256": digest(raw), "bytes": len(data)}
 
 
