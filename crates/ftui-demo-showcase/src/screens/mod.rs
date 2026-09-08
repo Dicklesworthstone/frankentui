@@ -826,6 +826,13 @@ pub trait Screen {
         false
     }
 
+    /// Whether a plain number key belongs to this screen's current controls.
+    /// This suppresses only the matching global number shortcut; other global
+    /// shortcuts and Tab navigation remain available.
+    fn consumes_number_key(&self, _key: char) -> bool {
+        false
+    }
+
     /// Whether this screen can undo.
     fn can_undo(&self) -> bool {
         false

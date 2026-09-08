@@ -8,6 +8,7 @@
 
 #![cfg(unix)]
 
+use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ftui_pty::{PtyConfig, spawn_command};
@@ -150,6 +151,15 @@ fn run_mermaid_showcase_with_init(
     seed: u64,
     log_path: &str,
 ) -> Result<Vec<u8>, String> {
+    let demo_file = std::fs::File::open(demo_bin)
+        .map_err(|err| format!("open Mermaid showcase binary {demo_bin}: {err}"))?;
+    let mut demo_hasher = blake3::Hasher::new();
+    demo_hasher
+        .update_reader(demo_file)
+        .map_err(|err| format!("hash Mermaid showcase binary {demo_bin}: {err}"))?;
+    let demo_hash = demo_hasher.finalize();
+    let capture_path = format!("{log_path}.pty");
+
     let config = PtyConfig::default()
         .with_size(MERMAID_COLS, MERMAID_ROWS)
         .with_test_name("mermaid_showcase_init")
@@ -171,7 +181,26 @@ fn run_mermaid_showcase_with_init(
     // The first prepare record proves the runtime has entered its render loop.
     // A fixed sleep is racy under loaded batch runs: input sent before terminal
     // initialization completes can be drained before the event loop sees it.
-    wait_for_mermaid_prepare(log_path, Duration::from_secs(10))?;
+    if let Err(err) = wait_for_mermaid_prepare(log_path, Duration::from_secs(10)) {
+        // Preserve startup evidence before dropping the session kills the child.
+        let read_error = session
+            .read_output_result()
+            .err()
+            .map(|err| format!("; PTY read error: {err}"))
+            .unwrap_or_default();
+        let output = session.output();
+        let capture = match std::fs::File::create_new(&capture_path)
+            .and_then(|mut file| file.write_all(output))
+        {
+            Ok(()) => format!("capture_path={capture_path}"),
+            Err(err) => format!("capture_path={capture_path}; capture write error: {err}"),
+        };
+        return Err(format!(
+            "{err}; demo_bin={demo_bin}; demo_blake3={demo_hash}; captured_bytes={}; {capture}{read_error}\nTAIL:\n{}",
+            output.len(),
+            tail_output(output, 4096)
+        ));
+    }
 
     // Toggle init directives so the engine must parse/apply them.
     session
@@ -182,6 +211,13 @@ fn run_mermaid_showcase_with_init(
         .wait_and_drain(Duration::from_secs(10))
         .map_err(|err| format!("wait mermaid showcase: {err}"))?;
     let output = session.output().to_vec();
+    std::fs::File::create_new(&capture_path)
+        .and_then(|mut file| file.write_all(&output))
+        .map_err(|err| format!("retain Mermaid showcase capture {capture_path}: {err}"))?;
+    eprintln!(
+        "Mermaid showcase: demo_bin={demo_bin}; demo_blake3={demo_hash}; capture_path={capture_path}; captured_bytes={}; status={status:?}",
+        output.len()
+    );
 
     if !status.success() {
         let tail = tail_output(&output, 4096);

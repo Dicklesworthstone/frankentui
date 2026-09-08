@@ -1351,7 +1351,12 @@ impl Screen for VirtualizedSearch {
                     KeyCode::Char('g') if !shift => {
                         self.select_first();
                     }
-                    KeyCode::Char('G') | KeyCode::Char('g') if shift => {
+                    // Legacy terminal input encodes uppercase G without a
+                    // separate Shift modifier; enhanced protocols may send g+Shift.
+                    KeyCode::Char('G') => {
+                        self.select_last();
+                    }
+                    KeyCode::Char('g') if shift => {
                         self.select_last();
                     }
                     KeyCode::Home => {
@@ -1906,6 +1911,31 @@ mod tests {
         assert_eq!(nav_entries.len(), 1);
         assert_eq!(nav_entries[0].direction.as_deref(), Some("down"));
         assert_eq!(nav_entries[0].selected, Some(1));
+    }
+
+    #[test]
+    fn virtualized_search_edge_keys_preserve_list_focus() {
+        let mut screen = VirtualizedSearch::new();
+        let last = TOTAL_ITEMS - 1;
+        for (code, modifiers, expected) in [
+            (KeyCode::Char('G'), Modifiers::NONE, last),
+            (KeyCode::Char('G'), Modifiers::SHIFT, last),
+            (KeyCode::Char('g'), Modifiers::SHIFT, last),
+            (KeyCode::Char('g'), Modifiers::NONE, 0),
+            (KeyCode::Home, Modifiers::NONE, 0),
+            (KeyCode::End, Modifiers::NONE, last),
+        ] {
+            screen.selected = TOTAL_ITEMS / 2;
+            screen.update(&Event::Key(KeyEvent::new(code).with_modifiers(modifiers)));
+            assert_eq!(
+                screen.selected_index(),
+                expected,
+                "edge navigation for {code:?} with {modifiers:?}"
+            );
+            assert!(!screen.is_search_focused());
+            assert!(screen.current_query().is_empty());
+            assert_eq!(screen.filtered_count(), TOTAL_ITEMS);
+        }
     }
 
     #[test]

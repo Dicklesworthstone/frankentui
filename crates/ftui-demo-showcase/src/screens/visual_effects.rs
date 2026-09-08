@@ -5397,6 +5397,10 @@ impl Screen for VisualEffectsScreen {
         }
     }
 
+    fn consumes_number_key(&self, key: char) -> bool {
+        matches!(self.demo_mode, DemoMode::TextEffects) && matches!(key, '1'..='6')
+    }
+
     fn title(&self) -> &'static str {
         "Visual Effects"
     }

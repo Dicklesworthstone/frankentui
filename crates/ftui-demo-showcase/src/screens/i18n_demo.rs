@@ -915,7 +915,7 @@ impl I18nDemo {
             format!("Dir: {}", if info.rtl { "RTL" } else { "LTR" })
         };
         Paragraph::new(format!(
-            " Tab/1-4: panels ({})  L/R: locale  {}  Current: {} ({}) ",
+            " 1-4: panels ({})  L/R: locale  {}  Current: {} ({}) ",
             pl, detail, info.name, info.tag
         ))
         .style(
@@ -1045,11 +1045,15 @@ impl Screen for I18nDemo {
                 action: "Scroll count/sample in panel",
             },
             HelpEntry {
-                key: "Tab/1-4",
+                key: "1-4",
                 action: "Switch panel",
             },
         ]
     }
+    fn consumes_number_key(&self, key: char) -> bool {
+        matches!(key, '1'..='4')
+    }
+
     fn tick(&mut self, tick_count: u64) {
         self.tick_count = tick_count;
     }

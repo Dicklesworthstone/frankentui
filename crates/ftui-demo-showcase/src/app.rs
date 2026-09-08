@@ -1553,6 +1553,11 @@ impl ScreenStates {
         dispatch_screen!(ref self, id, screen => screen.consumes_text_input(), noop: false)
     }
 
+    /// Whether the given screen owns this plain number key in its current mode.
+    fn consumes_number_key(&self, id: ScreenId, key: char) -> bool {
+        dispatch_screen!(ref self, id, screen => screen.consumes_number_key(key), noop: false)
+    }
+
     /// Forward a tick to the active screen and always tick performance_hud.
     ///
     /// Only the active screen receives tick updates for animations/data.
@@ -4183,8 +4188,14 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        // Number keys for direct screen access (suppressed when text field has focus)
-                        (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE) if !text_input_active => {
+                        // Text input and screen-local controls take precedence
+                        // over the corresponding global number shortcut.
+                        (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE)
+                            if !text_input_active
+                                && !self
+                                    .screens
+                                    .consumes_number_key(self.display_screen(), ch) =>
+                        {
                             if let Some(id) = ScreenId::from_number_key(ch) {
                                 if self.tour.is_active() {
                                     self.stop_tour(false, "number_key");
@@ -6173,6 +6184,97 @@ mod tests {
         });
         app.update(AppMsg::from(event));
         assert_eq!(app.current_screen, ScreenId::Shakespeare);
+    }
+
+    fn rendered_app_text(app: &AppModel) -> String {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        let mut text = String::new();
+        for y in 0..40 {
+            for x in 0..120 {
+                text.push(
+                    frame
+                        .buffer
+                        .get(x, y)
+                        .and_then(|cell| cell.content.as_char())
+                        .unwrap_or(' '),
+                );
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn local_number_keys_reach_visual_effects_and_i18n_controls() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::VisualEffects;
+        for ch in "t4   ".chars() {
+            app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char(ch)))));
+        }
+        assert_eq!(app.current_screen, ScreenId::VisualEffects);
+        assert!(rendered_app_text(&app).contains("1 · Matrix Style"));
+
+        app.current_screen = ScreenId::I18nDemo;
+        for (key, panel) in [('4', "Stress Lab"), ('1', "Overview")] {
+            app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char(key)))));
+            assert_eq!(app.current_screen, ScreenId::I18nDemo);
+            assert!(rendered_app_text(&app).contains(&format!("panels ({panel})")));
+        }
+    }
+
+    #[test]
+    fn unowned_number_keys_keep_global_screen_navigation() {
+        for (screen, text_effects, key, expected) in [
+            (ScreenId::VisualEffects, false, '4', ScreenId::CodeExplorer),
+            (ScreenId::VisualEffects, true, '7', ScreenId::FormsInput),
+            (ScreenId::I18nDemo, false, '5', ScreenId::WidgetGallery),
+        ] {
+            let mut app = AppModel::new();
+            app.current_screen = screen;
+            if text_effects {
+                app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('t')))));
+            }
+            app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char(key)))));
+            assert_eq!(app.current_screen, expected, "screen={screen:?} key={key}");
+        }
+    }
+
+    #[test]
+    fn local_number_ownership_preserves_other_global_shortcuts() {
+        for screen in [ScreenId::VisualEffects, ScreenId::I18nDemo] {
+            let mut app = AppModel::new();
+            app.current_screen = screen;
+            if screen == ScreenId::VisualEffects {
+                app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('t')))));
+            }
+
+            let mouse_before = app.mouse_capture_enabled;
+            app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('m')))));
+            assert_ne!(app.mouse_capture_enabled, mouse_before);
+            for expected in [true, false] {
+                app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('?')))));
+                assert_eq!(app.help_visible, expected);
+            }
+
+            app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Tab))));
+            assert_eq!(app.current_screen, screen.next());
+            app.update(AppMsg::from(Event::Key(KeyEvent {
+                code: KeyCode::BackTab,
+                modifiers: Modifiers::SHIFT,
+                kind: KeyEventKind::Press,
+            })));
+            assert_eq!(app.current_screen, screen);
+
+            let cmd = app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('q')))));
+            let contains_quit = match cmd {
+                Cmd::Quit => true,
+                Cmd::Batch(cmds) => cmds.iter().any(|cmd| matches!(cmd, Cmd::Quit)),
+                _ => false,
+            };
+            assert!(contains_quit, "global quit must remain active on {screen:?}");
+        }
     }
 
     #[test]
