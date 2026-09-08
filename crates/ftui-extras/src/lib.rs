@@ -44,6 +44,8 @@
 //! | `help` | `help` | Contextual help system with tooltips |
 
 #![forbid(unsafe_code)]
+// WGPU's nested auto-trait bounds exceed the compiler's default recursion depth.
+#![cfg_attr(feature = "fx-gpu", recursion_limit = "256")]
 
 #[cfg(test)]
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
