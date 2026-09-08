@@ -6,7 +6,7 @@
 # 1. Compilation (debug + release)
 # 2. Clippy (no warnings)
 # 3. Formatting (cargo fmt --check)
-# 4. Unit + snapshot tests
+# 4. Unit + integration + snapshot + documentation tests
 # 5. Smoke test (alt-screen with auto-exit)
 # 6. Inline mode smoke test
 # 7. Screen navigation (cycle all 45 screens)
@@ -43,6 +43,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
+# Set suite paths before logging.sh supplies its shared defaults.
+LOG_DIR="${LOG_DIR:-/tmp/ftui-demo-e2e-$(date +%Y%m%d_%H%M%S)}"
+E2E_LOG_DIR="${E2E_LOG_DIR:-$LOG_DIR}"
+E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
+E2E_JSONL_FILE="${E2E_JSONL_FILE:-$LOG_DIR/demo_showcase_e2e.jsonl}"
 # shellcheck source=/dev/null
 source "$LIB_DIR/common.sh"
 # shellcheck source=/dev/null
@@ -97,10 +102,6 @@ done
 e2e_fixture_init "demo_showcase"
 TIMESTAMP="$(e2e_log_stamp)"
 RUN_ID="${E2E_RUN_ID:-$TIMESTAMP}"
-LOG_DIR="${LOG_DIR:-/tmp/ftui-demo-e2e-${E2E_RUN_ID}-${TIMESTAMP}}"
-E2E_LOG_DIR="$LOG_DIR"
-E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
-E2E_JSONL_FILE="${E2E_JSONL_FILE:-$LOG_DIR/demo_showcase_e2e.jsonl}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 export E2E_LOG_DIR E2E_RESULTS_DIR E2E_JSONL_FILE E2E_RUN_CMD E2E_RUN_START_MS
@@ -109,7 +110,7 @@ if $VERBOSE; then
     required_tools+=(tee)
 fi
 if ! $QUICK; then
-    required_tools+=(sha256sum grep sort tr tail env)
+    required_tools+=(cargo-nextest sha256sum grep sort tr tail env)
     if [[ "${E2E_PYTHON:-python3}" != "python3" ]]; then
         required_tools+=("$E2E_PYTHON")
     fi
@@ -362,16 +363,32 @@ if $QUICK; then
 else
 
 # ────────────────────────────────────────────────────────────────────────────
-# Step 4: Unit + Snapshot Tests
+# Step 4: Unit + Integration + Snapshot + Documentation Tests
 # ────────────────────────────────────────────────────────────────────────────
 # Snapshot tests carry their own seeds (DeterminismLab is blessed at seed 7);
 # the E2E seed/time-step variables exported for the PTY steps must not reach
-# cargo test. e2e_cargo_test_env_guard strips them (shared list in common.sh);
+# test processes. e2e_cargo_test_env_guard strips them (shared list in common.sh);
 # the screens are also constructed with explicit seeds, so this is defense in
 # depth.
+# The default nextest profile applies the existing exclusive timing-test
+# reservations and 120-second per-test timeout. Doctests require cargo test;
+# run them even after a nextest failure so all original coverage is exercised.
+run_showcase_tests() {
+    local nextest_status=0
+    local doctest_status=0
+
+    e2e_cargo_test_env_guard cargo nextest run -p "$PKG" \
+        --profile default --no-fail-fast --test-threads=4 || nextest_status=$?
+    e2e_cargo_test_env_guard cargo test -p "$PKG" --doc \
+        -- --test-threads=4 || doctest_status=$?
+
+    printf 'nextest_exit=%d doctest_exit=%d\n' "$nextest_status" "$doctest_status"
+    [[ "$nextest_status" -eq 0 && "$doctest_status" -eq 0 ]]
+}
+
 e2e_log_cargo_test_hermetic
-run_step "Unit + snapshot tests" "$LOG_DIR/04_tests.log" \
-    e2e_cargo_test_env_guard cargo test -p "$PKG" -- --test-threads=4 || true
+run_step "Unit + integration + snapshot + documentation tests" "$LOG_DIR/04_tests.log" \
+    run_showcase_tests || true
 
 # ────────────────────────────────────────────────────────────────────────────
 # Steps 5-9: Smoke / Interactive Tests (require PTY)
@@ -2119,7 +2136,7 @@ PY
 
         link_cmd="exec env FTUI_LINK_REPORT_PATH=\"$LINK_REPORT\" FTUI_LINK_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=41 \"$DEMO_BIN\""
 
-        if PTY_SEND=$'\t\r' PTY_SEND_DELAY_MS=500 run_in_pty "$link_cmd" 8 2>&1; then
+        if PTY_SEND=$'\x1b[B\r' PTY_SEND_DELAY_MS=500 run_in_pty "$link_cmd" 8 2>&1; then
             link_exit=0
         else
             link_exit=$?

@@ -278,23 +278,19 @@ fn frame_hash_sequence(frames: &[MermaidFrame]) -> Vec<String> {
 
 #[test]
 fn pty_mermaid_harness_exits_cleanly() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     // Verify the harness runs and exits without error.
-    let _output = run_mermaid_harness(&demo_bin, MERMAID_SEED)?;
+    let _output = run_mermaid_harness(demo_bin, MERMAID_SEED)?;
     Ok(())
 }
 
 #[test]
 fn pty_mermaid_init_directives_prepare_jsonl_present() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let log_path = next_mermaid_log_path("prepare");
-    let _output = run_mermaid_showcase_with_init(&demo_bin, MERMAID_SEED, &log_path)?;
+    let _output = run_mermaid_showcase_with_init(demo_bin, MERMAID_SEED, &log_path)?;
 
     let content = std::fs::read_to_string(&log_path)
         .map_err(|err| format!("read FTUI_MERMAID_LOG_PATH={log_path}: {err}"))?;
@@ -341,12 +337,10 @@ fn pty_mermaid_init_directives_prepare_jsonl_present() -> Result<(), String> {
 
 #[test]
 fn pty_mermaid_harness_deterministic_hashes() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
-    let output_a = run_mermaid_harness(&demo_bin, MERMAID_SEED)?;
-    let output_b = run_mermaid_harness(&demo_bin, MERMAID_SEED)?;
+    let output_a = run_mermaid_harness(demo_bin, MERMAID_SEED)?;
+    let output_b = run_mermaid_harness(demo_bin, MERMAID_SEED)?;
 
     let frames_a = extract_mermaid_frames(&output_a)?;
     let frames_b = extract_mermaid_frames(&output_b)?;
@@ -388,11 +382,9 @@ fn pty_mermaid_harness_deterministic_hashes() -> Result<(), String> {
 
 #[test]
 fn pty_mermaid_harness_jsonl_schema() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
-    let output = run_mermaid_harness(&demo_bin, MERMAID_SEED)?;
+    let output = run_mermaid_harness(demo_bin, MERMAID_SEED)?;
 
     // --- Verify mermaid_harness_start event ---
     let start_line = find_event_line(&output, "mermaid_harness_start")
@@ -616,11 +608,9 @@ fn pty_mermaid_harness_jsonl_schema() -> Result<(), String> {
 /// logging) also appear in the harness output when E2E_JSONL is set.
 #[test]
 fn pty_mermaid_harness_metrics_jsonl_present() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
-    let output = run_mermaid_harness(&demo_bin, MERMAID_SEED)?;
+    let output = run_mermaid_harness(demo_bin, MERMAID_SEED)?;
     let text = String::from_utf8_lossy(&output);
 
     // The screen's recompute_metrics() emits mermaid_render events to stderr.
@@ -757,15 +747,13 @@ fn pty_mermaid_harness_metrics_jsonl_present() -> Result<(), String> {
 /// Verify that different seeds produce different frame hashes.
 #[test]
 fn pty_mermaid_harness_different_seeds_differ() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     // The seed doesn't affect mermaid rendering (it's for VFX randomness),
     // but the run_id differs, and the hash_key differs.
     // Run with two different seeds and just verify both complete successfully.
-    let output_a = run_mermaid_harness(&demo_bin, 42)?;
-    let output_b = run_mermaid_harness(&demo_bin, 99)?;
+    let output_a = run_mermaid_harness(demo_bin, 42)?;
+    let output_b = run_mermaid_harness(demo_bin, 99)?;
 
     let frames_a = extract_mermaid_frames(&output_a)?;
     let frames_b = extract_mermaid_frames(&output_b)?;

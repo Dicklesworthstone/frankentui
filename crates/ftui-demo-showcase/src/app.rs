@@ -4192,9 +4192,7 @@ impl AppModel {
                         // over the corresponding global number shortcut.
                         (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE)
                             if !text_input_active
-                                && !self
-                                    .screens
-                                    .consumes_number_key(self.display_screen(), ch) =>
+                                && !self.screens.consumes_number_key(self.display_screen(), ch) =>
                         {
                             if let Some(id) = ScreenId::from_number_key(ch) {
                                 if self.tour.is_active() {
@@ -6273,7 +6271,10 @@ mod tests {
                 Cmd::Batch(cmds) => cmds.iter().any(|cmd| matches!(cmd, Cmd::Quit)),
                 _ => false,
             };
-            assert!(contains_quit, "global quit must remain active on {screen:?}");
+            assert!(
+                contains_quit,
+                "global quit must remain active on {screen:?}"
+            );
         }
     }
 

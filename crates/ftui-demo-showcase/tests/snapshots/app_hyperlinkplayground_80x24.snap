@@ -1,7 +1,7 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭─────────────────────────────Hyperlink Playground─────────────────────────────╮
 │Hyperlink Playground  OSC-8 + Hit Regions                                     │
-│Up/Down move · Tab cycle · Enter activate · Mouse hover/click                 │
+│Up/Down move · c copy URL · Enter activate · Mouse hover/click                │
 │                                                                              │
 │╭Links (OSC-8)────────────────────╮╭Details & Registry───────────────────────╮│
 ││> FrankenTUI                     ││Selected: FrankenTUI                     ││

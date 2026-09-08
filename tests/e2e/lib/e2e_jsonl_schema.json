@@ -661,6 +661,78 @@
         "phase_len": "number"
       }
     },
+    "visual_effects_case": {
+      "required": [
+        "step",
+        "effect",
+        "size",
+        "mode",
+        "hash_key",
+        "cols",
+        "rows",
+        "screen",
+        "exit_code",
+        "duration_ms",
+        "outcome",
+        "term",
+        "colorterm",
+        "tmux",
+        "zellij",
+        "kitty",
+        "wt"
+      ],
+      "optional": [],
+      "types": {
+        "step": "string",
+        "effect": "string",
+        "size": "string",
+        "mode": "string",
+        "hash_key": "string",
+        "cols": "integer",
+        "rows": "integer",
+        "screen": "integer",
+        "exit_code": "integer",
+        "duration_ms": "integer",
+        "outcome": "string",
+        "term": "string",
+        "colorterm": "string",
+        "tmux": "integer",
+        "zellij": "integer",
+        "kitty": "integer",
+        "wt": "integer"
+      }
+    },
+    "layout_inspector_case": {
+      "required": [
+        "mode",
+        "hash_key",
+        "cols",
+        "rows",
+        "screen",
+        "scenario_id",
+        "step_idx",
+        "keys",
+        "rects_hash",
+        "duration_ms",
+        "exit_code",
+        "outcome"
+      ],
+      "optional": [],
+      "types": {
+        "mode": "string",
+        "hash_key": "string",
+        "cols": "integer",
+        "rows": "integer",
+        "screen": "integer",
+        "scenario_id": "integer",
+        "step_idx": "integer",
+        "keys": "string",
+        "rects_hash": "string",
+        "duration_ms": "integer",
+        "exit_code": "integer",
+        "outcome": "string"
+      }
+    },
     "table_theme_gallery": {
       "required": [
         "screen_id",
@@ -691,8 +763,8 @@
         "preview_mode": "string",
         "phase": "number",
         "highlight_target": "string",
-        "resolved_style_hash": "string",
-        "effects_hash": "string",
+        "resolved_style_hash": "integer",
+        "effects_hash": "integer",
         "column_widths": "array",
         "table_dims": "object",
         "terminal_size": "object",
@@ -720,8 +792,8 @@
       "types": {
         "action": "string",
         "preset_name": "string",
-        "style_hash": "string",
-        "effects_hash": "string",
+        "style_hash": "integer",
+        "effects_hash": "integer",
         "effect_count": "number",
         "file_path": [
           "string",

@@ -575,16 +575,14 @@ fn is_release_mode() -> bool {
 #[test]
 fn pty_visual_effects_input_no_panic() -> Result<(), String> {
     let start = Instant::now();
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     logger().log_env();
     log_jsonl(
         "env",
         &[
             ("test", JsonValue::str("pty_visual_effects_input_no_panic")),
-            ("bin", JsonValue::str(&demo_bin)),
+            ("bin", JsonValue::str(demo_bin)),
             ("cols", JsonValue::u64(120)),
             ("rows", JsonValue::u64(40)),
         ],
@@ -679,9 +677,7 @@ fn pty_visual_effects_input_no_panic() -> Result<(), String> {
 
 #[test]
 fn pty_vfx_harness_deterministic_hashes() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let seed = logger().fixture().seed();
     let case = *VFX_CASES
@@ -696,14 +692,14 @@ fn pty_vfx_harness_deterministic_hashes() -> Result<(), String> {
                 "test",
                 JsonValue::str("pty_vfx_harness_deterministic_hashes"),
             ),
-            ("bin", JsonValue::str(&demo_bin)),
+            ("bin", JsonValue::str(demo_bin)),
             ("effect", JsonValue::str(case.effect)),
             ("seed", JsonValue::u64(seed)),
         ],
     );
 
-    let frames_a = run_vfx_harness(&demo_bin, case, seed)?;
-    let frames_b = run_vfx_harness(&demo_bin, case, seed)?;
+    let frames_a = run_vfx_harness(demo_bin, case, seed)?;
+    let frames_b = run_vfx_harness(demo_bin, case, seed)?;
 
     validate_frame_suite(&frames_a, case)?;
     validate_frame_suite(&frames_b, case)?;
@@ -739,9 +735,7 @@ fn pty_vfx_harness_deterministic_hashes() -> Result<(), String> {
 
 #[test]
 fn pty_vfx_perf_jsonl_schema() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let seed = logger().fixture().seed();
     let case = *VFX_CASES
@@ -753,13 +747,13 @@ fn pty_vfx_perf_jsonl_schema() -> Result<(), String> {
         "env",
         &[
             ("test", JsonValue::str("pty_vfx_perf_jsonl_schema")),
-            ("bin", JsonValue::str(&demo_bin)),
+            ("bin", JsonValue::str(demo_bin)),
             ("effect", JsonValue::str(case.effect)),
             ("seed", JsonValue::u64(seed)),
         ],
     );
 
-    let output = run_vfx_harness_output(&demo_bin, case, seed, true, &[])?;
+    let output = run_vfx_harness_output(demo_bin, case, seed, true, &[])?;
     let perf_frames = extract_vfx_perf_frames(&output)?;
     ensure_vfx_perf_summary(&output)?;
 
@@ -798,9 +792,7 @@ fn pty_vfx_perf_regression_guard() -> Result<(), String> {
         return Ok(());
     }
 
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
     let seed = 0u64;
 
     logger().log_env();
@@ -808,7 +800,7 @@ fn pty_vfx_perf_regression_guard() -> Result<(), String> {
         "env",
         &[
             ("test", JsonValue::str("pty_vfx_perf_regression_guard")),
-            ("bin", JsonValue::str(&demo_bin)),
+            ("bin", JsonValue::str(demo_bin)),
             ("seed", JsonValue::u64(seed)),
             ("frames", JsonValue::u64(VFX_PERF_FRAMES)),
             (
@@ -819,7 +811,7 @@ fn pty_vfx_perf_regression_guard() -> Result<(), String> {
     );
 
     for case in VFX_PERF_CASES {
-        let output = run_vfx_harness_output(&demo_bin, *case, seed, true, &[])?;
+        let output = run_vfx_harness_output(demo_bin, *case, seed, true, &[])?;
         let summary = extract_vfx_perf_summary(&output)?;
         let frames = extract_vfx_frames(&output)?;
         let budget = find_perf_budget(*case).ok_or_else(|| {
@@ -997,9 +989,7 @@ fn contains_seq(haystack: &[u8], needle: &[u8]) -> bool {
 
 #[test]
 fn vfx_shape3d_smoke_runs() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let seed = logger().fixture().seed();
     let case = VfxCase {
@@ -1011,16 +1001,14 @@ fn vfx_shape3d_smoke_runs() -> Result<(), String> {
     };
 
     logger().log_env();
-    let frames = run_vfx_harness(&demo_bin, case, seed)?;
+    let frames = run_vfx_harness(demo_bin, case, seed)?;
     validate_frame_suite(&frames, case)?;
     Ok(())
 }
 
 #[test]
 fn vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let seed = logger().fixture().seed();
     let case = VfxCase {
@@ -1039,7 +1027,7 @@ fn vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences() -> Result<(), St
         ("WEZTERM_PANE", "1"),
         ("COLORTERM", "truecolor"),
     ];
-    let output = run_vfx_harness_output(&demo_bin, case, seed, false, extra_env)?;
+    let output = run_vfx_harness_output(demo_bin, case, seed, false, extra_env)?;
 
     assert!(
         !contains_seq(&output, b"\x1b[?2026h"),
@@ -1056,9 +1044,7 @@ fn vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences() -> Result<(), St
 /// `BLESS=1 FTUI_VFX_BLESS_NOTE="reason" cargo test -p ftui-demo-showcase --test visual_effects_pty vfx_golden_hash_registry -- --nocapture`
 #[test]
 fn vfx_golden_hash_registry() -> Result<(), String> {
-    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-    })?;
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let seed = logger().fixture().seed();
     let base_dir = vfx_golden_base_dir();
@@ -1066,7 +1052,7 @@ fn vfx_golden_hash_registry() -> Result<(), String> {
 
     logger().log_env();
     for case in VFX_CASES {
-        let frames = run_vfx_harness(&demo_bin, *case, seed)?;
+        let frames = run_vfx_harness(demo_bin, *case, seed)?;
         validate_frame_suite(&frames, *case)?;
         let actual = frame_hash_sequence(&frames);
 

@@ -27,6 +27,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${LOG_DIR:-/tmp/widget_api_e2e_${TIMESTAMP}}"
+# Set suite paths before logging.sh supplies its shared defaults.
+E2E_LOG_DIR="${E2E_LOG_DIR:-$LOG_DIR}"
+E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
+E2E_JSONL_FILE="${E2E_JSONL_FILE:-$LOG_DIR/widget_api_e2e.jsonl}"
 E2E_LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
 
 VERBOSE=false
@@ -98,13 +102,10 @@ done
 
 e2e_fixture_init "widget_api"
 LOG_DIR="${LOG_DIR:-/tmp/widget_api_e2e_${E2E_RUN_ID}_${TIMESTAMP}}"
-E2E_LOG_DIR="$LOG_DIR"
-E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
-E2E_JSONL_FILE="${E2E_JSONL_FILE:-$LOG_DIR/widget_api_e2e.jsonl}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 export E2E_LOG_DIR E2E_RESULTS_DIR E2E_JSONL_FILE E2E_RUN_CMD E2E_RUN_START_MS
-required_tools=(cargo "${E2E_PYTHON:-python3}" jq awk sed grep wc tr cat env sha256sum)
+required_tools=(cargo cargo-nextest "${E2E_PYTHON:-python3}" jq awk sed grep wc tr cat env sha256sum)
 if $VERBOSE; then
     required_tools+=(tee)
 fi
@@ -491,12 +492,15 @@ run_step "Building workspace" "$LOG_DIR/01_build.log" \
 # Step 2: Unit Tests
 # The deterministic seed variables exported above are for the PTY runs below;
 # unit tests carry their own default seeds (ftui-harness asserts 99/42), so the
-# seed/time-step env must not reach cargo test. e2e_cargo_test_env_guard strips
+# seed/time-step env must not reach test processes. e2e_cargo_test_env_guard strips
 # it (single source of the var list in common.sh); the tests are also hardened
 # to be env-independent, so this is defense in depth.
+# Use the existing nextest timing-test reservations and 120-second per-test
+# timeout while preserving the library-only scope of this step.
 e2e_log_cargo_test_hermetic
 run_step "Running unit tests" "$LOG_DIR/02_tests.log" \
-    e2e_cargo_test_env_guard cargo test --workspace --lib -- --test-threads=4
+    e2e_cargo_test_env_guard cargo nextest run --workspace --lib \
+        --profile default --no-fail-fast --test-threads=4
 
 # Step 3: Clippy
 run_step "Running clippy" "$LOG_DIR/03_clippy.log" \
@@ -661,7 +665,8 @@ else
     snap_start_ms="$(e2e_now_ms)"
     jsonl_step_start "snapshot_tests"
     if [ -f "$PROJECT_ROOT/crates/ftui-harness/tests/widget_snapshots.rs" ]; then
-        if cargo test -p ftui-harness --test widget_snapshots > "$LOG_DIR/07_snapshots.log" 2>&1; then
+        if e2e_cargo_test_env_guard cargo nextest run -p ftui-harness --test widget_snapshots \
+            --profile default --no-fail-fast --test-threads=4 > "$LOG_DIR/07_snapshots.log" 2>&1; then
             log_pass "Snapshot tests passed"
             PASS_COUNT=$((PASS_COUNT + 1))
             jsonl_step_end "snapshot_tests" "success" "$(( $(e2e_now_ms) - snap_start_ms ))"

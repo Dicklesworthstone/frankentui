@@ -262,8 +262,8 @@ impl HyperlinkPlayground {
             Span::styled("Up/Down", theme::muted()),
             Span::styled(" move", theme::muted()),
             Span::raw(" · "),
-            Span::styled("Tab", theme::muted()),
-            Span::styled(" cycle", theme::muted()),
+            Span::styled("c", theme::muted()),
+            Span::styled(" copy URL", theme::muted()),
             Span::raw(" · "),
             Span::styled("Enter", theme::muted()),
             Span::styled(" activate", theme::muted()),
@@ -504,10 +504,6 @@ impl Screen for HyperlinkPlayground {
             HelpEntry {
                 key: "Up/Down",
                 action: "Move focus",
-            },
-            HelpEntry {
-                key: "Tab",
-                action: "Cycle links",
             },
             HelpEntry {
                 key: "Enter",

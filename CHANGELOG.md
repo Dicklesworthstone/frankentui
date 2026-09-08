@@ -21,6 +21,83 @@ Scope window: [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/
 
 ---
 
+## [Unreleased]
+
+Changes since v0.6.0, prepared for 0.7.0.
+
+### Added
+
+- Default terminal backends and automatic selection through `App::run()`:
+  native TTY on Unix, Crossterm elsewhere. `FrameExt` is available from the
+  facade and prelude ([`18e28b0a`](https://github.com/Dicklesworthstone/frankentui/commit/18e28b0a),
+  [`6116a77d`](https://github.com/Dicklesworthstone/frankentui/commit/6116a77d)).
+- Declarative keymaps with chords, contexts, priorities, conflict detection,
+  TOML/JSON persistence behind `serde`, and generated help
+  ([`9b1f5bd4`](https://github.com/Dicklesworthstone/frankentui/commit/9b1f5bd4),
+  [`82592893`](https://github.com/Dicklesworthstone/frankentui/commit/82592893),
+  [`f3a2ceb2`](https://github.com/Dicklesworthstone/frankentui/commit/f3a2ceb2)).
+- Opt-in accessibility trees and announcements through
+  `Model::on_accessibility`, including TextArea semantics. Accessibility text
+  stays out of telemetry by default
+  ([`a23154d7`](https://github.com/Dicklesworthstone/frankentui/commit/a23154d7),
+  [`1b611c72`](https://github.com/Dicklesworthstone/frankentui/commit/1b611c72),
+  [`f6909bc0`](https://github.com/Dicklesworthstone/frankentui/commit/f6909bc0)).
+- TextArea syntax highlighting, collapsible JsonView nodes, TextInput history,
+  indeterminate progress, sparkline extrema markers, dashed borders, and
+  variable-height VirtualizedList rendering
+  ([`a2f36fe2`](https://github.com/Dicklesworthstone/frankentui/commit/a2f36fe2),
+  [`63465481`](https://github.com/Dicklesworthstone/frankentui/commit/63465481),
+  [`4c697f8c`](https://github.com/Dicklesworthstone/frankentui/commit/4c697f8c)).
+- Pane execution strategies with persistent tree storage
+  ([`636133cf`](https://github.com/Dicklesworthstone/frankentui/commit/636133cf));
+  opt-in gesture delivery and polling file-watcher subscriptions
+  ([`93d22b3b`](https://github.com/Dicklesworthstone/frankentui/commit/93d22b3b),
+  [`6462c7d5`](https://github.com/Dicklesworthstone/frankentui/commit/6462c7d5)).
+- Streaming log sanitization modes, including SGR-only styling, with assembly
+  of split escape sequences and UTF-8 fragments
+  ([`ed7ee2cc`](https://github.com/Dicklesworthstone/frankentui/commit/ed7ee2cc)).
+
+### Fixed
+
+- Preserve typed input, mouse events, and trailing Escape during terminal
+  probing; prevent Windows event-loop stalls after spurious console readiness
+  ([`fd4ade13`](https://github.com/Dicklesworthstone/frankentui/commit/fd4ade13),
+  [`2aaadb71`](https://github.com/Dicklesworthstone/frankentui/commit/2aaadb71),
+  [`fc67ab6e`](https://github.com/Dicklesworthstone/frankentui/commit/fc67ab6e)).
+- Protect inline UI boundaries when only one log row remains or a full-height
+  UI is shrinking ([`4e3657cb`](https://github.com/Dicklesworthstone/frankentui/commit/4e3657cb)).
+- Preserve exact internal height totals beyond `u32` in virtualized lists
+  ([`86e73927`](https://github.com/Dicklesworthstone/frankentui/commit/86e73927));
+  preserve pane history, honor nested size constraints, and autosave workspace
+  resets ([`af9a7d9f`](https://github.com/Dicklesworthstone/frankentui/commit/af9a7d9f),
+  [`5e79faa7`](https://github.com/Dicklesworthstone/frankentui/commit/5e79faa7),
+  [`22446ba0`](https://github.com/Dicklesworthstone/frankentui/commit/22446ba0)).
+- Restore uppercase-G navigation in Virtualized Search and local number-key
+  controls in the Visual Effects and internationalization showcase screens
+  ([`bd4a6ee8`](https://github.com/Dicklesworthstone/frankentui/commit/bd4a6ee8)).
+
+### Migration
+
+- Research modules in `ftui-runtime`, `ftui_render::roaring_bitmap`,
+  `ftui_layout::S3FifoLayoutCache`, and
+  `ftui_widgets::command_palette::ConformalRanker` now require the owning
+  crate's `experimental` feature. The facade's `experimental` feature does
+  not forward these features
+  ([`e2a4bdca`](https://github.com/Dicklesworthstone/frankentui/commit/e2a4bdca),
+  [`b590ef8c`](https://github.com/Dicklesworthstone/frankentui/commit/b590ef8c),
+  [`ee3b0534`](https://github.com/Dicklesworthstone/frankentui/commit/ee3b0534),
+  [`e2376ccc`](https://github.com/Dicklesworthstone/frankentui/commit/e2376ccc)).
+- `CoalesceAction::ShowPlaceholder` was removed. Pending coalescing returns
+  `CoalesceAction::None`; use `ResizeCoalescer::has_pending()` to distinguish
+  it from idle ([`6ab2d616`](https://github.com/Dicklesworthstone/frankentui/commit/6ab2d616)).
+
+### Release tooling
+
+- Resumable DSR crate publishing verifies dependency order, package hashes,
+  and Git provenance ([`d276e16d`](https://github.com/Dicklesworthstone/frankentui/commit/d276e16d)).
+
+---
+
 ## [v0.6.0] -- 2026-08-24 (GitHub Release)
 
 Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.5.0...v0.6.0>
@@ -668,6 +745,6 @@ This version contains all foundational work listed under v0.2.0 above (the kerne
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/frankentui/compare/v0.2.1...main
+[Unreleased]: https://github.com/Dicklesworthstone/frankentui/compare/v0.6.0...HEAD
 [v0.2.1]: https://github.com/Dicklesworthstone/frankentui/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.2.0

@@ -316,13 +316,7 @@ fn mermaid_jsonl_render_event_complete_schema() {
     use portable_pty::CommandBuilder;
     use std::time::Duration;
 
-    let demo_bin = match std::env::var("CARGO_BIN_EXE_ftui-demo-showcase") {
-        Ok(bin) => bin,
-        Err(_) => {
-            eprintln!("SKIPPED: CARGO_BIN_EXE_ftui-demo-showcase not set");
-            return;
-        }
-    };
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let config = PtyConfig::default()
         .with_size(120, 40)
@@ -332,7 +326,7 @@ fn mermaid_jsonl_render_event_complete_schema() {
         .with_env("E2E_SEED", "42")
         .logging(false);
 
-    let mut cmd = CommandBuilder::new(&demo_bin);
+    let mut cmd = CommandBuilder::new(demo_bin);
     cmd.arg("--mermaid-harness");
     cmd.arg("--mermaid-tick-ms=100");
     cmd.arg("--mermaid-cols=120");
@@ -426,13 +420,7 @@ fn mermaid_jsonl_all_samples_logged() {
     use portable_pty::CommandBuilder;
     use std::time::Duration;
 
-    let demo_bin = match std::env::var("CARGO_BIN_EXE_ftui-demo-showcase") {
-        Ok(bin) => bin,
-        Err(_) => {
-            eprintln!("SKIPPED: CARGO_BIN_EXE_ftui-demo-showcase not set");
-            return;
-        }
-    };
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let config = PtyConfig::default()
         .with_size(120, 40)
@@ -442,7 +430,7 @@ fn mermaid_jsonl_all_samples_logged() {
         .with_env("E2E_SEED", "42")
         .logging(false);
 
-    let mut cmd = CommandBuilder::new(&demo_bin);
+    let mut cmd = CommandBuilder::new(demo_bin);
     cmd.arg("--mermaid-harness");
     cmd.arg("--mermaid-tick-ms=100");
     cmd.arg("--mermaid-cols=120");
@@ -519,13 +507,7 @@ fn mermaid_jsonl_metric_values_sane() {
     use portable_pty::CommandBuilder;
     use std::time::Duration;
 
-    let demo_bin = match std::env::var("CARGO_BIN_EXE_ftui-demo-showcase") {
-        Ok(bin) => bin,
-        Err(_) => {
-            eprintln!("SKIPPED: CARGO_BIN_EXE_ftui-demo-showcase not set");
-            return;
-        }
-    };
+    let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
     let config = PtyConfig::default()
         .with_size(120, 40)
@@ -535,7 +517,7 @@ fn mermaid_jsonl_metric_values_sane() {
         .with_env("E2E_SEED", "42")
         .logging(false);
 
-    let mut cmd = CommandBuilder::new(&demo_bin);
+    let mut cmd = CommandBuilder::new(demo_bin);
     cmd.arg("--mermaid-harness");
     cmd.arg("--mermaid-tick-ms=100");
     cmd.arg("--mermaid-cols=120");

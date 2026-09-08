@@ -15,10 +15,9 @@ path to a working inline (scrollback-preserving) UI.
 ## Stability Notes
 
 - Expect breaking API changes: this is pre-1.0 and moving fast.
-- The workspace version, 0.6.1, is an unpublished candidate. The 17 library
-  crates have older crates.io releases; these examples use the current source
-  through the path dependency below.
-- The source facade's default features compile a terminal backend (native `ftui-tty`
+- These examples target 0.7.0. Use the version dependency below, or a local
+  checkout when developing against repository source.
+- The facade's default features compile a terminal backend (native `ftui-tty`
   on Unix, Crossterm elsewhere) so `App::run()` works without configuration.
 
 ## Crate Map (Core vs Optional)
@@ -167,37 +166,42 @@ Do **not** embed xterm.js as a fallback for this integration path.
 
 ## Add The Dependency
 
-The examples in this guide target the unpublished 0.6.1 repository source. Depend on
-the `ftui` facade by path to use that version:
+The examples in this guide target 0.7.0 through the `ftui` facade:
+
+```toml
+[dependencies]
+ftui = "=0.7.0"
+```
+
+To use a local checkout instead, replace that dependency with a path. Adjust
+the path to match your directory layout:
 
 ```toml
 [dependencies]
 ftui = { path = "../frankentui/crates/ftui" }
 ```
 
-The latest crates.io release, **0.6.0** (August 24, 2026), has only `runtime`
-and `extras` as default features. It predates the current backend and prelude
-changes; `ftui = "0.6"` does not select this checkout. A new release with an
-isolated registry-consumer check is still needed before these examples can be
-claimed to work with the published defaults. See its [published features](https://docs.rs/crate/ftui/0.6.0/features).
-
-The checkout's default features (`runtime`, `extras`, `backend`) are what the
-examples in this guide assume. `backend` compiles the native `ftui-tty` backend on Unix and
-the Crossterm backend elsewhere; `App::run()` picks whichever was compiled and
-`ftui::DEFAULT_BACKEND` names it. Headless, WASM, or custom-backend consumers
+The default features (`runtime`, `extras`, `backend`) are what the examples in
+this guide assume. `App::run()` selects native `ftui-tty` on Unix and Crossterm
+elsewhere when `backend` is enabled; `ftui::DEFAULT_BACKEND` names the selection.
+Headless, WASM, or custom-backend consumers
 should use `default-features = false, features = ["runtime"]`, in which case
 `App::run()` returns an `Unsupported` error naming the feature to enable.
 
-If you only want a small slice, you can depend on internal crates directly
-via path as well (same repo):
+If you only want a small slice, you can depend on individual crates directly:
 
 ```toml
 [dependencies]
-ftui-core = { path = "../frankentui/crates/ftui-core" }
-ftui-runtime = { path = "../frankentui/crates/ftui-runtime" }
-ftui-render = { path = "../frankentui/crates/ftui-render" }
-ftui-widgets = { path = "../frankentui/crates/ftui-widgets" }
+ftui-core = "=0.7.0"
+ftui-runtime = "=0.7.0"
+ftui-render = "=0.7.0"
+ftui-widgets = "=0.7.0"
 ```
+
+For local development, replace each version with a path to its directory under
+`../frankentui/crates/`. Direct `ftui-runtime` dependencies have no default
+terminal backend; enable `native-backend` on Unix or `crossterm-compat` for
+Crossterm if you need `App::run()`.
 
 ## Minimal Inline App (Copy/Paste)
 

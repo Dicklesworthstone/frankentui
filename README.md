@@ -136,8 +136,8 @@ Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-sho
 
 ## Minimal API Example
 
-This example targets the unpublished 0.6.1 checkout. Use the path dependency below;
-the published 0.6.0 archive predates the current backend and prelude changes.
+This example targets FrankenTUI 0.7.0 with the default features enabled. See
+[installation](#installation) for version and local checkout dependencies.
 
 ```rust
 use ftui::prelude::*;
@@ -300,9 +300,9 @@ cargo build --release
 ftui = { path = "../frankentui/crates/ftui" }
 ```
 
-### Crates.io (Published So Far)
+### Crates.io Dependency
 
-All 17 library crates are published on crates.io (the `ftui` facade plus
+The workspace provides 17 library crates (the `ftui` facade plus
 `ftui-core`, `ftui-render`, `ftui-style`, `ftui-text`, `ftui-layout`,
 `ftui-runtime`, `ftui-widgets`, `ftui-extras`, `ftui-backend`, `ftui-tty`,
 `ftui-web`, `ftui-harness`, `ftui-pty`, `ftui-a11y`, `ftui-i18n`,
@@ -310,28 +310,25 @@ All 17 library crates are published on crates.io (the `ftui` facade plus
 
 ```toml
 [dependencies]
-ftui = "=0.6.0"
+ftui = "=0.7.0"
 ```
 
-The latest published facade is **0.6.0**, released August 24, 2026. Its default
-features are `runtime` and `extras`; it predates this checkout's backend and
-prelude changes. The current examples are checked against repository source,
-so use the path dependency above when following them. A new release and a
-successful isolated registry-consumer run are still required to deliver these
-changes through crates.io. The workspace version, **0.6.1**, is an unpublished
-candidate. See the [published feature list](https://docs.rs/crate/ftui/0.6.0/features).
+These dependency examples target **0.7.0**. To work from a local checkout, use
+the path dependency above instead.
 
-In the current checkout, the default features also include `backend`, selecting
-native `ftui-tty` on Unix and Crossterm elsewhere. `ftui::DEFAULT_BACKEND`
-reports the selected backend. Headless, WASM, or custom-backend consumers of
-the checkout can opt out:
+The default features are `runtime`, `extras`, and `backend`. `App::run()` selects
+native `ftui-tty` on Unix and Crossterm elsewhere; `ftui::DEFAULT_BACKEND`
+reports the selected backend. Headless, WASM, or custom-backend consumers can
+disable the defaults:
 
 ```toml
 [dependencies]
-ftui = { path = "../frankentui/crates/ftui", default-features = false, features = ["runtime"] }
+ftui = { version = "=0.7.0", default-features = false, features = ["runtime"] }
 ```
 
-The doctor, demo, and WASM showcase targets are not published.
+Without a compiled terminal backend, `App::run()` returns an `Unsupported`
+error naming the feature to enable. The doctor, demo, and WASM showcase targets
+are repository-only applications.
 
 ---
 

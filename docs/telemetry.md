@@ -13,11 +13,11 @@ observability without impacting default performance.
 
 ### 1. Enable the Feature
 
-Add the `telemetry` feature to your Cargo dependency:
+Add the `telemetry` feature to your Cargo dependency. These examples target 0.7.0:
 
 ```toml
 [dependencies]
-ftui-runtime = { version = "0.1", features = ["telemetry"] }
+ftui-runtime = { version = "=0.7.0", features = ["telemetry"] }
 ```
 
 > Note: `TelemetryConfig` lives in `ftui-runtime` and is **not** re-exported
@@ -28,9 +28,13 @@ Optional: enable richer span emission in runtime + widgets:
 
 ```toml
 [dependencies]
-ftui-runtime = { version = "0.1", features = ["telemetry", "tracing"] }
-ftui-widgets = { version = "0.1", features = ["tracing"] }
+ftui-runtime = { version = "=0.7.0", features = ["telemetry", "tracing"] }
+ftui-widgets = { version = "=0.7.0", features = ["tracing"] }
 ```
+
+For a local checkout, replace `version = "=0.7.0"` with
+`path = "../frankentui/crates/ftui-runtime"` (or the corresponding widget crate
+path), keeping the same features.
 
 ### 2. Configure Environment
 
@@ -77,7 +81,7 @@ FrankenTUI supports the standard OpenTelemetry environment variables:
 |----------|---------|-------------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Base OTLP endpoint URL |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Per-signal override for traces |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | `grpc` or `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Transport is fixed to HTTP/protobuf; this variable does not select another protocol |
 | `OTEL_EXPORTER_OTLP_HEADERS` | unset | `key=value,key2=value2` for auth |
 
 ### FrankenTUI Extensions
@@ -203,7 +207,7 @@ Use `TelemetryConfig::evidence_ledger()` to inspect the decision path:
 
 - `enabled_reason` (why telemetry is on/off)
 - `endpoint_source` (traces endpoint, FTUI override, or base endpoint)
-- `protocol` (grpc vs http/protobuf)
+- `protocol` (HTTP/protobuf)
 - `trace_context_source` (explicit vs new)
 
 ---
@@ -295,6 +299,14 @@ let config = ProgramConfig::default().with_evidence_sink(
 ```
 
 ### Manual Integration (Budget Monitor)
+
+`AllocationBudget` and `BudgetConfig` require the runtime's `experimental`
+feature in addition to any telemetry features you use:
+
+```toml
+[dependencies]
+ftui-runtime = { version = "=0.7.0", features = ["telemetry", "experimental"] }
+```
 
 ```rust
 use ftui_runtime::{AllocationBudget, BudgetConfig, EvidenceSink, EvidenceSinkConfig};

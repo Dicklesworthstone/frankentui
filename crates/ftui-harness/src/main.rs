@@ -122,7 +122,7 @@ struct AgentHarness {
     locale_switch_target: Option<Locale>,
     /// Whether effect-queue tasks have been enqueued.
     effect_queue_seeded: bool,
-    /// Advance traced diff fixtures only after a successful presentation.
+    /// Advance traced fixtures only after a successful presentation.
     trace_fixture_clock: Option<TraceFixtureClock>,
 }
 
@@ -134,7 +134,7 @@ enum Msg {
     Key(KeyEvent),
     /// Tick for spinner animation.
     SpinnerTick,
-    /// Successful presentation recorded by the traced diff fixture.
+    /// Successful presentation recorded by the traced fixture.
     TraceFramePresented(u64),
     /// A log line was received.
     LogLine(String),
@@ -204,7 +204,10 @@ impl TraceFixtureClock {
         if !trace.enabled
             || !matches!(
                 view,
-                HarnessView::SpanDiff | HarnessView::SelectorStorm | HarnessView::TileSkip
+                HarnessView::SpanDiff
+                    | HarnessView::SelectorStorm
+                    | HarnessView::TileSkip
+                    | HarnessView::WidgetBudget
             )
         {
             return Ok(None);
@@ -212,7 +215,7 @@ impl TraceFixtureClock {
         if !trace.flush_on_write {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "traced diff fixtures require FTUI_HARNESS_RENDER_TRACE_FLUSH=1",
+                "traced fixtures require FTUI_HARNESS_RENDER_TRACE_FLUSH=1",
             ));
         }
         Ok(Some(Self {
@@ -349,7 +352,9 @@ impl TraceFixtureRecords {
                     return Ok(Some(frame_idx));
                 }
                 Some("trace_summary") if self.saw_header => {
-                    if value.get("total_frames").and_then(serde_json::Value::as_u64)
+                    if value
+                        .get("total_frames")
+                        .and_then(serde_json::Value::as_u64)
                         != Some(self.next_frame)
                     {
                         return Err(io::Error::new(
@@ -2070,7 +2075,6 @@ fn run_writer_session(mode: &str) -> io::Result<()> {
         cell::{CellAttrs, StyleFlags},
     };
     use ftui_runtime::{TerminalWriter, UiAnchor};
-    use std::io::BufRead;
 
     let screen_mode = match mode {
         "alt" => ScreenMode::AltScreen,
@@ -2592,23 +2596,52 @@ mod tests {
             let mut reader = io::Cursor::new(input.into_bytes());
             TraceFixtureClock::follow_reader(&mut reader, &sender, &stop)
         });
-        assert!(matches!(receiver.recv().unwrap(), Msg::TraceFramePresented(0)));
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            Msg::TraceFramePresented(0)
+        ));
         source.cancel();
-        worker.join().expect("clock worker").expect("cancel cleanly");
-        assert!(receiver.try_recv().is_err(), "partial frame must not advance");
+        worker
+            .join()
+            .expect("clock worker")
+            .expect("cancel cleanly");
+        assert!(
+            receiver.try_recv().is_err(),
+            "partial frame must not advance"
+        );
     }
 
     #[test]
-    fn trace_fixture_requires_flushing_only_for_traced_diff_views() {
+    fn trace_fixture_requires_flushing_only_for_selected_traced_views() {
         let mut trace = RenderTraceConfig::enabled_file("unused-trace.jsonl");
-        for view in [HarnessView::SpanDiff, HarnessView::SelectorStorm, HarnessView::TileSkip] {
-            assert!(TraceFixtureClock::from_config(view, &trace).unwrap().is_some());
+        for view in [
+            HarnessView::SpanDiff,
+            HarnessView::SelectorStorm,
+            HarnessView::TileSkip,
+            HarnessView::WidgetBudget,
+        ] {
+            trace.enabled = true;
+            trace.flush_on_write = true;
+            assert!(
+                TraceFixtureClock::from_config(view, &trace)
+                    .unwrap()
+                    .is_some()
+            );
+            trace.flush_on_write = false;
+            assert!(TraceFixtureClock::from_config(view, &trace).is_err());
+            trace.enabled = false;
+            assert!(
+                TraceFixtureClock::from_config(view, &trace)
+                    .unwrap()
+                    .is_none()
+            );
         }
-        trace.flush_on_write = false;
-        assert!(TraceFixtureClock::from_config(HarnessView::SpanDiff, &trace).is_err());
-        assert!(TraceFixtureClock::from_config(HarnessView::Default, &trace).unwrap().is_none());
-        trace.enabled = false;
-        assert!(TraceFixtureClock::from_config(HarnessView::SpanDiff, &trace).unwrap().is_none());
+        trace.enabled = true;
+        assert!(
+            TraceFixtureClock::from_config(HarnessView::Default, &trace)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -2641,9 +2674,12 @@ mod tests {
             (HarnessView::SpanDiff, 12),
             (HarnessView::TileSkip, 12),
             (HarnessView::SelectorStorm, 18),
+            (HarnessView::WidgetBudget, 12),
         ] {
             let mut app = AgentHarness::new(view, false);
-            let clock = TraceFixtureClock::from_config(view, &trace).unwrap().unwrap();
+            let clock = TraceFixtureClock::from_config(view, &trace)
+                .unwrap()
+                .unwrap();
             app.trace_fixture_clock = Some(clock.clone());
             app.auto_quit_ticks = Some(frame_count);
             for frame_idx in 0..frame_count {

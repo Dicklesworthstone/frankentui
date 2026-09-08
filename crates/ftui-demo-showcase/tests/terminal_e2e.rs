@@ -209,15 +209,14 @@ mod pty_management {
 
     #[test]
     fn e2e_demo_inline_mouse_auto_does_not_enable_capture() {
-        let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase")
-            .expect("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests");
+        let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
         let config = PtyConfig::default()
             .with_size(80, 24)
             .with_test_name("demo_inline_mouse_auto")
             .logging(false);
 
-        let mut cmd = CommandBuilder::new(&demo_bin);
+        let mut cmd = CommandBuilder::new(demo_bin);
         cmd.arg("--screen-mode=inline");
         cmd.arg("--mouse=auto");
         cmd.arg("--screen=36"); // Inline Mode
@@ -244,15 +243,14 @@ mod pty_management {
 
     #[test]
     fn e2e_demo_inline_mouse_on_enables_capture() {
-        let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase")
-            .expect("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests");
+        let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
         let config = PtyConfig::default()
             .with_size(80, 24)
             .with_test_name("demo_inline_mouse_on")
             .logging(false);
 
-        let mut cmd = CommandBuilder::new(&demo_bin);
+        let mut cmd = CommandBuilder::new(demo_bin);
         cmd.arg("--screen-mode=inline");
         cmd.arg("--mouse=on");
         cmd.arg("--screen=36"); // Inline Mode
@@ -996,9 +994,7 @@ mod mouse_navigation {
 
     #[test]
     fn e2e_mouse_tab_switches_screen() -> Result<(), String> {
-        let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
-            format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
-        })?;
+        let demo_bin = env!("CARGO_BIN_EXE_ftui-demo-showcase");
 
         let config = PtyConfig::default()
             .with_size(120, 40)

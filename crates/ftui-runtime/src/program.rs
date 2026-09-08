@@ -15448,7 +15448,11 @@ mod tests {
             .expect("survivor task cmd");
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !program.model().survivor_seen && Instant::now() <= deadline {
+        // The survivor can finish before the other worker records its panic.
+        // Completed handles also guarantee that their evidence writes finished.
+        while (!program.model().survivor_seen || program.task_executor.in_flight() > 0)
+            && Instant::now() <= deadline
+        {
             program
                 .process_task_results()
                 .expect("process task results");
@@ -15458,8 +15462,14 @@ mod tests {
             program.model().survivor_seen,
             "executor did not survive a panicking task"
         );
+        assert_eq!(
+            program.task_executor.in_flight(),
+            0,
+            "executor tasks did not finish before evidence was read"
+        );
         let panic_line = read_evidence_event(&evidence_path, "task_executor_panic");
         assert_eq!(panic_line["backend"], "asupersync");
+        assert_eq!(panic_line["panic_msg"], "asupersync boom");
     }
 
     #[cfg(feature = "asupersync-executor")]

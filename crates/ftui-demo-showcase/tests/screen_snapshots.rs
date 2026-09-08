@@ -17,6 +17,7 @@ use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseEvent, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
+use ftui_core::glyph_policy::{GlyphMode, GlyphPolicy};
 use ftui_core::terminal_capabilities::TerminalProfile;
 use ftui_demo_showcase::app::{AppModel, AppMsg, ScreenId};
 use ftui_demo_showcase::screens::Screen;
@@ -65,6 +66,19 @@ fn ctrl_press(code: KeyCode) -> Event {
 /// previous overrides on drop, so parallel tests stay isolated.
 fn stable_caps() -> OverrideGuard {
     push_override(CapabilityOverride::new().unicode_emoji(Some(true)))
+}
+
+/// These Mermaid goldens cover the CellOnly capability fallback. The displayed
+/// `Render:braille` header names the requested mode, not the resolved fallback.
+/// Keep this override scoped to Mermaid; explicit canvas/PTY tests cover Braille.
+fn mermaid_cell_only_caps() -> OverrideGuard {
+    let guard = push_override(CapabilityOverride::new().unicode_box_drawing(Some(false)));
+    assert_eq!(
+        GlyphPolicy::detect().mode,
+        GlyphMode::Ascii,
+        "Mermaid CellOnly snapshots require the ASCII capability fallback"
+    );
+    guard
 }
 
 fn mouse_move(x: u16, y: u16) -> Event {
@@ -141,6 +155,7 @@ fn mermaid_showcase_snapshot(
     height: u16,
     name: &str,
 ) {
+    let _caps = mermaid_cell_only_caps();
     screen.stabilize_metrics_for_snapshot();
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(width, height, &mut pool);
@@ -1200,6 +1215,7 @@ fn app_help_overlay_80x24() {
 #[test]
 fn app_help_overlay_mermaid_mega_showcase_80x24() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let _caps = mermaid_cell_only_caps();
     let mut app = AppModel::new();
     app.current_screen = ScreenId::MermaidMegaShowcase;
     app.help_visible = true;
@@ -1214,6 +1230,7 @@ fn app_help_overlay_mermaid_mega_showcase_80x24() {
 #[test]
 fn app_help_overlay_mermaid_mega_showcase_120x40() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let _caps = mermaid_cell_only_caps();
     let mut app = AppModel::new();
     app.current_screen = ScreenId::MermaidMegaShowcase;
     app.help_visible = true;
@@ -1271,6 +1288,14 @@ fn app_all_screens_80x24() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
 
     for &id in ftui_demo_showcase::screens::screen_ids() {
+        let _mermaid_caps = matches!(
+            id,
+            ScreenId::MermaidShowcase | ScreenId::MermaidMegaShowcase
+        )
+        .then(mermaid_cell_only_caps);
+        // This App golden covers fallback; direct gallery goldens cover emoji.
+        let _gallery_caps = (id == ScreenId::WidgetGallery)
+            .then(|| push_override(CapabilityOverride::new().unicode_emoji(Some(false))));
         let mut app = AppModel::new();
         app.current_screen = id;
         if id == ScreenId::TerminalCapabilities {
@@ -3226,6 +3251,7 @@ fn mermaid_showcase_viewport_override_120x40() {
 #[test]
 fn mermaid_showcase_error_sample_120x40() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let _caps = mermaid_cell_only_caps();
     let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
     const INVALID_SRC: &str = "graph TD\n    A[Start] --> B[Ok]\n    classDef";
     screen.override_selected_sample_for_test("error-sample", "Error Sample", INVALID_SRC);
@@ -3503,6 +3529,7 @@ fn mega_showcase_snapshot(
     height: u16,
     name: &str,
 ) {
+    let _caps = mermaid_cell_only_caps();
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(width, height, &mut pool);
     let area = Rect::new(0, 0, width, height);
@@ -3657,6 +3684,7 @@ fn mega_showcase_viewport_override_120x40() {
 #[test]
 fn mega_showcase_invalid_overlay_120x40() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let _caps = mermaid_cell_only_caps();
     let mut screen =
         ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
     mega_showcase_goto_sample(&mut screen, "flow-invalid-parse-error");
@@ -3676,6 +3704,7 @@ fn mega_showcase_invalid_overlay_120x40() {
 #[test]
 fn mega_showcase_invalid_diagnostics_120x40() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let _caps = mermaid_cell_only_caps();
     let mut screen =
         ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
     mega_showcase_goto_sample(&mut screen, "flow-invalid-parse-error");

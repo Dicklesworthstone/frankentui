@@ -24,6 +24,7 @@ case "$out/" in
 esac
 [[ ! -e "$out" ]] || { echo "Output directory already exists: $out" >&2; exit 2; }
 mkdir "$out"
+export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
 export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
 source_commit="$(git rev-parse HEAD)"
 git status --porcelain=v1 --untracked-files=normal > "$out/source-status.txt"
@@ -59,9 +60,13 @@ for name, manifest in packages.items():
     tables = [manifest] + list(manifest.get("target", {}).values())
     internal = set()
     for table in tables:
-        for kind in ("dependencies", "build-dependencies"):
+        for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
             for alias, dependency in table.get(kind, {}).items():
                 if not isinstance(dependency, dict):
+                    continue
+                # Cargo strips path-only development dependencies when packaging.
+                # Versioned ones remain in the normalized manifest and lockfile.
+                if kind == "dev-dependencies" and "version" not in dependency:
                     continue
                 target = dependency.get("package", alias)
                 if target in packages:
@@ -72,7 +77,7 @@ for name, manifest in packages.items():
 order = []
 while len(order) < len(packages):
     ready = sorted(name for name, deps in dependencies.items() if name not in order and deps <= set(order))
-    assert ready, "cycle in publishable non-development dependencies"
+    assert ready, "cycle in publishable dependencies"
     order.extend(ready)
 assert order, "no publishable crates"
 print(json.dumps({"version": version, "crates": order}, indent=2))
