@@ -29,7 +29,7 @@ JSONL_FILE="$E2E_RESULTS_DIR/virtualized_search.jsonl"
 RUN_ID="vsearch_$(e2e_log_stamp)"
 
 # Prefer canonicalization when the helper binary is available.
-CANON_BIN="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}/debug/pty_canonicalize"
+CANON_BIN="${PTY_CANONICALIZE_BIN:-${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}/debug/pty_canonicalize}"
 if [[ ! -x "$CANON_BIN" ]]; then
     CANON_BIN=""
 fi
@@ -141,7 +141,7 @@ jsonl_log_case() {
 
 ensure_demo_bin() {
     local target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
-    local bin="$target_dir/debug/ftui-demo-showcase"
+    local bin="${E2E_DEMO_BIN:-$target_dir/debug/ftui-demo-showcase}"
     if [[ -x "$bin" ]]; then
         echo "$bin"
         return 0
@@ -159,7 +159,7 @@ run_case() {
     local name="$1" send_label="$2"
     shift 2
     local start_ms
-    start_ms="$(e2e_now_ms)"
+    start_ms="$(e2e_monotonic_ms)" || return 2
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local output_file="$E2E_LOG_DIR/${name}.pty"
@@ -168,7 +168,7 @@ run_case() {
 
     if "$@"; then
         local end_ms
-        end_ms="$(e2e_now_ms)"
+        end_ms="$(e2e_monotonic_ms)" || return 2
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -177,7 +177,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(e2e_now_ms)"
+    end_ms="$(e2e_monotonic_ms)" || return 2
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "assertion failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "assertion failed"
@@ -197,8 +197,6 @@ if [[ -z "$DEMO_BIN" ]]; then
 fi
 
 SLASH='/'
-ESC=$'\x1b'
-PAGE_DOWN=$'\x1b[6~'
 
 vsearch_screen_load() {
     LOG_FILE="$E2E_LOG_DIR/vsearch_screen_load.log"
@@ -211,10 +209,10 @@ vsearch_screen_load() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=23 \
+    FTUI_DEMO_SCREEN=28 \
     FTUI_DEMO_EXIT_AFTER_MS=1200 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$DEMO_BIN"
+        pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
     assert_file="$(select_output_for_assertions "$output_file")"
@@ -239,10 +237,10 @@ vsearch_focus_search() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=23 \
+    FTUI_DEMO_SCREEN=28 \
     FTUI_DEMO_EXIT_AFTER_MS=1200 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$DEMO_BIN"
+        pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
     assert_file="$(select_output_for_assertions "$output_file")"
@@ -266,10 +264,10 @@ vsearch_query() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=23 \
+    FTUI_DEMO_SCREEN=28 \
     FTUI_DEMO_EXIT_AFTER_MS=1400 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$DEMO_BIN"
+        pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
     assert_file="$(select_output_for_assertions "$output_file")"
@@ -293,10 +291,10 @@ vsearch_navigation() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=23 \
+    FTUI_DEMO_SCREEN=28 \
     FTUI_DEMO_EXIT_AFTER_MS=1400 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$DEMO_BIN"
+        pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
     assert_file="$(select_output_for_assertions "$output_file")"
@@ -319,10 +317,10 @@ vsearch_jump_bottom() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=23 \
+    FTUI_DEMO_SCREEN=28 \
     FTUI_DEMO_EXIT_AFTER_MS=1400 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$DEMO_BIN"
+        pty_run "$output_file" "$DEMO_BIN" || return 1
 
     local assert_file
     assert_file="$(select_output_for_assertions "$output_file")"

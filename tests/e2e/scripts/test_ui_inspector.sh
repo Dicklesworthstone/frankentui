@@ -6,7 +6,7 @@ set -euo pipefail
 # Test scenarios:
 # - Smoke render at multiple sizes (120x40, 80x24, 40x10)
 # - Validate inspector panel text and labels are present
-# - Mode display verification
+# - Selected widget detail verification
 # - Edge cases: small terminal, minimal output
 #
 # JSONL Schema v2 (stable):
@@ -62,7 +62,6 @@ FTUI_HARNESS_ENABLE_KITTY_KEYBOARD="${FTUI_HARNESS_ENABLE_KITTY_KEYBOARD:-0}"
 FTUI_HARNESS_LOG_KEYS="${FTUI_HARNESS_LOG_KEYS:-0}"
 
 # Accumulated test data for JSONL
-declare -A TIMING_DATA
 declare -a ASSERTIONS_PASSED
 
 jsonl_log() {
@@ -133,7 +132,7 @@ assertions_json() {
 # Skip all tests if binary missing
 if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
     LOG_FILE="$E2E_LOG_DIR/ui_inspector_missing.log"
-    for t in ui_inspector_120x40 ui_inspector_80x24 ui_inspector_40x10; do
+    for t in ui_inspector_120x40 ui_inspector_80x24 ui_inspector_40x10 ui_inspector_selected_details ui_inspector_widget_bounds; do
         log_test_skip "$t" "ftui-harness binary missing"
         record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
         jsonl_log "{\"schema_version\":\"$SCHEMA_VERSION\",\"run_id\":\"$RUN_ID\",\"case\":\"$t\",\"status\":\"skipped\",\"reason\":\"binary missing\",\"seed\":\"$SEED\",\"capabilities\":$(capabilities_json),\"env\":$(env_json)}"
@@ -246,13 +245,14 @@ ui_inspector_smoke() {
     FTUI_HARNESS_EXIT_AFTER_MS=1200 \
     FTUI_HARNESS_SEED="$SEED" \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # Assertions with tracking
     assert_file_min_size "$output_file" 300 || return 1
     assert_contains "$output_file" "Inspector" || return 1
-    assert_contains "$output_file" "Region:" || return 1
-    assert_contains "$output_file" "LogPanel" || return 1
+    # The fixture selects LogPanel; selected details take precedence over hover.
+    assert_contains "$output_file" "Widget: LogPanel" || return 1
+    assert_contains "$output_file" "ID: 1" || return 1
 }
 
 # Small terminal edge case - should render without crash
@@ -271,14 +271,14 @@ ui_inspector_small_terminal() {
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     FTUI_HARNESS_SEED="$SEED" \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # Minimal assertions - just verify it produced output and didn't crash
     assert_file_min_size "$output_file" 50 || return 1
 }
 
-# Mode display verification - check "Full" mode indicator
-ui_inspector_mode_display() {
+# Selected widget details replace the unselected mode/hover panel.
+ui_inspector_selected_details() {
     local name="$1"
     local cols="$2"
     local rows="$3"
@@ -291,11 +291,13 @@ ui_inspector_mode_display() {
     FTUI_HARNESS_EXIT_AFTER_MS=1000 \
     FTUI_HARNESS_SEED="$SEED" \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     assert_file_min_size "$output_file" 200 || return 1
-    # Check that mode indicator is present
-    assert_contains "$output_file" "Mode:" || return 1
+    assert_contains "$output_file" "Widget: LogPanel" || return 1
+    assert_contains "$output_file" "ID: 1" || return 1
+    assert_contains "$output_file" "Area:" || return 1
+    assert_contains "$output_file" "x: 0" || return 1
 }
 
 # Widget bounds verification - check bound indicators are rendered
@@ -312,11 +314,12 @@ ui_inspector_widget_bounds() {
     FTUI_HARNESS_EXIT_AFTER_MS=1200 \
     FTUI_HARNESS_SEED="$SEED" \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     assert_file_min_size "$output_file" 300 || return 1
-    # Widget labels should be rendered with brackets
-    assert_contains "$output_file" "\[" || return 1
+    # Match actual widget labels, not a bracket from an ANSI CSI sequence.
+    assert_contains "$output_file" "\[LogPanel\]" || return 1
+    assert_contains "$output_file" "\[ActionPanel\]" || return 1
 }
 
 # ============================================================================
@@ -332,8 +335,8 @@ run_case "ui_inspector_80x24" 80 24 ui_inspector_smoke "ui_inspector_80x24" 80 2
 # Small terminal edge case
 run_case "ui_inspector_40x10" 40 10 ui_inspector_small_terminal "ui_inspector_40x10" 40 10 || FAILURES=$((FAILURES + 1))
 
-# Mode display verification
-run_case "ui_inspector_mode_display" 100 30 ui_inspector_mode_display "ui_inspector_mode_display" 100 30 || FAILURES=$((FAILURES + 1))
+# Selected widget detail verification
+run_case "ui_inspector_selected_details" 100 30 ui_inspector_selected_details "ui_inspector_selected_details" 100 30 || FAILURES=$((FAILURES + 1))
 
 # Widget bounds verification
 run_case "ui_inspector_widget_bounds" 100 30 ui_inspector_widget_bounds "ui_inspector_widget_bounds" 100 30 || FAILURES=$((FAILURES + 1))

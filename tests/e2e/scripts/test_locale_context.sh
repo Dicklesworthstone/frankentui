@@ -88,7 +88,7 @@ locale_system_detection() {
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     grep -a -q "Base locale: es-ES" "$output_file" || return 1
     grep -a -q "System locale: es-ES" "$output_file" || return 1
@@ -112,7 +112,7 @@ locale_override() {
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     grep -a -q "Base locale: en" "$output_file" || return 1
     grep -a -q "Current locale: fr" "$output_file" || return 1
@@ -137,11 +137,20 @@ locale_switch() {
     FTUI_HARNESS_LOCALE_SWITCH_MS=200 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     FTUI_HARNESS_EXIT_AFTER_MS=900 \
+    PTY_CANONICALIZE=1 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    grep -a -q "Locale switch -> de" "$output_file" || return 1
-    grep -a -q "Current locale: de" "$output_file" || return 1
+    # The locale view renders context fields, not the separate log viewer.
+    # Its update emits only changed cells, so replay the PTY for final values.
+    grep -a -F -q "Base locale: en" "$output_file" || return 1
+    grep -a -F -q "Current locale: en" "$output_file" || return 1
+    local assert_file="${PTY_CANONICAL_FILE:-}"
+    [[ -n "$assert_file" && -f "$assert_file" ]] || return 1
+    grep -a -F -q "Base locale: de" "$assert_file" || return 1
+    grep -a -F -q "Current locale: de" "$assert_file" || return 1
+    grep -a -F -q "Locale version: 1" "$assert_file" || return 1
+    grep -a -F -q "Switch countdown: none" "$assert_file" || return 1
 
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
