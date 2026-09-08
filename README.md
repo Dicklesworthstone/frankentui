@@ -505,7 +505,9 @@ bash scripts/release_publish_crates.sh VERSION NEW_OUTPUT_DIR --publish
 ```
 
 Each invocation requires a fresh output directory outside the checkout.
-The dry run verifies all 17 packages without a registry token. Publication
+The dry run verifies all 17 packages without a registry token once their sibling
+dependency versions are available in the registry; unpublished siblings can
+block a prepublication dry run. Publication
 follows dependency order, verifies registry checksums and Git provenance, and
 retains archives for safe retries. Repeating publication with a new output
 directory verifies and skips already-published versions. Keep the structured

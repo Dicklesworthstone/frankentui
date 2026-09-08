@@ -98,7 +98,8 @@ from typing import Any
 run_index_tsv = Path(sys.argv[1])
 report_json_path = Path(sys.argv[2])
 report_txt_path = Path(sys.argv[3])
-soak_root = Path(sys.argv[4]).resolve()
+soak_root_lexical = Path(sys.argv[4])
+soak_root = soak_root_lexical.resolve()
 iterations = int(sys.argv[5])
 schema_path = Path(sys.argv[6])
 
@@ -169,8 +170,10 @@ def parse_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def normalize_path_value(value: str, run_dir: Path) -> str:
     text = value
-    text = text.replace(str(soak_root), "<SOAK_ROOT>")
-    text = text.replace(str(run_dir), "<RUN_DIR>")
+    for root, replacement in [(run_dir, "<RUN_DIR>"), (soak_root_lexical, "<SOAK_ROOT>")]:
+        aliases = {str(root.absolute()), str(root.resolve())}
+        for alias in sorted(aliases, key=len, reverse=True):
+            text = text.replace(alias, replacement)
     return text
 
 
@@ -203,9 +206,39 @@ def normalize_event(event: dict[str, Any], run_dir: Path) -> dict[str, Any]:
             if is_volatile_artifact(normalized_path):
                 volatile_artifact_count += 1
                 continue
-            stable_artifact_hashes[normalized_path] = raw_hash
+            if normalized_path.endswith(("/command.txt", ".stderr.log")):
+                try:
+                    artifact_bytes = Path(raw_path).read_bytes()
+                    if sha256_bytes(artifact_bytes) != raw_hash:
+                        artifact_hash_shape_errors.append(f"{normalized_path}: artifact hash mismatch")
+                        continue
+                    artifact_text = artifact_bytes.decode("utf-8")
+                except (OSError, UnicodeError) as error:
+                    artifact_hash_shape_errors.append(f"{normalized_path}: {error}")
+                    continue
+                stable_artifact_hashes[normalized_path] = sha256_bytes(
+                    normalize_path_value(artifact_text, run_dir).encode("utf-8")
+                )
+            else:
+                stable_artifact_hashes[normalized_path] = raw_hash
     else:
         artifact_hash_shape_errors.append("artifact_hashes_not_object")
+
+    actual = normalize_value(event.get("actual", {}), run_dir)
+    if (
+        event.get("event_type") == "artifact"
+        and isinstance(artifact_hashes, dict)
+        and len(artifact_hashes) == 1
+        and next(iter(artifact_hashes)).endswith("/snapshot.png")
+        and is_volatile_artifact(next(iter(artifact_hashes)))
+        and isinstance(actual, dict)
+        and "size_bytes" in actual
+    ):
+        size = actual["size_bytes"]
+        if isinstance(size, int) and not isinstance(size, bool) and size > 0:
+            actual["size_bytes"] = {"positive": True}
+        else:
+            actual["size_bytes"] = {"positive": False, "value": size}
 
     return {
         "schema_version": event.get("schema_version"),
@@ -216,7 +249,7 @@ def normalize_event(event: dict[str, Any], run_dir: Path) -> dict[str, Any]:
         "env_hash": event.get("env_hash"),
         "exit_code": event.get("exit_code"),
         "expected": normalize_value(event.get("expected", {}), run_dir),
-        "actual": normalize_value(event.get("actual", {}), run_dir),
+        "actual": actual,
         "stable_artifact_hashes": stable_artifact_hashes,
         "artifact_hash_count": len(artifact_hashes) if isinstance(artifact_hashes, dict) else 0,
         "volatile_artifact_hash_count": volatile_artifact_count,
@@ -325,7 +358,7 @@ for raw in run_index_tsv.read_text(encoding="utf-8").splitlines():
         stdout_log,
         stderr_log,
     ) = raw.split("\t")
-    run_dir_path = Path(run_dir).resolve()
+    run_dir_path = Path(run_dir)
     summary = parse_json_file(Path(summary_json))
     validation = parse_json_file(Path(validation_json))
     events = parse_jsonl(Path(events_jsonl))
