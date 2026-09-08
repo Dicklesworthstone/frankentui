@@ -137,7 +137,7 @@ keybind_ctrl_c_clears_input() {
     FTUI_HARNESS_EXIT_AFTER_MS=3000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=6 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return $?
 
     # Should see "(Input cleared)" in output indicating Ctrl+C cleared input
     grep -a -q "(Input cleared)" "$output_file" || return 1
@@ -159,7 +159,7 @@ keybind_ctrl_c_cancels_task() {
     FTUI_HARNESS_EXIT_AFTER_MS=4000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=7 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return $?
 
     # Should see task cancellation message
     grep -a -q "(Task cancelled)" "$output_file" || return 1
@@ -183,7 +183,7 @@ keybind_esc_clears_input() {
     FTUI_HARNESS_EXIT_AFTER_MS=3000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=6 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return $?
 
     # Should see input cleared message
     grep -a -q "(Input cleared)" "$output_file" || return 1
@@ -202,7 +202,7 @@ keybind_esc_cancels_task() {
     FTUI_HARNESS_EXIT_AFTER_MS=4000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=7 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return $?
 
     # Should see task cancellation message
     grep -a -q "(Task cancelled)" "$output_file" || return 1
@@ -222,10 +222,11 @@ keybind_esc_esc_toggles_tree() {
     FTUI_HARNESS_EXIT_AFTER_MS=2000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return $?
 
-    # Should see tree view toggle message
-    grep -a -q "(Tree view opened)" "$output_file" || return 1
+    # The open overlay covers the log message; require its visible content.
+    grep -a -q "Tree View Overlay" "$output_file" || return 1
+    grep -a -q "name: claude-3.5" "$output_file" || return 1
 }
 
 # Test: Esc closes tree view when open
@@ -243,7 +244,7 @@ keybind_esc_closes_tree() {
     FTUI_HARNESS_EXIT_AFTER_MS=2500 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return $?
 
     # Should see tree opened and then closed
     grep -a -q "Tree view opened" "$output_file" || return 1
@@ -264,7 +265,7 @@ keybind_ctrl_d_soft_quit() {
     FTUI_HARNESS_EXIT_AFTER_MS=4000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=7 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN" || true
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return $?
 
     # Should see soft quit cancellation message
     grep -a -q "(Task cancelled via Ctrl+D)" "$output_file" || return 1
@@ -284,7 +285,7 @@ keybind_ctrl_q_hard_quit() {
     FTUI_HARNESS_EXIT_AFTER_MS=10000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN" || true
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return $?
 
     # App should have exited - cursor should be restored
     grep -a -F -q $'\x1b[?25h' "$output_file" || return 1

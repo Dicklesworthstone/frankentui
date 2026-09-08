@@ -154,6 +154,7 @@ pty_run() {
     local send_data="${PTY_SEND:-}"
     local send_file="${PTY_SEND_FILE:-}"
     local send_sequence="${PTY_SEND_SEQUENCE:-}"
+    local send_after_output="${PTY_SEND_AFTER_OUTPUT:-}"
     local send_delay_ms="${PTY_SEND_DELAY_MS:-0}"
     local cols="${PTY_COLS:-80}"
     local rows="${PTY_ROWS:-24}"
@@ -173,6 +174,7 @@ pty_run() {
             PTY_SEND="$send_data" \
             PTY_SEND_FILE="$send_file" \
             PTY_SEND_SEQUENCE="$send_sequence" \
+            PTY_SEND_AFTER_OUTPUT="$send_after_output" \
             PTY_SEND_DELAY_MS="$send_delay_ms" \
             PTY_COLS="$cols" \
             PTY_ROWS="$rows" \
@@ -205,6 +207,8 @@ timeout = float(os.environ.get("PTY_TIMEOUT", "5"))
 raw_send = os.environ.get("PTY_SEND", "")
 send_file = os.environ.get("PTY_SEND_FILE", "")
 send_sequence_raw = os.environ.get("PTY_SEND_SEQUENCE", "")
+# Literal UTF-8 readiness bytes; shell callers may use $'\e...' for escapes.
+send_after_output = os.environ.get("PTY_SEND_AFTER_OUTPUT", "").encode("utf-8")
 send_delay_ms = int(os.environ.get("PTY_SEND_DELAY_MS", "0"))
 cols = int(os.environ.get("PTY_COLS", "80"))
 rows = int(os.environ.get("PTY_ROWS", "24"))
@@ -295,6 +299,10 @@ if send_sequence_raw:
         sys.exit(2)
 elif send_bytes:
     send_sequence.append((send_delay_ms / 1000.0, send_bytes))
+
+if send_after_output and not send_sequence:
+    print("PTY_SEND_AFTER_OUTPUT requires input to send", file=sys.stderr)
+    sys.exit(2)
 
 master_fd, slave_fd = pty.openpty()
 
@@ -404,19 +412,24 @@ captured = bytearray()
 send_index = 0
 send_offset = 0
 send_error = None
+send_start = None if send_after_output else start
+readiness_tail = b""
 last_data = start
 terminate_at = None
 stop_at = None
 chunk_count = 0
 dropped_chunks = 0
+pty_eof = False
 
 try:
     while True:
         now = time.monotonic()
         input_due = (
             send_error is None
+            and not pty_eof
+            and send_start is not None
             and send_index < len(send_sequence)
-            and now - start >= send_sequence[send_index][0]
+            and now - send_start >= send_sequence[send_index][0]
         )
         if input_due:
             try:
@@ -459,10 +472,12 @@ try:
 
         input_due = (
             send_error is None
+            and not pty_eof
+            and send_start is not None
             and send_index < len(send_sequence)
-            and now - start >= send_sequence[send_index][0]
+            and now - send_start >= send_sequence[send_index][0]
         )
-        rlist, _, _ = select.select([master_fd], [master_fd] if input_due else [], [], read_poll)
+        rlist, _, _ = select.select([] if pty_eof else [master_fd], [master_fd] if input_due else [], [], read_poll)
         if rlist:
             eof = False
             while True:
@@ -476,6 +491,15 @@ try:
                 if not chunk:
                     eof = True
                     break
+                if send_start is None:
+                    # Match across reads independently of capture limits and
+                    # deliberate output drops. Keep only a bounded suffix.
+                    readiness = readiness_tail + chunk
+                    if send_after_output in readiness:
+                        send_start = time.monotonic()
+                        readiness_tail = b""
+                    else:
+                        readiness_tail = readiness[-(len(send_after_output) - 1):] if len(send_after_output) > 1 else b""
                 chunk_count += 1
                 should_drop = False
                 if drop_single_idx is not None and chunk_count == drop_single_idx:
@@ -501,7 +525,10 @@ try:
                     time.sleep(output_delay)
                 last_data = now
             if eof:
-                break
+                # Darwin can revoke the controlling PTY just before waitpid
+                # observes its session leader's exit. Keep polling/reaping
+                # under the original deadline instead of inventing exit 124.
+                pty_eof = True
 
         exit_code = proc.poll()
         if exit_code is not None:
@@ -522,7 +549,8 @@ finally:
             pass
 
 exit_code = proc.poll()
-if exit_code is None:
+if terminate_at is not None or exit_code is None:
+    # A graceful response to our deadline signal is still a test timeout.
     exit_code = 124
 
 if capture_max is not None and capture_max > 0 and len(captured) > capture_max:
@@ -532,7 +560,7 @@ with open(output_path, "wb") as handle:
     handle.write(captured)
 
 if send_error is not None or send_index < len(send_sequence):
-    print(f"PTY input delivery incomplete: chunk={send_index}/{len(send_sequence)}, offset={send_offset}, error={send_error}", file=sys.stderr)
+    print(f"PTY input delivery incomplete: chunk={send_index}/{len(send_sequence)}, offset={send_offset}, readiness_observed={send_start is not None}, error={send_error}", file=sys.stderr)
     if exit_code == 0:
         exit_code = 1
 

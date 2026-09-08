@@ -48,6 +48,10 @@ source "$LIB_DIR/logging.sh"
 # shellcheck source=/dev/null
 source "$LIB_DIR/pty.sh"
 
+# Inspector highlights can split a visible label across ANSI style changes.
+# Assert against the reconstructed screen while retaining raw PTY evidence.
+export PTY_CANONICALIZE=1
+
 SCHEMA_VERSION="2.0.0"
 JSONL_FILE="$E2E_RESULTS_DIR/ui_inspector.jsonl"
 RUN_ID="ui_inspector_$(date +%Y%m%d_%H%M%S)_$$"
@@ -211,6 +215,13 @@ assert_file_min_size() {
 assert_contains() {
     local file="$1"
     local pattern="$2"
+    if [[ "$file" == *.pty ]]; then
+        if [[ -z "${PTY_CANONICAL_FILE:-}" || ! -f "$PTY_CANONICAL_FILE" ]]; then
+            ASSERTIONS_PASSED+=("canonical_screen:failed(missing)")
+            return 1
+        fi
+        file="$PTY_CANONICAL_FILE"
+    fi
     if grep -a -q "$pattern" "$file"; then
         ASSERTIONS_PASSED+=("contains($pattern):passed")
         return 0

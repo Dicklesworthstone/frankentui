@@ -9,7 +9,7 @@
 # 4. Unit + snapshot tests
 # 5. Smoke test (alt-screen with auto-exit)
 # 6. Inline mode smoke test
-# 7. Screen navigation (cycle all 40 screens)
+# 7. Screen navigation (cycle all 45 screens)
 # 8. Search test (Shakespeare screen)
 # 9. Resize test (SIGWINCH handling)
 # 10. VisualEffects backdrop test (bd-l8x9.8.2)
@@ -49,6 +49,8 @@ source "$LIB_DIR/common.sh"
 source "$LIB_DIR/logging.sh"
 # shellcheck source=/dev/null
 source "$LIB_DIR/pty.sh"
+# This suite records failures and continues through the remaining scenarios.
+set +e
 if ! declare -f e2e_timestamp >/dev/null 2>&1; then
     e2e_timestamp() { date -Iseconds; }
 fi
@@ -107,7 +109,7 @@ if $VERBOSE; then
     required_tools+=(tee)
 fi
 if ! $QUICK; then
-    required_tools+=(script timeout stty sleep sha256sum grep sort tr tail env)
+    required_tools+=(sha256sum grep sort tr tail env)
     if [[ "${E2E_PYTHON:-python3}" != "python3" ]]; then
         required_tools+=("$E2E_PYTHON")
     fi
@@ -152,10 +154,10 @@ run_step() {
     local step_name="$1"
     local log_file="$2"
     shift 2
-    local cmd=("$@")
+    local step_cmd=("$@")
 
     log_step "$step_name"
-    log_info "Running: ${cmd[*]}"
+    log_info "Running: ${step_cmd[*]}"
 
     local start_ms
     start_ms="$(e2e_now_ms)"
@@ -163,13 +165,13 @@ run_step() {
 
     local exit_code=0
     if $VERBOSE; then
-        if "${cmd[@]}" 2>&1 | tee "$log_file"; then
+        if "${step_cmd[@]}" 2>&1 | tee "$log_file"; then
             exit_code=0
         else
             exit_code=1
         fi
     else
-        if "${cmd[@]}" > "$log_file" 2>&1; then
+        if "${step_cmd[@]}" > "$log_file" 2>&1; then
             exit_code=0
         else
             exit_code=1
@@ -230,7 +232,7 @@ run_smoke_step() {
     jsonl_step_start "$step_name"
 
     local exit_code=0
-    if eval "$@" > "$log_file" 2>&1; then
+    if "$@" > "$log_file" 2>&1; then
         exit_code=0
     else
         exit_code=$?
@@ -241,8 +243,8 @@ run_smoke_step() {
     duration_s=$(echo "scale=2; $duration_ms / 1000" | bc 2>/dev/null || echo "${duration_ms}ms")
     STEP_DURATIONS+=("${duration_s}s")
 
-    # exit code 0 = clean exit, 124 = timeout (acceptable for smoke tests)
-    if [ $exit_code -eq 0 ] || [ $exit_code -eq 124 ]; then
+    # Auto-exit must complete before the PTY deadline.
+    if [ $exit_code -eq 0 ]; then
         log_pass "$step_name passed (exit=$exit_code) in ${duration_s}s"
         PASS_COUNT=$((PASS_COUNT + 1))
         STEP_STATUSES+=("PASS")
@@ -261,29 +263,27 @@ run_smoke_step() {
 # PTY Helper
 # ============================================================================
 
-# Check whether the `script` command is available for providing a PTY.
+# Use the same PTY implementation as the terminal E2E suite.
 has_pty_support() {
-    command -v script >/dev/null 2>&1
+    [[ -n "${E2E_PYTHON:-}" ]] && "$E2E_PYTHON" -c 'import pty, termios'
 }
 
-# Run a command inside a pseudo-terminal via script(1).
-# This allows the TUI binary to initialize its terminal I/O even in CI.
-# Sets a default terminal size of 80x24 unless the command sets its own stty.
-# Usage: run_in_pty "command string"
+PTY_RUN_COUNT=0
+# Retain the raw capture and metadata, and forward the capture to the case log.
+# PTY_SEND/PTY_SEND_SEQUENCE deliver input through the master side of the PTY.
+# Usage: run_in_pty "command string" timeout_seconds [cols] [rows]
 run_in_pty() {
     local cmd="$1"
-    # Only add default stty if the command doesn't already set one
-    local setup
-    if echo "$cmd" | grep -q 'stty'; then
-        setup="$cmd"
-    else
-        setup="stty rows 24 cols 80 2>/dev/null; $cmd"
-    fi
-    if [ "$(uname)" = "Linux" ]; then
-        script -qec "$setup" /dev/null
-    else
-        script -q /dev/null bash -c "$setup"
-    fi
+    local timeout_seconds="$2"
+    local cols="${3:-80}"
+    local rows="${4:-24}"
+    PTY_RUN_COUNT=$((PTY_RUN_COUNT + 1))
+    local capture="$LOG_DIR/pty_${PTY_RUN_COUNT}.pty"
+    local exit_code=0
+    PTY_TIMEOUT="$timeout_seconds" PTY_COLS="$cols" PTY_ROWS="$rows" \
+        pty_run "$capture" bash -c "$cmd" || exit_code=$?
+    cat "$capture" || return 1
+    return "$exit_code"
 }
 
 # ============================================================================
@@ -310,7 +310,7 @@ MODE="${MODE:-normal}"
 echo "Mode:         ${MODE% }"
 
 mkdir -p "$LOG_DIR"
-cd "$PROJECT_ROOT"
+cd "$PROJECT_ROOT" || exit 1
 
 # Record environment info
 {
@@ -382,7 +382,7 @@ SMOKE_REASON=""
 
 if ! has_pty_support; then
     CAN_SMOKE=false
-    SMOKE_REASON="script command not available"
+    SMOKE_REASON="Python PTY support not available"
 fi
 
 if [ ! -x "$BINARY" ] && [ ! -x "$BINARY_DBG" ]; then
@@ -408,18 +408,20 @@ if $CAN_SMOKE; then
     # fail. A real terminal type lets the policy (alt=on, inline=off) actually
     # manifest as ANSI so the assertion tests what it's meant to.
     export TERM="xterm-256color"
+    unset PTY_SEND PTY_SEND_FILE PTY_SEND_SEQUENCE PTY_SEND_AFTER_OUTPUT
+    unset PTY_RESIZE_SEQUENCE PTY_RESIZE_DELAY_MS PTY_RESIZE_COLS PTY_RESIZE_ROWS
 
     # ────────────────────────────────────────────────────────────────────────
     # Step 5: Alt-screen Smoke Test
     # ────────────────────────────────────────────────────────────────────────
     run_smoke_step "Smoke test (alt-screen)" "$LOG_DIR/05_smoke_alt.log" \
-        "run_in_pty 'FTUI_DEMO_EXIT_AFTER_MS=3000 timeout 10 $DEMO_BIN'" || true
+        run_in_pty "exec env FTUI_DEMO_EXIT_AFTER_MS=3000 \"$DEMO_BIN\"" 10 || true
 
     # ────────────────────────────────────────────────────────────────────────
     # Step 6: Inline Smoke Test
     # ────────────────────────────────────────────────────────────────────────
     run_smoke_step "Smoke test (inline)" "$LOG_DIR/06_smoke_inline.log" \
-        "run_in_pty 'FTUI_DEMO_EXIT_AFTER_MS=3000 FTUI_DEMO_SCREEN_MODE=inline timeout 10 $DEMO_BIN'" || true
+        run_in_pty "exec env FTUI_DEMO_EXIT_AFTER_MS=3000 FTUI_DEMO_SCREEN_MODE=inline \"$DEMO_BIN\"" 10 || true
 
     # ────────────────────────────────────────────────────────────────────────
     # Step 6b: Mouse Capture Policy (bd-iuvb.17.1)
@@ -456,38 +458,33 @@ if $CAN_SMOKE; then
     # ────────────────────────────────────────────────────────────────────────
     # Step 7: Screen Navigation
     #
-    # Launch the demo on each screen (--screen=1..40) with a
+    # Launch the demo on each screen (--screen=1..45) with a
     # short auto-exit. If any screen panics on startup, this catches it.
-    # Updated for 40 screens (bd-iuvb.4 explainability cockpit + prior additions)
+    # Numeric IDs follow the default-feature CLI registry through Quake.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "Screen navigation (all 40 screens)"
+    log_step "Screen navigation (all 45 screens)"
     log_info "Starting demo on each screen to verify no panics..."
     NAV_LOG="$LOG_DIR/07_navigation.log"
-    STEP_NAMES+=("Screen navigation (all 40)")
+    STEP_NAMES+=("Screen navigation (all 45)")
 
     jsonl_set_context "alt" 80 24 "${E2E_SEED:-}" 2>/dev/null || true
-    jsonl_step_start "Screen navigation (all 40)"
+    jsonl_step_start "Screen navigation (all 45)"
     nav_start_ms="$(e2e_now_ms)"
     {
         NAV_FAILURES=0
-        for screen_num in $(seq 1 40); do
+        for ((screen_num = 1; screen_num <= 45; screen_num++)); do
             screen_log="$LOG_DIR/07_screen_${screen_num}.log"
             echo "--- Screen $screen_num ---"
-            if run_in_pty "stty rows 24 cols 80 2>/dev/null; FTUI_DEMO_EXIT_AFTER_MS=1500 timeout 8 $DEMO_BIN --screen=$screen_num" > "$screen_log" 2>&1; then
+            if run_in_pty "exec env FTUI_DEMO_EXIT_AFTER_MS=1500 \"$DEMO_BIN\" --screen=$screen_num" 8 > "$screen_log" 2>&1; then
                 echo "  Screen $screen_num: OK"
                 sc_exit=0
             else
                 sc_exit=$?
-                # 124 = timeout (acceptable if exit_after_ms didn't fire)
-                if [ "$sc_exit" -eq 124 ]; then
-                    echo "  Screen $screen_num: OK (timeout)"
-                else
-                    echo "  Screen $screen_num: FAILED (exit=$sc_exit)"
-                    NAV_FAILURES=$((NAV_FAILURES + 1))
-                fi
+                echo "  Screen $screen_num: FAILED (exit=$sc_exit)"
+                NAV_FAILURES=$((NAV_FAILURES + 1))
             fi
 
-            if [ "$sc_exit" -eq 124 ] || [ "$sc_exit" -eq 0 ]; then
+            if [ "$sc_exit" -eq 0 ]; then
                 outcome="pass"
                 status="pass"
             else
@@ -515,12 +512,12 @@ if $CAN_SMOKE; then
         log_pass "Screen navigation passed in ${nav_dur_s}s"
         PASS_COUNT=$((PASS_COUNT + 1))
         STEP_STATUSES+=("PASS")
-        jsonl_step_end "Screen navigation (all 40)" "success" "$nav_dur_ms"
+        jsonl_step_end "Screen navigation (all 45)" "success" "$nav_dur_ms"
     else
         log_fail "Screen navigation failed. See: $NAV_LOG"
         FAIL_COUNT=$((FAIL_COUNT + 1))
         STEP_STATUSES+=("FAIL")
-        jsonl_step_end "Screen navigation (all 40)" "failed" "$nav_dur_ms"
+        jsonl_step_end "Screen navigation (all 45)" "failed" "$nav_dur_ms"
     fi
 
     # ────────────────────────────────────────────────────────────────────────
@@ -531,7 +528,7 @@ if $CAN_SMOKE; then
     # the screen survives initialization and a brief run.
     # ────────────────────────────────────────────────────────────────────────
     run_smoke_step "Search test (Shakespeare)" "$LOG_DIR/08_search.log" \
-        "run_in_pty 'FTUI_DEMO_EXIT_AFTER_MS=2000 FTUI_DEMO_SCREEN=3 timeout 8 $DEMO_BIN'" || true
+        run_in_pty "exec env FTUI_DEMO_EXIT_AFTER_MS=2000 FTUI_DEMO_SCREEN=3 \"$DEMO_BIN\"" 8 || true
 
     # ────────────────────────────────────────────────────────────────────────
     # Step 9: Resize Test (SIGWINCH)
@@ -549,24 +546,24 @@ if $CAN_SMOKE; then
     resize_start_ms="$(e2e_now_ms)"
     {
         echo "=== Testing at 80x24 ==="
-        run_in_pty "stty rows 24 cols 80 2>/dev/null; FTUI_DEMO_EXIT_AFTER_MS=1500 timeout 8 $DEMO_BIN" 2>&1
+        run_in_pty "exec env FTUI_DEMO_EXIT_AFTER_MS=1500 \"$DEMO_BIN\"" 8 80 24 2>&1
         exit1=$?
         echo "  Exit code: $exit1"
 
         echo "=== Testing at 132x43 ==="
-        run_in_pty "stty rows 43 cols 132 2>/dev/null; FTUI_DEMO_EXIT_AFTER_MS=1500 timeout 8 $DEMO_BIN" 2>&1
+        run_in_pty "exec env FTUI_DEMO_EXIT_AFTER_MS=1500 \"$DEMO_BIN\"" 8 132 43 2>&1
         exit2=$?
         echo "  Exit code: $exit2"
 
         echo "=== Testing at 40x10 (tiny) ==="
-        run_in_pty "stty rows 10 cols 40 2>/dev/null; FTUI_DEMO_EXIT_AFTER_MS=1500 timeout 8 $DEMO_BIN" 2>&1
+        run_in_pty "exec env FTUI_DEMO_EXIT_AFTER_MS=1500 \"$DEMO_BIN\"" 8 40 10 2>&1
         exit3=$?
         echo "  Exit code: $exit3"
 
-        # Check all exits (0 or 124 acceptable)
+        # Every size must auto-exit normally.
         all_ok=true
         for ec in $exit1 $exit2 $exit3; do
-            if [ "$ec" -ne 0 ] && [ "$ec" -ne 124 ]; then
+            if [ "$ec" -ne 0 ]; then
                 all_ok=false
             fi
         done
@@ -592,7 +589,7 @@ if $CAN_SMOKE; then
     # ────────────────────────────────────────────────────────────────────────
     # Step 10: VisualEffects Backdrop Test (bd-l8x9.8.2)
     #
-    # Targeted test for the VisualEffects screen (screen 16) which exercises
+    # Targeted test for the VisualEffects screen (screen 18) which exercises
     # backdrop blending, metaballs/plasma effects, and markdown-over-backdrop
     # composition paths. Runs at multiple sizes to verify determinism and
     # no panics under various render conditions.
@@ -608,7 +605,7 @@ if $CAN_SMOKE; then
     jsonl_step_start "VisualEffects backdrop"
     vfx_start_ms="$(e2e_now_ms)"
     {
-        echo "=== VisualEffects (Screen 16) Backdrop Blending Tests ==="
+        echo "=== VisualEffects (Screen 18) Backdrop Blending Tests ==="
         echo "Bead: bd-l8x9.8.2 - Targeted runs for metaballs/plasma/backdrop paths"
         echo ""
         VFX_FAILURES=0
@@ -652,7 +649,7 @@ if $CAN_SMOKE; then
             payload="${payload}\"hash_key\":\"$(json_escape "$hash_key")\","
             payload="${payload}\"cols\":${cols_json},"
             payload="${payload}\"rows\":${rows_json},"
-            payload="${payload}\"screen\":14,"
+            payload="${payload}\"screen\":18,"
             payload="${payload}\"exit_code\":${exit_code},"
             payload="${payload}\"duration_ms\":${duration_ms},"
             payload="${payload}\"outcome\":\"$(json_escape "$outcome")\","
@@ -672,12 +669,12 @@ if $CAN_SMOKE; then
             local rows="$3"
             local cols="$4"
             local size="${cols}x${rows}"
-            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; FTUI_DEMO_EXIT_AFTER_MS=2500 ${effect_env} timeout 10 $DEMO_BIN --screen=16"
+            local cmd="exec env FTUI_DEMO_EXIT_AFTER_MS=2500 ${effect_env} \"$DEMO_BIN\" --screen=18"
             local start_ms dur_ms outcome exit_code
 
             echo "--- ${effect} (${size}) ---"
             start_ms=$(e2e_now_ms)
-            if run_in_pty "$cmd" 2>&1; then
+            if run_in_pty "$cmd" 10 "$cols" "$rows" 2>&1; then
                 outcome="pass"
                 exit_code=0
             else
@@ -686,8 +683,8 @@ if $CAN_SMOKE; then
                     outcome="timeout"
                 else
                     outcome="fail"
-                    VFX_FAILURES=$((VFX_FAILURES + 1))
                 fi
+                VFX_FAILURES=$((VFX_FAILURES + 1))
             fi
             dur_ms=$(( $(e2e_now_ms) - start_ms ))
             vfx_jsonl "$effect" "$size" "$outcome" "$exit_code" "$dur_ms" "$rows" "$cols"
@@ -736,7 +733,7 @@ if $CAN_SMOKE; then
     # Runs the Layout Inspector screen and cycles scenarios/steps to
     # produce deterministic hashes for evidence logs.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "Layout Inspector (screen 22)"
+    log_step "Layout Inspector (screen 24)"
     log_info "Running Layout Inspector scenarios and logging hashes..."
     INSPECT_LOG="$LOG_DIR/11_layout_inspector.log"
     INSPECT_JSONL="$LOG_DIR/11_layout_inspector.jsonl"
@@ -748,7 +745,7 @@ if $CAN_SMOKE; then
     jsonl_step_start "Layout Inspector"
     inspect_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Layout Inspector (Screen 22) ==="
+        echo "=== Layout Inspector (Screen 24) ==="
         echo "Bead: bd-iuvb.7"
         echo "JSONL: $INSPECT_JSONL"
         echo ""
@@ -758,12 +755,12 @@ if $CAN_SMOKE; then
             local step="$2"
             local keys="$3"
             local log_file="$LOG_DIR/11_layout_inspector_${scenario}_${step}.log"
-            local cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=22 timeout 8 $DEMO_BIN"
+            local cmd="exec env FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=24 \"$DEMO_BIN\""
             local start_ms dur_ms outcome exit_code rects_hash
 
             echo "--- Scenario ${scenario} / Step ${step} (keys='${keys}') ---"
             start_ms=$(e2e_now_ms)
-            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+            if PTY_SEND="$keys" PTY_SEND_DELAY_MS=600 run_in_pty "$cmd" 8 > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
@@ -799,7 +796,7 @@ if $CAN_SMOKE; then
             payload="${payload}\"hash_key\":\"$(json_escape "$hash_key")\","
             payload="${payload}\"cols\":${cols_json},"
             payload="${payload}\"rows\":${rows_json},"
-            payload="${payload}\"screen\":22,"
+            payload="${payload}\"screen\":24,"
             payload="${payload}\"scenario_id\":${scenario},"
             payload="${payload}\"step_idx\":${step},"
             payload="${payload}\"keys\":\"$(json_escape "$keys")\","
@@ -809,11 +806,14 @@ if $CAN_SMOKE; then
             payload="${payload}\"outcome\":\"$(json_escape "$outcome")\"}"
             echo "$payload" >> "$INSPECT_JSONL"
             jsonl_emit "$payload"
+            return "$exit_code"
         }
 
-        inspect_run 0 0 ""
-        inspect_run 1 1 "n]"
-        inspect_run 2 2 "nn]]"
+        inspect_failures=0
+        inspect_run 0 0 "" || inspect_failures=$((inspect_failures + 1))
+        inspect_run 1 1 "n]" || inspect_failures=$((inspect_failures + 1))
+        inspect_run 2 2 "nn]]" || inspect_failures=$((inspect_failures + 1))
+        [ "$inspect_failures" -eq 0 ]
     } > "$INSPECT_LOG" 2>&1
     inspect_exit=$?
     inspect_dur_ms=$(( $(e2e_now_ms) - inspect_start_ms ))
@@ -862,7 +862,7 @@ if $CAN_SMOKE; then
             local log_file="$LOG_DIR/11b_core_${label}.log"
             local keys_display
             keys_display="$(printf '%q' "$keys")"
-            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=${screen_num} timeout 8 $DEMO_BIN"
+            local cmd="exec env FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=${screen_num} \"$DEMO_BIN\""
             local start_ms dur_ms exit_code outcome status hash
             local case_name="core_navigation"
             local action="inject_keys"
@@ -871,14 +871,14 @@ if $CAN_SMOKE; then
             echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
             jsonl_case_step_start "$case_name" "$label" "$action" "$details"
             start_ms=$(e2e_now_ms)
-            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+            if PTY_SEND="$keys" PTY_SEND_DELAY_MS=600 run_in_pty "$cmd" 8 "$cols" "$rows" > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
             fi
             dur_ms=$(( $(e2e_now_ms) - start_ms ))
 
-            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+            if [ "$exit_code" -eq 0 ]; then
                 outcome="pass"
                 status="pass"
             else
@@ -899,8 +899,8 @@ if $CAN_SMOKE; then
 
         run_core_case "dashboard" 2 "cemg" 80 24
         run_core_case "layout_lab" 6 "2d+" 80 24
-        run_core_case "performance_hud" 30 "sm" 80 24
-        run_core_case "notifications" 19 "s" 80 24
+        run_core_case "performance_hud" 32 "sm" 80 24
+        run_core_case "notifications" 21 "s" 80 24
         run_core_case "nav_cycle" 2 $'\t\033[Z' 80 24
 
         echo ""
@@ -954,7 +954,7 @@ if $CAN_SMOKE; then
             local log_file="$LOG_DIR/11c_${label}.log"
             local keys_display
             keys_display="$(printf '%q' "$keys")"
-            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} timeout 10 $DEMO_BIN"
+            local cmd="exec env FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} \"$DEMO_BIN\""
             local start_ms dur_ms exit_code outcome status hash
             local case_name="editors_markdown_logsearch"
             local action="inject_keys"
@@ -963,14 +963,14 @@ if $CAN_SMOKE; then
             echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
             jsonl_case_step_start "$case_name" "$label" "$action" "$details"
             start_ms=$(e2e_now_ms)
-            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+            if PTY_SEND="$keys" PTY_SEND_DELAY_MS=600 run_in_pty "$cmd" 10 "$cols" "$rows" > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
             fi
             dur_ms=$(( $(e2e_now_ms) - start_ms ))
 
-            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+            if [ "$exit_code" -eq 0 ]; then
                 outcome="pass"
                 status="pass"
             else
@@ -989,10 +989,10 @@ if $CAN_SMOKE; then
                 "screen=${label} screen_num=${screen_num} keys=${keys_display} mode=${mode} cols=${cols} rows=${rows} seed=${seed_val} hash_key=${hash_key} hash=${hash} duration_ms=${dur_ms} exit=${exit_code} outcome=${outcome}"
         }
 
-        run_editor_case "advanced_text_editor" 23 $'\x1b[B\x1b[B' 80 24
+        run_editor_case "advanced_text_editor" 25 $'\x1b[B\x1b[B' 80 24
         run_editor_case "markdown_rich_text" 15 $'\x1b[B\x1b[B' 80 24
-        run_editor_case "log_search" 18 $'/err\rn' 80 24
-        run_editor_case "command_palette_lab" 36 "m2" 80 24
+        run_editor_case "log_search" 20 $'/err\rn' 80 24
+        run_editor_case "command_palette_lab" 39 "m2" 80 24
 
         echo ""
         echo "Editor/markdown failures: $edit_failures"
@@ -1045,7 +1045,7 @@ if $CAN_SMOKE; then
             local log_file="$LOG_DIR/11d_${label}.log"
             local keys_display
             keys_display="$(printf '%q' "$keys")"
-            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=${screen_num} timeout 8 $DEMO_BIN"
+            local cmd="exec env FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=${screen_num} \"$DEMO_BIN\""
             local start_ms dur_ms exit_code outcome status hash
             local case_name="data_viz_tables"
             local action="inject_keys"
@@ -1054,14 +1054,14 @@ if $CAN_SMOKE; then
             echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
             jsonl_case_step_start "$case_name" "$label" "$action" "$details"
             start_ms=$(e2e_now_ms)
-            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+            if PTY_SEND="$keys" PTY_SEND_DELAY_MS=600 run_in_pty "$cmd" 8 "$cols" "$rows" > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
             fi
             dur_ms=$(( $(e2e_now_ms) - start_ms ))
 
-            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+            if [ "$exit_code" -eq 0 ]; then
                 outcome="pass"
                 status="pass"
             else
@@ -1101,36 +1101,27 @@ if $CAN_SMOKE; then
             echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
             jsonl_case_step_start "$case_name" "$label" "$action" "$details"
             start_ms=$(e2e_now_ms)
-            if [[ -n "${E2E_PYTHON:-}" ]]; then
-                if PTY_COLS="$cols" \
-                    PTY_ROWS="$rows" \
-                    PTY_TIMEOUT=12 \
-                    PTY_SEND="vlsei" \
-                    PTY_SEND_DELAY_MS=1200 \
-                    pty_run "$log_file" \
-                    env \
-                    FTUI_TABLE_THEME_REPORT_PATH="${report_jsonl}" \
-                    FTUI_TABLE_THEME_EXPORT_PATH="${export_file}" \
-                    FTUI_TABLE_THEME_IMPORT_PATH="${export_file}" \
-                    FTUI_TABLE_THEME_CLIPBOARD="${clipboard_file}" \
-                    FTUI_DEMO_EXIT_AFTER_MS=4500 \
-                    FTUI_DEMO_SCREEN="${screen_num}" \
-                    "$DEMO_BIN"; then
-                    exit_code=0
-                else
-                    exit_code=$?
-                fi
+            if PTY_COLS="$cols" \
+                PTY_ROWS="$rows" \
+                PTY_TIMEOUT=12 \
+                PTY_SEND="vlsei" \
+                PTY_SEND_DELAY_MS=1200 \
+                pty_run "$log_file" \
+                env \
+                FTUI_TABLE_THEME_REPORT_PATH="${report_jsonl}" \
+                FTUI_TABLE_THEME_EXPORT_PATH="${export_file}" \
+                FTUI_TABLE_THEME_IMPORT_PATH="${export_file}" \
+                FTUI_TABLE_THEME_CLIPBOARD="${clipboard_file}" \
+                FTUI_DEMO_EXIT_AFTER_MS=4500 \
+                FTUI_DEMO_SCREEN="${screen_num}" \
+                "$DEMO_BIN"; then
+                exit_code=0
             else
-                local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 1.2; printf 'v'; sleep 0.2; printf 'l'; sleep 0.2; printf 's'; sleep 0.2; printf 'e'; sleep 0.4; printf 'i') & FTUI_TABLE_THEME_REPORT_PATH='${report_jsonl}' FTUI_TABLE_THEME_EXPORT_PATH='${export_file}' FTUI_TABLE_THEME_IMPORT_PATH='${export_file}' FTUI_TABLE_THEME_CLIPBOARD='${clipboard_file}' FTUI_DEMO_EXIT_AFTER_MS=4500 FTUI_DEMO_SCREEN=${screen_num} timeout 12 $DEMO_BIN"
-                if run_in_pty "$cmd" > "$log_file" 2>&1; then
-                    exit_code=0
-                else
-                    exit_code=$?
-                fi
+                exit_code=$?
             fi
             dur_ms=$(( $(e2e_now_ms) - start_ms ))
 
-            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+            if [ "$exit_code" -eq 0 ]; then
                 outcome="pass"
                 status="pass"
             else
@@ -1345,7 +1336,7 @@ if $CAN_SMOKE; then
             local log_file="$LOG_DIR/11e_${label}.log"
             local keys_display
             keys_display="$(printf '%q' "$keys")"
-            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & ${env_prefix} FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} timeout 10 $DEMO_BIN"
+            local cmd="exec env ${env_prefix} FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} \"$DEMO_BIN\""
             local start_ms dur_ms exit_code outcome status hash
             local case_name="vfx_determinism"
             local action="inject_keys"
@@ -1354,14 +1345,14 @@ if $CAN_SMOKE; then
             echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
             jsonl_case_step_start "$case_name" "$label" "$action" "$details"
             start_ms=$(e2e_now_ms)
-            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+            if PTY_SEND="$keys" PTY_SEND_DELAY_MS=600 run_in_pty "$cmd" 10 "$cols" "$rows" > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
             fi
             dur_ms=$(( $(e2e_now_ms) - start_ms ))
 
-            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+            if [ "$exit_code" -eq 0 ]; then
                 outcome="pass"
                 status="pass"
             else
@@ -1380,11 +1371,11 @@ if $CAN_SMOKE; then
                 "screen=${label} screen_num=${screen_num} keys=${keys_display} mode=${mode} cols=${cols} rows=${rows} seed=${seed_val} hash_key=${hash_key} hash=${hash} duration_ms=${dur_ms} exit=${exit_code} outcome=${outcome}"
         }
 
-        run_vfx_screen_case "visual_effects_default" 16 "" "" 80 24
-        run_vfx_screen_case "doom_e1m1" 16 " w " "FTUI_DEMO_VFX_EFFECT=doom-e1m1" 80 24
-        run_vfx_screen_case "quake_e1m1" 16 " w " "FTUI_DEMO_VFX_EFFECT=quake-e1m1" 80 24
-        run_vfx_screen_case "determinism_lab" 37 "e" "" 80 24
-        run_vfx_screen_case "voi_overlay" 32 "" "" 80 24
+        run_vfx_screen_case "visual_effects_default" 18 "" "" 80 24
+        run_vfx_screen_case "doom_e1m1" 18 " w " "FTUI_DEMO_VFX_EFFECT=doom-e1m1" 80 24
+        run_vfx_screen_case "quake_e1m1" 18 " w " "FTUI_DEMO_VFX_EFFECT=quake-e1m1" 80 24
+        run_vfx_screen_case "determinism_lab" 40 "e" "" 80 24
+        run_vfx_screen_case "voi_overlay" 35 "" "" 80 24
 
         echo ""
         echo "VFX/determinism failures: $vfx_failures"
@@ -1437,7 +1428,7 @@ if $CAN_SMOKE; then
             local log_file="$LOG_DIR/11f_${label}.log"
             local keys_display
             keys_display="$(printf '%q' "$keys")"
-            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} timeout 10 $DEMO_BIN"
+            local cmd="exec env FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} \"$DEMO_BIN\""
             local start_ms dur_ms exit_code outcome status hash
             local case_name="forms_virtualized"
             local action="inject_keys"
@@ -1446,14 +1437,14 @@ if $CAN_SMOKE; then
             echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
             jsonl_case_step_start "$case_name" "$label" "$action" "$details"
             start_ms=$(e2e_now_ms)
-            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+            if PTY_SEND="$keys" PTY_SEND_DELAY_MS=600 run_in_pty "$cmd" 10 "$cols" "$rows" > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
             fi
             dur_ms=$(( $(e2e_now_ms) - start_ms ))
 
-            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+            if [ "$exit_code" -eq 0 ]; then
                 outcome="pass"
                 status="pass"
             else
@@ -1473,8 +1464,8 @@ if $CAN_SMOKE; then
         }
 
         run_forms_case "forms_input" 7 $'a\tb' 80 24
-        run_forms_case "form_validation" 25 "m" 80 24
-        run_forms_case "virtualized_search" 26 $'/io\rj' 80 24
+        run_forms_case "form_validation" 27 "m" 80 24
+        run_forms_case "virtualized_search" 28 $'/io\rj' 80 24
 
         echo ""
         echo "Forms/virtualized failures: $forms_failures"
@@ -1528,7 +1519,7 @@ if $CAN_SMOKE; then
             local log_file="$LOG_DIR/11g_${label}.log"
             local keys_display
             keys_display="$(printf '%q' "$keys")"
-            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & ${env_prefix} FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} timeout 10 $DEMO_BIN"
+            local cmd="exec env ${env_prefix} FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} \"$DEMO_BIN\""
             local start_ms dur_ms exit_code outcome status hash
             local case_name="terminal_inline"
             local action="inject_keys"
@@ -1537,14 +1528,14 @@ if $CAN_SMOKE; then
             echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
             jsonl_case_step_start "$case_name" "$label" "$action" "$details"
             start_ms=$(e2e_now_ms)
-            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+            if PTY_SEND="$keys" PTY_SEND_DELAY_MS=600 run_in_pty "$cmd" 10 "$cols" "$rows" > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
             fi
             dur_ms=$(( $(e2e_now_ms) - start_ms ))
 
-            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+            if [ "$exit_code" -eq 0 ]; then
                 outcome="pass"
                 status="pass"
             else
@@ -1564,7 +1555,7 @@ if $CAN_SMOKE; then
         }
 
         run_terminal_case "terminal_caps" 12 "e" "" 80 24
-        run_terminal_case "inline_mode_story" 33 "" "FTUI_DEMO_SCREEN_MODE=inline FTUI_DEMO_UI_HEIGHT=12" 80 24
+        run_terminal_case "inline_mode_story" 36 "" "FTUI_DEMO_SCREEN_MODE=inline FTUI_DEMO_UI_HEIGHT=12" 80 24
 
         echo ""
         echo "Terminal/inline failures: $inline_failures"
@@ -1608,9 +1599,9 @@ if $CAN_SMOKE; then
         echo "Report path: $CAPS_REPORT"
         echo ""
 
-        caps_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf 'e' > /dev/tty) & FTUI_TERMCAPS_REPORT_PATH=\"$CAPS_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=2000 FTUI_DEMO_SCREEN=12 timeout 8 $DEMO_BIN"
+        caps_cmd="exec env FTUI_TERMCAPS_REPORT_PATH=\"$CAPS_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=2000 FTUI_DEMO_SCREEN=12 \"$DEMO_BIN\""
 
-        if run_in_pty "$caps_cmd" 2>&1; then
+        if PTY_SEND=e PTY_SEND_DELAY_MS=600 run_in_pty "$caps_cmd" 8 2>&1; then
             caps_exit=0
         else
             caps_exit=$?
@@ -1680,7 +1671,7 @@ PY
         fi
 
         caps_exit_ok=true
-        if [ "$caps_exit" -ne 0 ] && [ "$caps_exit" -ne 124 ]; then
+        if [ "$caps_exit" -ne 0 ]; then
             caps_exit_ok=false
         fi
 
@@ -1714,10 +1705,10 @@ PY
     # ────────────────────────────────────────────────────────────────────────
     # Step 13: i18n Stress Lab Report Export (bd-iuvb.9)
     #
-    # Runs the i18n screen (screen 31), cycles to the Stress Lab panel,
+    # Runs the i18n screen (screen 34), cycles to the Stress Lab panel,
     # and exports a JSONL report via an injected 'e' keypress.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "i18n stress report (screen 31)"
+    log_step "i18n stress report (screen 34)"
     log_info "Running i18n Stress Lab and exporting JSONL report..."
     I18N_LOG="$LOG_DIR/13_i18n_stress.log"
     I18N_REPORT="$LOG_DIR/13_i18n_report_${TIMESTAMP}.jsonl"
@@ -1727,14 +1718,15 @@ PY
     jsonl_step_start "i18n stress report"
     i18n_start_ms="$(e2e_now_ms)"
     {
-        echo "=== i18n Stress Lab (Screen 31) Report Export ==="
+        echo "=== i18n Stress Lab (Screen 34) Report Export ==="
         echo "Bead: bd-iuvb.9"
         echo "Report path: $I18N_REPORT"
         echo ""
 
-        i18n_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf '\\t\\t\\t' > /dev/tty; sleep 0.2; printf 'e' > /dev/tty) & FTUI_I18N_REPORT_PATH=\"$I18N_REPORT\" FTUI_I18N_REPORT_WIDTH=32 FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=31 timeout 8 $DEMO_BIN"
+        i18n_cmd="exec env FTUI_I18N_REPORT_PATH=\"$I18N_REPORT\" FTUI_I18N_REPORT_WIDTH=32 FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=34 \"$DEMO_BIN\""
 
-        if run_in_pty "$i18n_cmd" 2>&1; then
+        if PTY_SEND_SEQUENCE='[{"delay_ms":500,"text":"4"},{"delay_ms":700,"text":"e"}]' \
+            run_in_pty "$i18n_cmd" 8 2>&1; then
             i18n_exit=0
         else
             i18n_exit=$?
@@ -1799,7 +1791,7 @@ PY
         fi
 
         i18n_exit_ok=true
-        if [ "$i18n_exit" -ne 0 ] && [ "$i18n_exit" -ne 124 ]; then
+        if [ "$i18n_exit" -ne 0 ]; then
             i18n_exit_ok=false
         fi
 
@@ -1833,9 +1825,9 @@ PY
     # ────────────────────────────────────────────────────────────────────────
     # Step 14: Widget Builder Export (bd-iuvb.10)
     #
-    # Runs the widget builder (screen 35) and exports a JSONL snapshot.
+    # Runs the widget builder (screen 38) and exports a JSONL snapshot.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "widget builder export (screen 35)"
+    log_step "widget builder export (screen 38)"
     log_info "Running Widget Builder and exporting JSONL snapshot..."
     WIDGET_LOG="$LOG_DIR/14_widget_builder.log"
     WIDGET_REPORT="$LOG_DIR/14_widget_builder_report_${TIMESTAMP}.jsonl"
@@ -1845,14 +1837,14 @@ PY
     jsonl_step_start "widget builder export"
     widget_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Widget Builder (Screen 35) Export ==="
+        echo "=== Widget Builder (Screen 38) Export ==="
         echo "Bead: bd-iuvb.10"
         echo "Report path: $WIDGET_REPORT"
         echo ""
 
-        widget_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf 'x' > /dev/tty) & FTUI_WIDGET_BUILDER_EXPORT_PATH=\"$WIDGET_REPORT\" FTUI_WIDGET_BUILDER_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=35 timeout 8 $DEMO_BIN"
+        widget_cmd="exec env FTUI_WIDGET_BUILDER_EXPORT_PATH=\"$WIDGET_REPORT\" FTUI_WIDGET_BUILDER_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=38 \"$DEMO_BIN\""
 
-        if run_in_pty "$widget_cmd" 2>&1; then
+        if PTY_SEND=x PTY_SEND_DELAY_MS=500 run_in_pty "$widget_cmd" 8 2>&1; then
             widget_exit=0
         else
             widget_exit=$?
@@ -1906,7 +1898,7 @@ payload = {
 }
 
 with open(summary_path, "a", encoding="utf-8") as handle:
-    handle.write(json.dumps(payload) + "\\n")
+    handle.write(json.dumps(payload) + "\n")
 PY
             then
                 widget_parse_ok=true
@@ -1917,7 +1909,7 @@ PY
         fi
 
         widget_exit_ok=true
-        if [ "$widget_exit" -ne 0 ] && [ "$widget_exit" -ne 124 ]; then
+        if [ "$widget_exit" -ne 0 ]; then
             widget_exit_ok=false
         fi
 
@@ -1951,9 +1943,9 @@ PY
     # ────────────────────────────────────────────────────────────────────────
     # Step 15: Determinism Lab JSONL (bd-iuvb.2)
     #
-    # Runs the Determinism Lab (screen 37) and exports JSONL verification data.
+    # Runs the Determinism Lab (screen 40) and exports JSONL verification data.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "determinism lab report (screen 37)"
+    log_step "determinism lab report (screen 40)"
     log_info "Running Determinism Lab and validating JSONL..."
     DET_LOG="$LOG_DIR/15_determinism_lab.log"
     DET_REPORT="$LOG_DIR/15_determinism_report_${TIMESTAMP}.jsonl"
@@ -1963,14 +1955,14 @@ PY
     jsonl_step_start "determinism lab report"
     det_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Determinism Lab (Screen 37) ==="
+        echo "=== Determinism Lab (Screen 40) ==="
         echo "Bead: bd-iuvb.2"
         echo "Report path: $DET_REPORT"
         echo ""
 
-        det_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf 'e' > /dev/tty) & FTUI_DETERMINISM_LAB_REPORT=\"$DET_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=37 timeout 8 $DEMO_BIN"
+        det_cmd="exec env FTUI_DETERMINISM_LAB_REPORT=\"$DET_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=40 \"$DEMO_BIN\""
 
-        if run_in_pty "$det_cmd" 2>&1; then
+        if PTY_SEND=e PTY_SEND_DELAY_MS=600 run_in_pty "$det_cmd" 8 2>&1; then
             det_run_exit=0
         else
             det_run_exit=$?
@@ -2061,7 +2053,7 @@ summary = {
 }
 
 with open(summary_path, "w", encoding="utf-8") as handle:
-    handle.write(json.dumps(summary) + "\\n")
+    handle.write(json.dumps(summary) + "\n")
 
 print(json.dumps(summary))
 sys.exit(0 if ok else 2)
@@ -2074,7 +2066,7 @@ PY
         fi
 
         det_exit_ok=true
-        if [ "$det_run_exit" -ne 0 ] && [ "$det_run_exit" -ne 124 ]; then
+        if [ "$det_run_exit" -ne 0 ]; then
             det_exit_ok=false
         fi
 
@@ -2108,9 +2100,9 @@ PY
     # ────────────────────────────────────────────────────────────────────────
     # Step 16: Hyperlink Playground JSONL (bd-iuvb.14)
     #
-    # Runs the Hyperlink Playground (screen 38) and captures JSONL events.
+    # Runs the Hyperlink Playground (screen 41) and captures JSONL events.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "hyperlink playground (screen 38)"
+    log_step "hyperlink playground (screen 41)"
     log_info "Running Hyperlink Playground and validating JSONL..."
     LINK_LOG="$LOG_DIR/16_hyperlink_playground.log"
     LINK_REPORT="$LOG_DIR/16_hyperlink_report_${TIMESTAMP}.jsonl"
@@ -2120,14 +2112,14 @@ PY
     jsonl_step_start "hyperlink playground"
     link_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Hyperlink Playground (Screen 38) ==="
+        echo "=== Hyperlink Playground (Screen 41) ==="
         echo "Bead: bd-iuvb.14"
         echo "Report path: $LINK_REPORT"
         echo ""
 
-        link_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf '\\t\\r' > /dev/tty) & FTUI_LINK_REPORT_PATH=\"$LINK_REPORT\" FTUI_LINK_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=38 timeout 8 $DEMO_BIN"
+        link_cmd="exec env FTUI_LINK_REPORT_PATH=\"$LINK_REPORT\" FTUI_LINK_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=41 \"$DEMO_BIN\""
 
-        if run_in_pty "$link_cmd" 2>&1; then
+        if PTY_SEND=$'\t\r' PTY_SEND_DELAY_MS=500 run_in_pty "$link_cmd" 8 2>&1; then
             link_exit=0
         else
             link_exit=$?
@@ -2198,7 +2190,7 @@ PY
         fi
 
         link_exit_ok=true
-        if [ "$link_exit" -ne 0 ] && [ "$link_exit" -ne 124 ]; then
+        if [ "$link_exit" -ne 0 ]; then
             link_exit_ok=false
         fi
 
@@ -2249,9 +2241,10 @@ PY
         echo "Report path: $PAL_REPORT"
         echo ""
 
-        pal_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf '\\x0b' > /dev/tty; sleep 0.2; printf 'dash' > /dev/tty; sleep 0.2; printf '\\r' > /dev/tty; sleep 0.3; printf '\\x0b' > /dev/tty; sleep 0.2; printf '\\x06' > /dev/tty; sleep 0.2; printf '\\x1b' > /dev/tty) & FTUI_PALETTE_REPORT_PATH=\"$PAL_REPORT\" FTUI_PALETTE_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=1 timeout 8 $DEMO_BIN"
+        pal_cmd="exec env FTUI_PALETTE_REPORT_PATH=\"$PAL_REPORT\" FTUI_PALETTE_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=1 \"$DEMO_BIN\""
 
-        if run_in_pty "$pal_cmd" 2>&1; then
+        if PTY_SEND_SEQUENCE='[{"delay_ms":500,"text":"\u000b"},{"delay_ms":700,"text":"dash"},{"delay_ms":900,"text":"\r"},{"delay_ms":1200,"text":"\u000b"},{"delay_ms":1400,"text":"\u0006"},{"delay_ms":1600,"text":"\u001b"}]' \
+            run_in_pty "$pal_cmd" 8 2>&1; then
             pal_exit=0
         else
             pal_exit=$?
@@ -2315,7 +2308,7 @@ summary = {
 }
 
 with open(summary_path, "w", encoding="utf-8") as handle:
-    handle.write(json.dumps(summary) + "\\n")
+    handle.write(json.dumps(summary) + "\n")
 
 print(json.dumps(summary))
 sys.exit(0 if ok else 2)
@@ -2328,7 +2321,7 @@ PY
         fi
 
         pal_exit_ok=true
-        if [ "$pal_exit" -ne 0 ] && [ "$pal_exit" -ne 124 ]; then
+        if [ "$pal_exit" -ne 0 ]; then
             pal_exit_ok=false
         fi
 
@@ -2379,9 +2372,10 @@ PY
         echo "Evidence path: $EXPLAIN_REPORT"
         echo ""
 
-        explain_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; stty rows 30 cols 100 2>/dev/null; sleep 0.6; stty rows 24 cols 80 2>/dev/null; sleep 0.6; stty rows 35 cols 120 2>/dev/null) & FTUI_DEMO_EVIDENCE_JSONL=\"$EXPLAIN_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=3200 FTUI_DEMO_SCREEN=40 timeout 10 $DEMO_BIN"
+        explain_cmd="exec env FTUI_DEMO_EVIDENCE_JSONL=\"$EXPLAIN_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=3200 FTUI_DEMO_SCREEN=33 \"$DEMO_BIN\""
 
-        if run_in_pty "$explain_cmd" 2>&1; then
+        if PTY_RESIZE_SEQUENCE='600:100x30;1200:80x24;1800:120x35' \
+            run_in_pty "$explain_cmd" 10 2>&1; then
             explain_exit=0
         else
             explain_exit=$?
@@ -2589,7 +2583,7 @@ PY
         fi
 
         explain_exit_ok=true
-        if [ "$explain_exit" -ne 0 ] && [ "$explain_exit" -ne 124 ]; then
+        if [ "$explain_exit" -ne 0 ]; then
             explain_exit_ok=false
         fi
 

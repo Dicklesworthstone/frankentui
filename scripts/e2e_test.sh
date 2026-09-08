@@ -429,6 +429,12 @@ write_budget_case_meta() {
     fi
 }
 
+# The producer's run_id contains the process ID, not a rendering decision.
+# Preserve it in raw evidence; compare every other field between seeded runs.
+canonical_diff_decisions() {
+    jq -cS 'select(.event == "diff_decision") | del(.run_id)' "$1"
+}
+
 span_diff_hash() {
     local evidence_jsonl="$1"
     local hash_cmd=""
@@ -441,11 +447,11 @@ span_diff_hash() {
     fi
 
     if [[ -n "$hash_cmd" ]]; then
-        rg '"event":"diff_decision"' "$evidence_jsonl" \
+        canonical_diff_decisions "$evidence_jsonl" \
             | eval "$hash_cmd" \
             | awk '{print $1}'
     else
-        rg '"event":"diff_decision"' "$evidence_jsonl" | cksum | awk '{print $1}'
+        canonical_diff_decisions "$evidence_jsonl" | cksum | awk '{print $1}'
     fi
 }
 
@@ -461,18 +467,18 @@ selector_decision_hash() {
     fi
 
     if [[ -n "$hash_cmd" ]]; then
-        rg '"event":"diff_decision"' "$evidence_jsonl" \
+        canonical_diff_decisions "$evidence_jsonl" \
             | eval "$hash_cmd" \
             | awk '{print $1}'
     else
-        rg '"event":"diff_decision"' "$evidence_jsonl" | cksum | awk '{print $1}'
+        canonical_diff_decisions "$evidence_jsonl" | cksum | awk '{print $1}'
     fi
 }
 
 extract_diff_decision_lines() {
     local source="$1"
     local dest="$2"
-    rg '"event":"diff_decision"' "$source" > "$dest" || true
+    canonical_diff_decisions "$source" > "$dest"
 }
 
 check_span_evidence() {
@@ -572,7 +578,7 @@ check_tile_evidence() {
 check_selector_evidence() {
     local evidence_jsonl="$1"
     local case_name="$2"
-    local phase_len="${3:-6}"
+    local trace_jsonl="$3"
     local missing=0
 
     if ! rg -q '"event":"diff_decision"' "$evidence_jsonl"; then
@@ -608,7 +614,47 @@ check_selector_evidence() {
         fi
 
         local phase_mismatch
-        phase_mismatch="$(jq -c --argjson phase_len "$phase_len" 'def phase: (.event_idx / $phase_len | floor) % 2; def sparse_ok: .dirty_rows <= 3; def dense_ok: .dirty_rows >= (.total_rows - 2); map(select(.event=="diff_decision")) | map(. + {phase: phase}) | map(select((.phase == 0 and (sparse_ok | not)) or (.phase == 1 and (dense_ok | not)))) | first // empty' "$evidence_jsonl")"
+        # Runtime ticks may coalesce before presentation. Check the observed
+        # sparse/dense/sparse journey against actual trace geometry, not a tick
+        # number inferred from event_idx. Erasing a dense footprint is dense too.
+        # This fixed-size case has one startup redraw without a diff decision;
+        # subsequent decisions and successfully presented frames pair in order.
+        if ! phase_mismatch="$(jq -cs --slurpfile trace "$trace_jsonl" '
+            def phase:
+                if .dirty_rows > 0 and .dirty_rows <= 3 then "sparse"
+                elif .dirty_rows >= (.total_rows - 2) and .dirty_rows <= .total_rows then "dense"
+                else "invalid" end;
+            def trace_strategy:
+                {DirtyRows: "dirty", Full: "full", FullRedraw: "redraw"}[.strategy];
+            def sparse_cells_max:
+                (.cols / 10 | floor) | if . < 2 then 2 elif . > 12 then 12 else . end | . * 6;
+            map(select(.event == "diff_decision")) as $decisions |
+            ($trace | map(select(.event == "frame"))) as $frames |
+            if ($frames | length) != (($decisions | length) + 1)
+                or $frames[0].frame_idx != 0 or $frames[0].diff_strategy != "redraw" then
+                {reason: "trace/decision count or startup mismatch", decisions: ($decisions | length), frames: ($frames | length)}
+            else
+                [$decisions | to_entries[] | .key as $i | .value |
+                    . + {phase: phase, trace: $frames[$i + 1]} |
+                    select(.event_idx != $i or .trace.frame_idx != ($i + 1)
+                        or .trace.cols != .cols or .trace.rows != .rows
+                        or .trace.diff_strategy != trace_strategy
+                        or .phase == "invalid"
+                        or (.phase == "sparse" and (.trace.diff_cells < 1 or .trace.diff_cells > sparse_cells_max))
+                        or (.phase == "dense" and .trace.diff_cells < ((.cols - 2) * (.rows - 2))))
+                ] | first as $mismatch |
+                if $mismatch != null then $mismatch
+                else
+                    ($decisions | map(phase) | reduce .[] as $phase ([];
+                        if .[-1] == $phase then . else . + [$phase] end)) |
+                    if .[0:3] == ["sparse", "dense", "sparse"] then empty
+                    else {reason: "missing sparse/dense/sparse transitions", observed_phases: .} end
+                end
+            end
+        ' "$evidence_jsonl")"; then
+            log_test_fail "$case_name" "could not parse selector phase evidence"
+            return 1
+        fi
         if [[ -n "$phase_mismatch" ]]; then
             log_test_fail "$case_name" "sparse/dense phase mismatch"
             log_error "  Selector phase mismatch: $phase_mismatch"
@@ -616,7 +662,10 @@ check_selector_evidence() {
         fi
 
         local strategy_mismatch
-        strategy_mismatch="$(jq -c 'def best_strategy: if .cost_dirty <= .cost_full and .cost_dirty <= .cost_redraw then "DirtyRows" elif .cost_full <= .cost_redraw then "Full" else "FullRedraw" end; map(select(.event=="diff_decision")) | map(. + {best_strategy: best_strategy}) | map(select(.strategy != .best_strategy and (.hysteresis_applied | not) and .guard_reason == "none")) | first // empty' "$evidence_jsonl")"
+        if ! strategy_mismatch="$(jq -cs 'def best_strategy: if .cost_dirty <= .cost_full and .cost_dirty <= .cost_redraw then "DirtyRows" elif .cost_full <= .cost_redraw then "Full" else "FullRedraw" end; map(select(.event=="diff_decision")) | map(. + {best_strategy: best_strategy}) | map(select(.strategy != .best_strategy and (.hysteresis_applied | not) and .guard_reason == "none")) | first // empty' "$evidence_jsonl")"; then
+            log_test_fail "$case_name" "could not parse selector cost evidence"
+            return 1
+        fi
         if [[ -n "$strategy_mismatch" ]]; then
             log_test_fail "$case_name" "strategy not aligned to expected costs"
             log_error "  Selector cost mismatch: $strategy_mismatch"
@@ -801,6 +850,11 @@ run_large_case() {
     log_test_start "$case_name"
     record_terminal_caps "$caps_file"
 
+    # Exercise the resize policy required by the large-screen scenario, then
+    # restore the initial dimensions before the final capture and trace replay.
+    local resize_sequence="350:$((cols - 2))x${rows};400:${cols}x${rows};450:$((cols - 1))x$((rows - 1));500:${cols}x${rows};550:$((cols - 2))x${rows};600:${cols}x${rows}"
+    log_info "Resize sequence (ms:cols x rows): $resize_sequence"
+
     local start_ms
     start_ms="$(e2e_now_ms)"
 
@@ -820,6 +874,7 @@ run_large_case() {
     FTUI_HARNESS_RENDER_TRACE_MODULE="$case_name" \
     PTY_COLS="$cols" \
     PTY_ROWS="$rows" \
+    PTY_RESIZE_SEQUENCE="$resize_sequence" \
     PTY_TIMEOUT=6 \
     PTY_CANONICALIZE=1 \
     PTY_TEST_NAME="$case_name" \
@@ -974,6 +1029,7 @@ run_tile_case() {
     local trace_replay_log="$E2E_LOG_DIR/${case_name}_trace_replay.log"
 
     log_test_start "$case_name"
+    log_info "Diff profile: tile skip; fixture disables certified row narrowing"
 
     local start_ms
     start_ms="$(e2e_now_ms)"
@@ -1113,7 +1169,7 @@ run_selector_case() {
         return 1
     fi
 
-    if ! check_selector_evidence "$evidence_jsonl" "$case_name" "$phase_len"; then
+    if ! check_selector_evidence "$evidence_jsonl" "$case_name" "$trace_jsonl"; then
         record_result "$case_name" "failed" "$duration_ms" "$LOG_FILE" "selector evidence mismatch"
         write_selector_case_meta "$jsonl" "$case_name" "failed" "$seed" "$screen_mode" "$cols" "$rows" "$evidence_jsonl" "$output_file" "$duration_ms" "$run_id" "" "$phase_len"
         return 1

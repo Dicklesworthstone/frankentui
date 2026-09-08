@@ -110,8 +110,6 @@ run_case() {
     local prefix="SB_${cols}x${rows}_ui${ui_height}_"
     local pre_lines=$((rows + 4))
     local expected_visible=$((rows - ui_height))
-    local expected_last=$((pre_lines - ui_height))
-    local expected_hidden=$((expected_last + 1))
 
     LOG_FILE="$E2E_LOG_DIR/${case_id}.log"
     local output_file="$E2E_LOG_DIR/${case_id}.pty"
@@ -169,6 +167,31 @@ run_case() {
         error="canonical_missing"
     fi
 
+    # Reconstruct the viewport immediately before terminal setup. Printed
+    # newlines and startup diagnostics can scroll it before the UI claims its
+    # rows, so line numbers alone are not a reliable preservation oracle.
+    local pre_ui_file="$E2E_LOG_DIR/${case_id}.pre_ui.pty"
+    local pre_ui_canonical="$E2E_LOG_DIR/${case_id}.pre_ui.canonical.txt"
+    if [[ "$status" == "passed" ]]; then
+        if ! "$E2E_PYTHON" - "$output_file" "$pre_ui_file" <<'PY'
+from pathlib import Path
+import sys
+
+captured = Path(sys.argv[1]).read_bytes()
+startup, separator, _ = captured.partition(b"\x1b")
+if not separator:
+    raise SystemExit("No terminal setup boundary in PTY capture")
+Path(sys.argv[2]).write_bytes(startup)
+PY
+        then
+            status="failed"
+            error="pre_ui_capture_failed"
+        elif ! "$CANON_BIN" --input "$pre_ui_file" --output "$pre_ui_canonical" --cols "$cols" --rows "$rows"; then
+            status="failed"
+            error="pre_ui_canonicalize_failed"
+        fi
+    fi
+
     if [[ "$status" == "passed" ]]; then
         if ! grep -a -q "INLINE MODE - SCROLLBACK PRESERVED" "$output_file"; then
             status="failed"
@@ -207,14 +230,14 @@ run_case() {
     fi
 
     if [[ "$status" == "passed" ]]; then
-        if ! grep -q "${prefix}$(printf "%03d" "$expected_last")" "$canonical_file"; then
+        if [[ "$(head -n "$expected_visible" "$canonical_file")" != "$(head -n "$expected_visible" "$pre_ui_canonical")" ]]; then
             status="failed"
-            error="scrollback_last_missing"
+            error="scrollback_region_changed"
         fi
     fi
 
     if [[ "$status" == "passed" ]]; then
-        if grep -q "${prefix}$(printf "%03d" "$expected_hidden")" "$canonical_file"; then
+        if tail -n "$ui_height" "$canonical_file" | grep -q "^${prefix}"; then
             status="failed"
             error="ui_height_overlap"
         fi

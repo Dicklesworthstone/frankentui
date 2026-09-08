@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Coverage:
 # - Dashboard: Typewriter, Glitch, Wave
-# - Visual Effects (TextEffects): Ocean Gradient, Matrix Style
+# - Visual Effects (TextEffects): Diagonal Gradient (ocean palette), Matrix Style
 # - Modes: alt + inline
 # - Sizes: 80x24, 120x40
 # - Deterministic seeds/time with stable hash checks
@@ -103,8 +103,12 @@ mkdir -p "$TEXTFX_LOG_DIR"
 
 TEXTFX_TICK_MS="${TEXTFX_TICK_MS:-${E2E_TIME_STEP_MS:-100}}"
 TEXTFX_EXIT_AFTER_TICKS="${TEXTFX_EXIT_AFTER_TICKS:-12}"
-TEXTFX_UI_HEIGHT="${TEXTFX_UI_HEIGHT:-12}"
-TEXTFX_SEND_DELAY_MS="${TEXTFX_SEND_DELAY_MS:-300}"
+# Use the available rows by default. A 12-row inline viewport selects the
+# dashboard's tiny layout, which omits the text-effects panel entirely.
+TEXTFX_UI_HEIGHT="${TEXTFX_UI_HEIGHT:-}"
+# Send during capability probing, after raw mode is active. The old 300 ms
+# wall-clock delay raced the probe's own 300 ms timeout and added a redraw.
+TEXTFX_SEND_DELAY_MS="${TEXTFX_SEND_DELAY_MS:-0}"
 TEXTFX_MIN_BYTES="${TEXTFX_MIN_BYTES:-400}"
 
 if [[ -z "$TEXTFX_EXIT_AFTER_TICKS" || "$TEXTFX_EXIT_AFTER_TICKS" -lt 1 ]]; then
@@ -119,8 +123,8 @@ cases=(
     "dashboard_typewriter|2|dashboard|Typewriter"
     "dashboard_glitch|2|dashboard|Glitch"
     "dashboard_wave|2|dashboard|Wave"
-    "visual_ocean|16|visual_effects|OceanGradient"
-    "visual_matrix|16|visual_effects|MatrixStyle"
+    "visual_ocean|18|visual_effects|Diagonal Gradient"
+    "visual_matrix|18|visual_effects|Matrix Style"
 )
 
 repeat_char() {
@@ -201,7 +205,7 @@ emit_textfx_hash_jsonl() {
     fi
 }
 
-run_demo_once() {
+run_demo_once() (
     local screen_id="$1"
     local mode="$2"
     local cols="$3"
@@ -211,13 +215,23 @@ run_demo_once() {
     local out_pty="$7"
     local run_tag="$8"
 
+    # This declared identity requests a live sync-output probe. The query is
+    # our readiness signal; key bytes read by the probe become startup events.
+    unset NO_COLOR FTUI_TEST_PROFILE FTUI_SYNC_OUTPUT FTUI_SCROLL_REGION \
+        TMUX TMUX_PANE STY ZELLIJ WEZTERM_UNIX_SOCKET WEZTERM_PANE \
+        WEZTERM_EXECUTABLE KITTY_WINDOW_ID WT_SESSION TERM_PROGRAM \
+        TERM_PROGRAM_VERSION LC_TERMINAL LC_TERMINAL_VERSION \
+        PTY_SEND_FILE PTY_SEND_SEQUENCE
+    export TERM=xterm-256color COLORTERM=truecolor FTUI_CAPS_PROBE=1
+    log_info "Text FX PTY profile: TERM=$TERM COLORTERM=$COLORTERM; identity/mux/policy overrides cleared; input follows DEC 2026 query"
+
     local args=(
         "--screen=${screen_id}"
         "--screen-mode=${mode}"
         "--no-mouse"
     )
     if [[ "$mode" == "inline" ]]; then
-        args+=("--ui-height=${TEXTFX_UI_HEIGHT}")
+        args+=("--ui-height=${TEXTFX_UI_HEIGHT:-$rows}")
     fi
 
     local run_exit=0
@@ -229,6 +243,7 @@ run_demo_once() {
         PTY_ROWS="$rows" \
         PTY_TIMEOUT=8 \
         PTY_SEND="$send_keys" \
+        PTY_SEND_AFTER_OUTPUT=$'\x1b[?2026$p' \
         PTY_SEND_DELAY_MS="$TEXTFX_SEND_DELAY_MS" \
         PTY_TEST_NAME="textfx_${screen_id}_${mode}_${cols}x${rows}_${run_tag}" \
         pty_run "$out_pty" "$DEMO_BIN" "${args[@]}"; then
@@ -239,6 +254,51 @@ run_demo_once() {
 
     pty_record_metadata "$out_pty" "$run_exit" "$cols" "$rows"
     return "$run_exit"
+)
+
+assert_effect_visible() {
+    local output="$1"
+    local mode="$2"
+    local cols="$3"
+    local rows="$4"
+    local screen_label="$5"
+    local effect_label="$6"
+    local frame_pty="${output%.pty}.frame.pty"
+    local frame_text="${output%.pty}.frame.txt"
+
+    # Preserve the last application frame before leaving the alternate screen.
+    # The full capture, including cleanup, remains the determinism hash input.
+    if ! "$E2E_PYTHON" - "$output" "$frame_pty" "$mode" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+source, destination, mode = sys.argv[1:]
+data = Path(source).read_bytes()
+if mode == "alt":
+    exits = [
+        match.start()
+        for match in re.finditer(rb"\x1b\[\?([0-9;]+)l", data)
+        if b"1049" in match.group(1).split(b";")
+    ]
+    if not exits:
+        raise SystemExit("Alternate-screen cleanup missing from capture")
+    data = data[:exits[-1]]
+Path(destination).write_bytes(data)
+PY
+    then
+        return 1
+    fi
+    pty_canonicalize_file "$frame_pty" "$frame_text" "$cols" "$rows" || return 1
+
+    local panel_label="Text FX"
+    if [[ "$screen_label" == "visual_effects" ]]; then
+        panel_label="[Space] Cycle effect"
+    fi
+    # Check the primary slot: an adjacent effect in a multi-effect panel does
+    # not prove that the requested effect was selected.
+    grep -F -q "$panel_label" "$frame_text" && \
+        grep -F -q "1 · $effect_label" "$frame_text"
 }
 
 run_case() {
@@ -313,6 +373,18 @@ run_case() {
         return 1
     fi
 
+    local output
+    for output in "$out1" "$out2"; do
+        if ! assert_effect_visible "$output" "$mode" "$cols" "$rows" "$screen_label" "$effect_label"; then
+            local duration_ms=$(( $(e2e_now_ms) - start_ms ))
+            log_test_fail "$case_id" "requested text effect was not rendered"
+            jsonl_assert "text_fx_visible_${case_id}" "failed" "effect=$effect_label pty=$output frame=${output%.pty}.frame.txt"
+            record_result "$case_id" "failed" "$duration_ms" "$LOG_FILE" "requested text effect was not rendered"
+            return 1
+        fi
+    done
+    jsonl_assert "text_fx_visible_${case_id}" "passed" "effect=$effect_label rendered in the primary slot in both captures"
+
     if [[ "$hash1" != "$hash2" ]]; then
         local duration_ms=$(( $(e2e_now_ms) - start_ms ))
         log_test_fail "$case_id" "hash mismatch"
@@ -335,6 +407,7 @@ run_case() {
 
 if [[ -z "$DEMO_BIN" ]]; then
     LOG_FILE="$E2E_LOG_DIR/text_effects_sweep_missing.log"
+    missing_cases=0
     for case in "${cases[@]}"; do
         IFS='|' read -r effect_key _screen_id _screen_label _effect_label <<<"$case"
         for mode in "${modes[@]}"; do
@@ -342,16 +415,17 @@ if [[ -z "$DEMO_BIN" ]]; then
                 cols="${size%x*}"
                 rows="${size#*x}"
                 case_id="${effect_key}_${mode}_${cols}x${rows}"
-                log_test_skip "$case_id" "ftui-demo-showcase binary missing"
-                record_result "$case_id" "skipped" 0 "$LOG_FILE" "binary missing"
+                log_test_fail "$case_id" "ftui-demo-showcase binary missing"
+                record_result "$case_id" "failed" 0 "$LOG_FILE" "binary missing"
+                missing_cases=$((missing_cases + 1))
             done
         done
     done
-    exit 0
+    jsonl_run_end "failed" 0 "$missing_cases"
+    exit "$missing_cases"
 fi
 
 FAILURES=0
-STOP=0
 
 for case in "${cases[@]}"; do
     IFS='|' read -r effect_key screen_id screen_label effect_label <<<"$case"
@@ -361,17 +435,9 @@ for case in "${cases[@]}"; do
             rows="${size#*x}"
             if ! run_case "$effect_key" "$screen_id" "$screen_label" "$effect_label" "$mode" "$cols" "$rows"; then
                 FAILURES=$((FAILURES + 1))
-                STOP=1
-                break
             fi
         done
-        if [[ "$STOP" -eq 1 ]]; then
-            break
-        fi
     done
-    if [[ "$STOP" -eq 1 ]]; then
-        break
-    fi
 done
 
 run_end_ms="$(e2e_now_ms)"
