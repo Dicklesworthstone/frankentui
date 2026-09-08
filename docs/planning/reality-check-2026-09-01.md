@@ -60,8 +60,9 @@ in-tree caller, but its existence cannot substantiate automatic runtime use.
    The width-cache collision guard, conformal finite-sample boundary, private
    accessibility telemetry, pane reset/history fixes, and input/dirty-render
    repairs are shipped, not merely present in an unpublished checkout.
-2. **What does not yet work completely?** Doctor's coverage and determinism
-   gates fail. Browser compilation and Node tests do not establish a complete
+2. **What does not yet work completely?** Doctor's coverage gate still fails;
+   the corrected determinism comparator now passes all six retained captures.
+   Browser compilation and Node tests do not establish a complete
    browser/GPU/IME/mobile journey. The accessibility tree does not reach an OS
    screen reader by itself. The flagship interactive subprocess example is
    absent; its underlying streaming boundary is unbounded. Full editor,
@@ -69,7 +70,8 @@ in-tree caller, but its existence cannot substantiate automatic runtime use.
    README algorithm and guarantee claims exceed actual wiring or assumptions.
 3. **What blocks completion?** Concrete integration work and trustworthy,
    source-bound acceptance. The immediate verification blockers are doctor
-   coverage discovery/scope/deficits and schema-aware determinism comparison.
+   coverage discovery/scope/deficits. Schema-aware determinism comparison was
+   repaired and verified on September 8; the original failures remain retained.
    The native flagship needs bounded process streaming and cancellation; web
    and accessibility need actual host consumers. Controlled total-cost
    measurements are still required before claiming universal performance wins.
@@ -109,7 +111,7 @@ reruns do not erase an earlier failed aggregate.
 | Terminal journeys | Release verification records 17 terminal E2E suites, 20 text-effects cases, 24 interactive showcase stages and paired traces passing after concrete source/fixture repairs. | Exact receipts identify each snapshot; do not relabel all as one final-candidate full test run. |
 | WASM | Seven portable checks, actual showcase release WASM build, and two Node execution tests pass. Raw WASM SHA256 `04e7e653823f3246e3830e5ab042ec92d24a801fe6834b898dbae8ea8e7fd57d`; receipt `frankentui-candidate-070-wasm/20260908T030920-1646623/receipt.json`. | No browser JS packaging or real browser execution in that receipt. Size/export/negative-guard and current host delivery obligations remain. |
 | Browser | Fresh `/web/` HTTP 200; September 6 Chromium touch/mouse checks remain valid for their deployed host revision. | HTTP availability and earlier cell-text checks do not establish current WASM identity, GPU pixels, Safari or physical iPhone behavior. |
-| Doctor execution | 2,691 tests pass with zero skipped; all 12 failure cases, six actual soak workflows, VHS snapshot smoke and replay pass after scoped fixture repairs. See `doctor-final-evidence/findings.md`. | Aggregate comparator still fails on ledger and suite-manifest timestamps/trace identities; `.28.7`. Workflow exit success alone is not determinism. |
+| Doctor execution | 2,691 tests pass with zero skipped; all 12 failure cases, six actual soak workflows, VHS snapshot smoke and replay pass after scoped fixture repairs. The repaired comparator passes all six retained workflows plus 40 comparison controls, report-reuse protection, three iteration guards and symlink replay. DSR `frankentui-doctor-comparator8`; script SHA256 `b44c7eae2b4f8f7830a5f8235405dcfa77cbbe37c9922eff0efb6158284495ee`. | This is a fresh comparison of existing captures, not new capture execution. All 410 retained inputs and earlier failed reports are unchanged. `.28.7` is repaired; coverage `.28.6` still blocks aggregate G22 acceptance. |
 | Doctor coverage | Corrected export includes all 24 formerly omitted executed test objects and unchanged profiles. In the unchanged 307-file domain: 56.230% lines, 37.176% branches, 50.578% functions; 16 checks fail. DSR run `6bae7909-f9b3-4d88-8f5d-e80022741d34`. | Floors remain 89/69/86. Doctor-only diagnostics are not the gate; neither silent scope narrowing nor threshold reduction is a repair. `.28.6` owns this. |
 | Performance | Buffer-fill scalar parity and the bounded Linux ten-row performance gate pass; retained table benchmark improves 275.44 to 70.55 microseconds. | Four runtime-only metrics are unmeasured. A macOS VFX p99 failure remains. G47 still needs equal-history total-cost and memory comparisons. |
 
@@ -135,9 +137,9 @@ signature theorem identifies paths up to tree-like equivalence
 
 ### Bridge revision: order by complete user value
 
-1. **Repair verification that is demonstrably failing.** Finish `.28.7` using
-   the six existing captures and integrity-preserving negative controls; finish
-   `.28.6` with complete object discovery and explicit coverage scope. Reconcile
+1. **Repair verification that is demonstrably failing.** `.28.7` now passes
+   using the six existing captures and integrity-preserving negative controls.
+   Finish `.28.6` with complete object discovery and explicit coverage scope. Reconcile
    the full `.6.31` inventory from retained native receipts before scheduling
    missing checks. Keep timeouts, failures and unexecuted cases visible.
 2. **Deliver the original agent-harness story.** Complete output trust modes
@@ -801,7 +803,7 @@ consumer, host and feature scope actually executed.
 | 65 | Showcase screen count | PARTIAL; 45 asserted screens, README still says 46 | G06 |
 | 66 | Published libraries | WORKING; all 17 crates and versioned docs published as 0.7.0, registry identity and consumers verified | G43 broader negative controls |
 | 67 | Windows support | PARTIAL; 0.7.0 MSVC native binary/build/version/help pass; full interactive console/lifecycle matrix remains | G31 |
-| 68 | Doctor verification | PARTIAL; 2691 tests and real capture/failure/replay workflows pass; coverage and determinism comparator fail | G22 |
+| 68 | Doctor verification | PARTIAL; 2691 tests, real capture/failure/replay workflows and corrected retained-soak comparison pass; coverage still fails | G22 |
 | 69 | Cross-component test location | PARTIAL docs; tests largely in crate test directories | G39 |
 | 70 | Mandatory quality gates | PARTIAL; final-candidate Mac fmt/check/Clippy/rustdoc pass, retained aggregates and doctor gates fail; full inventory remains | G04/G42 |
 | 71 | Main/legacy branch synchronization | WORKING at audit start: release handoff records both refs at `0ae2c02e`; recheck after this documentation push without Actions | G41 |
@@ -844,7 +846,7 @@ do not automatically establish acceptance; preserve in-progress assignments.
 | G19 | .25 | Preserve ranked Help; verify actual application feedback. |
 | G20 | .26 | Default announcement-text redaction delivered; complete evidence schemas and actual producer/artifact contracts. |
 | G21 | .18 | Hand-chosen experimental SOS route; correct residual solver attribution. |
-| G22 | .28 | Preserve actual capture/failure/replay passes; fix coverage `.28.6` and determinism `.28.7`; retain real importer fixture/source scope. |
+| G22 | .28 | Preserve actual capture/failure/replay and corrected determinism `.28.7` passes; fix coverage `.28.6`; retain real importer fixture/source scope. |
 | G23 | .29 | Preserve deployed touch fix; finish in-tree host, current WASM artifact identity, real GPU/IME and physical mobile proof. |
 | G24 | .30 | Executor resolution, side-effect-safe shadow comparison, measured queue policy. |
 | G25 | .31 | Latency/bytes/allocation budgets, negative gates, no selected-best-run baselines. |
