@@ -22,7 +22,7 @@
 //! prog.init().unwrap();
 //!
 //! // Host-driven frame loop
-//! prog.push_event(Event::Tick);
+//! prog.push_event(Event::Tick).expect("tick admission");
 //! prog.advance_time(Duration::from_millis(16));
 //! let result = prog.step().unwrap();
 //!
@@ -249,8 +249,12 @@ impl<M: Model> StepProgram<M> {
     /// Push a terminal event into the event queue.
     ///
     /// Accepted events are processed on the next [`step`](Self::step) call.
-    /// Rejection leaves the queue and backend size unchanged and returns the event.
+    /// Rejection leaves the queue and backend size unchanged. Capacity errors
+    /// return the event; a stopped program rejects further input as unsupported.
     pub fn push_event(&mut self, event: Event) -> Result<(), WebBackendError> {
+        if !self.running {
+            return Err(WebBackendError::Unsupported("program has stopped"));
+        }
         let event = match event {
             Event::Resize { width, height } => {
                 let (width, height) = clamp_terminal_size(width, height);
@@ -704,9 +708,9 @@ mod tests {
         let mut prog = StepProgram::new(new_counter(0), 80, 24);
         prog.init().unwrap();
 
-        prog.push_event(key_event('+'));
-        prog.push_event(key_event('+'));
-        prog.push_event(key_event('+'));
+        prog.push_event(key_event('+')).expect("key admission");
+        prog.push_event(key_event('+')).expect("key admission");
+        prog.push_event(key_event('+')).expect("key admission");
         let result = prog.step().unwrap();
 
         assert!(result.running);
@@ -734,9 +738,9 @@ mod tests {
         let mut prog = StepProgram::new(new_counter(0), 80, 24);
         prog.init().unwrap();
 
-        prog.push_event(key_event('+'));
-        prog.push_event(key_event('q'));
-        prog.push_event(key_event('+')); // Should not be processed.
+        prog.push_event(key_event('+')).expect("key admission");
+        prog.push_event(key_event('q')).expect("quit admission");
+        prog.push_event(key_event('+')).expect("key admission"); // Should not be processed.
         let result = prog.step().unwrap();
 
         assert!(!result.running);
@@ -749,11 +753,19 @@ mod tests {
         let mut prog = StepProgram::new(new_counter(0), 80, 24);
         prog.init().unwrap();
 
-        prog.push_event(key_event('q'));
+        prog.push_event(key_event('q')).expect("quit admission");
         prog.step().unwrap();
 
-        // Further steps do nothing.
-        prog.push_event(key_event('+'));
+        // Stopped programs reject new input and geometry changes.
+        assert_eq!(
+            prog.push_event(key_event('+')),
+            Err(WebBackendError::Unsupported("program has stopped"))
+        );
+        assert_eq!(
+            prog.resize(120, 40),
+            Err(WebBackendError::Unsupported("program has stopped"))
+        );
+        assert_eq!(prog.size(), (80, 24));
         let result = prog.step().unwrap();
         assert!(!result.running);
         assert!(!result.rendered);
@@ -764,11 +776,46 @@ mod tests {
     // ---- Resize ----
 
     #[test]
+    fn rejected_resize_preserves_geometry_and_accepted_input_until_recovery() {
+        let mut prog = StepProgram::new(new_counter(0), 80, 24);
+        prog.init().unwrap();
+        for _ in 0..crate::WebEventSource::MAX_EVENTS {
+            prog.push_event(key_event('+')).unwrap();
+        }
+        assert!(matches!(
+            prog.resize(120, 40),
+            Err(WebBackendError::InputQueueFull {
+                limit: crate::WebInputLimit::Events,
+                event: Event::Resize {
+                    width: 120,
+                    height: 40
+                },
+            })
+        ));
+        assert_eq!(prog.backend.events_mut().size().unwrap(), (80, 24));
+        assert_eq!(prog.size(), (80, 24));
+        let result = prog.step().unwrap();
+        assert_eq!(
+            result.events_processed as usize,
+            crate::WebEventSource::MAX_EVENTS
+        );
+        assert_eq!(
+            prog.model().value as usize,
+            crate::WebEventSource::MAX_EVENTS
+        );
+        assert_eq!(prog.size(), (80, 24));
+        prog.resize(120, 40).unwrap();
+        assert_eq!(prog.step().unwrap().events_processed, 1);
+        assert_eq!(prog.size(), (120, 40));
+        assert_eq!(prog.backend.events_mut().size().unwrap(), (120, 40));
+    }
+
+    #[test]
     fn resize_updates_dimensions() {
         let mut prog = StepProgram::new(new_counter(0), 80, 24);
         prog.init().unwrap();
 
-        prog.resize(120, 40);
+        prog.resize(120, 40).expect("resize admission");
         prog.step().unwrap();
 
         assert_eq!(prog.size(), (120, 40));
@@ -779,7 +826,7 @@ mod tests {
         let mut prog = StepProgram::new(new_counter(0), 80, 24);
         prog.init().unwrap();
 
-        prog.resize(0, 0);
+        prog.resize(0, 0).expect("resize admission");
         prog.step().unwrap();
 
         assert_eq!(prog.size(), (1, 1));
@@ -794,7 +841,7 @@ mod tests {
         let mut prog = StepProgram::new(new_counter(42), 80, 24);
         prog.init().unwrap();
 
-        prog.resize(40, 10);
+        prog.resize(40, 10).expect("resize admission");
         prog.step().unwrap();
 
         let outputs = prog.outputs();
@@ -809,7 +856,7 @@ mod tests {
         prog.init().unwrap();
         let _ = prog.take_outputs(); // discard init frame
 
-        prog.resize(120, 40);
+        prog.resize(120, 40).expect("resize admission");
         prog.step().unwrap();
 
         let outputs = prog.outputs();
@@ -839,7 +886,7 @@ mod tests {
         prog.init().unwrap();
         let _ = prog.take_outputs(); // discard init frame
 
-        prog.resize(80, 24);
+        prog.resize(80, 24).expect("resize admission");
         prog.step().unwrap();
 
         let outputs = prog.take_outputs();
@@ -866,7 +913,7 @@ mod tests {
         let _ = prog.take_outputs();
 
         for (w, h) in [(120, 40), (80, 24), (120, 40), (80, 24)] {
-            prog.resize(w, h);
+            prog.resize(w, h).expect("resize admission");
             prog.step().unwrap();
 
             let outputs = prog.take_outputs();
@@ -893,12 +940,12 @@ mod tests {
         prog.init().unwrap();
         let _ = prog.take_outputs();
 
-        prog.resize(100, 30);
+        prog.resize(100, 30).expect("resize admission");
         prog.step().unwrap();
         let after_resize = prog.take_outputs();
         assert!(after_resize.last_full_repaint_hint);
 
-        prog.push_event(key_event('+'));
+        prog.push_event(key_event('+')).expect("key admission");
         prog.step().unwrap();
         let after_increment = prog.take_outputs();
         assert!(!after_increment.last_full_repaint_hint);
@@ -913,7 +960,8 @@ mod tests {
         prog.init().unwrap();
 
         // Schedule tick at 100ms intervals.
-        prog.push_event(key_event('+')); // Will map to Increment, but we use send for ScheduleTick.
+        // Will map to Increment, but we use send for ScheduleTick.
+        prog.push_event(key_event('+')).expect("key admission");
         prog.step().unwrap();
 
         // Manually set tick rate (since our test model doesn't emit ScheduleTick from events).
@@ -1022,7 +1070,7 @@ mod tests {
         assert!(outputs.last_full_repaint_hint);
 
         // Second frame after an event should not be full repaint.
-        prog.push_event(key_event('+'));
+        prog.push_event(key_event('+')).expect("key admission");
         prog.step().unwrap();
 
         let outputs = prog.outputs();
@@ -1057,10 +1105,10 @@ mod tests {
             let mut prog = StepProgram::new(new_counter(0), 20, 1);
             prog.init().unwrap();
 
-            prog.push_event(key_event('+'));
-            prog.push_event(key_event('+'));
-            prog.push_event(key_event('-'));
-            prog.push_event(key_event('+'));
+            prog.push_event(key_event('+')).expect("key admission");
+            prog.push_event(key_event('+')).expect("key admission");
+            prog.push_event(key_event('-')).expect("key admission");
+            prog.push_event(key_event('+')).expect("key admission");
             prog.step().unwrap();
 
             let outputs = prog.outputs();
@@ -1104,15 +1152,15 @@ mod tests {
         prog.init().unwrap();
 
         // Frame 1: increment twice.
-        prog.push_event(key_event('+'));
-        prog.push_event(key_event('+'));
+        prog.push_event(key_event('+')).expect("key admission");
+        prog.push_event(key_event('+')).expect("key admission");
         let r1 = prog.step().unwrap();
         assert_eq!(r1.events_processed, 2);
         assert!(r1.rendered);
         assert_eq!(prog.model().value, 2);
 
         // Frame 2: decrement once.
-        prog.push_event(key_event('-'));
+        prog.push_event(key_event('-')).expect("key admission");
         let r2 = prog.step().unwrap();
         assert_eq!(r2.events_processed, 1);
         assert_eq!(prog.model().value, 1);

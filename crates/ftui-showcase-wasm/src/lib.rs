@@ -170,6 +170,44 @@ mod tests {
         assert!(result.rendered);
     }
 
+    #[test]
+    fn runner_core_rejects_overflow_and_recovers_after_stepping() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        let key_up = r#"{"kind":"key","phase":"up","code":"Tab","mods":0}"#;
+        for _ in 0..ftui_web::WebEventSource::MAX_EVENTS {
+            assert!(core.push_encoded_input(key_up));
+        }
+        assert!(!core.push_encoded_input(key_up));
+        assert!(!core.resize(100, 30));
+        let result = core.step();
+        assert!(result.running);
+        assert_eq!(
+            result.events_processed as usize,
+            ftui_web::WebEventSource::MAX_EVENTS
+        );
+        assert!(core.push_encoded_input(key_up));
+        assert!(core.resize(100, 30));
+        assert_eq!(core.step().events_processed, 2);
+    }
+
+    #[test]
+    fn runner_core_rejects_oversized_paste_without_poisoning_input() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        assert!(core.push_encoded_input(r#"{"kind":"paste","data":"日本語 👩‍💻"}"#));
+        assert_eq!(core.step().events_processed, 1);
+        let payload = serde_json::json!({
+            "kind": "paste",
+            "data": "x".repeat(ftui_web::WebEventSource::MAX_PAYLOAD_BYTES + 1),
+        })
+        .to_string();
+        assert!(!core.push_encoded_input(&payload));
+        assert_eq!(core.step().events_processed, 0);
+        assert!(push_key(&mut core, "Tab", 0));
+        assert_eq!(core.step().events_processed, 1);
+    }
+
     fn push_key(core: &mut RunnerCore, code: &str, mods: u8) -> bool {
         let payload = format!(
             r#"{{"kind":"key","phase":"down","code":"{code}","mods":{mods},"repeat":false}}"#
@@ -258,9 +296,9 @@ mod tests {
             }
 
             if i % 7 == 0 {
-                core.resize(0, 0);
+                assert!(core.resize(0, 0));
             } else {
-                core.resize(24 + (i % 32), 6 + (i % 12));
+                assert!(core.resize(24 + (i % 32), 6 + (i % 12)));
             }
             core.advance_time_ms(16.0);
 
@@ -291,13 +329,13 @@ mod tests {
                 i as i32 % 2,
             ));
 
-            match i % 5 {
+            assert!(match i % 5 {
                 0 => core.resize(0, 0),
                 1 => core.resize(1, 1),
                 2 => core.resize(2, 1),
                 3 => core.resize(2, 2),
                 _ => core.resize(3, 2),
-            }
+            });
 
             core.advance_time_ms(16.0);
             let result = core.step();
@@ -331,14 +369,14 @@ mod tests {
                 i as i32 % 60 - 10,
             ));
 
-            match i % 6 {
+            assert!(match i % 6 {
                 0 => core.resize(0, 0),
                 1 => core.resize(80, 24),
                 2 => core.resize(120, 40),
                 3 => core.resize(150, 45),
                 4 => core.resize(90, 28),
                 _ => core.resize(64, 20),
-            }
+            });
 
             core.advance_time_ms(16.0);
             let result = core.step();
@@ -403,7 +441,7 @@ mod tests {
                     let y = (next_u32() % 120) as i32 - 30;
                     let _ = push_mouse_move(&mut core, -1, x, y);
                 }
-                4 => match next_u32() % 7 {
+                4 => assert!(match next_u32() % 7 {
                     0 => core.resize(0, 0),
                     1 => core.resize(1, 1),
                     2 => core.resize(80, 24),
@@ -411,7 +449,7 @@ mod tests {
                     4 => core.resize(150, 45),
                     5 => core.resize(90, 28),
                     _ => core.resize(64, 20),
-                },
+                }),
                 5 => {
                     pointer_id_seed = pointer_id_seed.saturating_add(1);
                     let x = (next_u32() % 160) as i32;
@@ -512,7 +550,7 @@ mod tests {
     fn runner_core_resize() {
         let mut core = RunnerCore::new(80, 24);
         core.init();
-        core.resize(120, 40);
+        assert!(core.resize(120, 40));
         let result = core.step();
         assert!(result.rendered);
     }
@@ -521,7 +559,7 @@ mod tests {
     fn runner_core_resize_clamps_zero_dimensions() {
         let mut core = RunnerCore::new(80, 24);
         core.init();
-        core.resize(0, 0);
+        assert!(core.resize(0, 0));
         let result = core.step();
         assert!(result.rendered);
     }
@@ -693,7 +731,7 @@ mod tests {
         let mut pointer_id = 400u32;
 
         for (cols, rows) in sizes.into_iter().cycle().take(16) {
-            core.resize(cols, rows);
+            assert!(core.resize(cols, rows));
             let stepped = core.step();
             assert!(stepped.running);
 

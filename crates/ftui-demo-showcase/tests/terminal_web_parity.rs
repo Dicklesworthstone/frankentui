@@ -142,11 +142,11 @@ fn run_screen_sweep_parity(cols: u16, rows: u16) -> Vec<FrameParitySignature> {
         if terminal_toggle_mermaid_metrics {
             let mermaid_toggle = key_event(KeyCode::Char('m'));
             terminal.inject_event(mermaid_toggle.clone());
-            web.push_event(mermaid_toggle);
+            web.push_event(mermaid_toggle).expect("key admission");
         }
 
         terminal.inject_event(Event::Tick);
-        web.push_event(Event::Tick);
+        web.push_event(Event::Tick).expect("tick admission");
         let step = web.step().expect("web step should succeed during sweep");
         assert!(
             step.rendered,
@@ -201,7 +201,7 @@ fn run_interaction_trace_parity(cols: u16, rows: u16) -> Vec<FrameParitySignatur
         let step_label = match action {
             ParityAction::Event(event) => {
                 terminal.inject_event(event.clone());
-                web.push_event(event.clone());
+                web.push_event(event.clone()).expect("event admission");
                 let step = web
                     .step()
                     .expect("web step should succeed in interaction trace");
@@ -224,7 +224,7 @@ fn run_interaction_trace_parity(cols: u16, rows: u16) -> Vec<FrameParitySignatur
                     height: next_rows,
                 };
                 terminal.inject_event(resize_event);
-                web.resize(next_cols, next_rows);
+                web.resize(next_cols, next_rows).expect("resize admission");
                 let step = web
                     .step()
                     .expect("web step should succeed after resize in interaction trace");

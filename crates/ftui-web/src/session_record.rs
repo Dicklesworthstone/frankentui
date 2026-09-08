@@ -35,7 +35,7 @@
 //! let mut recorder = SessionRecorder::new(MyModel::default(), 80, 24, /*seed=*/0);
 //! recorder.init().unwrap();
 //!
-//! recorder.push_event(0, key_event('+'));
+//! recorder.push_event(0, key_event('+')).expect("key admission");
 //! recorder.advance_time(16_000_000, Duration::from_millis(16));
 //! recorder.step().unwrap();
 //!
@@ -322,10 +322,7 @@ impl<M: ftui_runtime::program::Model> SessionRecorder<M> {
     pub fn push_event(&mut self, ts_ns: u64, event: Event) -> Result<(), WebBackendError> {
         self.program.push_event(event.clone())?;
         self.current_ts_ns = ts_ns;
-        self.records.push(TraceRecord::Input {
-            ts_ns,
-            event,
-        });
+        self.records.push(TraceRecord::Input { ts_ns, event });
         Ok(())
     }
 
@@ -1677,6 +1674,60 @@ mod tests {
         Counter { value }
     }
 
+    #[test]
+    fn recorder_rejects_before_changing_trace_or_timestamp_and_replays_recovery() {
+        let mut recorder = SessionRecorder::new(new_counter(0), 80, 24, 0);
+        recorder.init().unwrap();
+        for _ in 0..crate::WebEventSource::MAX_EVENTS {
+            recorder.push_event(1, key_event('+')).unwrap();
+        }
+        let records_before = recorder.records.len();
+        assert!(matches!(
+            recorder.push_event(2, key_event('-')),
+            Err(WebBackendError::InputQueueFull { .. })
+        ));
+        assert!(matches!(
+            recorder.resize(3, 120, 40),
+            Err(WebBackendError::InputQueueFull { .. })
+        ));
+        assert_eq!(recorder.records.len(), records_before);
+        assert_eq!(recorder.current_ts_ns, 1);
+        assert_eq!(recorder.program.size(), (80, 24));
+        assert_eq!(
+            recorder.step().unwrap().events_processed as usize,
+            crate::WebEventSource::MAX_EVENTS
+        );
+        recorder.push_event(2, key_event('-')).unwrap();
+        recorder.resize(3, 120, 40).unwrap();
+        assert_eq!(recorder.step().unwrap().events_processed, 2);
+        let trace = recorder.finish();
+        trace.validate().unwrap();
+        assert!(replay(new_counter(0), &trace).unwrap().ok());
+    }
+
+    #[test]
+    fn replay_rejects_an_overfull_batch_without_inserting_unrecorded_steps() {
+        let mut recorder = SessionRecorder::new(new_counter(0), 80, 24, 0);
+        recorder.init().unwrap();
+        let mut trace = recorder.finish();
+        let summary_index = trace.records.len() - 1;
+        trace.records.splice(
+            summary_index..summary_index,
+            (0..=crate::WebEventSource::MAX_EVENTS).map(|_| TraceRecord::Input {
+                ts_ns: 0,
+                event: key_event('+'),
+            }),
+        );
+        trace.validate().unwrap();
+        assert!(matches!(
+            replay(new_counter(0), &trace),
+            Err(ReplayError::Backend(WebBackendError::InputQueueFull {
+                limit: crate::WebInputLimit::Events,
+                ..
+            }))
+        ));
+    }
+
     // ---- FNV-1a hash tests ----
 
     #[test]
@@ -1755,12 +1806,16 @@ mod tests {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
 
-        rec.push_event(1_000_000, key_event('+'));
-        rec.push_event(2_000_000, key_event('+'));
-        rec.push_event(3_000_000, key_event('-'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
+        rec.push_event(2_000_000, key_event('+'))
+            .expect("key admission");
+        rec.push_event(3_000_000, key_event('-'))
+            .expect("key admission");
         rec.step().unwrap();
 
-        rec.push_event(16_000_000, key_event('+'));
+        rec.push_event(16_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
 
         let trace = rec.finish();
@@ -1795,8 +1850,10 @@ mod tests {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
 
-        rec.push_event(1_000_000, key_event('+'));
-        rec.push_event(2_000_000, key_event('+'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
+        rec.push_event(2_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
 
         let trace = rec.finish();
@@ -1813,7 +1870,7 @@ mod tests {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
 
-        rec.resize(5_000_000, 40, 2);
+        rec.resize(5_000_000, 40, 2).expect("resize admission");
         rec.step().unwrap();
 
         let trace = rec.finish();
@@ -1845,7 +1902,8 @@ mod tests {
         rec.init().unwrap();
 
         for i in 0..5 {
-            rec.push_event(i * 16_000_000, key_event('+'));
+            rec.push_event(i * 16_000_000, key_event('+'))
+                .expect("key admission");
             rec.step().unwrap();
         }
 
@@ -1868,8 +1926,10 @@ mod tests {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
 
-        rec.push_event(1_000_000, key_event('+'));
-        rec.push_event(2_000_000, key_event('q'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
+        rec.push_event(2_000_000, key_event('q'))
+            .expect("quit admission");
         let result = rec.step().unwrap();
         assert!(!result.running);
 
@@ -1897,7 +1957,8 @@ mod tests {
     fn session_trace_frame_count() {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
-        rec.push_event(1_000_000, key_event('+'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
         let trace = rec.finish();
         assert_eq!(trace.frame_count(), 2);
@@ -2064,12 +2125,16 @@ mod tests {
             let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
             rec.init().unwrap();
 
-            rec.push_event(1_000_000, key_event('+'));
-            rec.push_event(2_000_000, key_event('+'));
-            rec.push_event(3_000_000, key_event('-'));
+            rec.push_event(1_000_000, key_event('+'))
+                .expect("key admission");
+            rec.push_event(2_000_000, key_event('+'))
+                .expect("key admission");
+            rec.push_event(3_000_000, key_event('-'))
+                .expect("key admission");
             rec.step().unwrap();
 
-            rec.push_event(16_000_000, key_event('+'));
+            rec.push_event(16_000_000, key_event('+'))
+                .expect("key admission");
             rec.step().unwrap();
 
             rec.finish()
@@ -2108,7 +2173,7 @@ mod tests {
             y: 0,
             modifiers: Modifiers::empty(),
         });
-        rec.push_event(1_000_000, mouse);
+        rec.push_event(1_000_000, mouse).expect("mouse admission");
         rec.step().unwrap();
 
         let trace = rec.finish();
@@ -2122,7 +2187,7 @@ mod tests {
         rec.init().unwrap();
 
         let paste = Event::Paste(PasteEvent::bracketed("hello"));
-        rec.push_event(1_000_000, paste);
+        rec.push_event(1_000_000, paste).expect("paste admission");
         rec.step().unwrap();
 
         let trace = rec.finish();
@@ -2135,8 +2200,10 @@ mod tests {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
 
-        rec.push_event(1_000_000, Event::Focus(true));
-        rec.push_event(2_000_000, Event::Focus(false));
+        rec.push_event(1_000_000, Event::Focus(true))
+            .expect("focus admission");
+        rec.push_event(2_000_000, Event::Focus(false))
+            .expect("focus admission");
         rec.step().unwrap();
 
         let trace = rec.finish();
@@ -2149,9 +2216,12 @@ mod tests {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
 
-        rec.push_event(1_000_000, Event::Ime(ImeEvent::start()));
-        rec.push_event(2_000_000, Event::Ime(ImeEvent::update("你")));
-        rec.push_event(3_000_000, Event::Ime(ImeEvent::commit("你好")));
+        rec.push_event(1_000_000, Event::Ime(ImeEvent::start()))
+            .expect("IME start admission");
+        rec.push_event(2_000_000, Event::Ime(ImeEvent::update("你")))
+            .expect("IME update admission");
+        rec.push_event(3_000_000, Event::Ime(ImeEvent::commit("你好")))
+            .expect("IME commit admission");
         rec.step().unwrap();
 
         let trace = rec.finish();
@@ -2166,10 +2236,12 @@ mod tests {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
 
-        rec.push_event(1_000_000, key_event('+'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
 
-        rec.push_event(2_000_000, key_event('+'));
+        rec.push_event(2_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
 
         let trace = rec.finish();
@@ -2331,8 +2403,10 @@ mod tests {
         // Record a session.
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 42);
         rec.init().unwrap();
-        rec.push_event(1_000_000, key_event('+'));
-        rec.push_event(2_000_000, key_event('+'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
+        rec.push_event(2_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
         let trace = rec.finish();
 
@@ -2404,7 +2478,7 @@ mod tests {
     fn jsonl_round_trip_with_resize() {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
-        rec.resize(5_000_000, 40, 2);
+        rec.resize(5_000_000, 40, 2).expect("resize admission");
         rec.step().unwrap();
         let trace = rec.finish();
 
@@ -2684,7 +2758,8 @@ mod tests {
     fn gate_trace_passes_on_correct_replay() {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
-        rec.push_event(1_000_000, key_event('+'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
         let trace = rec.finish();
 
@@ -2699,8 +2774,10 @@ mod tests {
     fn gate_trace_fails_with_actionable_diff() {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
-        rec.push_event(1_000_000, key_event('+'));
-        rec.push_event(2_000_000, key_event('+'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
+        rec.push_event(2_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
         let trace = rec.finish();
 
@@ -2721,10 +2798,13 @@ mod tests {
     fn gate_trace_diff_has_event_context() {
         let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
         rec.init().unwrap();
-        rec.push_event(1_000_000, key_event('+'));
-        rec.push_event(2_000_000, key_event('+'));
+        rec.push_event(1_000_000, key_event('+'))
+            .expect("key admission");
+        rec.push_event(2_000_000, key_event('+'))
+            .expect("key admission");
         rec.step().unwrap();
-        rec.push_event(3_000_000, key_event('-'));
+        rec.push_event(3_000_000, key_event('-'))
+            .expect("key admission");
         rec.step().unwrap();
         let trace = rec.finish();
 
@@ -2758,7 +2838,8 @@ mod tests {
         rec.init().unwrap();
 
         for i in 0..3 {
-            rec.push_event(i * 16_000_000, key_event('+'));
+            rec.push_event(i * 16_000_000, key_event('+'))
+                .expect("key admission");
             rec.step().unwrap();
         }
         let original_trace = rec.finish();

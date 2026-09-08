@@ -449,13 +449,17 @@ Per-session and per-IP rate limits:
 
 | Resource          | Default Limit      | Action on Exceed       |
 |-------------------|--------------------|------------------------|
-| Input messages    | 1000/sec           | Drop + `FlowControl`   |
+| Input messages    | 1000/sec           | Backpressure before acceptance + `FlowControl` |
 | Resize messages   | 20/sec             | Coalesce               |
 | Clipboard paste   | 10/sec, 1 MiB/msg  | Reject + `Error`       |
 | New sessions      | 5/min per IP       | Reject upgrade (429)   |
 | Concurrent sessions | 10 per user      | Reject upgrade (429)   |
 
 Limits are configurable. The server MUST log rate limit events.
+Rate limits do not authorize dropping accepted input. Producers must retain
+unaccepted input within their own bounds and retry after flow control permits;
+if they cannot retain it, report explicit rejection before acceptance. Log
+counts and reasons rather than keyboard, composition or clipboard contents.
 
 ### 3.4 Command Execution
 
@@ -610,12 +614,15 @@ Fairness monitor:
 | Queue              | Soft/Hard Cap | Overload Policy |
 |--------------------|---------------|-----------------|
 | Server output      | 192/256 KiB   | Stop PTY reads at hard cap; resume below soft cap. |
-| Server input       | 12/16 KiB     | Drop only non-interactive newest events (mouse move/drag). |
+| Server input       | 12/16 KiB     | Backpressure/reject before acceptance; coalesce only events with explicitly replaceable semantics. |
 | Client render      | 1/2 frames    | Keep latest frame, drop oldest pending frame. |
 
 Non-negotiable overload rules:
-- Keyboard events (`KeyDown`, `KeyUp`, `Paste`, `FocusIn`, `FocusOut`) MUST NOT
-  be dropped.
+- Accepted keyboard events (`KeyDown`, `KeyUp`), paste, IME composition, focus
+  events and terminal input bytes MUST NOT be dropped or reordered. A full
+  queue must reject before acceptance or stop accepting input until drained.
+  Mouse drag and pointer capture transitions are not automatically replaceable
+  merely because they are mouse events.
 - If `Q_out` remains at hard cap for >5 seconds, terminate session with
   `Error(code: "rate_limited", fatal: true)` and `SessionEnd(reason: "timeout")`
   rather than allowing unbounded memory growth.

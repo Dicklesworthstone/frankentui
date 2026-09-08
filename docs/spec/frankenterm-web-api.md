@@ -237,7 +237,13 @@ The runtime guarantees:
 
 ### Bounded Buffering Contract
 
-To prevent unbounded memory growth, host-drained queues use drop-oldest policy:
+Input queues must enforce bounds before acceptance. Accepted keyboard, paste,
+IME composition, focus and encoded terminal bytes retain FIFO order and exact
+content; they must never be evicted to admit new input. A full queue must return
+explicit rejection/backpressure so the producer can drain and retry. Oversized
+individual payloads require explicit rejection, without logging their contents.
+The following renderer limits are contract requirements; verify them in the
+pinned adjacent renderer artifact before claiming support:
 
 - `encoded_inputs_queue_max=4096`
 - `encoded_input_bytes_queue_max=4096`
@@ -249,6 +255,19 @@ To prevent unbounded memory growth, host-drained queues use drop-oldest policy:
 - `event_subscription_registry_max=256`
 
 Host integrations should drain these queues at least once per render tick.
+Drop/coalesce policies for non-input notifications require an explicit event
+contract; this list does not authorize silent loss of accepted input.
+
+The in-tree `ftui-web::WebEventSource` separately admits at most 4096 events and
+1 MiB of cumulative retained paste, IME and clipboard String allocations
+(including spare capacity). Its `push_event` returns `InputQueueFull` with the
+rejected event. Draining frees both limits without discarding unconsumed events.
+`StepProgram` propagates rejection and changes resize state only after admission.
+`ShowcaseRunner.pushEncodedInput` returns false on rejection; hosts must inspect
+the result, drain and present intermediate patches before retrying, and report
+input that still cannot be admitted. `ShowcaseRunner.resize` also returns an
+admission boolean. These in-tree bounds do not prove the adjacent renderer's
+queue implementation or WebSocket transport behavior.
 
 ### Security Defaults (Attach + Embedding)
 

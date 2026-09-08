@@ -166,7 +166,7 @@ fn render_screen(screen: ScreenId, cols: u16, rows: u16) -> (Buffer, GraphemePoo
         .enable_deterministic_mode_for_test(TICK_MS, TICK_MS);
     program.model_mut().current_screen = screen;
     stabilize_screen(&mut program, screen);
-    program.push_event(tick_event());
+    program.push_event(tick_event()).expect("tick admission");
     program.advance_time(Duration::from_millis(TICK_MS));
     let step = program.step().unwrap();
     assert!(step.rendered, "screen must render for {}", screen.title());
@@ -262,7 +262,7 @@ fn sweep_checksums(cols: u16, rows: u16) -> SweepResult {
     for &screen in screens::screen_ids().iter() {
         program.model_mut().current_screen = screen;
         stabilize_screen(&mut program, screen);
-        program.push_event(tick_event());
+        program.push_event(tick_event()).expect("tick admission");
         program.advance_time(Duration::from_millis(TICK_MS));
 
         let step = program.step().unwrap();

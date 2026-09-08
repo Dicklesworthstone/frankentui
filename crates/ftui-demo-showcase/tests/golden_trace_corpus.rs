@@ -108,7 +108,7 @@ fn record_and_verify(cols: u16, rows: u16, script: impl FnOnce(&mut SessionRecor
 /// Helper to advance time by one tick and step.
 fn tick_and_step(rec: &mut SessionRecorder<AppModel>, tick_num: u64) {
     let ts_ns = tick_num * TICK_MS * 1_000_000;
-    rec.push_event(ts_ns, tick_event());
+    rec.push_event(ts_ns, tick_event()).expect("tick admission");
     rec.advance_time(ts_ns, Duration::from_millis(TICK_MS));
     rec.step().unwrap();
 }
@@ -257,7 +257,9 @@ fn build_repro_trace(cols: u16, rows: u16, screen: ScreenId) -> String {
     recorder.init().unwrap();
     recorder.program_mut().model_mut().current_screen = screen;
     let ts_ns = TICK_MS * 1_000_000;
-    recorder.push_event(ts_ns, tick_event());
+    recorder
+        .push_event(ts_ns, tick_event())
+        .expect("tick admission");
     recorder.advance_time(ts_ns, Duration::from_millis(TICK_MS));
     recorder.step().unwrap();
     recorder.finish().to_jsonl()
@@ -272,7 +274,9 @@ fn apply_web_sweep_deterministic_profile(program: &mut StepProgram<AppModel>, sc
                 .mermaid_showcase
                 .stabilize_metrics_for_snapshot();
             // Hide timing-heavy panel output for deterministic hash sweeps.
-            program.push_event(key(KeyCode::Char('m')));
+            program
+                .push_event(key(KeyCode::Char('m')))
+                .expect("key admission");
         }
         ScreenId::MermaidMegaShowcase => {
             program
@@ -299,7 +303,7 @@ fn run_web_sweep(cols: u16, rows: u16, dpr: f32) -> Vec<WebSweepRecord> {
         ts_ms = ts_ms.saturating_add(TICK_MS);
         program.model_mut().current_screen = screen;
         apply_web_sweep_deterministic_profile(&mut program, screen);
-        program.push_event(tick_event());
+        program.push_event(tick_event()).expect("tick admission");
         program.advance_time(Duration::from_millis(TICK_MS));
 
         let start = Instant::now();
@@ -391,7 +395,7 @@ fn run_web_sweep_soak(cols: u16, rows: u16, dpr: f32, cycles: usize, tick_ms: u6
             if cycle == 0 {
                 apply_web_sweep_deterministic_profile(&mut program, screen);
             }
-            program.push_event(tick_event());
+            program.push_event(tick_event()).expect("tick admission");
             program.advance_time(Duration::from_millis(tick_ms));
 
             let start = Instant::now();
@@ -540,31 +544,31 @@ fn golden_screen_navigation() {
 
         // Dashboard → Shakespeare (dense text).
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, tab());
+        rec.push_event(ts, tab()).expect("key admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Shakespeare → CodeExplorer (syntax highlighting).
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, tab());
+        rec.push_event(ts, tab()).expect("key admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // CodeExplorer → WidgetGallery (mixed widgets).
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, tab());
+        rec.push_event(ts, tab()).expect("key admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // WidgetGallery → LayoutLab.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, tab());
+        rec.push_event(ts, tab()).expect("key admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Go back one screen (BackTab).
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, backtab());
+        rec.push_event(ts, backtab()).expect("key admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
     });
@@ -590,8 +594,8 @@ fn golden_resize_storm() {
 
         for (i, &(w, h)) in sizes.iter().enumerate() {
             let ts = (i as u64 + 1) * TICK_MS * 1_000_000;
-            rec.resize(ts, w, h);
-            rec.push_event(ts, tick_event());
+            rec.resize(ts, w, h).expect("resize admission");
+            rec.push_event(ts, tick_event()).expect("tick admission");
             rec.advance_time(ts, Duration::from_millis(TICK_MS));
             rec.step().unwrap();
         }
@@ -611,31 +615,35 @@ fn golden_mouse_interaction() {
 
         // Initial tick.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, tick_event());
+        rec.push_event(ts, tick_event()).expect("tick admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Move mouse across the top chrome (tab bar area).
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, mouse_move(10, 0));
+        rec.push_event(ts, mouse_move(10, 0))
+            .expect("mouse admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Click on the tab area.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, mouse_click(30, 0));
+        rec.push_event(ts, mouse_click(30, 0))
+            .expect("mouse admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Move into the content area.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, mouse_move(60, 20));
+        rec.push_event(ts, mouse_move(60, 20))
+            .expect("mouse admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Click in the content area.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, mouse_click(60, 20));
+        rec.push_event(ts, mouse_click(60, 20))
+            .expect("mouse admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
     });
@@ -669,28 +677,30 @@ fn golden_keyboard_scrolling() {
 
         // Navigate to Shakespeare screen.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, tab());
+        rec.push_event(ts, tab()).expect("key admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Scroll down with arrow keys and page down.
         for _ in 0..5 {
             ts += TICK_MS * 1_000_000;
-            rec.push_event(ts, key(KeyCode::Down));
+            rec.push_event(ts, key(KeyCode::Down))
+                .expect("key admission");
             rec.advance_time(ts, Duration::from_millis(TICK_MS));
             rec.step().unwrap();
         }
 
         // Page down.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, key(KeyCode::PageDown));
+        rec.push_event(ts, key(KeyCode::PageDown))
+            .expect("key admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Scroll back up.
         for _ in 0..3 {
             ts += TICK_MS * 1_000_000;
-            rec.push_event(ts, key(KeyCode::Up));
+            rec.push_event(ts, key(KeyCode::Up)).expect("key admission");
             rec.advance_time(ts, Duration::from_millis(TICK_MS));
             rec.step().unwrap();
         }
@@ -711,41 +721,42 @@ fn golden_mixed_workload() {
         // A few ticks on dashboard.
         for _ in 0..3 {
             ts += TICK_MS * 1_000_000;
-            rec.push_event(ts, tick_event());
+            rec.push_event(ts, tick_event()).expect("tick admission");
             rec.advance_time(ts, Duration::from_millis(TICK_MS));
             rec.step().unwrap();
         }
 
         // Resize to larger terminal.
         ts += TICK_MS * 1_000_000;
-        rec.resize(ts, 120, 40);
-        rec.push_event(ts, tick_event());
+        rec.resize(ts, 120, 40).expect("resize admission");
+        rec.push_event(ts, tick_event()).expect("tick admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Navigate to next screen.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, tab());
+        rec.push_event(ts, tab()).expect("key admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Mouse movement.
         ts += TICK_MS * 1_000_000;
-        rec.push_event(ts, mouse_move(40, 15));
+        rec.push_event(ts, mouse_move(40, 15))
+            .expect("mouse admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // Resize back to smaller.
         ts += TICK_MS * 1_000_000;
-        rec.resize(ts, 80, 24);
-        rec.push_event(ts, tick_event());
+        rec.resize(ts, 80, 24).expect("resize admission");
+        rec.push_event(ts, tick_event()).expect("tick admission");
         rec.advance_time(ts, Duration::from_millis(TICK_MS));
         rec.step().unwrap();
 
         // More ticks to settle.
         for _ in 0..2 {
             ts += TICK_MS * 1_000_000;
-            rec.push_event(ts, tick_event());
+            rec.push_event(ts, tick_event()).expect("tick admission");
             rec.advance_time(ts, Duration::from_millis(TICK_MS));
             rec.step().unwrap();
         }

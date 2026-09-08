@@ -706,6 +706,9 @@ impl Backend for WebBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_core::event::{
+        ClipboardEvent, ClipboardSource, ImeEvent, KeyCode, KeyEvent, PasteEvent,
+    };
     use ftui_render::cell::Cell;
 
     use pretty_assertions::assert_eq;
@@ -733,11 +736,12 @@ mod tests {
         assert_eq!(ev.size().unwrap(), (80, 24));
         assert_eq!(ev.poll_event(Duration::from_millis(0)).unwrap(), false);
 
-        ev.push_event(Event::Tick);
+        ev.push_event(Event::Tick).unwrap();
         ev.push_event(Event::Resize {
             width: 100,
             height: 40,
-        });
+        })
+        .unwrap();
 
         assert_eq!(ev.poll_event(Duration::from_millis(0)).unwrap(), true);
         assert_eq!(ev.read_event().unwrap(), Some(Event::Tick));
@@ -996,12 +1000,140 @@ mod tests {
     #[test]
     fn event_source_drain_events() {
         let mut ev = WebEventSource::new(80, 24);
-        ev.push_event(Event::Tick);
-        ev.push_event(Event::Tick);
+        ev.push_event(Event::Tick).unwrap();
+        ev.push_event(Event::Tick).unwrap();
 
         let drained: Vec<_> = ev.drain_events().collect();
         assert_eq!(drained.len(), 2);
         assert_eq!(ev.poll_event(Duration::ZERO).unwrap(), false);
+    }
+
+    #[test]
+    fn event_source_count_limit_preserves_every_accepted_event_and_retry_order() {
+        let mut source = WebEventSource::new(80, 24);
+        let accepted: Vec<_> = (0..WebEventSource::MAX_EVENTS)
+            .map(|index| {
+                Event::Key(KeyEvent::new(KeyCode::Char(
+                    char::from_u32(0x1000 + index as u32).unwrap(),
+                )))
+            })
+            .collect();
+        for event in &accepted {
+            source.push_event(event.clone()).unwrap();
+        }
+        let tail = Event::Paste(PasteEvent::bracketed("rejected tail: 日本語 👩‍💻"));
+        let error = source.push_event(tail.clone()).unwrap_err();
+        assert_eq!(
+            error,
+            WebBackendError::InputQueueFull {
+                limit: WebInputLimit::Events,
+                event: tail.clone(),
+            }
+        );
+        assert_eq!(source.queued_events(), WebEventSource::MAX_EVENTS);
+        assert_eq!(source.queued_payload_bytes(), 0);
+        assert_eq!(source.read_event().unwrap(), Some(accepted[0].clone()));
+        let WebBackendError::InputQueueFull { event, .. } = error else {
+            unreachable!();
+        };
+        source.push_event(event).unwrap();
+        let delivered: Vec<_> = source.drain_events().collect();
+        assert_eq!(&delivered[..delivered.len() - 1], &accepted[1..]);
+        assert_eq!(delivered.last(), Some(&tail));
+        assert_eq!(source.queued_events(), 0);
+        assert_eq!(source.queued_payload_bytes(), 0);
+    }
+
+    #[test]
+    fn event_source_bounds_cumulative_paste_ime_and_clipboard_allocations() {
+        let half = "x".repeat(WebEventSource::MAX_PAYLOAD_BYTES / 2);
+        let events = [
+            Event::Paste(PasteEvent::bracketed(half.clone())),
+            Event::Ime(ImeEvent::commit(half.clone())),
+            Event::Clipboard(ClipboardEvent::new(half, ClipboardSource::Osc52)),
+        ];
+        for event in events {
+            let mut source = WebEventSource::new(80, 24);
+            source.push_event(event.clone()).unwrap();
+            source.push_event(event.clone()).unwrap();
+            assert_eq!(
+                source.queued_payload_bytes(),
+                WebEventSource::MAX_PAYLOAD_BYTES
+            );
+            let error = source.push_event(event.clone()).unwrap_err();
+            assert_eq!(
+                error,
+                WebBackendError::InputQueueFull {
+                    limit: WebInputLimit::PayloadBytes,
+                    event: event.clone(),
+                }
+            );
+            // A byte-full queue can still admit non-text control input.
+            source.push_event(Event::Focus(false)).unwrap();
+            assert_eq!(source.read_event().unwrap(), Some(event.clone()));
+            let WebBackendError::InputQueueFull { event: retry, .. } = error else {
+                unreachable!();
+            };
+            source.push_event(retry).unwrap();
+            assert_eq!(
+                source.drain_events().collect::<Vec<_>>(),
+                vec![event.clone(), Event::Focus(false), event]
+            );
+            assert_eq!(source.queued_payload_bytes(), 0);
+        }
+    }
+
+    #[test]
+    fn event_source_rejects_oversized_allocation_without_retaining_or_logging_text() {
+        let mut text = String::with_capacity(WebEventSource::MAX_PAYLOAD_BYTES + 1);
+        text.push_str("private clipboard text");
+        let event = Event::Clipboard(ClipboardEvent::new(text, ClipboardSource::Unknown));
+        let allocation = event_payload_bytes(&event);
+        let mut source = WebEventSource::new(80, 24);
+        let error = source.push_event(event).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "input queue full (PayloadBytes); drain before retrying"
+        );
+        let WebBackendError::InputQueueFull { limit, event } = error else {
+            unreachable!();
+        };
+        assert_eq!(limit, WebInputLimit::PayloadBytes);
+        assert_eq!(event_payload_bytes(&event), allocation);
+        assert_eq!(source.queued_events(), 0);
+        assert_eq!(source.queued_payload_bytes(), 0);
+        source.push_event(Event::Ime(ImeEvent::cancel())).unwrap();
+        assert_eq!(
+            source.read_event().unwrap(),
+            Some(Event::Ime(ImeEvent::cancel()))
+        );
+    }
+
+    #[test]
+    fn event_source_partial_drain_and_clone_account_for_actual_allocations() {
+        let mut text = String::with_capacity(4096);
+        text.push('中');
+        let allocation = text.capacity();
+        let mut source = WebEventSource::new(80, 24);
+        source.push_event(Event::Tick).unwrap();
+        source
+            .push_event(Event::Paste(PasteEvent::bracketed(text)))
+            .unwrap();
+        {
+            let mut drain = source.drain_events();
+            assert_eq!(drain.next(), Some(Event::Tick));
+        }
+        assert_eq!(source.queued_events(), 1);
+        assert_eq!(source.queued_payload_bytes(), allocation);
+        let mut cloned = source.clone();
+        let clone_bytes = cloned.queued_payload_bytes();
+        let delivered = cloned.read_event().unwrap().unwrap();
+        assert_eq!(clone_bytes, event_payload_bytes(&delivered));
+        assert_eq!(delivered, Event::Paste(PasteEvent::bracketed("中")));
+        assert_eq!(cloned.queued_payload_bytes(), 0);
+        assert_eq!(source.queued_payload_bytes(), allocation);
+        assert_eq!(source.read_event().unwrap(), Some(delivered));
+        assert_eq!(source.queued_payload_bytes(), 0);
     }
 
     #[test]

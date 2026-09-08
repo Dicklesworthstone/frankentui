@@ -66,25 +66,46 @@ impl ShowcaseRunner {
     }
 
     /// Resize the runner (pushes an `Event::Resize` into the program).
-    pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.program.resize(cols.max(1), rows.max(1));
+    /// Rejection leaves the program dimensions unchanged.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), JsValue> {
+        self.program
+            .resize(cols.max(1), rows.max(1))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Apply a batch of encoded input JSON strings (from `FrankenTermWeb.drainEncodedInputs()`).
     ///
     /// Returns the number of `ftui_core::event::Event`s successfully enqueued.
+    /// Inputs with no canonical event mapping are skipped and are not counted.
+    ///
+    /// Admission is partial: on failure, earlier accepted events remain queued.
+    /// The redacted error identifies the zero-based failing input index and the
+    /// accepted event count. The failing input and remaining suffix are not
+    /// consumed. Resume from that index, not from the accepted count, because
+    /// the prefix may include inputs with no event mapping. For capacity errors,
+    /// step and apply every intermediate patch batch before retrying the suffix;
+    /// never resubmit an accepted prefix or insert extra steps during replay.
     #[wasm_bindgen(js_name = applyEncodedInputs)]
     pub fn apply_encoded_inputs(&mut self, inputs: Array) -> Result<u32, JsValue> {
         let mut pushed: u32 = 0;
-        for value in inputs.iter() {
+        for (index, value) in inputs.iter().enumerate() {
             let Some(s) = value.as_string() else {
-                return Err(JsValue::from_str("encoded inputs must be strings"));
+                return Err(JsValue::from_str(&format!(
+                    "encoded input rejected at index {index} after {pushed} accepted events: expected string"
+                )));
             };
 
-            let ev =
-                parse_encoded_input_to_event(&s).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let ev = parse_encoded_input_to_event(&s).map_err(|_| {
+                JsValue::from_str(&format!(
+                    "encoded input rejected at index {index} after {pushed} accepted events: malformed input; contents withheld"
+                ))
+            })?;
             if let Some(ev) = ev {
-                self.program.push_event(ev);
+                self.program.push_event(ev).map_err(|e| {
+                    JsValue::from_str(&format!(
+                        "encoded input rejected at index {index} after {pushed} accepted events: {e}"
+                    ))
+                })?;
                 pushed = pushed.saturating_add(1);
             }
         }

@@ -236,22 +236,24 @@ impl RunnerCore {
     /// Parse a JSON-encoded input event and push to the event queue.
     ///
     /// Returns `true` if the event was accepted, `false` if it was
-    /// unsupported, malformed, or had no `Event` mapping.
+    /// unsupported, malformed, had no `Event` mapping, or exceeded input capacity.
+    /// On capacity rejection, step the runner before retrying the same input.
     pub fn push_encoded_input(&mut self, json: &str) -> bool {
         match ftui_web::input_parser::parse_encoded_input_to_event(json) {
-            Ok(Some(event)) => {
-                self.inner.push_event(event);
-                true
-            }
+            Ok(Some(event)) => self.inner.push_event(event).is_ok(),
             _ => false,
         }
     }
 
-    /// Resize the terminal. Pushes a `Resize` event processed on the next step.
-    pub fn resize(&mut self, cols: u16, rows: u16) {
+    /// Queue a resize for the next step. Returns false without changing size
+    /// when input capacity is exhausted; step the runner before retrying.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> bool {
         let (cols, rows) = Self::clamp_size(cols, rows);
-        self.inner.resize(cols, rows);
+        if self.inner.resize(cols, rows).is_err() {
+            return false;
+        }
         self.preview_state = PanePreviewState::default();
+        true
     }
 
     /// Process pending events and render if dirty.

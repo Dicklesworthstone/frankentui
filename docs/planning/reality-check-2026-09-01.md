@@ -10,9 +10,10 @@ historical and must not drive another unnecessary release.
 
 This assessment starts at main `0ae2c02e4ab5d24c680a9a14d1c756d407519142`.
 The published product is the frozen, tagged commit
-`798efa0bb746601cea78b75ad8bc859f738a6456`. Subsequent changes affect release
-tooling, documentation, Beads, and doctor verification fixtures/comparison;
-they do not change the published library implementation. All **905 lines of
+`798efa0bb746601cea78b75ad8bc859f738a6456`. Subsequent changes repair doctor
+verification and, in the current execution block, connect optional Asupersync
+task execution and bounded web input admission. These changes are on main;
+the published 0.7.0 artifacts remain the tagged source. All **905 lines of
 AGENTS.md and 2,897 lines of README.md** were read afresh, along with both
 original kernel plans, this complete prior assessment, and selected doctor,
 pane, SDK and migration contracts. The September 6 full subsidiary-document
@@ -21,14 +22,17 @@ read of every subsidiary spec or all 1,077,726 tracked Rust lines. Fresh source
 traces below check the consequential boundaries against the current tree.
 CASS supplied the earlier release/planning context; current commits and retained
 receipts, rather than session recollections, establish delivery. Additional
-audit agents were unavailable because of their usage limit; this assessment's
-new source review was performed by GreenLynx.
+audit agents were unavailable during the initial assessment. IcyBarn later
+reviewed the runtime and browser changes, identifying constructor diagnostics
+and quit/replay lifecycle gaps. That review is source evidence, not an
+independently executed browser or runtime test.
 
 DSR remains the only authorized build/verification/release path. No Actions
 workflow, `act`, or DSR Actions-waiting command was used. The installed RCH and
 UBS cleanup behavior remains incompatible with Rule 1, so neither was invoked.
-This assessment changes documentation and Beads; it does not rerun expensive
-builds or convert historical results into a fresh aggregate pass.
+The initial assessment changed documentation and Beads. The subsequent product
+changes use retained native DSR checks and actual WASM/Node execution; those
+results do not convert historical or unexecuted host checks into an aggregate pass.
 
 ### What the architecture actually delivers
 
@@ -110,6 +114,8 @@ reruns do not erase an earlier failed aggregate.
 | Workspace tests | Default aggregate: 25,405/25,407 pass, two fail, seven ignored. All-feature aggregate: 27,665/27,668 pass, three fail. Scoped timing/allocation reruns and the repaired executor test have separately recorded passes. | The original aggregates remain failed. A passing isolated test is not a passing workspace aggregate. |
 | Terminal journeys | Release verification records 17 terminal E2E suites, 20 text-effects cases, 24 interactive showcase stages and paired traces passing after concrete source/fixture repairs. | Exact receipts identify each snapshot; do not relabel all as one final-candidate full test run. |
 | WASM | Seven portable checks, actual showcase release WASM build, and two Node execution tests pass. Raw WASM SHA256 `04e7e653823f3246e3830e5ab042ec92d24a801fe6834b898dbae8ea8e7fd57d`; receipt `frankentui-candidate-070-wasm/20260908T030920-1646623/receipt.json`. | No browser JS packaging or real browser execution in that receipt. Size/export/negative-guard and current host delivery obligations remain. |
+| Current runtime/web changes | DSR `frankentui-runtime-web10`, run `20edadf0-ca7a-41ed-8bb7-39bd8d2e0f3b`: workspace fmt/check/strict Clippy/strict rustdoc and feature-specific Clippy pass; web 335, runner 63, parity 15, runtime default 2,561 and Asupersync 2,569 test executions pass, all zero skipped. Full source manifest SHA256 `8a3ec39cc94b010aa96b87709202a2f87262896cfe9c66c57fca243dec7cbda5` is checked before/after. | This covers the changed suites, not every workspace test or host. The new public-constructor tests verify real task execution and warning/backend reporting; they do not prove Shadow or bounded shutdown. |
+| Current web/WASM changes | DSR `frankentui-runtime-web8-wasm`, run `5b64cc07-b317-425b-9a16-48e8ff975d7f`: portable/feature checks, four actual WASM test bodies, release cdylib, generated Node bindings, admission/recovery exercise and HTML syntax pass. Transformed WASM SHA256 `253765553bc9ab6b742eceed57a393673eead681f4c77b64a7fe24cda08f03fc`; source manifest `b96425700854f7683971f0f0623b04b96031d4b5bd623be12c5f726fcebc9fea`. | Native10 differs only in native test expectations, a test-only line wrap, and tracking docs/Beads. Node is not browser/GPU/Safari proof. The retained, unreferenced `ftui-demo-showcase/src/wasm_runner.rs` is source maintenance, not a compiled consumer. |
 | Browser | Fresh `/web/` HTTP 200; September 6 Chromium touch/mouse checks remain valid for their deployed host revision. | HTTP availability and earlier cell-text checks do not establish current WASM identity, GPU pixels, Safari or physical iPhone behavior. |
 | Doctor execution | 2,691 tests pass with zero skipped; all 12 failure cases, six actual soak workflows, VHS snapshot smoke and replay pass after scoped fixture repairs. The repaired comparator passes all six retained workflows plus 40 comparison controls, report-reuse protection, three iteration guards and symlink replay. DSR `frankentui-doctor-comparator8`; script SHA256 `b44c7eae2b4f8f7830a5f8235405dcfa77cbbe37c9922eff0efb6158284495ee`. | This is a fresh comparison of existing captures, not new capture execution. All 410 retained inputs and earlier failed reports are unchanged. `.28.7` is repaired; coverage `.28.6` still blocks aggregate G22 acceptance. |
 | Doctor coverage | Corrected export includes all 24 formerly omitted executed test objects and unchanged profiles. In the unchanged 307-file domain: 56.230% lines, 37.176% branches, 50.578% functions; 16 checks fail. DSR run `6bae7909-f9b3-4d88-8f5d-e80022741d34`. | Floors remain 89/69/86. Doctor-only diagnostics are not the gate; neither silent scope narrowing nor threshold reduction is a repair. `.28.6` owns this. |
@@ -119,9 +125,9 @@ reruns do not erase an earlier failed aggregate.
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
-| Bounded browser interaction | `ftui-web/src/lib.rs:126–156`: `WebEventSource` owns `VecDeque<Event>` and `push_event` unconditionally appends. | `.29.8/.29.9`: bound event count and payload bytes; report admission/backpressure before accepting input; preserve accepted keyboard/paste/IME ordering; prove delayed drain and recovery. |
+| Bounded browser interaction | `WebEventSource` now bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through `StepProgram`, recorder, runner and JS bindings; the HTML host drains and presents before retry. | `.29.8/.29.9`: native and WASM queue/recovery tests now exercise this path. Finish accepted input disposition after quit, non-rendering replay steps, real renderer packaging and the browser/GPU/mobile matrix. |
 | Interactive process stream | `process_subscription.rs:172–320`: `BufRead::lines`, unbounded sender, null stdin, immediate-child kill/wait. `Cmd::Log` already exists. | `.32.1–.32.3` after `.33.1/.33.2`: reuse working APIs; add the missing complete journey, newline-free/invalid-UTF-8/huge output, blocked consumers, child stdin policy and descendant cancellation. |
-| Full Asupersync/shadow behavior | `program.rs:2992` resolves Asupersync to Structured unconditionally. An optional `AsupersyncTaskExecutor` really exists. Production `rollout_policy` reads configure/log it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: distinguish explicit task backend from full lane; compare actual recorded runs without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
+| Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
 | SOS provenance | `sos_barrier.rs:9,23` still attributes coefficients to a missing solver, while `sos_barrier_coeffs.rs:1–9` says they were hand chosen. | G21/G45: correct residual attribution and test the actual polynomial/domain. Eight sample points are not a solver certificate. |
@@ -136,6 +142,36 @@ signature theorem identifies paths up to tree-like equivalence
 ([Hambly and Lyons](https://arxiv.org/abs/math/0507536)).
 
 ### Bridge revision: order by complete user value
+
+Current execution TODO (substeps remain in the owning Beads; checked means the
+specific implementation or observation below, not completion of the whole goal):
+
+- [x] `.28.7`: repair retained determinism comparison; execute six original
+  workflows and 40 corruption/control cases without changing retained inputs.
+- [x] `.30.1`: connect optional Asupersync task execution, preserve explicit
+  backend overrides, and execute 32 real closures through public construction.
+- [x] `.30.1`: correct the independently found duplicate/missing constructor
+  warning and add exact warning/startup assertions for three backend cases.
+- [x] `.30.1`: verify the corrected constructor and six feature-dependent
+  expectations; native DSR default/feature suites and strict gates all pass.
+- [x] `.29.8`: bound queue count and retained payload allocation, return rejected
+  events, preserve FIFO/retry order and resize state, and propagate admission
+  through recorder, native runner, generated JS bindings and the HTML host.
+- [x] `.29.8`: execute native queue/runner/parity suites and four real WASM tests;
+  exercise the generated binding with 4,097 inputs, rejection, drain and retry.
+- [ ] `.29.8`: account for accepted input remaining after quit; record/replay
+  non-rendering steps so a final quit batch cannot pass without execution.
+- [ ] `.29.7–.29.9`: finish first-party renderer packaging and execute current
+  HTML/JS/WASM in the claimed real browser, GPU, IME and physical mobile hosts.
+- [ ] `.30.1/.30.3/.30.4`: implement shared semantic checksums and recordings,
+  strict comparison including divergence/partial data, and effect-once candidate
+  execution; verify with real recordings rather than simulator labels.
+- [ ] `.28.6`: repair complete coverage discovery and meet unchanged floors;
+  the 307-file report still fails 16 checks.
+- [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
+  subprocess/PTY input, streaming, cancellation and restart journey.
+- [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
+  independent negative controls; successful compilation alone is insufficient.
 
 1. **Repair verification that is demonstrably failing.** `.28.7` now passes
    using the six existing captures and integrity-preserving negative controls.
@@ -787,7 +823,7 @@ consumer, host and feature scope actually executed.
 | 49 | Inline A/B/C strategies | WORKING with new self-test fallback, host proof bounded | G05 |
 | 50 | Color profiles/contrast | WORKING; style/color/ANSI code and tests | G25 |
 | 51 | Evidence events | PARTIAL; queue depth/VOI improved, disclosure/completeness gaps | G20/G44 |
-| 52 | Runtime lanes/shadow execution | PARTIAL; optional Asupersync task executor exists, full lane resolves to Structured, no live dual run | G24 |
+| 52 | Runtime lanes/shadow execution | PARTIAL; optional Asupersync task executor is selected by its lane, missing feature falls back to Structured, no live dual run | G24 |
 | 53 | Effect queue/backpressure | WORKING; effects runtime and tests | G24/G26 |
 | 54 | Telemetry schema | PARTIAL; default a11y text redaction repaired, schema/producer coverage remains | G20 |
 | 55 | E-graph before layout solver | PARTIAL; module exists, no call from Flex/Grid | G07 |

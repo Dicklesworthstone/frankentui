@@ -1,9 +1,14 @@
 # WASM Showcase Runner Contract — bd-lff4p.12.1
 
-Defines the exact API/ABI contract between:
+Describes the in-tree runner API and its intended integration with:
+
 1. The browser host (HTML+JS)
-2. `FrankenTermWeb` (web terminal surface, frankenterm-web crate)
-3. The showcase app runner compiled to WASM (new `ShowcaseRunner` struct)
+2. `FrankenTermWeb` (adjacent web terminal surface)
+3. The showcase app runner compiled to WASM (`ShowcaseRunner`)
+
+The runner and bounded Rust input queue are implemented here; the adjacent
+`frankenterm-web` renderer is not vendored. Browser/renderer verification and
+host queue bounds remain open under `bd-g00-root-epic-ewths.29.8`.
 
 ## Architecture
 
@@ -18,7 +23,7 @@ Browser (JS host loop)
 │   └── Shadow cell buffer
 │
 └── ShowcaseRunner (app logic)
-    ├── StepProgram<AppModel>
+    ├── RunnerCore → StepProgram<AppModel>
     ├── Deterministic clock
     ├── Patch generation (Buffer → Diff → WebPatchRun)
     └── Log capture
@@ -40,12 +45,47 @@ DOM events → term.input() → term.drainEncodedInputs() → runner.pushEncoded
 1. Browser captures DOM keyboard/mouse/touch/paste/focus events.
 2. JS calls `term.input(eventObj)` — FrankenTermWeb normalizes the event.
 3. JS calls `term.drainEncodedInputs()` — returns `Array<string>` of JSON-encoded events.
-4. JS forwards each string: `runner.pushEncodedInput(json)` — returns `true` if accepted.
+4. JS forwards each string: `runner.pushEncodedInput(json)` — returns `true`
+   only when admitted to the runner queue. Every `false` needs host handling.
 5. Runner parses JSON → `ftui_core::event::Event` → `StepProgram::push_event()`.
+   `false` covers malformed input, unsupported/no-mapping input, a stopped runner, and capacity
+   rejection; the boolean does not distinguish these causes.
+
+### Bounded Admission
+
+`WebEventSource` admits at most **4096 pending events** and **1 MiB of retained
+text allocation capacity** across paste, IME, and clipboard events. The byte
+bound sums `String::capacity()`, including spare capacity; it does not bound
+raw JSON, temporary parsing, or host/renderer queues. Accepted events remain
+FIFO and are never evicted to admit later input.
+
+The Rust entry points return `Result<(), WebBackendError>`:
+
+```rust
+// WebEventSource and StepProgram:
+pub fn push_event(&mut self, event: Event) -> Result<(), WebBackendError>;
+// StepProgram:
+pub fn resize(&mut self, width: u16, height: u16) -> Result<(), WebBackendError>;
+// SessionRecorder:
+pub fn push_event(&mut self, ts_ns: u64, event: Event) -> Result<(), WebBackendError>;
+pub fn resize(&mut self, ts_ns: u64, width: u16, height: u16)
+    -> Result<(), WebBackendError>;
+```
+
+Overflow returns `WebBackendError::InputQueueFull { limit, event }` with
+`WebInputLimit::Events` or `PayloadBytes`, leaving accepted input unchanged.
+For live capacity retries, step, take and apply **every intermediate patch**,
+then retry the same input before later inputs. Stepping without presenting
+loses intermediate output batches. If an empty queue still rejects the input
+(including a payload over 1 MiB), report permanent rejection explicitly.
+Diagnostics must omit raw input and payload-bearing error `Debug` output.
+Known display-only `touch`/`accessibility` inputs need no capacity retry;
+pane touch handling uses separate APIs.
 
 ### JSON Input Schema
 
-Defined by `frankenterm-web::input::InputEvent::to_json_string()`. Stable across versions.
+Accepted by the in-tree parser; adjacent encoder changes require compatibility
+checks.
 
 ```json
 {"kind":"key","phase":"down","code":"a","mods":0,"repeat":false}
@@ -62,26 +102,31 @@ Defined by `frankenterm-web::input::InputEvent::to_json_string()`. Stable across
 
 ### JSON → Event Conversion
 
-New function in `ftui-web` (no web-sys dependency):
+Implemented in `ftui-web/src/input_parser.rs` (no web-sys dependency):
 
 ```rust
 pub fn parse_encoded_input_to_event(json: &str) -> Result<Option<Event>, InputParseError>
 ```
 
 Mapping rules:
-- `kind:"key" + phase:"down"` → `Event::Key { code, modifiers, kind: Press }`
-- `kind:"key" + phase:"up"` → `Event::Key { code, modifiers, kind: Release }`
-- `kind:"mouse" + phase:"down"` → `Event::Mouse { kind: Press, x, y, button, modifiers }`
-- `kind:"mouse" + phase:"up"` → `Event::Mouse { kind: Release, x, y, button, modifiers }`
-- `kind:"mouse" + phase:"move"` → `Event::Mouse { kind: Move, x, y, modifiers }`
-- `kind:"mouse" + phase:"drag"` → `Event::Mouse { kind: Drag, x, y, button, modifiers }`
+- `kind:"key" + phase:"down"` → `Event::Key` with Press, or Repeat when `repeat:true`
+- `kind:"key" + phase:"up"` → `Event::Key` with `KeyEventKind::Release`
+- `kind:"mouse" + phase:"down"` → `Event::Mouse` with `MouseEventKind::Down(button)`
+- `kind:"mouse" + phase:"up"` → `Event::Mouse` with `MouseEventKind::Up(button)`
+- `kind:"mouse" + phase:"move"` → `Event::Mouse` with `MouseEventKind::Moved`
+- `kind:"mouse" + phase:"drag"` → `Event::Mouse` with `MouseEventKind::Drag(button)`
 - `kind:"paste"` → `Event::Paste(PasteEvent { text })`
 - `kind:"focus"` → `Event::Focus(focused)`
-- `kind:"wheel"` → mapped to scroll-style Mouse event (dy < 0 → ScrollUp, dy > 0 → ScrollDown)
-- `kind:"composition" + phase:"end"` → synthesized `Event::Key` events for each char in `data`
+- `kind:"wheel"` → scroll-style mouse event: vertical `dy` takes precedence,
+  then horizontal `dx`; both zero returns `Ok(None)` (no movement).
+- `kind:"composition"` → one `Event::Ime` per input: `start` → Start,
+  `update` → Update, `end`/`commit` → Commit, `cancel` → Cancel. Update and
+  commit preserve the complete text, including empty commits; no character-key
+  synthesis occurs. An unknown phase is a parse error.
 - `kind:"accessibility"` → `Ok(None)` (display-only, no runner effect)
 - `kind:"touch"` → `Ok(None)` (not mapped to terminal events yet)
-- Unknown `kind` → `Ok(None)` (silently dropped)
+- Unknown `kind` → `Ok(None)`; `pushEncodedInput` returns `false`, which the
+  host must handle explicitly rather than treating it as accepted.
 
 ### Modifier Mapping
 
@@ -116,25 +161,39 @@ The runner consumes **terminal cols/rows (cell-space) only**. Pixel dimensions a
 ### Flow
 
 1. Host detects container resize (ResizeObserver / window resize / DPR change).
-2. Host calls `term.fitToContainer(widthCss, heightCss, dpr)` → returns `{ cols, rows, ... }`.
-3. Host calls `runner.resize(cols, rows)`.
-4. If `fitToContainer` was not used, host calls `term.resize(cols, rows)` separately.
+2. Before changing renderer geometry, drain pending runner events and apply
+   every patch at the existing geometry.
+3. Host calls `term.fitToContainer(widthCss, heightCss, dpr)` → returns `{ cols, rows, ... }`.
+4. Host checks `runner.resize(cols, rows)` for successful admission. A `false`
+   leaves runner dimensions unchanged; stop the geometry transition explicitly.
+5. If `fitToContainer` was not used, resize the renderer to the accepted
+   dimensions before presenting the next runner frame.
 
 ### Lockstep Invariant
 
-FrankenTermWeb and ShowcaseRunner **MUST** agree on `(cols, rows)` at all times. The host is responsible for calling both resize methods before the next `step()`.
+FrankenTermWeb and ShowcaseRunner **MUST** agree on `(cols, rows)` when applying
+patches. If `fitToContainer` changes geometry before admission fails, halt or
+restore the old renderer geometry before draining and retrying. Never apply
+old-geometry patches to the resized renderer.
 
 ### Behavior
 
-- `runner.resize(cols, rows)` pushes `Event::Resize { width: cols, height: rows }` internally.
+- `runner.resize(cols, rows) -> boolean` queues an `Event::Resize`, clamping
+  each dimension to at least one cell.
+  `true` means accepted; `false` means capacity rejection or a stopped runner, without changing
+  runner dimensions or pane preview state.
 - On the next `step()`, the resize event is processed, `prev_buffer` is invalidated, and a full repaint is emitted.
 - First frame after resize is always a full repaint (single span covering `cols * rows` cells).
+- A same-size resize signal also forces a repaint boundary (for host fit,
+  DPR, or zoom transitions). Admission does not render until `step()`.
 
 ## 3. Patch Contract
 
 ### When to Read Patches
 
-Only after `runner.step()` returns `{ rendered: true }`.
+After initialization's first render and after every `runner.step()` that
+returns `{ rendered: true }`, including steps used to drain input capacity.
+Consume and apply each batch before another render can replace it.
 
 ### Format
 
@@ -155,7 +214,7 @@ Only after `runner.step()` returns `{ rendered: true }`.
 
 Host calls:
 ```js
-term.applyPatchBatchFlat(patches.cells, patches.spans);
+term.applyPatchBatchFlat(patches.spans, patches.cells);
 term.render();
 ```
 
@@ -181,6 +240,21 @@ term.render();
 ### Real-Time Mode
 
 ```js
+function stepAndPresent() {
+    const result = runner.step();
+    if (result.rendered) {
+        const patches = runner.takeFlatPatches();
+        term.applyPatchBatchFlat(patches.spans, patches.cells);
+        term.render();
+    }
+    return result;
+}
+
+runner.init();
+const initial = runner.takeFlatPatches(); // Preserve init output before retries.
+term.applyPatchBatchFlat(initial.spans, initial.cells);
+term.render();
+
 let lastTs = 0;
 function frame(timestamp) {
     const dt = lastTs === 0 ? 16.0 : timestamp - lastTs;
@@ -189,48 +263,60 @@ function frame(timestamp) {
     runner.advanceTime(dt);  // milliseconds, f64
 
     const inputs = term.drainEncodedInputs();
-    for (const json of inputs) runner.pushEncodedInput(json);
-
-    const result = runner.step();
-    if (result.rendered) {
-        const patches = runner.takeFlatPatches();
-        term.applyPatchBatchFlat(patches.cells, patches.spans);
-        term.render();
+    for (const json of inputs) {
+        let input;
+        try { input = JSON.parse(json); }
+        catch { throw new Error("Malformed input rejected; contents withheld"); }
+        if (input?.kind === "touch" || input?.kind === "accessibility") continue;
+        if (runner.pushEncodedInput(json)) continue;
+        // Drain and apply every intermediate batch before one retry.
+        if (!stepAndPresent().running || !runner.pushEncodedInput(json)) {
+            throw new Error("Input rejected after draining; contents withheld");
+        }
     }
+
+    const result = stepAndPresent();
     if (result.running) requestAnimationFrame(frame);
 }
+requestAnimationFrame(frame);
 ```
 
-`advanceTime(dt_ms)` internally: `Duration::from_secs_f64(dt_ms / 1000.0)`.
+This example halts on permanent rejection; a host may instead show a redacted
+status under an explicit rejection policy. Host drain/retry storage also needs
+bounds. This example is not evidence of browser verification.
+
+`advanceTime(dt_ms)` ignores non-finite/non-positive deltas and clamps accepted
+deltas to a representable `Duration`.
 
 ### Fixed-Step Replay Mode
 
-```js
-for (const record of trace.records) {
-    switch (record.event) {
-        case "input":
-            runner.setTime(record.ts_ns);
-            runner.pushEncodedInput(JSON.stringify(record.payload));
-            break;
-        case "tick":
-            runner.setTime(record.ts_ns);
-            break;
-        case "resize":
-            runner.setTime(record.ts_ns);
-            runner.resize(record.cols, record.rows);
-            term.resize(record.cols, record.rows);
-            break;
-    }
-    const result = runner.step();
-    if (record.event === "frame") {
-        console.assert(runner.patchHash() === record.patch_hash);
-    }
+Use the canonical `ftui_web::session_record::replay`, which returns
+`Result<ReplayResult, ReplayError>`. Example inside a function returning
+`Result<(), &'static str>`:
+
+```rust,ignore
+let result = ftui_web::session_record::replay(MyModel::default(), &trace)
+    .map_err(|_| "trace validation or replay failed; contents withheld")?;
+if !result.ok() {
+    return Err("replay frame checksum mismatch");
 }
 ```
 
-`setTime(ts_ns)` internally: `Duration::from_nanos(ts_ns as u64)`.
+`SessionRecorder` records input/resize and changes its recording timestamp only
+after successful admission. Replay validates the trace, advances time at tick
+records, and steps only at frame boundaries; initialization supplies frame 0.
+Admission failure returns `ReplayError::Backend`. Never insert unrecorded steps
+to make replay fit capacity. Browser replay must fail on rejection and apply
+every intermediate patch while preserving those recorded boundaries.
 
-### Checksum Algorithm
+`setTime(ts_ns)` maps non-finite/non-positive values to zero and clamps positive
+values to `u64` nanoseconds. JavaScript `number` precision still limits exact
+large timestamps.
+
+### Patch Checksum Algorithm
+
+This patch-batch hash differs from the full-buffer checksums and checksum chain
+used by `SessionRecorder`/`replay`. They must not be compared interchangeably.
 
 FNV-1a 64-bit over the patch batch, matching `ftui-web::patch_batch_hash()`:
 ```
@@ -269,18 +355,18 @@ The runner provides raw data; the host formats JSONL lines:
 |--------|---------|-------------|
 | `runner.patchHash()` | `string \| null` | FNV-1a hash of last patch batch |
 | `runner.patchStats()` | `{dirty_cells, patch_count, bytes_uploaded} \| null` | Patch upload accounting |
-| `runner.frameIdx()` | `number` | Current frame index (monotonic, 0-based) |
+| `runner.frameIdx()` | `bigint` | Rendered frame count: 0 before init, 1 after its first render; `step().frame_idx` is a JS number |
 | `runner.isRunning()` | `boolean` | False after model emits `Cmd::Quit` |
 
 ## 6. ShowcaseRunner wasm-bindgen API
 
 ```rust
-// Crate: ftui-showcase-wasm (new)
+// Core runner exports from ftui-showcase-wasm/src/wasm.rs (excerpt).
 // Dependencies: ftui-web, ftui-demo-showcase, wasm-bindgen, js-sys
 
 #[wasm_bindgen]
 pub struct ShowcaseRunner {
-    inner: StepProgram<AppModel>,
+    inner: RunnerCore,
 }
 
 #[wasm_bindgen]
@@ -301,12 +387,13 @@ impl ShowcaseRunner {
     pub fn set_time(&mut self, ts_ns: f64);
 
     /// Parse a JSON-encoded input and push to the event queue.
-    /// Returns true if accepted, false if unsupported/malformed.
+    /// Returns true only after admission. False includes unsupported,
+    /// malformed, no-mapping, and over-capacity inputs.
     #[wasm_bindgen(js_name = pushEncodedInput)]
     pub fn push_encoded_input(&mut self, json: &str) -> bool;
 
-    /// Resize the terminal (pushes Resize event, processed on next step).
-    pub fn resize(&mut self, cols: u16, rows: u16);
+    /// Queue a resize. False leaves dimensions unchanged on capacity rejection.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> bool;
 
     /// Process pending events and render if dirty.
     /// Returns { running, rendered, events_processed, frame_idx }.
@@ -323,13 +410,13 @@ impl ShowcaseRunner {
 
     /// FNV-1a hash of the last patch batch, or null.
     #[wasm_bindgen(js_name = patchHash)]
-    pub fn patch_hash(&self) -> Option<String>;
+    pub fn patch_hash(&mut self) -> Option<String>;
 
     /// Patch upload stats: { dirty_cells, patch_count, bytes_uploaded }.
     #[wasm_bindgen(js_name = patchStats)]
     pub fn patch_stats(&self) -> JsValue;
 
-    /// Current frame index (monotonic, 0-based).
+    /// Rendered frame count (monotonic, zero before initialization).
     #[wasm_bindgen(js_name = frameIdx)]
     pub fn frame_idx(&self) -> u64;
 
@@ -337,30 +424,35 @@ impl ShowcaseRunner {
     #[wasm_bindgen(js_name = isRunning)]
     pub fn is_running(&self) -> bool;
 
-    /// Release internal resources.
+    /// Currently a no-op; internal resources use Rust Drop cleanup.
     pub fn destroy(&mut self);
 }
 ```
 
-## 7. Implementation Checklist (for bd-lff4p.12.3)
+## 7. Implementation and Verification Scope
 
 1. **ftui-web: `parse_encoded_input_to_event`**
-   - New public function in `ftui-web/src/input_parser.rs` (or similar).
+   - Public function in `ftui-web/src/input_parser.rs`.
    - Parses frankenterm-web JSON input schema.
    - Converts to `ftui_core::event::Event`.
-   - No web-sys/js-sys dependency. Uses serde_json or hand-rolled parser.
+   - No web-sys/js-sys dependency. Uses `serde_json`.
+   - `WebEventSource` enforces count and retained-text allocation bounds.
 
-2. **New crate: `ftui-showcase-wasm`**
-   - `ShowcaseRunner` struct wrapping `StepProgram<AppModel>`.
+2. **Crate: `ftui-showcase-wasm`**
+   - `ShowcaseRunner` wraps `RunnerCore`, which owns `StepProgram<AppModel>`.
    - wasm-bindgen exports per the API above.
    - Dependencies: ftui-web, ftui-demo-showcase, wasm-bindgen, js-sys.
-   - Build: `wasm-pack build --target web`.
+   - Builds and verification use the repository's DSR native-host path and
+     pinned Rust toolchain.
 
 3. **Host HTML: `crates/ftui-showcase-wasm/frankentui_showcase_demo.html`**
    - Creates FrankenTermWeb + ShowcaseRunner.
    - requestAnimationFrame host loop.
    - ResizeObserver → fitToContainer → runner.resize.
    - DOM event listeners → term.input → drain → runner.pushEncodedInput.
+   - Check admission; preserve FIFO, geometry, and intermediate patches on retry.
+   - DOM/IME/clipboard, renderer bounds, accessibility, and lifecycle verification
+     remain browser-host obligations under `bd-g00-root-epic-ewths.29.8`.
 
 ## 8. Invariants Summary
 
@@ -369,10 +461,15 @@ impl ShowcaseRunner {
 | Determinism | Same inputs + same time → identical patch hashes |
 | No system time | DeterministicClock only; no Instant::now() in WASM |
 | No threads | StepProgram runs synchronously; Cmd::Task executes inline |
-| Lockstep geometry | Host calls resize on both FrankenTermWeb and ShowcaseRunner |
+| Lockstep geometry | Host checks resize admission and applies each patch at its matching geometry |
 | Patch ordering | Spans in ascending offset order, non-overlapping |
 | First frame | Always full repaint (single span, all cells) |
 | Empty batches | Valid (length-0 arrays); host skips render |
-| Input drop | Unknown kinds return false; not an error |
+| Accepted input | FIFO, never evicted to admit later events |
+| Input bounds | 4096 pending events; 1 MiB retained text allocation capacity |
+| Rejected input | Rust capacity errors return the event; stopped programs return `Unsupported`; JS returns false; host handles explicitly |
+| Display-only input | Touch/accessibility have no mapping on the encoded-input path |
+| Live capacity retry | Drain and apply every intermediate batch before retrying the same input |
+| Replay admission | Fail on rejected recorded input; never add unrecorded steps |
 | GraphemePool GC | Every 256 frames (automatic inside StepProgram) |
-| Schema compat | JSON input format matches golden-trace-v1 input records |
+| Schema compat | Parser and trace schemas require explicit compatibility checks; patch hashes differ from replay buffer checksums |

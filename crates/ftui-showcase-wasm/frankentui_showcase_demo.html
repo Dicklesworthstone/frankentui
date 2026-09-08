@@ -1088,6 +1088,66 @@ function takeRunnerPatches() {
   };
 }
 
+// Install the initial full frame before any admission retry can step the runner.
+const initPatches = takeRunnerPatches();
+if (initPatches.cells.length > 0) {
+  term.applyPatchBatchFlat(initPatches.spans, initPatches.cells);
+}
+term.render();
+
+let lastTs = 0;
+let totalFrames = 0;
+
+// Drain before retrying capacity-limited input. Present every intermediate
+// patch batch: later diffs depend on these frames having reached the terminal.
+function stepAndPresentRunner() {
+  const result = runner.step();
+  if (result.rendered) {
+    const patches = takeRunnerPatches();
+    if (patches.cells.length > 0) {
+      term.applyPatchBatchFlat(patches.spans, patches.cells);
+    }
+    term.render();
+    totalFrames++;
+    if (LOG_JSONL) {
+      const stats = runner.patchStats();
+      jsonl({
+        event: "frame",
+        frame_idx: result.frame_idx,
+        events_processed: result.events_processed,
+        patch_hash: runner.patchHash(),
+        dirty_cells: stats ? stats.dirty_cells : 0,
+        patch_count: stats ? stats.patch_count : 0,
+        ts: Date.now(),
+      });
+    }
+  }
+  for (const text of runner.takeLogs()) {
+    jsonl({ event: "log", text, frame_idx: result.frame_idx, ts: Date.now() });
+  }
+  return result;
+}
+
+function pushRunnerInput(input) {
+  if (runner.pushEncodedInput(input)) return true;
+  // These events belong to the display surface and have no runner mapping.
+  let decoded;
+  try { decoded = JSON.parse(input); } catch (_) { /* Report without parser text below. */ }
+  const kind = decoded?.kind;
+  if (kind === "touch" || kind === "accessibility" ||
+      (kind === "wheel" && (decoded.dx ?? 0) === 0 && (decoded.dy ?? 0) === 0)) return false;
+  if (!stepAndPresentRunner().running) {
+    throw new Error("Runner stopped before pending input could be accepted");
+  }
+  if (runner.pushEncodedInput(input)) return true;
+  // A retry on an empty queue can still reject malformed/unsupported input or
+  // a payload that exceeds the byte cap. Report the rejection without its text.
+  status.textContent = "Input rejected: unsupported event or text exceeds capacity";
+  console.warn("Runner rejected input after draining; input contents withheld");
+  jsonl({ event: "input_rejected", reason: "unsupported_or_oversized", ts: Date.now() });
+  return false;
+}
+
 // Navigate to a specific screen if requested via URL.
 if (START_SCREEN > 0) {
   const screenIdx = START_SCREEN - 1;
@@ -1095,23 +1155,14 @@ if (START_SCREEN > 0) {
   // For screens > 10, we send repeated Tab presses.
   if (screenIdx < 10) {
     const key = screenIdx === 9 ? "0" : String(screenIdx + 1);
-    runner.pushEncodedInput(JSON.stringify({ kind: "key", phase: "down", key, code: `Digit${key}`, mods: 0, repeat: false }));
+    pushRunnerInput(JSON.stringify({ kind: "key", phase: "down", key, code: `Digit${key}`, mods: 0, repeat: false }));
   } else {
     // Navigate with Tab presses.
     for (let i = 0; i < screenIdx; i++) {
-      runner.pushEncodedInput(JSON.stringify({ kind: "key", phase: "down", key: "Tab", code: "Tab", mods: 0, repeat: false }));
+      pushRunnerInput(JSON.stringify({ kind: "key", phase: "down", key: "Tab", code: "Tab", mods: 0, repeat: false }));
     }
   }
 }
-
-// `ShowcaseRunner.init()` renders frame 1 and produces a full repaint patch batch.
-// If we don't apply it immediately, the first `step()` often returns `rendered=false`
-// and the initial frame never becomes visible (or later diffs apply against an empty buffer).
-const initPatches = takeRunnerPatches();
-if (initPatches.cells.length > 0) {
-  term.applyPatchBatchFlat(initPatches.spans, initPatches.cells);
-}
-term.render();
 
 // Hide loading overlay, show status.
 setProgress(100, "Ready");
@@ -1173,6 +1224,11 @@ function queueGeometrySync(reason) {
 
 function applyQueuedGeometrySync(trigger = "frame_tick") {
   if (!pendingGeometrySync) return;
+  // Make room while the renderer still has its old geometry, so draining
+  // cannot apply old-size patches to a surface that has already been resized.
+  if (!stepAndPresentRunner().running) {
+    throw new Error("Runner stopped before geometry could be synchronized");
+  }
   pendingGeometrySync = false;
   pendingGeometryReasons.add(trigger);
   const reasons = Array.from(pendingGeometryReasons).sort();
@@ -1199,7 +1255,9 @@ function applyQueuedGeometrySync(trigger = "frame_tick") {
     // Force a resize signal to the runner whenever host geometry semantics changed.
     // The runner now treats every resize signal as a repaint boundary, even if
     // cols/rows are numerically unchanged (e.g. DPR/zoom transitions).
-    runner.resize(currentCols, currentRows);
+    if (!runner.resize(currentCols, currentRows)) {
+      throw new Error("Runner rejected resize after draining input");
+    }
     lastGeometrySignature = nextSignature;
   }
 
@@ -1258,8 +1316,14 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 function safeTermInput(ev) {
   try {
     term.input(ev);
-  } catch (e) {
-    console.error("[ShowcaseDemo] term.input failed:", e, ev);
+    return true;
+  } catch (_) {
+    // Events and renderer exception messages can contain paste/IME contents.
+    // Report the failure without either payload.
+    console.error("[ShowcaseDemo] term.input failed; input contents withheld");
+    status.textContent = "Input rejected by terminal surface";
+    jsonl({ event: "input_rejected", reason: "terminal_input_failed", ts: Date.now() });
+    return false;
   }
 }
 
@@ -2396,9 +2460,6 @@ canvas.addEventListener("touchcancel", (e) => {
 }, { passive: false });
 
 // ── Host frame loop ────────────────────────────────────────────────────
-let lastTs = 0;
-let totalFrames = 0;
-
 function frame(timestamp) {
   try {
     const dt = lastTs === 0 ? 16.0 : timestamp - lastTs;
@@ -2413,40 +2474,11 @@ function frame(timestamp) {
     // 3. Drain normalized inputs from FrankenTermWeb -> push to runner.
     const inputs = term.drainEncodedInputs();
     for (let i = 0; i < inputs.length; i++) {
-      runner.pushEncodedInput(inputs[i]);
+      pushRunnerInput(inputs[i]);
     }
 
     // 4. Step the application.
-    const result = runner.step();
-
-    // 5. If a frame was rendered, apply patches and present.
-    if (result.rendered) {
-      const patches = takeRunnerPatches();
-      if (patches.cells.length > 0) {
-        term.applyPatchBatchFlat(patches.spans, patches.cells);
-      }
-      term.render();
-      totalFrames++;
-
-      if (LOG_JSONL) {
-        const stats = runner.patchStats();
-        jsonl({
-          event: "frame",
-          frame_idx: result.frame_idx,
-          events_processed: result.events_processed,
-          patch_hash: runner.patchHash(),
-          dirty_cells: stats ? stats.dirty_cells : 0,
-          patch_count: stats ? stats.patch_count : 0,
-          ts: Date.now(),
-        });
-      }
-    }
-
-    // 6. Drain logs.
-    const logs = runner.takeLogs();
-    for (let i = 0; i < logs.length; i++) {
-      jsonl({ event: "log", text: logs[i], frame_idx: result.frame_idx, ts: Date.now() });
-    }
+    const result = stepAndPresentRunner();
     syncPaneOverlayFromRunner();
 
     // 7. Continue or stop.

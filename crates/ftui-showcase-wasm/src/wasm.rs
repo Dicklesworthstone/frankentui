@@ -625,7 +625,8 @@ impl ShowcaseRunner {
     }
 
     /// Parse a JSON-encoded input and push to the event queue.
-    /// Returns `true` if accepted, `false` if unsupported/malformed.
+    /// Returns `true` if accepted, `false` if unsupported, malformed, or over
+    /// input capacity. After a capacity rejection, step before retrying.
     #[wasm_bindgen(js_name = pushEncodedInput)]
     pub fn push_encoded_input(&mut self, json: &str) -> bool {
         self.inner.push_encoded_input(json)
@@ -1073,9 +1074,10 @@ impl ShowcaseRunner {
         self.inner.pane_apply_intelligence_mode(mode, primary)
     }
 
-    /// Resize the terminal (pushes Resize event, processed on next step).
-    pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.inner.resize(cols.max(1), rows.max(1));
+    /// Queue a resize for the next step. Returns false without changing size
+    /// when input capacity is exhausted; step before retrying.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> bool {
+        self.inner.resize(cols.max(1), rows.max(1))
     }
 
     /// Process pending events and render if dirty.

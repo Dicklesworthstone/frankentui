@@ -3,13 +3,14 @@
 
 use core::time::Duration;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{Event, ImeEvent, KeyCode, KeyEvent, KeyEventKind, Modifiers, PasteEvent};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_runtime::program::{Cmd, Model};
 use ftui_runtime::render_trace::checksum_buffer;
 use ftui_web::step_program::StepProgram;
+use ftui_web::{WebBackendError, WebEventSource, WebInputLimit};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 #[derive(Default)]
@@ -206,4 +207,59 @@ fn wasm_step_program_replay_produces_identical_checksums() {
 
     assert!(!run_a.is_empty());
     assert_eq!(run_a, run_b);
+}
+
+#[wasm_bindgen_test]
+fn wasm_step_program_overflow_preserves_accepted_input_and_resize_state() {
+    let mut program = StepProgram::new(CounterModel::default(), 16, 2);
+    program.init().unwrap();
+    for _ in 0..WebEventSource::MAX_EVENTS {
+        program.push_event(key_event('+')).unwrap();
+    }
+    assert!(matches!(
+        program.push_event(key_event('-')),
+        Err(WebBackendError::InputQueueFull {
+            limit: WebInputLimit::Events,
+            ..
+        })
+    ));
+    assert!(program.resize(20, 3).is_err());
+    assert_eq!(program.size(), (16, 2));
+    assert_eq!(program.step().unwrap().events_processed, 4096);
+    assert_eq!(program.model().value, 4096);
+    assert_eq!(program.size(), (16, 2));
+    program.push_event(key_event('-')).unwrap();
+    program.resize(20, 3).unwrap();
+    assert_eq!(program.step().unwrap().events_processed, 2);
+    assert_eq!(program.model().value, 4095);
+    assert_eq!(program.size(), (20, 3));
+    assert!(buffer_text(program.outputs().last_buffer.as_ref().unwrap()).starts_with("count=4095"));
+}
+
+#[wasm_bindgen_test]
+fn wasm_event_queue_bounds_text_bytes_and_delivers_exact_retry_content() {
+    use ftui_backend::BackendEventSource;
+
+    let mut source = WebEventSource::new(16, 2);
+    let paste = Event::Paste(PasteEvent::bracketed(
+        "界".repeat(WebEventSource::MAX_PAYLOAD_BYTES / 3),
+    ));
+    source.push_event(paste.clone()).unwrap();
+    let tail = Event::Ime(ImeEvent::commit("日本語 👩‍💻"));
+    let rejected = source.push_event(tail.clone()).unwrap_err();
+    assert!(matches!(
+        &rejected,
+        WebBackendError::InputQueueFull {
+            limit: WebInputLimit::PayloadBytes,
+            ..
+        }
+    ));
+    assert_eq!(source.read_event().unwrap(), Some(paste));
+    let WebBackendError::InputQueueFull { event, .. } = rejected else {
+        unreachable!();
+    };
+    source.push_event(event).unwrap();
+    assert_eq!(source.read_event().unwrap(), Some(tail));
+    assert_eq!(source.queued_events(), 0);
+    assert_eq!(source.queued_payload_bytes(), 0);
 }
