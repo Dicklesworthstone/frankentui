@@ -1,6 +1,203 @@
-# FrankenTUI Reality Check and Bridge Plan (updated 2026-09-06)
+# FrankenTUI Reality Check and Bridge Plan (updated 2026-09-08)
 
-## Current assessment: 2026-09-06
+## Current assessment: 2026-09-08, after publication of 0.7.0
+
+**FrankenTUI is a working, published native terminal UI framework. It does not
+yet deliver the full README vision. Publication is complete; comprehensive
+verification, several complete user journeys, and the strongest mathematical
+claims remain incomplete.** The September 6 distribution diagnosis below is
+historical and must not drive another unnecessary release.
+
+This assessment starts at main `0ae2c02e4ab5d24c680a9a14d1c756d407519142`.
+The published product is the frozen, tagged commit
+`798efa0bb746601cea78b75ad8bc859f738a6456`. Subsequent changes affect release
+tooling, documentation, Beads, and doctor verification fixtures/comparison;
+they do not change the published library implementation. All **905 lines of
+AGENTS.md and 2,897 lines of README.md** were read afresh, along with both
+original kernel plans, this complete prior assessment, and selected doctor,
+pane, SDK and migration contracts. The September 6 full subsidiary-document
+inventory remains historical evidence; this pass does not claim a second full
+read of every subsidiary spec or all 1,077,726 tracked Rust lines. Fresh source
+traces below check the consequential boundaries against the current tree.
+CASS supplied the earlier release/planning context; current commits and retained
+receipts, rather than session recollections, establish delivery. Additional
+audit agents were unavailable because of their usage limit; this assessment's
+new source review was performed by GreenLynx.
+
+DSR remains the only authorized build/verification/release path. No Actions
+workflow, `act`, or DSR Actions-waiting command was used. The installed RCH and
+UBS cleanup behavior remains incompatible with Rule 1, so neither was invoked.
+This assessment changes documentation and Beads; it does not rerun expensive
+builds or convert historical results into a fresh aggregate pass.
+
+### What the architecture actually delivers
+
+The useful center is still the original kernel-first design: a model consumes
+canonical events, updates state, and renders widgets/layout/text into a frame;
+the cell buffer, diff and presenter produce terminal output through one writer.
+The facade exposes these pieces as a usable library. Native `Program` abstracts
+its event source while retaining `TerminalWriter` for output; the web
+`StepProgram` is a separate host-driven execution path. The backend traits are
+useful seams, but their existence does not mean all time, presentation and
+execution already flow through one universal host implementation.
+
+The tree has 20 workspace crates and 961 tracked Rust files. That size includes
+tests, the large showcase and the doctor/migration/research machinery; it is not
+a measure of delivered user value. The 45-screen registry is checked explicitly
+at `ftui-demo-showcase/src/app.rs:7228`, while README still says 46. Experimental
+runtime modules include flat combining, IVM, rough paths, SOS and additional
+conformal monitors. A public standalone algorithm can be useful without an
+in-tree caller, but its existence cannot substantiate automatic runtime use.
+
+### The five questions, answered now
+
+1. **What works?** The native kernel, facade startup, inline log presentation,
+   substantial widget library, subscriptions, headless simulation and live pane
+   interactions are real. Version 0.7.0 reached all established venues: six
+   native binary archives, 17 crates, and 17 version-specific docs.rs pages.
+   Actual default and slim registry consumers each passed both documented PTY
+   journeys; both no-backend journeys returned the expected Unsupported error.
+   The width-cache collision guard, conformal finite-sample boundary, private
+   accessibility telemetry, pane reset/history fixes, and input/dirty-render
+   repairs are shipped, not merely present in an unpublished checkout.
+2. **What does not yet work completely?** Doctor's coverage and determinism
+   gates fail. Browser compilation and Node tests do not establish a complete
+   browser/GPU/IME/mobile journey. The accessibility tree does not reach an OS
+   screen reader by itself. The flagship interactive subprocess example is
+   absent; its underlying streaming boundary is unbounded. Full editor,
+   widget/focus, RTL/formatting and supported-host commitments remain. Several
+   README algorithm and guarantee claims exceed actual wiring or assumptions.
+3. **What blocks completion?** Concrete integration work and trustworthy,
+   source-bound acceptance. The immediate verification blockers are doctor
+   coverage discovery/scope/deficits and schema-aware determinism comparison.
+   The native flagship needs bounded process streaming and cancellation; web
+   and accessibility need actual host consumers. Controlled total-cost
+   measurements are still required before claiming universal performance wins.
+   More releases, speculative algorithms, or task closures do not supply these.
+4. **Would completing the open Beads finish the vision?** Their G01–G47
+   workstreams cover the identified vision, provided completion means the
+   strengthened user-journey contracts and actual proof. Completing stale
+   checklist text literally would not: critical tasks still described forbidden
+   Actions jobs, unpublished 0.6.0, or never-built WASM. This pass replaces the
+   critical DSR/WASM/doctor contracts and credits existing publication proof.
+   Broader tasks remain open when their negative controls or host obligations
+   exceed the release's evidence. Native milestone `.42.5` is deliberately
+   stronger than publication task `.10.5` and remains open.
+5. **What lacked ownership?** No additional vision workstream was needed.
+   Browser overload already belongs to `.29.8/.29.9`, subprocess stream and
+   descendants to `.32.1–.32.3`, live AT to `.13.8–.13.11`, mathematical
+   assumptions to `.43.3/.43.4`, and total pane cost to `.44.1/.44.2`. Release
+   work added the now-concrete doctor failures `.28.6/.28.7`. The new `.46`
+   tracks only this bounded assessment, not a new product epic or feature.
+
+### Accepted evidence and its limits
+
+Evidence root: `/data/retained/ftui-release-20260908-greenlynx/`.
+`release-audit.md` records the completed release first and labels its older
+chronological entries. Receipts and failures remain retained. Each result below
+belongs to its recorded source, toolchain, host and command; successful scoped
+reruns do not erase an earlier failed aggregate.
+
+| Boundary | Accepted observation | Remaining limit |
+|---|---|---|
+| Publication | [0.7.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.7.0) became public/latest at 17:03:52 UTC September 8. Fresh API read confirms 14 uploaded assets: six archives, six checksum sidecars, manifest and SHA256SUMS. All were independently downloaded and hash-verified during release. | GitHub's two generated source downloads are not additional native builds. Publication is not an aggregate quality verdict. |
+| Platforms | Linux x64 GNU/musl and ARM64 GNU, macOS ARM64/Intel, Windows x64 MSVC. Actual version/help execution recorded; Linux ARM64 uses QEMU and Intel Mac uses Rosetta. | Windows startup/help does not prove the complete interactive console and cleanup matrix. |
+| Registry | All 17 immutable 0.7.0 archives have checked registry hashes and VCS provenance; idempotent repeat and tokenless dry-run pass. Fresh `ftui` API read reports 0.7.0. Publisher receipt `frankentui-candidate-070-publish-resume/20260908T130001-4141401/receipt.json`. | The first publisher attempt failed after publishing core; it remains failed evidence. Broader poisoned-config/offline/receipt-portability proof in `.10.4` remains distinct. |
+| Consumer/docs | Default and slim registry-only consumers: two real PTY journeys each pass. No backend: two EXPECTED_UNSUPPORTED outcomes. All 17 docs.rs pages pass after propagation, receipt `frankentui-candidate-070-docs-observation/20260908T130825-4178999/receipt.json`. | These examples do not spawn the missing flagship agent-shell child. Earlier 1/17 and 15/17 docs observations are retained failures. |
+| Compiler gates | Final candidate macOS workspace formatting, all-target check, strict Clippy and strict rustdoc pass on `nightly-2026-08-31`, rustc `90850177249efe0321573c569aec5d12b257f8d6`. | No claim that every target/profile/feature gate passed in one complete run. |
+| Workspace tests | Default aggregate: 25,405/25,407 pass, two fail, seven ignored. All-feature aggregate: 27,665/27,668 pass, three fail. Scoped timing/allocation reruns and the repaired executor test have separately recorded passes. | The original aggregates remain failed. A passing isolated test is not a passing workspace aggregate. |
+| Terminal journeys | Release verification records 17 terminal E2E suites, 20 text-effects cases, 24 interactive showcase stages and paired traces passing after concrete source/fixture repairs. | Exact receipts identify each snapshot; do not relabel all as one final-candidate full test run. |
+| WASM | Seven portable checks, actual showcase release WASM build, and two Node execution tests pass. Raw WASM SHA256 `04e7e653823f3246e3830e5ab042ec92d24a801fe6834b898dbae8ea8e7fd57d`; receipt `frankentui-candidate-070-wasm/20260908T030920-1646623/receipt.json`. | No browser JS packaging or real browser execution in that receipt. Size/export/negative-guard and current host delivery obligations remain. |
+| Browser | Fresh `/web/` HTTP 200; September 6 Chromium touch/mouse checks remain valid for their deployed host revision. | HTTP availability and earlier cell-text checks do not establish current WASM identity, GPU pixels, Safari or physical iPhone behavior. |
+| Doctor execution | 2,691 tests pass with zero skipped; all 12 failure cases, six actual soak workflows, VHS snapshot smoke and replay pass after scoped fixture repairs. See `doctor-final-evidence/findings.md`. | Aggregate comparator still fails on ledger and suite-manifest timestamps/trace identities; `.28.7`. Workflow exit success alone is not determinism. |
+| Doctor coverage | Corrected export includes all 24 formerly omitted executed test objects and unchanged profiles. In the unchanged 307-file domain: 56.230% lines, 37.176% branches, 50.578% functions; 16 checks fail. DSR run `6bae7909-f9b3-4d88-8f5d-e80022741d34`. | Floors remain 89/69/86. Doctor-only diagnostics are not the gate; neither silent scope narrowing nor threshold reduction is a repair. `.28.6` owns this. |
+| Performance | Buffer-fill scalar parity and the bounded Linux ten-row performance gate pass; retained table benchmark improves 275.44 to 70.55 microseconds. | Four runtime-only metrics are unmeasured. A macOS VFX p99 failure remains. G47 still needs equal-history total-cost and memory comparisons. |
+
+### Fresh source findings that determine the next work
+
+| User promise | Current source evidence | Existing owner and required outcome |
+|---|---|---|
+| Bounded browser interaction | `ftui-web/src/lib.rs:126–156`: `WebEventSource` owns `VecDeque<Event>` and `push_event` unconditionally appends. | `.29.8/.29.9`: bound event count and payload bytes; report admission/backpressure before accepting input; preserve accepted keyboard/paste/IME ordering; prove delayed drain and recovery. |
+| Interactive process stream | `process_subscription.rs:172–320`: `BufRead::lines`, unbounded sender, null stdin, immediate-child kill/wait. `Cmd::Log` already exists. | `.32.1–.32.3` after `.33.1/.33.2`: reuse working APIs; add the missing complete journey, newline-free/invalid-UTF-8/huge output, blocked consumers, child stdin policy and descendant cancellation. |
+| Full Asupersync/shadow behavior | `program.rs:2992` resolves Asupersync to Structured unconditionally. An optional `AsupersyncTaskExecutor` really exists. Production `rollout_policy` reads configure/log it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: distinguish explicit task backend from full lane; compare actual recorded runs without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
+| Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
+| Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
+| SOS provenance | `sos_barrier.rs:9,23` still attributes coefficients to a missing solver, while `sos_barrier_coeffs.rs:1–9` says they were hand chosen. | G21/G45: correct residual attribution and test the actual polynomial/domain. Eight sample points are not a solver certificate. |
+| Editor/localization | `Cmd` has no SetClipboard/GetClipboard variants; `ftui-i18n` exports catalogs/plurals, not number/date formatting. Direction helpers alone are not complete bidirectional text editing. | G15/G29: implement the promised boundary and real editing/locale tests; retain shipped TextArea highlighting and catalog behavior. |
+| Harness and inventory docs | `FTUI_HARNESS_VIEW` is read by `ftui-harness`, with unknown values falling back to Default; `dashboard` is not a recognized value. Showcase registry asserts 45 screens. | G06/G35: command examples must exercise the intended binary and view. Count production widget implementations with a declared denominator, excluding test helpers. |
+
+The README VOI arithmetic was already corrected in the release and is not a new
+defect. The remaining mathematical concern is assumptions, calibration and
+scope. In particular, truncated rough-path features do not establish the
+README's universal path-uniqueness claim; even the full bounded-variation
+signature theorem identifies paths up to tree-like equivalence
+([Hambly and Lyons](https://arxiv.org/abs/math/0507536)).
+
+### Bridge revision: order by complete user value
+
+1. **Repair verification that is demonstrably failing.** Finish `.28.7` using
+   the six existing captures and integrity-preserving negative controls; finish
+   `.28.6` with complete object discovery and explicit coverage scope. Reconcile
+   the full `.6.31` inventory from retained native receipts before scheduling
+   missing checks. Keep timeouts, failures and unexecuted cases visible.
+2. **Deliver the original agent-harness story.** Complete output trust modes
+   `.33.1/.33.2`, then bounded subprocess input/output/cancel/restart and actual
+   PTY journey `.32.1–.32.3`. The published minimal and streaming examples are
+   foundations, not a substitute for a real child process under stable chrome.
+3. **Finish real browser and accessibility consumers.** Use the already-built
+   WASM artifact as a starting point, finish reproducible host packaging and
+   bounded admission, then GPU/IME/mobile proof. In parallel, complete widget
+   semantics and focus before a supported real AT bridge. Host availability is
+   a concrete prerequisite, not something headless simulation can waive.
+4. **Finish interaction details and measure actual benefits.** Preserve shipped
+   widget/editor/keymap improvements while completing outstanding subfeatures,
+   RTL/formatting, lifecycle and virtualization work. Compare runtime and pane
+   policies on identical outputs and retained histories, including setup,
+   conversion, render/I/O and memory. Keep conservative behavior when it wins.
+5. **Align claims as their evidence changes.** Correct public overclaims now;
+   retain the promised implementation in its owning Bead. Optional SIMD, FFI,
+   SSH, TLA+ and adjacent importer/renderer decisions remain explicit scope
+   decisions. A documentation correction does not close an implementation gap.
+
+Ambition round 1 strengthens the native cut from installability to responsive,
+bounded subprocess interaction. Round 2 strengthens web/AT acceptance from
+Rust output to actual host behavior, and performance from microbenchmarks to
+equal-output total cost. Both reuse the existing G01–G47 bridge and the frozen
+Bead-generation/refinement prompts retained below; neither adds another meta
+framework, a duplicate product epic, or an arbitrary completion percentage.
+
+### Bead refinement and validation for this assessment
+
+The five refinement passes addressed: (1) stale publication/source premises;
+(2) forbidden runner instructions and missing WASM proof boundaries;
+(3) dependency correctness; (4) coverage-object and comparator negative
+controls; and (5) a final consistency check, which found no further change
+needed in this revision. Seven existing tasks were refined: `.6.25`, `.6.26`,
+`.6.31`, `.10.4`, `.28.2`, `.28.6`, `.28.7`. Their product/proof statuses remain
+open. The sole new task `.46` records completion of this assessment only.
+
+The dependency pass found that doctor coverage/determinism reached full-vision
+acceptance but did **not** block `.6.31`, despite its complete-verification
+claim. Added `.6.31 -> .28.2`; both doctor failures now block that aggregate.
+An exact traversal of **3,046 nodes and 4,363 blocking edges** visits every node
+with no cycle or missing endpoint. Parent-child and related edges were counted
+separately. `bv --robot-insights` skips cycles above 2,000 nodes; its empty
+Cycles array is not the proof used here.
+
+`br ready` reports 58 claimable tasks. Before assessment closure, BV's 117
+directly actionable nodes included 19 in-progress tasks and 40 additional
+open epics with unfinished descendants. The counts answer different questions.
+Use `br ready` and actual ownership to claim work; BV's high ranking for a
+claims ledger or optional SIMD decision does not override the concrete failure
+and user-journey order above.
+
+Validation preserves all 71 ordered current vision rows, both verbatim frozen
+skill prompts, existing assignments, and historical failures. `git diff --check`
+passes. The changed files are the existing report and Beads exports; no Rust,
+test, dependency, workflow or release artifact changed. No compiler run or UBS
+pass is claimed for this documentation-only assessment.
+
+## Historical assessment: 2026-09-06
 
 **The native framework works, and several important source and mobile fixes are
 real. The full README vision is still incomplete, and published packages lag the
@@ -527,12 +724,13 @@ end-to-end speedups need equal-history and equal-output comparisons. This audit
 did not rerun controlled performance benchmarks, a physical terminal matrix,
 Windows/macOS sessions, real screen readers, or browser GPU rendering.
 
-## Current vision checklist: 2026-09-06
+## Current vision checklist: 2026-09-08
 
 These numbered goals preserve the original 71-row checklist. WORKING refers to
 the bounded implemented/tested behavior, not certification on every host.
 PARTIAL includes remaining integration or acceptance; UNPROVEN means the stated
-guarantee is not established. Source improvements do not establish shipped parity.
+guarantee is not established. Shipped 0.7.0 evidence is credited only for the
+consumer, host and feature scope actually executed.
 
 | # | Testable promise | Current status and evidence | Remaining gaps |
 |---|---|---|---|
@@ -540,10 +738,10 @@ guarantee is not established. Source improvements do not establish shipped parit
 | 2 | Deterministic buffer/diff/presentation | WORKING; render kernel and harness proof/property tests | G25/G42 |
 | 3 | One terminal writer | WORKING; TerminalWriter and sanitized log path | G27 |
 | 4 | Restore terminal on exit/panic | PARTIAL; RAII exists, suspend/cross-backend proof remains | G13/G32 |
-| 5 | Composable runnable facade | PARTIAL; source defaults fixed, published defaults stale | G01/G43 |
+| 5 | Composable runnable facade | WORKING; published 0.7.0 default/slim registry consumers pass real PTY journeys; no-backend refuses explicitly | G43 broader negative controls |
 | 6 | Accurate widget inventory | PARTIAL; broad library, counts/feature claims need reconciliation | G06/G17 |
 | 7 | Pane drag/dock/snap/throw/history | PARTIAL; live selector/rollback, nested solving and reset repaired; full cost/host proof remains | G04/G47 |
-| 8 | Reproducible browser delivery | PARTIAL; deployed touch fix proven in Chromium; first-party host/GPU/physical mobile gaps | G23 |
+| 8 | Reproducible browser delivery | PARTIAL; 0.7.0 WASM build and Node tests pass, prior Chromium touch proof; current host/GPU/physical mobile gaps | G23 |
 | 9 | Bayesian diff selection | WORKING; TerminalWriter calls diff_strategy | G25 |
 | 10 | BOCPD resize detection | PARTIAL; default enabled now, differential replay pending | G12 |
 | 11 | VOI remeasurement | PARTIAL; inline_auto live, generalized list work incomplete | G10/G20 |
@@ -570,7 +768,7 @@ guarantee is not established. Source improvements do not establish shipped parit
 | 32 | Elm runtime/subscriptions | WORKING; task/tick/fs-watch helpers present, E2E remains | G16 |
 | 33 | No unsafe implementation | WORKING declared crate policy; governance FFI exception conflicts | G34 |
 | 34 | Render proof sketches | WORKING as bounded sketches/tests, not machine-checked proof | G06/G38 |
-| 35 | Property/snapshot/benchmark infrastructure | WORKING infrastructure; default workspace tests pass, broader execution gaps remain | G04/G25 |
+| 35 | Property/snapshot/benchmark infrastructure | WORKING infrastructure; release aggregates retain failures, scoped repairs pass; no fresh full aggregate pass | G04/G25 |
 | 36 | Resize coalescing regimes | PARTIAL; controller real, differential/default docs remain | G12 |
 | 37 | PID degradation | WORKING budget controller; experimental duplicate remains | G13 |
 | 38 | Input fairness | WORKING; input_fairness wired through runtime | G25 |
@@ -587,7 +785,7 @@ guarantee is not established. Source improvements do not establish shipped parit
 | 49 | Inline A/B/C strategies | WORKING with new self-test fallback, host proof bounded | G05 |
 | 50 | Color profiles/contrast | WORKING; style/color/ANSI code and tests | G25 |
 | 51 | Evidence events | PARTIAL; queue depth/VOI improved, disclosure/completeness gaps | G20/G44 |
-| 52 | Runtime lanes/shadow execution | PARTIAL; Asupersync resolves to Structured, no live dual run | G24 |
+| 52 | Runtime lanes/shadow execution | PARTIAL; optional Asupersync task executor exists, full lane resolves to Structured, no live dual run | G24 |
 | 53 | Effect queue/backpressure | WORKING; effects runtime and tests | G24/G26 |
 | 54 | Telemetry schema | PARTIAL; default a11y text redaction repaired, schema/producer coverage remains | G20 |
 | 55 | E-graph before layout solver | PARTIAL; module exists, no call from Flex/Grid | G07 |
@@ -601,12 +799,12 @@ guarantee is not established. Source improvements do not establish shipped parit
 | 63 | Animation | WORKING; widget animation code and tests | G25 |
 | 64 | Bayesian capability detection | PARTIAL; ledger/probes live now, host validation remains | G28/G05 |
 | 65 | Showcase screen count | PARTIAL; 45 asserted screens, README still says 46 | G06 |
-| 66 | Published libraries | PARTIAL; packages exist, documented behavior newer than release | G43 |
-| 67 | Windows support | PARTIAL; Crossterm fallback, current test-import lint and native DSR host proof pending | G31 |
-| 68 | Doctor verification | PARTIAL; real core/importer code; capture artifact and full DSR journey incomplete | G22 |
+| 66 | Published libraries | WORKING; all 17 crates and versioned docs published as 0.7.0, registry identity and consumers verified | G43 broader negative controls |
+| 67 | Windows support | PARTIAL; 0.7.0 MSVC native binary/build/version/help pass; full interactive console/lifecycle matrix remains | G31 |
+| 68 | Doctor verification | PARTIAL; 2691 tests and real capture/failure/replay workflows pass; coverage and determinism comparator fail | G22 |
 | 69 | Cross-component test location | PARTIAL docs; tests largely in crate test directories | G39 |
-| 70 | Mandatory quality gates | PARTIAL; DSR registry added, fmt/check passed; full DSR attempt fails on remote infrastructure, broader host/fuzz/artifact failures remain | G04/G42 |
-| 71 | Main/legacy branch synchronization | WORKING at fresh audit start: both remote refs `2fa9c438`; recheck after any push without using Actions | G41 |
+| 70 | Mandatory quality gates | PARTIAL; final-candidate Mac fmt/check/Clippy/rustdoc pass, retained aggregates and doctor gates fail; full inventory remains | G04/G42 |
+| 71 | Main/legacy branch synchronization | WORKING at audit start: release handoff records both refs at `0ae2c02e`; recheck after this documentation push without Actions | G41 |
 
 Plans add subprocess output under stable inline chrome (G26/G27), suspend/resume
 (G32), terminal protocol/resource caps (G36), reproducible optimization budgets
@@ -628,7 +826,7 @@ do not automatically establish acceptance; preserve in-progress assignments.
 | G01 | .1 | Preserve default-backend fix; source acceptance plus shipped G43 proof. |
 | G02 | .2 | Preserve compiled examples; test dependency origin as well as source identity. |
 | G03 | .3 | Preserve per-Program signal fix, timeout and soak evidence. |
-| G04 | .6 | Configure direct DSR verification/build hosts; resolve current fuzz/platform/PTY/artifact failures without masking them. |
+| G04 | .6 | Preserve delivered native DSR builds and compiler gates; reconcile remaining fuzz/platform/PTY/artifact acceptance against exact receipts without masking failures. |
 | G05 | .4 | Preserve probes/overrides/fallback; supported-host and teardown proof. |
 | G06 | .5 | Claims ledger, counts/API examples, source/release labels, negative checker tests. |
 | G07 | .11 | Experimental gating; judge exported APIs by intended use, not in-tree caller count alone. |
@@ -646,7 +844,7 @@ do not automatically establish acceptance; preserve in-progress assignments.
 | G19 | .25 | Preserve ranked Help; verify actual application feedback. |
 | G20 | .26 | Default announcement-text redaction delivered; complete evidence schemas and actual producer/artifact contracts. |
 | G21 | .18 | Hand-chosen experimental SOS route; correct residual solver attribution. |
-| G22 | .28 | Usable doctor core gates; real importer fixture/source scope. |
+| G22 | .28 | Preserve actual capture/failure/replay passes; fix coverage `.28.6` and determinism `.28.7`; retain real importer fixture/source scope. |
 | G23 | .29 | Preserve deployed touch fix; finish in-tree host, current WASM artifact identity, real GPU/IME and physical mobile proof. |
 | G24 | .30 | Executor resolution, side-effect-safe shadow comparison, measured queue policy. |
 | G25 | .31 | Latency/bytes/allocation budgets, negative gates, no selected-best-run baselines. |
@@ -668,7 +866,15 @@ do not automatically establish acceptance; preserve in-progress assignments.
 | G41 | .10 | Fail-closed preflight and immutable version identity, extended by G43. |
 | G42 | .42 | Fresh integration evidence; native and full-vision milestones, extended by G44. |
 
-#### G43: Source improvements have not reached the published consumer
+#### G43: Preserve shipped consumer proof and finish the wider isolation contract
+
+**September 8 disposition:** 0.7.0 closes the source-versus-published gap.
+`.10.3`, publication `.10.5` and publisher `.6.21` are closed with actual
+registry/DSR evidence. Both default and slim registry consumers passed the two
+documented PTY journeys; all 17 crates and docs are available. `.10.4` remains
+open for its broader negative isolation and receipt-portability contract.
+The following describes the original gap and the acceptance to preserve,
+not a request to republish immutable versions or repeat completed builds.
 
 Add a registry-only lane with isolated workspace, lockfile, Cargo configuration,
 target directory and explicit toolchain. Record resolved URLs, versions,
