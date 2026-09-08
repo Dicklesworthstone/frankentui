@@ -282,8 +282,8 @@ impl SurvivalStats {
         let k = (1.2 / cv).clamp(0.5, 10.0);
 
         // λ = mean / Gamma(1 + 1/k)
-        // Approximate Gamma(1 + 1/k) ≈ 1 - 0.5772/k + 0.98905/k^2 for k > 1
-        let gamma_approx = 1.0 - 0.5772 / k + 0.98905 / (k * k);
+        // Approximate Gamma(1 + 1/k) ≈ 1 - γ/k + 0.98905/k^2 for k > 1.
+        let gamma_approx = 1.0 - std::f64::consts::EULER_GAMMA / k + 0.98905 / (k * k);
         let lambda = (mean / gamma_approx).max(0.001);
 
         self.k = k;
