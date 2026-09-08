@@ -6,24 +6,37 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
-Scope window: [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.0) (2026-04-12) through [v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0) (2026-08-24). `Kind` below: GitHub Release vs plain git tag. **v0.4.0 is a tag only** — there is no GitHub Release at that tag. v0.3.1, v0.4.1, and v0.5.0 are published Releases.
+Scope window: initial development on 2026-01-31 through the unpublished 0.7.0
+changes reviewed on 2026-09-08. The latest published GitHub Release is
+[v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0).
+`Release` below means a published GitHub Release; `Tag` means a git tag with
+no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 
 ## Version Timeline
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [0.7.0 (planned)][Unreleased] | Unreleased | — | Default backends, keymaps, runtime accessibility, widgets, terminal fixes |
 | [v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0) | Release | 2026-08-24 | Runtime guardrails, resize SLA, asupersync 0.4.9, color depth |
 | [v0.5.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0) | Release | 2026-07-05 | OpenTUI-import closeout + alien-governance |
 | [v0.4.1](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.4.1) | Release | 2026-06-13 | Allocation-reduction skill-loop |
 | [v0.4.0](https://github.com/Dicklesworthstone/frankentui/tree/v0.4.0) | Tag | 2026-04-24 | Load governor + WebGPU context-loss (no GitHub Release) |
 | [v0.3.1](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.1) | Release | 2026-04-12 | crates.io publish-order patch |
-| [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.0) | Release | 2026-04-12 | ftui-a11y + render pipeline (previous changelog ceiling) |
+| [v0.3.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.0) | Release | 2026-04-12 | Accessibility crate, render pipeline, Asupersync executor |
+| [v0.2.1](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.2.1) | Release | 2026-03-07 | Doctor, OpenTUI migration, widgets, terminal and text support |
+| [v0.2.0](https://github.com/Dicklesworthstone/frankentui/tree/v0.2.0) | Tag | 2026-02-15 | First tagged workspace, WASM showcase, kernel and widget foundations |
+| [0.1.1](https://crates.io/api/v1/crates/ftui/0.1.1) | crates.io only | 2026-02-05 | First package publication; no git tag or GitHub Release |
+| [0.1.0](https://github.com/Dicklesworthstone/frankentui/commit/7a23b45a1efa7b114ea55c51835cc093abf97605) | Internal | 2026-01-31 | Initial architecture and workspace; no published release |
+
+Release dates use GitHub's publication timestamp. Tag-only dates use the
+tag's recorded timezone; the internal milestone uses its commit date.
 
 ---
 
 ## [Unreleased]
 
-Changes since v0.6.0, prepared for 0.7.0.
+Changes since v0.6.0, prepared for 0.7.0. No 0.7.0 tag or GitHub Release has
+been published as of 2026-09-08.
 
 ### Added
 
@@ -36,18 +49,28 @@ Changes since v0.6.0, prepared for 0.7.0.
   ([`9b1f5bd4`](https://github.com/Dicklesworthstone/frankentui/commit/9b1f5bd4),
   [`82592893`](https://github.com/Dicklesworthstone/frankentui/commit/82592893),
   [`f3a2ceb2`](https://github.com/Dicklesworthstone/frankentui/commit/f3a2ceb2)).
+- Help-bar ordering can learn from shortcut usage, and ListState can stabilize
+  hover selection across small pointer movements
+  ([`0c40d6ed`](https://github.com/Dicklesworthstone/frankentui/commit/0c40d6ed),
+  [`90ac9aef`](https://github.com/Dicklesworthstone/frankentui/commit/90ac9aef),
+  [`23188f1a`](https://github.com/Dicklesworthstone/frankentui/commit/23188f1a)).
 - Opt-in accessibility trees and announcements through
   `Model::on_accessibility`, including TextArea semantics. Accessibility text
   stays out of telemetry by default
   ([`a23154d7`](https://github.com/Dicklesworthstone/frankentui/commit/a23154d7),
   [`1b611c72`](https://github.com/Dicklesworthstone/frankentui/commit/1b611c72),
   [`f6909bc0`](https://github.com/Dicklesworthstone/frankentui/commit/f6909bc0)).
-- TextArea syntax highlighting, collapsible JsonView nodes, TextInput history,
-  indeterminate progress, sparkline extrema markers, dashed borders, and
-  variable-height VirtualizedList rendering
+- TextArea syntax highlighting, collapsible JsonView nodes, and variable-height
+  VirtualizedList rendering with Fenwick-tree height tracking by default
   ([`a2f36fe2`](https://github.com/Dicklesworthstone/frankentui/commit/a2f36fe2),
   [`63465481`](https://github.com/Dicklesworthstone/frankentui/commit/63465481),
   [`4c697f8c`](https://github.com/Dicklesworthstone/frankentui/commit/4c697f8c)).
+- TextInput history recall, indeterminate ProgressBar, Sparkline extrema
+  markers, and dashed borders
+  ([`9f8b4d4c`](https://github.com/Dicklesworthstone/frankentui/commit/9f8b4d4c),
+  [`efe0e470`](https://github.com/Dicklesworthstone/frankentui/commit/efe0e470),
+  [`f4b4950c`](https://github.com/Dicklesworthstone/frankentui/commit/f4b4950c),
+  [`f44a6470`](https://github.com/Dicklesworthstone/frankentui/commit/f44a6470)).
 - Pane execution strategies with persistent tree storage
   ([`636133cf`](https://github.com/Dicklesworthstone/frankentui/commit/636133cf));
   opt-in gesture delivery and polling file-watcher subscriptions
@@ -56,6 +79,30 @@ Changes since v0.6.0, prepared for 0.7.0.
 - Streaming log sanitization modes, including SGR-only styling, with assembly
   of split escape sequences and UTF-8 fragments
   ([`ed7ee2cc`](https://github.com/Dicklesworthstone/frankentui/commit/ed7ee2cc)).
+
+### Runtime defaults and rendering performance
+
+- Resize coalescing enables Bayesian online change-point detection (BOCPD)
+  by default, with a rate-based heuristic fallback while its posterior is
+  unavailable. Quiet gaps correctly leave burst mode
+  ([`db9e3856`](https://github.com/Dicklesworthstone/frankentui/commit/db9e3856),
+  [`9ab6bbce`](https://github.com/Dicklesworthstone/frankentui/commit/9ab6bbce)).
+- Hybrid and scroll-region inline modes test DECSTBM support at startup and
+  fall back to overlay redraw when the test fails
+  ([`749dac62`](https://github.com/Dicklesworthstone/frankentui/commit/749dac62)).
+- Capability decisions carry evidence, runtime guardrails observe the current
+  executor queue depth, and `tick_every` provides a subscription helper
+  ([`378c69ba`](https://github.com/Dicklesworthstone/frankentui/commit/378c69ba)).
+- A bounded per-thread grapheme-width cache avoids repeated non-ASCII width
+  calculations; cache hits require the exact grapheme, including on hash
+  collisions ([`378c69ba`](https://github.com/Dicklesworthstone/frankentui/commit/378c69ba),
+  [`1b611c72`](https://github.com/Dicklesworthstone/frankentui/commit/1b611c72)).
+- Tiled diffing uses summed-area-table queries to skip entirely clean tile
+  rows and reports the queries and skipped rows in its evidence
+  ([`4d2ff829`](https://github.com/Dicklesworthstone/frankentui/commit/4d2ff829)).
+- `Buffer::fill` skips redundant overlap repair for rows of single-width cells
+  while preserving clipping, opacity, background compositing, and dirty-span
+  tracking ([`a82c99fe`](https://github.com/Dicklesworthstone/frankentui/commit/a82c99fe)).
 
 ### Fixed
 
@@ -66,6 +113,16 @@ Changes since v0.6.0, prepared for 0.7.0.
   [`fc67ab6e`](https://github.com/Dicklesworthstone/frankentui/commit/fc67ab6e)).
 - Protect inline UI boundaries when only one log row remains or a full-height
   UI is shrinking ([`4e3657cb`](https://github.com/Dicklesworthstone/frankentui/commit/4e3657cb)).
+- Conformal frame-time prediction reports unavailable bounds when calibration
+  cannot support the requested rank, instead of substituting a finite observed
+  maximum. The runtime continues rendering through its measured-budget
+  controller when a bound is unavailable
+  ([`92bd6c06`](https://github.com/Dicklesworthstone/frankentui/commit/92bd6c06)).
+- ANSI parser hooks retain `HookPanicked` as the rejection cause when a panic
+  also exceeds the callback time budget; raw terminal-log tracing uses a
+  registered telemetry target
+  ([`78a13dbe`](https://github.com/Dicklesworthstone/frankentui/commit/78a13dbe),
+  [`2eb1c946`](https://github.com/Dicklesworthstone/frankentui/commit/2eb1c946)).
 - Preserve exact internal height totals beyond `u32` in virtualized lists
   ([`86e73927`](https://github.com/Dicklesworthstone/frankentui/commit/86e73927));
   preserve pane history, honor nested size constraints, and autosave workspace
@@ -75,6 +132,11 @@ Changes since v0.6.0, prepared for 0.7.0.
 - Restore uppercase-G navigation in Virtualized Search and local number-key
   controls in the Visual Effects and internationalization showcase screens
   ([`bd4a6ee8`](https://github.com/Dicklesworthstone/frankentui/commit/bd4a6ee8)).
+- WASM showcase touch navigation only captures pane drags on splitter handles;
+  releasing a pinch no longer generates an unintended tap
+  ([`3b0da562`](https://github.com/Dicklesworthstone/frankentui/commit/3b0da562)).
+- Keep native Criterion benchmark dependencies out of `ftui-web` WASM test
+  builds ([`798efa0b`](https://github.com/Dicklesworthstone/frankentui/commit/798efa0b)).
 
 ### Migration
 
@@ -90,11 +152,56 @@ Changes since v0.6.0, prepared for 0.7.0.
 - `CoalesceAction::ShowPlaceholder` was removed. Pending coalescing returns
   `CoalesceAction::None`; use `ResizeCoalescer::has_pending()` to distinguish
   it from idle ([`6ab2d616`](https://github.com/Dicklesworthstone/frankentui/commit/6ab2d616)).
+- Use `CoalescerConfig::without_bocpd()` to retain rate-based resize detection
+  after the default changes
+  ([`db9e3856`](https://github.com/Dicklesworthstone/frankentui/commit/db9e3856)).
+- Handle `ConformalPrediction::upper_us`, `confidence`, and `quantile` as
+  `Option<f64>`, and inspect `status` when a bound is absent.
+  `ConformalUpdate::residual` is also optional, and
+  `ConformalPredictor::new(config)` now returns
+  `Result<Self, ConformalConfigError>`. JSONL consumers must accept `null`
+  values in the `conformal-v2` schema
+  ([`92bd6c06`](https://github.com/Dicklesworthstone/frankentui/commit/92bd6c06)).
 
-### Release tooling
+### Verification and release tooling
 
 - Resumable DSR crate publishing verifies dependency order, package hashes,
-  and Git provenance ([`d276e16d`](https://github.com/Dicklesworthstone/frankentui/commit/d276e16d)).
+  and Git provenance. Its ordering includes versioned development dependencies
+  retained by Cargo packaging
+  ([`d276e16d`](https://github.com/Dicklesworthstone/frankentui/commit/d276e16d),
+  [`798efa0b`](https://github.com/Dicklesworthstone/frankentui/commit/798efa0b)).
+- Delivery now uses DSR with the toolchain pinned in `rust-toolchain.toml`
+  (`nightly-2026-08-31`); GitHub Actions is disabled
+  ([`2fa9c438`](https://github.com/Dicklesworthstone/frankentui/commit/2fa9c438),
+  [`6b4e9e5e`](https://github.com/Dicklesworthstone/frankentui/commit/6b4e9e5e)).
+- Isolated consumer checks validate package identity and run the shipped
+  examples through real PTYs. Release archives use the actual executed remote
+  binaries ([`167a4998`](https://github.com/Dicklesworthstone/frankentui/commit/167a4998),
+  [`719ddb7a`](https://github.com/Dicklesworthstone/frankentui/commit/719ddb7a)).
+- Terminal E2E drivers wait for startup readiness before sending input, resolve
+  showcase screens by identity, and validate structured evidence. Dirty-diff
+  and replay checks cover tile skipping and deterministic trace clocks
+  ([`e43b4805`](https://github.com/Dicklesworthstone/frankentui/commit/e43b4805),
+  [`d09c8f11`](https://github.com/Dicklesworthstone/frankentui/commit/d09c8f11)).
+- Native showcase PTY tests use Cargo's executable path and fail when the
+  required binary is missing. Snapshot fixtures pin rendering capabilities,
+  and executor panic tests wait for task completion before checking recorded
+  panic evidence
+  ([`798efa0b`](https://github.com/Dicklesworthstone/frankentui/commit/798efa0b)).
+
+### Workstream status
+
+These records are pinned to the researched revision; an implemented feature
+does not imply that its broader epic or release gate is complete.
+
+| Workstream | Recorded status | Scope |
+|------------|-----------------|-------|
+| [G01 facade defaults](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2211) | Closed | Default backends, prelude traits, inline example |
+| [G09 runtime accessibility](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2239) | Closed | Tree collection, announcements, model hook |
+| [G14 keymap core](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2291) | Closed | Chords, contexts, priorities, conflicts, dispatch |
+| [G17 widget features](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2310) | Open | Added widget APIs; broader acceptance remains pending |
+| [G47 live panes](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2447) | In progress | Execution strategies landed; measurement and rollback work remains |
+| [DSR release preparation](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2220) | In progress | Candidate prepared; remaining verification and publication pending |
 
 ---
 
@@ -242,9 +349,9 @@ Patch release fixing crates.io publish ordering: removes version specifiers from
 
 ---
 
-## [0.3.0] (2026-04-12)
+## [v0.3.0] -- 2026-04-12 (GitHub Release)
 
-> 190 commits since v0.2.1 (2026-03-07).
+> 193 non-merge commits since v0.2.1 (2026-03-07).
 > Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.2.1...v0.3.0>
 
 ### Accessibility (ftui-a11y) -- New Crate
@@ -341,7 +448,9 @@ Patch release fixing crates.io publish ordering: removes version specifiers from
 ## [v0.2.1] -- 2026-03-07 (GitHub Release)
 
 > GitHub Release: <https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.2.1>
-> Published to crates.io as `ftui 0.2.1`.
+> The [crates.io package](https://crates.io/api/v1/crates/ftui/0.2.1) was published on
+> 2026-02-19, before this GitHub Release. The section describes the later tag's
+> contents, not the earlier package snapshot.
 > Compare: <https://github.com/Dicklesworthstone/frankentui/compare/v0.2.0...v0.2.1>
 
 This release spans 373 commits from the v0.2.0 tag (2026-02-15) through the v0.2.1 tag (2026-03-07). It introduced the doctor diagnostic crate, the OpenTUI migration pipeline, massive widget and testing expansion, formal observability infrastructure, and extensive correctness hardening.
@@ -379,6 +488,10 @@ This release spans 373 commits from the v0.2.0 tag (2026-02-15) through the v0.2
 
 ### Widget Expansion
 
+- DragDrop and Quake showcase screens, dashboard splitters, and mouse
+  reliability fixes ([`a97b6e58`](https://github.com/Dicklesworthstone/frankentui/commit/a97b6e58)).
+- Showcase mouse actions activate on press and suppress duplicate releases
+  ([`67a37631`](https://github.com/Dicklesworthstone/frankentui/commit/67a37631)).
 - Galaxy-brain decision card widget with 4-level progressive disclosure transparency layer. ([03427231](https://github.com/Dicklesworthstone/frankentui/commit/034272314d7ad36b13e4e44705d93a9fccb9c5d5), [121a7b66](https://github.com/Dicklesworthstone/frankentui/commit/121a7b665deaae9793552274cb8819bea7b4c34a))
 - Galaxy-brain transparency FrankenLab scenario in the demo. ([7c400e2f](https://github.com/Dicklesworthstone/frankentui/commit/7c400e2f74221be3a4f60f8c2d3951f1e2daf0c0))
 - Adaptive radix tree widget with expanded E2E conformance coverage. ([de388072](https://github.com/Dicklesworthstone/frankentui/commit/de38807281cd9a1823e014639bae32c5f84dd188))
@@ -403,6 +516,8 @@ This release spans 373 commits from the v0.2.0 tag (2026-02-15) through the v0.2
 
 ### Terminal and IME
 
+- Mouse protocol compatibility, mux-safe cleanup, and terminal-session
+  resilience ([`43d7cb7c`](https://github.com/Dicklesworthstone/frankentui/commit/43d7cb7ca56a90d172c2c6635af2d1273201d4e3)).
 - IME event model (`ImeEvent`, `ImePhase`) added to ftui-core. ([2e93c7f2](https://github.com/Dicklesworthstone/frankentui/commit/2e93c7f2))
 - Native IME event pipeline for web, replacing composition-as-paste hack. ([e6cdfed4](https://github.com/Dicklesworthstone/frankentui/commit/e6cdfed4))
 - IME composition wired into TextInput; host-focus lifecycle added to FocusManager. ([681aecd0](https://github.com/Dicklesworthstone/frankentui/commit/681aecd0))
@@ -411,10 +526,6 @@ This release spans 373 commits from the v0.2.0 tag (2026-02-15) through the v0.2
 
 ### Text and Typography
 
-- Incremental Knuth-Plass line-break optimizer. ([70f567c9](https://github.com/Dicklesworthstone/frankentui/commit/70f567c9a97cdfb73728de38bfdf316a798645c3))
-- Leading/baseline-grid and paragraph spacing system. ([3a564479](https://github.com/Dicklesworthstone/frankentui/commit/3a56447962a7568cb1e3079c4b8ec625f336899d))
-- Microtypographic justification controls. ([e27612b3](https://github.com/Dicklesworthstone/frankentui/commit/e27612b3b0d9faab548c00fd74f42255bd131b6a))
-- Layout policy presets and deterministic fallback contract. ([33b28404](https://github.com/Dicklesworthstone/frankentui/commit/33b2840410ab8726713d3f5327f266d5803bf6ce))
 - Text shaping and script segmentation modules. ([6b86d038](https://github.com/Dicklesworthstone/frankentui/commit/6b86d0386bcff294fbdf0aae3e86166cbdf99410))
 - Ligature policy system. ([e6d1ba73](https://github.com/Dicklesworthstone/frankentui/commit/e6d1ba737fd5abf9280a01da77274d79fdc7e6fd))
 - Tier budget system with Emergency layout tier. ([f3e0f7bc](https://github.com/Dicklesworthstone/frankentui/commit/f3e0f7bca15c399a215196812928705dab0b5882))
@@ -443,20 +554,6 @@ This release spans 373 commits from the v0.2.0 tag (2026-02-15) through the v0.2
 - Golden frame comparison for replay verification. ([674c3cc1](https://github.com/Dicklesworthstone/frankentui/commit/674c3cc1662b92a83ce1f56b4c9cb7fc44a323c2))
 - Evidence ledger capture during replay. ([b52cdfef](https://github.com/Dicklesworthstone/frankentui/commit/b52cdfef5bc854b1d80c4e065cc173b852c3843b))
 - E2E test suite for Recipe D Deterministic Debugging. ([181e8a9c](https://github.com/Dicklesworthstone/frankentui/commit/181e8a9c5e012969dfa89559ec0d51d3dff69696))
-
-### Security
-
-- Threat model, HTTPS-only defaults, and resource bound hardening. ([3125afab](https://github.com/Dicklesworthstone/frankentui/commit/3125afabb2873afffbdb7f4e1dc2aa20f79c2475))
-- Clipboard policy API, link audit trail, and wide character handling. ([cddcc986](https://github.com/Dicklesworthstone/frankentui/commit/cddcc986803967aa96845945cdb8f8c4e6a34b2f))
-
-### Shared Capabilities and Rendering
-
-- SharedCapabilities with ArcSwap-backed concurrent access. ([d70e44cd](https://github.com/Dicklesworthstone/frankentui/commit/d70e44cdd6c43daa9343e83a1f891055dc2247a3))
-- SharedResolvedTheme with ArcSwap-backed concurrent access. ([f39037b5](https://github.com/Dicklesworthstone/frankentui/commit/f39037b58737ce99d58100f6b4f22fb229cabd01))
-- Frame guardrails for memory budget and queue depth. ([e3a2d4fb](https://github.com/Dicklesworthstone/frankentui/commit/e3a2d4fb16956f22cce5862b3536235e4f195818))
-- Deterministic fit-to-container and font metric lifecycle. ([0d5d1c47](https://github.com/Dicklesworthstone/frankentui/commit/0d5d1c471a0e2313d5be786a03959a92c8741346))
-- Selection copy/rect extraction, AHashMap migration, and render pipeline optimization. ([af044fa7](https://github.com/Dicklesworthstone/frankentui/commit/af044fa7fcf40b6ec06353171ea12c4645f89847))
-- SelectionGestureController for pointer/keyboard gestures. ([792a4543](https://github.com/Dicklesworthstone/frankentui/commit/792a4543bbec86423c15705f721283f4c43f7334))
 
 ### Web/WASM
 
@@ -519,8 +616,10 @@ This release spans 373 commits from the v0.2.0 tag (2026-02-15) through the v0.2
 ## [v0.2.0] -- 2026-02-15 (Tag Only)
 
 > Git tag only (no GitHub Release).
-> Tag: <https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.2.0>
+> Tag: <https://github.com/Dicklesworthstone/frankentui/tree/v0.2.0>
 > First tagged release of FrankenTUI.
+> The [ftui 0.2.0 package](https://crates.io/api/v1/crates/ftui/0.2.0) was also published
+> on 2026-02-15 and is yanked as of 2026-09-08.
 
 This is the first tagged release. It spans from the initial commit (2026-01-31) through the version bump on 2026-02-15, covering the full foundation plus major expansion across all crates during the v0.1.1 crates.io publish cycle.
 
@@ -540,7 +639,6 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 ### Backend Abstraction Layer -- New Crates
 
 - New `ftui-backend` trait crate and `ftui-tty` native TTY implementation with Unix raw mode and terminal feature toggles. ([5a314523](https://github.com/Dicklesworthstone/frankentui/commit/5a314523), [ac43f32e](https://github.com/Dicklesworthstone/frankentui/commit/ac43f32e))
-- Mouse protocol compatibility hardening, WezTerm mux detection, and terminal session resilience. ([43d7cb7c](https://github.com/Dicklesworthstone/frankentui/commit/43d7cb7ca56a90d172c2c6635af2d1273201d4e3))
 
 ### WASM Showcase -- New Crate
 
@@ -560,7 +658,7 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 - Cx capability context for cancellation and deadline propagation. ([fdd633a1](https://github.com/Dicklesworthstone/frankentui/commit/fdd633a1539855c90e871b29284569ef2135ea81))
 - Cx threaded through all Ring 1 terminal I/O operations. ([a144dcac](https://github.com/Dicklesworthstone/frankentui/commit/a144dcac8687b7a96cd0008eb83836cee9c396b0))
 - S3-FIFO scan-resistant cache. ([79d91f28](https://github.com/Dicklesworthstone/frankentui/commit/79d91f286dc7b6b8dd70a5e405b48dec9881feba))
-- Composable animation primitives. ([67eb0314](https://github.com/Dicklesworthstone/frankentui/commit/67eb0314))
+- Composable animation primitives. ([cf4c8eb8](https://github.com/Dicklesworthstone/frankentui/commit/cf4c8eb895f7b90bca21973f35153d9a667fe7ca))
 - Tracing instrumentation for input parser and event_type_label. ([196e6a3b](https://github.com/Dicklesworthstone/frankentui/commit/196e6a3badb3d075e29b6acac4a2b1b7bf1726d4))
 - SharedCapabilities with ArcSwap-backed concurrent access. ([d70e44cd](https://github.com/Dicklesworthstone/frankentui/commit/d70e44cdd6c43daa9343e83a1f891055dc2247a3))
 - Canonical terminal engine module. ([4e8b4bc4](https://github.com/Dicklesworthstone/frankentui/commit/4e8b4bc46c6f1171d2e99f6370e1d853aa0a99e9))
@@ -571,19 +669,17 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 - Presenter with state-tracked ANSI emission. ([aa58e858](https://github.com/Dicklesworthstone/frankentui/commit/aa58e85813486827c6f43cb3d21377e735c8d608))
 - Geometry primitives and drawing module. ([14a19353](https://github.com/Dicklesworthstone/frankentui/commit/14a193535f4172ee29a33006392a17cb5dd28c28))
 - CountingWriter for output bytes tracking. ([07a836e9](https://github.com/Dicklesworthstone/frankentui/commit/07a836e9))
-- C1 controls stripped in sanitizer with proptest Rust 2024 compat. ([e2d6e656](https://github.com/Dicklesworthstone/frankentui/commit/e2d6e656))
-- Export adapters (HTML, SVG, Text) for Buffer rendering. ([5aa907fc](https://github.com/Dicklesworthstone/frankentui/commit/5aa907fc))
+- C1 controls stripped in sanitizer with proptest Rust 2024 compat. ([06fb241e](https://github.com/Dicklesworthstone/frankentui/commit/06fb241e022851bcc906609d085e95a182b0e456))
 - Bump-allocated frame arena. ([de824689](https://github.com/Dicklesworthstone/frankentui/commit/de824689fd05bff1ca8c19823cbe68492b53ac99))
 - Frame guardrails for memory budget and queue depth. ([e3a2d4fb](https://github.com/Dicklesworthstone/frankentui/commit/e3a2d4fb16956f22cce5862b3536235e4f195818))
 - Presenter orphan detection, O(1) diff lookups, and DiffViewport elimination. ([7e27656e](https://github.com/Dicklesworthstone/frankentui/commit/7e27656e))
 - Deterministic fit-to-container and font metric lifecycle. ([0d5d1c47](https://github.com/Dicklesworthstone/frankentui/commit/0d5d1c471a0e2313d5be786a03959a92c8741346))
-- Hyperlink support and text rendering infrastructure. ([22532c8c](https://github.com/Dicklesworthstone/frankentui/commit/22532c8c))
+- Hyperlink support and text rendering infrastructure. ([67c4cd94](https://github.com/Dicklesworthstone/frankentui/commit/67c4cd943b65f46e6b8a0aa5b04c4fd449d216d3))
 - Golden checksums migrated from SipHash to BLAKE3. ([e6582158](https://github.com/Dicklesworthstone/frankentui/commit/e6582158c6edcb8e1807e06dfa7a80bb009575e6))
 
 ### Layout (ftui-layout)
 
 - Flex layout solver. ([0baccfdd](https://github.com/Dicklesworthstone/frankentui/commit/0baccfddd7ad1897bdab11dea39ea4c78063abd2))
-- LayoutDebugger with tracing. ([94d9d8bb](https://github.com/Dicklesworthstone/frankentui/commit/94d9d8bb))
 - Iterative solver to prevent wasted space with Max constraints. ([324f019f](https://github.com/Dicklesworthstone/frankentui/commit/324f019f))
 - Pane operations and transaction journal. ([25c20240](https://github.com/Dicklesworthstone/frankentui/commit/25c2024077aa37786a4216bfdcc1d0943b124483))
 - Pane invariant diagnostics and safe repair. ([beb2bccf](https://github.com/Dicklesworthstone/frankentui/commit/beb2bccfb9814dc8094e4209c66438a1e22fc1c9))
@@ -596,7 +692,9 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 ### Runtime (ftui-runtime)
 
 - Elm/Bubbletea-style Program runtime with Model/Cmd pattern. ([75e21361](https://github.com/Dicklesworthstone/frankentui/commit/75e21361))
-- Stdio capture utility for accidental println! protection. ([81d16a63](https://github.com/Dicklesworthstone/frankentui/commit/81d16a63))
+- Opt-in channel-based stdio capture through `ftui_println!` and
+  `ftui_eprintln!`; ordinary `println!` is not intercepted
+  ([8a83307e](https://github.com/Dicklesworthstone/frankentui/commit/8a83307ecc4c49486f3243c8840264f516c15b5b)).
 - Pane terminal hit-testing and routing primitives. ([80f2128d](https://github.com/Dicklesworthstone/frankentui/commit/80f2128df2d0d1a365f3e26c893da0fdcea656c4))
 - Input fairness module with adaptive scheduling and SLA tracking.
 - Inline-mode active widget gauge, scrollback preservation tracing, and unit tests. ([4472647e](https://github.com/Dicklesworthstone/frankentui/commit/4472647e0d8185da8857ef4c71c0a481578e216e))
@@ -605,11 +703,12 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 
 ### Widget System (ftui-widgets)
 
-- Panel widget with border, title, and padding. ([85d17ace](https://github.com/Dicklesworthstone/frankentui/commit/85d17ace))
-- StatusLine widget. ([a58bf932](https://github.com/Dicklesworthstone/frankentui/commit/a58bf932))
-- Hit testing and cursor control for interactive widgets. ([ad8cb457](https://github.com/Dicklesworthstone/frankentui/commit/ad8cb457))
-- Budget-aware degradation across all widgets. ([21bd6676](https://github.com/Dicklesworthstone/frankentui/commit/21bd6676))
-- Focused input state and CellContent support. ([b9a7fefa](https://github.com/Dicklesworthstone/frankentui/commit/b9a7fefa))
+- Panel widget with border, title, and padding. ([2fec4118](https://github.com/Dicklesworthstone/frankentui/commit/2fec4118d983e2ab6395cdcbe049ebd474ba7bd7))
+- StatusLine widget. ([8862b6b7](https://github.com/Dicklesworthstone/frankentui/commit/8862b6b7f280d658dbb27ab654c3149fc1a2cd3e))
+- Hit testing and cursor control for interactive widgets. ([c2688b8d](https://github.com/Dicklesworthstone/frankentui/commit/c2688b8d091ecce63e597569e901d1af3074968d))
+- Budget-aware degradation for core widgets. ([cf4c8eb8](https://github.com/Dicklesworthstone/frankentui/commit/cf4c8eb895f7b90bca21973f35153d9a667fe7ca))
+- Focused input state and CellContent support. ([aed6f9a7](https://github.com/Dicklesworthstone/frankentui/commit/aed6f9a7e9fb0ee9e471609a3049fc8ce1eacb48))
+- LayoutDebugger with tracing. ([9f83775e](https://github.com/Dicklesworthstone/frankentui/commit/9f83775e861b06fb8292edb8b34d05fc00e6e1d9))
 - Mouse event handling for Tree, List, and Table widgets. ([65c68a58](https://github.com/Dicklesworthstone/frankentui/commit/65c68a58))
 - TextArea, Help, Tree, JsonView, Emoji, Stopwatch, Timer, Pretty widgets and Live display system.
 - Undo/redo editor core, Unicode BiDi support, SyntaxHighlighter API.
@@ -621,6 +720,12 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 
 ### Text (ftui-text)
 
+- Incremental Knuth-Plass line breaking, paragraph spacing and baseline grids,
+  microtypographic justification, and layout policy presets
+  ([`70f567c9`](https://github.com/Dicklesworthstone/frankentui/commit/70f567c9a97cdfb73728de38bfdf316a798645c3),
+  [`3a564479`](https://github.com/Dicklesworthstone/frankentui/commit/3a56447962a7568cb1e3079c4b8ec625f336899d),
+  [`e27612b3`](https://github.com/Dicklesworthstone/frankentui/commit/e27612b3b0d9faab548c00fd74f42255bd131b6a),
+  [`33b28404`](https://github.com/Dicklesworthstone/frankentui/commit/33b2840410ab8726713d3f5327f266d5803bf6ce)).
 - ASCII width fast-path optimization. ([86613c83](https://github.com/Dicklesworthstone/frankentui/commit/86613c83a82dcd1e029216cdffa73ddb54106d78))
 - Unicode width corpus tests and grapheme helpers. ([bb8b02ab](https://github.com/Dicklesworthstone/frankentui/commit/bb8b02ab))
 - Rope text storage and View helpers. ([4fa45b3a](https://github.com/Dicklesworthstone/frankentui/commit/4fa45b3a))
@@ -637,8 +742,9 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 
 ### Extras (ftui-extras)
 
-- Console abstraction for styled output. ([39be7b6c](https://github.com/Dicklesworthstone/frankentui/commit/39be7b6c))
-- Asciicast v2 session recording. ([491d4732](https://github.com/Dicklesworthstone/frankentui/commit/491d4732))
+- Console abstraction for styled output. ([2fec4118](https://github.com/Dicklesworthstone/frankentui/commit/2fec4118d983e2ab6395cdcbe049ebd474ba7bd7))
+- Export adapters (HTML, SVG, Text) for Buffer rendering. ([5f746121](https://github.com/Dicklesworthstone/frankentui/commit/5f74612103aaeda077c19038404da97baac5285e))
+- PTY backpressure handling. ([e459ab24](https://github.com/Dicklesworthstone/frankentui/commit/e459ab249005ea25f734f66bb44a885cc18e7f0d))
 - Full Mermaid diagram rendering pipeline: parser, layout, renderer with support for flowchart, sequence, Gantt, class, ER, and C4 diagram families. ([ad85efc9](https://github.com/Dicklesworthstone/frankentui/commit/ad85efc9), [46600614](https://github.com/Dicklesworthstone/frankentui/commit/46600614))
 - Visual diagram diffing (`render_diff`). ([46600614](https://github.com/Dicklesworthstone/frankentui/commit/46600614))
 - Mermaid showcase controls and metrics panel. ([a71ac2ae](https://github.com/Dicklesworthstone/frankentui/commit/a71ac2ae))
@@ -647,7 +753,6 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 ### Demo Showcase (ftui-demo-showcase)
 
 - Kanban Board screen. ([46a178ce](https://github.com/Dicklesworthstone/frankentui/commit/46a178ce9b60f296e11d2b7aad7884ef4eff70a9))
-- DragDrop/Quake screens and dashboard splitters. ([a97b6e58](https://github.com/Dicklesworthstone/frankentui/commit/a97b6e58))
 - Live Markdown Editor integration. ([4a926ddc](https://github.com/Dicklesworthstone/frankentui/commit/4a926ddc))
 - Toggleable FPS render mode in visual effects showcase. ([5762768b](https://github.com/Dicklesworthstone/frankentui/commit/5762768b))
 - Mermaid harness telemetry, dense flow sample, and tour landing UI. ([069a80dd](https://github.com/Dicklesworthstone/frankentui/commit/069a80dd))
@@ -655,10 +760,13 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 
 ### PTY (ftui-pty)
 
-- PTY signal handling, feature flags, and backpressure fixes. ([748393b7](https://github.com/Dicklesworthstone/frankentui/commit/748393b7))
+- PTY signal methods and the required `nix` signal feature
+  ([e8da1ced](https://github.com/Dicklesworthstone/frankentui/commit/e8da1cedaa4035cac6acafbcbddabc282cf0c190),
+  [0af87c4e](https://github.com/Dicklesworthstone/frankentui/commit/0af87c4ea1a6879912340aa6ce7fb5a1637950cd)).
 
 ### Harness (ftui-harness)
 
+- Asciicast v2 session recording. ([addc3ce1](https://github.com/Dicklesworthstone/frankentui/commit/addc3ce1fcb2fd35ca2663d119f22a6a02a1e114))
 - Input storm module for stress-testing terminal input handling. ([a00b05e2](https://github.com/Dicklesworthstone/frankentui/commit/a00b05e22eb38f9a9e9d96312503b77afbd8bd01))
 - HDD minimization harness and roaring bitmap renderer. ([57f727e3](https://github.com/Dicklesworthstone/frankentui/commit/57f727e34c03705168a5d17fd8e99b3aa9bba9d5))
 
@@ -692,7 +800,6 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 - Mouse event handling for Tree, List, and Table widgets. ([65c68a58](https://github.com/Dicklesworthstone/frankentui/commit/65c68a58))
 - `Cmd::SetMouseCapture` for runtime mouse capture control. ([9f2c4fa7](https://github.com/Dicklesworthstone/frankentui/commit/9f2c4fa7))
 - Hit region registration for chrome overlays and status bar. ([4293bd1d](https://github.com/Dicklesworthstone/frankentui/commit/4293bd1d))
-- Mouse dispatcher rewritten to activate on press with release suppression. ([67a37631](https://github.com/Dicklesworthstone/frankentui/commit/67a37631))
 - Tab/BackTab prevented from switching screens during text input. ([f6d6fd48](https://github.com/Dicklesworthstone/frankentui/commit/f6d6fd48fa2e128562db3727b309eef443579e56))
 - Force-cancel safety valve and RAII interaction guard. ([7251045](https://github.com/Dicklesworthstone/frankentui/commit/7251045296a16996794ce9cca6d4d084d65a20e5))
 - Multiplexer capability matrix with fallback policy. ([657c2299](https://github.com/Dicklesworthstone/frankentui/commit/657c2299e6fc607fd03b76d2a3f160f0958df8d4))
@@ -701,9 +808,8 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 
 ### Testing Infrastructure
 
-- Over 1,500 new tests across the workspace including edge-case, property, conformance, and snapshot tests.
-- ~120 tests across widgets, render, runtime, layout. ([38db5b3e](https://github.com/Dicklesworthstone/frankentui/commit/38db5b3e))
-- ~55 tests for PTY, text, style, logging modules. ([268e24a0](https://github.com/Dicklesworthstone/frankentui/commit/268e24a0))
+- Expanded unit and edge-case tests across widgets, rendering, runtime, and
+  layout ([0564b302](https://github.com/Dicklesworthstone/frankentui/commit/0564b30294cf828694b33e826a7e77dea00c5c56)).
 - 100+ VT conformance fixture tests for frankenterm-core. ([dfee0d76](https://github.com/Dicklesworthstone/frankentui/commit/dfee0d76), [023d479f](https://github.com/Dicklesworthstone/frankentui/commit/023d479f))
 - Comprehensive inline mode tests. ([f52cf29b](https://github.com/Dicklesworthstone/frankentui/commit/f52cf29b4291d46913c2c7330509e9dadc55faf6))
 - Property tests for S3-FIFO cache invariants. ([805bf8ee](https://github.com/Dicklesworthstone/frankentui/commit/805bf8ee98d0ef1f4dc4a94c8fcd4d95296ecce6))
@@ -730,7 +836,9 @@ This is the first tagged release. It spans from the initial commit (2026-01-31) 
 
 First crates.io publish of all 13 original workspace crates, bumped from 0.1.0 to 0.1.1 with pinned external dependencies for build reproducibility. Broke the `ftui-extras` / `ftui-harness` publish cycle by inlining ANSI snapshot helpers.
 
-This version contains all foundational work listed under v0.2.0 above (the kernel, render pipeline, layout solver, runtime, widget system, text subsystem, extras, and PTY crate). The v0.2.0 tag includes the v0.1.1 content plus the feature expansion that followed.
+This publication established the original 13-crate package set. The v0.2.0
+section covers that foundation together with the additions that followed;
+its full feature list should not be attributed to the earlier 0.1.1 package.
 
 ---
 
@@ -746,5 +854,11 @@ This version contains all foundational work listed under v0.2.0 above (the kerne
 ---
 
 [Unreleased]: https://github.com/Dicklesworthstone/frankentui/compare/v0.6.0...HEAD
-[v0.2.1]: https://github.com/Dicklesworthstone/frankentui/compare/v0.2.0...v0.2.1
-[v0.2.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.2.0
+[v0.6.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0
+[v0.5.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0
+[v0.4.1]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.4.1
+[v0.4.0]: https://github.com/Dicklesworthstone/frankentui/tree/v0.4.0
+[v0.3.1]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.1
+[v0.3.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.3.0
+[v0.2.1]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.2.1
+[v0.2.0]: https://github.com/Dicklesworthstone/frankentui/tree/v0.2.0
