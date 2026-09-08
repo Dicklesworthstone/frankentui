@@ -118,19 +118,28 @@ query_registry() {
 }
 
 verify_archive() {
-    local crate="$1" response="$2" archive="$target_dir/package/$1-$version.crate"
-    [[ -f "$archive" ]] || { echo "Missing candidate archive: $archive" >&2; return 1; }
+    local crate="$1" response="$2" retained="$target_dir/package/$1-$version.crate"
+    local archive="$target_dir/package/tmp-crate/$1-$version.crate"
+    # Cargo publish leaves its newly generated archive in tmp-crate. Prefer that
+    # exact crate, then retain a stable copy before Cargo can clear its temporary
+    # directory. Later idempotency checks can use the verified retained copy.
+    if [[ ! -e "$archive" && ! -L "$archive" ]]; then archive="$retained"; fi
+    [[ -f "$archive" && ! -L "$archive" ]] || { echo "Missing or unsafe candidate archive: $archive" >&2; return 1; }
     local expected actual
-    expected="$(jq -er '.version.checksum' "$response")"
-    actual="$(sha256sum "$archive" | cut -d ' ' -f 1)"
+    expected="$(jq -er '.version.checksum' "$response")" || return 1
+    actual="$(sha256sum "$archive" | cut -d ' ' -f 1)" || return 1
     [[ "$actual" == "$expected" ]] || { echo "Registry archive differs from candidate: $crate" >&2; return 1; }
-    python3 -I - "$archive" "$crate" "$version" "$source_commit" <<'PY'
+    python3 -I - "$archive" "$crate" "$version" "$source_commit" "$retained" "$expected" <<'PY'
+import hashlib
 import json
+import shutil
+import stat
 import sys
 import tarfile
 import tomllib
+from pathlib import Path
 
-archive, crate, version, commit = sys.argv[1:]
+archive, crate, version, commit, retained, expected = sys.argv[1:]
 with tarfile.open(archive, "r:gz") as package:
     prefix = f"{crate}-{version}/"
     vcs = json.load(package.extractfile(prefix + ".cargo_vcs_info.json"))
@@ -140,6 +149,20 @@ assert vcs["git"].get("dirty", False) is False, "candidate archive contains unco
 assert vcs["path_in_vcs"] == f"crates/{crate}", "candidate archive has the wrong source path"
 assert manifest["package"]["name"] == crate, "candidate archive name mismatch"
 assert manifest["package"]["version"] == version, "candidate archive version mismatch"
+
+destination = Path(retained)
+if archive != retained:
+    try:
+        output = destination.open("xb")
+    except FileExistsError:
+        pass  # Validate existing bytes below; never overwrite them.
+    else:
+        with output, open(archive, "rb") as source:
+            shutil.copyfileobj(source, output)
+assert stat.S_ISREG(destination.lstat().st_mode), "retained archive is not a regular file"
+with destination.open("rb") as candidate:
+    assert hashlib.file_digest(candidate, "sha256").hexdigest() == expected, \
+        "retained archive differs from the verified registry archive"
 PY
 }
 

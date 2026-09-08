@@ -6,9 +6,9 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
-Scope window: initial development on 2026-01-31 through the unpublished 0.7.0
-changes reviewed on 2026-09-08. The latest published GitHub Release is
-[v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0).
+Scope window: initial development on 2026-01-31 through the 0.7.0 release
+published on 2026-09-08. The latest published GitHub Release is
+[v0.7.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.7.0).
 `Release` below means a published GitHub Release; `Tag` means a git tag with
 no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 
@@ -16,7 +16,7 @@ no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
-| [0.7.0 (planned)][Unreleased] | Unreleased | — | Default backends, keymaps, runtime accessibility, widgets, terminal fixes |
+| [v0.7.0] | Release | 2026-09-08 | Default backends, keymaps, runtime accessibility, widgets, terminal fixes |
 | [v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0) | Release | 2026-08-24 | Runtime guardrails, resize SLA, asupersync 0.4.9, color depth |
 | [v0.5.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0) | Release | 2026-07-05 | OpenTUI-import closeout + alien-governance |
 | [v0.4.1](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.4.1) | Release | 2026-06-13 | Allocation-reduction skill-loop |
@@ -33,10 +33,15 @@ tag's recorded timezone; the internal milestone uses its commit date.
 
 ---
 
-## [Unreleased]
+## [v0.7.0] -- 2026-09-08 (GitHub Release)
 
-Changes since v0.6.0, prepared for 0.7.0. No 0.7.0 tag or GitHub Release has
-been published as of 2026-09-08.
+Published at 17:03:52 UTC from
+[`798efa0b`](https://github.com/Dicklesworthstone/frankentui/commit/798efa0bb746601cea78b75ad8bc859f738a6456).
+The release includes Linux x64 GNU/musl and ARM64 GNU, macOS ARM64/Intel, and
+Windows x64 MSVC showcase packages, with per-archive and aggregate SHA-256
+checksums. All 17 publishable workspace crates are available at 0.7.0 on
+crates.io ([facade package](https://crates.io/api/v1/crates/ftui/0.7.0)).
+[Compare with v0.6.0](https://github.com/Dicklesworthstone/frankentui/compare/v0.6.0...v0.7.0).
 
 ### Added
 
@@ -191,8 +196,9 @@ been published as of 2026-09-08.
 
 ### Workstream status
 
-These records are pinned to the researched revision; an implemented feature
-does not imply that its broader epic or release gate is complete.
+Feature records are pinned to the researched revision; an implemented feature
+does not imply that its broader epic is complete. The release row links to
+the published version.
 
 | Workstream | Recorded status | Scope |
 |------------|-----------------|-------|
@@ -201,7 +207,7 @@ does not imply that its broader epic or release gate is complete.
 | [G14 keymap core](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2291) | Closed | Chords, contexts, priorities, conflicts, dispatch |
 | [G17 widget features](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2310) | Open | Added widget APIs; broader acceptance remains pending |
 | [G47 live panes](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2447) | In progress | Execution strategies landed; measurement and rollback work remains |
-| [DSR release preparation](https://github.com/Dicklesworthstone/frankentui/blob/fc04ef3f023cf54cc9d63f9f8e2b771de4e6e9de/.beads/issues.jsonl#L2220) | In progress | Candidate prepared; remaining verification and publication pending |
+| [DSR 0.7.0 release](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.7.0) | Published | Six platform packages and all 17 crates; downloaded bytes and registry checksums verified |
 
 ---
 
@@ -853,7 +859,7 @@ its full feature list should not be attributed to the earlier 0.1.1 package.
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/frankentui/compare/v0.6.0...HEAD
+[v0.7.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.7.0
 [v0.6.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0
 [v0.5.0]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0
 [v0.4.1]: https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.4.1

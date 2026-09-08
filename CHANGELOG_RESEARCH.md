@@ -2,7 +2,7 @@
 
 ## Scope and sources
 
-This update applies `changelog-md-workmanship` to the unpublished 0.7.0 changes
+This update applies `changelog-md-workmanship` to the 0.7.0 changes
 in `v0.6.0..fc04ef3f`, with a separate audit of the historical version timeline.
 Research date: 2026-09-08. Sources are local Git history and tags, live GitHub
 Release metadata, and the checked-in `.beads/issues.jsonl` records. The existing
@@ -12,7 +12,16 @@ specific correction.
 The release candidate is frozen at
 [`798efa0b`](https://github.com/Dicklesworthstone/frankentui/commit/798efa0bb746601cea78b75ad8bc859f738a6456).
 Later documentation and tracker commits do not change the provenance of its
-prepared binaries. Version 0.7.0 remains **Unreleased** until publication.
+published binaries. Version 0.7.0 was published on 2026-09-08 at 17:03:52 UTC:
+[GitHub Release](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.7.0).
+The annotated tag peels to that exact candidate commit. All six platform
+archives, six checksum sidecars, aggregate checksums, and the build manifest
+were downloaded and verified; all 17 crates were published with matching
+candidate checksums. The repeat publisher invocation confirmed all 17 as
+already published, and independent registry downloads matched their retained
+candidate archives and Git provenance. Release metadata confirms a public,
+non-prerelease version marked latest. DSR performed the builds and publication;
+repository dispatch was disabled.
 
 ## Research chunks
 
@@ -28,9 +37,10 @@ prepared binaries. Version 0.7.0 remains **Unreleased** until publication.
 
 ## Version spine findings
 
-The GitHub Releases API lists six published, non-draft releases: 0.2.1, 0.3.0,
-0.3.1, 0.4.1, 0.5.0, and 0.6.0. Local tags also include 0.2.0 and 0.4.0;
-neither has a published GitHub Release. There is no 0.7.0 tag or Release.
+The initial GitHub Releases inventory listed six published, non-draft releases:
+0.2.1, 0.3.0, 0.3.1, 0.4.1, 0.5.0, and 0.6.0. Publication added 0.7.0 as the
+seventh. Local tags also include 0.2.0 and 0.4.0; neither has a published GitHub
+Release.
 The 0.4.0 tag timestamp is 2026-04-24 21:23:53 -0400, so the timeline retains
 its recorded local date instead of silently changing it to the next UTC day.
 
@@ -48,7 +58,7 @@ The first 97 commits were read chronologically. Their implementation and API
 evidence adds default backends, keymaps and Help feedback, accessibility hooks,
 variable-height virtualization, history/progress/border widgets, BOCPD defaults,
 startup DECSTBM fallback, capability/queue evidence, grapheme caching, and SAT
-tile-row skipping. These changes are distilled into Unreleased with individual
+tile-row skipping. These changes are distilled into the 0.7.0 section with individual
 implementation links. Pure tracker, formatting, and superseded workflow changes
 are not represented as new runtime capabilities.
 
@@ -63,14 +73,18 @@ gates, exact grapheme cache keys, explicit unavailable conformal bounds,
 accessibility privacy, pane persistence/constraints, streaming log sanitization,
 touch routing, narrow-cell fill optimization, and DSR/PTY verification repairs.
 These are distilled into the feature, fix, migration, and verification sections.
-No aggregate test pass, completed browser gate, or published artifact is claimed.
+The initial history audit made no claim that pending verification or publication
+had completed; the publication evidence above records the subsequent release.
 
-Six workstream links point to exact lines in the researched tracker revision.
+Five feature-workstream links point to exact lines in the researched tracker revision.
 G01 facade, G09 runtime accessibility, and G14 keymap core are closed records;
-G17 widgets, G47 panes, and the release record remain open or in progress.
+G17 widgets and G47 panes remain open or in progress. The release row now links
+to the actual 0.7.0 publication instead of its earlier preparation record.
 
-The live crates.io API confirms 0.1.1 publication on 2026-02-05 and no 0.1.0
-or 0.7.0 package. The 0.2.1 package was published on 2026-02-19, before the
+The initial crates.io inventory confirmed 0.1.1 publication on 2026-02-05 and
+no 0.1.0 or 0.7.0 package. All 17 version-specific 0.7.0 registry records and
+archive checksums were subsequently verified after publication. The 0.2.1
+package was published on 2026-02-19, before the
 2026-03-07 GitHub Release; this distinction is now explicit. The 0.2.0 package
 exists and is currently yanked, independently of its tag-only GitHub status.
 
@@ -99,8 +113,10 @@ package snapshot.
 - All 409 distinct commit URLs resolve locally. All 424 uses belong to the
   stated version's ancestry, and references in incremental release sections
   are newer than their predecessor tag.
-- All six tracker anchors resolve to the named record and recorded status at
-  the pinned revision. Version-heading reference links are defined.
+- All six original tracker anchors resolved to the named records and statuses
+  at the pinned revision. The five retained feature anchors are unchanged;
+  the preparation anchor was replaced by the verified public release URL.
+  Version-heading reference links are defined.
 - The skill's structural validator and `git diff --check` pass.
 - The full live HTTP scan checked 431 distinct inline links: 428 succeeded;
   three crates.io frontend routes returned 404. Those three links now use the
