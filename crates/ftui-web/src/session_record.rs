@@ -319,24 +319,26 @@ impl<M: ftui_runtime::program::Model> SessionRecorder<M> {
     }
 
     /// Record an input event at the given timestamp (nanoseconds since start).
-    pub fn push_event(&mut self, ts_ns: u64, event: Event) {
+    pub fn push_event(&mut self, ts_ns: u64, event: Event) -> Result<(), WebBackendError> {
+        self.program.push_event(event.clone())?;
         self.current_ts_ns = ts_ns;
         self.records.push(TraceRecord::Input {
             ts_ns,
-            event: event.clone(),
+            event,
         });
-        self.program.push_event(event);
+        Ok(())
     }
 
     /// Record a resize at the given timestamp.
-    pub fn resize(&mut self, ts_ns: u64, width: u16, height: u16) {
+    pub fn resize(&mut self, ts_ns: u64, width: u16, height: u16) -> Result<(), WebBackendError> {
+        self.program.resize(width, height)?;
         self.current_ts_ns = ts_ns;
         self.records.push(TraceRecord::Resize {
             ts_ns,
             cols: width,
             rows: height,
         });
-        self.program.resize(width, height);
+        Ok(())
     }
 
     /// Record a time advancement (tick) at the given timestamp.
@@ -492,10 +494,10 @@ pub fn replay<M: ftui_runtime::program::Model>(
     for record in &trace.records {
         match record {
             TraceRecord::Input { event, .. } => {
-                program.push_event(event.clone());
+                program.push_event(event.clone())?;
             }
             TraceRecord::Resize { cols, rows, .. } => {
-                program.resize(*cols, *rows);
+                program.resize(*cols, *rows)?;
             }
             TraceRecord::Tick { ts_ns } => {
                 program.set_time(Duration::from_nanos(*ts_ns));

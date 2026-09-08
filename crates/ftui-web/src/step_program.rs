@@ -248,19 +248,27 @@ impl<M: Model> StepProgram<M> {
 
     /// Push a terminal event into the event queue.
     ///
-    /// Events are processed on the next [`step`](Self::step) call.
-    pub fn push_event(&mut self, event: Event) {
-        // Keep backend size in sync immediately so host-side reads stay current.
-        // The model and render baseline update when the event is processed in `step()`.
+    /// Accepted events are processed on the next [`step`](Self::step) call.
+    /// Rejection leaves the queue and backend size unchanged and returns the event.
+    pub fn push_event(&mut self, event: Event) -> Result<(), WebBackendError> {
         let event = match event {
             Event::Resize { width, height } => {
                 let (width, height) = clamp_terminal_size(width, height);
-                self.backend.events_mut().set_size(width, height);
                 Event::Resize { width, height }
             }
             other => other,
         };
-        self.backend.events_mut().push_event(event);
+        let resize = match &event {
+            Event::Resize { width, height } => Some((*width, *height)),
+            _ => None,
+        };
+        self.backend.events_mut().push_event(event)?;
+        // Publish the requested size only after its event is admitted. The
+        // model and render baseline update when `step()` processes it.
+        if let Some((width, height)) = resize {
+            self.backend.events_mut().set_size(width, height);
+        }
+        Ok(())
     }
 
     /// Advance the deterministic clock by `dt`.
@@ -277,8 +285,8 @@ impl<M: Model> StepProgram<M> {
     ///
     /// Pushes a `Resize` event and updates the backend size. The resize
     /// is processed on the next [`step`](Self::step) call.
-    pub fn resize(&mut self, width: u16, height: u16) {
-        self.push_event(Event::Resize { width, height });
+    pub fn resize(&mut self, width: u16, height: u16) -> Result<(), WebBackendError> {
+        self.push_event(Event::Resize { width, height })
     }
 
     /// Take the captured outputs (rendered buffer, logs), leaving empty defaults.
