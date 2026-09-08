@@ -723,8 +723,24 @@ run_case() {
     fi
   fi
 
+  local report_contract_valid=1
+  if [[ "${case_id}" == "suite_report_failure" || "${case_id}" == "json_suite_contract" ]]; then
+    local suite_dir="${case_root}/suites/${suite_name}"
+    if [[ ! -d "${suite_dir}/report.json" || ! -d "${suite_dir}/index.html" ]] ||
+      ! jq -e '.success_count == 1 and .failure_count == 0 and .report_failed == true' \
+        "${suite_dir}/suite_manifest.json" > "${case_logs}/report_contract.log" 2>&1; then
+      report_contract_valid=0
+    fi
+    if [[ "${case_id}" == "json_suite_contract" ]] &&
+      ! jq -e '.command == "suite" and .status == "failed" and .success_count == 1 and .failure_count == 0 and .report_failed == true' \
+        "${stdout_log}" >> "${case_logs}/report_contract.log" 2>&1; then
+      report_contract_valid=0
+    fi
+    append_artifact "${artifact_list}" "${suite_dir}/suite_manifest.json" "${case_logs}/report_contract.log"
+  fi
+
   local pass=0
-  if [[ "${actual_exit}" -eq "${expected_exit}" && "${regex_matched}" -eq 1 && "${json_valid}" -eq 1 ]]; then
+  if [[ "${actual_exit}" -eq "${expected_exit}" && "${regex_matched}" -eq 1 && "${json_valid}" -eq 1 && "${report_contract_valid}" -eq 1 ]]; then
     pass=1
   fi
 
@@ -757,7 +773,7 @@ run_case() {
   if [[ "${pass}" -eq 1 ]]; then
     echo "[case] PASS ${case_id} (exit=${actual_exit})"
   else
-    echo "[case] FAIL ${case_id} (expected_exit=${expected_exit}, actual_exit=${actual_exit}, regex_matched=${regex_matched}, json_valid=${json_valid})"
+    echo "[case] FAIL ${case_id} (expected_exit=${expected_exit}, actual_exit=${actual_exit}, regex_matched=${regex_matched}, json_valid=${json_valid}, report_contract_valid=${report_contract_valid})"
   fi
 }
 
@@ -984,8 +1000,10 @@ case_id="suite_report_failure"
 case_root="${CASES_DIR}/${case_id}"
 suite_name="broken_suite"
 mkdir -p "${case_root}/project"
-mkdir -p "${case_root}/suites/${suite_name}/report.json"
-mkdir -p "${case_root}/suites/${suite_name}/index.html"
+# Create the obstruction from the captured app, after suite directory validation.
+printf -v poison_report_command 'mkdir -p -- %q %q && echo demo' \
+  "${case_root}/suites/${suite_name}/report.json" \
+  "${case_root}/suites/${suite_name}/index.html"
 run_case \
   "${case_id}" \
   1 \
@@ -997,7 +1015,7 @@ run_case \
   --project-dir "${case_root}/project" \
   --run-root "${case_root}/suites" \
   --suite-name "${suite_name}" \
-  --app-command "echo demo"
+  --app-command "${poison_report_command}"
 
 # Case 5: seed timeout boundary.
 case_id="seed_timeout_boundary"
@@ -1080,8 +1098,9 @@ case_id="json_suite_contract"
 case_root="${CASES_DIR}/${case_id}"
 suite_name="json_suite"
 mkdir -p "${case_root}/project"
-mkdir -p "${case_root}/suites/${suite_name}/report.json"
-mkdir -p "${case_root}/suites/${suite_name}/index.html"
+printf -v poison_report_command 'mkdir -p -- %q %q && echo demo' \
+  "${case_root}/suites/${suite_name}/report.json" \
+  "${case_root}/suites/${suite_name}/index.html"
 run_case \
   "${case_id}" \
   1 \
@@ -1093,7 +1112,7 @@ run_case \
   --project-dir "${case_root}/project" \
   --run-root "${case_root}/suites" \
   --suite-name "${suite_name}" \
-  --app-command "echo demo"
+  --app-command "${poison_report_command}"
 
 case_id="json_report_contract"
 case_root="${CASES_DIR}/${case_id}"

@@ -1137,8 +1137,22 @@ fn suite_report_failure_and_json_output_contracts() {
 
     fs::create_dir_all(&project_dir).expect("project dir");
     let poisoned_suite_dir = suite_root.join("report_fail_suite");
-    fs::create_dir_all(poisoned_suite_dir.join("report.json")).expect("poison report.json dir");
-    fs::create_dir_all(poisoned_suite_dir.join("index.html")).expect("poison index.html dir");
+    // Poison the report paths during capture, after the suite accepts its empty directory.
+    let poison_report_command = format!(
+        "mkdir -p -- {} {} && echo demo",
+        doctor_frankentui::util::shell_single_quote(
+            poisoned_suite_dir
+                .join("report.json")
+                .to_str()
+                .expect("report path str")
+        ),
+        doctor_frankentui::util::shell_single_quote(
+            poisoned_suite_dir
+                .join("index.html")
+                .to_str()
+                .expect("index path str")
+        ),
+    );
 
     let report_fail_output = run_doctor_command(
         &[
@@ -1152,7 +1166,7 @@ fn suite_report_failure_and_json_output_contracts() {
             "--suite-name",
             "report_fail_suite",
             "--app-command",
-            "echo demo",
+            &poison_report_command,
         ],
         &[],
     );
@@ -1171,6 +1185,16 @@ fn suite_report_failure_and_json_output_contracts() {
         .expect("read suite_report.log")
         .contains("report generation failed")
     );
+    assert!(poisoned_suite_dir.join("report.json").is_dir());
+    assert!(poisoned_suite_dir.join("index.html").is_dir());
+    let report_fail_manifest: Value = serde_json::from_str(
+        &fs::read_to_string(poisoned_suite_dir.join("suite_manifest.json"))
+            .expect("read report failure suite manifest"),
+    )
+    .expect("parse report failure suite manifest");
+    assert_eq!(report_fail_manifest["success_count"], 1);
+    assert_eq!(report_fail_manifest["failure_count"], 0);
+    assert_eq!(report_fail_manifest["report_failed"], true);
 
     let json_ok_output = run_doctor_command(
         &[

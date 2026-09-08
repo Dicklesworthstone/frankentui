@@ -22,6 +22,11 @@ already published, and independent registry downloads matched their retained
 candidate archives and Git provenance. Release metadata confirms a public,
 non-prerelease version marked latest. DSR performed the builds and publication;
 repository dispatch was disabled.
+Both shipped examples passed in real PTYs with default and slim registry
+dependencies; both no-backend journeys returned the expected Unsupported
+result. All 17 version-specific docs.rs rustdoc pages returned HTTP 200 after
+publication propagated. Earlier incomplete documentation observations remain
+retained as failures in the release evidence.
 
 ## Research chunks
 

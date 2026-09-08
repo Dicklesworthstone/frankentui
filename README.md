@@ -493,6 +493,24 @@ Troubleshooting map:
 - JSON contract regressions: inspect `json_*` case stdout logs under `.../failure/cases/`.
 - coverage regressions: inspect `.../coverage/coverage_gate_report.json` for failing group + threshold delta.
 
+### Release Publishing (Maintainers)
+
+Releases use DSR on native build hosts with the channel in `rust-toolchain.toml`.
+GitHub Actions stays disabled. Run the registry helper from a clean candidate
+checkout inside the native DSR job:
+
+```text
+bash scripts/release_publish_crates.sh VERSION NEW_OUTPUT_DIR --dry-run
+bash scripts/release_publish_crates.sh VERSION NEW_OUTPUT_DIR --publish
+```
+
+Each invocation requires a fresh output directory outside the checkout.
+The dry run verifies all 17 packages without a registry token. Publication
+follows dependency order, verifies registry checksums and Git provenance, and
+retains archives for safe retries. Repeating publication with a new output
+directory verifies and skips already-published versions. Keep the structured
+`release_log.jsonl`, Cargo logs, registry responses, and retained archives.
+
 ---
 
 ## Configuration
