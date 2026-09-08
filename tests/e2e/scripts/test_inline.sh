@@ -55,10 +55,13 @@ inline_basic() {
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     FTUI_HARNESS_LOG_LINES=0 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    rg -a -q "Welcome to the Agent Harness" "$output_file" || return 1
-    rg -a -q "Type a command and press Enter" "$output_file" || return 1
+    # The default ten-row UI shows only the last four startup log lines.
+    # The full welcome banner is covered by inline_custom_height below.
+    rg -a -F -q "Stable UI chrome (status bar, input line)" "$output_file" || return 1
+    rg -a -F -q "Type a command and press Enter" "$output_file" || return 1
+    rg -a -F -q "claude-3.5" "$output_file" || return 1
 }
 
 inline_log_scroll() {
@@ -71,7 +74,7 @@ inline_log_scroll() {
     FTUI_HARNESS_EXIT_AFTER_MS=1200 \
     FTUI_HARNESS_LOG_LINES=8 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # With many log lines, the harness should still render without crashing.
     # The PTY output will contain the first render frame plus diff updates.
@@ -93,7 +96,7 @@ inline_many_logs() {
     FTUI_HARNESS_EXIT_AFTER_MS=1500 \
     FTUI_HARNESS_LOG_LINES=200 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # With 200 log lines, the harness must handle large content without crashing.
     # Verify the output file has substantial content (render cycles ran).
@@ -115,7 +118,7 @@ inline_custom_height() {
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     FTUI_HARNESS_LOG_LINES=5 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # Basic sanity: welcome text appears
     rg -a -q "Welcome to the Agent Harness" "$output_file" || return 1
@@ -132,7 +135,7 @@ inline_ui_chrome() {
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     FTUI_HARNESS_LOG_LINES=0 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # Status bar should show model name
     rg -a -q "claude-3.5" "$output_file" || return 1
@@ -158,7 +161,7 @@ inline_resize() {
     FTUI_HARNESS_LOG_LINES=5 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # The harness must render without crashing at a smaller terminal size.
     local size
@@ -180,7 +183,7 @@ inline_cursor_contract() {
     FTUI_HARNESS_EXIT_AFTER_MS=1200 \
     FTUI_HARNESS_LOG_LINES=20 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # Cursor hide is optional in inline mode (alt-screen mode always hides).
     # Just log whether it was emitted for diagnostics.

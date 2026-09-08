@@ -43,10 +43,9 @@ run_case() {
     return 1
 }
 
-# Note: PTY capture only contains the first full render frame due to
-# FrankenTUI's render diff optimization. Subsequent frames emit only
-# changed cells, which makes content-based assertions on command output
-# unreliable. These tests focus on stability and crash-free behavior.
+# PTY captures contain the initial frame followed by changed cells.
+# Check stable initial text and successful exits instead of treating the
+# byte stream as successive full-screen snapshots.
 
 input_typing_stable() {
     LOG_FILE="$E2E_LOG_DIR/input_typing_stable.log"
@@ -59,10 +58,11 @@ input_typing_stable() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    # App should have rendered initial UI
-    grep -a -q "Welcome" "$output_file" || return 1
+    # The default log viewport shows the startup tail, not the welcome banner.
+    grep -a -F -q "Type a command and press Enter" "$output_file" || return 1
+    grep -a -F -q "claude-3.5" "$output_file" || return 1
     # Output file should have content (multiple render cycles ran)
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
@@ -80,7 +80,7 @@ input_enter_stable() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_EXIT_AFTER_MS=2000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # App should have rendered initial content
     grep -a -q "claude-3.5" "$output_file" || return 1
@@ -101,7 +101,7 @@ input_ctrl_t_cycles_theme() {
     PTY_SEND_DELAY_MS=500 \
     FTUI_HARNESS_EXIT_AFTER_MS=2000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     grep -a -q "Theme: Darcula" "$output_file" || return 1
 }
@@ -117,7 +117,7 @@ input_ctrl_c_quit() {
     PTY_SEND_DELAY_MS=500 \
     FTUI_HARNESS_EXIT_AFTER_MS=10000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN" || true
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # App should have rendered something before the Ctrl+C
     [[ -f "$output_file" ]] || return 1
@@ -135,15 +135,16 @@ input_quit_command() {
 
     log_test_start "input_quit_command"
 
-    # Send "quit\r" which should cause the app to exit via Cmd::Quit
+    # Send "quit\r" and require a clean exit before the auto-quit deadline.
     PTY_SEND='quit\r' \
     PTY_SEND_DELAY_MS=500 \
     FTUI_HARNESS_EXIT_AFTER_MS=10000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN" || true
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    # The app should have rendered content before quitting
-    grep -a -q "Welcome" "$output_file" || return 1
+    # The initial status bar remains visible even when startup logs scroll.
+    grep -a -F -q "claude-3.5" "$output_file" || return 1
+    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
 
     # Output file should exist and have reasonable size
     [[ -f "$output_file" ]] || return 1
@@ -163,7 +164,7 @@ input_multi_keystrokes() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_EXIT_AFTER_MS=2500 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     # App should handle multiple inputs without crashing
     [[ -f "$output_file" ]] || return 1
@@ -191,9 +192,9 @@ input_kitty_keyboard_basic() {
     FTUI_HARNESS_EXIT_AFTER_MS=2000 \
     FTUI_HARNESS_ENABLE_KITTY_KEYBOARD=true \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    "$E2E_PYTHON" - "$output_file" <<'PY'
+    "$E2E_PYTHON" - "$output_file" <<'PY' || return 1
 import sys
 data = open(sys.argv[1], "rb").read()
 if b"\x1b[>15u" not in data or b"\x1b[<u" not in data:
@@ -218,9 +219,9 @@ input_kitty_keyboard_kinds_mods() {
     FTUI_HARNESS_EXIT_AFTER_MS=3000 \
     FTUI_HARNESS_ENABLE_KITTY_KEYBOARD=true \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN" || true
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    "$E2E_PYTHON" - "$output_file" <<'PY'
+    "$E2E_PYTHON" - "$output_file" <<'PY' || return 1
 import sys
 data = open(sys.argv[1], "rb").read()
 if b"\x1b[>15u" not in data or b"\x1b[<u" not in data:

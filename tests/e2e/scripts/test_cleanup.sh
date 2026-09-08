@@ -53,6 +53,47 @@ run_case() {
     return 1
 }
 
+# These cases exercise supported modes on a simulated bare modern terminal.
+# Keep the profile inside the child invocation so other suites retain theirs.
+cleanup_pty_run() (
+    unset NO_COLOR FTUI_TEST_PROFILE TMUX TMUX_PANE STY ZELLIJ \
+        WEZTERM_UNIX_SOCKET WEZTERM_PANE WEZTERM_EXECUTABLE KITTY_WINDOW_ID \
+        WT_SESSION TERM_PROGRAM_VERSION LC_TERMINAL LC_TERMINAL_VERSION
+    export TERM=xterm-256color COLORTERM=truecolor TERM_PROGRAM=Alacritty
+    log_info "PTY profile: TERM=$TERM COLORTERM=$COLORTERM TERM_PROGRAM=$TERM_PROGRAM; inherited capability/mux markers cleared"
+    log_info "Requested modes: screen=${FTUI_HARNESS_SCREEN_MODE:-inline} mouse=${FTUI_HARNESS_ENABLE_MOUSE:-0} focus=${FTUI_HARNESS_ENABLE_FOCUS:-0} paste=1 (ProgramConfig default)"
+    pty_run "$@"
+)
+
+assert_cleanup_modes() {
+    "$E2E_PYTHON" - "$@" <<'PY'
+import pathlib
+import re
+import sys
+
+
+def check_modes(data, disabled_modes):
+    transitions = {}
+    for parameters, state in re.findall(rb"\x1b\[\?([0-9]+(?:;[0-9]+)*)([hl])", data):
+        for parameter in parameters.split(b";"):
+            transitions.setdefault(int(parameter), []).append(state)
+    expected = [(25, b"l", b"h")]
+    expected.extend((mode, b"h", b"l") for mode in disabled_modes)
+    errors = []
+    for mode, active, restored in expected:
+        states = transitions.get(mode, [])
+        if active not in states or states[-1] != restored:
+            errors.append(f"mode {mode}: expected {active!r} then final {restored!r}, got {states!r}")
+    return errors
+
+
+errors = check_modes(pathlib.Path(sys.argv[1]).read_bytes(), [int(mode) for mode in sys.argv[2:]])
+for error in errors:
+    print(error, file=sys.stderr)
+sys.exit(bool(errors))
+PY
+}
+
 cleanup_normal() {
     LOG_FILE="$E2E_LOG_DIR/cleanup_normal.log"
     local output_file="$E2E_LOG_DIR/cleanup_normal.pty"
@@ -62,9 +103,9 @@ cleanup_normal() {
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     FTUI_HARNESS_LOG_LINES=0 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        cleanup_pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
+    assert_cleanup_modes "$output_file"
 }
 
 cleanup_cursor_visible() {
@@ -76,12 +117,12 @@ cleanup_cursor_visible() {
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     FTUI_HARNESS_LOG_LINES=0 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        cleanup_pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    # Cursor show sequence must appear (cleanup restores cursor visibility)
-    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
+    # Cursor must be shown after its final hide.
+    assert_cleanup_modes "$output_file" || return 1
 
-    # Output should end cleanly (no truncated escape sequences at the end)
+    # Require a rendered application, not just an empty cleanup sequence.
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 100 ]] || return 1
@@ -97,7 +138,7 @@ cleanup_sigterm() {
     FTUI_HARNESS_EXIT_AFTER_MS=10000 \
     FTUI_HARNESS_LOG_LINES=5 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN" || true
+        cleanup_pty_run "$output_file" "$E2E_HARNESS_BIN" || true
 
     # The PTY timeout (3s) will kill the process via SIGTERM.
     # Verify the output file exists and has content (the app ran)
@@ -106,8 +147,10 @@ cleanup_sigterm() {
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 50 ]] || return 1
 
-    # Verify welcome text appeared (app started successfully before kill)
-    grep -a -q "Welcome" "$output_file" || return 1
+    # The five fixture logs scroll the welcome text out of the inline viewport.
+    # Verify a visible fixture line, then the actual cleanup state.
+    grep -a -F -q "Log line 5" "$output_file" || return 1
+    assert_cleanup_modes "$output_file" 2004
 }
 
 cleanup_mouse_disabled() {
@@ -122,12 +165,10 @@ cleanup_mouse_disabled() {
     FTUI_HARNESS_LOG_LINES=0 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        cleanup_pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    # Mouse disable sequence must appear (CSI ? 1000 l or combined)
-    grep -a -F -q $'\x1b[?1000' "$output_file" || return 1
-    # Cursor show must still be present
-    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
+    # Both split and grouped DEC parameters must finish disabled after enabling.
+    assert_cleanup_modes "$output_file" 1000 1002 1006
 }
 
 cleanup_bracketed_paste_disabled() {
@@ -142,12 +183,9 @@ cleanup_bracketed_paste_disabled() {
     FTUI_HARNESS_LOG_LINES=0 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        cleanup_pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    # Bracketed paste disable must appear
-    grep -a -F -q $'\x1b[?2004l' "$output_file" || return 1
-    # Cursor show must still be present
-    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
+    assert_cleanup_modes "$output_file" 2004
 }
 
 cleanup_altscreen_exit() {
@@ -162,12 +200,9 @@ cleanup_altscreen_exit() {
     FTUI_HARNESS_LOG_LINES=0 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        cleanup_pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    # Alt-screen exit sequence must appear
-    grep -a -F -q $'\x1b[?1049l' "$output_file" || return 1
-    # Cursor show must still be present
-    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
+    assert_cleanup_modes "$output_file" 1049
 }
 
 cleanup_altscreen_mouse_focus() {
@@ -184,14 +219,9 @@ cleanup_altscreen_mouse_focus() {
     FTUI_HARNESS_LOG_LINES=0 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=3 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        cleanup_pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    # All cleanup sequences must appear
-    grep -a -F -q $'\x1b[?1049l' "$output_file"   || return 1  # alt-screen exit
-    grep -a -F -q $'\x1b[?25h'  "$output_file"    || return 1  # cursor show
-    grep -a -F -q $'\x1b[?1000' "$output_file"   || return 1  # mouse disable
-    grep -a -F -q $'\x1b[?1004l' "$output_file"   || return 1  # focus events disable
-    grep -a -F -q $'\x1b[?2004l' "$output_file"   || return 1  # bracketed paste disable
+    assert_cleanup_modes "$output_file" 1049 1000 1002 1006 1004 2004
 }
 
 FAILURES=0

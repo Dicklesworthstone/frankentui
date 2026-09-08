@@ -178,8 +178,8 @@ keybind_esc_clears_input() {
     log_test_start "keybind_esc_clears_input"
 
     # Type text, then Esc (0x1B), then type more to show app is still running
-    PTY_SEND='hello\x1bstatus\r' \
-    PTY_SEND_DELAY_MS=500 \
+    # Leave more than the parser's 50ms ambiguity grace after literal Escape.
+    PTY_SEND_SEQUENCE='[{"delay_ms":500,"text":"hello"},{"delay_ms":650,"text":"\u001b"},{"delay_ms":800,"text":"status\r"}]' \
     FTUI_HARNESS_EXIT_AFTER_MS=3000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=6 \
@@ -198,8 +198,7 @@ keybind_esc_cancels_task() {
     log_test_start "keybind_esc_cancels_task"
 
     # Start a task, wait for it to start, then Esc
-    PTY_SEND='search\r\x1bstatus\r' \
-    PTY_SEND_DELAY_MS=600 \
+    PTY_SEND_SEQUENCE='[{"delay_ms":600,"text":"search\r"},{"delay_ms":750,"text":"\u001b"},{"delay_ms":900,"text":"status\r"}]' \
     FTUI_HARNESS_EXIT_AFTER_MS=4000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=7 \
@@ -217,10 +216,9 @@ keybind_esc_esc_toggles_tree() {
 
     log_test_start "keybind_esc_esc_toggles_tree"
 
-    # Send Esc Esc rapidly (within 250ms timeout)
-    # The ActionMapper should detect this as a double-Esc sequence
-    PTY_SEND='\x1b\x1b' \
-    PTY_SEND_DELAY_MS=300 \
+    # Separate Escape presses beyond the parser grace but within the 250ms
+    # double-tap window. Contiguous ESC ESC encodes Alt+Escape instead.
+    PTY_SEND_SEQUENCE='[{"delay_ms":300,"text":"\u001b"},{"delay_ms":450,"text":"\u001b"}]' \
     FTUI_HARNESS_EXIT_AFTER_MS=2000 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=5 \

@@ -4,17 +4,13 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────────────────
 # E2E Tests: Mouse SGR Protocol
 #
-# KNOWN LIMITATION: Crossterm reads from /dev/tty directly on Unix, bypassing
-# PTY input for complex escape sequences. These tests verify the SGR mouse
-# sequences would be correctly handled IF delivered to the event system.
+# Send SGR mouse sequences through the child's controlling PTY and verify the
+# harness renders the resulting events. The PTY helper attaches the slave as
+# /dev/tty so terminal backends receive the same input as stdin.
 #
 # For comprehensive input parser coverage, see unit tests in:
 #   crates/ftui-core/src/input_parser.rs (mouse_sgr_* tests)
 #
-# These E2E tests may fail in PTY environments due to crossterm's /dev/tty
-# reading behavior. They serve as documentation of expected behavior and will
-# pass when running with a real TTY or when the test infrastructure is improved
-# to support stdin-based event reading.
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -88,7 +84,7 @@ run_case() {
 # ─────────────────────────────────────────────────────────────────────────────
 # SGR Mouse Protocol Reference:
 #   Format: ESC [ < Cb ; Cx ; Cy M (press/motion) or ESC [ < Cb ; Cx ; Cy m (release)
-#   Button bits 0-1: 0=Left, 1=Middle, 2=Right
+#   Button bits 0-1: 0=Left, 1=Middle, 2=Right, 3=no button during motion
 #   Modifier bits: 4=Shift, 8=Alt/Meta, 16=Ctrl
 #   Motion bit: 32 (bit 5) indicates motion event
 #   Scroll: 64=Up, 65=Down, 66=Left, 67=Right
@@ -162,8 +158,8 @@ mouse_move_event() {
     log_test_start "mouse_move_event"
     PTY_TEST_NAME="mouse_move_event"
 
-    # Button code 32 = motion bit set (no button held)
-    PTY_SEND=$'\x1b[<32;12;6M' \
+    # Button code 35 = motion bit (32) + no button (3)
+    PTY_SEND=$'\x1b[<35;12;6M' \
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_ENABLE_MOUSE=1 \
     FTUI_HARNESS_EXIT_AFTER_MS=1500 \
@@ -171,7 +167,7 @@ mouse_move_event() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
-    grep -a -q "Mouse: Moved" "$canonical_file" || return 1
+    grep -a -F -q "Mouse: Moved @ 11,5" "$canonical_file" || return 1
 }
 
 mouse_drag_left() {
@@ -182,8 +178,8 @@ mouse_drag_left() {
     PTY_TEST_NAME="mouse_drag_left"
 
     # Button code 32 = motion with left button (0+32=32)
-    # Note: Drag vs Move depends on whether a button was pressed first
-    # Send click, then drag motion
+    # The button code identifies the drag independently of prior input.
+    # Send the complete press, two drag motions, and release gesture.
     PTY_SEND=$'\x1b[<0;10;10M\x1b[<32;15;10M\x1b[<32;20;10M\x1b[<0;20;10m' \
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_ENABLE_MOUSE=1 \
@@ -191,11 +187,12 @@ mouse_drag_left() {
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
-    # Should see Down, motion events, then Up
+    # Verify both drag positions and the press/release endpoints (0-based).
     local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
-    grep -a -q "Mouse: Down(Left)" "$canonical_file" || return 1
-    grep -a -q "Mouse: Moved" "$canonical_file" || return 1
-    grep -a -q "Mouse: Up(Left)" "$canonical_file" || return 1
+    grep -a -F -q "Mouse: Down(Left) @ 9,9" "$canonical_file" || return 1
+    grep -a -F -q "Mouse: Drag(Left) @ 14,9" "$canonical_file" || return 1
+    grep -a -F -q "Mouse: Drag(Left) @ 19,9" "$canonical_file" || return 1
+    grep -a -F -q "Mouse: Up(Left) @ 19,9" "$canonical_file" || return 1
 }
 
 mouse_scroll_events() {

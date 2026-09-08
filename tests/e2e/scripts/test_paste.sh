@@ -12,7 +12,7 @@ source "$LIB_DIR/logging.sh"
 source "$LIB_DIR/pty.sh"
 
 E2E_SUITE_SCRIPT="$SCRIPT_DIR/test_paste.sh"
-export E2E_SUITE_SCRIPT
+export E2E_SUITE_SCRIPT PTY_TEST_NAME
 export PTY_CANONICALIZE=1
 ONLY_CASE="${E2E_ONLY_CASE:-}"
 FIXTURE_DIR="$E2E_ROOT/fixtures"
@@ -23,7 +23,7 @@ ALL_CASES=(
     paste_large
     paste_unicode
     paste_embedded_escape
-    paste_dos_limit
+    paste_parser_dos_limit
 )
 
 if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
@@ -75,7 +75,7 @@ paste_basic() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
     grep -a -q "Paste: hello paste" "$canonical_file" || return 1
@@ -92,7 +92,7 @@ paste_multiline() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
     grep -a -q "Paste: line_one" "$canonical_file" || return 1
@@ -114,7 +114,7 @@ paste_large() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_EXIT_AFTER_MS=2000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
     grep -a -q "Paste:" "$canonical_file" || return 1
@@ -143,7 +143,7 @@ paste_unicode() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
     grep -a -q "Paste: こんにちは" "$canonical_file" || return 1
@@ -164,7 +164,7 @@ paste_embedded_escape() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
     grep -a -q "Paste: alpha" "$canonical_file" || return 1
@@ -172,16 +172,16 @@ paste_embedded_escape() {
     grep -a -q "gamma" "$canonical_file" || return 1
 }
 
-paste_dos_limit() {
-    LOG_FILE="$E2E_LOG_DIR/paste_dos_limit.log"
-    local output_file="$E2E_LOG_DIR/paste_dos_limit.pty"
+paste_parser_dos_limit() {
+    LOG_FILE="$E2E_LOG_DIR/paste_parser_dos_limit.log"
+    local output_file="$E2E_LOG_DIR/paste_parser_dos_limit.pty"
     local payload_file="$E2E_LOG_DIR/paste_dos_payload.bin"
 
-    log_test_start "paste_dos_limit"
-    PTY_TEST_NAME="paste_dos_limit"
+    log_test_start "paste_parser_dos_limit"
+    PTY_TEST_NAME="paste_parser_dos_limit"
 
     if [[ -z "${E2E_PYTHON:-}" ]]; then
-        log_test_fail "paste_dos_limit" "E2E_PYTHON missing"
+        log_test_fail "paste_parser_dos_limit" "E2E_PYTHON missing"
         return 1
     fi
 
@@ -189,38 +189,49 @@ paste_dos_limit() {
 import sys
 
 path = sys.argv[1]
-max_len = 1024 * 1024
-prefix = "PREFIX-"
-tail_marker = "TAIL-"
-marker_len = 64
+max_len = 1024 * 1024  # ftui_core::InputParser MAX_PASTE_LEN
+prefix = b"PREFIX-"
+limit_marker = b"LIMIT-" + b"Z" * 58
+retained = prefix + b"A" * (max_len - len(prefix) - len(limit_marker)) + limit_marker
+overflow = b"OVERFLOW-" + b"Q" * 55
 
-if len(prefix) + marker_len >= max_len:
-    raise SystemExit("Marker setup exceeds max length")
-
-marker = tail_marker + ("Z" * (marker_len - len(tail_marker)))
-fill_len = (max_len - len(prefix) - marker_len) + 1
-content = prefix + ("A" * fill_len) + marker
-
-if len(content) <= max_len:
-    raise SystemExit("Payload does not exceed MAX_PASTE_LEN")
+if len(retained) != max_len or len(overflow) != 64:
+    raise SystemExit("Incorrect paste boundary fixture")
 
 with open(path, "wb") as handle:
     handle.write(b"\x1b[200~")
-    handle.write(content.encode("ascii"))
+    handle.write(retained + overflow)
     handle.write(b"\x1b[201~")
+    handle.write(b"b")  # Parser must resume ordinary keys after the terminator.
 PY
 
+    # This limit belongs to FrankenTUI's InputParser. The default harness
+    # application uses Crossterm, so select the actual parser trace explicitly.
     PTY_SEND_FILE="$payload_file" \
     PTY_SEND_DELAY_MS=300 \
+    FTUI_HARNESS_INPUT_MODE=parser \
     FTUI_HARNESS_EXIT_AFTER_MS=2000 \
+    PTY_CANONICALIZE=0 \
     PTY_TIMEOUT=6 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
-    local canonical_file="${PTY_CANONICAL_FILE:-$output_file}"
-    grep -a -q "Paste: TAIL-" "$canonical_file" || return 1
-    if grep -a -q "PREFIX-" "$canonical_file"; then
-        return 1
-    fi
+    # Trace output is a bounded diagnostic stream, not a rendered viewport.
+    "$E2E_PYTHON" - "$output_file" <<'PY'
+import sys
+from pathlib import Path
+
+data = Path(sys.argv[1]).read_bytes()
+prefix = b"PREFIX-" + b"A" * 57
+suffix = b"LIMIT-" + b"Z" * 58
+expected = b'Paste: bytes=1048576 prefix="' + prefix + b'" suffix="' + suffix + b'"'
+if data.count(b"Paste: bytes=") != 1 or expected not in data:
+    raise SystemExit("Parser must retain exactly the first MiB, including both boundary markers")
+if b"OVERFLOW-" in data:
+    raise SystemExit("Parser retained or replayed discarded overflow bytes")
+key = b"Key: code=Char('b') kind=Press mods=none"
+if data.find(key, data.index(expected) + len(expected)) < 0:
+    raise SystemExit("Parser did not resume ordinary key events after the paste terminator")
+PY
 }
 
 FAILURES=0
@@ -229,5 +240,5 @@ run_case "paste_multiline" paste_multiline || FAILURES=$((FAILURES + 1))
 run_case "paste_large" paste_large         || FAILURES=$((FAILURES + 1))
 run_case "paste_unicode" paste_unicode     || FAILURES=$((FAILURES + 1))
 run_case "paste_embedded_escape" paste_embedded_escape || FAILURES=$((FAILURES + 1))
-run_case "paste_dos_limit" paste_dos_limit || FAILURES=$((FAILURES + 1))
+run_case "paste_parser_dos_limit" paste_parser_dos_limit || FAILURES=$((FAILURES + 1))
 exit "$FAILURES"

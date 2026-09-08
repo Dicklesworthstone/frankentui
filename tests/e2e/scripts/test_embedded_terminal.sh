@@ -226,9 +226,9 @@ term_pty_working_directory() {
 
     log_test_start "term_pty_working_directory"
 
-    # Create temp dir, run pwd inside it
+    # Retain the working-directory fixture with this run's artifacts.
     local test_dir
-    test_dir=$(mktemp -d)
+    test_dir=$(mktemp -d "$E2E_LOG_DIR/term_pty_cwd.XXXXXX")
     local test_dir_name
     test_dir_name=$(basename "$test_dir")
 
@@ -240,9 +240,6 @@ term_pty_working_directory() {
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     jsonl_log "output" "term_pty_cwd" "size_bytes" "$size" "dir" "$test_dir"
-
-    # Clean up
-    rmdir "$test_dir" 2>/dev/null || true
 
     grep -a -q "$test_dir_name" "$output_file" || return 1
 }

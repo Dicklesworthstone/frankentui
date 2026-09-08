@@ -58,6 +58,15 @@ run_case() {
     return 1
 }
 
+# Exercise hyperlink output with an explicit bare-terminal identity. Ambient
+# TERM=dumb, NO_COLOR, or multiplexer markers deliberately suppress OSC 8.
+osc8_pty_run() (
+    unset NO_COLOR TMUX STY ZELLIJ WEZTERM_UNIX_SOCKET WEZTERM_PANE WEZTERM_EXECUTABLE
+    unset KITTY_WINDOW_ID WT_SESSION LC_TERMINAL FTUI_TEST_PROFILE
+    export TERM=xterm-256color TERM_PROGRAM=iTerm.app COLORTERM=truecolor
+    pty_run "$@"
+)
+
 osc8_basic_link() {
     LOG_FILE="$E2E_LOG_DIR/osc8_basic_link.log"
     local output_file="$E2E_LOG_DIR/osc8_basic_link.pty"
@@ -76,15 +85,16 @@ TXT
     FTUI_HARNESS_EXIT_AFTER_MS=1200 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        osc8_pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 200 ]] || return 1
 
-    # OSC 8 open and close should appear
-    grep -a -F -q $'\x1b]8;;https://example.com\x1b\\' "$output_file" || return 1
-    grep -a -F -q $'\x1b]8;;\x1b\\' "$output_file" || return 1
+    # Presenter emits BEL-terminated OSC 8 sequences around the visible label.
+    grep -a -F -q $'\x1b]8;;https://example.com\x07' "$output_file" || return 1
+    grep -a -F -q 'Click here' "$output_file" || return 1
+    grep -a -F -q $'\x1b]8;;\x07' "$output_file" || return 1
 }
 
 osc8_multi_links() {
@@ -105,15 +115,17 @@ TXT
     FTUI_HARNESS_EXIT_AFTER_MS=1200 \
     FTUI_HARNESS_SUPPRESS_WELCOME=1 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_HARNESS_BIN"
+        osc8_pty_run "$output_file" "$E2E_HARNESS_BIN" || return 1
 
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 200 ]] || return 1
 
-    grep -a -F -q $'\x1b]8;;https://a.example\x1b\\' "$output_file" || return 1
-    grep -a -F -q $'\x1b]8;;https://b.example\x1b\\' "$output_file" || return 1
-    grep -a -F -q $'\x1b]8;;\x1b\\' "$output_file" || return 1
+    grep -a -F -q $'\x1b]8;;https://a.example\x07' "$output_file" || return 1
+    grep -a -F -q 'Alpha' "$output_file" || return 1
+    grep -a -F -q $'\x1b]8;;https://b.example\x07' "$output_file" || return 1
+    grep -a -F -q 'Beta' "$output_file" || return 1
+    grep -a -F -q $'\x1b]8;;\x07' "$output_file" || return 1
 }
 
 FAILURES=0
