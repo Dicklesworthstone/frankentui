@@ -1153,7 +1153,44 @@ impl Buffer {
         self.push_scissor(clipped);
 
         let step = cell.content.width().max(1) as u16;
+        let opacity = self.current_opacity();
+        let single_cell = cell_width <= 1 && !cell.is_continuation();
+        let fill_cell = if opacity < 1.0 {
+            Cell {
+                fg: cell.fg.with_opacity(opacity),
+                bg: cell.bg.with_opacity(opacity),
+                ..cell
+            }
+        } else {
+            cell
+        };
         for y in clipped.y..clipped.bottom() {
+            let row_start = y as usize * self.width as usize;
+            let start = row_start + clipped.x as usize;
+            let end = row_start + clipped.right() as usize;
+            // Narrow cells have no overlap fragments to repair. Preserve their
+            // backgrounds directly, including through nested scissor/opacity
+            // stacks. A continuation just outside the span still needs `set`'s
+            // orphan cleanup, so keep it on the scalar path.
+            if single_cell
+                && (clipped.right() == self.width || !self.cells[end].is_continuation())
+                && self.cells[start..end]
+                    .iter()
+                    .all(|old| !old.is_continuation() && old.content.width() <= 1)
+            {
+                for old in &mut self.cells[start..end] {
+                    *old = Cell {
+                        bg: fill_cell.bg.over(old.bg),
+                        ..fill_cell
+                    };
+                }
+                // Keep the scalar insertion order: merging a whole span at
+                // once could change dirty-span overflow telemetry.
+                for x in clipped.x..clipped.right() {
+                    self.mark_dirty_span(y, x, x.saturating_add(1));
+                }
+                continue;
+            }
             // Pre-clear the row span first: `set` drops a wide glyph whose
             // tail would cross the clip edge, so trailing columns that cannot
             // hold a whole glyph would otherwise keep their previous content
@@ -2174,6 +2211,110 @@ mod tests {
         assert_eq!(buf.get(3, 3).unwrap().content.as_char(), Some('#'));
         assert!(buf.get(0, 0).unwrap().is_empty());
         assert!(buf.get(7, 7).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fill_single_width_matches_scalar_reference() {
+        // Keep the original two-pass fill as an independent oracle, including
+        // its overlap cleanup, compositing, and dirty-span insertion order.
+        fn scalar_fill(buffer: &mut Buffer, area: Rect, cell: Cell) {
+            let clipped = buffer.current_scissor().intersection(&area);
+            if clipped.is_empty() {
+                return;
+            }
+            buffer.push_scissor(clipped);
+            for y in clipped.y..clipped.bottom() {
+                for x in clipped.x..clipped.right() {
+                    buffer.set(x, y, Cell::default());
+                }
+                for x in clipped.x..clipped.right() {
+                    buffer.set(x, y, cell);
+                }
+            }
+            buffer.pop_scissor();
+        }
+
+        let mut cases = 0usize;
+        let mut fingerprint = 0xcbf2_9ce4_8422_2325u64;
+        for layout in 0..4 {
+            for dirty_mode in 0..3 {
+                for opacity in [0.0, 0.375, 1.0] {
+                    for alpha in [0, 96, 255] {
+                        for ch in [' ', '#', '\u{301}'] {
+                            for area in [
+                                Rect::new(0, 0, 10, 4),
+                                Rect::new(2, 1, 5, 2),
+                                Rect::new(6, 0, 8, 4),
+                                Rect::new(0, 2, 0, 1),
+                                Rect::new(12, 0, 1, 1),
+                            ] {
+                                let mut initial = Buffer::new(10, 4);
+                                for y in 0..4 {
+                                    for x in 0..10 {
+                                        let old = Cell::from_char(if layout == 3 {
+                                            '\u{301}'
+                                        } else {
+                                            'a'
+                                        })
+                                        .with_bg(PackedRgba::rgba(
+                                            x as u8 * 20,
+                                            y as u8 * 30,
+                                            70,
+                                            [0, 128, 255][x as usize % 3],
+                                        ));
+                                        initial.set_raw(x, y, old);
+                                    }
+                                }
+                                if layout == 1 {
+                                    initial.set(0, 0, Cell::from_char('中'));
+                                    initial.set(8, 1, Cell::from_char('中'));
+                                    initial.set(4, 2, Cell::from_char('中'));
+                                } else if layout == 2 {
+                                    initial.set_raw(2, 0, Cell::CONTINUATION);
+                                    initial.set_raw(7, 1, Cell::CONTINUATION);
+                                    initial.set_raw(9, 1, Cell::CONTINUATION);
+                                }
+                                initial.set_dirty_span_config(
+                                    DirtySpanConfig::default().with_max_spans_per_row(2),
+                                );
+                                if dirty_mode != 0 {
+                                    initial.clear_dirty();
+                                }
+                                if dirty_mode == 2 {
+                                    for y in 0..4 {
+                                        initial.mark_dirty_span(y, 0, 1);
+                                        initial.mark_dirty_span(y, 9, 10);
+                                    }
+                                }
+                                initial.push_scissor(Rect::new(1, 0, 8, 4));
+                                initial.push_scissor(Rect::new(0, 0, 10, 3));
+                                initial.push_opacity(opacity);
+                                let cell = Cell::from_char(ch)
+                                    .with_fg(PackedRgba::rgba(80, 91, 123, 180))
+                                    .with_bg(PackedRgba::rgba(19, 40, 66, alpha))
+                                    .with_attrs(crate::cell::CellAttrs::new(
+                                        crate::cell::StyleFlags::BOLD,
+                                        73,
+                                    ));
+                                let mut actual = initial.clone();
+                                let mut expected = initial;
+                                actual.fill(area, cell);
+                                scalar_fill(&mut expected, area, cell);
+                                let actual_state = format!("{actual:?}");
+                                let expected_state = format!("{expected:?}");
+                                assert_eq!(actual_state, expected_state, "case {cases}");
+                                for byte in actual_state.bytes() {
+                                    fingerprint ^= u64::from(byte);
+                                    fingerprint = fingerprint.wrapping_mul(0x100_0000_01b3);
+                                }
+                                cases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("FILL_GOLDEN cases={cases} hash={fingerprint:016x}");
     }
 
     #[test]
