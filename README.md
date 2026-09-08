@@ -626,7 +626,12 @@ FrankenTUI is migrating its execution substrate through three lanes:
 |------|-------------|--------|
 | `Legacy` | Thread‑based subscriptions with manual stop coordination | Available |
 | `Structured` | CancellationToken‑backed subscriptions (current default) | **Active** |
-| `Asupersync` | Full Asupersync‑native execution | Future |
+| `Asupersync` | Asupersync blocking task pool with CancellationToken-backed subscriptions | Available with `ftui-runtime/asupersync-executor` |
+
+Selecting `asupersync` without that feature emits a warning and resolves to
+`Structured`. An explicit task backend in `EffectQueueConfig` takes precedence
+over the lane default. Subscriptions retain their structured cancellation;
+the lane selects how `Cmd::Task` closures execute.
 
 ### Rollout Policy
 

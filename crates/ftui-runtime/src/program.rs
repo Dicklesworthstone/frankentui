@@ -2965,10 +2965,11 @@ impl LoadGovernorState {
 ///
 /// 1. `Legacy` — pre-migration thread-based subscriptions with manual stop coordination
 /// 2. `Structured` — CancellationToken-backed subscriptions (current default after bd-3tmu4)
-/// 3. `Asupersync` — full Asupersync-native execution (future)
+/// 3. `Asupersync` — Asupersync blocking-task execution with structured subscriptions
 ///
 /// Selection is logged at startup so operators can tell which lane is active.
-/// Fallback from `Asupersync` → `Structured` → `Legacy` is automatic on error.
+/// Without `asupersync-executor`, requesting `Asupersync` falls back to `Structured`.
+/// Executor initialization errors are returned to the caller.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeLane {
     /// Pre-migration behavior: thread-based subscriptions with manual stop coordination.
@@ -2978,30 +2979,31 @@ pub enum RuntimeLane {
     /// Externally observable behavior is identical to Legacy.
     #[default]
     Structured,
-    /// Full Asupersync-native execution (reserved for future use).
-    /// Falls back to Structured if Asupersync primitives are unavailable.
+    /// Execute tasks through the Asupersync blocking pool, retaining structured
+    /// subscription cancellation. Requires the `asupersync-executor` feature;
+    /// without it, falls back to Structured with a warning.
     Asupersync,
 }
 
 impl RuntimeLane {
     /// Resolve the effective lane, applying fallback rules.
     ///
-    /// If the requested lane is not yet implemented, falls back to the
-    /// highest available lane. Currently: Asupersync → Structured.
+    /// Asupersync is available when `asupersync-executor` is compiled in.
+    /// Otherwise, its tasks use Structured's default executor.
     #[must_use]
     pub fn resolve(self) -> Self {
-        match self {
-            Self::Asupersync => {
-                tracing::info!(
-                    target: crate::telemetry_schema::TARGET_RUNTIME,
-                    requested = "asupersync",
-                    resolved = "structured",
-                    "Asupersync lane not yet available; falling back to structured cancellation"
-                );
-                Self::Structured
-            }
-            other => other,
+        #[cfg(not(feature = "asupersync-executor"))]
+        if self == Self::Asupersync {
+            tracing::warn!(
+                target: crate::telemetry_schema::TARGET_RUNTIME,
+                requested = "asupersync",
+                resolved = "structured",
+                missing_feature = "asupersync-executor",
+                "Asupersync lane requires asupersync-executor; falling back to structured cancellation"
+            );
+            return Self::Structured;
         }
+        self
     }
 
     /// Returns a human-readable label for logging.
@@ -3044,21 +3046,11 @@ impl RuntimeLane {
     #[must_use]
     fn task_executor_backend(self) -> TaskExecutorBackend {
         match self {
-            // Legacy and Structured both use per-task `Spawned` execution.
-            // (Structured only changes cancellation semantics, not concurrency
-            // — see the regression note above.) Kept as a combined arm so the
-            // `match_same_arms` lint stays happy under `-D warnings`.
-            Self::Legacy | Self::Structured => TaskExecutorBackend::Spawned,
-            Self::Asupersync => {
-                #[cfg(feature = "asupersync-executor")]
-                {
-                    TaskExecutorBackend::Asupersync
-                }
-                #[cfg(not(feature = "asupersync-executor"))]
-                {
-                    TaskExecutorBackend::EffectQueue
-                }
-            }
+            #[cfg(feature = "asupersync-executor")]
+            Self::Asupersync => TaskExecutorBackend::Asupersync,
+            // Structured cancellation does not serialize tasks. An unavailable
+            // Asupersync lane resolves to Structured before backend selection.
+            _ => TaskExecutorBackend::Spawned,
         }
     }
 
@@ -5323,6 +5315,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             target: crate::telemetry_schema::TARGET_RUNTIME,
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
+            task_backend = task_executor.kind_name(),
             rollout_policy = config.rollout_policy.label(),
             "runtime startup: lane={}, rollout={}",
             resolved_lane.label(),
@@ -16915,6 +16908,106 @@ mod tests {
             .resolved_effect_queue_config();
         assert!(!resolved.enabled);
         assert_eq!(resolved.backend, TaskExecutorBackend::Spawned);
+    }
+
+    #[cfg(not(feature = "asupersync-executor"))]
+    #[test]
+    fn asupersync_lane_falls_back_to_structured_without_feature() {
+        use tracing_subscriber::prelude::*;
+
+        let capture = A11yTraceCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone().with_filter(
+            tracing_subscriber::filter::filter_fn(|metadata| {
+                *metadata.level() == tracing::Level::WARN
+                    && metadata.target() == crate::telemetry_schema::TARGET_RUNTIME
+            }),
+        ));
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(RuntimeLane::Asupersync.resolve(), RuntimeLane::Structured);
+        });
+        let warning = capture.0.lock().expect("capture lock");
+        assert_eq!(warning.lines().count(), 1, "{warning}");
+        assert!(warning.contains("missing_feature=\"asupersync-executor\""));
+        assert!(warning.contains("requested=\"asupersync\""));
+        assert!(warning.contains("resolved=\"structured\""));
+
+        let resolved = ProgramConfig::default()
+            .with_lane(RuntimeLane::Asupersync)
+            .resolved_effect_queue_config();
+        assert_eq!(resolved.backend, TaskExecutorBackend::Spawned);
+        assert!(!resolved.enabled);
+    }
+
+    #[cfg(feature = "asupersync-executor")]
+    #[test]
+    fn asupersync_lane_resolves_to_asupersync_backend_when_feature_enabled() {
+        let resolved_lane = RuntimeLane::Asupersync.resolve();
+        assert_eq!(resolved_lane, RuntimeLane::Asupersync);
+        assert_eq!(
+            resolved_lane.task_executor_backend(),
+            TaskExecutorBackend::Asupersync
+        );
+        let config = ProgramConfig::default()
+            .with_lane(RuntimeLane::Asupersync)
+            .with_signal_interception(false);
+        let resolved = config.resolved_effect_queue_config();
+        assert_eq!(resolved.backend, TaskExecutorBackend::Asupersync);
+        assert!(!resolved.enabled);
+
+        // Use the public constructor, not the manually assembled test Program.
+        let features = BackendFeatures::default();
+        let events = HeadlessEventSource::new(80, 24, features);
+        let writer = TerminalWriter::with_diff_config(
+            Vec::new(),
+            config.screen_mode,
+            config.ui_anchor,
+            TerminalCapabilities::basic(),
+            config.diff_config.clone(),
+        );
+        let mut program =
+            Program::with_event_source(TestModel { value: 0 }, events, features, writer, config)
+                .expect("Asupersync lane initializes its executor");
+        assert_eq!(program.task_executor.kind_name(), "asupersync");
+        let executions = Arc::new(AtomicUsize::new(0));
+        for _ in 0..32 {
+            let executions = Arc::clone(&executions);
+            program
+                .execute_cmd(Cmd::task(move || {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    TestMsg::Increment
+                }))
+                .expect("submit through selected lane");
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (program.model().value < 32 || program.task_executor.in_flight() > 0)
+            && Instant::now() < deadline
+        {
+            program
+                .process_task_results()
+                .expect("deliver task results");
+            program.reap_finished_tasks();
+            thread::yield_now();
+        }
+        assert_eq!(program.model().value, 32, "every result reaches the model");
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            32,
+            "effects execute once"
+        );
+        assert_eq!(program.task_executor.in_flight(), 0);
+    }
+
+    #[test]
+    fn asupersync_lane_preserves_explicit_task_backend() {
+        for backend in [
+            TaskExecutorBackend::Spawned,
+            TaskExecutorBackend::EffectQueue,
+        ] {
+            let config = ProgramConfig::default()
+                .with_lane(RuntimeLane::Asupersync)
+                .with_effect_queue(EffectQueueConfig::default().with_backend(backend));
+            assert_eq!(config.resolved_effect_queue_config().backend, backend);
+        }
     }
 
     #[test]
