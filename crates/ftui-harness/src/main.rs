@@ -640,13 +640,38 @@ fn run_input_trace(exit_after: Option<Duration>) -> io::Result<()> {
         match rx.recv_timeout(poll_timeout) {
             Ok(bytes) => {
                 for event in parser.parse(&bytes) {
-                    if let Event::Key(key) = event {
-                        let mods = format_modifiers(key.modifiers);
-                        writeln!(
-                            stdout,
-                            "Key: code={:?} kind={:?} mods={}",
-                            key.code, key.kind, mods
-                        )?;
+                    match event {
+                        Event::Key(key) => {
+                            let mods = format_modifiers(key.modifiers);
+                            writeln!(
+                                stdout,
+                                "Key: code={:?} kind={:?} mods={}",
+                                key.code, key.kind, mods
+                            )?;
+                        }
+                        Event::Paste(paste) => {
+                            // Keep diagnostics bounded even when exercising the paste
+                            // size limit. Character boundaries preserve valid UTF-8.
+                            let prefix_end = paste
+                                .text
+                                .char_indices()
+                                .nth(64)
+                                .map_or(paste.text.len(), |(index, _)| index);
+                            let suffix_start = paste
+                                .text
+                                .char_indices()
+                                .rev()
+                                .nth(63)
+                                .map_or(0, |(index, _)| index);
+                            writeln!(
+                                stdout,
+                                "Paste: bytes={} prefix={:?} suffix={:?}",
+                                paste.text.len(),
+                                &paste.text[..prefix_end],
+                                &paste.text[suffix_start..]
+                            )?;
+                        }
+                        _ => {}
                     }
                 }
                 stdout.flush()?;

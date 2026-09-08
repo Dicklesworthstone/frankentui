@@ -19,8 +19,10 @@ resolve_canonicalize_bin() {
         return 0
     fi
 
-    local debug_bin="$PROJECT_ROOT/target/debug/pty_canonicalize"
-    local release_bin="$PROJECT_ROOT/target/release/pty_canonicalize"
+    local target_dir
+    target_dir="$(cd "$PROJECT_ROOT" && cargo metadata --format-version=1 --no-deps | jq -er '.target_directory')" || return 1
+    local debug_bin="$target_dir/debug/pty_canonicalize"
+    local release_bin="$target_dir/release/pty_canonicalize"
     if [[ -x "$debug_bin" ]]; then
         echo "$debug_bin"
         return 0
@@ -151,6 +153,7 @@ pty_run() {
     local timeout="${PTY_TIMEOUT:-5}"
     local send_data="${PTY_SEND:-}"
     local send_file="${PTY_SEND_FILE:-}"
+    local send_sequence="${PTY_SEND_SEQUENCE:-}"
     local send_delay_ms="${PTY_SEND_DELAY_MS:-0}"
     local cols="${PTY_COLS:-80}"
     local rows="${PTY_ROWS:-24}"
@@ -169,6 +172,7 @@ pty_run() {
             PTY_TIMEOUT="$timeout" \
             PTY_SEND="$send_data" \
             PTY_SEND_FILE="$send_file" \
+            PTY_SEND_SEQUENCE="$send_sequence" \
             PTY_SEND_DELAY_MS="$send_delay_ms" \
             PTY_COLS="$cols" \
             PTY_ROWS="$rows" \
@@ -200,6 +204,7 @@ if not output_path:
 timeout = float(os.environ.get("PTY_TIMEOUT", "5"))
 raw_send = os.environ.get("PTY_SEND", "")
 send_file = os.environ.get("PTY_SEND_FILE", "")
+send_sequence_raw = os.environ.get("PTY_SEND_SEQUENCE", "")
 send_delay_ms = int(os.environ.get("PTY_SEND_DELAY_MS", "0"))
 cols = int(os.environ.get("PTY_COLS", "80"))
 rows = int(os.environ.get("PTY_ROWS", "24"))
@@ -263,7 +268,33 @@ if send_file:
         print(f"Failed to read PTY_SEND_FILE: {exc}", file=sys.stderr)
         sys.exit(2)
 elif raw_send:
-    send_bytes = codecs.decode(raw_send, "unicode_escape").encode("utf-8")
+    # unicode_escape treats str as UTF-8 bytes, corrupting literal non-ASCII.
+    # raw_unicode_escape preserves code points while keeping backslash syntax.
+    send_bytes = codecs.decode(raw_send.encode("raw_unicode_escape"), "unicode_escape").encode("utf-8")
+
+send_sequence = []
+if send_sequence_raw:
+    try:
+        if raw_send or send_file:
+            raise ValueError("PTY_SEND_SEQUENCE cannot be combined with PTY_SEND or PTY_SEND_FILE")
+        sequence = json.loads(send_sequence_raw)
+        if not isinstance(sequence, list):
+            raise ValueError("expected a JSON array")
+        previous_ms = 0
+        for item in sequence:
+            if not isinstance(item, dict) or set(item) != {"delay_ms", "text"}:
+                raise ValueError("each input must contain delay_ms and text")
+            delay = item["delay_ms"]
+            if type(delay) is not int or delay < previous_ms or not isinstance(item["text"], str):
+                raise ValueError("delays must be nonnegative, ordered integers and text must be a string")
+            previous_ms = delay
+            if item["text"]:
+                send_sequence.append((delay / 1000.0, item["text"].encode("utf-8")))
+    except (ValueError, TypeError) as exc:
+        print(f"Invalid PTY_SEND_SEQUENCE: {exc}", file=sys.stderr)
+        sys.exit(2)
+elif send_bytes:
+    send_sequence.append((send_delay_ms / 1000.0, send_bytes))
 
 master_fd, slave_fd = pty.openpty()
 
@@ -370,7 +401,9 @@ proc = subprocess.Popen(
 slave_fd_open = slave_fd
 
 captured = bytearray()
-sent = False
+send_index = 0
+send_offset = 0
+send_error = None
 last_data = start
 terminate_at = None
 stop_at = None
@@ -380,12 +413,24 @@ dropped_chunks = 0
 try:
     while True:
         now = time.monotonic()
-        if (not sent) and send_bytes and (now - start) >= (send_delay_ms / 1000.0):
+        input_due = (
+            send_error is None
+            and send_index < len(send_sequence)
+            and now - start >= send_sequence[send_index][0]
+        )
+        if input_due:
             try:
-                os.write(master_fd, send_bytes)
-                sent = True
-            except OSError:
+                payload = send_sequence[send_index][1]
+                # A nonblocking PTY write may accept only a prefix. Keep the
+                # remainder and poll writability instead of dropping it.
+                send_offset += os.write(master_fd, payload[send_offset:])
+                if send_offset == len(payload):
+                    send_index += 1
+                    send_offset = 0
+            except BlockingIOError:
                 pass
+            except OSError as exc:
+                send_error = str(exc)
 
         while resize_events and now >= resize_events[0][0]:
             _, next_cols, next_rows = resize_events.pop(0)
@@ -412,7 +457,12 @@ try:
                     except Exception:
                         pass
 
-        rlist, _, _ = select.select([master_fd], [], [], read_poll)
+        input_due = (
+            send_error is None
+            and send_index < len(send_sequence)
+            and now - start >= send_sequence[send_index][0]
+        )
+        rlist, _, _ = select.select([master_fd], [master_fd] if input_due else [], [], read_poll)
         if rlist:
             eof = False
             while True:
@@ -480,6 +530,11 @@ if capture_max is not None and capture_max > 0 and len(captured) > capture_max:
 
 with open(output_path, "wb") as handle:
     handle.write(captured)
+
+if send_error is not None or send_index < len(send_sequence):
+    print(f"PTY input delivery incomplete: chunk={send_index}/{len(send_sequence)}, offset={send_offset}, error={send_error}", file=sys.stderr)
+    if exit_code == 0:
+        exit_code = 1
 
 if drop_stats_file:
     try:
