@@ -656,6 +656,11 @@ run_step doctor_full \
   --app-command "echo demo" \
   --full
 
+run_step doctor_snapshot_decode \
+  ffmpeg -nostdin -v error -xerror \
+  -i "${RUN_ROOT}/doctor/doctor_full_run/snapshot.png" \
+  -f null -
+
 run_step capture_happy \
   "${BIN_PATH}" capture \
   --profile analytics-empty \
@@ -663,6 +668,11 @@ run_step capture_happy \
   --run-root "${RUN_ROOT}/captures" \
   --run-name happy_capture \
   --app-command "echo demo"
+
+run_step capture_snapshot_decode \
+  ffmpeg -nostdin -v error -xerror \
+  -i "${RUN_ROOT}/captures/happy_capture/snapshot.png" \
+  -f null -
 
 run_step suite_happy \
   "${BIN_PATH}" suite \

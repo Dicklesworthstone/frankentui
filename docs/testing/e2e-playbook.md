@@ -69,6 +69,27 @@ Inventory scope: this table tracks top-level scripts in `scripts/`. Nested suite
 - Local validation: set `E2E_JSONL_VALIDATE=1` or `E2E_JSONL_VALIDATE_MODE=strict` when running scripts.
 - Example JSONL lines: `tests/e2e/lib/e2e_jsonl_examples.jsonl`.
 
+## Doctor capture tools on DSR hosts
+
+Run `bash scripts/doctor_frankentui_install_capture_tools.sh --prefix /path/to/capture-tools`
+on a native Linux x86_64 DSR host, then prepend `/path/to/capture-tools/bin` to
+`PATH`. The script pins VHS 0.10.0 and ttyd 1.7.7 using their upstream release
+checksums. It retains downloads and extraction directories, checks cached files
+on every invocation, and refuses to replace an existing different binary. Bump
+versions and hashes together in that script. FFmpeg, ffprobe and Chrome remain
+separate host prerequisites; installation alone does not prove capture works.
+
+`doctor --full` requires its snapshot. The happy workflow decodes the doctor
+and standalone capture PNGs with FFmpeg before accepting them. Run the happy,
+failure and determinism scripts through DSR and retain their artifacts under
+`/tmp/doctor_frankentui_ci/`.
+
+VHS 0.10.0 itself removes temporary frame directories, including at recording
+startup. Its capture execution still needs a verified retention route or the
+owner's explicit deletion permission under `AGENTS.md` Rule 1; the installer
+does not run a recording. This unresolved execution constraint is tracked in
+`bd-g00-root-epic-ewths.6.13`.
+
 ## Environment Controls
 
 Common variables:

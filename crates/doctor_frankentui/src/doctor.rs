@@ -460,7 +460,7 @@ fn build_capture_smoke_command(
             .arg("2")
             .arg("--keys")
             .arg("1,sleep:2,?,sleep:2,q")
-            .arg("--no-snapshot")
+            .arg("--snapshot-required")
             .arg("--capture-timeout-seconds")
             .arg(args.capture_timeout_seconds.to_string())
             .arg("--snapshot-second")
@@ -1335,7 +1335,8 @@ kill -TERM $$
         assert!(values.contains(&"doctor_full_run".to_string()));
         assert!(values.contains(&"--boot-sleep".to_string()));
         assert!(values.contains(&"--keys".to_string()));
-        assert!(values.contains(&"--no-snapshot".to_string()));
+        assert!(values.contains(&"--snapshot-required".to_string()));
+        assert!(!values.contains(&"--no-snapshot".to_string()));
         assert!(values.contains(&"--capture-timeout-seconds".to_string()));
         assert!(values.contains(&"37".to_string()));
         assert!(values.contains(&"--snapshot-second".to_string()));
