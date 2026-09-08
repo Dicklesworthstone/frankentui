@@ -131,12 +131,16 @@ fn run_phase(
     for step_idx in 0..steps {
         if let Some(cycle) = resize_cycle {
             let (w, h) = cycle[step_idx % cycle.len()];
-            program.resize(w, h);
+            program.resize(w, h).expect("stress resize admission");
         }
         for _ in 0..keys_per_step {
-            program.push_event(Event::Key(KeyEvent::new(KeyCode::Char('k'))));
+            program
+                .push_event(Event::Key(KeyEvent::new(KeyCode::Char('k'))))
+                .expect("stress key admission");
         }
-        program.push_event(Event::Tick);
+        program
+            .push_event(Event::Tick)
+            .expect("stress tick admission");
         program.advance_time(Duration::from_millis(16));
         program.step().expect("stress step must not fail");
         let mut outputs = program.take_outputs();

@@ -75,12 +75,32 @@ const FNV64_PRIME: u64 = 0x100000001b3;
 pub enum WebBackendError {
     /// Generic unsupported operation.
     Unsupported(&'static str),
+    /// Input was rejected before admission. The caller retains ownership of
+    /// the event and can retry after draining the queue.
+    InputQueueFull {
+        /// Which bound prevented admission.
+        limit: WebInputLimit,
+        /// The event that was not accepted.
+        event: Event,
+    },
+}
+
+/// Resource bound enforced by the host-driven input queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebInputLimit {
+    /// The pending event count reached its bound.
+    Events,
+    /// Retained paste, IME and clipboard allocations would exceed the byte bound.
+    PayloadBytes,
 }
 
 impl core::fmt::Display for WebBackendError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Unsupported(msg) => write!(f, "unsupported: {msg}"),
+            Self::InputQueueFull { limit, .. } => {
+                write!(f, "input queue full ({limit:?}); drain before retrying")
+            }
         }
     }
 }
@@ -122,14 +142,44 @@ impl BackendClock for DeterministicClock {
 /// Host-driven event source for WASM.
 ///
 /// The host is responsible for pushing [`Event`] values and updating size.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WebEventSource {
     size: (u16, u16),
     features: BackendFeatures,
     queue: VecDeque<Event>,
+    queued_payload_bytes: usize,
+}
+
+impl Clone for WebEventSource {
+    fn clone(&self) -> Self {
+        let queue = self.queue.clone();
+        // String::clone may reduce spare capacity; account for the allocations
+        // actually retained by the clone rather than copying the original sum.
+        let queued_payload_bytes = queue.iter().map(event_payload_bytes).sum();
+        Self {
+            size: self.size,
+            features: self.features,
+            queue,
+            queued_payload_bytes,
+        }
+    }
+}
+
+fn event_payload_bytes(event: &Event) -> usize {
+    match event {
+        Event::Paste(paste) => paste.text.capacity(),
+        Event::Ime(ime) => ime.text.capacity(),
+        Event::Clipboard(clipboard) => clipboard.content.capacity(),
+        Event::Key(_) | Event::Mouse(_) | Event::Resize { .. } | Event::Focus(_) | Event::Tick => 0,
+    }
 }
 
 impl WebEventSource {
+    /// Maximum pending events. Accepted input is never evicted to admit new input.
+    pub const MAX_EVENTS: usize = 4096;
+    /// Maximum retained payload allocation bytes (including String spare capacity).
+    pub const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
+
     /// Create a new event source with an initial size.
     #[must_use]
     pub fn new(width: u16, height: u16) -> Self {
@@ -137,6 +187,7 @@ impl WebEventSource {
             size: (width, height),
             features: BackendFeatures::default(),
             queue: VecDeque::new(),
+            queued_payload_bytes: 0,
         }
     }
 
@@ -151,14 +202,51 @@ impl WebEventSource {
         self.features
     }
 
-    /// Push a canonical event into the queue.
-    pub fn push_event(&mut self, event: Event) {
+    /// Admit a canonical event without evicting previously accepted input.
+    ///
+    /// On overflow, returns the rejected event. Drain pending events before
+    /// retrying; an oversized individual payload must be rejected by the host.
+    pub fn push_event(&mut self, event: Event) -> Result<(), WebBackendError> {
+        if self.queue.len() >= Self::MAX_EVENTS {
+            return Err(WebBackendError::InputQueueFull {
+                limit: WebInputLimit::Events,
+                event,
+            });
+        }
+        let payload_bytes = event_payload_bytes(&event);
+        if payload_bytes > Self::MAX_PAYLOAD_BYTES - self.queued_payload_bytes {
+            return Err(WebBackendError::InputQueueFull {
+                limit: WebInputLimit::PayloadBytes,
+                event,
+            });
+        }
+        self.queued_payload_bytes += payload_bytes;
         self.queue.push_back(event);
+        Ok(())
     }
 
-    /// Drain all pending events.
+    /// Number of pending accepted events.
+    #[must_use]
+    pub fn queued_events(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Total allocation bytes retained by pending text payloads.
+    #[must_use]
+    pub const fn queued_payload_bytes(&self) -> usize {
+        self.queued_payload_bytes
+    }
+
+    fn pop_event(&mut self) -> Option<Event> {
+        let event = self.queue.pop_front()?;
+        self.queued_payload_bytes -= event_payload_bytes(&event);
+        Some(event)
+    }
+
+    /// Drain pending events in FIFO order. Dropping the iterator early leaves
+    /// unconsumed input queued for the next drain or read.
     pub fn drain_events(&mut self) -> impl Iterator<Item = Event> + '_ {
-        self.queue.drain(..)
+        std::iter::from_fn(|| self.pop_event())
     }
 }
 
@@ -181,7 +269,7 @@ impl BackendEventSource for WebEventSource {
     }
 
     fn read_event(&mut self) -> Result<Option<Event>, Self::Error> {
-        Ok(self.queue.pop_front())
+        Ok(self.pop_event())
     }
 }
 

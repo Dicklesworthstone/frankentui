@@ -108,7 +108,7 @@ fn boot() -> StepProgram<Canvas> {
 #[test]
 fn resize_emits_baseline_and_repaint_markers() {
     let mut prog = boot();
-    prog.resize(120, 40);
+    prog.resize(120, 40).expect("resize admission");
     prog.step().expect("step");
     let outputs = prog.take_outputs();
     let (reset, repaint) = count_markers(&outputs.logs);
@@ -146,7 +146,8 @@ fn resize_emits_baseline_and_repaint_markers() {
 #[test]
 fn same_dimension_resize_still_resets_baseline() {
     let mut prog = boot();
-    prog.resize(80, 24); // identical dimensions, but a real transition signal
+    // identical dimensions, but a real transition signal
+    prog.resize(80, 24).expect("resize admission");
     prog.step().expect("step");
     let outputs = prog.take_outputs();
     let (reset, repaint) = count_markers(&outputs.logs);
@@ -171,7 +172,7 @@ fn same_dimension_resize_still_resets_baseline() {
 #[test]
 fn tick_without_resize_emits_no_markers() {
     let mut prog = boot();
-    prog.push_event(Event::Tick);
+    prog.push_event(Event::Tick).expect("tick admission");
     prog.step().expect("step");
     let outputs = prog.take_outputs();
     let (reset, repaint) = count_markers(&outputs.logs);
@@ -193,7 +194,7 @@ fn tick_without_resize_emits_no_markers() {
 fn marker_stream_is_deterministic() {
     let render = || {
         let mut prog = boot();
-        prog.resize(100, 30);
+        prog.resize(100, 30).expect("resize admission");
         prog.step().expect("step");
         let mut markers: Vec<String> = prog
             .take_outputs()

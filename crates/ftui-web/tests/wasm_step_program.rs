@@ -95,8 +95,12 @@ fn scenario_checksums() -> Vec<u64> {
         program.pool(),
     ));
 
-    program.push_event(key_event('+'));
-    program.push_event(key_event('+'));
+    program
+        .push_event(key_event('+'))
+        .expect("key admission should succeed");
+    program
+        .push_event(key_event('+'))
+        .expect("key admission should succeed");
     let step_1 = program.step().expect("step 1 should succeed");
     if step_1.rendered {
         checksums.push(checksum_buffer(
@@ -109,7 +113,9 @@ fn scenario_checksums() -> Vec<u64> {
         ));
     }
 
-    program.resize(20, 3);
+    program
+        .resize(20, 3)
+        .expect("resize admission should succeed");
     program.advance_time(Duration::from_millis(17));
     let step_2 = program.step().expect("step 2 should succeed");
     if step_2.rendered {
@@ -131,8 +137,12 @@ fn scenario_checksums() -> Vec<u64> {
     assert_eq!(resized.width(), 20);
     assert_eq!(resized.height(), 3);
 
-    program.push_event(key_event('-'));
-    program.push_event(Event::Tick);
+    program
+        .push_event(key_event('-'))
+        .expect("key admission should succeed");
+    program
+        .push_event(Event::Tick)
+        .expect("tick admission should succeed");
     program.advance_time(Duration::from_millis(17));
     let step_3 = program.step().expect("step 3 should succeed");
     if step_3.rendered {
@@ -155,9 +165,15 @@ fn wasm_step_program_event_flow_updates_model_and_buffer() {
     let mut program = StepProgram::new(CounterModel::default(), 16, 2);
     program.init().expect("initialization should succeed");
 
-    program.push_event(key_event('+'));
-    program.push_event(key_event('+'));
-    program.push_event(key_event('-'));
+    program
+        .push_event(key_event('+'))
+        .expect("key admission should succeed");
+    program
+        .push_event(key_event('+'))
+        .expect("key admission should succeed");
+    program
+        .push_event(key_event('-'))
+        .expect("key admission should succeed");
     let result = program.step().expect("step should succeed");
 
     assert!(result.running);
