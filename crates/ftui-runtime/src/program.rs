@@ -5315,7 +5315,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             target: crate::telemetry_schema::TARGET_RUNTIME,
             requested_lane = config.runtime_lane.label(),
             resolved_lane = resolved_lane.label(),
-            task_backend = task_executor.kind_name(),
+            task_backend = task_executor.kind_name_for_logs(),
             rollout_policy = config.rollout_policy.label(),
             "runtime startup: lane={}, rollout={}",
             resolved_lane.label(),
