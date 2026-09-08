@@ -6,7 +6,7 @@
 //! # Drill Categories
 //!
 //! - **D1: Enablement** — Legacy → Structured transition
-//! - **D2: Fallback** — Asupersync → Structured automatic fallback
+//! - **D2: Fallback** — Asupersync → Structured when its executor feature is absent
 //! - **D3: Rollback** — Structured → Legacy downgrade
 //! - **D4: Recovery** — model state preserved across lane switches
 //! - **D5: Configuration** — ProgramConfig lane wiring
@@ -233,22 +233,27 @@ fn d1_enablement_lane_label() {
 }
 
 // ============================================================================
-// D2: FALLBACK — Asupersync → Structured automatic fallback
+// D2: FALLBACK — Asupersync → Structured when its executor feature is absent
 // ============================================================================
 
-/// DRILL D2.1: Asupersync resolves to Structured (not yet implemented).
+/// DRILL D2.1: Asupersync resolves according to its executor feature availability.
 #[test]
 fn d2_fallback_asupersync_to_structured() {
-    let mut verdict = DrillVerdict::new("D2.1: Asupersync fallback");
+    let mut verdict = DrillVerdict::new("D2.1: Asupersync feature selection");
 
     let resolved = RuntimeLane::Asupersync.resolve();
+    let expected = if cfg!(feature = "asupersync-executor") {
+        RuntimeLane::Asupersync
+    } else {
+        RuntimeLane::Structured
+    };
     verdict.check(
-        resolved == RuntimeLane::Structured,
-        &format!("resolved to: {resolved:?}"),
+        resolved == expected,
+        &format!("resolved to {resolved:?}; expected {expected:?} for compiled features"),
     );
     verdict.check(
         resolved.uses_structured_cancellation(),
-        "fallback uses structured cancellation",
+        "resolved lane uses structured cancellation",
     );
 
     verdict.assert_passed();
@@ -271,18 +276,24 @@ fn d2_fallback_stable_lanes() {
     verdict.assert_passed();
 }
 
-/// DRILL D2.3: Workload succeeds after fallback resolution.
+/// DRILL D2.3: Lane resolution and a separate simulator workload succeed.
 #[test]
 fn d2_fallback_workload_succeeds() {
-    let mut verdict = DrillVerdict::new("D2.3: Post-fallback workload");
+    let mut verdict = DrillVerdict::new("D2.3: Lane resolution and simulator workload");
 
     let resolved = RuntimeLane::Asupersync.resolve();
+    let expected = if cfg!(feature = "asupersync-executor") {
+        RuntimeLane::Asupersync
+    } else {
+        RuntimeLane::Structured
+    };
     verdict.check(
-        resolved == RuntimeLane::Structured,
-        "resolved to Structured",
+        resolved == expected,
+        &format!("resolved to {resolved:?}; expected {expected:?} for compiled features"),
     );
 
-    // Run workload to prove it still works after resolution
+    // This simulator workload does not select an executor or use the resolved lane.
+    // It checks model behavior separately from the lane-resolution assertion.
     let (trace, val, _, running) = run_workload();
     verdict.check(!trace.is_empty(), "trace non-empty");
     verdict.check(val == 4, &format!("value correct: {val}"));
@@ -700,16 +711,15 @@ fn d6_model_state_preserved_across_policy_switch() {
     verdict.assert_passed();
 }
 
-/// D6.8: Full lifecycle drill proving the operator workflow:
-///   Off → Shadow (gather evidence) → evaluate scorecard → Enabled → rollback to Off
+/// D6.8: Configuration transitions: Off → Shadow → Enabled → rollback to Off.
 ///
-/// This exercises the complete rollout policy state machine and proves that
-/// ProgramConfig correctly carries the policy through each transition.
+/// This checks that ProgramConfig carries the policy through each transition.
+/// It does not run a Shadow lifecycle, gather comparison evidence, or execute a backend.
 #[test]
 fn d6_full_lifecycle_off_shadow_enabled_rollback() {
-    let mut verdict = DrillVerdict::new("D6.8: Full lifecycle Off → Shadow → Enabled → Off");
+    let mut verdict = DrillVerdict::new("D6.8: Configuration Off → Shadow → Enabled → Off");
 
-    // Phase 1: Off (default production state)
+    // Phase 1: Off (default configuration)
     let config = ProgramConfig::default();
     verdict.check(
         config.rollout_policy == RolloutPolicy::Off,
@@ -720,19 +730,19 @@ fn d6_full_lifecycle_off_shadow_enabled_rollback() {
         "Phase 1: lane is Structured (current default)",
     );
 
-    // Phase 2: Operator enables shadow mode for evidence gathering
+    // Phase 2: Select the Shadow policy in the configuration.
     let config = config.with_rollout_policy(RolloutPolicy::Shadow);
     verdict.check(
         config.rollout_policy.is_shadow(),
-        "Phase 2: shadow mode active",
+        "Phase 2: Shadow policy configured",
     );
-    // Lane stays the same — shadow mode only adds comparison, doesn't change lane
+    // Changing the configured policy leaves the configured lane unchanged.
     verdict.check(
         config.runtime_lane == RuntimeLane::Structured,
         "Phase 2: lane unchanged during shadow",
     );
 
-    // Phase 3: Shadow evidence is good — operator promotes to Enabled
+    // Phase 3: Select Enabled and request the Asupersync lane.
     let config = config
         .with_lane(RuntimeLane::Asupersync)
         .with_rollout_policy(RolloutPolicy::Enabled);
@@ -744,14 +754,19 @@ fn d6_full_lifecycle_off_shadow_enabled_rollback() {
         config.runtime_lane == RuntimeLane::Asupersync,
         "Phase 3: lane switched to Asupersync",
     );
-    // Asupersync resolves back to Structured until fully implemented
+    // The compiled executor feature determines the exact resolved lane.
     let resolved = config.runtime_lane.resolve();
+    let expected = if cfg!(feature = "asupersync-executor") {
+        RuntimeLane::Asupersync
+    } else {
+        RuntimeLane::Structured
+    };
     verdict.check(
-        resolved == RuntimeLane::Structured,
-        "Phase 3: Asupersync resolves to Structured (fallback)",
+        resolved == expected,
+        &format!("Phase 3: resolved {resolved:?}; expected {expected:?} for compiled features"),
     );
 
-    // Phase 4: Problem detected — operator rolls back
+    // Phase 4: Restore the Structured lane and Off policy in the configuration.
     let config = config
         .with_lane(RuntimeLane::Structured)
         .with_rollout_policy(RolloutPolicy::Off);

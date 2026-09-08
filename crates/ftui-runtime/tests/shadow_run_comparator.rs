@@ -1582,8 +1582,17 @@ fn runtime_lane_labels() {
 fn runtime_lane_resolve_fallback() {
     assert_eq!(RuntimeLane::Legacy.resolve(), RuntimeLane::Legacy);
     assert_eq!(RuntimeLane::Structured.resolve(), RuntimeLane::Structured);
-    // Asupersync falls back to Structured (not yet implemented)
-    assert_eq!(RuntimeLane::Asupersync.resolve(), RuntimeLane::Structured);
+    // Asupersync is available with its executor feature; otherwise use Structured.
+    let expected = if cfg!(feature = "asupersync-executor") {
+        RuntimeLane::Asupersync
+    } else {
+        RuntimeLane::Structured
+    };
+    assert_eq!(
+        RuntimeLane::Asupersync.resolve(),
+        expected,
+        "lane resolution must match asupersync-executor availability"
+    );
 }
 
 #[test]

@@ -26,7 +26,7 @@
 //! | I15  | Sync output blocks balanced                  | terminal_writer tests          |
 //! | I16  | write_log no-op in AltScreen                 | terminal_writer tests          |
 //! | I17  | RuntimeLane default is Structured            | rollout_drills                 |
-//! | I18  | Asupersync falls back to Structured          | rollout_drills                 |
+//! | I18  | Asupersync resolution matches its feature    | rollout_drills                 |
 //! | I19  | Shadow comparison: lanes produce same output | shadow_run_comparator          |
 //! | I20  | Deterministic output across N runs           | effect_executor_parity         |
 //! | I21  | Deep recursion (depth 50) no stack overflow  | go_nogo_scorecard G8.1         |
@@ -377,15 +377,20 @@ fn i17_default_lane_structured() {
 }
 
 // ============================================================================
-// I18: Asupersync falls back to Structured
+// I18: Asupersync resolves to itself with its executor feature, otherwise Structured
 // ============================================================================
 
 #[test]
 fn i18_asupersync_fallback() {
+    let expected = if cfg!(feature = "asupersync-executor") {
+        RuntimeLane::Asupersync
+    } else {
+        RuntimeLane::Structured
+    };
     assert_eq!(
         RuntimeLane::Asupersync.resolve(),
-        RuntimeLane::Structured,
-        "I18"
+        expected,
+        "I18: lane resolution must match asupersync-executor availability"
     );
 }
 

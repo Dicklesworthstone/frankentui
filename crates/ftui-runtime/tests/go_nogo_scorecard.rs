@@ -316,13 +316,18 @@ fn g6_default_lane_structured() {
     );
 }
 
-/// GATE G6.2: Asupersync falls back to Structured.
+/// GATE G6.2: Asupersync resolves to itself with its executor feature, otherwise Structured.
 #[test]
 fn g6_asupersync_fallback() {
+    let expected = if cfg!(feature = "asupersync-executor") {
+        RuntimeLane::Asupersync
+    } else {
+        RuntimeLane::Structured
+    };
     assert_eq!(
         RuntimeLane::Asupersync.resolve(),
-        RuntimeLane::Structured,
-        "G6.2: Asupersync must fall back to Structured"
+        expected,
+        "G6.2: lane resolution must match asupersync-executor availability"
     );
 }
 

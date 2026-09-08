@@ -3045,13 +3045,13 @@ impl RuntimeLane {
     /// backend — see `EffectQueueConfig::uses_legacy_default_backend`).
     #[must_use]
     fn task_executor_backend(self) -> TaskExecutorBackend {
-        match self {
-            #[cfg(feature = "asupersync-executor")]
-            Self::Asupersync => TaskExecutorBackend::Asupersync,
-            // Structured cancellation does not serialize tasks. An unavailable
-            // Asupersync lane resolves to Structured before backend selection.
-            _ => TaskExecutorBackend::Spawned,
+        #[cfg(feature = "asupersync-executor")]
+        if self == Self::Asupersync {
+            return TaskExecutorBackend::Asupersync;
         }
+        // Structured cancellation does not serialize tasks. An unavailable
+        // Asupersync lane resolves to Structured before backend selection.
+        TaskExecutorBackend::Spawned
     }
 
     /// Read the lane from the `FTUI_RUNTIME_LANE` environment variable.
@@ -3620,14 +3620,14 @@ impl ProgramConfig {
     }
 
     #[must_use]
-    fn resolved_effect_queue_config(&self) -> EffectQueueConfig {
+    fn resolved_effect_queue_config(&self, resolved_lane: RuntimeLane) -> EffectQueueConfig {
         if !self.effect_queue.uses_legacy_default_backend() {
             return self.effect_queue.clone();
         }
 
         self.effect_queue
             .clone()
-            .with_backend(self.runtime_lane.resolve().task_executor_backend())
+            .with_backend(resolved_lane.task_executor_backend())
     }
 }
 
@@ -5204,7 +5204,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
         M::Message: Send + 'static,
     {
         let resolved_lane = config.runtime_lane.resolve();
-        let effect_queue_config = config.resolved_effect_queue_config();
+        let effect_queue_config = config.resolved_effect_queue_config(resolved_lane);
         let mut capabilities = TerminalCapabilities::with_overrides();
         let mouse_capture = config.resolved_mouse_capture();
         let requested_features = BackendFeatures {
@@ -5409,7 +5409,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     where
         M::Message: Send + 'static,
     {
-        let effect_queue_config = config.resolved_effect_queue_config();
+        let resolved_lane = config.runtime_lane.resolve();
+        let effect_queue_config = config.resolved_effect_queue_config(resolved_lane);
         let (width, height) = config
             .forced_size
             .unwrap_or_else(|| events.size().unwrap_or((80, 24)));
@@ -5476,6 +5477,17 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         )?;
 
         let guardrails = FrameGuardrails::new(config.guardrails);
+
+        tracing::info!(
+            target: crate::telemetry_schema::TARGET_RUNTIME,
+            requested_lane = config.runtime_lane.label(),
+            resolved_lane = resolved_lane.label(),
+            task_backend = task_executor.kind_name_for_logs(),
+            rollout_policy = config.rollout_policy.label(),
+            "runtime startup: lane={}, rollout={}",
+            resolved_lane.label(),
+            config.rollout_policy.label(),
+        );
 
         Ok(Self {
             model,
@@ -12184,7 +12196,8 @@ mod tests {
     where
         M::Message: Send + 'static,
     {
-        let effect_queue_config = config.resolved_effect_queue_config();
+        let effect_queue_config =
+            config.resolved_effect_queue_config(config.runtime_lane.resolve());
         let capabilities = TerminalCapabilities::basic();
         let mut writer = TerminalWriter::with_diff_config(
             Vec::new(),
@@ -16896,7 +16909,8 @@ mod tests {
         // one `effect_queue_loop` worker (which caused per-keystroke head-of-line
         // latency for PTY-forwarding apps). `enabled` is the legacy convenience
         // flag mirroring the backend, so it is now false for the default lane.
-        let resolved = ProgramConfig::default().resolved_effect_queue_config();
+        let config = ProgramConfig::default();
+        let resolved = config.resolved_effect_queue_config(config.runtime_lane.resolve());
         assert!(!resolved.enabled);
         assert_eq!(resolved.backend, TaskExecutorBackend::Spawned);
     }
@@ -16905,7 +16919,7 @@ mod tests {
     fn program_config_legacy_lane_resolves_to_spawned_backend() {
         let resolved = ProgramConfig::default()
             .with_lane(RuntimeLane::Legacy)
-            .resolved_effect_queue_config();
+            .resolved_effect_queue_config(RuntimeLane::Legacy);
         assert!(!resolved.enabled);
         assert_eq!(resolved.backend, TaskExecutorBackend::Spawned);
     }
@@ -16930,12 +16944,68 @@ mod tests {
         assert!(warning.contains("missing_feature=\"asupersync-executor\""));
         assert!(warning.contains("requested=\"asupersync\""));
         assert!(warning.contains("resolved=\"structured\""));
+    }
 
-        let resolved = ProgramConfig::default()
-            .with_lane(RuntimeLane::Asupersync)
-            .resolved_effect_queue_config();
-        assert_eq!(resolved.backend, TaskExecutorBackend::Spawned);
-        assert!(!resolved.enabled);
+    #[cfg(not(feature = "asupersync-executor"))]
+    #[test]
+    fn public_constructor_reports_fallback_once_and_actual_backend() {
+        use tracing_subscriber::prelude::*;
+
+        for (effect_queue, expected_backend) in [
+            (EffectQueueConfig::default(), "spawned"),
+            (
+                EffectQueueConfig::default().with_backend(TaskExecutorBackend::Spawned),
+                "spawned",
+            ),
+            (
+                EffectQueueConfig::default().with_backend(TaskExecutorBackend::EffectQueue),
+                "queued",
+            ),
+        ] {
+            let capture = A11yTraceCapture::default();
+            let subscriber = tracing_subscriber::registry().with(capture.clone().with_filter(
+                tracing_subscriber::filter::filter_fn(|metadata| {
+                    metadata.target() == crate::telemetry_schema::TARGET_RUNTIME
+                }),
+            ));
+            tracing::subscriber::with_default(subscriber, || {
+                let config = ProgramConfig::default()
+                    .with_lane(RuntimeLane::Asupersync)
+                    .with_effect_queue(effect_queue)
+                    .with_signal_interception(false);
+                let features = BackendFeatures::default();
+                let events = HeadlessEventSource::new(80, 24, features);
+                let writer = TerminalWriter::with_diff_config(
+                    Vec::new(),
+                    config.screen_mode,
+                    config.ui_anchor,
+                    TerminalCapabilities::basic(),
+                    config.diff_config.clone(),
+                );
+                let program = Program::with_event_source(
+                    TestModel { value: 0 },
+                    events,
+                    features,
+                    writer,
+                    config,
+                )
+                .expect("fallback executor initializes");
+                assert_eq!(program.task_executor.kind_name(), expected_backend);
+            });
+            let output = capture.0.lock().expect("capture lock");
+            assert_eq!(output.matches("missing_feature=").count(), 1, "{output}");
+            assert!(output.contains("missing_feature=\"asupersync-executor\""));
+            assert!(output.contains("requested=\"asupersync\""));
+            assert!(output.contains("resolved=\"structured\""));
+            let startup: Vec<_> = output
+                .lines()
+                .filter(|line| line.contains("runtime startup:"))
+                .collect();
+            assert_eq!(startup.len(), 1, "{output}");
+            assert!(startup[0].contains("requested_lane=\"asupersync\""));
+            assert!(startup[0].contains("resolved_lane=\"structured\""));
+            assert!(startup[0].contains(&format!("task_backend=\"{expected_backend}\"")));
+        }
     }
 
     #[cfg(feature = "asupersync-executor")]
@@ -16950,7 +17020,7 @@ mod tests {
         let config = ProgramConfig::default()
             .with_lane(RuntimeLane::Asupersync)
             .with_signal_interception(false);
-        let resolved = config.resolved_effect_queue_config();
+        let resolved = config.resolved_effect_queue_config(resolved_lane);
         assert_eq!(resolved.backend, TaskExecutorBackend::Asupersync);
         assert!(!resolved.enabled);
 
@@ -17006,7 +17076,12 @@ mod tests {
             let config = ProgramConfig::default()
                 .with_lane(RuntimeLane::Asupersync)
                 .with_effect_queue(EffectQueueConfig::default().with_backend(backend));
-            assert_eq!(config.resolved_effect_queue_config().backend, backend);
+            assert_eq!(
+                config
+                    .resolved_effect_queue_config(config.runtime_lane.resolve())
+                    .backend,
+                backend
+            );
         }
     }
 
@@ -17014,7 +17089,7 @@ mod tests {
     fn program_config_explicit_spawned_backend_is_preserved() {
         let resolved = ProgramConfig::default()
             .with_effect_queue(EffectQueueConfig::default().with_enabled(false))
-            .resolved_effect_queue_config();
+            .resolved_effect_queue_config(RuntimeLane::Structured);
         assert!(!resolved.enabled);
         assert_eq!(resolved.backend, TaskExecutorBackend::Spawned);
     }
