@@ -20,6 +20,7 @@ cargo run -p ftui-harness --example minimal
 cargo run -p ftui-harness --example streaming
 cargo run -p ftui-harness --example streaming -- --exit-when-child-exits -- seq 1 10000
 cargo run -p ftui-harness --example streaming -- --stdin --exit-when-child-exits -- cat
+cargo run -p ftui-harness --example streaming -- --stdin -- cat
 ```
 
 ## Part 1: Hello World Harness (< 50 LOC)
@@ -113,8 +114,7 @@ input clears the editor and produces a sanitized `[stdin queued]` echo; that
 echo reports queue admission, not child acknowledgment. Queue-full, closed-input
 and oversized-line errors leave the draft visible with retry or correction instructions.
 Paste uses the single-line editor: line breaks and tabs become spaces, and
-other control characters are removed. While the child is running, `q` is text;
-Ctrl-C quits the TUI and stops the immediate child, without forwarding SIGINT.
+other control characters are removed. While the child is running, `q` is text.
 Ctrl-D requests EOF after accepted input drains; it preserves any unsubmitted
 draft. A child that does not read can prevent that drain, so Ctrl-C remains
 available. Without `--stdin`, `q` still quits and the child receives closed stdin.
@@ -125,7 +125,28 @@ subscription ID. Its queue admits at most 16 lines of up to 64 KiB of UTF-8 byte
 each, plus one line being written. Sending never waits for pipe capacity;
 child exit, stop or I/O failure can discard accepted input. The draft itself is
 not byte capped. A handle belongs to one process run; a future restart needs a
-fresh handle. This example does not implement restart or process-tree control.
+fresh handle.
+
+Every command run also owns a `ProcessControl` handle. The model polls its PID
+and interrupt status every 250 ms; rendering uses that copied state. Ctrl-C
+requests SIGINT for the immediate child on supported Unix hosts. A second
+distinct press less than two seconds later quits the TUI and stops the child;
+key-repeat events do neither. At exactly two seconds the next press starts a
+new request window. Unsupported hosts, a child that has not started, closed
+control, pending requests and failed signals produce explicit feedback.
+`SIGINT sent` means the OS accepted the signal operation, not that a handler
+acknowledged it. A child that handles the signal can keep reading queued input,
+and requesting EOF does not disable interrupts. On an exited child, Ctrl-C or
+`q` quits immediately. Signals target the immediate child, not its descendants.
+
+Without `--exit-when-child-exits`, press F5 after the terminal event to rerun the
+same command and arguments. Restart also requires confirmed child cleanup;
+closed control alone is insufficient while accepted output is still draining.
+The model preserves the log viewer and unsubmitted draft, emits one
+`[process] RESTART` boundary, resets per-run counters and creates fresh control
+and input handles. Each process event carries its run generation, so late
+stdout, stderr or terminal events from the previous run cannot change the new
+run. This is same-command restart; process-tree control is unsupported.
 
 The runtime's shared subscription queue holds at most 256 messages, and a loop
 iteration drains at most 64 before returning to terminal work. After a full
@@ -149,7 +170,7 @@ completion indefinitely unless a timeout or cancellation interrupts the drain.
 The example stops the immediate child. A descendant can also retain stdin and
 keep an input worker blocked after cancellation; a blocked write may deliver a
 prefix before it returns. Byte-safe partial output, descendant cleanup and the
-remaining restart/registry workflow are still unfinished agent-shell work.
+remaining CLI/registry workflow are still unfinished agent-shell work.
 
 Choose a log policy in the model's returned command:
 
