@@ -1,4 +1,4 @@
-# FrankenTUI Reality Check and Bridge Plan (updated 2026-09-08)
+# FrankenTUI Reality Check and Bridge Plan (updated 2026-09-09)
 
 ## Current assessment: 2026-09-08, after publication of 0.7.0
 
@@ -12,10 +12,11 @@ This assessment starts at main `0ae2c02e4ab5d24c680a9a14d1c756d407519142`.
 The published product is the frozen, tagged commit
 `798efa0bb746601cea78b75ad8bc859f738a6456`. Subsequent changes repair doctor
 verification and, in the current execution block, connect optional Asupersync
-task execution, bounded web input admission, and explicit quit/replay recovery.
+task execution, bounded web input admission, explicit quit/replay recovery,
+and a buildable first-party browser renderer package.
 These changes are on main;
 the published 0.7.0 artifacts remain the tagged source. All **905 lines of
-AGENTS.md and 2,897 lines of README.md** were read afresh, along with both
+AGENTS.md and 2,902 lines of README.md** were read afresh, along with both
 original kernel plans, this complete prior assessment, and selected doctor,
 pane, SDK and migration contracts. The September 6 full subsidiary-document
 inventory remains historical evidence; this pass does not claim a second full
@@ -26,7 +27,11 @@ receipts, rather than session recollections, establish delivery. Additional
 audit agents were unavailable during the initial assessment. IcyBarn later
 reviewed the runtime and browser changes, identifying constructor diagnostics
 and quit/replay lifecycle gaps. That review is source evidence, not an
-independently executed browser or runtime test.
+independently executed browser or runtime test. The September 9 continuation
+starts at `6439f3f9fd8e06680166e1f021884b2d8afc8145`; IcyBarn independently
+inspected its source and Mac browser screenshot, while GreenLynx executed the
+DSR builds and live browser tests. AGENTS.md then gained nine lines documenting
+the observed browser-wrapper cleanup incident below.
 
 DSR remains the only authorized build/verification/release path. No Actions
 workflow, `act`, or DSR Actions-waiting command was used. The installed RCH and
@@ -34,6 +39,9 @@ UBS cleanup behavior remains incompatible with Rule 1, so neither was invoked.
 The initial assessment changed documentation and Beads. The subsequent product
 changes use retained native DSR checks and actual WASM/Node execution; those
 results do not convert historical or unexecuted host checks into an aggregate pass.
+The new browser package has now rendered the actual dashboard through WebGPU in
+headless native Mac Chrome. Linux SwiftShader still produces a blank viewport;
+physical mobile, IME, Safari and the complete browser matrix remain unproven.
 
 ### What the architecture actually delivers
 
@@ -67,8 +75,8 @@ in-tree caller, but its existence cannot substantiate automatic runtime use.
    repairs are shipped, not merely present in an unpublished checkout.
 2. **What does not yet work completely?** Doctor's coverage gate still fails;
    the corrected determinism comparator now passes all six retained captures.
-   Browser compilation and Node tests do not establish a complete
-   browser/GPU/IME/mobile journey. The accessibility tree does not reach an OS
+   Mac browser rendering and recovery now work in the exercised path, but do
+   not establish a complete browser/GPU/IME/mobile journey. The accessibility tree does not reach an OS
    screen reader by itself. The flagship interactive subprocess example is
    absent; its underlying streaming boundary is unbounded. Full editor,
    widget/focus, RTL/formatting and supported-host commitments remain. Several
@@ -117,17 +125,88 @@ reruns do not erase an earlier failed aggregate.
 | WASM | Seven portable checks, actual showcase release WASM build, and two Node execution tests pass. Raw WASM SHA256 `04e7e653823f3246e3830e5ab042ec92d24a801fe6834b898dbae8ea8e7fd57d`; receipt `frankentui-candidate-070-wasm/20260908T030920-1646623/receipt.json`. | No browser JS packaging or real browser execution in that receipt. Size/export/negative-guard and current host delivery obligations remain. |
 | Current runtime/web changes | DSR `frankentui-runtime-web10`, run `20edadf0-ca7a-41ed-8bb7-39bd8d2e0f3b`: workspace fmt/check/strict Clippy/strict rustdoc and feature-specific Clippy pass; web 335, runner 63, parity 15, runtime default 2,561 and Asupersync 2,569 test executions pass, all zero skipped. Full source manifest SHA256 `8a3ec39cc94b010aa96b87709202a2f87262896cfe9c66c57fca243dec7cbda5` is checked before/after. | This covers the changed suites, not every workspace test or host. The new public-constructor tests verify real task execution and warning/backend reporting; they do not prove Shadow or bounded shutdown. |
 | Current web/WASM changes | DSR `frankentui-runtime-web8-wasm`, run `5b64cc07-b317-425b-9a16-48e8ff975d7f`: portable/feature checks, four actual WASM test bodies, release cdylib, generated Node bindings, admission/recovery exercise and HTML syntax pass. Transformed WASM SHA256 `253765553bc9ab6b742eceed57a393673eead681f4c77b64a7fe24cda08f03fc`; source manifest `b96425700854f7683971f0f0623b04b96031d4b5bd623be12c5f726fcebc9fea`. | Native10 differs only in native test expectations, a test-only line wrap, and tracking docs/Beads. Node is not browser/GPU/Safari proof. The retained, unreferenced `ftui-demo-showcase/src/wasm_runner.rs` is source maintenance, not a compiled consumer. |
-| Quit/replay continuation | DSR `frankentui-replay4`, run `5c842c9c-3834-4c38-be1c-11d0132a199d`: all nine native stages pass, including workspace fmt/check/strict Clippy/strict rustdoc; web 344, runner 64, runtime 2,566 and parity 15 tests pass with zero skipped. `frankentui-replay4-wasm`, run `aed45dcb-9231-43da-a58d-b5a10b310c93`: all eight stages pass, including five actual WASM tests and generated JS quit-tail recovery. Both use source manifest `170a4adaf5c6a13fbf15861dcfb4c1650fc244c7d7852c7007c40cbaa88dce57`. | This proves explicit init/idle/quit boundaries, exact tail recovery, escaped Unicode and chain integrity on the exercised paths. Final HTML-only keyboard/zoom guards have separate DSR syntax receipt `frankentui-replay5-host/20260908T233057-3443332/receipt.json`, HTML SHA256 `7d4d292ae82b705e196045342ebeee1b36de769fac5cb9949774d455ce82d9cc`. Browser download/keyboard behavior, GPU and mobile remain unexecuted. |
+| Quit/replay continuation | DSR `frankentui-replay4`, run `5c842c9c-3834-4c38-be1c-11d0132a199d`: all nine native stages pass, including workspace fmt/check/strict Clippy/strict rustdoc; web 344, runner 64, runtime 2,566 and parity 15 tests pass with zero skipped. `frankentui-replay4-wasm`, run `aed45dcb-9231-43da-a58d-b5a10b310c93`: all eight stages pass, including five actual WASM tests and generated JS quit-tail recovery. Both use source manifest `170a4adaf5c6a13fbf15861dcfb4c1650fc244c7d7852c7007c40cbaa88dce57`. | This proves explicit init/idle/quit boundaries, exact tail recovery, escaped Unicode and chain integrity on the exercised paths. Final HTML-only keyboard/zoom guards have separate DSR syntax receipt `frankentui-replay5-host/20260908T233057-3443332/receipt.json`, HTML SHA256 `7d4d292ae82b705e196045342ebeee1b36de769fac5cb9949774d455ce82d9cc`. Later browser observations are recorded separately below. |
+| Browser packaging | DSR `frankentui-browser2`, run `4b5dffd3-a308-4adf-a8af-2f7730891712`: actual archived renderer and current runner build with the current dated toolchain and committed dependency locks. Source manifest `8ca1d9884c7b30f47cea27968bdf159a9d428d41ed414734c91e6c3b6d894261` passes before/after. JS/WASM signatures, source hashes and licenses are retained; imports agree with generated paths. | Repeated builds used a shared compiler cache, not independent clean-cache reproducibility. Historical renderer source emits one unreachable-call warning; it was not suppressed. Coherent whole-site rollback is not authenticated or rejected. |
+| Browser consumer | DSR `frankentui-browser-mac2`, run `5ab3f997-8a6d-4660-bb7e-afd63347d318`: Chrome 153.0.8010.36, actual WebGPU init/frame/resize, visible compositor screenshots, exact Unicode quit-tail recovery and an actual keyboard-activated download pass. Missing JS, valid-JS integrity corruption, wrong renderer revision and incompatible ABI all reject. Test SHA256 `71c014fed7e40d3e71114ab4a09acae46bad66071f8f83836401216d262003b2`. | This ABI mutation changed multiple fields; final version-only mutation is a separate check. Linux Chrome 152 SwiftShader init/input passed but screenshots were white with GPU SharedImage errors. Physical input, IME, mobile/Safari, full feature rendering and lifecycle remain open. |
+| Browser workspace gates | DSR `frankentui-browser-native`, run `8579c02f-a3e0-4ace-911b-85aa63f3acc0`: workspace fmt, locked all-target check, strict Clippy and strict rustdoc pass on the browser2 frozen source. | Cargo reports the existing `nix 0.28.0` future-incompatibility warning. No Rust code changed in this packaging block; prior Rust test receipts remain scoped to their source. |
 | Browser | Fresh `/web/` HTTP 200; September 6 Chromium touch/mouse checks remain valid for their deployed host revision. | HTTP availability and earlier cell-text checks do not establish current WASM identity, GPU pixels, Safari or physical iPhone behavior. |
 | Doctor execution | 2,691 tests pass with zero skipped; all 12 failure cases, six actual soak workflows, VHS snapshot smoke and replay pass after scoped fixture repairs. The repaired comparator passes all six retained workflows plus 40 comparison controls, report-reuse protection, three iteration guards and symlink replay. DSR `frankentui-doctor-comparator8`; script SHA256 `b44c7eae2b4f8f7830a5f8235405dcfa77cbbe37c9922eff0efb6158284495ee`. | This is a fresh comparison of existing captures, not new capture execution. All 410 retained inputs and earlier failed reports are unchanged. `.28.7` is repaired; coverage `.28.6` still blocks aggregate G22 acceptance. |
 | Doctor coverage | Corrected export includes all 24 formerly omitted executed test objects and unchanged profiles. In the unchanged 307-file domain: 56.230% lines, 37.176% branches, 50.578% functions; 16 checks fail. DSR run `6bae7909-f9b3-4d88-8f5d-e80022741d34`. | Floors remain 89/69/86. Doctor-only diagnostics are not the gate; neither silent scope narrowing nor threshold reduction is a repair. `.28.6` owns this. |
 | Performance | Buffer-fill scalar parity and the bounded Linux ten-row performance gate pass; retained table benchmark improves 275.44 to 70.55 microseconds. | Four runtime-only metrics are unmeasured. A macOS VFX p99 failure remains. G47 still needs equal-history total-cost and memory comparisons. |
 
+### September 9 browser delivery and retained failures
+
+The final package build is DSR `frankentui-browser3`, run
+`711464b2-4699-4522-89e5-ff859d02a3b4`, exit 0. It runs
+`bash build-wasm.sh NEW_OUTPUT` on the native Linux build host, targeting
+`wasm32-unknown-unknown` with default package features, release profile and the
+explicit WASM `ftui-extras` size override. The frozen full-source manifest is
+`be3af5116d56df22d20e8ff05e00594a735d41b89cb2257bb7c5cfaa40bd9935`.
+Both builds use `nightly-2026-08-31`, rustc
+`90850177249efe0321573c569aec5d12b257f8d6`, and wasm-bindgen `0.2.127`.
+The retained bundle includes generated JS and WASM declarations, exact package
+hashes, compiler identity and the source-input digest; no sibling website
+binary supplied this positive result.
+
+The final live consumer is DSR `frankentui-browser-mac3`, run
+`d5306ca4-ce32-4588-b693-c5fbc1820f74`, exit 0. Native Mac Chrome
+`153.0.8010.36` loads the actual build3 site through
+`node scripts/browser_showcase_smoke.mjs SITE NEW_EVIDENCE_DIR CDP_URL`.
+The test verifies WebGPU-backed visible dashboard startup, resize from 960×640
+to 800×500 at DPR 1, exact quit-tail Unicode JSONL, preserved recovery link after
+zoom and an actual downloaded file activated by CDP Enter. Four planted
+package failures reject: missing JS, changed valid JS with unchanged integrity,
+wrong renderer source revision, and API-version-only incompatibility with all
+other original contract fields preserved. The three compositor screenshots
+pass the predeclared minimum of 16 interior colors (5,364/3,901/3,820); this is a
+blank-screen guard, not a complete visual or performance oracle. The positive
+journey has no uncaught exception; the four intentional faults retain theirs.
+
+All paths below are under
+`/data/retained/ftui-release-20260908-greenlynx/`:
+
+- `browser3-site.tar`: SHA256
+  `01657cdfd45cba98fbbe55f90fcdc9f4fa1bcf8e4903187ba7dc3135a1b44735`.
+- `browser3-bundle/site/pkg/manifest.json`: SHA256
+  `08a0175cff92178c430c142a99ad87468c0e1ac7ad172c7406402e43f79788b3`.
+- `browser-mac3-evidence/evidence3/observations.json`: SHA256
+  `4646ee31c71f7d0e4ba368ddcce34b4aac70eee0f87c5ecb5d94390bfeb02d03`.
+- `browser-mac3-evidence/evidence3/resized.png`: SHA256
+  `86867c2f0edfcb0f1c9d3a7175ba749f966accbdca1f339eee8f94a69998e240`.
+- `browser3.sh/.yaml` and `browser-mac3.sh/.yaml` retain exact DSR commands;
+  DSR receipts/logs are in `~/.local/state/dsr/quality-logs/` under those tool
+  names. Their broken duration metadata is not timing evidence.
+
+IcyBarn reviewed the final helper, HTML, both locks and smoke test and inspected
+Mac captures. GreenLynx then executed the reviewed HTML/test hashes
+`e94dea2467a032384374a41bcbe9df9e67b10302bc20940d3cb57b7dba133a0a`
+and `54a1909b58436c8d1d5f7f766cfb166577c431d7c1e5de7115a6bbdd0d1b4805`.
+Neither agent closes `.29.7`: its isolated validation and expanded host
+acceptance remain incomplete. No new follow-up replaces those obligations.
+
+Failures are part of this result. Initial lock-bootstrap verification was
+invalidated by a moving source; the subsequent dependency-update attempt failed.
+The manually aligned lock then built with `--locked`. The first browser smoke
+timed out because its status-text oracle was wrong; frame records showed it
+was not evidence of a GPU stall, and that initial diagnosis was retracted.
+Linux's later white compositor output is a separate observed GPU path failure,
+despite successful frame/input logs. Current tests inspect actual pixels.
+
+The first browser attempt also invoked Playwright's recursive temporary
+artifact cleanup on disconnect. GreenLynx discovered this too late to stop it,
+disclosed the Rule 1 violation, replaced the adapter with direct Node CDP and
+recorded the precise restriction in AGENTS.md. Retained profiles, logs and
+screenshots survive; the removed temporary directory cannot be restored from
+evidence. RCH and UBS were not invoked. This incident is not erased by later
+passing checks. The historical renderer warning, Linux blank viewport,
+producer drop-oldest/byte limits, graphemes, physical input/IME, device loss,
+fallback and full mobile/Safari matrix remain explicit limits.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
-| Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; Rust and JS recovery return the accepted FIFO tail without executing it. | `.29.8/.29.9`: native/WASM/JS checks pass. Finish real renderer packaging and the browser/GPU/mobile matrix, including the HTML recovery download and post-stop keyboard/zoom behavior. |
+| Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; Rust and JS recovery return the accepted FIFO tail without executing it. The rebuilt historical renderer still drops its oldest queued input on overflow before this boundary. | `.29.7/.29.8/.29.9`: actual Mac browser rendering and recovery download now pass. Fix the producer queue and grapheme transport, then complete the original browser/GPU/IME/mobile matrix and packaging validation obligations. |
 | Interactive process stream | `process_subscription.rs:172–320`: `BufRead::lines`, unbounded sender, null stdin, immediate-child kill/wait. `Cmd::Log` already exists. | `.32.1–.32.3` after `.33.1/.33.2`: reuse working APIs; add the missing complete journey, newline-free/invalid-UTF-8/huge output, blocked consumers, child stdin policy and descendant cancellation. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
@@ -171,9 +250,22 @@ specific implementation or observation below, not completion of the whole goal):
   zero skipped, plus actual generated binding admission/recovery execution.
 - [x] `.29.8`: retain a host recovery download link and preserve it after stop;
   review pointer, error-overlay, keyboard and zoom handling; check final JS
-  syntax through DSR. Actual browser interaction remains in the next item.
+  syntax through DSR. Later browser interaction is recorded in the next items.
+- [x] `.29.7`: replace manifest-editing/optional-renderer packaging with pinned
+  archived first-party source, checked-in current/renderer dependency locks,
+  exact toolchain, a fresh retained output and one complete importable site.
+- [x] `.29.7`: verify archive and package bytes; check constructors, required
+  APIs and negotiated contract; exercise real missing/mixed/revision/ABI errors.
+- [x] `.29.8`: run the rebuilt packages in native Mac Chrome, inspect actual
+  dashboard pixels, assert changed-size frame output and retain GPU identity.
+- [x] `.29.8`: drive synthetic quit plus Unicode paste through the real renderer
+  and Rust model; verify exact recovered JSONL, stable link after zoom and an
+  actual keyboard-activated browser download with matching file bytes.
+- [ ] `.29.7`: finish the explicitly requested isolated artifact/contract unit
+  and boundary validation, along with the original expanded host obligations.
 - [ ] `.29.7–.29.9`: finish first-party renderer packaging and execute current
-  HTML/JS/WASM in the claimed real browser, GPU, IME and physical mobile hosts.
+  HTML/JS/WASM across the claimed GPU, IME and physical mobile hosts. Preserve
+  the Linux white-viewport failure; do not treat Mac success as matrix closure.
 - [ ] `.30.1/.30.3/.30.4`: implement shared semantic checksums and recordings,
   strict comparison including divergence/partial data, and effect-once candidate
   execution; verify with real recordings rather than simulator labels.

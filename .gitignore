@@ -8,7 +8,8 @@
 target/
 target-*/
 target_*/
-Cargo.lock
+# The workspace applications and DSR browser builds need a committed lock.
+fuzz/Cargo.lock
 fuzz/target/
 fuzz/artifacts/
 
@@ -207,4 +208,3 @@ check_output.txt
 # Skill-loop / repo-janitor scratch
 .skill-loop-progress.md
 .skill-loop-progress-*.md
-

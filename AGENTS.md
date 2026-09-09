@@ -235,6 +235,15 @@ cargo insta review
 
 ### End-to-End Testing
 
+**Browser retention constraint (observed 2026-09-09):** the installed Playwright
+`connectOverCDP` creates a temporary artifact directory and calls recursive
+`fs.promises.rm` on disconnect, even when Chrome was launched externally with a
+retained profile. Do not use that adapter under Rule 1. Use the direct Node
+WebSocket/CDP route in `scripts/browser_showcase_smoke.mjs` with an explicitly
+retained Chrome profile and download directory; inspect cleanup before using
+another browser wrapper. A screenshot must be inspected for actual UI pixels:
+successful frame logs and input recovery do not prove visible rendering.
+
 ```bash
 # Run E2E test scripts
 ./scripts/e2e_test.sh

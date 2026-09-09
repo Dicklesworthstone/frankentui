@@ -4,11 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>FrankenTUI — Showcase Demo</title>
-<link rel="preload" href="../../fonts/pragmasevka-nf-subset.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="./fonts/pragmasevka-nf-subset.woff2" as="font" type="font/woff2" crossorigin>
 <style>
 	  @font-face {
 	    font-family: "Pragmasevka NF";
-	    src: url("../../fonts/pragmasevka-nf-subset.woff2") format("woff2");
+	    src: url("./fonts/pragmasevka-nf-subset.woff2") format("woff2");
 	    font-weight: 400;
 	    font-style: normal;
 	    font-display: block;
@@ -241,8 +241,6 @@ const URL_ZOOM        = parseFloat(params.get("zoom")) || 0;
 // Console JSONL is extremely expensive at 60fps; enable only when debugging.
 const LOG_JSONL       = params.get("jsonl") === "1";
 const LOG_PERF        = false;  // Per-frame timing in console
-// Bump when deploying to bypass Cloudflare/browser caches for JS/WASM artifacts.
-const ASSET_VERSION = "2026-02-20.4";
 
 // ── DOM refs ───────────────────────────────────────────────────────────
 const canvas         = document.getElementById("terminal-canvas");
@@ -305,8 +303,8 @@ const fontsReady = (async () => {
 // and, worse, slows instantiation due to large data-segment memcpy.
 const largeAssetsPromise = (async () => {
   try {
-    const shakespeareUrl = `./crates/ftui-demo-showcase/data/shakespeare.txt?v=${ASSET_VERSION}`;
-    const sqliteUrl      = `./crates/ftui-demo-showcase/data/sqlite3.c?v=${ASSET_VERSION}`;
+    const shakespeareUrl = "./assets/shakespeare.txt";
+    const sqliteUrl      = "./assets/sqlite3.c";
     const [shakespeare, sqlite] = await Promise.all([
       fetch(shakespeareUrl).then((r) => {
         if (!r.ok) throw new Error(`GET ${shakespeareUrl} -> ${r.status}`);
@@ -327,34 +325,54 @@ const largeAssetsPromise = (async () => {
 // ── WASM module loading ────────────────────────────────────────────────
 let termMod, runnerMod;
 let runnerWasmExports = null;
+async function loadVerifiedModule(manifest, name) {
+  async function fetchVerified(filename) {
+    const hash = manifest.files?.[filename];
+    if (typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) {
+      throw new Error(`Missing package checksum: ${filename}`);
+    }
+    const bytes = Uint8Array.from(hash.match(/../g), (hex) => parseInt(hex, 16));
+    const integrity = `sha256-${btoa(String.fromCharCode(...bytes))}`;
+    const response = await fetch(`./pkg/${filename}?sha256=${hash}`, { integrity });
+    if (!response.ok) throw new Error(`GET ${filename} -> ${response.status}`);
+    return response;
+  }
+  const [js, wasm] = await Promise.all([
+    fetchVerified(`${name}.js`), fetchVerified(`${name}_bg.wasm`),
+  ]);
+  // Import the verified bytes themselves: a second URL import could race a
+  // deployment and execute different glue from the module we just checked.
+  const url = URL.createObjectURL(new Blob([await js.text()], { type: "text/javascript" }));
+  try {
+    const module = await import(url);
+    const exports = await module.default({ module_or_path: wasm });
+    return { module, exports };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 try {
-  // 1a. Download JS glue modules.
-  setProgress(0, "Downloading JS modules...");
-  const termJsUrl = `../../pkg/FrankenTerm.js?v=${ASSET_VERSION}`;
-  const runnerJsUrl = `../../pkg/ftui_showcase_wasm.js?v=${ASSET_VERSION}`;
-  [termMod, runnerMod] = await Promise.all([
-    import(termJsUrl),
-    import(runnerJsUrl),
+  setProgress(-1, "Loading verified browser packages...");
+  const response = await fetch("./pkg/manifest.json", { cache: "no-store" });
+  if (!response.ok) throw new Error(`GET package manifest -> ${response.status}`);
+  const manifest = await response.json();
+  if (manifest.schema !== "ftui-browser-package-v1") {
+    throw new Error("Unsupported browser package manifest");
+  }
+  if (manifest.renderer?.revision !== "88b402b8be9c70a4405895d4172e449940cab2fe") {
+    throw new Error("Unsupported renderer source revision");
+  }
+  const [renderer, showcase] = await Promise.all([
+    loadVerifiedModule(manifest, "FrankenTerm"),
+    loadVerifiedModule(manifest, "ftui_showcase_wasm"),
   ]);
-
-  // 1b. Initialize WASM modules directly from URLs.
-  // Let wasm-bindgen use the browser's streaming compilation path instead of
-  // buffering + copying full ArrayBuffers in JS first.
-  setProgress(-1, "Initializing WASM modules...");
-  const termWasmUrl = `../../pkg/FrankenTerm_bg.wasm?v=${ASSET_VERSION}`;
-  const runnerWasmUrl = `../../pkg/ftui_showcase_wasm_bg.wasm?v=${ASSET_VERSION}`;
-
-  [, runnerWasmExports] = await Promise.all([
-    termMod.default(termWasmUrl),
-    runnerMod.default(runnerWasmUrl),
-  ]);
-  setProgress(95, "Starting WebGPU...");
+  termMod = renderer.module;
+  runnerMod = showcase.module;
+  runnerWasmExports = showcase.exports;
+  setProgress(95, "Starting terminal renderer...");
 } catch (e) {
   showError(
-    `Failed to load WASM modules.\n\n` +
-    `Expected wasm-pack output at ../../pkg/FrankenTerm.js and ../../pkg/ftui_showcase_wasm.js\n\n` +
-    `Build with:\n` +
-    `  ./build-wasm.sh\n\n` +
+    `Failed to load the browser packages. Reload after the complete site bundle has been installed.\n\n` +
     `Error: ${e.message || e}`
   );
   throw e;
@@ -364,12 +382,30 @@ try {
 const { FrankenTermWeb }  = termMod;
 const { ShowcaseRunner }  = runnerMod;
 
-const term   = new FrankenTermWeb();
+let term;
 const dpr    = window.devicePixelRatio || 1.0;
 
 try {
+  if (typeof FrankenTermWeb !== "function" || typeof ShowcaseRunner !== "function") {
+    throw new Error("Browser package is missing its constructor");
+  }
+  term = new FrankenTermWeb();
+  const contract = typeof term.apiContract === "function" ? term.apiContract() : null;
+  if (
+    contract?.apiLine !== "frankenterm-js" || contract.apiVersion !== "1.0.0" ||
+    contract.packageName !== "frankenterm-web" || contract.packageVersion !== "0.2.0" ||
+    contract.protocolVersion !== "frankenterm-ws-v1" || contract.eventSchemaVersion !== "1.0.0"
+  ) {
+    throw new Error("Unsupported first-party renderer API contract");
+  }
+  for (const method of ["init", "applyPatchBatchFlat", "render", "input", "drainEncodedInputs", "destroy"]) {
+    if (typeof term[method] !== "function") throw new Error(`Renderer is missing ${method}`);
+  }
+  for (const method of ["init", "step", "pushEncodedInput", "takeFlatPatches", "takePendingInputTrace"]) {
+    if (typeof ShowcaseRunner.prototype[method] !== "function") throw new Error(`Runner is missing ${method}`);
+  }
   await fontsReady;
-  setProgress(96, "Initializing WebGPU terminal...");
+  setProgress(96, "Initializing terminal renderer...");
   await term.init(canvas, {
     cols: INITIAL_COLS,
     rows: INITIAL_ROWS,
@@ -379,7 +415,7 @@ try {
     focused: true,
   });
 } catch (e) {
-  showError(`FrankenTermWeb.init() failed: ${e.message || e}\n\nWebGPU may not be supported in this browser.`);
+  showError(`Terminal initialization failed: ${e.message || e}`);
   throw e;
 }
 
@@ -1213,7 +1249,8 @@ function jsonl(obj) {
   if (LOG_JSONL) console.log(JSON.stringify(obj));
 }
 
-jsonl({ event: "init", cols: currentCols, rows: currentRows, dpr, zoom: userZoom, ts: Date.now() });
+jsonl({ event: "init", cols: currentCols, rows: currentRows, dpr, zoom: userZoom,
+  renderer_backend: term.rendererBackend(), ts: Date.now() });
 
 function geometrySignature(cols, rows, dprValue, zoomValue) {
   return `${cols}x${rows}@${dprValue.toFixed(4)}:z${Math.round(zoomValue * 1000)}`;

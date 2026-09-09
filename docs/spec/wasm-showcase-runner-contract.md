@@ -6,9 +6,16 @@ Describes the in-tree runner API and its intended integration with:
 2. `FrankenTermWeb` (adjacent web terminal surface)
 3. The showcase app runner compiled to WASM (`ShowcaseRunner`)
 
-The runner and bounded Rust input queue are implemented here; the adjacent
-`frankenterm-web` renderer is not vendored. Browser/renderer verification and
-host queue bounds remain open under `bd-g00-root-epic-ewths.29.8`.
+The runner and bounded Rust input queue are implemented here. `build-wasm.sh`
+builds the first-party renderer from pinned historical source
+`88b402b8be9c70a4405895d4172e449940cab2fe` and its checked-in `renderer.lock`,
+using the current `rust-toolchain.toml` pin. The renderer is extracted into a
+fresh output directory, not restored as a workspace member. It and the current
+runner are packaged into one `site/pkg/` directory; the browser checks package
+byte integrity and renderer API/event-schema versions before initialization.
+The historical renderer's drop-oldest input queues, grapheme transport and
+full browser/device verification remain open under
+`bd-g00-root-epic-ewths.29.8` and `.29.9`.
 
 ## Architecture
 

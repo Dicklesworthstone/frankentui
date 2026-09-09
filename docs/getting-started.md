@@ -52,12 +52,13 @@ Current repo reality:
 
 - This checkout contains the in-tree web foundations: `ftui-web` and `ftui-showcase-wasm`.
 - This checkout does **not** currently vendor a local `crates/frankenterm-web` package.
-- If your website also embeds `FrankenTermWeb`, that browser-facing bundle must
-  come from the adjacent/external repo or worktree that owns it.
+- The build helper retrieves `FrankenTermWeb` from this repository's pinned
+  historical source, before that crate was removed from the workspace.
 
 ### 1. Build artifacts from this repo
 
-From `frankentui/`:
+Run these commands inside a native DSR job using the channel in
+`rust-toolchain.toml`. Keep GitHub Actions disabled.
 
 ```bash
 # One-time target install
@@ -72,21 +73,48 @@ cargo check -p ftui-showcase-wasm --target wasm32-unknown-unknown
 # Optional: emit ftui-web release artifacts into target/wasm32-unknown-unknown/release/deps/
 cargo build -p ftui-web --target wasm32-unknown-unknown --release
 
-# Optional: build the in-tree showcase WASM package with the repo helper
-./build-wasm.sh
+# Build both real browser packages and a self-contained site into a NEW directory
+bash build-wasm.sh /absolute/new-browser-build
+# Serve the completed site (not the Rust checkout)
+python3 -m http.server --directory /absolute/new-browser-build/site 8080
 ```
 
-If you need a browser-facing `FrankenTermWeb` bundle, build or import that
-package from the adjacent/external repo that owns it. Do not run
-`wasm-pack build crates/frankenterm-web` from this checkout because that path is
-not present here. The repo helper also skips that package by default; set
-`FRANKENTERM_WEB_CRATE_DIR=/path/to/adjacent/frankenterm-web` only when you
-explicitly want it to build an adjacent/out-of-tree crate into `pkg/`.
+The helper requires Cargo, Python 3.11+, curl, tar and `wasm-bindgen` matching
+both checked-in locks (currently `0.2.127`). Install the CLI through Cargo on the
+DSR host when needed. It builds the current showcase and renderer source at
+`88b402b8be9c70a4405895d4172e449940cab2fe`, verifies the source archive SHA-256,
+and applies `crates/ftui-showcase-wasm/renderer.lock` to that isolated source
+tree. Both builds use the current repository's exact toolchain pin and
+`--locked`. Cargo profile configuration supplies the WASM size override;
+the helper never rewrites source manifests or removes previous outputs.
+
+The output retains source, licenses, dependency locks, tool versions and
+`source-inputs.json`. Its `site/` directory contains the host, font, text assets,
+and both JS/WASM packages together. The host verifies package bytes against
+`pkg/manifest.json` before execution and checks the renderer API contract.
+Deploy the complete `site/` directory together. Integrity checks detect mixed or
+corrupt packages; they do not authenticate a manifest or prevent a coherent
+rollback of an entire site. The historical renderer's queue overflow policy,
+grapheme transport and full browser/device matrix remain open work.
+
+For a real browser smoke test, launch Chrome with a retained profile and CDP
+endpoint on the DSR host, then use Node 22+ directly (no automation package):
+
+```text
+node scripts/browser_showcase_smoke.mjs SITE NEW_EVIDENCE_DIR CDP_URL
+```
+
+The test exercises actual rendering startup/resize, quit-tail recovery and a
+keyboard-activated browser download, plus missing/corrupt/wrong-revision/ABI
+package failures. It asserts visible compositor pixels and retains screenshots
+and browser observations. Synthetic DOM inputs
+do not establish physical keyboard/IME/mobile behavior; inspect the recorded
+renderer backend before making GPU claims.
 
 ### 2. Initialize in a Next.js client component
 
 The snippet below assumes your website repo already contains a `FrankenTermWeb`
-bundle at `@/wasm/frankenterm-web/FrankenTerm` from that adjacent build.
+bundle at `@/wasm/frankenterm-web/FrankenTerm` from the pinned build above.
 
 ```tsx
 "use client";

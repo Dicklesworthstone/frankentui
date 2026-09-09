@@ -1,106 +1,119 @@
 #!/usr/bin/env bash
-# build-wasm.sh — Maximum-optimized WASM build for the FrankenTUI showcase demo.
-#
-# Optimization pipeline:
-#   1. Rust compiler: opt-level="z", LTO, codegen-units=1, panic=abort, strip
-#   2. RUSTFLAGS: enable modern WASM features for better codegen
-#   3. wasm-opt: -Oz --converge --all-features (runs passes until no improvement)
-#
-# Temporarily removes the ftui-extras opt-level=3 override (which bloats WASM
-# by disabling size optimizations), builds the in-tree WASM showcase crate, and
-# optionally builds an adjacent/out-of-tree frankenterm-web crate when explicitly
-# requested via FRANKENTERM_WEB_CRATE_DIR.
+# Build a complete browser showcase inside a native DSR job.
+# The first-party renderer comes from its last source change before removal
+# from this workspace. Its source, dependency lock and license are retained.
+# No source manifest edits, wasm-pack cleanup, or reuse of stale pkg files.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-CARGO_TOML="Cargo.toml"
-BACKUP="${CARGO_TOML}.bak"
-
-# Ensure wasm-pack is available.
-if ! command -v wasm-pack &>/dev/null; then
-  echo "ERROR: wasm-pack is not installed. Install with: cargo install wasm-pack" >&2
-  exit 1
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+if [[ $# != 1 || $1 != /* ]]; then
+  fail 'usage: bash build-wasm.sh /absolute/NEW_OUTPUT_DIR (run through DSR)'
 fi
+output=$1
+[[ ! -e "$output" && ! -L "$output" ]] || fail "output already exists: $output"
+output=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$output")
+case "$output/" in "$SCRIPT_DIR/"*) fail 'output must be outside the checkout' ;; esac
+[[ -z ${FRANKENTERM_WEB_CRATE_DIR:-} ]] || fail 'unverified renderer overrides are unsupported'
+for tool in cargo rustc wasm-bindgen python3 curl tar; do
+  command -v "$tool" >/dev/null || fail "missing tool: $tool"
+done
+[[ -f Cargo.lock ]] || fail 'Cargo.lock is required; retain the DSR candidate lock'
+[[ -f crates/ftui-showcase-wasm/renderer.lock ]] || fail 'renderer dependency lock is missing'
 
-# ── Step 0: Set WASM-specific compiler flags ──────────────────────────────────
-# Enable modern WASM features that all major browsers support (Chrome 91+,
-# Firefox 89+, Safari 15+). These unlock better codegen from LLVM:
-#   bulk-memory     — memcpy/memset as single wasm instructions
-#   mutable-globals — avoid indirection for thread-local-like patterns
-#   nontrapping-fptoint — faster float→int without trapping semantics
-#   sign-ext        — i32.extend8_s etc, avoids shift-based sign extension
-#   reference-types — required by some wasm-bindgen features
-#   multivalue      — functions can return multiple values (avoids stack spills)
-#
-# IMPORTANT: Use CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS, NOT RUSTFLAGS.
-# RUSTFLAGS applies to ALL compilations including proc macros (serde_derive,
-# wasm-bindgen-macro) that compile for the HOST target, which would fail with
-# WASM-specific target features.
-WASM_FLAGS="-C target-feature=+bulk-memory,+mutable-globals,+nontrapping-fptoint,+sign-ext,+reference-types,+multivalue"
-export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS:-} ${WASM_FLAGS}"
+# The current repository pin governs BOTH builds, including the archived tree.
+export RUSTUP_TOOLCHAIN
+RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+[[ "$RUSTUP_TOOLCHAIN" == nightly-????-??-?? ]] || fail 'toolchain must be pinned by date'
+unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS
+export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
+export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
 
-echo ">> WASM RUSTFLAGS: $CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS"
+renderer_revision=88b402b8be9c70a4405895d4172e449940cab2fe
+renderer_archive_sha256=46e23154a20e22672465e406f5f79f5b9e800198c8f655e073d0e79ad0d05306
+mkdir "$output"
+output=$(cd "$output" && pwd)
+mkdir "$output/renderer-source" "$output/site" "$output/site/pkg" "$output/site/assets" "$output/site/fonts"
+rustc -Vv > "$output/toolchain.txt"
+wasm-bindgen --version > "$output/wasm-bindgen.txt"
 
-# ── Step 1: Patch Cargo.toml to remove ftui-extras opt-level override ────────
-echo ">> Patching $CARGO_TOML (removing ftui-extras opt-level=3 override)..."
+# Require the CLI schema to match both dependency locks before compilation.
+python3 - "$output/wasm-bindgen.txt" <<'PY'
+import pathlib, sys, tomllib
+cli = pathlib.Path(sys.argv[1]).read_text().strip().split()[-1]
+for name in ('Cargo.lock', 'crates/ftui-showcase-wasm/renderer.lock'):
+    packages = tomllib.loads(pathlib.Path(name).read_text())['package']
+    versions = {p['version'] for p in packages if p['name'] == 'wasm-bindgen'}
+    if versions != {cli}:
+        raise SystemExit(f'{name}: wasm-bindgen CLI {cli} does not match {sorted(versions)}')
+PY
 
-restore_cargo() {
-  if [[ -f "$BACKUP" ]]; then
-    echo ">> Restoring $CARGO_TOML..."
-    mv "$BACKUP" "$CARGO_TOML"
-  fi
+curl --fail --location --user-agent "$CARGO_HTTP_USER_AGENT" \
+  --output "$output/renderer.tar.gz" \
+  "https://codeload.github.com/Dicklesworthstone/frankentui/tar.gz/$renderer_revision"
+python3 - "$output/renderer.tar.gz" "$renderer_archive_sha256" <<'PY'
+import hashlib, pathlib, sys
+actual = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()
+if actual != sys.argv[2]:
+    raise SystemExit(f'renderer source checksum mismatch: {actual}')
+PY
+tar -xz --strip-components=1 -f "$output/renderer.tar.gz" -C "$output/renderer-source"
+[[ ! -e "$output/renderer-source/Cargo.lock" ]] || fail 'unexpected lock in pinned source archive'
+cp crates/ftui-showcase-wasm/renderer.lock "$output/renderer-source/Cargo.lock"
+
+build_package() {
+  local source=$1 package=$2 out_name=$3 target_dir
+  # The packages have distinct output names; cache selection is owned by DSR.
+  target_dir=${CARGO_TARGET_DIR:-$output/target}
+  [[ "$target_dir" == /* ]] || fail 'CARGO_TARGET_DIR must be absolute'
+  (
+    cd "$source"
+    cargo --config 'profile.release.package.ftui-extras.opt-level="z"' \
+      build --locked --release --lib --target wasm32-unknown-unknown \
+      --target-dir "$target_dir" -p "$package"
+  )
+  wasm-bindgen --target web --out-name "$out_name" --out-dir "$output/site/pkg" \
+    "$target_dir/wasm32-unknown-unknown/release/${package//-/_}.wasm"
 }
-trap restore_cargo EXIT
+build_package "$output/renderer-source" frankenterm-web FrankenTerm
+build_package "$SCRIPT_DIR" ftui-showcase-wasm ftui_showcase_wasm
+cp crates/ftui-showcase-wasm/frankentui_showcase_demo.html "$output/site/index.html"
+cp crates/ftui-demo-showcase/data/shakespeare.txt crates/ftui-demo-showcase/data/sqlite3.c "$output/site/assets/"
+cp fonts/pragmasevka-nf-subset.woff2 "$output/site/fonts/"
+cp "$output/renderer-source/LICENSE" "$output/site/RENDERER-LICENSE"
+cp LICENSE "$output/site/LICENSE"
 
-cp "$CARGO_TOML" "$BACKUP"
-
-# Remove the [profile.release.package.ftui-extras] section and its opt-level line.
-# This is a simple sed that removes both the section header and the opt-level line.
-sed -i '/^\[profile\.release\.package\.ftui-extras\]$/,/^$/d' "$CARGO_TOML"
-# Also remove the comment line before it if it's still there.
-sed -i '/^# VFX-heavy crate: prefer speed over binary size/d' "$CARGO_TOML"
-
-# ── Step 2: Build WASM crates ────────────────────────────────────────────────
-# wasm-pack runs wasm-opt automatically using flags from
-# [package.metadata.wasm-pack.profile.release] in each crate's Cargo.toml:
-#   wasm-opt = ["-Oz", "--all-features", "--converge"]
-if [[ -n "${FRANKENTERM_WEB_CRATE_DIR:-}" ]]; then
-  if [[ ! -d "$FRANKENTERM_WEB_CRATE_DIR" ]]; then
-    echo "ERROR: FRANKENTERM_WEB_CRATE_DIR does not exist: $FRANKENTERM_WEB_CRATE_DIR" >&2
-    exit 1
-  fi
-
-  echo ">> Building external frankenterm-web from $FRANKENTERM_WEB_CRATE_DIR..."
-  wasm-pack build "$FRANKENTERM_WEB_CRATE_DIR" \
-    --target web \
-    --out-dir "$SCRIPT_DIR/pkg/frankenterm-web" \
-    --out-name FrankenTerm \
-    --release
-else
-  echo ">> Skipping frankenterm-web: this checkout has no crates/frankenterm-web."
-  echo "   Set FRANKENTERM_WEB_CRATE_DIR=/path/to/adjacent/frankenterm-web crate to build it."
-fi
-
-echo ">> Building ftui-showcase-wasm (demo runner)..."
-wasm-pack build crates/ftui-showcase-wasm \
-  --target web \
-  --out-dir ../../pkg \
-  --release
-
-# ── Step 3: Report sizes ────────────────────────────────────────────────────
-echo ""
-echo "── WASM binary sizes ──"
-while IFS= read -r f; do
-  if [ -f "$f" ]; then
-    size_bytes=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
-    size_mb=$(echo "scale=2; $size_bytes / 1048576" | bc)
-    echo "  $f: ${size_mb} MB ($size_bytes bytes)"
-  fi
-done < <(find pkg -type f -name '*.wasm' | sort)
-
-echo ""
-echo "── Build complete ──"
-echo "Serve from the project root with: python3 -m http.server 8080"
-echo "Open: http://localhost:8080/crates/ftui-showcase-wasm/frankentui_showcase_demo.html"
+# This manifest is consumed by the host's integrity loader before it executes
+# either module. It also binds the package to exact source/dependency inputs.
+python3 - "$output" "$renderer_revision" "$renderer_archive_sha256" <<'PY'
+import hashlib, json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+files = {p.name: digest(p) for p in sorted((root / 'site/pkg').iterdir()) if p.suffix in ('.js', '.wasm')}
+inputs = {p.as_posix(): digest(p) for p in sorted(pathlib.Path('crates').rglob('*'))
+          if p.is_file() and p.suffix in ('.rs', '.toml')}
+for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-wasm.sh',
+             'crates/ftui-showcase-wasm/frankentui_showcase_demo.html',
+             'crates/ftui-showcase-wasm/renderer.lock', 'fonts/pragmasevka-nf-subset.woff2',
+             'crates/ftui-demo-showcase/data/shakespeare.txt', 'crates/ftui-demo-showcase/data/sqlite3.c'):
+    inputs[name] = digest(pathlib.Path(name))
+source_bytes = json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()
+with (root / 'source-inputs.json').open('xb') as out:
+    out.write(source_bytes)
+manifest = {
+    'schema': 'ftui-browser-package-v1', 'toolchain': os.environ['RUSTUP_TOOLCHAIN'],
+    'renderer': {'revision': sys.argv[2], 'archive_sha256': sys.argv[3],
+                 'lock_sha256': digest(pathlib.Path('crates/ftui-showcase-wasm/renderer.lock')),
+                 'license': 'MIT License (with OpenAI/Anthropic Rider)'},
+    'source_inputs_sha256': hashlib.sha256(source_bytes).hexdigest(),
+    'runner_lock_sha256': digest(pathlib.Path('Cargo.lock')), 'files': files,
+}
+with (root / 'site/pkg/manifest.json').open('x') as out:
+    json.dump(manifest, out, indent=2)
+    out.write('\n')
+for name, sha in files.items():
+    print(f'{sha}  pkg/{name}')
+PY
+printf 'Serve the completed bundle: python3 -m http.server --directory %q 8080\n' "$output/site"
