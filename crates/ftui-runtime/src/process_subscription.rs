@@ -4,7 +4,8 @@
 //! [`ProcessSubscription`] wraps [`std::process::Command`] as a first-class
 //! runtime [`Subscription`]. It spawns a child process, captures stdout
 //! line-by-line, and sends messages to the model. When the subscription is
-//! stopped (via [`StopSignal`]), the child process is killed.
+//! stopped (via [`StopSignal`]), termination of the immediate child is requested
+//! and its cleanup outcome is checked.
 //!
 //! # Migration rationale
 //!
@@ -56,7 +57,10 @@ pub enum ProcessEvent {
     Exited(i32),
     /// The process was terminated by a Unix signal.
     Signaled(i32),
-    /// The process was killed by the subscription (stop signal or timeout).
+    /// Termination was requested and the immediate child was reaped.
+    ///
+    /// On Unix its observed status must be SIGKILL. Pending input/output may
+    /// be incomplete. Failed or unconfirmed cleanup produces [`Self::Error`].
     Killed,
     /// Spawning, monitoring, or process pipe I/O failed.
     Error(String),
@@ -84,10 +88,11 @@ pub struct ProcessControlStatus {
     pub pid: Option<u32>,
     /// The supervisor accepts no further requests for this run.
     pub closed: bool,
-    /// No child was spawned, or the supervisor confirmed that it was reaped.
+    /// No child was spawned, or its owner confirmed that it was reaped.
     ///
     /// This does not prove output drain completion. Wait for this run's terminal
-    /// [`ProcessEvent`] as well before replacing its subscription.
+    /// [`ProcessEvent`] as well before replacing its subscription. A retained
+    /// background reaper can set this after an unconfirmed-cleanup error.
     pub can_restart: bool,
     /// Outcome of the most recent interrupt request.
     pub interrupt: ProcessInterruptStatus,
@@ -412,8 +417,10 @@ fn write_process_input(
 /// A subscription that spawns and monitors an external process.
 ///
 /// Captures stdout/stderr line-by-line and sends [`ProcessEvent`] messages.
-/// The process is killed when the subscription's [`StopSignal`] fires or
-/// when the optional timeout expires.
+/// Termination is requested when the subscription's [`StopSignal`] fires or
+/// when the optional timeout expires. [`ProcessEvent::Killed`] requires a
+/// successful kill request and confirmed reaping (with SIGKILL status on Unix).
+/// Failed or unconfirmed cleanup produces [`ProcessEvent::Error`].
 ///
 /// Normal exit waits for stdout/stderr forwarding to finish, including bounded
 /// channel backpressure. The timeout remains active during that drain. If the
@@ -423,13 +430,20 @@ fn write_process_input(
 /// Each UTF-8 line is limited to [`MAX_PROCESS_LINE_BYTES`] payload bytes.
 /// LF and its immediately preceding CR are excluded from the limit. An
 /// unterminated final line is delivered at EOF (preserving any trailing CR).
-/// Oversized lines, invalid UTF-8, and read failures stop forwarding, terminate
-/// and reap the immediate child, and produce one error instead of a normal
-/// exit. That error reports incomplete output and any child cleanup failure.
+/// Oversized lines, invalid UTF-8, and read failures stop forwarding, request
+/// termination of the immediate child, and produce one error instead of a
+/// normal exit. That error reports incomplete output and the cleanup outcome.
+/// Monitoring and input failures use the same cleanup path. After an accepted
+/// kill request, foreground reaping is limited to 500 ms; a rejected request
+/// never leads to a blocking foreground wait. If ownership remains safe, an
+/// unconfirmed child is handed to a background reaper. If that thread cannot
+/// start, the error says so; a later wait failure is logged and leaves restart
+/// disabled. Late reaping does not turn the earlier error into success. Linux
+/// retains a pidfd when available; after a wait error, targets without a
+/// retained process handle refuse further waits and signals for that PID.
 /// Inherited descendant pipes cannot be interrupted by the reader stop signal.
 /// Input is closed by default; [`stdin`](Self::stdin) enables a bounded input
-/// worker. Its I/O failures terminate and reap the immediate child, like output
-/// failures. Inherited descendant stdin can also keep a worker blocked after
+/// worker. Inherited descendant stdin can also keep a worker blocked after
 /// cancellation; joins are bounded, but descendant cleanup is not provided.
 /// A blocked OS write can deliver a prefix even after stop is requested.
 /// Optional [`control`](Self::control) admits interrupts independently of those
@@ -449,6 +463,7 @@ pub struct ProcessSubscription<M: Send + 'static> {
 
 const PROCESS_READER_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 const PROCESS_READER_JOIN_POLL: Duration = Duration::from_millis(5);
+const PROCESS_REAP_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Maximum UTF-8 payload bytes in a process stdout/stderr line (64 KiB).
 ///
@@ -563,27 +578,183 @@ fn take_reader_error<E: std::fmt::Display>(
     }
 }
 
-fn output_failure_event(error: &str, child: &mut std::process::Child) -> ProcessEvent {
-    let disposition = if let Ok(Some(status)) = child.try_wait() {
-        format!("child reaped: {:?}", process_exit_event(status))
-    } else {
-        match child.kill() {
-            Ok(()) => match child.wait() {
-                Ok(status) => format!(
-                    "child terminated and reaped: {:?}",
-                    process_exit_event(status)
-                ),
-                Err(error) => format!("child kill succeeded but reaping failed: {error}"),
-            },
-            Err(error) => match child.try_wait() {
-                Ok(Some(status)) => format!("child reaped: {:?}", process_exit_event(status)),
-                _ => format!("child kill failed: {error}; child may still be running"),
-            },
+#[derive(Debug)]
+struct ChildCleanup {
+    status: Option<std::process::ExitStatus>,
+    kill_sent: bool,
+    detail: String,
+}
+
+impl ChildCleanup {
+    fn reaped(status: std::process::ExitStatus, kill_sent: bool, prior_error: &str) -> Self {
+        Self {
+            status: Some(status),
+            kill_sent,
+            detail: format!(
+                "{prior_error}child reaped: {:?}",
+                process_exit_event(status)
+            ),
+        }
+    }
+
+    fn unconfirmed(detail: String) -> Self {
+        Self {
+            status: None,
+            kill_sent: false,
+            detail: format!("{detail}; child may still be running or unreaped"),
+        }
+    }
+}
+
+fn reap_child_until(
+    child: &mut std::process::Child,
+    deadline: Instant,
+    wait_error: &mut Option<String>,
+) -> io::Result<Option<std::process::ExitStatus>> {
+    loop {
+        match try_wait_child(child, wait_error) {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        // A stopped cancellation token would return immediately and spin.
+        std::thread::sleep(PROCESS_READER_JOIN_POLL.min(remaining));
+    }
+}
+
+fn has_retained_process_handle(child: &std::process::Child) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::os::linux::process::ChildExt::pidfd(child).is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = child;
+        // Windows retains a process handle; other Unix targets only retain a
+        // PID, which must not be signaled after ownership becomes uncertain.
+        cfg!(windows)
+    }
+}
+
+fn try_wait_child(
+    child: &mut std::process::Child,
+    wait_error: &mut Option<String>,
+) -> io::Result<Option<std::process::ExitStatus>> {
+    if let Some(error) = wait_error.as_ref()
+        && !has_retained_process_handle(child)
+    {
+        // Ownership uncertainty is sticky. A later numeric-PID wait could
+        // observe a different child that reused this PID, even without a kill.
+        return Err(io::Error::other(error.clone()));
+    }
+    let result = child.try_wait();
+    if let Err(error) = &result {
+        wait_error.get_or_insert_with(|| error.to_string());
+    }
+    result
+}
+
+fn cleanup_child(child: &mut std::process::Child, wait_error: &mut Option<String>) -> ChildCleanup {
+    let prior_error = match try_wait_child(child, wait_error) {
+        Ok(Some(status)) => return ChildCleanup::reaped(status, false, ""),
+        Ok(None) => String::new(),
+        Err(error) => {
+            let context = format!("child wait failed: {error}; ");
+            if !has_retained_process_handle(child) {
+                return ChildCleanup::unconfirmed(format!(
+                    "{context}kill and further waits not attempted without a retained process handle"
+                ));
+            }
+            context
         }
     };
+    if let Err(error) = child.kill() {
+        let context = format!("{prior_error}child kill failed: {error}; ");
+        // An exit can race with kill. Observe it once; never block waiting for
+        // a still-running child after the termination request was rejected.
+        return match try_wait_child(child, wait_error) {
+            Ok(Some(status)) => ChildCleanup::reaped(status, false, &context),
+            Ok(None) => ChildCleanup::unconfirmed(format!("{context}child has not exited")),
+            Err(error) => ChildCleanup::unconfirmed(format!("{context}reaping failed: {error}")),
+        };
+    }
+    // This budget is independent of an already-expired subscription timeout.
+    match reap_child_until(child, Instant::now() + PROCESS_REAP_TIMEOUT, wait_error) {
+        Ok(Some(status)) => ChildCleanup::reaped(status, true, &prior_error),
+        Ok(None) => ChildCleanup::unconfirmed(format!(
+            "{prior_error}child kill accepted but reaping exceeded {} ms",
+            PROCESS_REAP_TIMEOUT.as_millis()
+        )),
+        Err(error) => ChildCleanup::unconfirmed(format!(
+            "{prior_error}child kill accepted but reaping failed: {error}"
+        )),
+    }
+}
+
+fn cleanup_failure_event(error: &str, cleanup: &ChildCleanup) -> ProcessEvent {
     ProcessEvent::Error(format!(
-        "{error}; {disposition}; stdout/stderr output is incomplete"
+        "{error}; {}; stdout/stderr output is incomplete",
+        cleanup.detail
     ))
+}
+
+fn output_failure_event(
+    error: &str,
+    child: &mut std::process::Child,
+    wait_error: &mut Option<String>,
+) -> ProcessEvent {
+    cleanup_failure_event(error, &cleanup_child(child, wait_error))
+}
+
+fn stopped_process_event(
+    reason: &str,
+    child: &mut std::process::Child,
+    wait_error: &mut Option<String>,
+) -> ProcessEvent {
+    let cleanup = cleanup_child(child, wait_error);
+    let terminated = cleanup.status.is_some_and(|status| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            status.signal() == Some(rustix::process::Signal::KILL.as_raw())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = status;
+            true
+        }
+    });
+    if cleanup.kill_sent && terminated {
+        ProcessEvent::Killed
+    } else {
+        cleanup_failure_event(reason, &cleanup)
+    }
+}
+
+fn reap_child_in_background(
+    mut child: std::process::Child,
+    control: Option<ProcessControl>,
+    sub_id: SubId,
+) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("ftui-process-reaper".to_owned())
+        .spawn(move || match child.wait() {
+            Ok(status) => {
+                if let Some(control) = control {
+                    control.confirm_reaped();
+                }
+                tracing::debug!(sub_id, ?status, "background child reaping completed");
+            }
+            Err(error) => {
+                tracing::warn!(sub_id, %error, "background child reaping failed");
+            }
+        })
+        .map(|_| ())
 }
 
 impl<M: Send + 'static> ProcessSubscription<M> {
@@ -769,7 +940,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         }
 
         #[cfg(target_os = "linux")]
-        if self.control.is_some() {
+        {
             std::os::linux::process::CommandExt::create_pidfd(&mut cmd, true);
         }
 
@@ -831,6 +1002,13 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             }
             input_trigger.stop();
         };
+        let stop_process_io = || {
+            if let Some(control) = &self.control {
+                control.close();
+            }
+            reader_trigger.stop();
+            stop_input();
+        };
         let mut input_handle = input_receiver
             .zip(child.stdin.take())
             .map(|(receiver, stdin)| {
@@ -859,6 +1037,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             })
         });
 
+        let mut child_wait_error = None;
         let mut final_event = loop {
             // Reader results bypass the model queue: a full queue must never
             // prevent supervising a child whose other stream has failed.
@@ -866,11 +1045,10 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 .or_else(|| take_reader_error(&mut stderr_handle, "stderr"))
                 .or_else(|| take_reader_error(&mut input_handle, "stdin write failed"))
             {
-                reader_trigger.stop();
-                stop_input();
-                break output_failure_event(&error, &mut child);
+                stop_process_io();
+                break output_failure_event(&error, &mut child, &mut child_wait_error);
             }
-            match child.try_wait() {
+            match try_wait_child(&mut child, &mut child_wait_error) {
                 Ok(Some(status)) => {
                     let event = process_exit_event(status);
                     if let ProcessEvent::Exited(code) = &event {
@@ -900,9 +1078,12 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                         error = %e,
                         "process wait error"
                     );
-                    reader_trigger.stop();
-                    stop_input();
-                    break ProcessEvent::Error(format!("wait error: {e}"));
+                    stop_process_io();
+                    break output_failure_event(
+                        &format!("wait error: {e}"),
+                        &mut child,
+                        &mut child_wait_error,
+                    );
                 }
             }
 
@@ -916,11 +1097,12 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     reason = "timeout",
                     "killing process"
                 );
-                reader_trigger.stop();
-                stop_input();
-                let _ = child.kill();
-                let _ = child.wait();
-                break ProcessEvent::Killed;
+                stop_process_io();
+                break stopped_process_event(
+                    "process timed out",
+                    &mut child,
+                    &mut child_wait_error,
+                );
             }
 
             if token.wait_timeout(poll_interval) {
@@ -931,11 +1113,8 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     reason = "cancellation",
                     "killing process"
                 );
-                reader_trigger.stop();
-                stop_input();
-                let _ = child.kill();
-                let _ = child.wait();
-                break ProcessEvent::Killed;
+                stop_process_io();
+                break stopped_process_event("process canceled", &mut child, &mut child_wait_error);
             }
             if let Some(control) = &self.control {
                 control.dispatch_interrupt(&child);
@@ -946,7 +1125,10 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             control.close();
             // Closing admission is not proof of cleanup. Only an observed
             // reaped status permits a consumer to offer a safe restart.
-            if matches!(child.try_wait(), Ok(Some(_))) {
+            if matches!(
+                try_wait_child(&mut child, &mut child_wait_error),
+                Ok(Some(_))
+            ) {
                 control.confirm_reaped();
             }
         }
@@ -965,7 +1147,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     .or_else(|| take_reader_error(&mut input_handle, "stdin write failed"))
                 {
                     reader_trigger.stop();
-                    final_event = output_failure_event(&error, &mut child);
+                    final_event = output_failure_event(&error, &mut child, &mut child_wait_error);
                     break;
                 }
                 if stdout_handle.is_none() && stderr_handle.is_none() {
@@ -1002,7 +1184,31 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 ProcessEvent::Exited(_) | ProcessEvent::Signaled(_)
             )
         {
-            final_event = output_failure_event(&error, &mut child);
+            final_event = output_failure_event(&error, &mut child, &mut child_wait_error);
+        }
+
+        // Keep ownership when foreground cleanup could not confirm reaping.
+        // A late wait can update restart eligibility, but the error already
+        // observed by this run remains an error. Descendants are not managed.
+        match try_wait_child(&mut child, &mut child_wait_error) {
+            Ok(Some(_)) => {
+                if let Some(control) = &self.control {
+                    control.confirm_reaped();
+                }
+            }
+            _ if child_wait_error.is_some() && !has_retained_process_handle(&child) => {
+                tracing::warn!(
+                    sub_id,
+                    "further child waits refused: prior wait failed without a retained process handle"
+                );
+            }
+            _ => {
+                if let Err(error) = reap_child_in_background(child, self.control.clone(), sub_id) {
+                    final_event = ProcessEvent::Error(format!(
+                        "{final_event:?}; background reaper could not start: {error}; child may remain unreaped"
+                    ));
+                }
+            }
         }
 
         if send_terminal_message(
@@ -1108,6 +1314,339 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     enum TestMsg {
         Proc(ProcessEvent),
+    }
+
+    #[cfg(unix)]
+    fn spawn_cleanup_probe() -> (
+        std::process::Child,
+        std::process::ChildStdin,
+        io::BufReader<std::process::ChildStdout>,
+    ) {
+        let script = "import signal,sys\nsignal.alarm(5)\nprint('READY',flush=True)\nline=sys.stdin.readline()\nprint('RELEASED '+line.removesuffix('\\n'),flush=True)\nraise SystemExit(67)";
+        let mut command = Command::new("python3");
+        command
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        #[cfg(target_os = "linux")]
+        std::os::linux::process::CommandExt::create_pidfd(&mut command, true);
+        let mut child = command.spawn().expect("spawn actual cleanup probe");
+        #[cfg(target_os = "linux")]
+        std::os::linux::process::ChildExt::pidfd(&child)
+            .expect("cleanup probe requires retained PID ownership");
+        // Hold stdin outside Child so a background Child::wait cannot turn the
+        // test's pending child into a completed child by implicitly closing it.
+        let stdin = child.stdin.take().unwrap();
+        let mut output = io::BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        output.read_line(&mut ready).unwrap();
+        assert_eq!(ready, "READY\n");
+        (child, stdin, output)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_live_child_reports_killed_only_after_sigkill_reaping() {
+        use std::os::unix::process::ExitStatusExt;
+
+        for reason in ["process canceled", "process timed out"] {
+            let (mut child, _stdin, mut output) = spawn_cleanup_probe();
+            let mut wait_error = None;
+            let start = Instant::now();
+            let event = stopped_process_event(reason, &mut child, &mut wait_error);
+            let elapsed = start.elapsed();
+            let observed = child.try_wait().unwrap();
+            let mut tail = String::new();
+            output.read_to_string(&mut tail).unwrap();
+            assert_eq!(event, ProcessEvent::Killed);
+            assert!(elapsed < Duration::from_secs(2));
+            assert_eq!(
+                observed.unwrap().signal(),
+                Some(rustix::process::Signal::KILL.as_raw())
+            );
+            assert!(tail.is_empty(), "the held input was never released");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_already_exited_child_retains_status_instead_of_reporting_killed() {
+        let (mut child, mut stdin, mut output) = spawn_cleanup_probe();
+        let mut wait_error = None;
+        stdin.write_all(b"release\n").unwrap();
+        drop(stdin);
+        let mut tail = String::new();
+        output.read_to_string(&mut tail).unwrap();
+        let status = reap_child_until(
+            &mut child,
+            Instant::now() + Duration::from_secs(2),
+            &mut wait_error,
+        )
+        .unwrap()
+        .expect("actual natural exit");
+        assert_eq!(tail, "RELEASED release\n");
+        assert_eq!(status.code(), Some(67));
+        let cleanup = cleanup_child(&mut child, &mut wait_error);
+        assert_eq!(cleanup.status.unwrap().code(), Some(67));
+        assert!(!cleanup.kill_sent);
+        assert_eq!(cleanup.detail, "child reaped: Exited(67)");
+        assert_eq!(
+            stopped_process_event("process canceled", &mut child, &mut wait_error),
+            ProcessEvent::Error(
+                "process canceled; child reaped: Exited(67); stdout/stderr output is incomplete"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_expired_reap_deadline_leaves_live_child_unconfirmed() {
+        let (mut child, _stdin, _output) = spawn_cleanup_probe();
+        let mut wait_error = None;
+        let control = ProcessControl::new();
+        let _guard = control.claim().unwrap();
+        control.started(child.id());
+        control.close();
+        let start = Instant::now();
+        let result = reap_child_until(&mut child, start, &mut wait_error);
+        let elapsed = start.elapsed();
+        let still_running = child.try_wait();
+        let status_before_cleanup = control.status();
+        // This exercises an explicitly expired helper deadline on a healthy
+        // child, not an unkillable kernel task. Capture the refusal first;
+        // the following explicit cleanup must not count as foreground proof.
+        let cleanup = cleanup_child(&mut child, &mut wait_error);
+        assert!(matches!(result, Ok(None)));
+        assert!(matches!(still_running, Ok(None)));
+        assert!(elapsed < Duration::from_secs(1));
+        assert!(status_before_cleanup.closed);
+        assert!(!status_before_cleanup.can_restart);
+        assert!(cleanup.kill_sent);
+        assert!(cleanup.status.is_some());
+        assert!(!control.status().can_restart);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_background_reaper_confirms_only_after_real_stdin_release() {
+        let (child, mut stdin, mut output) = spawn_cleanup_probe();
+        let pid = rustix::process::Pid::from_child(&child);
+        let control = ProcessControl::new();
+        let _guard = control.claim().unwrap();
+        control.started(child.id());
+        control.close();
+        let start = Instant::now();
+        reap_child_in_background(child, Some(control.clone()), 991).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // The real child's read cannot finish while this test retains stdin.
+        thread::sleep(Duration::from_millis(30));
+        assert!(control.status().closed);
+        assert!(!control.status().can_restart);
+        stdin.write_all(b"release\n").unwrap();
+        drop(stdin);
+        let mut tail = String::new();
+        output.read_to_string(&mut tail).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !control.status().can_restart && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(tail, "RELEASED release\n");
+        assert_eq!(
+            control.status(),
+            ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart: true,
+                interrupt: ProcessInterruptStatus::Idle,
+            }
+        );
+        // Independently confirm that the reaper consumed the actual child's
+        // exit status; an early can_restart update must not hide a zombie.
+        let subsequent_wait =
+            rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG);
+        assert_eq!(subsequent_wait.unwrap_err(), rustix::io::Errno::CHILD);
+        assert_eq!(
+            control.request_interrupt(),
+            Err(ProcessControlError::Closed)
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn cleanup_externally_reaped_child_uses_retained_handle_without_false_killed() {
+        use rustix::process::{Pid, WaitOptions, waitpid};
+
+        let (mut child, mut stdin, mut output) = spawn_cleanup_probe();
+        let mut wait_error = None;
+        let pid = Pid::from_child(&child);
+        let control = ProcessControl::new();
+        let _guard = control.claim().unwrap();
+        control.started(child.id());
+        control.close();
+        stdin.write_all(b"release\n").unwrap();
+        drop(stdin);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let externally_reaped = loop {
+            match waitpid(Some(pid), WaitOptions::NOHANG) {
+                Ok(Some(observed)) => break observed,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                other => {
+                    // Retained pidfd keeps this failure cleanup safe even if
+                    // the exact child was reaped outside std::Child.
+                    let cleanup = cleanup_child(&mut child, &mut wait_error);
+                    panic!("external exact-child wait failed: {other:?}; {cleanup:?}");
+                }
+            }
+        };
+        let mut tail = String::new();
+        output.read_to_string(&mut tail).unwrap();
+        assert_eq!(tail, "RELEASED release\n");
+        assert_eq!(externally_reaped.0, pid);
+        assert_eq!(externally_reaped.1.exit_status(), Some(67));
+        assert!(has_retained_process_handle(&child));
+        match try_wait_child(&mut child, &mut wait_error) {
+            Ok(Some(status)) => {
+                // Newer kernels let std recover the reaped child's status
+                // through the retained pidfd. This is not ECHILD evidence.
+                eprintln!("retained pidfd recovered exit67; ECHILD branch not exercised");
+                assert_eq!(status.code(), Some(67));
+                assert!(wait_error.is_none());
+                let cleanup = cleanup_child(&mut child, &mut wait_error);
+                assert_eq!(cleanup.status.unwrap().code(), Some(67));
+                assert!(!cleanup.kill_sent);
+                assert_eq!(cleanup.detail, "child reaped: Exited(67)");
+                assert_eq!(
+                    stopped_process_event("process canceled", &mut child, &mut wait_error),
+                    ProcessEvent::Error(
+                        "process canceled; child reaped: Exited(67); stdout/stderr output is incomplete"
+                            .to_owned()
+                    )
+                );
+            }
+            Err(error) => {
+                eprintln!("retained pidfd could not recover exit67; checking actual ECHILD");
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(rustix::io::Errno::CHILD.raw_os_error())
+                );
+                let error_text = error.to_string();
+                assert_eq!(wait_error.as_deref(), Some(error_text.as_str()));
+                let cleanup = cleanup_child(&mut child, &mut wait_error);
+                let kill_error =
+                    io::Error::from_raw_os_error(rustix::io::Errno::SRCH.raw_os_error());
+                let expected = format!(
+                    "child wait failed: {error}; child kill failed: {kill_error}; reaping failed: {error}; child may still be running or unreaped"
+                );
+                assert!(cleanup.status.is_none());
+                assert!(!cleanup.kill_sent);
+                assert_eq!(cleanup.detail, expected);
+                assert_eq!(
+                    stopped_process_event("process canceled", &mut child, &mut wait_error),
+                    ProcessEvent::Error(format!(
+                        "process canceled; {expected}; stdout/stderr output is incomplete"
+                    ))
+                );
+            }
+            Ok(None) => panic!("the externally reaped child cannot still be running"),
+        }
+        assert!(!control.status().can_restart);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn cleanup_sticky_wait_error_refuses_signal_and_repoll_without_retained_handle() {
+        use rustix::process::{Pid, WaitOptions, waitpid};
+
+        let script = "import signal,sys\nsignal.alarm(5)\nprint('READY',flush=True)\nline=sys.stdin.readline()\nprint('RELEASED '+line.removesuffix('\\n'),flush=True)\nraise SystemExit(67)";
+        let mut command = Command::new("python3");
+        command
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        std::os::linux::process::CommandExt::create_pidfd(&mut command, false);
+        let mut child = command
+            .spawn()
+            .expect("spawn actual no-pidfd cleanup probe");
+        assert!(!has_retained_process_handle(&child));
+        let pid = Pid::from_child(&child);
+        let child_id = child.id();
+        let mut stdin = child.stdin.take().unwrap();
+        let mut output = io::BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        output.read_line(&mut ready).unwrap();
+        assert_eq!(ready, "READY\n");
+        let control = ProcessControl::new();
+        let _guard = control.claim().unwrap();
+        control.started(child_id);
+        control.close();
+
+        // Inject only the previously observed error state. The child remains
+        // real and owned; this is not evidence of an actual OS wait failure.
+        let saved_error = "injected prior wait failure";
+        let mut wait_error = Some(saved_error.to_owned());
+        let expected = format!(
+            "child wait failed: {saved_error}; kill and further waits not attempted without a retained process handle; child may still be running or unreaped"
+        );
+        assert_eq!(
+            try_wait_child(&mut child, &mut wait_error)
+                .unwrap_err()
+                .to_string(),
+            saved_error
+        );
+        let cleanup = cleanup_child(&mut child, &mut wait_error);
+        assert!(cleanup.status.is_none());
+        assert!(!cleanup.kill_sent);
+        assert_eq!(cleanup.detail, expected);
+        assert_eq!(
+            stopped_process_event("process canceled", &mut child, &mut wait_error),
+            ProcessEvent::Error(format!(
+                "process canceled; {expected}; stdout/stderr output is incomplete"
+            ))
+        );
+        assert!(!control.status().can_restart);
+
+        // Exact output after the refusal proves that cleanup did not signal
+        // this live child. The test, not Child::wait, releases its stdin.
+        stdin.write_all(b"release\n").unwrap();
+        drop(stdin);
+        let mut tail = String::new();
+        output.read_to_string(&mut tail).unwrap();
+        assert_eq!(tail, "RELEASED release\n");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status = std::fs::read_to_string(format!("/proc/{child_id}/status")).unwrap();
+            if status.lines().any(|line| line.starts_with("State:\tZ")) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "actual child did not exit");
+            thread::sleep(Duration::from_millis(5));
+        }
+        // The now-waitable child makes a forbidden re-poll observable: only
+        // the independent exact-child wait below may consume its exit status.
+        assert_eq!(
+            reap_child_until(&mut child, Instant::now(), &mut wait_error)
+                .unwrap_err()
+                .to_string(),
+            saved_error
+        );
+        let cleanup = cleanup_child(&mut child, &mut wait_error);
+        assert!(cleanup.status.is_none());
+        assert!(!cleanup.kill_sent);
+        assert_eq!(cleanup.detail, expected);
+        assert_eq!(wait_error.as_deref(), Some(saved_error));
+        let reaped = waitpid(Some(pid), WaitOptions::NOHANG)
+            .unwrap()
+            .expect("sticky helpers must leave the exact child waitable");
+        assert_eq!(reaped.0, pid);
+        assert_eq!(reaped.1.exit_status(), Some(67));
+        assert!(!control.status().can_restart);
+        assert_eq!(
+            control.request_interrupt(),
+            Err(ProcessControlError::Closed)
+        );
     }
 
     #[test]

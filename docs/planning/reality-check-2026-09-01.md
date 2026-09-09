@@ -683,12 +683,65 @@ partial-byte output, descendant ownership, unchecked kill/wait failure reporting
 full CLI/log/link behavior and published-consumer/host acceptance remain. No new
 release was made. A successful immediate-child interrupt does not settle those gaps.
 
+### September 9 checked process cleanup and late restart readiness
+
+Timeout, cancellation, pipe failures and monitoring errors now share checked
+immediate-child cleanup. `Killed` requires an accepted kill and observed reaping
+(SIGKILL on Unix); failed or unconfirmed cleanup stays an error. Foreground
+reaping after an accepted kill has a 500 ms budget. Rejected kills never lead
+to a blocking foreground wait. The first wait error persists across cleanup:
+without a retained process handle, no later wait, signal or background handoff
+can act on that numeric PID. This fixes a review-found hole where a later poll
+could discard the earlier ownership uncertainty.
+
+Where ownership remains safe, a background reaper can finish late cleanup.
+Thread-start failure is reported; a later wait failure is logged and leaves
+restart disabled. The streaming example keeps only its status poll after an
+unconfirmed terminal error, then enables F5 when reaping is confirmed. It
+preserves the error, log, counters, generation and draft and never restarts
+automatically. Descendants and unkillable-process lifetime remain outside this
+guarantee; the budget limits foreground reaping, not total output drain.
+
+Final proof uses the 2,497-file manifest
+`132448a95cf939ff489fdae801f758a47f9199f18a04c2ee4d3725ac2848b3e5`,
+in an isolated checkout of base `46e687ac` plus the frozen tracked changes.
+DSR receipts `frankentui-cleanup2-native/20260909T151448-4135253` and
+`frankentui-cleanup2-wasm/20260909T151651-4143564` have matching source states
+and verified log hashes. All required workspace formatting/check/strict
+Clippy/strict rustdoc and web/showcase WASM checks pass on configured `trj`
+with the exact pinned nightly. The 172 selected tests comprise 123 runtime
+(1,882 excluded), 23 lifecycle/effect, six trace-fixture (four excluded), 14
+example and six Node/WASM tests. This is not the full workspace suite.
+
+Six new runtime tests cover live SIGKILL/reaping, retained natural exit status,
+an expired helper deadline, real stdin-gated background reaping, external
+reaping through a pidfd, and injected sticky-error refusal on a real no-pidfd
+child. Independent exact-child waits detect hidden reaping and lingering
+zombies. This host recovered exit 67 through its pidfd; the actual ECHILD/ESRCH
+branch did not execute. The injected error, zero-deadline and background-helper
+tests are explicitly separate from real kernel-failure proof. Two synthetic
+consumer tests establish late polling and preserved historical failure state.
+All 12 unchanged PTY journeys pass, with raw capture hashes, exact records,
+termios restoration and immediate-child cleanup assertions checked. CPR9;1
+remains declared protocol emulation, not physical-rendering proof.
+
+Evidence is retained in `/data/retained/ftui-process-cleanup-20260909-greenlynx/`.
+Candidate1 failed formatting only; every other native gate passed. Manual
+formatting corrections are the sole difference in candidate2. Independent
+review also corrected the initial kernel-specific ECHILD test assumption before
+execution. Failed artifacts remain available. DSR duration fields are malformed
+and receive no timing credit; the existing nix future-compatibility warning is
+retained. Installed RCH/UBS remain unavailable under the deletion constraint;
+DSR/direct SSH and manual review were used. No Actions or new release ran.
+Original `.32.1` remains in progress for partial-byte output, descendants,
+full CLI/log/link behavior and published-consumer/host acceptance.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5; 12 PTY journeys include handler acknowledgment, continued input and two restart modes. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, cleanup-error reporting, full CLI/log/link behavior and published-consumer/host proof. Queue admission and signal acceptance are not child acknowledgment. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. Twelve PTY journeys include handler acknowledgment, continued input and two restart modes. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, full CLI/log/link behavior and published-consumer/host proof. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -800,6 +853,11 @@ specific implementation or observation below, not completion of the whole goal):
   Ctrl-C/F5; preserve EOF control, old-event rejection and final outcome feedback.
 - [x] `.32.1`: verify 164 selected tests, 12 PTY journeys and required native/WASM
   gates at `95f7558f`; retain formatting and moving-revision failures.
+- [x] `.32.1`: check every immediate-child cleanup outcome, bound foreground
+  reaping, preserve wait-error ownership state and refresh late F5 readiness.
+- [x] `.32.1`: verify 172 selected tests, 12 PTY journeys and required native/WASM
+  gates against manifest `132448a9`; retain the failed formatting candidate and
+  distinguish pidfd exit recovery from unexecuted ECHILD failure coverage.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their

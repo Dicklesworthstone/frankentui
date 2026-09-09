@@ -142,6 +142,9 @@ and requesting EOF does not disable interrupts. On an exited child, Ctrl-C or
 Without `--exit-when-child-exits`, press F5 after the terminal event to rerun the
 same command and arguments. Restart also requires confirmed child cleanup;
 closed control alone is insufficient while accepted output is still draining.
+If cleanup was initially unconfirmed, polling continues after the terminal
+error so F5 becomes available when the retained child is eventually reaped.
+That confirmation does not rewrite the earlier error or start a new process.
 The model preserves the log viewer and unsubmitted draft, emits one
 `[process] RESTART` boundary, resets per-run counters and creates fresh control
 and input handles. Each process event carries its run generation, so late
@@ -159,10 +162,20 @@ buffer and at most one unsent line. Arbitrary model messages and retained model
 history have no byte limit imposed by this queue.
 
 Oversized lines, invalid UTF-8 and read errors stop output forwarding and
-terminate/reap the immediate child even if the model queue is full. The final
+request immediate-child termination even if the model queue is full. The final
 error names the stream, failure and actual child cleanup outcome, and reports
 incomplete output. Already admitted lines precede that error; no successful
 exit event follows it. Partial-line and arbitrary binary streaming are unsupported.
+Monitoring errors, timeout and cancellation also check termination and reaping.
+`Killed` requires an accepted kill request and an observed reaped status
+(SIGKILL on Unix). Failed or unconfirmed cleanup is an error. After an accepted
+kill, foreground reaping waits at most 500 ms; rejected kills never lead to a
+blocking foreground wait. When ownership remains safe, an unconfirmed child is
+handed to a background reaper. Thread-start failure is reported; a later wait
+failure is logged and leaves restart disabled. After a wait error, a target
+without a retained process handle refuses further waits and signals for that
+PID. Restart stays unavailable until a successful wait proves reaping. This bounds
+foreground reaping, not OS process lifetime or the total output-drain duration.
 Natural exit waits for captured output delivery; timeout/cancellation can
 interrupt that drain, and a full canceled queue may prevent final-status
 delivery. A descendant that keeps a captured pipe open can delay natural

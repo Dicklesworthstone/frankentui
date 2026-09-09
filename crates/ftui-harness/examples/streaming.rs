@@ -245,9 +245,24 @@ impl StreamingHarness {
     }
 
     fn apply_control_status(&mut self, status: ProcessControlStatus) -> Cmd<Msg> {
+        let restart_became_available =
+            self.child_finished && !self.process_can_restart && status.can_restart;
         self.process_pid = status.pid;
         self.process_closed = status.closed;
         self.process_can_restart = status.can_restart;
+        if restart_became_available
+            && self.control_feedback.as_deref()
+                == Some("Restart unavailable: child exit not confirmed.")
+        {
+            self.control_feedback = None;
+        }
+        if self.child_finished && self.process_input.is_some() {
+            self.input_feedback = if self.process_can_restart {
+                "Child finished; F5 restarts with draft kept. Q or Ctrl-C quits."
+            } else {
+                "Child cleanup unconfirmed; draft kept. Q or Ctrl-C quits."
+            };
+        }
         if self.interrupt_status == status.interrupt {
             return Cmd::none();
         }
@@ -279,11 +294,6 @@ impl StreamingHarness {
         if let Some(input) = &self.process_input {
             input.close();
             self.input.set_focused(false);
-            self.input_feedback = if self.process_can_restart {
-                "Child finished; F5 restarts with draft kept. Q or Ctrl-C quits."
-            } else {
-                "Child cleanup unconfirmed; draft kept. Q or Ctrl-C quits."
-            };
         }
         self.child_status = status;
         let status = format!("[process] {} lines={}", self.child_status, self.line_count);
@@ -577,7 +587,15 @@ impl Model for StreamingHarness {
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
         if let Some((program, arguments)) = self.options.command.split_first() {
             return if self.child_finished {
-                Vec::new()
+                if self.process_can_restart {
+                    Vec::new()
+                } else {
+                    // A retained reaper can confirm cleanup after the terminal
+                    // error. Keep polling, without creating another process.
+                    vec![Box::new(Every::new(Duration::from_millis(250), || {
+                        Msg::PollControl
+                    }))]
+                }
             } else {
                 let control = self.process_control.as_ref().expect("command has control");
                 let generation = control.generation();
@@ -1097,6 +1115,119 @@ mod tests {
                 assert!(feedback.starts_with(expected), "{feedback}");
             }
         }
+    }
+
+    #[test]
+    fn synthetic_terminal_cleanup_polling_stops_only_after_confirmation() {
+        // Supplied snapshots exercise consumer transitions, not kernel cleanup.
+        for stdin in [false, true] {
+            let mut model = StreamingHarness::new(StreamingOptions {
+                command: vec!["cat".to_owned()],
+                stdin,
+                ..StreamingOptions::default()
+            });
+            let initial = model.subscriptions();
+            let process_id = initial[0].id();
+            let poll_id = initial[1].id();
+            let generation = model.process_control.as_ref().unwrap().generation();
+            model.input.set_value("retained draft");
+            model.line_count = 7;
+            let unconfirmed = ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart: false,
+                interrupt: ProcessInterruptStatus::Idle,
+            };
+            let terminal_status = "ERROR: child exit unconfirmed";
+            assert!(matches!(
+                model.finish_child(terminal_status.to_owned(), Some(unconfirmed.clone())),
+                Cmd::Log { text, mode: SanitizeMode::Strip }
+                    if text == "[process] ERROR: child exit unconfirmed lines=7"
+            ));
+            for _ in 0..3 {
+                assert!(matches!(
+                    model.apply_control_status(unconfirmed.clone()),
+                    Cmd::None
+                ));
+                let subscriptions = model.subscriptions();
+                assert_eq!(subscriptions.len(), 1, "only cleanup polling remains");
+                assert_eq!(subscriptions[0].id(), poll_id);
+                assert_ne!(subscriptions[0].id(), process_id);
+            }
+            assert!(matches!(
+                model.restart_child_with_status(unconfirmed.clone()),
+                Cmd::Log { text, .. }
+                    if text == "[process control] Restart unavailable: child exit not confirmed."
+            ));
+            let history_len = model.log.len();
+            let mut confirmed = unconfirmed;
+            confirmed.can_restart = true;
+            assert!(matches!(model.apply_control_status(confirmed), Cmd::None));
+            assert!(model.subscriptions().is_empty());
+            assert!(model.child_finished, "confirmation must not start a child");
+            assert_eq!(model.child_status, terminal_status);
+            assert_eq!(model.line_count, 7);
+            assert_eq!(model.log.len(), history_len);
+            assert_eq!(
+                model.process_control.as_ref().unwrap().generation(),
+                generation
+            );
+            assert_eq!(model.input.value(), "retained draft");
+            assert_eq!(model.control_feedback, None);
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(100, 15, &mut pool);
+            model.view(&mut frame);
+            let row = |y| -> String {
+                (0..100)
+                    .map(|x| {
+                        frame
+                            .buffer
+                            .get(x, y)
+                            .unwrap()
+                            .content
+                            .as_char()
+                            .unwrap_or(' ')
+                    })
+                    .collect()
+            };
+            assert!(row(0).contains("F5"), "restart hint must refresh");
+            assert!(row(14).contains("F5 restarts"));
+            assert!(!row(14).contains("unconfirmed"));
+        }
+    }
+
+    #[test]
+    fn synthetic_late_poll_uses_current_handle_and_preserves_failure_feedback() {
+        // The live handle is unspawned: its can_restart=true means no child
+        // exists. This proves message routing, not delayed process reaping.
+        let mut model = interactive_model();
+        let generation = model.process_control.as_ref().unwrap().generation();
+        let _ = model.finish_child(
+            "ERROR: retained cleanup".to_owned(),
+            Some(ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart: false,
+                interrupt: ProcessInterruptStatus::Idle,
+            }),
+        );
+        let _ = model.control_note("Interrupt failed: denied".to_owned());
+        let history_len = model.log.len();
+        assert_eq!(model.subscriptions().len(), 1);
+        assert!(matches!(model.update(Msg::PollControl), Cmd::None));
+        assert!(model.process_can_restart);
+        assert!(model.subscriptions().is_empty());
+        assert!(model.child_finished);
+        assert_eq!(model.child_status, "ERROR: retained cleanup");
+        assert_eq!(model.log.len(), history_len);
+        assert_eq!(
+            model.process_control.as_ref().unwrap().generation(),
+            generation
+        );
+        assert_eq!(
+            model.control_feedback.as_deref(),
+            Some("Interrupt failed: denied")
+        );
     }
 
     #[test]
