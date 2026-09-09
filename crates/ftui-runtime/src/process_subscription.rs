@@ -39,7 +39,7 @@
 use crate::subscription::{StopSignal, StopTrigger, SubId, Subscription, SubscriptionSender};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, Read};
+use std::io::{self, BufRead, Read};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use web_time::{Duration, Instant};
@@ -47,9 +47,9 @@ use web_time::{Duration, Instant};
 /// Events emitted by a [`ProcessSubscription`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessEvent {
-    /// A line of stdout output from the process.
+    /// A UTF-8 stdout line, without LF or CRLF, up to [`MAX_PROCESS_LINE_BYTES`].
     Stdout(String),
-    /// A line of stderr output from the process.
+    /// A UTF-8 stderr line, without LF or CRLF, up to [`MAX_PROCESS_LINE_BYTES`].
     Stderr(String),
     /// The process exited with a status code.
     Exited(i32),
@@ -57,7 +57,7 @@ pub enum ProcessEvent {
     Signaled(i32),
     /// The process was killed by the subscription (stop signal or timeout).
     Killed,
-    /// An error occurred spawning or monitoring the process.
+    /// Spawning, monitoring, or reading process output failed.
     Error(String),
 }
 
@@ -72,8 +72,13 @@ pub enum ProcessEvent {
 /// drain is canceled after the child exits, an error describes the exit and
 /// incomplete output. Cancellation can reject an unsent line or final status
 /// when the model queue is full; final-status delivery is not guaranteed then.
-/// Line assembly itself is not byte-bounded, and inherited descendant pipes
-/// cannot be interrupted by the reader stop signal.
+/// Each UTF-8 line is limited to [`MAX_PROCESS_LINE_BYTES`] payload bytes.
+/// LF and its immediately preceding CR are excluded from the limit. An
+/// unterminated final line is delivered at EOF (preserving any trailing CR).
+/// Oversized lines, invalid UTF-8, and read failures stop forwarding, terminate
+/// and reap the immediate child, and produce one error instead of a normal
+/// exit. That error reports incomplete output and any child cleanup failure.
+/// Inherited descendant pipes cannot be interrupted by the reader stop signal.
 pub struct ProcessSubscription<M: Send + 'static> {
     program: String,
     args: Vec<String>,
@@ -86,6 +91,141 @@ pub struct ProcessSubscription<M: Send + 'static> {
 
 const PROCESS_READER_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 const PROCESS_READER_JOIN_POLL: Duration = Duration::from_millis(5);
+
+/// Maximum UTF-8 payload bytes in a process stdout/stderr line (64 KiB).
+///
+/// The LF or CRLF delimiter is excluded. Each reader's assembly buffer holds
+/// at most this many bytes plus one possible CR delimiter, alongside an 8 KiB
+/// input buffer and one in-flight line of at most this many bytes. This does
+/// not bound allocations in the message conversion callback or model.
+pub const MAX_PROCESS_LINE_BYTES: usize = 64 * 1024;
+
+#[derive(Debug)]
+enum ProcessReadError {
+    LineTooLong,
+    InvalidUtf8(std::str::Utf8Error),
+    Io(io::Error),
+}
+
+impl std::fmt::Display for ProcessReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LineTooLong => write!(f, "line exceeds {MAX_PROCESS_LINE_BYTES} payload bytes"),
+            Self::InvalidUtf8(error) => write!(f, "invalid UTF-8: {error}"),
+            Self::Io(error) => write!(f, "read failed: {error}"),
+        }
+    }
+}
+
+type ProcessReaderHandle = std::thread::JoinHandle<Result<(), ProcessReadError>>;
+
+fn read_process_line<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    stop: &StopSignal,
+) -> Result<Option<String>, ProcessReadError> {
+    line.clear();
+    loop {
+        if stop.is_stopped() {
+            return Ok(None);
+        }
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(ProcessReadError::Io(error)),
+        };
+        if available.is_empty() {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let end = available.iter().position(|byte| *byte == b'\n');
+        let count = end.unwrap_or(available.len());
+        let payload = &available[..count];
+        let total = line.len().saturating_add(count);
+        // Retain one extra CR only while it could still be part of CRLF.
+        // Check before appending so allocation never follows untrusted length.
+        if total > MAX_PROCESS_LINE_BYTES
+            && (total != MAX_PROCESS_LINE_BYTES + 1
+                || payload.last().or_else(|| line.last()) != Some(&b'\r'))
+        {
+            return Err(ProcessReadError::LineTooLong);
+        }
+        line.extend_from_slice(payload);
+        reader.consume(count + usize::from(end.is_some()));
+        if end.is_some() {
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            break;
+        }
+    }
+    if line.len() > MAX_PROCESS_LINE_BYTES {
+        return Err(ProcessReadError::LineTooLong);
+    }
+    let text = std::str::from_utf8(line).map_err(ProcessReadError::InvalidUtf8)?;
+    // Copy only the payload; the reusable maximum-sized assembly buffer stays
+    // with the reader instead of inflating every short queued message.
+    Ok(Some(text.to_owned()))
+}
+
+fn forward_lines<R: Read, M: Send + 'static>(
+    reader: R,
+    sender: SubscriptionSender<M>,
+    stop: StopSignal,
+    make_msg: impl Fn(String) -> M,
+) -> Result<(), ProcessReadError> {
+    let mut reader = io::BufReader::with_capacity(8 * 1024, reader);
+    let mut line = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+    while let Some(line) = read_process_line(&mut reader, &mut line, &stop)? {
+        if stop.is_stopped() {
+            break;
+        }
+        let message = make_msg(line);
+        if stop.is_stopped() || sender.send(message).is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn take_reader_error(handle: &mut Option<ProcessReaderHandle>, stream: &str) -> Option<String> {
+    if !handle
+        .as_ref()
+        .is_some_and(std::thread::JoinHandle::is_finished)
+    {
+        return None;
+    }
+    match handle.take()?.join() {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("{stream} {error}")),
+        Err(_) => Some(format!("{stream} reader panicked")),
+    }
+}
+
+fn output_failure_event(error: &str, child: &mut std::process::Child) -> ProcessEvent {
+    let disposition = if let Ok(Some(status)) = child.try_wait() {
+        format!("child reaped: {:?}", process_exit_event(status))
+    } else {
+        match child.kill() {
+            Ok(()) => match child.wait() {
+                Ok(status) => format!(
+                    "child terminated and reaped: {:?}",
+                    process_exit_event(status)
+                ),
+                Err(error) => format!("child kill succeeded but reaping failed: {error}"),
+            },
+            Err(error) => match child.try_wait() {
+                Ok(Some(status)) => format!("child reaped: {:?}", process_exit_event(status)),
+                _ => format!("child kill failed: {error}; child may still be running"),
+            },
+        }
+    };
+    ProcessEvent::Error(format!(
+        "{error}; {disposition}; stdout/stderr output is incomplete"
+    ))
+}
 
 impl<M: Send + 'static> ProcessSubscription<M> {
     fn computed_id(
@@ -178,38 +318,6 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
     }
 
     fn run(&self, sender: SubscriptionSender<M>, stop: StopSignal) {
-        fn forward_lines<R, M>(
-            reader: std::io::BufReader<R>,
-            sender: SubscriptionSender<M>,
-            stop: StopSignal,
-            make_msg: impl Fn(String) -> M,
-        ) where
-            R: Read,
-            M: Send + 'static,
-        {
-            let mut lines = reader.lines();
-            loop {
-                if stop.is_stopped() {
-                    break;
-                }
-                let Some(line) = lines.next() else {
-                    break;
-                };
-                if stop.is_stopped() {
-                    break;
-                }
-                match line {
-                    Ok(line) => {
-                        let message = make_msg(line);
-                        if stop.is_stopped() || sender.send(message).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-
         let spawn_start = web_time::Instant::now();
         let sub_id = self.id;
 
@@ -266,34 +374,36 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         let (reader_stop, reader_trigger) = StopSignal::new();
         let reader_sender = sender.with_stop_signal(reader_stop.clone());
         let poll_interval = Duration::from_millis(50);
-        let stdout_handle = stdout.map(|stdout| {
+        let mut stdout_handle = stdout.map(|stdout| {
             let sender_out = reader_sender.clone();
             let stop_out = reader_stop.clone();
             let make_msg_out = std::sync::Arc::clone(&make_msg_ref);
             std::thread::spawn(move || {
-                forward_lines(
-                    std::io::BufReader::new(stdout),
-                    sender_out,
-                    stop_out,
-                    |line| (make_msg_out.as_ref())(ProcessEvent::Stdout(line)),
-                );
+                forward_lines(stdout, sender_out, stop_out, |line| {
+                    (make_msg_out.as_ref())(ProcessEvent::Stdout(line))
+                })
             })
         });
-        let stderr_handle = stderr.map(|stderr| {
+        let mut stderr_handle = stderr.map(|stderr| {
             let sender_err = reader_sender.clone();
             let stop_err = reader_stop.clone();
             let make_msg_err = std::sync::Arc::clone(&make_msg_ref);
             std::thread::spawn(move || {
-                forward_lines(
-                    std::io::BufReader::new(stderr),
-                    sender_err,
-                    stop_err,
-                    |line| (make_msg_err.as_ref())(ProcessEvent::Stderr(line)),
-                );
+                forward_lines(stderr, sender_err, stop_err, |line| {
+                    (make_msg_err.as_ref())(ProcessEvent::Stderr(line))
+                })
             })
         });
 
         let mut final_event = loop {
+            // Reader results bypass the model queue: a full queue must never
+            // prevent supervising a child whose other stream has failed.
+            if let Some(error) = take_reader_error(&mut stdout_handle, "stdout")
+                .or_else(|| take_reader_error(&mut stderr_handle, "stderr"))
+            {
+                reader_trigger.stop();
+                break output_failure_event(&error, &mut child);
+            }
             match child.try_wait() {
                 Ok(Some(status)) => {
                     let event = process_exit_event(status);
@@ -367,13 +477,17 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             // A child can exit while its reader is waiting for model queue
             // capacity. Preserve every line on normal completion, however
             // slowly the model drains, while still honoring stop and timeout.
-            while stdout_handle
-                .as_ref()
-                .is_some_and(|handle| !handle.is_finished())
-                || stderr_handle
-                    .as_ref()
-                    .is_some_and(|handle| !handle.is_finished())
-            {
+            loop {
+                if let Some(error) = take_reader_error(&mut stdout_handle, "stdout")
+                    .or_else(|| take_reader_error(&mut stderr_handle, "stderr"))
+                {
+                    reader_trigger.stop();
+                    final_event = output_failure_event(&error, &mut child);
+                    break;
+                }
+                if stdout_handle.is_none() && stderr_handle.is_none() {
+                    break;
+                }
                 let interruption = if stop.is_stopped() {
                     Some("canceled")
                 } else if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -452,7 +566,7 @@ fn process_exit_event(status: std::process::ExitStatus) -> ProcessEvent {
 }
 
 fn join_reader_thread_bounded(
-    handle: std::thread::JoinHandle<()>,
+    handle: ProcessReaderHandle,
     stream: &'static str,
     sub_id: SubId,
     reader_trigger: &StopTrigger,
@@ -476,7 +590,7 @@ fn join_reader_thread_bounded(
     let _ = handle.join();
 }
 
-fn detach_reader_join(handle: std::thread::JoinHandle<()>, stream: &'static str) {
+fn detach_reader_join(handle: ProcessReaderHandle, stream: &'static str) {
     let _ = std::thread::Builder::new()
         .name(format!("ftui-process-{stream}-detached-join"))
         .spawn(move || {
@@ -493,6 +607,338 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     enum TestMsg {
         Proc(ProcessEvent),
+    }
+
+    fn collect_lines(bytes: &[u8], read_capacity: usize) -> Result<Vec<String>, ProcessReadError> {
+        let mut reader = io::BufReader::with_capacity(read_capacity, bytes);
+        let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+        let (stop, _trigger) = StopSignal::new();
+        let mut lines = Vec::new();
+        while let Some(line) = read_process_line(&mut reader, &mut pending, &stop)? {
+            lines.push(line);
+        }
+        Ok(lines)
+    }
+
+    #[test]
+    fn bounded_lines_preserve_delimiters_unicode_and_eof_across_reads() {
+        let input = "\nalpha\r\n\r\n🦀é\ninside\rcarriage\nlast\r";
+        let expected = ["", "alpha", "", "🦀é", "inside\rcarriage", "last\r"];
+        for capacity in 1..=input.len() {
+            assert_eq!(collect_lines(input.as_bytes(), capacity).unwrap(), expected);
+            assert!(collect_lines(b"", capacity).unwrap().is_empty());
+            assert_eq!(collect_lines(b"tail\n", capacity).unwrap(), ["tail"]);
+        }
+    }
+
+    #[test]
+    fn bounded_lines_enforce_payload_limit_for_lf_crlf_and_eof() {
+        for size in [MAX_PROCESS_LINE_BYTES - 1, MAX_PROCESS_LINE_BYTES] {
+            let payload = "x".repeat(size);
+            for delimiter in ["", "\n", "\r\n"] {
+                let input = format!("{payload}{delimiter}");
+                for capacity in [1, 8192, MAX_PROCESS_LINE_BYTES + 1] {
+                    assert_eq!(
+                        collect_lines(input.as_bytes(), capacity).unwrap(),
+                        [payload.as_str()],
+                        "size={size}, delimiter={delimiter:?}, read capacity={capacity}"
+                    );
+                }
+            }
+        }
+        let unicode = "🦀".repeat(MAX_PROCESS_LINE_BYTES / 4);
+        assert_eq!(collect_lines(unicode.as_bytes(), 3).unwrap(), [unicode]);
+        for tail in ["x", "x\n", "x\r\n", "\r"] {
+            let input = format!("{}{tail}", "x".repeat(MAX_PROCESS_LINE_BYTES));
+            assert!(matches!(
+                collect_lines(input.as_bytes(), 8192),
+                Err(ProcessReadError::LineTooLong)
+            ));
+        }
+    }
+
+    #[test]
+    fn bounded_lines_reject_invalid_utf8_without_lossy_substitution() {
+        for input in [b"secret\xff\n".as_slice(), b"\xf0\x9f\xa6", b"\xc0\x80\r\n"] {
+            for capacity in 1..=input.len() {
+                assert!(matches!(
+                    collect_lines(input, capacity),
+                    Err(ProcessReadError::InvalidUtf8(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_lines_stop_reading_before_oversized_input_allocates() {
+        let input = vec![b'x'; MAX_PROCESS_LINE_BYTES * 16];
+        let cursor = io::Cursor::new(input);
+        let mut reader = io::BufReader::with_capacity(8192, cursor);
+        let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+        let capacity = pending.capacity();
+        let (stop, trigger) = StopSignal::new();
+        assert!(matches!(
+            read_process_line(&mut reader, &mut pending, &stop),
+            Err(ProcessReadError::LineTooLong)
+        ));
+        assert!(pending.len() <= MAX_PROCESS_LINE_BYTES + 1);
+        assert_eq!(pending.capacity(), capacity);
+        let consumed = reader.get_ref().position();
+        assert!(consumed <= (MAX_PROCESS_LINE_BYTES + 8192) as u64);
+        trigger.stop();
+        assert_eq!(
+            read_process_line(&mut reader, &mut pending, &stop).unwrap(),
+            None
+        );
+        assert_eq!(reader.get_ref().position(), consumed);
+    }
+
+    #[test]
+    fn bounded_lines_retry_interrupted_reads_and_report_io_failures() {
+        struct FaultingReader {
+            calls: usize,
+        }
+        impl Read for FaultingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                match self.calls {
+                    1 => Err(io::ErrorKind::Interrupted.into()),
+                    2 => {
+                        let bytes = b"good\npartial";
+                        buffer[..bytes.len()].copy_from_slice(bytes);
+                        Ok(bytes.len())
+                    }
+                    _ => Err(io::Error::other("injected read failure")),
+                }
+            }
+        }
+        let mut reader = io::BufReader::new(FaultingReader { calls: 0 });
+        let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+        let (stop, _trigger) = StopSignal::new();
+        assert_eq!(
+            read_process_line(&mut reader, &mut pending, &stop).unwrap(),
+            Some("good".to_owned())
+        );
+        assert!(matches!(
+            read_process_line(&mut reader, &mut pending, &stop),
+            Err(ProcessReadError::Io(error)) if error.kind() == io::ErrorKind::Other
+        ));
+    }
+
+    fn collect_real_process(script: &str) -> Vec<ProcessEvent> {
+        let sub = ProcessSubscription::new("sh", |event| event).args(["-c", script]);
+        let (tx, rx) = stdmpsc::sync_channel(256);
+        let (signal, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
+        });
+        let mut events = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(event) => events.push(event),
+                Err(stdmpsc::RecvTimeoutError::Disconnected) => break,
+                Err(stdmpsc::RecvTimeoutError::Timeout) => {
+                    trigger.stop();
+                    handle.join().expect("stop timed-out child");
+                    panic!("child supervision stalled after {} events", events.len());
+                }
+            }
+        }
+        handle.join().expect("supervisor finished");
+        events
+    }
+
+    #[test]
+    fn real_process_preserves_complete_lines_and_maximum_payload_on_both_streams() {
+        let events = collect_real_process(
+            "printf '\\nalpha\\r\\n🦀é\\nlast\\r'; printf '%065536d\\r\\n' 0 >&2; printf 'tail' >&2",
+        );
+        let stdout: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ProcessEvent::Stdout(line) => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        let stderr: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ProcessEvent::Stderr(line) => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stdout, ["", "alpha", "🦀é", "last\r"]);
+        assert_eq!(
+            stderr,
+            ["0".repeat(MAX_PROCESS_LINE_BYTES), "tail".to_owned()]
+        );
+        assert_eq!(events.len(), 7);
+        assert_eq!(events.last(), Some(&ProcessEvent::Exited(0)));
+
+        let events = collect_real_process("printf '%065536d\\n' 0");
+        assert_eq!(
+            events,
+            [
+                ProcessEvent::Stdout("0".repeat(MAX_PROCESS_LINE_BYTES)),
+                ProcessEvent::Exited(0)
+            ]
+        );
+    }
+
+    #[test]
+    fn real_process_invalid_or_oversized_output_reports_one_error() {
+        for (output, reason) in [
+            ("printf '\\377\\n'", "invalid UTF-8"),
+            ("printf '%065537d' 0", "line exceeds 65536 payload bytes"),
+        ] {
+            for stream in ["stdout", "stderr"] {
+                let redirect = if stream == "stderr" { " >&2" } else { "" };
+                for ending in ["exit 0", "exec sleep 60"] {
+                    let events = collect_real_process(&format!("{output}{redirect}; {ending}"));
+                    assert_eq!(events.len(), 1, "one terminal error: {events:?}");
+                    let ProcessEvent::Error(error) = &events[0] else {
+                        panic!("reader failure misreported: {events:?}");
+                    };
+                    assert!(error.starts_with(&format!("{stream} {reason}")), "{error}");
+                    assert!(error.contains("reaped:"), "{error}");
+                    assert!(
+                        error.ends_with("stdout/stderr output is incomplete"),
+                        "{error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_process_reader_failure_reaps_child_while_model_queue_is_full() {
+        for (output, reason) in [
+            ("printf '\\377\\n'", "stderr invalid UTF-8:"),
+            (
+                "printf '%065537d' 0",
+                "stderr line exceeds 65536 payload bytes",
+            ),
+        ] {
+            assert_reader_failure_with_full_queue(output, reason);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_reader_failure_with_full_queue(output: &str, reason: &str) {
+        let (observed_tx, observed_rx) = stdmpsc::channel();
+        let sub = ProcessSubscription::new("sh", move |event| {
+            observed_tx
+                .send(event.clone())
+                .expect("observe child and supervision");
+            event
+        })
+        .args([
+            "-c",
+            &format!("printf '%s\\n' \"$$\"; kill -STOP \"$$\"; {output} >&2; exec sleep 60"),
+        ]);
+        let (tx, rx) = stdmpsc::sync_channel(256);
+        let prefix: Vec<_> = (0..256)
+            .map(|index| ProcessEvent::Stdout(format!("accepted-{index}")))
+            .collect();
+        for event in &prefix {
+            tx.send(event.clone()).expect("fill application queue");
+        }
+        let (signal, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
+        });
+        // This observer is before the blocked application send. Hold the real
+        // child stopped until its PID is observed so reader scheduling cannot
+        // race the PID callback against the other stream's failure.
+        let first = observed_rx.recv_timeout(Duration::from_secs(5));
+        let pid = match &first {
+            Ok(ProcessEvent::Stdout(line)) => line.parse::<u32>().ok(),
+            _ => None,
+        };
+        let Some(pid) = pid else {
+            trigger.stop();
+            handle.join().expect("stop child without PID");
+            panic!("expected actual child PID, got {first:?}");
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+            if status.lines().any(|line| line.starts_with("State:\tT")) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                trigger.stop();
+                handle.join().expect("stop child that did not pause");
+                panic!("child never stopped: {status}");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let resumed = Command::new("kill")
+            .args(["-CONT", &pid.to_string()])
+            .status();
+        if !resumed
+            .as_ref()
+            .is_ok_and(std::process::ExitStatus::success)
+        {
+            trigger.stop();
+            handle.join().expect("stop child that did not resume");
+            panic!("child resume failed: {resumed:?}");
+        }
+        // The other stream must fail and be supervised without any drain.
+        let mut observed = vec![first.unwrap()];
+        loop {
+            match observed_rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(event) => {
+                    let terminal = matches!(event, ProcessEvent::Error(_));
+                    observed.push(event);
+                    if terminal {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    trigger.stop();
+                    handle.join().expect("stop stalled supervision");
+                    panic!("full queue hid reader failure: {error:?}");
+                }
+            }
+        }
+        let terminal = observed.last().unwrap().clone();
+        // Retain the observations before releasing queue backpressure. This
+        // detects a live child or unreaped zombie, not just a reported status.
+        let child_reaped = std::fs::metadata(format!("/proc/{pid}"))
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+        let mut received: Vec<_> = (0..256)
+            .map(|_| rx.recv().expect("accepted prefix"))
+            .collect();
+        received.push(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("terminal error after drain"),
+        );
+        trigger.stop();
+        handle.join().expect("supervisor finished");
+        assert!(
+            child_reaped,
+            "child must be reaped before any model queue drain: {observed:?}"
+        );
+        assert!(
+            matches!(&terminal, ProcessEvent::Error(error)
+            if error.starts_with(reason)
+                && error.contains("reaped:")
+                && error.ends_with("stdout/stderr output is incomplete")),
+            "{terminal:?}"
+        );
+        let mut expected = prefix;
+        expected.push(terminal);
+        assert_eq!(received, expected);
+        assert!(
+            rx.try_iter().next().is_none(),
+            "no late reader output or duplicate status"
+        );
+        assert!(
+            observed_rx.try_iter().next().is_none(),
+            "readers finished before final event"
+        );
     }
 
     #[test]

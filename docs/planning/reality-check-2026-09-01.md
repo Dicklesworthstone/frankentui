@@ -512,18 +512,69 @@ IcyBarn implemented supervised drain and reviewed the PTY observer. GreenLynx
 reviewed both diffs and ran all cited verification. These are independent source
 reviews and one coordinated execution, not independent duplicate proof.
 
-`.32.1` stays in progress. Line assembly still has no byte bound, invalid UTF-8
-or read failures silently end a reader, child stdin is closed, and kill/wait
-errors and descendants need stronger ownership. Inherited open pipes can delay
+At that revision, `.32.1` stayed in progress: line assembly had no byte bound
+and invalid UTF-8/read failures silently ended a reader. The next continuation
+addresses those two defects. Child stdin is closed, and cancellation kill/wait
+errors and descendants still need stronger ownership. Inherited open pipes can delay
 natural completion indefinitely without stop/timeout. Full agent-shell input,
 interrupt/restart, published-consumer and host-matrix obligations remain open.
+
+### September 9 bounded process lines and supervised output failures
+
+The continuation after `e36a43f5` preserves complete UTF-8 line events up to
+65,536 payload bytes. LF/CRLF are delimiters; an unterminated EOF line preserves
+its trailing CR. The assembly buffer holds at most 65,537 bytes, alongside an
+8 KiB read buffer and one in-flight payload per reader. Arbitrary mapper/model
+allocations remain outside this bound. Invalid UTF-8 is checked on completed
+lines or EOF, not independently on read chunks.
+
+Oversized lines, decoding failures and read errors now reach the supervisor
+through reader results, independently of a full model queue. Monitoring checks
+those results while the child runs and during post-exit drain. Failure stops
+forwarding, attempts immediate-child termination/reaping, and reports the
+stream, cause, actual cleanup outcome and incomplete output in one Error.
+Unsent output can be discarded on failure; a full canceled/timed-out queue can
+still reject the terminal notification. This is bounded line transport, not
+arbitrary partial-byte or binary streaming. The original `.32.1` remains open.
+
+Final DSR source manifest (2,497 tracked files, including Cargo.lock):
+`4c70a83a808867e0688acba9d1fd17d94f0361495051871253d66f62e8497e93`.
+Native/WASM receipt source-before/source-after values match, and both hosts
+used `nightly-2026-08-31`, rustc `90850177249efe0321573c569aec5d12b257f8d6`.
+
+- Native receipt: `frankentui-proclines2-native/20260909T123722-3370490/receipt.json`.
+  Formatting, workspace all-target check, strict Clippy and strict rustdoc pass.
+  102 runtime tests pass (1,882 excluded), 23 lifecycle/effect tests (none excluded),
+  six trace-fixture tests (four excluded), and two example tests. The file-watcher
+  deletion test still compiles but is excluded under Rule 1.
+- WASM receipt: `frankentui-proclines2-wasm/20260909T123724-3370791/receipt.json`.
+  Portable web/showcase checks and all six WASM/Node tests pass. Total selected
+  tests: 139; this is not a full workspace test execution.
+- Seven actual PTY journeys pass: the four earlier scenarios plus one intact
+  64 KiB line and separate invalid-UTF-8/oversized-line failures. Both failed
+  children are absent before the PTY session leader is released. The unit/live
+  tests additionally prove exact accepted-prefix preservation and immediate
+  child reaping before draining a full 256-message queue for both error kinds.
+  Read-fault injection is unit evidence. PTY evidence declares CPR9;1 emulation
+  and proves kernel termios/byte delivery, not physical rendering or descendants.
+
+Retained source, wrappers, captures and receipts are under
+`/data/retained/ftui-process-lines-20260909-greenlynx/`. The first native candidate
+remains failed for formatting and an unnecessary clone in a new test; both were
+fixed manually without weakening assertions. IcyBarn independently reviewed
+source/tests and the PTY observer; GreenLynx executed verification. This is one
+coordinated execution, not independent duplicate proof. Review also corrected
+memory accounting, specific error assertions, coverage of both full-queue
+failures and command-stderr retention. UBS/RCH remain unavailable under their
+documented cleanup constraints; existing nix future-compatibility warnings
+remain visible. No new release was made.
 
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr now reaches the streaming example and Cmd logs through a 256-message subscription queue and 64-message dispatch batches. Normal exit drains before status; blocked-queue stop/timeout, 10,000 lines and real PTY quit pass. `BufRead::lines` remains byte-unbounded; stdin is null and kill/wait owns only the immediate child. | `.32.1–.32.3` after `.33.1/.33.2`: finish newline-free/invalid-UTF-8/huge output, input, descendant cancellation, restart, full CLI and published-consumer proof. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example and Cmd logs through a 256-message queue and 64-message dispatch batches. Complete UTF-8 lines are bounded to 64 KiB; invalid/oversized output produces a supervised error and reaps the immediate child even with a full queue. Normal/maximum-line delivery and seven PTY journeys pass. Stdin remains null. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, interactive input, descendant cancellation, restart, full CLI and published-consumer proof. Bounded-line refusal does not complete arbitrary streaming. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -621,6 +672,12 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.32.1`: verify 131 selected native/WASM tests, all required workspace
   gates, and four real PTY journeys; retain the initial failed driver/formatting
   evidence and the independently reviewed corrections.
+- [x] `.32.1`: bound complete UTF-8 process lines to 64 KiB and supervise
+  reader failures independently of the model queue; preserve exact LF/CRLF/EOF
+  content and observe child reaping before draining both full-queue failure cases.
+- [x] `.32.1`: verify 139 selected tests and seven actual PTY journeys,
+  including maximum-line delivery; pass final workspace/WASM gates and retain
+  the failed formatting/lint candidate with independent review corrections.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their

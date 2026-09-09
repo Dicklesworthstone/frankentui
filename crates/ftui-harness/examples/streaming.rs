@@ -7,9 +7,11 @@
 //! Without arguments this generates messages. Pass a command after `--` to
 //! stream a real child's stdout/stderr through the same model and log writer.
 //! Child output uses plain-text sanitization; the generated demo retains color.
-//! ProcessSubscription currently reads UTF-8 lines, so an unterminated line can
-//! grow without a byte limit and invalid UTF-8 is not supported. Child stdin is
-//! closed; quitting stops the immediate child, not an entire descendant tree.
+//! ProcessSubscription delivers complete UTF-8 lines up to 64 KiB. Oversized
+//! lines or invalid UTF-8 terminate the child and report incomplete output.
+//! Partial lines wait for a newline or EOF; binary output is unsupported.
+//! Child stdin is closed; quitting stops the immediate child, not an entire
+//! descendant tree.
 //!
 //! Run: `cargo run -p ftui-harness --example streaming`
 //! Or: `cargo run -p ftui-harness --example streaming -- --exit-when-child-exits -- seq 1 10000`

@@ -109,9 +109,18 @@ successfully, so it is not a shell command wrapper.
 The runtime's shared subscription queue holds at most 256 messages, and a loop
 iteration drains at most 64 before returning to terminal work. After a full
 batch, the next input poll does not wait before checking queued output again. A full queue
-applies backpressure to producers; cancellation interrupts blocked sends. These
-are message-count bounds: `ProcessSubscription` still reads UTF-8 lines, so a
-single unterminated line is not byte bounded and invalid UTF-8 is unsupported.
+applies backpressure to producers; cancellation interrupts blocked sends.
+`ProcessSubscription` delivers complete UTF-8 lines up to 64 KiB of payload,
+excluding LF or CRLF. Final unterminated lines arrive at EOF; a trailing CR at
+EOF is payload. Each pipe reader has a bounded assembly buffer, an 8 KiB input
+buffer and at most one unsent line. Arbitrary model messages and retained model
+history have no byte limit imposed by this queue.
+
+Oversized lines, invalid UTF-8 and read errors stop output forwarding and
+terminate/reap the immediate child even if the model queue is full. The final
+error names the stream, failure and actual child cleanup outcome, and reports
+incomplete output. Already admitted lines precede that error; no successful
+exit event follows it. Partial-line and arbitrary binary streaming are unsupported.
 Natural exit waits for captured output delivery; timeout/cancellation can
 interrupt that drain, and a full canceled queue may prevent final-status
 delivery. A descendant that keeps a captured pipe open can delay natural
