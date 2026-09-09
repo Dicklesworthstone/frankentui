@@ -23,6 +23,7 @@ enum CounterMsg {
     Increment,
     Decrement,
     Noop,
+    Quit,
 }
 
 impl From<Event> for CounterMsg {
@@ -30,6 +31,7 @@ impl From<Event> for CounterMsg {
         match event {
             Event::Key(key) if key.code == KeyCode::Char('+') => Self::Increment,
             Event::Key(key) if key.code == KeyCode::Char('-') => Self::Decrement,
+            Event::Key(key) if key.code == KeyCode::Char('q') => Self::Quit,
             Event::Tick => Self::Increment,
             _ => Self::Noop,
         }
@@ -48,6 +50,7 @@ impl Model for CounterModel {
             CounterMsg::Increment => self.value += 1,
             CounterMsg::Decrement => self.value -= 1,
             CounterMsg::Noop => {}
+            CounterMsg::Quit => return Cmd::quit(),
         }
         Cmd::none()
     }
@@ -159,6 +162,51 @@ fn scenario_checksums() -> Vec<u64> {
 
     assert_eq!(checksums.len(), 4);
     checksums
+}
+
+#[wasm_bindgen_test]
+fn wasm_quit_replays_without_a_frame_and_preserves_the_accepted_tail() {
+    use ftui_web::session_record::{SessionRecorder, SessionTrace, replay};
+
+    let mut recorder = SessionRecorder::new(CounterModel::default(), 16, 2, 7);
+    recorder.init().unwrap();
+    let tail = vec![
+        Event::Paste(PasteEvent::bracketed("尾巴 🦀")),
+        Event::Resize {
+            width: 30,
+            height: 4,
+        },
+    ];
+    for event in [key_event('+'), key_event('q')]
+        .into_iter()
+        .chain(tail.clone())
+    {
+        recorder.push_event(1, event).unwrap();
+    }
+    let outcome = recorder.step().unwrap();
+    assert!(!outcome.running && !outcome.rendered);
+    assert_eq!(outcome.events_processed, 2);
+    assert_eq!(outcome.events_pending, 2);
+    assert_eq!(recorder.program().model().value, 1);
+    assert_eq!(recorder.program().size(), (16, 2));
+    let jsonl = recorder.finish().to_jsonl().replace('🦀', r"\ud83e\udd80");
+    let trace = SessionTrace::from_jsonl_validated(&jsonl).unwrap();
+    let replayed = replay(CounterModel::default(), &trace).unwrap();
+    assert!(replayed.ok());
+    assert_eq!(replayed.total_steps, 2);
+    assert_eq!(replayed.total_frames, 1);
+    assert!(!replayed.running);
+    assert_eq!(replayed.unprocessed_events, tail);
+
+    let mut program = StepProgram::new(CounterModel::default(), 16, 2);
+    program.init().unwrap();
+    program.push_event(key_event('q')).unwrap();
+    for event in &tail {
+        program.push_event(event.clone()).unwrap();
+    }
+    assert_eq!(program.step().unwrap().events_pending, 2);
+    assert_eq!(program.take_pending_events(), tail);
+    assert_eq!(program.step().unwrap().events_pending, 0);
 }
 
 #[wasm_bindgen_test]

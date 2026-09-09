@@ -75,6 +75,8 @@ pub struct StepResult {
     pub rendered: bool,
     /// Number of events processed during this step.
     pub events_processed: u32,
+    /// Accepted events still queued, including the unprocessed tail after quit.
+    pub events_pending: u32,
     /// Current frame index (monotonically increasing).
     pub frame_idx: u64,
 }
@@ -174,6 +176,8 @@ impl<M: Model> StepProgram<M> {
         self.execute_cmd(cmd);
         if self.running {
             self.render_frame()?;
+        } else {
+            self.backend.events.set_size(self.width, self.height);
         }
         Ok(())
     }
@@ -192,6 +196,7 @@ impl<M: Model> StepProgram<M> {
                 running: false,
                 rendered: false,
                 events_processed: 0,
+                events_pending: self.pending_events(),
                 frame_idx: self.frame_idx,
             });
         }
@@ -238,10 +243,16 @@ impl<M: Model> StepProgram<M> {
             false
         };
 
+        if !self.running {
+            // Queued resizes after quit were accepted but never processed.
+            self.backend.events.set_size(self.width, self.height);
+        }
+
         Ok(StepResult {
             running: self.running,
             rendered,
             events_processed,
+            events_pending: self.pending_events(),
             frame_idx: self.frame_idx,
         })
     }
@@ -291,6 +302,29 @@ impl<M: Model> StepProgram<M> {
     /// is processed on the next [`step`](Self::step) call.
     pub fn resize(&mut self, width: u16, height: u16) -> Result<(), WebBackendError> {
         self.push_event(Event::Resize { width, height })
+    }
+
+    /// Number of accepted events awaiting processing or explicit recovery.
+    #[must_use]
+    pub fn pending_events(&self) -> u32 {
+        self.backend.events.queued_events() as u32
+    }
+
+    /// Recover queued events in FIFO order without executing their effects.
+    ///
+    /// After quit, the host can retain this tail for inspection or another
+    /// session. Taking pending input cancels any queued resize request and
+    /// restores the backend's requested size to the last processed geometry.
+    pub fn take_pending_events(&mut self) -> Vec<Event> {
+        let events = self.backend.events.drain_events().collect();
+        self.backend.events.set_size(self.width, self.height);
+        events
+    }
+
+    /// Current deterministic clock value, independently of recording timestamps.
+    #[must_use]
+    pub fn time(&self) -> Duration {
+        self.backend.clock.now_mono()
     }
 
     /// Take the captured outputs (rendered buffer, logs), leaving empty defaults.
@@ -741,11 +775,35 @@ mod tests {
         prog.push_event(key_event('+')).expect("key admission");
         prog.push_event(key_event('q')).expect("quit admission");
         prog.push_event(key_event('+')).expect("key admission"); // Should not be processed.
+        let paste = Event::Paste(ftui_core::event::PasteEvent::bracketed("尾巴 🦀"));
+        prog.push_event(paste.clone()).unwrap();
+        prog.resize(120, 40).unwrap();
         let result = prog.step().unwrap();
 
         assert!(!result.running);
+        assert!(!result.rendered);
+        assert_eq!(result.events_processed, 2);
+        assert_eq!(result.events_pending, 3);
         assert!(!prog.is_running());
         assert_eq!(prog.model().value, 1); // Only first '+' processed.
+        assert_eq!(prog.size(), (80, 24));
+        assert_eq!(prog.backend.events_mut().size().unwrap(), (80, 24));
+        assert_eq!(prog.step().unwrap().events_pending, 3);
+        assert_eq!(
+            prog.take_pending_events(),
+            vec![
+                key_event('+'),
+                paste,
+                Event::Resize {
+                    width: 120,
+                    height: 40
+                }
+            ]
+        );
+        assert_eq!(prog.pending_events(), 0);
+        assert_eq!(prog.backend.events.queued_payload_bytes(), 0);
+        assert!(prog.take_pending_events().is_empty());
+        assert_eq!(prog.model().value, 1);
     }
 
     #[test]

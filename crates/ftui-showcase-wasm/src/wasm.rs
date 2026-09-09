@@ -1081,7 +1081,7 @@ impl ShowcaseRunner {
     }
 
     /// Process pending events and render if dirty.
-    /// Returns `{ running, rendered, events_processed, frame_idx }`.
+    /// Returns `{ running, rendered, events_processed, events_pending, frame_idx }`.
     pub fn step(&mut self) -> JsValue {
         let result = self.inner.step();
         let obj = Object::new();
@@ -1094,10 +1094,32 @@ impl ShowcaseRunner {
         );
         let _ = Reflect::set(
             &obj,
+            &"events_pending".into(),
+            &result.events_pending.into(),
+        );
+        let _ = Reflect::set(
+            &obj,
             &"frame_idx".into(),
             &JsValue::from_f64(result.frame_idx as f64),
         );
         obj.into()
+    }
+
+    /// Recover unprocessed input as canonical golden-trace-v2 input JSONL.
+    ///
+    /// Events remain in FIFO order and are removed without executing effects.
+    /// Timestamps are zero because original admission timestamps are unavailable.
+    /// This is an input fragment, not a complete replay trace or encoded DOM input.
+    #[wasm_bindgen(js_name = takePendingInputTrace)]
+    pub fn take_pending_input_trace(&mut self) -> String {
+        let mut jsonl = String::new();
+        for event in self.inner.take_pending_events() {
+            jsonl.push_str(
+                &ftui_web::session_record::TraceRecord::Input { ts_ns: 0, event }.to_jsonl(),
+            );
+            jsonl.push('\n');
+        }
+        jsonl
     }
 
     /// Take flat patch batch for GPU upload.

@@ -143,15 +143,18 @@ Normalization rules must be explicit:
 
 ### 4.2 Golden Trace Corpus (Event Log -> Expected Checksums)
 Artifacts:
-- `trace.jsonl` per `docs/spec/frankenterm-golden-trace-format.md` (`schema_version="golden-trace-v1"`):
-  - header with `run_id`/`git_sha`/`seed`/`profile`/`env`
-  - per-frame hashes (and optional checksum chaining)
-  - optional payload references (diff runs / full buffers)
+- Web JSONL per `docs/spec/frankenterm-golden-trace-format.md`
+  (`schema_version="golden-trace-v2"`):
+  - header with seed, dimensions, profile and environment target
+  - every actual init/step outcome, clock and pending-input count
+  - per-render FNV-1a hashes and verified checksum chaining
+- Native/remote bundle goals: `run_id`/`git_sha` metadata and optional payload
+  references (diff runs / full buffers); the web recorder does not emit these.
 
 Note:
 - `render-trace-v2` (ftui today) is a useful reference implementation of JSONL trace emission + replay.
-  FrankenTerm's `golden-trace-v1` is intended to be compatible in spirit (streamable JSONL + sidecar payloads),
-  but is a distinct schema.
+  The web `golden-trace-v2` is a distinct schema. V1 recordings lack execution
+  boundaries and must be re-recorded; changing the version label is insufficient.
 
 Trace replay gate:
 - deterministic runner replays traces and compares checksum chains.

@@ -265,6 +265,7 @@ impl RunnerCore {
                     running: false,
                     rendered: false,
                     events_processed: 0,
+                    events_pending: self.inner.pending_events(),
                     frame_idx: self.inner.frame_idx(),
                 };
             }
@@ -277,6 +278,7 @@ impl RunnerCore {
                     running: self.inner.is_running(),
                     rendered: false,
                     events_processed: 0,
+                    events_pending: self.inner.pending_events(),
                     frame_idx: self.inner.frame_idx(),
                 };
             }
@@ -285,6 +287,14 @@ impl RunnerCore {
             self.refresh_cached_patch_meta_from_live_outputs();
         }
         result
+    }
+
+    /// Recover accepted input that has not been processed, in FIFO order.
+    ///
+    /// This executes no model effects. Hosts should recover a quit tail before
+    /// destroying the runner. Queued resize requests are canceled.
+    pub fn take_pending_events(&mut self) -> Vec<ftui_core::event::Event> {
+        self.inner.take_pending_events()
     }
 
     /// Take the flat patch batch for GPU upload.
@@ -1687,6 +1697,35 @@ mod tests {
         assert!(runner.inner.is_initialized());
         assert!(result.running);
         assert!(result.frame_idx >= 1);
+    }
+
+    #[test]
+    fn quit_exposes_and_recovers_accepted_unicode_and_resize_without_effects() {
+        use ftui_core::event::{Event, PasteEvent};
+        let mut runner = RunnerCore::new(80, 24);
+        runner.init();
+        assert!(runner.push_encoded_input(
+            r#"{"kind":"key","phase":"down","key":"c","code":"KeyC","mods":4}"#
+        ));
+        assert!(runner.push_encoded_input(r#"{"kind":"paste","data":"尾巴 🦀"}"#));
+        assert!(runner.resize(100, 30));
+        let result = runner.step();
+        assert!(!result.running && !result.rendered);
+        assert_eq!(result.events_processed, 1);
+        assert_eq!(result.events_pending, 2);
+        assert_eq!(runner.inner.size(), (80, 24));
+        assert_eq!(
+            runner.take_pending_events(),
+            vec![
+                Event::Paste(PasteEvent::bracketed("尾巴 🦀")),
+                Event::Resize {
+                    width: 100,
+                    height: 30
+                },
+            ]
+        );
+        assert_eq!(runner.step().events_pending, 0);
+        assert!(runner.take_pending_events().is_empty());
     }
 
     #[test]

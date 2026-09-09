@@ -2,8 +2,9 @@
 
 //! bd-ehk.3: CI gate — reader/writer compatibility matrix test.
 //!
-//! Validates that trace from version N can replay on N+1 (forward compatibility)
-//! and that newer writer versions are correctly rejected.
+//! Validates schema-version acceptance and rejection, including the GoldenTrace
+//! v2 boundary change that requires migration of older data. These registry
+//! assertions do not execute replay.
 //!
 //! Run:
 //!   cargo test -p ftui-runtime --test schema_compat_matrix
@@ -54,7 +55,7 @@ fn matrix_covers_all_schema_kinds() {
         let count = matrix.iter().filter(|e| e.kind == kind).count();
         assert!(
             count >= 3,
-            "{kind} has only {count} matrix entries, expected at least 3 (exact, forward, backward/garbage)"
+            "{kind} has only {count} matrix entries, expected at least 3 (exact, older, newer/garbage)"
         );
     }
 }
@@ -155,14 +156,52 @@ fn event_trace_v2_backward() {
 // ============================================================================
 
 #[test]
-fn golden_trace_v0_forward() {
+fn golden_trace_v0_requires_migration() {
     let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v0");
+    assert_eq!(
+        result.compatibility,
+        Compatibility::MigrationRequired {
+            reader_version: 2,
+            writer_version: 0,
+        }
+    );
+    assert!(!result.is_compatible());
+}
+
+#[test]
+fn golden_trace_v1_requires_migration() {
+    let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v1");
+    assert_eq!(
+        result.compatibility,
+        Compatibility::MigrationRequired {
+            reader_version: 2,
+            writer_version: 1,
+        }
+    );
+    assert!(
+        !result.is_compatible(),
+        "v1 lacks the actual step boundaries required by the v2 reader"
+    );
+}
+
+#[test]
+fn golden_trace_v2_exact() {
+    let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v2");
+    assert_eq!(result.reader_version, "golden-trace-v2");
+    assert_eq!(result.compatibility, Compatibility::Exact);
     assert!(result.is_compatible());
 }
 
 #[test]
-fn golden_trace_v2_backward() {
-    let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v2");
+fn golden_trace_v3_backward() {
+    let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v3");
+    assert_eq!(
+        result.compatibility,
+        Compatibility::Backward {
+            reader_version: 2,
+            writer_version: 3,
+        }
+    );
     assert!(!result.is_compatible());
 }
 
@@ -304,21 +343,32 @@ fn compat_check_does_not_increment_counter() {
 }
 
 // ============================================================================
-// N → N+1 Replay Contract
+// N → N+1 Schema Acceptance Contract
 // ============================================================================
 
 #[test]
-fn version_n_replays_on_n_plus_1() -> Result<(), Box<dyn std::error::Error>> {
-    // Simulate the scenario: if we bump each schema's version by 1,
-    // the *old* (current) version must be forward-compatible with the new reader.
-    // This is the core CI contract: trace from N must replay on N+1.
+fn version_n_compatibility_on_n_plus_1() -> Result<(), Box<dyn std::error::Error>> {
+    // Classify older writer versions against each current reader. GoldenTrace
+    // v2 intentionally rejects v1 because its missing boundaries cannot be
+    // reconstructed. All other schemas retain their forward-acceptance rule.
+    // This checks the registry contract, not actual replay execution.
     for kind in SchemaKind::ALL {
-        if kind == SchemaKind::Telemetry {
+        if kind == SchemaKind::GoldenTrace {
+            let result = classify_schema_compat(kind, "golden-trace-v1");
+            assert_eq!(
+                result.compatibility,
+                Compatibility::MigrationRequired {
+                    reader_version: 2,
+                    writer_version: 1,
+                }
+            );
+            assert!(!result.is_compatible());
+        } else if kind == SchemaKind::Telemetry {
             // Semver: 1.0.0 reader should read 0.x.x data
             let result = classify_schema_compat(kind, "0.0.1");
             assert!(
                 result.is_compatible(),
-                "telemetry: v0 data should replay on v1 reader"
+                "telemetry: v1 registry should accept v0 data"
             );
         } else {
             // Current version as writer, simulated N+1 reader:
@@ -344,7 +394,7 @@ fn version_n_replays_on_n_plus_1() -> Result<(), Box<dyn std::error::Error>> {
                 let result = classify_schema_compat(kind, &older);
                 assert!(
                     result.is_compatible(),
-                    "{kind}: v{} data should replay on v{current_num} reader",
+                    "{kind}: v{current_num} registry should accept v{} data",
                     current_num - 1,
                 );
             }

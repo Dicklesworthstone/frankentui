@@ -115,7 +115,7 @@ impl ShowcaseRunner {
     /// Advance deterministic time by `dt_ms` and process one step.
     ///
     /// Returns a JS object:
-    /// `{ running, rendered, eventsProcessed, frameIdx }`.
+    /// `{ running, rendered, eventsProcessed, eventsPending, frameIdx }`.
     pub fn step(&mut self, dt_ms: u32) -> Result<JsValue, JsValue> {
         self.program
             .advance_time(Duration::from_millis(u64::from(dt_ms)));
@@ -263,6 +263,11 @@ fn step_result_to_js(result: StepResult) -> Result<JsValue, JsValue> {
         &obj,
         &JsValue::from_str("eventsProcessed"),
         &JsValue::from_f64(f64::from(result.events_processed)),
+    )?;
+    js_sys::Reflect::set(
+        &obj,
+        &JsValue::from_str("eventsPending"),
+        &JsValue::from_f64(f64::from(result.events_pending)),
     )?;
     Reflect::set(
         &obj,

@@ -8,13 +8,14 @@
 //!
 //! # Design
 //!
-//! Follows the golden-trace-v1 schema defined in
+//! Follows the golden-trace-v2 schema defined in
 //! `docs/spec/frankenterm-golden-trace-format.md`:
 //!
 //! - **Header**: seed, initial dimensions, capability profile.
 //! - **Input**: timestamped terminal events (key, mouse, paste, etc.).
 //! - **Resize**: terminal resize events.
 //! - **Tick**: explicit time advancement events.
+//! - **Step**: actual initialization/step boundaries, clock and execution outcomes.
 //! - **Frame**: frame checkpoints with FNV-1a checksums and chaining.
 //! - **Summary**: total frames and final checksum chain.
 //!
@@ -58,7 +59,7 @@ use crate::step_program::{StepProgram, StepResult};
 use tracing::{error, info_span};
 
 /// Schema version for session traces.
-pub const SCHEMA_VERSION: &str = "golden-trace-v1";
+pub const SCHEMA_VERSION: &str = "golden-trace-v2";
 
 // FNV-1a constants — identical to ftui-runtime/src/render_trace.rs.
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -98,6 +99,14 @@ pub enum TraceRecord {
     Resize { ts_ns: u64, cols: u16, rows: u16 },
     /// Explicit time advancement.
     Tick { ts_ns: u64 },
+    /// An observed execution boundary, including non-rendering and quit steps.
+    Step {
+        step_idx: u64,
+        ts_ns: u64,
+        init: bool,
+        clock: Duration,
+        result: StepResult,
+    },
     /// Frame checkpoint with checksum.
     Frame {
         frame_idx: u64,
@@ -145,6 +154,8 @@ impl SessionTrace {
     /// - summary exists and is the last record
     /// - frame indices are contiguous and start at zero
     /// - summary totals/chains match frame records
+    /// - every execution boundary records its outcome and accepted input count
+    /// - frame checkpoints follow exactly those steps that rendered
     pub fn validate(&self) -> Result<(), TraceValidationError> {
         if self.records.is_empty() {
             return Err(TraceValidationError::EmptyTrace);
@@ -242,6 +253,12 @@ impl SessionTrace {
                         });
                     }
                 }
+                TraceRecord::Step { ts_ns, .. } => {
+                    validate_ts(*ts_ns, idx)?;
+                    if let Some((summary_index, _, _)) = summary {
+                        return Err(TraceValidationError::SummaryNotLast { summary_index });
+                    }
+                }
             }
         }
 
@@ -276,6 +293,103 @@ impl SessionTrace {
             });
         }
 
+        self.validate_steps()
+    }
+
+    fn validate_steps(&self) -> Result<(), TraceValidationError> {
+        let mut next_step = 0;
+        let mut frames = 0;
+        let mut queued = 0_u64;
+        let mut last_result: Option<StepResult> = None;
+        let mut frame_pending = false;
+        let mut inputs_pending = false;
+        let mut checksum_chain = 0;
+        for (record_index, record) in self.records.iter().enumerate() {
+            let invalid = |reason| TraceValidationError::InvalidExecution {
+                record_index,
+                reason,
+            };
+            if frame_pending && !matches!(record, TraceRecord::Frame { .. }) {
+                return Err(invalid("rendered step is missing its frame checkpoint"));
+            }
+            match record {
+                TraceRecord::Step {
+                    step_idx,
+                    init,
+                    result,
+                    ..
+                } => {
+                    if *step_idx != next_step || *init != (next_step == 0) {
+                        return Err(invalid(
+                            "steps must start with init at zero and be contiguous",
+                        ));
+                    }
+                    if *init && result.events_processed != 0 {
+                        return Err(invalid("initialization cannot process queued input"));
+                    }
+                    if result.events_processed as u64 > queued {
+                        return Err(invalid("step processed more events than were admitted"));
+                    }
+                    queued -= u64::from(result.events_processed);
+                    if queued != u64::from(result.events_pending) {
+                        return Err(invalid(
+                            "step pending count does not account for accepted input",
+                        ));
+                    }
+                    if let Some(previous) = last_result
+                        && !previous.running
+                        && (result.running || result.rendered || result.events_processed != 0)
+                    {
+                        return Err(invalid("a stopped program cannot resume or process input"));
+                    }
+                    if result.rendered && !result.running {
+                        return Err(invalid("a stopped step cannot render"));
+                    }
+                    if result.frame_idx != frames + u64::from(result.rendered) {
+                        return Err(invalid(
+                            "step frame count does not match rendered checkpoints",
+                        ));
+                    }
+                    frame_pending = result.rendered;
+                    inputs_pending = false;
+                    last_result = Some(*result);
+                    next_step += 1;
+                }
+                TraceRecord::Frame {
+                    checksum,
+                    checksum_chain: supplied_chain,
+                    ..
+                } => {
+                    if !frame_pending {
+                        return Err(invalid(
+                            "frame checkpoint has no rendered execution boundary",
+                        ));
+                    }
+                    checksum_chain = fnv1a64_pair(checksum_chain, *checksum);
+                    if *supplied_chain != checksum_chain {
+                        return Err(invalid("frame checksum chain does not match its hashes"));
+                    }
+                    frame_pending = false;
+                    frames += 1;
+                }
+                TraceRecord::Input { .. } | TraceRecord::Resize { .. } => {
+                    if last_result.is_some_and(|result| !result.running) {
+                        return Err(invalid(
+                            "input cannot be admitted after the program stopped",
+                        ));
+                    }
+                    queued += 1;
+                    inputs_pending = true;
+                }
+                TraceRecord::Tick { .. } => inputs_pending = true,
+                TraceRecord::Summary { .. } => {
+                    if last_result.is_none() || inputs_pending {
+                        return Err(invalid("trace ends without an observed execution boundary"));
+                    }
+                }
+                TraceRecord::Header { .. } => {}
+            }
+        }
         Ok(())
     }
 }
@@ -290,6 +404,7 @@ pub struct SessionRecorder<M: ftui_runtime::program::Model> {
     records: Vec<TraceRecord>,
     checksum_chain: u64,
     current_ts_ns: u64,
+    next_step_idx: u64,
 }
 
 impl<M: ftui_runtime::program::Model> SessionRecorder<M> {
@@ -308,13 +423,21 @@ impl<M: ftui_runtime::program::Model> SessionRecorder<M> {
             records,
             checksum_chain: 0,
             current_ts_ns: 0,
+            next_step_idx: 0,
         }
     }
 
-    /// Initialize the model and record the first frame checkpoint.
+    /// Record initialization and its frame checkpoint, if it renders.
     pub fn init(&mut self) -> Result<(), WebBackendError> {
         self.program.init()?;
-        self.record_frame();
+        let result = StepResult {
+            running: self.program.is_running(),
+            rendered: self.program.frame_idx() > 0,
+            events_processed: 0,
+            events_pending: self.program.pending_events(),
+            frame_idx: self.program.frame_idx(),
+        };
+        self.record_step(true, result);
         Ok(())
     }
 
@@ -345,16 +468,17 @@ impl<M: ftui_runtime::program::Model> SessionRecorder<M> {
         self.program.advance_time(dt);
     }
 
-    /// Process one step and record a frame checkpoint if rendered.
+    /// Record an actual step, including non-rendering outcomes and pending input.
     pub fn step(&mut self) -> Result<StepResult, WebBackendError> {
         let result = self.program.step()?;
-        if result.rendered {
-            self.record_frame();
-        }
+        self.record_step(false, result);
         Ok(result)
     }
 
     /// Finish recording and return the completed trace.
+    ///
+    /// Does not step or flush pending input. Validation rejects a recording
+    /// whose final admissions or time advance lack an observed step boundary.
     pub fn finish(mut self) -> SessionTrace {
         let total_frames = self
             .records
@@ -376,8 +500,25 @@ impl<M: ftui_runtime::program::Model> SessionRecorder<M> {
     }
 
     /// Mutably access the underlying program.
+    ///
+    /// Direct input, stepping, or queue recovery bypasses recording. Use the
+    /// recorder methods for operations that must be captured in the trace.
     pub fn program_mut(&mut self) -> &mut StepProgram<M> {
         &mut self.program
+    }
+
+    fn record_step(&mut self, init: bool, result: StepResult) {
+        self.records.push(TraceRecord::Step {
+            step_idx: self.next_step_idx,
+            ts_ns: self.current_ts_ns,
+            init,
+            clock: self.program.time(),
+            result,
+        });
+        self.next_step_idx += 1;
+        if result.rendered {
+            self.record_frame();
+        }
     }
 
     fn record_frame(&mut self) {
@@ -399,6 +540,12 @@ impl<M: ftui_runtime::program::Model> SessionRecorder<M> {
 /// Result of replaying a session trace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayResult {
+    /// Execution boundaries replayed, including initialization.
+    pub total_steps: u64,
+    /// Whether the model was still running at the end of the recording.
+    pub running: bool,
+    /// Exact accepted FIFO tail that quit prevented from being processed.
+    pub unprocessed_events: Vec<Event>,
     /// Total frames replayed.
     pub total_frames: u64,
     /// Final checksum chain from replay.
@@ -408,7 +555,8 @@ pub struct ReplayResult {
 }
 
 impl ReplayResult {
-    /// Whether the replay produced identical checksums.
+    /// Whether recorded execution outcomes and checksums matched.
+    /// Inspect `unprocessed_events` separately: matching quit may leave a tail.
     #[must_use]
     pub fn ok(&self) -> bool {
         self.first_mismatch.is_none()
@@ -435,6 +583,14 @@ pub enum ReplayError {
     InvalidTrace(TraceValidationError),
     /// A backend error occurred during replay.
     Backend(WebBackendError),
+    /// Replay reached a different execution outcome at a recorded boundary.
+    StepMismatch {
+        step_idx: u64,
+        expected: StepResult,
+        actual: StepResult,
+    },
+    /// A frame checkpoint did not have a rendered buffer to compare.
+    MissingFrame { frame_idx: u64 },
 }
 
 impl core::fmt::Display for ReplayError {
@@ -443,6 +599,15 @@ impl core::fmt::Display for ReplayError {
             Self::MissingHeader => write!(f, "trace missing header record"),
             Self::InvalidTrace(e) => write!(f, "invalid trace: {e}"),
             Self::Backend(e) => write!(f, "backend error: {e}"),
+            Self::StepMismatch {
+                step_idx,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "execution mismatch at step {step_idx}: expected {expected:?}, got {actual:?}"
+            ),
+            Self::MissingFrame { frame_idx } => write!(f, "missing rendered frame {frame_idx}"),
         }
     }
 }
@@ -458,9 +623,9 @@ impl From<WebBackendError> for ReplayError {
 /// Replay a recorded session trace through a fresh model.
 ///
 /// Feeds all recorded events, resizes, and ticks through a new
-/// [`StepProgram`], stepping only at frame boundaries (matching the
-/// original recording cadence). Compares frame checksums against the
-/// recorded values.
+/// [`StepProgram`], executing only recorded initialization and step boundaries.
+/// Checks exact outcomes even when a boundary did not render. Frame records
+/// compare existing rendered buffers; they never trigger an extra step.
 ///
 /// Returns [`ReplayResult`] with match/mismatch information.
 pub fn replay<M: ftui_runtime::program::Model>(
@@ -479,15 +644,14 @@ pub fn replay<M: ftui_runtime::program::Model>(
     trace.validate().map_err(ReplayError::InvalidTrace)?;
 
     let mut program = StepProgram::new(model, cols, rows);
-    program.init()?;
 
     let mut replay_frame_idx: u64 = 0;
+    let mut total_steps = 0;
     let mut checksum_chain: u64 = 0;
     let mut first_mismatch: Option<ReplayMismatch> = None;
 
-    // Replay by iterating through trace records. Input/Resize/Tick records
-    // feed data into the program; Frame records trigger a step and checksum
-    // verification. This ensures event batching matches the original session.
+    // Admission, actual execution boundaries and rendered checkpoints are
+    // distinct. Never infer a missing step from a frame or from queued input.
     for record in &trace.records {
         match record {
             TraceRecord::Input { event, .. } => {
@@ -496,20 +660,40 @@ pub fn replay<M: ftui_runtime::program::Model>(
             TraceRecord::Resize { cols, rows, .. } => {
                 program.resize(*cols, *rows)?;
             }
-            TraceRecord::Tick { ts_ns } => {
-                program.set_time(Duration::from_nanos(*ts_ns));
+            TraceRecord::Step {
+                step_idx,
+                init,
+                clock,
+                result: expected,
+                ..
+            } => {
+                program.set_time(*clock);
+                let actual = if *init {
+                    program.init()?;
+                    StepResult {
+                        running: program.is_running(),
+                        rendered: program.frame_idx() > 0,
+                        events_processed: 0,
+                        events_pending: program.pending_events(),
+                        frame_idx: program.frame_idx(),
+                    }
+                } else {
+                    program.step()?
+                };
+                if actual != *expected {
+                    return Err(ReplayError::StepMismatch {
+                        step_idx: *step_idx,
+                        expected: *expected,
+                        actual,
+                    });
+                }
+                total_steps += 1;
             }
             TraceRecord::Frame {
                 frame_idx: expected_idx,
                 checksum: expected_checksum,
                 ..
             } => {
-                // The init frame (frame_idx 0) was already rendered by init().
-                // Subsequent frames require a step() call.
-                if replay_frame_idx > 0 {
-                    program.step()?;
-                }
-
                 // Verify checksum.
                 let outputs = program.outputs();
                 if let Some(buf) = &outputs.last_buffer {
@@ -522,14 +706,22 @@ pub fn replay<M: ftui_runtime::program::Model>(
                             actual,
                         });
                     }
+                } else {
+                    return Err(ReplayError::MissingFrame {
+                        frame_idx: *expected_idx,
+                    });
                 }
                 replay_frame_idx += 1;
             }
-            TraceRecord::Header { .. } | TraceRecord::Summary { .. } => {}
+            TraceRecord::Header { .. } | TraceRecord::Summary { .. } | TraceRecord::Tick { .. } => {
+            }
         }
     }
 
     Ok(ReplayResult {
+        total_steps,
+        running: program.is_running(),
+        unprocessed_events: program.take_pending_events(),
         total_frames: replay_frame_idx,
         final_checksum_chain: checksum_chain,
         first_mismatch,
@@ -684,7 +876,7 @@ fn ime_phase_to_str(phase: ImePhase) -> &'static str {
 }
 
 impl TraceRecord {
-    /// Serialize this record as a golden-trace-v1 JSONL line.
+    /// Serialize this record as a golden-trace-v2 JSONL line.
     pub fn to_jsonl(&self) -> String {
         match self {
             TraceRecord::Header {
@@ -714,6 +906,26 @@ impl TraceRecord {
                 r#"{{"schema_version":"{}","event":"tick","ts_ns":{}}}"#,
                 SCHEMA_VERSION, ts_ns
             ),
+            TraceRecord::Step {
+                step_idx,
+                ts_ns,
+                init,
+                clock,
+                result,
+            } => format!(
+                r#"{{"schema_version":"{}","event":"step","step_idx":{},"ts_ns":{},"init":{},"clock_secs":{},"clock_subsec_nanos":{},"running":{},"rendered":{},"events_processed":{},"events_pending":{},"frame_idx":{}}}"#,
+                SCHEMA_VERSION,
+                step_idx,
+                ts_ns,
+                init,
+                clock.as_secs(),
+                clock.subsec_nanos(),
+                result.running,
+                result.rendered,
+                result.events_processed,
+                result.events_pending,
+                result.frame_idx
+            ),
             TraceRecord::Frame {
                 frame_idx,
                 ts_ns,
@@ -735,7 +947,7 @@ impl TraceRecord {
 }
 
 impl SessionTrace {
-    /// Serialize the entire trace as a golden-trace-v1 JSONL string.
+    /// Serialize the entire trace as a golden-trace-v2 JSONL string.
     pub fn to_jsonl(&self) -> String {
         let mut out = String::new();
         for record in &self.records {
@@ -745,7 +957,7 @@ impl SessionTrace {
         out
     }
 
-    /// Parse a golden-trace-v1 JSONL string into a `SessionTrace`.
+    /// Parse a golden-trace-v2 JSONL string into a `SessionTrace`.
     ///
     /// Returns a parse error with the line number on failure.
     pub fn from_jsonl(input: &str) -> Result<Self, TraceParseError> {
@@ -761,7 +973,7 @@ impl SessionTrace {
         Ok(SessionTrace { records })
     }
 
-    /// Parse and validate a golden-trace-v1 JSONL payload.
+    /// Parse and validate a golden-trace-v2 JSONL payload.
     pub fn from_jsonl_validated(input: &str) -> Result<Self, TraceLoadError> {
         let trace = Self::from_jsonl(input)?;
         trace.validate()?;
@@ -787,6 +999,10 @@ impl std::error::Error for TraceParseError {}
 /// Typed validation failures for `SessionTrace`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TraceValidationError {
+    InvalidExecution {
+        record_index: usize,
+        reason: &'static str,
+    },
     EmptyTrace,
     MissingHeader,
     HeaderNotFirst,
@@ -818,6 +1034,12 @@ pub enum TraceValidationError {
 impl core::fmt::Display for TraceValidationError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::InvalidExecution {
+                record_index,
+                reason,
+            } => {
+                write!(f, "invalid execution at record {record_index}: {reason}")
+            }
             Self::EmptyTrace => write!(f, "trace is empty"),
             Self::MissingHeader => write!(f, "trace is missing header"),
             Self::HeaderNotFirst => write!(f, "trace header is not the first record"),
@@ -893,50 +1115,116 @@ impl From<TraceValidationError> for TraceLoadError {
 
 // ---- Minimal JSON field extraction (no serde dependency) ----
 
-fn extract_str<'a>(json: &'a str, key: &str) -> Option<&'a str> {
-    let pattern = format!("\"{}\":\"", key);
-    let start = json.find(&pattern)? + pattern.len();
-    let rest = &json[start..];
-    // Find closing quote, handling escapes.
-    let mut i = 0;
-    let bytes = rest.as_bytes();
+fn json_string_end(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    if bytes.first() != Some(&b'"') {
+        return None;
+    }
+    let mut i = 1;
     while i < bytes.len() {
         if bytes[i] == b'\\' {
-            i += 2; // Skip escaped char.
+            i += 2;
             continue;
         }
         if bytes[i] == b'"' {
-            return Some(&rest[..i]);
+            return Some(i + 1);
+        }
+        if bytes[i] < 0x20 {
+            return None;
         }
         i += 1;
     }
     None
 }
 
+fn json_value_end(input: &str) -> Option<usize> {
+    match input.as_bytes().first()? {
+        b'"' => json_string_end(input),
+        b'{' | b'[' => {
+            let mut closing = Vec::new();
+            let mut index = 0;
+            while index < input.len() {
+                match input.as_bytes()[index] {
+                    b'"' => {
+                        index += json_string_end(&input[index..])?;
+                        continue;
+                    }
+                    b'{' => closing.push(b'}'),
+                    b'[' => closing.push(b']'),
+                    byte @ (b'}' | b']') => {
+                        if closing.pop()? != byte {
+                            return None;
+                        }
+                        if closing.is_empty() {
+                            return Some(index + 1);
+                        }
+                    }
+                    _ => {}
+                }
+                index += 1;
+            }
+            None
+        }
+        _ => Some(input.find([',', '}', ']']).unwrap_or(input.len())),
+    }
+}
+
+// Only inspect complete top-level values. A nested field or quoted payload
+// must never impersonate execution metadata; duplicate requested keys fail.
+fn extract_value<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let mut rest = json.trim().strip_prefix('{')?.trim_start();
+    let mut found = None;
+    if rest == "}" {
+        return None;
+    }
+    loop {
+        let key_end = json_string_end(rest)?;
+        let field_key = &rest[1..key_end - 1];
+        rest = rest[key_end..].trim_start().strip_prefix(':')?.trim_start();
+        let value_end = json_value_end(rest)?;
+        let value = rest[..value_end].trim();
+        if value.is_empty() {
+            return None;
+        }
+        if field_key == key {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(value);
+        }
+        rest = rest[value_end..].trim_start();
+        if rest == "}" {
+            return found;
+        }
+        rest = rest.strip_prefix(',')?.trim_start();
+    }
+}
+
+fn extract_str<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    extract_value(json, key)?
+        .strip_prefix('"')?
+        .strip_suffix('"')
+}
+
 fn extract_u64(json: &str, key: &str) -> Option<u64> {
-    let pattern = format!("\"{}\":", key);
-    let start = json.find(&pattern)? + pattern.len();
-    let rest = json[start..].trim_start();
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end].parse().ok()
+    let value = extract_value(json, key)?;
+    if !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return None;
+    }
+    value.parse().ok()
 }
 
 fn extract_i64(json: &str, key: &str) -> Option<i64> {
-    let pattern = format!("\"{}\":", key);
-    let start = json.find(&pattern)? + pattern.len();
-    let rest = json[start..].trim_start();
-    let signed = rest.strip_prefix('-').is_some();
-    let digits = if signed { &rest[1..] } else { rest };
-    let end = digits
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(digits.len());
-    if end == 0 {
+    let value = extract_value(json, key)?;
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    if !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
         return None;
     }
-    let parsed: i64 = digits[..end].parse().ok()?;
-    Some(if signed { -parsed } else { parsed })
+    value.parse().ok()
 }
 
 fn extract_u16(json: &str, key: &str) -> Option<u16> {
@@ -944,15 +1232,10 @@ fn extract_u16(json: &str, key: &str) -> Option<u16> {
 }
 
 fn extract_bool(json: &str, key: &str) -> Option<bool> {
-    let pattern = format!("\"{}\":", key);
-    let start = json.find(&pattern)? + pattern.len();
-    let rest = json[start..].trim_start();
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
+    match extract_value(json, key)? {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
     }
 }
 
@@ -962,29 +1245,23 @@ fn extract_hex_u64(json: &str, key: &str) -> Option<u64> {
 }
 
 fn extract_object<'a>(json: &'a str, key: &str) -> Option<&'a str> {
-    let pattern = format!("\"{}\":", key);
-    let start = json.find(&pattern)? + pattern.len();
-    let rest = json[start..].trim_start();
-    if !rest.starts_with('{') {
-        return None;
-    }
-    let mut depth = 0;
-    for (i, ch) in rest.char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&rest[..=i]);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    let value = extract_value(json, key)?;
+    (value.starts_with('{') && value.ends_with('}')).then_some(value)
 }
 
-fn json_unescape(input: &str) -> String {
+fn json_unescape(input: &str) -> Result<String, String> {
+    fn hex_unit(chars: &mut core::str::Chars<'_>) -> Result<u32, String> {
+        let mut unit = 0;
+        for _ in 0..4 {
+            let digit = chars
+                .next()
+                .and_then(|ch| ch.to_digit(16))
+                .ok_or("invalid JSON Unicode escape")?;
+            unit = unit * 16 + digit;
+        }
+        Ok(unit)
+    }
+
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars();
     while let Some(ch) = chars.next() {
@@ -992,28 +1269,34 @@ fn json_unescape(input: &str) -> String {
             match chars.next() {
                 Some('"') => out.push('"'),
                 Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some('b') => out.push('\u{0008}'),
+                Some('f') => out.push('\u{000c}'),
                 Some('n') => out.push('\n'),
                 Some('r') => out.push('\r'),
                 Some('t') => out.push('\t'),
                 Some('u') => {
-                    let hex: String = chars.by_ref().take(4).collect();
-                    if let Ok(cp) = u32::from_str_radix(&hex, 16)
-                        && let Some(c) = char::from_u32(cp)
-                    {
-                        out.push(c);
+                    let mut cp = hex_unit(&mut chars)?;
+                    if (0xd800..=0xdbff).contains(&cp) {
+                        if chars.next() != Some('\\') || chars.next() != Some('u') {
+                            return Err("missing JSON low surrogate".to_string());
+                        }
+                        let low = hex_unit(&mut chars)?;
+                        if !(0xdc00..=0xdfff).contains(&low) {
+                            return Err("invalid JSON low surrogate".to_string());
+                        }
+                        cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
                     }
+                    out.push(char::from_u32(cp).ok_or("invalid JSON Unicode scalar")?);
                 }
-                Some(c) => {
-                    out.push('\\');
-                    out.push(c);
-                }
-                None => out.push('\\'),
+                Some(_) => return Err("invalid JSON escape".to_string()),
+                None => return Err("incomplete JSON escape".to_string()),
             }
         } else {
             out.push(ch);
         }
     }
-    out
+    Ok(out)
 }
 
 fn check_trace_schema_compat(schema_version: &str, line_num: usize) -> Result<(), TraceParseError> {
@@ -1094,6 +1377,36 @@ fn parse_trace_line(line: &str, line_num: usize) -> Result<TraceRecord, TracePar
             let ts_ns = extract_u64(line, "ts_ns").ok_or_else(|| err("missing ts_ns"))?;
             Ok(TraceRecord::Tick { ts_ns })
         }
+        "step" => {
+            let required_u64 = |key| {
+                extract_u64(line, key).ok_or_else(|| err(&format!("missing or invalid {key}")))
+            };
+            let required_u32 = |key| {
+                required_u64(key).and_then(|value| {
+                    u32::try_from(value).map_err(|_| err(&format!("{key} out of range")))
+                })
+            };
+            let required_bool = |key| {
+                extract_bool(line, key).ok_or_else(|| err(&format!("missing or invalid {key}")))
+            };
+            let nanos = required_u32("clock_subsec_nanos")?;
+            if nanos >= 1_000_000_000 {
+                return Err(err("clock_subsec_nanos must be less than 1000000000"));
+            }
+            Ok(TraceRecord::Step {
+                step_idx: required_u64("step_idx")?,
+                ts_ns: required_u64("ts_ns")?,
+                init: required_bool("init")?,
+                clock: Duration::new(required_u64("clock_secs")?, nanos),
+                result: StepResult {
+                    running: required_bool("running")?,
+                    rendered: required_bool("rendered")?,
+                    events_processed: required_u32("events_processed")?,
+                    events_pending: required_u32("events_pending")?,
+                    frame_idx: required_u64("frame_idx")?,
+                },
+            })
+        }
         "frame" => {
             let frame_idx =
                 extract_u64(line, "frame_idx").ok_or_else(|| err("missing frame_idx"))?;
@@ -1128,7 +1441,7 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
     match kind {
         "key" => {
             let code_str = extract_str(data, "code").ok_or("missing key code")?;
-            let code = parse_key_code(&json_unescape(code_str))?;
+            let code = parse_key_code(&json_unescape(code_str)?)?;
             let mods_bits = extract_u64(data, "modifiers")
                 .or(extract_u64(data, "mods"))
                 .unwrap_or(0) as u8;
@@ -1216,6 +1529,7 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
             let text = extract_str(data, "text")
                 .or(extract_str(data, "data"))
                 .map(json_unescape)
+                .transpose()?
                 .unwrap_or_default();
             let bracketed = extract_bool(data, "bracketed").unwrap_or(true);
             Ok(Event::Paste(PasteEvent::new(text, bracketed)))
@@ -1226,6 +1540,7 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
             let text = extract_str(data, "text")
                 .or(extract_str(data, "data"))
                 .map(json_unescape)
+                .transpose()?
                 .unwrap_or_default();
             let ime = match phase {
                 ImePhase::Start => ImeEvent::start(),
@@ -1244,6 +1559,7 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
         "clipboard" => {
             let content = extract_str(data, "content")
                 .map(json_unescape)
+                .transpose()?
                 .unwrap_or_default();
             let source_str = extract_str(data, "source").unwrap_or("unknown");
             let source = match source_str {
@@ -1442,6 +1758,9 @@ pub fn gate_trace<M: ftui_runtime::program::Model>(
 
     Ok(GateReport {
         passed: result.ok(),
+        total_steps: result.total_steps,
+        running: result.running,
+        unprocessed_events: result.unprocessed_events,
         total_frames: result.total_frames,
         expected_frames: frame_checksums.len() as u64,
         final_checksum_chain: result.final_checksum_chain,
@@ -1452,8 +1771,14 @@ pub fn gate_trace<M: ftui_runtime::program::Model>(
 /// Report from a golden trace gate validation.
 #[derive(Debug, Clone)]
 pub struct GateReport {
-    /// Whether all frame checksums matched.
+    /// Whether all execution outcomes and frame checksums matched.
     pub passed: bool,
+    /// Number of execution boundaries replayed, including initialization.
+    pub total_steps: u64,
+    /// Whether the replayed program is still running.
+    pub running: bool,
+    /// Accepted input left unprocessed after quit, preserved in FIFO order.
+    pub unprocessed_events: Vec<Event>,
     /// Number of frames replayed.
     pub total_frames: u64,
     /// Number of frame checkpoints in the trace.
@@ -1469,8 +1794,13 @@ impl GateReport {
     pub fn format(&self) -> String {
         if self.passed {
             format!(
-                "PASS: {}/{} frames verified, final_chain={:016x}",
-                self.total_frames, self.expected_frames, self.final_checksum_chain
+                "PASS: {}/{} frames verified, final_chain={:016x}, steps={}, running={}, unprocessed_events={}",
+                self.total_frames,
+                self.expected_frames,
+                self.final_checksum_chain,
+                self.total_steps,
+                self.running,
+                self.unprocessed_events.len()
             )
         } else if let Some(d) = &self.diff {
             format!(
@@ -1674,6 +2004,202 @@ mod tests {
         Counter { value }
     }
 
+    // Observe actual updates even when quit prevents any new frame.
+    struct ObservedModel {
+        seen: std::rc::Rc<std::cell::RefCell<Vec<Event>>>,
+        init_count: std::rc::Rc<std::cell::Cell<u32>>,
+        quit_on_init: bool,
+        honor_quit: bool,
+    }
+
+    impl Model for ObservedModel {
+        type Message = Event;
+
+        fn init(&mut self) -> Cmd<Event> {
+            self.init_count.set(self.init_count.get() + 1);
+            if self.quit_on_init {
+                Cmd::quit()
+            } else {
+                Cmd::tick(Duration::from_millis(10))
+            }
+        }
+
+        fn update(&mut self, event: Event) -> Cmd<Event> {
+            let quit = event == key_event('q') && self.honor_quit;
+            self.seen.borrow_mut().push(event);
+            if quit { Cmd::quit() } else { Cmd::none() }
+        }
+
+        fn view(&self, frame: &mut Frame) {
+            frame.buffer.set_raw(0, 0, Cell::from_char('X'));
+        }
+    }
+
+    fn observed_model(quit_on_init: bool, honor_quit: bool) -> ObservedModel {
+        ObservedModel {
+            seen: Default::default(),
+            init_count: Default::default(),
+            quit_on_init,
+            honor_quit,
+        }
+    }
+
+    #[test]
+    fn non_rendering_quit_replays_actual_updates_and_exact_accepted_tail() {
+        let model = observed_model(false, true);
+        let recorded_seen = model.seen.clone();
+        let mut recorder = SessionRecorder::new(model, 20, 2, 7);
+        recorder.init().unwrap();
+        let tail = vec![
+            Event::Paste(PasteEvent::bracketed("尾巴 🦀")),
+            Event::Resize {
+                width: 33,
+                height: 4,
+            },
+        ];
+        for event in [key_event('+'), key_event('q')]
+            .into_iter()
+            .chain(tail.clone())
+        {
+            recorder.push_event(9, event).unwrap();
+        }
+        let outcome = recorder.step().unwrap();
+        assert_eq!(outcome.events_processed, 2);
+        assert_eq!(outcome.events_pending, 2);
+        assert!(!outcome.running && !outcome.rendered);
+        assert_eq!(
+            *recorded_seen.borrow(),
+            vec![key_event('+'), key_event('q')]
+        );
+        let trace = SessionTrace::from_jsonl_validated(&recorder.finish().to_jsonl()).unwrap();
+        let model = observed_model(false, true);
+        let replayed_seen = model.seen.clone();
+        let init_count = model.init_count.clone();
+        let result = replay(model, &trace).unwrap();
+        assert!(result.ok());
+        assert_eq!(result.total_steps, 2);
+        assert_eq!(result.total_frames, 1);
+        assert!(!result.running);
+        assert_eq!(result.unprocessed_events, tail);
+        assert_eq!(*replayed_seen.borrow(), *recorded_seen.borrow());
+        assert_eq!(init_count.get(), 1);
+        let gate = gate_trace(observed_model(false, true), &trace).unwrap();
+        assert!(gate.passed);
+        assert_eq!(gate.total_steps, 2);
+        assert!(!gate.running);
+        assert_eq!(gate.unprocessed_events, tail);
+        assert!(gate.format().contains("unprocessed_events=2"));
+        assert!(!gate.format().contains("尾巴"));
+
+        // Same initial frame, different quit behavior: checksum-only replay
+        // previously accepted this without ever executing the quit step.
+        assert!(matches!(
+            replay(observed_model(false, false), &trace),
+            Err(ReplayError::StepMismatch { step_idx: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn initialization_quit_has_no_frame_and_recovers_preinit_input() {
+        let mut recorder = SessionRecorder::new(observed_model(true, true), 20, 2, 7);
+        recorder.push_event(1, key_event('+')).unwrap();
+        recorder.resize(2, 40, 4).unwrap();
+        recorder.init().unwrap();
+        assert_eq!(recorder.program().size(), (20, 2));
+        assert!(recorder.program().outputs().last_buffer.is_none());
+        let stopped = recorder.step().unwrap();
+        assert_eq!(stopped.events_pending, 2);
+        assert_eq!(stopped.events_processed, 0);
+        let trace = SessionTrace::from_jsonl_validated(&recorder.finish().to_jsonl()).unwrap();
+        let model = observed_model(true, true);
+        let seen = model.seen.clone();
+        let init_count = model.init_count.clone();
+        let result = replay(model, &trace).unwrap();
+        assert!(result.ok());
+        assert!(!result.running);
+        assert_eq!(result.total_frames, 0);
+        assert_eq!(result.total_steps, 2);
+        assert_eq!(init_count.get(), 1);
+        assert!(seen.borrow().is_empty());
+        assert_eq!(
+            result.unprocessed_events,
+            vec![
+                key_event('+'),
+                Event::Resize {
+                    width: 40,
+                    height: 4
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn idle_steps_and_clock_deltas_replay_independently_of_metadata_timestamps() {
+        let model = observed_model(false, true);
+        let seen = model.seen.clone();
+        let mut recorder = SessionRecorder::new(model, 20, 2, 7);
+        recorder.init().unwrap();
+        assert!(!recorder.step().unwrap().rendered);
+        recorder.advance_time(1, Duration::from_millis(9));
+        assert!(!recorder.step().unwrap().rendered);
+        recorder.advance_time(2, Duration::from_millis(1));
+        assert!(recorder.step().unwrap().rendered);
+        assert!(!recorder.step().unwrap().rendered);
+        assert_eq!(*seen.borrow(), vec![Event::Tick]);
+        let trace = SessionTrace::from_jsonl_validated(&recorder.finish().to_jsonl()).unwrap();
+        let model = observed_model(false, true);
+        let replayed = model.seen.clone();
+        let result = replay(model, &trace).unwrap();
+        assert!(result.ok());
+        assert_eq!(result.total_steps, 5);
+        assert_eq!(result.total_frames, 2);
+        assert_eq!(*replayed.borrow(), vec![Event::Tick]);
+    }
+
+    #[test]
+    fn trace_requires_observed_boundaries_without_implicit_flush_or_stale_frames() {
+        let mut recorder = SessionRecorder::new(new_counter(0), 20, 2, 7);
+        recorder.init().unwrap();
+        recorder.push_event(1, key_event('q')).unwrap();
+        recorder.step().unwrap();
+        let trace = recorder.finish();
+        trace.validate().unwrap();
+        let quit_idx = trace.records.len() - 2;
+        for missing in [1, 2, quit_idx] {
+            let mut changed = trace.clone();
+            changed.records.remove(missing);
+            assert!(changed.validate().is_err(), "missing record {missing}");
+            assert!(replay(new_counter(0), &changed).is_err());
+        }
+        let mut duplicate = trace.clone();
+        duplicate
+            .records
+            .insert(quit_idx, trace.records[quit_idx].clone());
+        assert!(duplicate.validate().is_err());
+        let mut reordered = trace.clone();
+        reordered.records.swap(1, 2);
+        assert!(reordered.validate().is_err());
+        let mut bad_count = trace.clone();
+        if let TraceRecord::Step { result, .. } = &mut bad_count.records[quit_idx] {
+            result.events_pending = 1;
+        }
+        assert!(bad_count.validate().is_err());
+        let mut after_quit = trace.clone();
+        after_quit.records.insert(
+            quit_idx + 1,
+            TraceRecord::Input {
+                ts_ns: 1,
+                event: key_event('+'),
+            },
+        );
+        assert!(after_quit.validate().is_err());
+
+        let mut recorder = SessionRecorder::new(new_counter(0), 20, 2, 7);
+        recorder.init().unwrap();
+        recorder.push_event(1, key_event('+')).unwrap();
+        assert!(recorder.finish().validate().is_err());
+    }
+
     #[test]
     fn recorder_rejects_before_changing_trace_or_timestamp_and_replays_recovery() {
         let mut recorder = SessionRecorder::new(new_counter(0), 80, 24, 0);
@@ -1718,6 +2244,22 @@ mod tests {
                 event: key_event('+'),
             }),
         );
+        trace.records.insert(
+            trace.records.len() - 1,
+            TraceRecord::Step {
+                step_idx: 1,
+                ts_ns: 0,
+                init: false,
+                clock: Duration::ZERO,
+                result: StepResult {
+                    running: false,
+                    rendered: false,
+                    events_processed: 0,
+                    events_pending: crate::WebEventSource::MAX_EVENTS as u32 + 1,
+                    frame_idx: 1,
+                },
+            },
+        );
         trace.validate().unwrap();
         assert!(matches!(
             replay(new_counter(0), &trace),
@@ -1751,7 +2293,7 @@ mod tests {
         rec.init().unwrap();
 
         let trace = rec.finish();
-        assert!(trace.records.len() >= 3); // header + frame + summary
+        assert_eq!(trace.records.len(), 4); // header + init step + frame + summary
 
         // First record is header.
         assert!(matches!(
@@ -2288,6 +2830,9 @@ mod tests {
     #[test]
     fn replay_result_ok_when_no_mismatch() {
         let r = ReplayResult {
+            total_steps: 5,
+            running: true,
+            unprocessed_events: Vec::new(),
             total_frames: 5,
             final_checksum_chain: 123,
             first_mismatch: None,
@@ -2298,6 +2843,9 @@ mod tests {
     #[test]
     fn replay_result_not_ok_when_mismatch() {
         let r = ReplayResult {
+            total_steps: 5,
+            running: true,
+            unprocessed_events: Vec::new(),
             total_frames: 5,
             final_checksum_chain: 123,
             first_mismatch: Some(ReplayMismatch {
@@ -2336,7 +2884,7 @@ mod tests {
         };
         let line = r.to_jsonl();
         assert!(line.contains("\"event\":\"trace_header\""));
-        assert!(line.contains("\"schema_version\":\"golden-trace-v1\""));
+        assert!(line.contains("\"schema_version\":\"golden-trace-v2\""));
         assert!(line.contains("\"seed\":42"));
         assert!(line.contains("\"cols\":80"));
         assert!(line.contains("\"rows\":24"));
@@ -2497,6 +3045,139 @@ mod tests {
     // ---- JSONL parsing errors ----
 
     #[test]
+    fn step_jsonl_preserves_clock_and_requires_all_outcome_fields() {
+        let record = TraceRecord::Step {
+            step_idx: 4,
+            ts_ns: 9,
+            init: false,
+            clock: Duration::new(u64::MAX, 999_999_999),
+            result: StepResult {
+                running: false,
+                rendered: false,
+                events_processed: 3,
+                events_pending: 2,
+                frame_idx: 2,
+            },
+        };
+        let json = record.to_jsonl();
+        assert_eq!(
+            SessionTrace::from_jsonl(&json).unwrap().records,
+            vec![record]
+        );
+        for field in [
+            "step_idx",
+            "ts_ns",
+            "init",
+            "clock_secs",
+            "clock_subsec_nanos",
+            "running",
+            "rendered",
+            "events_processed",
+            "events_pending",
+            "frame_idx",
+        ] {
+            let changed = json.replace(&format!("\"{field}\":"), "\"unknown\":");
+            assert!(
+                SessionTrace::from_jsonl(&changed).is_err(),
+                "missing {field}"
+            );
+        }
+        for (old, new) in [
+            (
+                "\"clock_subsec_nanos\":999999999",
+                "\"clock_subsec_nanos\":1000000000",
+            ),
+            ("\"events_pending\":2", "\"events_pending\":4294967296"),
+            ("\"events_processed\":3", "\"events_processed\":-1"),
+            ("\"running\":false", "\"running\":null"),
+            ("\"running\":false", "\"running\":falseX"),
+            ("\"events_pending\":2", "\"events_pending\":2.5"),
+            ("\"events_pending\":2", "\"events_pending\":2e3"),
+            ("\"events_pending\":2", "\"nested\":{\"events_pending\":2}"),
+            (
+                "\"events_pending\":2",
+                "\"events_pending\":2,\"events_pending\":2",
+            ),
+        ] {
+            assert!(
+                SessionTrace::from_jsonl(&json.replace(old, new)).is_err(),
+                "invalid {new}"
+            );
+        }
+    }
+
+    #[test]
+    fn v1_trace_cannot_invent_missing_execution_boundaries() {
+        let line = r#"{"schema_version":"golden-trace-v1","event":"tick","ts_ns":0}"#;
+        let error = SessionTrace::from_jsonl(line).unwrap_err();
+        assert!(error.message.contains("migration required"));
+    }
+
+    #[test]
+    fn text_payloads_with_braces_quotes_and_unicode_round_trip_in_quit_tail() {
+        let text = "} { \\\" 🦀/\n\t\0\u{0008}\u{000c}";
+        let tail = vec![
+            Event::Paste(PasteEvent::bracketed(text)),
+            Event::Ime(ImeEvent::commit(text)),
+            Event::Clipboard(ftui_core::event::ClipboardEvent {
+                content: text.to_owned(),
+                source: ClipboardSource::Osc52,
+            }),
+        ];
+        let mut recorder = SessionRecorder::new(new_counter(0), 20, 2, 7);
+        recorder.init().unwrap();
+        recorder.push_event(0, key_event('q')).unwrap();
+        for event in &tail {
+            recorder.push_event(0, event.clone()).unwrap();
+        }
+        recorder.step().unwrap();
+        let jsonl = recorder.finish().to_jsonl();
+        let escaped = jsonl
+            .replace('🦀', r"\ud83e\udd80")
+            .replace('/', r"\/")
+            .replace(r"\u0008", r"\b")
+            .replace(r"\u000c", r"\f");
+        for input in [&jsonl, &escaped] {
+            let trace = SessionTrace::from_jsonl_validated(input).unwrap();
+            assert_eq!(
+                replay(new_counter(0), &trace).unwrap().unprocessed_events,
+                tail
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_text_escapes_are_rejected_without_changing_content() {
+        for text in [r"\uZZZZ", r"\ud83e", r"\udd80", r"\ud83e\u0061", r"\q"] {
+            let line = format!(
+                r#"{{"schema_version":"{}","event":"input","ts_ns":0,"data":{{"kind":"paste","text":"{}"}}}}"#,
+                SCHEMA_VERSION, text
+            );
+            assert!(SessionTrace::from_jsonl(&line).is_err(), "invalid {text}");
+        }
+    }
+
+    #[test]
+    fn chain_only_corruption_cannot_pass_replay_or_gate() {
+        let mut recorder = SessionRecorder::new(new_counter(0), 20, 2, 7);
+        recorder.init().unwrap();
+        let mut trace = recorder.finish();
+        for record in &mut trace.records {
+            match record {
+                TraceRecord::Frame { checksum_chain, .. } => *checksum_chain ^= 1,
+                TraceRecord::Summary {
+                    final_checksum_chain,
+                    ..
+                } => *final_checksum_chain ^= 1,
+                _ => {}
+            }
+        }
+        assert!(trace.validate().is_err());
+        assert!(replay(new_counter(0), &trace).is_err());
+        assert!(gate_trace(new_counter(0), &trace).is_err());
+    }
+
+    #[test]
     fn from_jsonl_empty_is_ok() {
         let trace = SessionTrace::from_jsonl("").unwrap();
         assert!(trace.records.is_empty());
@@ -2504,7 +3185,7 @@ mod tests {
 
     #[test]
     fn from_jsonl_unknown_event_fails() {
-        let line = r#"{"schema_version":"golden-trace-v1","event":"unknown_type","ts_ns":0}"#;
+        let line = r#"{"schema_version":"golden-trace-v2","event":"unknown_type","ts_ns":0}"#;
         let result = SessionTrace::from_jsonl(line);
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("unknown event type"));
@@ -2512,7 +3193,7 @@ mod tests {
 
     #[test]
     fn from_jsonl_missing_event_field_fails() {
-        let line = r#"{"schema_version":"golden-trace-v1","ts_ns":0}"#;
+        let line = r#"{"schema_version":"golden-trace-v2","ts_ns":0}"#;
         let result = SessionTrace::from_jsonl(line);
         assert!(result.is_err());
     }
@@ -2537,7 +3218,7 @@ mod tests {
 
     #[test]
     fn from_jsonl_schema_matrix_newer_writer_version_fails_with_migration_error() {
-        let line = r#"{"schema_version":"golden-trace-v2","event":"tick","ts_ns":0}"#;
+        let line = r#"{"schema_version":"golden-trace-v3","event":"tick","ts_ns":0}"#;
         let result = SessionTrace::from_jsonl(line);
         assert!(result.is_err());
         let message = result.unwrap_err().message;
@@ -2553,7 +3234,7 @@ mod tests {
             tracing_subscriber::registry().with(capture.clone().with_filter(LevelFilter::TRACE));
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let line = r#"{"schema_version":"golden-trace-v2","event":"tick","ts_ns":0}"#;
+        let line = r#"{"schema_version":"golden-trace-v3","event":"tick","ts_ns":0}"#;
         let err = SessionTrace::from_jsonl(line).expect_err("newer schema should fail");
         assert!(err.message.contains("migration required"));
 
@@ -2604,7 +3285,7 @@ mod tests {
         ];
         for input in cases {
             let escaped = json_escape(input);
-            let unescaped = json_unescape(&escaped);
+            let unescaped = json_unescape(&escaped).unwrap();
             assert_eq!(unescaped, input, "round-trip failed for: {input:?}");
         }
     }
@@ -2810,17 +3491,31 @@ mod tests {
 
         // Tamper with the trace: change a frame checksum.
         let mut tampered = trace.clone();
+        let mut chain = 0;
         for record in &mut tampered.records {
-            if let TraceRecord::Frame {
-                frame_idx,
-                checksum,
-                ..
-            } = record
-                && *frame_idx == 2
-            {
-                *checksum = 0xBAD;
+            match record {
+                TraceRecord::Frame {
+                    frame_idx,
+                    checksum,
+                    checksum_chain,
+                    ..
+                } => {
+                    if *frame_idx == 2 {
+                        *checksum = 0xBAD;
+                    }
+                    chain = fnv1a64_pair(chain, *checksum);
+                    *checksum_chain = chain;
+                }
+                TraceRecord::Summary {
+                    final_checksum_chain,
+                    ..
+                } => *final_checksum_chain = chain,
+                _ => {}
             }
         }
+        // Preserve structural integrity so this still tests an actual model
+        // checksum mismatch, independently of the malformed-chain rejection.
+        tampered.validate().unwrap();
 
         let report = gate_trace(new_counter(0), &tampered).unwrap();
         assert!(!report.passed);

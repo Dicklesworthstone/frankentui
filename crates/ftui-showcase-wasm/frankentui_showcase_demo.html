@@ -436,6 +436,7 @@ function addMediaQueryChangeListener(query, handler) {
 let userZoom = URL_ZOOM || parseFloat(storageGet("ftui-zoom")) || 1.0;
 
 function applyZoom() {
+  if (!runner.isRunning() || errorDiv.classList.contains("visible")) return;
   if (typeof term.setZoom === "function") {
     term.setZoom(userZoom);
   }
@@ -1098,6 +1099,22 @@ term.render();
 let lastTs = 0;
 let totalFrames = 0;
 
+// Retain the accepted quit tail in a downloadable input fragment. Do not log
+// pasted/IME/clipboard contents or execute them after the application stops.
+function retainPendingRunnerInput(destination = status) {
+  const inputTrace = runner.takePendingInputTrace();
+  if (!inputTrace) return;
+  const count = inputTrace.trimEnd().split("\n").length;
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([inputTrace], { type: "application/x-ndjson" }));
+  link.download = "frankentui-unprocessed-input.jsonl";
+  link.textContent = `Save ${count} unprocessed input event${count === 1 ? "" : "s"}`;
+  link.style.color = "inherit";
+  link.style.pointerEvents = "auto";
+  destination.append(" — ", link);
+  jsonl({ event: "input_recovered", count, ts: Date.now() });
+}
+
 // Drain before retrying capacity-limited input. Present every intermediate
 // patch batch: later diffs depend on these frames having reached the terminal.
 function stepAndPresentRunner() {
@@ -1203,6 +1220,7 @@ function geometrySignature(cols, rows, dprValue, zoomValue) {
 }
 
 function setRunningStatusText() {
+  if (!runner.isRunning() || errorDiv.classList.contains("visible")) return;
   if (Math.abs(userZoom - 1.0) > 0.01) {
     status.textContent = `${currentCols}\u00d7${currentRows} \u2014 zoom ${Math.round(userZoom * 100)}%`;
   } else {
@@ -1697,6 +1715,8 @@ function domWheelToInput(e) {
 }
 
 function shouldForwardKeyEvent(e) {
+  // Leave Tab/Enter and browser controls available for input recovery after stop.
+  if (!runner.isRunning() || errorDiv.classList.contains("visible")) return false;
   // Avoid double-encoding during IME composition.
   if (e.isComposing || e.key === "Process") return false;
   if (isEditableTarget(e.target)) return false;
@@ -2487,6 +2507,7 @@ function frame(timestamp) {
     } else {
       status.textContent = `${currentCols}\u00d7${currentRows} \u2014 stopped (${totalFrames} frames)`;
       jsonl({ event: "quit", total_frames: totalFrames, ts: Date.now() });
+      retainPendingRunnerInput();
       runner.destroy();
     }
   } catch (e) {
@@ -2494,6 +2515,7 @@ function frame(timestamp) {
     jsonl({ event: "runtime_error", error: errorText, ts: Date.now() });
     showError(`Runtime error in frame loop:\n${errorText}`);
     try {
+      retainPendingRunnerInput(errorDiv);
       runner.destroy();
     } catch (_) {}
   }

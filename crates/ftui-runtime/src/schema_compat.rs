@@ -13,7 +13,7 @@
 //! | Evidence       | `ftui-evidence-v2`     | JSONL    |
 //! | RenderTrace    | `render-trace-v2`      | JSONL    |
 //! | EventTrace     | `event-trace-v1`       | JSONL.gz |
-//! | GoldenTrace    | `golden-trace-v1`      | JSONL    |
+//! | GoldenTrace    | `golden-trace-v2`      | JSONL    |
 //! | Telemetry      | `1.0.0`                | OTLP     |
 //! | MigrationIr    | `migration-ir-v1`      | JSON     |
 //!
@@ -21,7 +21,10 @@
 //!
 //! - **Exact**: reader version == writer version → always compatible.
 //! - **Forward**: reader is newer than writer → compatible (reader can
-//!   understand older formats).
+//!   understand older formats), except GoldenTrace.
+//! - **MigrationRequired**: older GoldenTrace data is incompatible: v1 lacks
+//!   the explicit execution boundaries required by v2. Re-record from the
+//!   original session source; guessing boundaries cannot preserve execution.
 //! - **Backward**: writer is newer than reader → incompatible (reader cannot
 //!   understand newer formats without migration).
 //! - **Unknown**: version string doesn't match the expected prefix for its
@@ -80,7 +83,7 @@ impl SchemaKind {
             Self::Evidence => "ftui-evidence-v2",
             Self::RenderTrace => crate::render_trace::RENDER_TRACE_SCHEMA_VERSION,
             Self::EventTrace => "event-trace-v1",
-            Self::GoldenTrace => "golden-trace-v1",
+            Self::GoldenTrace => "golden-trace-v2",
             Self::Telemetry => "1.0.0",
             Self::MigrationIr => "migration-ir-v1",
         }
@@ -131,6 +134,11 @@ pub enum Compatibility {
         reader_version: u32,
         writer_version: u32,
     },
+    /// Older data lacks required semantics and needs an explicit migration.
+    MigrationRequired {
+        reader_version: u32,
+        writer_version: u32,
+    },
     /// Writer is newer than reader — incompatible (needs migration).
     Backward {
         reader_version: u32,
@@ -157,6 +165,13 @@ impl fmt::Display for Compatibility {
             } => write!(
                 f,
                 "forward compatible (reader=v{reader_version}, writer=v{writer_version})"
+            ),
+            Self::MigrationRequired {
+                reader_version,
+                writer_version,
+            } => write!(
+                f,
+                "incompatible: migration required (reader=v{reader_version}, writer=v{writer_version})"
             ),
             Self::Backward {
                 reader_version,
@@ -248,6 +263,19 @@ pub fn classify_schema_compat(kind: SchemaKind, writer_version: &str) -> CompatC
             parse_version_number(kind, reader_version),
             parse_version_number(kind, writer_version),
         ) {
+            (Some(rv), Some(wv)) if kind == SchemaKind::GoldenTrace && rv > wv => {
+                Compatibility::MigrationRequired {
+                    reader_version: rv,
+                    writer_version: wv,
+                }
+            }
+            // Golden traces require the exact schema identifier, matching the
+            // session parser. Numeric aliases such as v02 are not v2 schemas.
+            (Some(rv), Some(wv)) if kind == SchemaKind::GoldenTrace && rv == wv => {
+                Compatibility::Unknown {
+                    writer_version: writer_version.to_string(),
+                }
+            }
             (Some(rv), Some(wv)) if rv > wv => Compatibility::Forward {
                 reader_version: rv,
                 writer_version: wv,
@@ -366,7 +394,7 @@ pub fn run_compatibility_matrix(entries: &[MatrixEntry]) -> Vec<(MatrixEntry, Co
 ///
 /// For each kind, tests:
 /// - Current version (exact match, compatible)
-/// - One version older (forward compatible)
+/// - One version older (migration required for GoldenTrace, otherwise forward compatible)
 /// - One version newer (backward incompatible)
 /// - Garbage version string (unknown, incompatible)
 pub fn default_compatibility_matrix() -> Vec<MatrixEntry> {
@@ -410,7 +438,7 @@ pub fn default_compatibility_matrix() -> Vec<MatrixEntry> {
                     entries.push(MatrixEntry {
                         kind,
                         writer_version: format!("{prefix}{}", current_num - 1),
-                        expected_compatible: true,
+                        expected_compatible: kind != SchemaKind::GoldenTrace,
                     });
                 }
                 entries.push(MatrixEntry {
@@ -648,8 +676,52 @@ mod tests {
     }
 
     #[test]
-    fn golden_trace_backward_incompat() {
+    fn golden_trace_v2_exact() {
         let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v2");
+        assert_eq!(result.reader_version, "golden-trace-v2");
+        assert_eq!(result.compatibility, Compatibility::Exact);
+        assert!(result.is_compatible());
+    }
+
+    #[test]
+    fn golden_trace_v1_requires_migration() {
+        let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v1");
+        assert_eq!(
+            result.compatibility,
+            Compatibility::MigrationRequired {
+                reader_version: 2,
+                writer_version: 1,
+            }
+        );
+        assert!(!result.is_compatible());
+        assert_eq!(
+            result.compatibility.to_string(),
+            "incompatible: migration required (reader=v2, writer=v1)"
+        );
+    }
+
+    #[test]
+    fn golden_trace_backward_incompat() {
+        let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v3");
+        assert_eq!(
+            result.compatibility,
+            Compatibility::Backward {
+                reader_version: 2,
+                writer_version: 3,
+            }
+        );
+        assert!(!result.is_compatible());
+    }
+
+    #[test]
+    fn golden_trace_noncanonical_version_is_not_exact() {
+        let result = classify_schema_compat(SchemaKind::GoldenTrace, "golden-trace-v02");
+        assert_eq!(
+            result.compatibility,
+            Compatibility::Unknown {
+                writer_version: "golden-trace-v02".to_string(),
+            }
+        );
         assert!(!result.is_compatible());
     }
 

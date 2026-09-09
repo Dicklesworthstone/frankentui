@@ -59,6 +59,23 @@ bound sums `String::capacity()`, including spare capacity; it does not bound
 raw JSON, temporary parsing, or host/renderer queues. Accepted events remain
 FIFO and are never evicted to admit later input.
 
+`Cmd::Quit` stops model updates immediately. Previously admitted events after
+that point remain queued; `StepResult.events_pending` reports their count even
+on subsequent stopped calls. Rust hosts recover the exact FIFO tail through
+`StepProgram::take_pending_events()` without executing it. Recovery also restores
+the backend's requested size to the last processed geometry, cancelling any
+queued resize request. Hosts must retain the tail or explicitly report its
+non-delivery before disposing of the runner. A stopped runner cannot be drained
+by further `step()` calls.
+
+`RunnerCore::take_pending_events() -> Vec<Event>` exposes the same recovery to
+Rust runner hosts. Browser hosts use `runner.takePendingInputTrace() -> string`:
+it removes the exact FIFO tail and returns canonical `golden-trace-v2` Input
+records as JSONL, stamped with zero because original admission times are
+unavailable. This is a recovery payload, not a complete replay trace or the
+JSON accepted by `pushEncodedInput`. Retain it before disposing of the runner;
+do not log its potentially sensitive input contents.
+
 The Rust entry points return `Result<(), WebBackendError>`:
 
 ```rust
@@ -182,7 +199,9 @@ old-geometry patches to the resized renderer.
   each dimension to at least one cell.
   `true` means accepted; `false` means capacity rejection or a stopped runner, without changing
   runner dimensions or pane preview state.
-- On the next `step()`, the resize event is processed, `prev_buffer` is invalidated, and a full repaint is emitted.
+- When `step()` processes the resize before any quit, the diff baseline is
+  invalidated and the next rendered frame is a full repaint. A resize left in
+  the pending tail after quit is not applied to the model.
 - First frame after resize is always a full repaint (single span covering `cols * rows` cells).
 - A same-size resize signal also forces a repaint boundary (for host fit,
   DPR, or zoom transitions). Admission does not render until `step()`.
@@ -222,7 +241,7 @@ term.render();
 
 | Property | Guarantee |
 |----------|-----------|
-| First frame (after init) | Full repaint: single span `[0, cols*rows]` |
+| First frame (if init renders) | Full repaint: single span `[0, cols*rows]`; init may quit without rendering |
 | First frame (after resize) | Full repaint: single span `[0, cols*rows]` |
 | Empty batches | Valid (both arrays length 0); host should skip render |
 | Span ordering | Ascending offset, non-overlapping |
@@ -247,13 +266,18 @@ function stepAndPresent() {
         term.applyPatchBatchFlat(patches.spans, patches.cells);
         term.render();
     }
+    if (!result.running && result.events_pending > 0) {
+        throw new Error(`Runner stopped with ${result.events_pending} accepted inputs pending; contents withheld`);
+    }
     return result;
 }
 
 runner.init();
 const initial = runner.takeFlatPatches(); // Preserve init output before retries.
-term.applyPatchBatchFlat(initial.spans, initial.cells);
-term.render();
+if (initial.cells.length > 0) {
+    term.applyPatchBatchFlat(initial.spans, initial.cells);
+    term.render();
+}
 
 let lastTs = 0;
 function frame(timestamp) {
@@ -300,14 +324,37 @@ let result = ftui_web::session_record::replay(MyModel::default(), &trace)
 if !result.ok() {
     return Err("replay frame checksum mismatch");
 }
+if !result.unprocessed_events.is_empty() {
+    return Err("replay left accepted input unprocessed after quit; contents withheld");
+}
 ```
 
 `SessionRecorder` records input/resize and changes its recording timestamp only
-after successful admission. Replay validates the trace, advances time at tick
-records, and steps only at frame boundaries; initialization supplies frame 0.
-Admission failure returns `ReplayError::Backend`. Never insert unrecorded steps
-to make replay fit capacity. Browser replay must fail on rejection and apply
-every intermediate patch while preserving those recorded boundaries.
+after successful admission. It emits `golden-trace-v2`, with an explicit `Step`
+record for initialization and every actual later step, including non-rendering
+and stopped calls. Each boundary records `step_idx`, `ts_ns`, `init`, the actual
+clock (`clock_secs`, `clock_subsec_nanos`), and the complete step result:
+`running`, `rendered`, `events_processed`, `events_pending`, `frame_idx`.
+
+Replay restores the recorded clock and executes exactly that boundary. Tick
+timestamps are recording metadata and may differ from accumulated host deltas.
+A `Frame` only checks the buffer from the immediately preceding rendered
+boundary; it never triggers a step. Initialization that quits has no frame.
+Input/time records without a subsequent observed boundary are invalid.
+
+Replay returns `total_steps`, final `running`, and the exact FIFO
+`unprocessed_events` tail alongside frame-checksum results. `ok()` means the
+recorded execution outcomes and checksums matched; callers must inspect the
+tail separately. The example above treats non-delivery as an error; a recovery
+caller can retain the returned events for another session. Quit never executes
+later queued input merely to empty the queue.
+
+V1 traces lack reconstructible execution boundaries and are incompatible with
+v2; re-record from observed execution rather than guessing steps. Admission
+failure returns `ReplayError::Backend`. Never insert unrecorded steps to make
+replay fit capacity. A browser replay implementation must preserve the recorded
+boundaries and apply every intermediate patch. These Rust format guarantees do
+not establish browser, GPU, or Safari execution.
 
 `setTime(ts_ns)` maps non-finite/non-positive values to zero and clamps positive
 values to `u64` nanoseconds. JavaScript `number` precision still limits exact
@@ -341,10 +388,11 @@ Formatted as `"fnv1a64:{hash:016x}"`.
 
 ### Host-Side JSONL (for E2E/CI)
 
-The runner provides raw data; the host formats JSONL lines:
+The runner provides raw data; the host formats diagnostic JSONL lines. These
+examples are not `golden-trace-v2` records and do not contain its replay contract:
 
 ```jsonl
-{"event":"step","frame_idx":1,"ts_ns":16000000,"rendered":true,"events_processed":3}
+{"event":"step","frame_idx":1,"ts_ns":16000000,"running":true,"rendered":true,"events_processed":3,"events_pending":0}
 {"event":"patch_stats","frame_idx":1,"dirty_cells":42,"patch_count":3,"bytes_uploaded":672}
 {"event":"frame","frame_idx":1,"patch_hash":"fnv1a64:a1b2c3d4e5f6a7b8"}
 ```
@@ -375,7 +423,7 @@ impl ShowcaseRunner {
     #[wasm_bindgen(constructor)]
     pub fn new(cols: u16, rows: u16) -> Self;
 
-    /// Initialize the model and render the first frame. Call exactly once.
+    /// Initialize the model; render only if it remains running. Call exactly once.
     pub fn init(&mut self);
 
     /// Advance deterministic clock by dt milliseconds (real-time mode).
@@ -396,8 +444,14 @@ impl ShowcaseRunner {
     pub fn resize(&mut self, cols: u16, rows: u16) -> bool;
 
     /// Process pending events and render if dirty.
-    /// Returns { running, rendered, events_processed, frame_idx }.
+    /// Returns { running, rendered, events_processed, events_pending, frame_idx }.
     pub fn step(&mut self) -> JsValue;
+
+    /// Recover unprocessed input as golden-trace-v2 Input JSONL without execution.
+    /// Timestamps are zero (original admission times are unavailable).
+    /// This is not a complete replay trace or encoded DOM input.
+    #[wasm_bindgen(js_name = takePendingInputTrace)]
+    pub fn take_pending_input_trace(&mut self) -> String;
 
     /// Take flat patch batch for GPU upload.
     /// Returns { cells: Uint32Array, spans: Uint32Array }.
@@ -463,13 +517,15 @@ impl ShowcaseRunner {
 | No threads | StepProgram runs synchronously; Cmd::Task executes inline |
 | Lockstep geometry | Host checks resize admission and applies each patch at its matching geometry |
 | Patch ordering | Spans in ascending offset order, non-overlapping |
-| First frame | Always full repaint (single span, all cells) |
+| First frame | Full repaint if initialization renders; no invented frame when init quits |
 | Empty batches | Valid (length-0 arrays); host skips render |
 | Accepted input | FIFO, never evicted to admit later events |
+| Quit tail | Pending count reported; exact Rust events recoverable without execution; host must handle non-delivery |
 | Input bounds | 4096 pending events; 1 MiB retained text allocation capacity |
 | Rejected input | Rust capacity errors return the event; stopped programs return `Unsupported`; JS returns false; host handles explicitly |
 | Display-only input | Touch/accessibility have no mapping on the encoded-input path |
 | Live capacity retry | Drain and apply every intermediate batch before retrying the same input |
 | Replay admission | Fail on rejected recorded input; never add unrecorded steps |
+| Replay boundaries | v2 records actual init/steps and clocks; rendered boundaries have one immediate checksum-only frame |
 | GraphemePool GC | Every 256 frames (automatic inside StepProgram) |
 | Schema compat | Parser and trace schemas require explicit compatibility checks; patch hashes differ from replay buffer checksums |

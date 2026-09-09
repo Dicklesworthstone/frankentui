@@ -447,7 +447,13 @@ Golden traces are stored as JSONL bundles (`trace.jsonl` + optional sidecar payl
 The canonical spec lives in:
 - `docs/spec/frankenterm-golden-trace-format.md`
 
-Minimal example (JSONL; one object per line):
+Historical native bundle sketch (JSONL; one object per line):
+
+This v1 sketch is not accepted by the implemented web replay reader. The current
+`ftui-web::session_record` contract is `golden-trace-v2`: explicit init/step
+boundaries, actual stepped clock values, FNV-1a frame hashes and preserved quit
+tails. Use the canonical spec above for executable web records. Native bundle
+metadata, sidecars and SHA-256 hashing below remain separate design work.
 
 ```jsonl
 {"schema_version":"golden-trace-v1","event":"trace_header","run_id":"trace-2026-02-08-abc123","git_sha":"<git sha>","seed":42,"env":{"target":"native","os":"linux","term":"xterm-256color"},"profile":"modern"}

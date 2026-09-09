@@ -12,7 +12,8 @@ This assessment starts at main `0ae2c02e4ab5d24c680a9a14d1c756d407519142`.
 The published product is the frozen, tagged commit
 `798efa0bb746601cea78b75ad8bc859f738a6456`. Subsequent changes repair doctor
 verification and, in the current execution block, connect optional Asupersync
-task execution and bounded web input admission. These changes are on main;
+task execution, bounded web input admission, and explicit quit/replay recovery.
+These changes are on main;
 the published 0.7.0 artifacts remain the tagged source. All **905 lines of
 AGENTS.md and 2,897 lines of README.md** were read afresh, along with both
 original kernel plans, this complete prior assessment, and selected doctor,
@@ -116,6 +117,7 @@ reruns do not erase an earlier failed aggregate.
 | WASM | Seven portable checks, actual showcase release WASM build, and two Node execution tests pass. Raw WASM SHA256 `04e7e653823f3246e3830e5ab042ec92d24a801fe6834b898dbae8ea8e7fd57d`; receipt `frankentui-candidate-070-wasm/20260908T030920-1646623/receipt.json`. | No browser JS packaging or real browser execution in that receipt. Size/export/negative-guard and current host delivery obligations remain. |
 | Current runtime/web changes | DSR `frankentui-runtime-web10`, run `20edadf0-ca7a-41ed-8bb7-39bd8d2e0f3b`: workspace fmt/check/strict Clippy/strict rustdoc and feature-specific Clippy pass; web 335, runner 63, parity 15, runtime default 2,561 and Asupersync 2,569 test executions pass, all zero skipped. Full source manifest SHA256 `8a3ec39cc94b010aa96b87709202a2f87262896cfe9c66c57fca243dec7cbda5` is checked before/after. | This covers the changed suites, not every workspace test or host. The new public-constructor tests verify real task execution and warning/backend reporting; they do not prove Shadow or bounded shutdown. |
 | Current web/WASM changes | DSR `frankentui-runtime-web8-wasm`, run `5b64cc07-b317-425b-9a16-48e8ff975d7f`: portable/feature checks, four actual WASM test bodies, release cdylib, generated Node bindings, admission/recovery exercise and HTML syntax pass. Transformed WASM SHA256 `253765553bc9ab6b742eceed57a393673eead681f4c77b64a7fe24cda08f03fc`; source manifest `b96425700854f7683971f0f0623b04b96031d4b5bd623be12c5f726fcebc9fea`. | Native10 differs only in native test expectations, a test-only line wrap, and tracking docs/Beads. Node is not browser/GPU/Safari proof. The retained, unreferenced `ftui-demo-showcase/src/wasm_runner.rs` is source maintenance, not a compiled consumer. |
+| Quit/replay continuation | DSR `frankentui-replay4`, run `5c842c9c-3834-4c38-be1c-11d0132a199d`: all nine native stages pass, including workspace fmt/check/strict Clippy/strict rustdoc; web 344, runner 64, runtime 2,566 and parity 15 tests pass with zero skipped. `frankentui-replay4-wasm`, run `aed45dcb-9231-43da-a58d-b5a10b310c93`: all eight stages pass, including five actual WASM tests and generated JS quit-tail recovery. Both use source manifest `170a4adaf5c6a13fbf15861dcfb4c1650fc244c7d7852c7007c40cbaa88dce57`. | This proves explicit init/idle/quit boundaries, exact tail recovery, escaped Unicode and chain integrity on the exercised paths. Final HTML-only keyboard/zoom guards have separate DSR syntax receipt `frankentui-replay5-host/20260908T233057-3443332/receipt.json`, HTML SHA256 `7d4d292ae82b705e196045342ebeee1b36de769fac5cb9949774d455ce82d9cc`. Browser download/keyboard behavior, GPU and mobile remain unexecuted. |
 | Browser | Fresh `/web/` HTTP 200; September 6 Chromium touch/mouse checks remain valid for their deployed host revision. | HTTP availability and earlier cell-text checks do not establish current WASM identity, GPU pixels, Safari or physical iPhone behavior. |
 | Doctor execution | 2,691 tests pass with zero skipped; all 12 failure cases, six actual soak workflows, VHS snapshot smoke and replay pass after scoped fixture repairs. The repaired comparator passes all six retained workflows plus 40 comparison controls, report-reuse protection, three iteration guards and symlink replay. DSR `frankentui-doctor-comparator8`; script SHA256 `b44c7eae2b4f8f7830a5f8235405dcfa77cbbe37c9922eff0efb6158284495ee`. | This is a fresh comparison of existing captures, not new capture execution. All 410 retained inputs and earlier failed reports are unchanged. `.28.7` is repaired; coverage `.28.6` still blocks aggregate G22 acceptance. |
 | Doctor coverage | Corrected export includes all 24 formerly omitted executed test objects and unchanged profiles. In the unchanged 307-file domain: 56.230% lines, 37.176% branches, 50.578% functions; 16 checks fail. DSR run `6bae7909-f9b3-4d88-8f5d-e80022741d34`. | Floors remain 89/69/86. Doctor-only diagnostics are not the gate; neither silent scope narrowing nor threshold reduction is a repair. `.28.6` owns this. |
@@ -125,7 +127,7 @@ reruns do not erase an earlier failed aggregate.
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
-| Bounded browser interaction | `WebEventSource` now bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through `StepProgram`, recorder, runner and JS bindings; the HTML host drains and presents before retry. | `.29.8/.29.9`: native and WASM queue/recovery tests now exercise this path. Finish accepted input disposition after quit, non-rendering replay steps, real renderer packaging and the browser/GPU/mobile matrix. |
+| Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; Rust and JS recovery return the accepted FIFO tail without executing it. | `.29.8/.29.9`: native/WASM/JS checks pass. Finish real renderer packaging and the browser/GPU/mobile matrix, including the HTML recovery download and post-stop keyboard/zoom behavior. |
 | Interactive process stream | `process_subscription.rs:172–320`: `BufRead::lines`, unbounded sender, null stdin, immediate-child kill/wait. `Cmd::Log` already exists. | `.32.1–.32.3` after `.33.1/.33.2`: reuse working APIs; add the missing complete journey, newline-free/invalid-UTF-8/huge output, blocked consumers, child stdin policy and descendant cancellation. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
@@ -159,8 +161,17 @@ specific implementation or observation below, not completion of the whole goal):
   through recorder, native runner, generated JS bindings and the HTML host.
 - [x] `.29.8`: execute native queue/runner/parity suites and four real WASM tests;
   exercise the generated binding with 4,097 inputs, rejection, drain and retry.
-- [ ] `.29.8`: account for accepted input remaining after quit; record/replay
+- [x] `.29.8`: account for accepted input remaining after quit; record/replay
   non-rendering steps so a final quit batch cannot pass without execution.
+- [x] `.29.8`: preserve actual init/step clocks and outcomes; reject missing
+  boundaries, altered outcomes, corrupt chains and malformed text escapes;
+  round-trip literal and escaped Unicode, including braces and surrogate pairs.
+- [x] `.29.8`: expose the accepted tail through replay, gate, Rust runner and
+  generated JS recovery APIs; verify 2,989 native tests and five WASM tests with
+  zero skipped, plus actual generated binding admission/recovery execution.
+- [x] `.29.8`: retain a host recovery download link and preserve it after stop;
+  review pointer, error-overlay, keyboard and zoom handling; check final JS
+  syntax through DSR. Actual browser interaction remains in the next item.
 - [ ] `.29.7–.29.9`: finish first-party renderer packaging and execute current
   HTML/JS/WASM in the claimed real browser, GPU, IME and physical mobile hosts.
 - [ ] `.30.1/.30.3/.30.4`: implement shared semantic checksums and recordings,
