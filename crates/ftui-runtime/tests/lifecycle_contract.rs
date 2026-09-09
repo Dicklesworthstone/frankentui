@@ -14,7 +14,7 @@ use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::frame::Frame;
 use ftui_runtime::program::{Cmd, Model, Program, ProgramConfig};
 use ftui_runtime::simulator::{ProgramSimulator, SimulatorError};
-use ftui_runtime::subscription::{StopSignal, SubId, Subscription};
+use ftui_runtime::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
 use ftui_runtime::terminal_writer::{ScreenMode, TerminalWriter, UiAnchor};
 use std::io;
 use std::io::Write;
@@ -485,7 +485,7 @@ impl Subscription<HookMsg> for PanicSubscription {
         77
     }
 
-    fn run(&self, _sender: std::sync::mpsc::Sender<HookMsg>, _stop: StopSignal) {
+    fn run(&self, _sender: SubscriptionSender<HookMsg>, _stop: StopSignal) {
         panic!("subscription exploded");
     }
 }
@@ -598,7 +598,7 @@ impl Subscription<SimMsg> for DormantSubscription {
         SIM_SUB_ID
     }
 
-    fn run(&self, _sender: std::sync::mpsc::Sender<SimMsg>, _stop: StopSignal) {}
+    fn run(&self, _sender: SubscriptionSender<SimMsg>, _stop: StopSignal) {}
 }
 
 #[derive(Debug)]

@@ -36,7 +36,7 @@
 
 #![forbid(unsafe_code)]
 
-use crate::subscription::{StopSignal, SubId, Subscription};
+use crate::subscription::{StopSignal, StopTrigger, SubId, Subscription, SubscriptionSender};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read};
@@ -66,6 +66,14 @@ pub enum ProcessEvent {
 /// Captures stdout/stderr line-by-line and sends [`ProcessEvent`] messages.
 /// The process is killed when the subscription's [`StopSignal`] fires or
 /// when the optional timeout expires.
+///
+/// Normal exit waits for stdout/stderr forwarding to finish, including bounded
+/// channel backpressure. The timeout remains active during that drain. If the
+/// drain is canceled after the child exits, an error describes the exit and
+/// incomplete output. Cancellation can reject an unsent line or final status
+/// when the model queue is full; final-status delivery is not guaranteed then.
+/// Line assembly itself is not byte-bounded, and inherited descendant pipes
+/// cannot be interrupted by the reader stop signal.
 pub struct ProcessSubscription<M: Send + 'static> {
     program: String,
     args: Vec<String>,
@@ -169,19 +177,31 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         self.id
     }
 
-    fn run(&self, sender: mpsc::Sender<M>, stop: StopSignal) {
+    fn run(&self, sender: SubscriptionSender<M>, stop: StopSignal) {
         fn forward_lines<R, M>(
             reader: std::io::BufReader<R>,
-            sender: mpsc::Sender<M>,
+            sender: SubscriptionSender<M>,
+            stop: StopSignal,
             make_msg: impl Fn(String) -> M,
         ) where
             R: Read,
             M: Send + 'static,
         {
-            for line in reader.lines() {
+            let mut lines = reader.lines();
+            loop {
+                if stop.is_stopped() {
+                    break;
+                }
+                let Some(line) = lines.next() else {
+                    break;
+                };
+                if stop.is_stopped() {
+                    break;
+                }
                 match line {
                     Ok(line) => {
-                        if sender.send(make_msg(line)).is_err() {
+                        let message = make_msg(line);
+                        if stop.is_stopped() || sender.send(message).is_err() {
                             break;
                         }
                     }
@@ -223,10 +243,16 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     error = %e,
                     "process spawn failed"
                 );
-                let _ = sender.send((self.make_msg.as_ref())(ProcessEvent::Error(format!(
+                let message = (self.make_msg.as_ref())(ProcessEvent::Error(format!(
                     "Failed to spawn '{}': {}",
                     self.program, e
-                ))));
+                )));
+                let _ = send_terminal_message(
+                    &sender,
+                    &stop,
+                    self.timeout.map(|timeout| spawn_start + timeout),
+                    message,
+                );
                 return;
             }
         };
@@ -237,27 +263,37 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         let make_msg_ref = std::sync::Arc::clone(&self.make_msg);
         // Use the cancellation token for cooperative stop coordination.
         let token = stop.cancellation_token().clone();
+        let (reader_stop, reader_trigger) = StopSignal::new();
+        let reader_sender = sender.with_stop_signal(reader_stop.clone());
         let poll_interval = Duration::from_millis(50);
         let stdout_handle = stdout.map(|stdout| {
-            let sender_out = sender.clone();
+            let sender_out = reader_sender.clone();
+            let stop_out = reader_stop.clone();
             let make_msg_out = std::sync::Arc::clone(&make_msg_ref);
             std::thread::spawn(move || {
-                forward_lines(std::io::BufReader::new(stdout), sender_out, |line| {
-                    (make_msg_out.as_ref())(ProcessEvent::Stdout(line))
-                });
+                forward_lines(
+                    std::io::BufReader::new(stdout),
+                    sender_out,
+                    stop_out,
+                    |line| (make_msg_out.as_ref())(ProcessEvent::Stdout(line)),
+                );
             })
         });
         let stderr_handle = stderr.map(|stderr| {
-            let sender_err = sender.clone();
+            let sender_err = reader_sender.clone();
+            let stop_err = reader_stop.clone();
             let make_msg_err = std::sync::Arc::clone(&make_msg_ref);
             std::thread::spawn(move || {
-                forward_lines(std::io::BufReader::new(stderr), sender_err, |line| {
-                    (make_msg_err.as_ref())(ProcessEvent::Stderr(line))
-                });
+                forward_lines(
+                    std::io::BufReader::new(stderr),
+                    sender_err,
+                    stop_err,
+                    |line| (make_msg_err.as_ref())(ProcessEvent::Stderr(line)),
+                );
             })
         });
 
-        let final_event = loop {
+        let mut final_event = loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     let event = process_exit_event(status);
@@ -288,6 +324,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                         error = %e,
                         "process wait error"
                     );
+                    reader_trigger.stop();
                     break ProcessEvent::Error(format!("wait error: {e}"));
                 }
             }
@@ -302,6 +339,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     reason = "timeout",
                     "killing process"
                 );
+                reader_trigger.stop();
                 let _ = child.kill();
                 let _ = child.wait();
                 break ProcessEvent::Killed;
@@ -315,20 +353,88 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     reason = "cancellation",
                     "killing process"
                 );
+                reader_trigger.stop();
                 let _ = child.kill();
                 let _ = child.wait();
                 break ProcessEvent::Killed;
             }
         };
 
-        if let Some(handle) = stdout_handle {
-            join_reader_thread_bounded(handle, "stdout", sub_id);
-        }
-        if let Some(handle) = stderr_handle {
-            join_reader_thread_bounded(handle, "stderr", sub_id);
+        if matches!(
+            final_event,
+            ProcessEvent::Exited(_) | ProcessEvent::Signaled(_)
+        ) {
+            // A child can exit while its reader is waiting for model queue
+            // capacity. Preserve every line on normal completion, however
+            // slowly the model drains, while still honoring stop and timeout.
+            while stdout_handle
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished())
+                || stderr_handle
+                    .as_ref()
+                    .is_some_and(|handle| !handle.is_finished())
+            {
+                let interruption = if stop.is_stopped() {
+                    Some("canceled")
+                } else if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    Some("timed out")
+                } else {
+                    None
+                };
+                if let Some(reason) = interruption {
+                    reader_trigger.stop();
+                    final_event = ProcessEvent::Error(format!(
+                        "output drain {reason} after {final_event:?}; stdout/stderr output is incomplete"
+                    ));
+                    break;
+                }
+                token.wait_timeout(PROCESS_READER_JOIN_POLL);
+            }
         }
 
-        let _ = sender.send((make_msg_ref.as_ref())(final_event));
+        if let Some(handle) = stdout_handle {
+            join_reader_thread_bounded(handle, "stdout", sub_id, &reader_trigger);
+        }
+        if let Some(handle) = stderr_handle {
+            join_reader_thread_bounded(handle, "stderr", sub_id, &reader_trigger);
+        }
+
+        if send_terminal_message(
+            &sender,
+            &stop,
+            deadline,
+            (make_msg_ref.as_ref())(final_event),
+        )
+        .is_err()
+        {
+            tracing::warn!(
+                target: crate::telemetry_schema::TARGET_PROCESS,
+                sub_id,
+                "process terminal event was not delivered: queue disconnected or stop/timeout interrupted backpressure"
+            );
+        }
+    }
+}
+
+fn send_terminal_message<M>(
+    sender: &SubscriptionSender<M>,
+    stop: &StopSignal,
+    deadline: Option<Instant>,
+    mut message: M,
+) -> Result<(), mpsc::SendError<M>> {
+    loop {
+        // Preserve the sender's one immediate attempt after cancellation.
+        match sender.try_send(message) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::TrySendError::Disconnected(message)) => {
+                return Err(mpsc::SendError(message));
+            }
+            Err(mpsc::TrySendError::Full(unsent)) => message = unsent,
+        }
+        if stop.is_stopped() || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(mpsc::SendError(message));
+        }
+        stop.wait_timeout(PROCESS_READER_JOIN_POLL);
     }
 }
 
@@ -349,10 +455,12 @@ fn join_reader_thread_bounded(
     handle: std::thread::JoinHandle<()>,
     stream: &'static str,
     sub_id: SubId,
+    reader_trigger: &StopTrigger,
 ) {
     let start = Instant::now();
     while !handle.is_finished() {
         if start.elapsed() >= PROCESS_READER_JOIN_TIMEOUT {
+            reader_trigger.stop();
             tracing::warn!(
                 target: crate::telemetry_schema::TARGET_PROCESS,
                 sub_id,
@@ -467,11 +575,11 @@ mod tests {
     #[test]
     fn echo_captures_stdout() {
         let sub = ProcessSubscription::new("echo", TestMsg::Proc).arg("hello world");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         // Wait for process to complete
@@ -499,11 +607,11 @@ mod tests {
     fn nonexistent_program_sends_error() {
         let sub =
             ProcessSubscription::new("/nonexistent/program/that/should/not/exist", TestMsg::Proc);
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, _trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         handle.join().unwrap();
@@ -517,12 +625,12 @@ mod tests {
     #[test]
     fn stop_signal_kills_long_running_process() {
         let sub = ProcessSubscription::new("sleep", TestMsg::Proc).arg("60");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
         let start = web_time::Instant::now();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         // Give it a moment to start, then stop
@@ -546,12 +654,12 @@ mod tests {
         let sub = ProcessSubscription::new("sleep", TestMsg::Proc)
             .arg("60")
             .timeout(Duration::from_millis(100));
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, _trigger) = StopSignal::new();
         let start = web_time::Instant::now();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         handle.join().unwrap();
@@ -570,11 +678,11 @@ mod tests {
     fn env_vars_are_passed() {
         let sub =
             ProcessSubscription::new("env", TestMsg::Proc).env("FTUI_TEST_VAR", "test_value_42");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(500));
@@ -592,11 +700,11 @@ mod tests {
     #[test]
     fn multiple_args_via_args_method() {
         let sub = ProcessSubscription::new("echo", TestMsg::Proc).args(["hello", "world"]);
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(500));
@@ -617,11 +725,11 @@ mod tests {
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
             .arg("echo error_msg >&2");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(500));
@@ -641,11 +749,11 @@ mod tests {
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
             .arg("exit 42");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(500));
@@ -665,11 +773,11 @@ mod tests {
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
             .arg("kill -TERM $$");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(500));
@@ -695,7 +803,7 @@ mod tests {
     #[test]
     fn contract_uses_cancellation_token_for_stop() {
         let sub = ProcessSubscription::new("sleep", TestMsg::Proc).arg("60");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         // Verify the cancellation token is accessible
@@ -703,7 +811,7 @@ mod tests {
         assert!(!token.is_cancelled());
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(100));
@@ -730,11 +838,11 @@ mod tests {
         // Happy path: process exits normally
         {
             let sub = ProcessSubscription::new("true", TestMsg::Proc);
-            let (tx, rx) = stdmpsc::channel();
+            let (tx, rx) = stdmpsc::sync_channel(256);
             let (signal, trigger) = StopSignal::new();
 
             let handle = thread::spawn(move || {
-                sub.run(tx, signal);
+                sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
             });
 
             thread::sleep(Duration::from_millis(500));
@@ -769,11 +877,11 @@ mod tests {
                 "/nonexistent/program/that/should/not/exist",
                 TestMsg::Proc,
             );
-            let (tx, rx) = stdmpsc::channel();
+            let (tx, rx) = stdmpsc::sync_channel(256);
             let (signal, _trigger) = StopSignal::new();
 
             let handle = thread::spawn(move || {
-                sub.run(tx, signal);
+                sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
             });
 
             handle.join().unwrap();
@@ -808,11 +916,11 @@ mod tests {
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
             .arg("echo FIRST && echo SECOND >&2 && exit 0");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(500));
@@ -821,18 +929,30 @@ mod tests {
 
         let msgs: Vec<TestMsg> = rx.try_iter().collect();
 
+        assert_eq!(
+            msgs.len(),
+            3,
+            "both output lines and one terminal event: {msgs:?}"
+        );
+        assert!(msgs.contains(&TestMsg::Proc(ProcessEvent::Stdout("FIRST".to_owned()))));
+        assert!(msgs.contains(&TestMsg::Proc(ProcessEvent::Stderr("SECOND".to_owned()))));
+        assert_eq!(msgs.last(), Some(&TestMsg::Proc(ProcessEvent::Exited(0))));
+
         // Find the position of the terminal event
-        let terminal_pos = msgs.iter().position(|m| {
-            matches!(
-                m,
-                TestMsg::Proc(
-                    ProcessEvent::Exited(_)
-                        | ProcessEvent::Signaled(_)
-                        | ProcessEvent::Killed
-                        | ProcessEvent::Error(_)
+        let terminal_pos = msgs
+            .iter()
+            .position(|m| {
+                matches!(
+                    m,
+                    TestMsg::Proc(
+                        ProcessEvent::Exited(_)
+                            | ProcessEvent::Signaled(_)
+                            | ProcessEvent::Killed
+                            | ProcessEvent::Error(_)
+                    )
                 )
-            )
-        });
+            })
+            .expect("process must report its terminal event");
 
         // Find positions of stdout/stderr events
         let output_positions: Vec<usize> = msgs
@@ -844,14 +964,224 @@ mod tests {
             })
             .collect();
 
-        if let Some(term_pos) = terminal_pos {
-            for &out_pos in &output_positions {
-                assert!(
-                    out_pos < term_pos,
-                    "output event at position {out_pos} must precede terminal event at {term_pos}"
-                );
-            }
+        for &out_pos in &output_positions {
+            assert!(
+                out_pos < terminal_pos,
+                "output event at position {out_pos} must precede terminal event at {terminal_pos}"
+            );
         }
+    }
+
+    #[test]
+    fn real_process_flood_backpressures_and_drains_in_order() {
+        use crate::subscription::SubscriptionManager;
+
+        let (progress_tx, progress_rx) = stdmpsc::channel();
+        let sub = ProcessSubscription::new("sh", move |event| {
+            if let ProcessEvent::Stdout(line) = &event
+                && matches!(line.as_str(), "256" | "257")
+            {
+                progress_tx
+                    .send(line.clone())
+                    .expect("observe actual child output");
+            }
+            TestMsg::Proc(event)
+        })
+        .args([
+            "-c",
+            "i=0; while [ \"$i\" -lt 1024 ]; do printf '%s\\n' \"$i\"; i=$((i+1)); done",
+        ]);
+        let mut manager = SubscriptionManager::new();
+        manager.reconcile(vec![Box::new(sub)]);
+
+        // The conversion callback observes the real 257th line before its
+        // send. With no manager drain, that send must wait on the full queue.
+        assert_eq!(
+            progress_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("child reached capacity"),
+            "256"
+        );
+        // Hold backpressure longer than the old reader join timeout.
+        assert_eq!(
+            progress_rx.recv_timeout(PROCESS_READER_JOIN_TIMEOUT + Duration::from_millis(100)),
+            Err(stdmpsc::RecvTimeoutError::Timeout),
+            "the reader must not reach line 257 while 256 messages remain undrained"
+        );
+
+        let mut received = manager.drain_messages();
+        assert_eq!(
+            received.len(),
+            64,
+            "one runtime turn has a fixed batch budget"
+        );
+        assert_eq!(
+            progress_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("drain released backpressure"),
+            "257"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !matches!(
+            received.last(),
+            Some(TestMsg::Proc(ProcessEvent::Exited(0)))
+        ) {
+            assert!(
+                Instant::now() < deadline,
+                "actual child output did not finish: {} messages",
+                received.len()
+            );
+            let batch = manager.drain_messages();
+            assert!(
+                batch.len() <= 64,
+                "every drain must preserve the runtime batch budget"
+            );
+            if batch.is_empty() {
+                thread::sleep(Duration::from_millis(1));
+            }
+            received.extend(batch);
+        }
+        manager.stop_all();
+        received.extend(manager.drain_messages());
+        let mut expected: Vec<_> = (0..1024)
+            .map(|index| TestMsg::Proc(ProcessEvent::Stdout(index.to_string())))
+            .collect();
+        expected.push(TestMsg::Proc(ProcessEvent::Exited(0)));
+        assert_eq!(
+            received, expected,
+            "all real child lines precede exactly one exit"
+        );
+        assert!(manager.drain_messages().is_empty());
+    }
+
+    #[test]
+    fn real_process_full_queue_stop_is_prompt() {
+        use crate::subscription::SubscriptionManager;
+
+        let (capacity_tx, capacity_rx) = stdmpsc::channel();
+        let (terminal_tx, terminal_rx) = stdmpsc::channel();
+        let sub = ProcessSubscription::new("sh", move |event| {
+            if matches!(&event, ProcessEvent::Stdout(line) if line == "256") {
+                capacity_tx
+                    .send(())
+                    .expect("observe actual full-queue output");
+            }
+            if matches!(
+                &event,
+                ProcessEvent::Killed
+                    | ProcessEvent::Exited(_)
+                    | ProcessEvent::Signaled(_)
+                    | ProcessEvent::Error(_)
+            ) {
+                terminal_tx
+                    .send(event.clone())
+                    .expect("observe actual child termination");
+            }
+            TestMsg::Proc(event)
+        })
+        .args([
+            "-c",
+            "i=0; while [ \"$i\" -lt 1024 ]; do printf '%s\\n' \"$i\"; i=$((i+1)); done; exec sleep 60",
+        ]);
+        let mut manager = SubscriptionManager::new();
+        manager.reconcile(vec![Box::new(sub)]);
+        capacity_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("child reached capacity");
+
+        let stop_start = Instant::now();
+        manager.stop_all();
+        assert!(
+            stop_start.elapsed() < Duration::from_secs(2),
+            "full output queue must not block subscription stop"
+        );
+        assert_eq!(
+            terminal_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("supervisor reported termination"),
+            ProcessEvent::Killed
+        );
+        assert_eq!(
+            terminal_rx.recv_timeout(Duration::from_secs(2)),
+            Err(stdmpsc::RecvTimeoutError::Disconnected),
+            "the supervisor and reader callbacks must finish before draining"
+        );
+
+        // Cancellation may reject the final status on a full data queue. The
+        // callback above observes supervision; only these 256 lines were sent.
+        let mut received = Vec::new();
+        loop {
+            let batch = manager.drain_messages();
+            assert!(batch.len() <= 64);
+            if batch.is_empty() {
+                break;
+            }
+            received.extend(batch);
+        }
+        let expected: Vec<_> = (0..256)
+            .map(|index| TestMsg::Proc(ProcessEvent::Stdout(index.to_string())))
+            .collect();
+        assert_eq!(
+            received, expected,
+            "already accepted output remains in FIFO order"
+        );
+    }
+
+    #[test]
+    fn real_process_exit_drain_timeout_cannot_block_on_final_status() {
+        let (tx, rx) = stdmpsc::sync_channel(256);
+        let expected: Vec<_> = (0..256)
+            .map(|index| TestMsg::Proc(ProcessEvent::Stdout(format!("queued-{index}"))))
+            .collect();
+        // Control the queue state independently of the real child's one-line
+        // output so this exercises timeout after exit, not a sleeping child.
+        for message in &expected {
+            tx.send(message.clone()).expect("fill model queue");
+        }
+        let (observed_tx, observed_rx) = stdmpsc::channel();
+        let (done_tx, done_rx) = stdmpsc::channel();
+        let sub = ProcessSubscription::new("sh", move |event| {
+            observed_tx
+                .send(event.clone())
+                .expect("observe actual process callbacks");
+            TestMsg::Proc(event)
+        })
+        .args(["-c", "printf 'tail\\n'; exit 42"])
+        .timeout(Duration::from_millis(500));
+        let (signal, _trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
+            done_tx.send(()).expect("report completed supervision");
+        });
+
+        assert_eq!(
+            observed_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("real child output"),
+            ProcessEvent::Stdout("tail".to_owned())
+        );
+        assert_eq!(
+            observed_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("interrupted output drain"),
+            ProcessEvent::Error(
+                "output drain timed out after Exited(42); stdout/stderr output is incomplete"
+                    .to_owned()
+            )
+        );
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("a full final-status send must honor the timeout");
+        handle.join().expect("supervisor thread");
+        assert_eq!(
+            observed_rx.recv_timeout(Duration::from_secs(2)),
+            Err(stdmpsc::RecvTimeoutError::Disconnected)
+        );
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            expected,
+            "timeout preserves accepted messages and rejects the unsent tail/status"
+        );
     }
 
     /// CONTRACT: ProcessSubscription ID includes timeout in the hash.
@@ -881,11 +1211,11 @@ mod tests {
     #[test]
     fn contract_kill_is_prompt() {
         let sub = ProcessSubscription::new("sleep", TestMsg::Proc).arg("60");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(100));
@@ -917,12 +1247,12 @@ mod tests {
         let sub = ProcessSubscription::new("sh", TestMsg::Proc)
             .arg("-c")
             .arg("sleep 60 & sleep 60");
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, trigger) = StopSignal::new();
         let start = web_time::Instant::now();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(100));
@@ -948,12 +1278,12 @@ mod tests {
             .arg("-c")
             .arg("sleep 60 & sleep 60")
             .timeout(Duration::from_millis(100));
-        let (tx, rx) = stdmpsc::channel();
+        let (tx, rx) = stdmpsc::sync_channel(256);
         let (signal, _trigger) = StopSignal::new();
         let start = web_time::Instant::now();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         handle.join().unwrap();

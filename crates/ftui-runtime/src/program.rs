@@ -7473,6 +7473,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
     /// Calculate the effective poll timeout.
     fn effective_timeout(&self) -> Duration {
+        // A full subscription batch may leave a FIFO suffix queued. Poll input
+        // without sleeping before the next batch, while still returning through
+        // the normal input, tick, and render work on every iteration.
+        if self.subscriptions.may_have_pending_messages() {
+            return Duration::ZERO;
+        }
         if let Some(tick_rate) = self.tick_rate {
             let elapsed = self.last_tick.elapsed();
             let mut timeout = tick_rate.saturating_sub(elapsed);
@@ -12479,7 +12485,7 @@ mod tests {
 
     #[test]
     fn headless_apply_resize_reconciles_subscriptions() {
-        use crate::subscription::{StopSignal, SubId, Subscription};
+        use crate::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
 
         struct ResizeSubModel {
             subscribed: bool,
@@ -12528,7 +12534,7 @@ mod tests {
                 1
             }
 
-            fn run(&self, _sender: mpsc::Sender<ResizeSubMsg>, _stop: StopSignal) {}
+            fn run(&self, _sender: SubscriptionSender<ResizeSubMsg>, _stop: StopSignal) {}
         }
 
         let mut program = headless_program_with_config(
@@ -12853,7 +12859,7 @@ mod tests {
 
     #[test]
     fn run_quit_from_init_skips_initial_render_and_subscription_start() {
-        use crate::subscription::{StopSignal, SubId, Subscription};
+        use crate::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
 
         struct InitQuitModel {
             render_calls: Arc<AtomicUsize>,
@@ -12902,7 +12908,7 @@ mod tests {
                 1
             }
 
-            fn run(&self, _sender: mpsc::Sender<InitQuitMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<InitQuitMsg>, stop: StopSignal) {
                 self.starts.fetch_add(1, Ordering::SeqCst);
                 let _ = stop.wait_timeout(Duration::from_millis(10));
             }
@@ -13075,7 +13081,7 @@ mod tests {
 
     #[test]
     fn run_pending_signal_skips_initial_render_and_subscription_start() {
-        use crate::subscription::{StopSignal, SubId, Subscription};
+        use crate::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
 
         struct SignalStopModel {
             render_calls: Arc<AtomicUsize>,
@@ -13120,7 +13126,7 @@ mod tests {
                 11
             }
 
-            fn run(&self, _sender: mpsc::Sender<SignalStopMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<SignalStopMsg>, stop: StopSignal) {
                 self.starts.fetch_add(1, Ordering::SeqCst);
                 let _ = stop.wait_timeout(Duration::from_millis(10));
             }
@@ -14521,7 +14527,7 @@ mod tests {
 
     #[test]
     fn headless_handle_event_quit_skips_subscription_reconcile() {
-        use crate::subscription::{StopSignal, SubId, Subscription};
+        use crate::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
 
         struct QuitSubModel {
             quitting: bool,
@@ -14578,7 +14584,7 @@ mod tests {
                 7
             }
 
-            fn run(&self, _sender: mpsc::Sender<QuitSubMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<QuitSubMsg>, stop: StopSignal) {
                 self.starts.fetch_add(1, Ordering::SeqCst);
                 let _ = stop.wait_timeout(Duration::from_millis(10));
             }
@@ -14705,7 +14711,7 @@ mod tests {
 
     #[test]
     fn headless_process_subscription_messages_updates_model() {
-        use crate::subscription::{StopSignal, SubId, Subscription};
+        use crate::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
 
         struct SubModel {
             pings: usize,
@@ -14752,7 +14758,7 @@ mod tests {
                 1
             }
 
-            fn run(&self, sender: mpsc::Sender<SubMsg>, _stop: StopSignal) {
+            fn run(&self, sender: SubscriptionSender<SubMsg>, _stop: StopSignal) {
                 let _ = sender.send(SubMsg::Ping);
                 let _ = self.ready_tx.send(());
             }
@@ -14771,6 +14777,189 @@ mod tests {
             .expect("process subscriptions");
 
         assert_eq!(program.model().pings, 1);
+    }
+
+    #[test]
+    fn subscription_backlog_skips_idle_poll_without_starving_input_or_render() {
+        use crate::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
+        use std::sync::Mutex;
+
+        // Two full 64-message batches followed by one partial batch exercise
+        // both prompt backlog draining and restoration of the normal timeout.
+        const TOTAL: usize = 129;
+        const IDLE_TIMEOUT: Duration = Duration::from_millis(100);
+
+        #[derive(Default)]
+        struct Trace {
+            delivered: usize,
+            polls: Vec<(usize, Duration)>,
+            renders: Vec<usize>,
+        }
+
+        enum BurstMsg {
+            Value(usize),
+            Event(Event),
+        }
+
+        impl From<Event> for BurstMsg {
+            fn from(event: Event) -> Self {
+                Self::Event(event)
+            }
+        }
+
+        struct BurstSubscription {
+            ready: mpsc::Sender<()>,
+        }
+
+        impl Subscription<BurstMsg> for BurstSubscription {
+            fn id(&self) -> SubId {
+                1
+            }
+
+            fn run(&self, sender: SubscriptionSender<BurstMsg>, _stop: StopSignal) {
+                for value in 0..TOTAL {
+                    sender.send(BurstMsg::Value(value)).unwrap();
+                }
+                self.ready.send(()).unwrap();
+            }
+        }
+
+        struct BurstModel {
+            received: Vec<usize>,
+            input_at: Vec<usize>,
+            ready: mpsc::Sender<()>,
+            trace: Arc<Mutex<Trace>>,
+        }
+
+        impl Model for BurstModel {
+            type Message = BurstMsg;
+
+            fn update(&mut self, message: BurstMsg) -> Cmd<BurstMsg> {
+                match message {
+                    BurstMsg::Value(value) => {
+                        self.received.push(value);
+                        self.trace.lock().unwrap().delivered = self.received.len();
+                    }
+                    BurstMsg::Event(Event::Key(key)) if key.code == KeyCode::Char('q') => {
+                        return Cmd::quit();
+                    }
+                    BurstMsg::Event(Event::Key(_)) => self.input_at.push(self.received.len()),
+                    BurstMsg::Event(_) => {}
+                }
+                Cmd::none()
+            }
+
+            fn view(&self, _frame: &mut Frame) {
+                self.trace.lock().unwrap().renders.push(self.received.len());
+            }
+
+            fn subscriptions(&self) -> Vec<Box<dyn Subscription<BurstMsg>>> {
+                vec![Box::new(BurstSubscription {
+                    ready: self.ready.clone(),
+                })]
+            }
+        }
+
+        // The event source observes the real loop's requested timeouts. Its
+        // initial barrier makes the whole burst pending before the first drain;
+        // it supplies input between batches and quit only after complete delivery.
+        struct ObservedSource {
+            ready: Option<mpsc::Receiver<()>>,
+            trace: Arc<Mutex<Trace>>,
+            sent_input: bool,
+            pending: Option<Event>,
+        }
+
+        impl BackendEventSource for ObservedSource {
+            type Error = io::Error;
+
+            fn size(&self) -> io::Result<(u16, u16)> {
+                Ok((20, 4))
+            }
+
+            fn set_features(&mut self, _features: BackendFeatures) -> io::Result<()> {
+                Ok(())
+            }
+
+            fn poll_event(&mut self, timeout: Duration) -> io::Result<bool> {
+                if let Some(ready) = self.ready.take() {
+                    ready
+                        .recv_timeout(Duration::from_secs(2))
+                        .map_err(io::Error::other)?;
+                }
+                let mut trace = self.trace.lock().unwrap();
+                if trace.polls.len() >= 12 {
+                    return Err(io::Error::other("subscription burst did not complete"));
+                }
+                let delivered = trace.delivered;
+                trace.polls.push((delivered, timeout));
+                drop(trace);
+                if delivered == 64 && !self.sent_input {
+                    self.sent_input = true;
+                    self.pending = Some(Event::Key(KeyEvent::new(KeyCode::Char('x'))));
+                } else if delivered == TOTAL {
+                    self.pending = Some(Event::Key(KeyEvent::new(KeyCode::Char('q'))));
+                }
+                Ok(self.pending.is_some())
+            }
+
+            fn read_event(&mut self) -> io::Result<Option<Event>> {
+                Ok(self.pending.take())
+            }
+        }
+
+        let trace = Arc::new(Mutex::new(Trace::default()));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let model = BurstModel {
+            received: Vec::new(),
+            input_at: Vec::new(),
+            ready: ready_tx,
+            trace: Arc::clone(&trace),
+        };
+        let events = ObservedSource {
+            ready: Some(ready_rx),
+            trace: Arc::clone(&trace),
+            sent_input: false,
+            pending: None,
+        };
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            TerminalCapabilities::dumb(),
+        );
+        let config = ProgramConfig {
+            poll_timeout: IDLE_TIMEOUT,
+            ..ProgramConfig::default()
+                .with_forced_size(20, 4)
+                .with_signal_interception(false)
+                .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)))
+        };
+        let mut program =
+            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
+                .expect("program construction");
+        program
+            .run()
+            .expect("burst completes through the real loop");
+
+        assert_eq!(program.model().received, (0..TOTAL).collect::<Vec<_>>());
+        assert_eq!(program.model().input_at, [64]);
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.renders, [0, 64, 128, TOTAL]);
+        assert_eq!(trace.polls.first(), Some(&(0, IDLE_TIMEOUT)));
+        assert_eq!(trace.polls.last(), Some(&(TOTAL, IDLE_TIMEOUT)));
+        for delivered in [64, 128] {
+            let polls: Vec<_> = trace
+                .polls
+                .iter()
+                .filter(|(count, _)| *count == delivered)
+                .collect();
+            assert!(!polls.is_empty(), "input must be polled between batches");
+            assert!(
+                polls.iter().all(|(_, timeout)| *timeout == Duration::ZERO),
+                "queued subscription output must not incur an idle input wait: {polls:?}"
+            );
+        }
     }
 
     #[test]
@@ -18210,7 +18399,7 @@ mod tests {
 
     #[test]
     fn check_screen_transition_reconciles_subscriptions_after_force_tick() {
-        use crate::subscription::{StopSignal, SubId, Subscription};
+        use crate::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
 
         struct TransitionSubModel {
             active: String,
@@ -18277,7 +18466,7 @@ mod tests {
                 1
             }
 
-            fn run(&self, _sender: mpsc::Sender<TransitionSubMsg>, _stop: StopSignal) {}
+            fn run(&self, _sender: SubscriptionSender<TransitionSubMsg>, _stop: StopSignal) {}
         }
 
         struct TransitionStrategy;

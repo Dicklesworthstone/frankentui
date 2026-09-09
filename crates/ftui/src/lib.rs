@@ -67,8 +67,8 @@ pub use ftui_runtime::{
     FileWatcher, InlineAutoRemeasureConfig, Locale, LocaleContext, LocaleOverride, Model,
     NO_BACKEND_MESSAGE, PredictiveConfig, Program, ProgramConfig, ResizeBehavior,
     RuntimeDiffConfig, ScreenMode, ScreenReaderAnnouncement, ScreenReaderPolicy, Subscription,
-    TaskSpec, TerminalWriter, TickDecision, TickStrategy, TickStrategyKind, UiAnchor,
-    current_locale, detect_system_locale, file_watcher, set_locale, tick_every,
+    SubscriptionSender, TaskSpec, TerminalWriter, TickDecision, TickStrategy, TickStrategyKind,
+    UiAnchor, current_locale, detect_system_locale, file_watcher, set_locale, tick_every,
 };
 
 // --- Widget traits ----------------------------------------------------------

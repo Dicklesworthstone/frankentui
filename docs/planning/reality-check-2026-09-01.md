@@ -17,7 +17,9 @@ a buildable first-party browser renderer package, and eager local input
 forwarding that prevents producer-queue eviction during browser bursts. Further
 continuations connect log trust modes to model commands and the streaming
 example, propagate screen effects and macro playback, and deliver browser logs
-through quitting steps. The interactive subprocess application is unfinished.
+through quitting steps. The streaming example now launches a real child with
+bounded subscription transport; the full interactive subprocess application
+remains unfinished.
 These changes are on main;
 the published 0.7.0 artifacts remain the tagged source. All **905 lines of
 AGENTS.md and 2,902 lines of README.md** were read afresh, along with both
@@ -428,12 +430,100 @@ remain unbounded if the host does not drain them. Original `.29.7/.29.8/.29.9`
 grapheme, lifecycle, transport and device/GPU obligations stay open. No new
 release was made; these are post-0.7.0 changes on main.
 
+### September 9 bounded subscriptions and real process streaming
+
+Starting from `1e8a21ee`, `.32.1` now connects the existing streaming example to
+actual child stdout/stderr, plain-text model logs and exit status. Run
+`cargo run -p ftui-harness --example streaming -- --exit-when-child-exits -- seq 1 10000`.
+No arguments retain the generated colored demo. Child arguments are passed
+literally, stderr is labeled, and completion logs before quit. The example's
+own exit status describes the TUI run, not the child's reported exit code.
+
+`SubscriptionSender` replaces the public unbounded channel endpoint. All
+subscriptions share 256 message slots; blocked sends preserve their message
+and can be interrupted by cancellation. Each runtime iteration dispatches at
+most 64 messages before returning to input/render work. A full batch requests
+nonblocking input polling for the next iteration, avoiding a 100 ms idle wait
+between batches. The queue plus one drained batch can retain 320 messages;
+these are count limits, not limits on arbitrary message allocation or processing
+cost. Per-producer scheduling fairness is not promised.
+
+Natural child completion now waits for both pipe readers to finish forwarding
+before admitting its final status, including after sustained backpressure.
+Stop/timeout interrupts a blocked drain; a post-exit interruption reports the
+observed exit and incomplete output. Terminal notification itself respects the
+deadline. A full canceled queue can reject unsent output and final status;
+already admitted messages remain queued, but a model choosing Quit need not
+process its remaining queue. This is not a lossless cancellation contract.
+
+Final DSR evidence uses all 2,497 tracked files, including Cargo.lock, with
+manifest SHA-256
+`8c34b648a84747a39d269b9ccf50ea4aad58030a0c7645fb5afa62c9691a2202`.
+Native/WASM source manifests and the local held source matched before/after.
+Both hosts used `nightly-2026-08-31`, rustc commit
+`90850177249efe0321573c569aec5d12b257f8d6`.
+
+- `frankentui-subqueue2-native/20260909T031435-748599/receipt.json` passes
+  formatting, workspace all-target check, strict Clippy and strict rustdoc;
+  94 runtime tests (1,882 excluded), 23 lifecycle/effect tests (none excluded),
+  six trace-fixture tests (four excluded), two example tests and the example
+  build. The existing file-watcher create/modify/remove test was deliberately
+  excluded because its TempDir and explicit file removal violate Rule 1; it
+  still compiled. This is selected verification, not a full workspace test run.
+- `frankentui-subqueue2-wasm/20260909T031435-748597/receipt.json` passes portable
+  web/showcase checks and six actual WASM/Node tests. No browser/GPU run is
+  credited in this block. Total selected tests: 131 passed.
+- Four actual Linux PTY journeys pass: exact ordered lines 1–10,000 plus one
+  final status; stdout/stderr control-sequence attacks filtered by Strip with
+  exit 7 reported after both lines; `q` during an infinite child flood with
+  immediate-child absence observed before the test supervisor exits; and a
+  no-probe-reply control exercising non-scrolling overlay output. Every journey
+  observed raw mode and exact kernel termios restoration. Supported-region
+  cases emulate the documented CPR9;1 response; every emitted LF belongs to a
+  log record written with the 9-row log region active, leaving 15 chrome rows.
+  This proves actual PTY byte delivery and lifecycle with declared protocol
+  emulation, not physical-terminal rendering or descendant cleanup. The finite
+  run took 3.19 seconds; observed quit latency was 2.4 ms in this one run, not a
+  performance guarantee.
+
+Retained evidence root: `/data/retained/ftui-release-20260908-greenlynx/`.
+`subqueue1-source.*` and `subqueue2-source.*` preserve both candidates;
+`subqueue-native-evidence.tar` and `subqueue-wasm-evidence.tar` retain command
+results and PTY captures. The accepted driver is `subqueue2-pty.py`, SHA-256
+`1483e73b3acd0bbe78a1199697ce33fc9537a2ff9d5361159659a7d729ba0aef`.
+
+The first native receipt remains **failed**: formatting needed manual fixes,
+and the initial PTY driver never answered the capability probe. The runtime
+correctly selected overlay; the driver's accumulating-log parser and `q`
+trigger did not match, so its flood run timed out. Its inherited sync-count
+validator also rejected a harmless final disable. The corrected observer uses
+boolean mode state with late-enable/nested-enable negative controls and a real
+no-reply overlay case. Independent review caught a PID check after supervisor
+release that could conceal a surviving child through SIGHUP, and an observer
+that ignored unmatched newlines. Both were corrected before the final run.
+Failures were retained, not converted into successful evidence. Existing nix
+future-compatibility warnings remain visible; UBS/RCH remain unavailable under
+their documented cleanup constraint. DSR direct SSH verification was used.
+
+DustySalmon migrated callers and found/fixed the polling delay, with a real
+Program-loop test proving 129-message FIFO delivery and intervening input/views.
+Its observing event source is an explicit test double, not PTY evidence.
+IcyBarn implemented supervised drain and reviewed the PTY observer. GreenLynx
+reviewed both diffs and ran all cited verification. These are independent source
+reviews and one coordinated execution, not independent duplicate proof.
+
+`.32.1` stays in progress. Line assembly still has no byte bound, invalid UTF-8
+or read failures silently end a reader, child stdin is closed, and kill/wait
+errors and descendants need stronger ownership. Inherited open pipes can delay
+natural completion indefinitely without stop/timeout. Full agent-shell input,
+interrupt/restart, published-consumer and host-matrix obligations remain open.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | `process_subscription.rs:172–320`: `BufRead::lines`, unbounded sender, null stdin, immediate-child kill/wait. Model commands now expose existing writer trust modes, and the streaming example submits generated messages to that path. | `.32.1–.32.3` after `.33.1/.33.2`: finish the actual child-process journey, newline-free/invalid-UTF-8/huge output, blocked consumers, child stdin policy and descendant cancellation. |
+| Interactive process stream | Real child stdout/stderr now reaches the streaming example and Cmd logs through a 256-message subscription queue and 64-message dispatch batches. Normal exit drains before status; blocked-queue stop/timeout, 10,000 lines and real PTY quit pass. `BufRead::lines` remains byte-unbounded; stdin is null and kill/wait owns only the immediate child. | `.32.1–.32.3` after `.33.1/.33.2`: finish newline-free/invalid-UTF-8/huge output, input, descendant cancellation, restart, full CLI and published-consumer proof. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -522,6 +612,15 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.29.8`: restore Determinism Lab strategy keys and recorder status/error
   visibility; verify the actual screen command in the generated browser package
   against a corrected failing baseline, preserving all existing browser cases.
+- [x] `.32.1`: bound the shared subscription queue and dispatch batches; migrate
+  every caller, preserve FIFO/backpressure/stop behavior, avoid idle waits between
+  full batches and verify input/render interleaving through the actual loop.
+- [x] `.32.1`: preserve normal child output before terminal status, honor stop
+  and timeout while draining and notifying, and connect a real child to the
+  existing streaming example with literal arguments and plain-text output.
+- [x] `.32.1`: verify 131 selected native/WASM tests, all required workspace
+  gates, and four real PTY journeys; retain the initial failed driver/formatting
+  evidence and the independently reviewed corrections.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
@@ -535,7 +634,9 @@ specific implementation or observation below, not completion of the whole goal):
 2. **Deliver the original agent-harness story.** Complete output trust modes
    `.33.1/.33.2`, then bounded subprocess input/output/cancel/restart and actual
    PTY journey `.32.1–.32.3`. The published minimal and streaming examples are
-   foundations, not a substitute for a real child process under stable chrome.
+   foundations. Main now streams a real child under stable inline chrome;
+   byte-safe partial output, child input, descendant cancellation and restart
+   remain required before calling the full journey complete.
 3. **Finish real browser and accessibility consumers.** Use the already-built
    WASM artifact as a starting point, finish reproducible host packaging and
    bounded admission, then GPU/IME/mobile proof. In parallel, complete widget

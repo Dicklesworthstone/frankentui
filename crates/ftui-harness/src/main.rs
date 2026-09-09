@@ -55,7 +55,8 @@ use ftui_runtime::cancellation::CancellationToken;
 use ftui_runtime::locale::{Locale, LocaleContext, detect_system_locale, set_locale};
 use ftui_runtime::{
     Cmd, ConformalConfig, Every, EvidenceSinkConfig, Model, MouseCapturePolicy, Program,
-    ProgramConfig, RenderTraceConfig, ScreenMode, StopSignal, Subscription, TaskSpec,
+    ProgramConfig, RenderTraceConfig, ScreenMode, StopSignal, Subscription, SubscriptionSender,
+    TaskSpec,
 };
 use ftui_style::Style;
 use ftui_text::WrapMode;
@@ -243,20 +244,24 @@ impl TraceFixtureClock {
         }
     }
 
-    fn follow(&self, sender: &mpsc::Sender<Msg>, stop: &CancellationToken) -> io::Result<()> {
+    fn follow(
+        &self,
+        send: impl FnMut(Msg) -> Result<(), mpsc::SendError<Msg>>,
+        stop: &CancellationToken,
+    ) -> io::Result<()> {
         let file = std::fs::File::open(&self.path)?;
-        Self::follow_reader(&mut io::BufReader::new(file), sender, stop)
+        Self::follow_reader(&mut io::BufReader::new(file), send, stop)
     }
 
     fn follow_reader(
         reader: &mut impl BufRead,
-        sender: &mpsc::Sender<Msg>,
+        mut send: impl FnMut(Msg) -> Result<(), mpsc::SendError<Msg>>,
         stop: &CancellationToken,
     ) -> io::Result<()> {
         let mut records = TraceFixtureRecords::default();
         while !stop.is_cancelled() {
             if let Some(frame_idx) = records.read_next(reader)? {
-                if sender.send(Msg::TraceFramePresented(frame_idx)).is_err() {
+                if send(Msg::TraceFramePresented(frame_idx)).is_err() {
                     return Ok(());
                 }
             } else {
@@ -272,8 +277,8 @@ impl Subscription<Msg> for TraceFixtureClock {
         0x4654_5549_5452_4143 // "FTUITRAC"
     }
 
-    fn run(&self, sender: mpsc::Sender<Msg>, stop: StopSignal) {
-        if let Err(error) = self.follow(&sender, stop.cancellation_token()) {
+    fn run(&self, sender: SubscriptionSender<Msg>, stop: StopSignal) {
+        if let Err(error) = self.follow(|message| sender.send(message), stop.cancellation_token()) {
             self.fail(format!(
                 "trace fixture clock {}: {error}",
                 self.path.display()
@@ -2648,7 +2653,7 @@ mod tests {
         );
         let worker = std::thread::spawn(move || {
             let mut reader = io::Cursor::new(input.into_bytes());
-            TraceFixtureClock::follow_reader(&mut reader, &sender, &stop)
+            TraceFixtureClock::follow_reader(&mut reader, |message| sender.send(message), &stop)
         });
         assert!(matches!(
             receiver.recv().unwrap(),
@@ -2715,7 +2720,9 @@ mod tests {
             .unwrap();
         let source = ftui_runtime::cancellation::CancellationSource::new();
         let (sender, _receiver) = mpsc::channel();
-        let error = clock.follow(&sender, &source.token()).unwrap_err();
+        let error = clock
+            .follow(|message| sender.send(message), &source.token())
+            .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         clock.fail(error);
         assert!(clock.check().is_err());

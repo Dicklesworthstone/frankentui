@@ -180,10 +180,9 @@ fn multiple_subscriptions_all_start() {
     use ftui_render::frame::Frame;
     use ftui_runtime::BackendFeatures;
     use ftui_runtime::program::{Cmd, HeadlessEventSource, Model, Program, ProgramConfig};
-    use ftui_runtime::subscription::{StopSignal, SubId, Subscription};
+    use ftui_runtime::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
     use ftui_runtime::terminal_writer::TerminalWriter;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     #[derive(Default)]
@@ -216,7 +215,7 @@ fn multiple_subscriptions_all_start() {
             u64::from(self.id)
         }
 
-        fn run(&self, sender: mpsc::Sender<Msg>, stop: StopSignal) {
+        fn run(&self, sender: SubscriptionSender<Msg>, stop: StopSignal) {
             let index = usize::from(self.id);
             self.lifecycle.starts[index].fetch_add(1, Ordering::AcqRel);
             if sender.send(Msg::Started(self.id)).is_ok() {

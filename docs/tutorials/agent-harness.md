@@ -18,6 +18,7 @@ Run the examples:
 ```bash
 cargo run -p ftui-harness --example minimal
 cargo run -p ftui-harness --example streaming
+cargo run -p ftui-harness --example streaming -- --exit-when-child-exits -- seq 1 10000
 ```
 
 ## Part 1: Hello World Harness (< 50 LOC)
@@ -96,8 +97,28 @@ The runnable `streaming` example submits every generated line to both `LogViewer
 and `Cmd::log_sgr_only`. Terminal logs accumulate when a scroll region is active
 and log rows are available. The overlay fallback displays only the latest
 width-clamped first line; no available log rows means no terminal log output.
-The example generates messages on a timer; it does not launch or manage a
-subprocess.
+With no arguments the example generates messages on a timer. A command after
+`--` starts a real `ProcessSubscription`: stdout and stderr feed the log viewer
+and plain-text `Cmd::log` output. Stderr lines have a `[stderr]` prefix. The
+status records the child's exit code or signal and the total stdout/stderr line
+count. Add `--exit-when-child-exits` to exit after logging that final status;
+otherwise the chrome remains visible until `q` or Ctrl-C. This TUI example logs
+the child's exit code; its own exit code reports whether the application ran
+successfully, so it is not a shell command wrapper.
+
+The runtime's shared subscription queue holds at most 256 messages, and a loop
+iteration drains at most 64 before returning to terminal work. After a full
+batch, the next input poll does not wait before checking queued output again. A full queue
+applies backpressure to producers; cancellation interrupts blocked sends. These
+are message-count bounds: `ProcessSubscription` still reads UTF-8 lines, so a
+single unterminated line is not byte bounded and invalid UTF-8 is unsupported.
+Natural exit waits for captured output delivery; timeout/cancellation can
+interrupt that drain, and a full canceled queue may prevent final-status
+delivery. A descendant that keeps a captured pipe open can delay natural
+completion indefinitely unless a timeout or cancellation interrupts the drain.
+The current example closes child stdin and stops the immediate child;
+interactive input, byte-safe partial output and descendant cleanup remain part
+of the unfinished agent-shell journey.
 
 Choose a log policy in the model's returned command:
 

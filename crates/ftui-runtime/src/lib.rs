@@ -173,7 +173,8 @@ pub use retry::{BackoffStrategy, RetryPolicy, task_with_retry, task_with_timeout
 pub use simulator::{ProgramSimulator, SimulatorError};
 pub use string_model::{StringModel, StringModelAdapter};
 pub use subscription::{
-    Every, FileEvent, FileWatcher, StopSignal, SubId, Subscription, file_watcher, tick_every,
+    Every, FileEvent, FileWatcher, StopSignal, SubId, Subscription, SubscriptionSender,
+    file_watcher, tick_every,
 };
 pub use terminal_writer::{ScreenMode, TerminalWriter, UiAnchor, inline_active_widgets};
 pub use tick_strategy::{

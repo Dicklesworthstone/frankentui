@@ -15,6 +15,7 @@
 //! 4. Subscription messages are routed through `Model::update()`
 
 use crate::cancellation::{CancellationSource, CancellationToken};
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -26,6 +27,71 @@ use web_time::{Duration, Instant};
 /// Used by the runtime to track which subscriptions are active and
 /// to deduplicate subscriptions across update cycles.
 pub type SubId = u64;
+
+const SUBSCRIPTION_QUEUE_CAPACITY: usize = 256;
+const SUBSCRIPTION_BATCH_LIMIT: usize = 64;
+const SUBSCRIPTION_SEND_POLL: Duration = Duration::from_millis(5);
+
+/// A bounded message sender supplied to a running subscription.
+///
+/// The runtime shares a 256-message queue across subscriptions and dispatches
+/// at most 64 messages per iteration before returning to input/render work.
+/// These are message-count limits, not byte limits on arbitrary model messages.
+/// Producers should also bound the size of each message they construct.
+///
+/// Clones share both queue capacity and the subscription's stop signal.
+pub struct SubscriptionSender<M> {
+    sender: mpsc::SyncSender<M>,
+    stop: StopSignal,
+}
+
+impl<M> Clone for SubscriptionSender<M> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            stop: self.stop.clone(),
+        }
+    }
+}
+
+impl<M> SubscriptionSender<M> {
+    pub(crate) fn new(sender: mpsc::SyncSender<M>, stop: StopSignal) -> Self {
+        Self { sender, stop }
+    }
+
+    /// Reuse the transport for a producer whose owning supervisor also enforces
+    /// a timeout. The supervisor must propagate subscription stop to this signal.
+    pub(crate) fn with_stop_signal(&self, stop: StopSignal) -> Self {
+        Self::new(self.sender.clone(), stop)
+    }
+
+    /// Let a supervisor enforce its own deadline while retaining an unsent item.
+    pub(crate) fn try_send(&self, message: M) -> Result<(), mpsc::TrySendError<M>> {
+        self.sender.try_send(message)
+    }
+
+    /// Send a message, applying backpressure while the queue is full.
+    ///
+    /// Returns the unsent message if the receiver disconnects or cancellation
+    /// interrupts a full-queue wait. An immediate send may still succeed after
+    /// cancellation, allowing a final status when capacity is available. Final
+    /// status delivery is not guaranteed after cancelling a full queue.
+    /// Implementations must still check their stop signal before producing work.
+    pub fn send(&self, mut message: M) -> Result<(), mpsc::SendError<M>> {
+        loop {
+            match self.sender.try_send(message) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::TrySendError::Disconnected(unsent)) => {
+                    return Err(mpsc::SendError(unsent));
+                }
+                Err(mpsc::TrySendError::Full(unsent)) => message = unsent,
+            }
+            if self.stop.wait_timeout(SUBSCRIPTION_SEND_POLL) {
+                return Err(mpsc::SendError(message));
+            }
+        }
+    }
+}
 
 /// A subscription produces messages from an external event source.
 ///
@@ -43,7 +109,7 @@ pub trait Subscription<M: Send + 'static>: Send {
     /// This is called on a background thread. Implementations should
     /// loop and send messages until the channel is disconnected (receiver dropped)
     /// or the stop signal is received.
-    fn run(&self, sender: mpsc::Sender<M>, stop: StopSignal);
+    fn run(&self, sender: SubscriptionSender<M>, stop: StopSignal);
 }
 
 /// Signal for stopping a subscription.
@@ -241,20 +307,22 @@ impl Drop for RunningSubscription {
 /// Manages the lifecycle of subscriptions for a program.
 pub(crate) struct SubscriptionManager<M: Send + 'static> {
     active: Vec<RunningSubscription>,
-    sender: mpsc::Sender<M>,
+    sender: mpsc::SyncSender<M>,
     receiver: mpsc::Receiver<M>,
+    batch_limit_reached: Cell<bool>,
     failure_sender: mpsc::Sender<SubscriptionFailure>,
     failure_receiver: mpsc::Receiver<SubscriptionFailure>,
 }
 
 impl<M: Send + 'static> SubscriptionManager<M> {
     pub(crate) fn new() -> Self {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (failure_sender, failure_receiver) = mpsc::channel();
         Self {
             active: Vec::new(),
             sender,
             receiver,
+            batch_limit_reached: Cell::new(false),
             failure_sender,
             failure_receiver,
         }
@@ -323,7 +391,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
             crate::effect_system::record_subscription_start("subscription", id);
             crate::effect_system::record_dynamics_sub_start();
             let (signal, trigger) = StopSignal::new();
-            let sender = self.sender.clone();
+            let sender = SubscriptionSender::new(self.sender.clone(), signal.clone());
             let panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let panicked_flag = panicked.clone();
             let sub_id_for_thread = id;
@@ -381,13 +449,23 @@ impl<M: Send + 'static> SubscriptionManager<M> {
         );
     }
 
-    /// Drain pending messages from subscriptions.
+    /// Drain one bounded batch, leaving its FIFO suffix queued for a later turn.
+    /// A producer may refill the channel concurrently; it cannot extend this batch.
     pub(crate) fn drain_messages(&self) -> Vec<M> {
-        let mut messages = Vec::new();
-        while let Ok(msg) = self.receiver.try_recv() {
-            messages.push(msg);
-        }
+        let messages: Vec<M> = self
+            .receiver
+            .try_iter()
+            .take(SUBSCRIPTION_BATCH_LIMIT)
+            .collect();
+        self.batch_limit_reached
+            .set(messages.len() == SUBSCRIPTION_BATCH_LIMIT);
         messages
+    }
+
+    /// A full batch may have left a suffix. Poll input without waiting before
+    /// the next drain; an exactly full final batch costs only one extra poll.
+    pub(crate) fn may_have_pending_messages(&self) -> bool {
+        self.batch_limit_reached.get()
     }
 
     /// Drain subscription failures that have not yet been reported to the model.
@@ -644,7 +722,7 @@ impl<M: Send + 'static> Subscription<M> for FileWatcher<M> {
         self.id
     }
 
-    fn run(&self, sender: mpsc::Sender<M>, stop: StopSignal) {
+    fn run(&self, sender: SubscriptionSender<M>, stop: StopSignal) {
         let mut last = file_fingerprint(&self.path);
         let mut sent: u64 = 0;
         crate::debug_trace!(
@@ -686,7 +764,7 @@ impl<M: Send + 'static> Subscription<M> for Every<M> {
         self.id
     }
 
-    fn run(&self, sender: mpsc::Sender<M>, stop: StopSignal) {
+    fn run(&self, sender: SubscriptionSender<M>, stop: StopSignal) {
         let mut tick_count: u64 = 0;
         crate::debug_trace!(
             "Every subscription started: id={}, interval={:?}",
@@ -720,6 +798,106 @@ impl<M: Send + 'static> Subscription<M> for Every<M> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn bounded_sender_waits_for_capacity_and_preserves_fifo() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        let (signal, _trigger) = StopSignal::new();
+        let sender = SubscriptionSender::new(tx, signal);
+        sender.send(1).unwrap();
+        sender.clone().send(2).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            sender.send(3).unwrap();
+            finished_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            finished_rx.recv_timeout(Duration::from_millis(30)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "third message must wait while both slots remain occupied"
+        );
+        assert_eq!(rx.recv().unwrap(), 1);
+        finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        handle.join().unwrap();
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [2, 3]);
+    }
+
+    #[test]
+    fn bounded_sender_returns_unsent_message_on_stop_or_disconnect() {
+        for disconnect in [false, true] {
+            let (tx, rx) = mpsc::sync_channel(1);
+            let (signal, trigger) = StopSignal::new();
+            let sender = SubscriptionSender::new(tx, signal);
+            sender.send("admitted").unwrap();
+            let (started_tx, started_rx) = mpsc::channel();
+            let (finished_tx, finished_rx) = mpsc::channel();
+            let handle = thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let result = sender.send("pending");
+                finished_tx.send(result).unwrap();
+            });
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(
+                finished_rx.recv_timeout(Duration::from_millis(30)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            );
+            if disconnect {
+                drop(rx);
+            } else {
+                trigger.stop();
+                let result = finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                assert_eq!(result, Err(mpsc::SendError("pending")));
+                assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["admitted"]);
+                handle.join().unwrap();
+                continue;
+            }
+            assert_eq!(
+                finished_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+                Err(mpsc::SendError("pending"))
+            );
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn bounded_sender_allows_final_status_only_when_capacity_is_available() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let (signal, trigger) = StopSignal::new();
+        let sender = SubscriptionSender::new(tx, signal);
+        trigger.stop();
+        assert_eq!(sender.send("final"), Ok(()));
+        assert_eq!(sender.send("unsent"), Err(mpsc::SendError("unsent")));
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["final"]);
+    }
+
+    #[test]
+    fn manager_bounds_queue_and_each_drain_preserving_its_suffix() {
+        let manager = SubscriptionManager::new();
+        assert!(!manager.may_have_pending_messages());
+        for value in 0..SUBSCRIPTION_QUEUE_CAPACITY {
+            manager.sender.try_send(value).unwrap();
+        }
+        assert_eq!(
+            manager.sender.try_send(SUBSCRIPTION_QUEUE_CAPACITY),
+            Err(mpsc::TrySendError::Full(SUBSCRIPTION_QUEUE_CAPACITY))
+        );
+        let mut received = Vec::new();
+        for _ in 0..SUBSCRIPTION_QUEUE_CAPACITY / SUBSCRIPTION_BATCH_LIMIT {
+            let batch = manager.drain_messages();
+            assert_eq!(batch.len(), SUBSCRIPTION_BATCH_LIMIT);
+            assert!(manager.may_have_pending_messages());
+            received.extend(batch);
+        }
+        assert_eq!(
+            received,
+            (0..SUBSCRIPTION_QUEUE_CAPACITY).collect::<Vec<_>>()
+        );
+        assert!(manager.drain_messages().is_empty());
+        assert!(!manager.may_have_pending_messages());
+    }
+
     #[derive(Debug, Clone, PartialEq)]
     enum TestMsg {
         Tick,
@@ -748,7 +926,7 @@ mod tests {
             self.id
         }
 
-        fn run(&self, sender: mpsc::Sender<M>, stop: StopSignal) {
+        fn run(&self, sender: SubscriptionSender<M>, stop: StopSignal) {
             loop {
                 if stop.is_stopped() {
                     break;
@@ -800,11 +978,11 @@ mod tests {
     #[test]
     fn channel_subscription_forwards_messages() {
         let (sub, event_tx) = channel_subscription(1);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         event_tx.send(TestMsg::Value(1)).unwrap();
@@ -820,11 +998,11 @@ mod tests {
     #[test]
     fn every_subscription_fires() {
         let sub = Every::new(Duration::from_millis(10), || TestMsg::Tick);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         // Wait for a few ticks
@@ -848,9 +1026,11 @@ mod tests {
             "the helper must not change subscription identity (diffing relies on it)"
         );
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (signal, trigger) = StopSignal::new();
-        let handle = thread::spawn(move || boxed.run(tx, signal));
+        let handle = thread::spawn(move || {
+            boxed.run(SubscriptionSender::new(tx, signal.clone()), signal);
+        });
         thread::sleep(Duration::from_millis(50));
         trigger.stop();
         handle.join().unwrap();
@@ -889,9 +1069,11 @@ mod tests {
         let path = dir.path().join("watched.toml");
         let sub = FileWatcher::new(&path, TestMsg::File).with_interval(Duration::from_millis(5));
         assert_eq!(sub.path(), path.as_path());
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (signal, trigger) = StopSignal::new();
-        let handle = thread::spawn(move || sub.run(tx, signal));
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
+        });
         let wait = Duration::from_secs(10);
         // Let the watcher take its baseline (path absent) and prove it stays quiet.
         thread::sleep(Duration::from_millis(40));
@@ -1124,11 +1306,11 @@ mod tests {
     #[test]
     fn channel_subscription_no_messages_without_events() {
         let (sub, _event_tx) = channel_subscription(1);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (signal, trigger) = StopSignal::new();
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         thread::sleep(Duration::from_millis(10));
@@ -1148,13 +1330,13 @@ mod tests {
     #[test]
     fn channel_subscription_stops_on_disconnected_receiver() {
         let (sub, event_tx) = channel_subscription(1);
-        let (tx, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (signal, _trigger) = StopSignal::new();
 
         drop(event_tx);
 
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         let result = handle.join();
@@ -1170,7 +1352,7 @@ mod tests {
     #[test]
     fn every_stops_on_disconnected_receiver() {
         let sub = Every::new(Duration::from_millis(5), || TestMsg::Tick);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (signal, _trigger) = StopSignal::new();
 
         // Drop receiver before running
@@ -1178,7 +1360,7 @@ mod tests {
 
         // Should exit the loop when send fails
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         // Should complete quickly, not hang
@@ -1190,12 +1372,12 @@ mod tests {
     fn every_respects_interval() {
         let interval = Duration::from_millis(50);
         let sub = Every::with_id(1, interval, Instant::now);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let (signal, trigger) = StopSignal::new();
 
         let start = Instant::now();
         let handle = thread::spawn(move || {
-            sub.run(tx, signal);
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
         });
 
         // Wait for three ticks by receiving them rather than sleeping a
@@ -1388,7 +1570,7 @@ mod tests {
                 self.id
             }
 
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, stop: StopSignal) {
                 while !stop.is_stopped() {
                     thread::sleep(Duration::from_millis(5));
                 }
@@ -1507,7 +1689,7 @@ mod tests {
                 999
             }
 
-            fn run(&self, sender: mpsc::Sender<TestMsg>, _stop: StopSignal) {
+            fn run(&self, sender: SubscriptionSender<TestMsg>, _stop: StopSignal) {
                 for v in &self.values {
                     let _ = sender.send(TestMsg::Value(*v));
                     thread::sleep(Duration::from_millis(1));
@@ -1607,7 +1789,7 @@ mod tests {
                 self.id
             }
 
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, _stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, _stop: StopSignal) {
                 // Ignore stop signal entirely, sleep for a long time
                 thread::sleep(Duration::from_secs(5));
             }
@@ -1652,7 +1834,7 @@ mod tests {
                 self.id
             }
 
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, stop: StopSignal) {
                 self.counter
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 while !stop.is_stopped() {
@@ -1702,7 +1884,7 @@ mod tests {
                 77
             }
 
-            fn run(&self, sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
+            fn run(&self, sender: SubscriptionSender<TestMsg>, stop: StopSignal) {
                 // Send a burst of messages immediately
                 for i in 0..10 {
                     let _ = sender.send(TestMsg::Value(i));
@@ -1819,7 +2001,7 @@ mod tests {
                 self.id
             }
 
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, stop: StopSignal) {
                 while !stop.is_stopped() {
                     thread::sleep(Duration::from_millis(5));
                 }
@@ -1894,7 +2076,7 @@ mod tests {
                 0xDEAD
             }
 
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, _stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, _stop: StopSignal) {
                 panic!("intentional test panic in subscription");
             }
         }
@@ -1940,7 +2122,7 @@ mod tests {
             fn id(&self) -> SubId {
                 0xBAD
             }
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, _stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, _stop: StopSignal) {
                 panic!("boom");
             }
         }
@@ -1995,7 +2177,7 @@ mod tests {
                 self.id
             }
 
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, stop: StopSignal) {
                 while !stop.is_stopped() {
                     thread::sleep(Duration::from_millis(5));
                 }
@@ -2077,7 +2259,7 @@ mod tests {
                 self.id
             }
 
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, stop: StopSignal) {
                 while !stop.is_stopped() {
                     thread::sleep(Duration::from_millis(5));
                 }
@@ -2292,7 +2474,7 @@ mod tests {
                 self.id
             }
 
-            fn run(&self, sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
+            fn run(&self, sender: SubscriptionSender<TestMsg>, stop: StopSignal) {
                 while !stop.is_stopped() {
                     if sender.send(TestMsg::Tick).is_err() {
                         break;
@@ -2368,7 +2550,7 @@ mod tests {
                 self.id
             }
 
-            fn run(&self, _sender: mpsc::Sender<TestMsg>, stop: StopSignal) {
+            fn run(&self, _sender: SubscriptionSender<TestMsg>, stop: StopSignal) {
                 while !stop.is_stopped() {
                     thread::sleep(Duration::from_millis(1));
                 }
