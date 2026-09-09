@@ -1146,7 +1146,8 @@ impl Screen for MacroRecorderScreen {
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
-        let mut controls_height: u16 = 6;
+        // Five control rows plus the top and bottom borders.
+        let mut controls_height: u16 = 7;
         if self.status_note.is_some() {
             controls_height += 1;
         }

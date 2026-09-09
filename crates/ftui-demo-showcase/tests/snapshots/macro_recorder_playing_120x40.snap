@@ -3,6 +3,7 @@
 │Speed: 1.00x   Loop: Off   Progress: 100%   Filtered: 0                                                               │
 │Focus: [Controls]  [Timeline]  [Scenarios]   Ctrl/Alt+Arrows: ↑Controls  ←Timeline  →Scenarios                        │
 │Quick Start: Enter load scenario  Space record  ↑/↓ scrub timeline                                                    │
+│Space/r record/stop  Enter/p play/pause  Esc stop  L loop  +/- speed                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭───────────────────────────────Timeline───────────────────────────────╮╭─────────────────Event Detail─────────────────╮
 │▶ 001  +   0ms  @    0ms  a                                           ││Selected: #000                                │
@@ -11,7 +12,6 @@
 │                                                                      ││Event: a                                      │
 │                                                                      ││Kind: Press                                   │
 │                                                                      ││Modifiers: Modifiers(0x0)                     │
-│                                                                      ││                                              │
 │                                                                      ││                                              │
 │                                                                      ││                                              │
 │                                                                      ││                                              │

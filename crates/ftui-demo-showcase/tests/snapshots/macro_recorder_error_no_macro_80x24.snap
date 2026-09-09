@@ -5,6 +5,7 @@
 │Quick Start: Enter load scenario  Space record  ↑/↓ scrub timeline            │
 │Space/r record/stop  Enter/p play/pause  Esc stop  L loop  +/- speed          │
 │Press Space to record or Enter in Scenarios to load a demo                    │
+│⚠ Error: No macro recorded — press 'r' to start recording                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭───────────────────Timeline───────────────────╮╭─────────Event Detail─────────╮
 │No macro loaded.                              ││Select a scenario or record a │
@@ -20,5 +21,4 @@
 │                                              ││Preset scenarios (Enter to loa│
 │                                              ││                              │
 │                                              ││Tab Tour                      │
-│                                              ││  Cycle tabs and toggle the he│
 ╰──────────────────────────────────────────────╯╰──────────────────────────────╯

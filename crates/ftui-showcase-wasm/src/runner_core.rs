@@ -43,7 +43,7 @@ pub struct RunnerCore {
     cached_patch_hash: Option<String>,
     /// Cached patch stats from the last `take_flat_patches()` call.
     cached_patch_stats: Option<WebPatchStats>,
-    /// Cached logs from the last `take_flat_patches()` call.
+    /// Undelivered logs retained across patch drains.
     cached_logs: Vec<String>,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     /// Reusable cell buffer for flat patch output (avoids per-frame allocation).
@@ -308,7 +308,7 @@ impl RunnerCore {
         self.cached_patch_hash = outputs.compute_patch_hash().map(str::to_owned);
         self.cached_patch_stats = outputs.last_patch_stats;
         let flat = outputs.flatten_patches_u32();
-        self.cached_logs = outputs.logs;
+        self.cached_logs.extend(outputs.logs);
         flat
     }
 
@@ -330,7 +330,7 @@ impl RunnerCore {
         // Hash stays lazy: compute on-demand from `flat_*_buf` only if asked.
         self.cached_patch_hash = None;
         self.cached_patch_stats = outputs.last_patch_stats;
-        self.cached_logs = outputs.logs;
+        self.cached_logs.extend(outputs.logs);
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -345,9 +345,14 @@ impl RunnerCore {
         &self.flat_spans_buf
     }
 
-    /// Take accumulated log lines (from the last `take_flat_patches` call).
+    /// Take undelivered model logs in order, followed by deferred pane logs.
+    ///
+    /// This also drains live logs from non-rendering or quitting steps. It does
+    /// not consume patches or change frame metadata; patch and log reads can be
+    /// scheduled independently by the host.
     pub fn take_logs(&mut self) -> Vec<String> {
         let mut logs = std::mem::take(&mut self.cached_logs);
+        logs.append(&mut self.inner.backend_mut().presenter_mut().outputs_mut().logs);
         logs.extend(self.pane_logs.drain(..).map(|record| match record {
             PaneLogRecord::Pointer(log) => format_pane_log_entry(log),
             PaneLogRecord::Line(line) => line,
@@ -1308,6 +1313,83 @@ mod tests {
         edge_fling_projection,
     };
     use ftui_layout::{PaneDockPreview, PaneDockZone, PaneResizeGrip, PaneRetentionPolicy};
+
+    #[test]
+    fn log_drain_preserves_pending_frame_and_metadata() {
+        let mut runner = RunnerCore::new(80, 24);
+        runner.init();
+        let hash = runner.patch_hash().expect("initial frame hash");
+        let stats = runner.patch_stats().expect("initial patch stats");
+        let before = runner.inner.outputs().clone();
+        assert!(!before.last_patches.is_empty());
+        let frame_idx = runner.frame_idx();
+        runner
+            .inner
+            .backend_mut()
+            .presenter_mut()
+            .outputs_mut()
+            .logs
+            .extend(["first".to_owned(), "second".to_owned()]);
+
+        assert_eq!(runner.take_logs(), ["first", "second"]);
+        assert!(runner.take_logs().is_empty());
+        let after = runner.inner.outputs();
+        assert_eq!(after.last_patches, before.last_patches);
+        assert_eq!(after.last_patch_stats, before.last_patch_stats);
+        assert_eq!(after.last_patch_hash, before.last_patch_hash);
+        assert_eq!(after.last_full_repaint_hint, before.last_full_repaint_hint);
+        assert!(
+            after
+                .last_buffer
+                .as_ref()
+                .unwrap()
+                .content_eq(before.last_buffer.as_ref().unwrap())
+        );
+        assert_eq!(runner.frame_idx(), frame_idx);
+        assert_eq!(runner.patch_hash().as_deref(), Some(hash.as_str()));
+        assert_eq!(runner.patch_stats(), Some(stats));
+        assert_eq!(runner.take_flat_patches(), before.flatten_patches_u32());
+    }
+
+    #[test]
+    fn log_drains_preserve_fifo_across_both_patch_apis() {
+        for prepare_first in [false, true] {
+            for prepare_second in [false, true] {
+                let mut runner = RunnerCore::new(80, 24);
+                runner.init();
+                for (message, prepare) in [("first", prepare_first), ("second", prepare_second)] {
+                    runner
+                        .inner
+                        .backend_mut()
+                        .presenter_mut()
+                        .outputs_mut()
+                        .logs
+                        .push(message.to_owned());
+                    if prepare {
+                        runner.prepare_flat_patches();
+                        runner.prepare_flat_patches();
+                    } else {
+                        runner.take_flat_patches();
+                        runner.take_flat_patches();
+                    }
+                }
+                runner
+                    .inner
+                    .backend_mut()
+                    .presenter_mut()
+                    .outputs_mut()
+                    .logs
+                    .push("live".to_owned());
+                runner
+                    .pane_logs
+                    .push(PaneLogRecord::Line("pane".to_owned()));
+                assert_eq!(runner.take_logs(), ["first", "second", "live", "pane"]);
+                assert!(runner.take_logs().is_empty());
+                runner.prepare_flat_patches();
+                assert!(runner.take_logs().is_empty());
+            }
+        }
+    }
 
     #[test]
     fn live_reflow_threshold_drops_for_fast_confident_motion() {

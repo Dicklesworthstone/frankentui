@@ -1544,8 +1544,8 @@ impl ScreenStates {
     }
 
     /// Forward an event to the screen identified by `id`.
-    fn update(&mut self, id: ScreenId, event: &Event) {
-        dispatch_screen!(mut self, id, screen => { let _ = screen.update(event); }, noop: {});
+    fn update(&mut self, id: ScreenId, event: &Event) -> Cmd<AppMsg> {
+        dispatch_screen!(mut self, id, screen => lift_screen_cmd(id, screen.update(event)), noop: Cmd::none())
     }
 
     /// Whether the given screen is currently consuming text input.
@@ -1653,10 +1653,89 @@ impl ScreenStates {
 // AppMsg
 // ---------------------------------------------------------------------------
 
+/// Results returned by the existing screen command message types.
+#[derive(Debug)]
+pub enum ScreenMessage {
+    /// Deliver an event directly to the screen that produced the command.
+    Event(Event),
+    /// Completion from a screen whose message type is unit.
+    Unit,
+    /// Completion from Theme Studio.
+    ThemeStudio(screens::theme_studio::ThemeStudioMsg),
+}
+
+impl From<Event> for ScreenMessage {
+    fn from(event: Event) -> Self {
+        Self::Event(event)
+    }
+}
+
+impl From<()> for ScreenMessage {
+    fn from((): ()) -> Self {
+        Self::Unit
+    }
+}
+
+impl From<screens::theme_studio::ThemeStudioMsg> for ScreenMessage {
+    fn from(message: screens::theme_studio::ThemeStudioMsg) -> Self {
+        Self::ThemeStudio(message)
+    }
+}
+
+/// Lift screen effects without executing them or changing their ordering.
+/// Event results retain their origin even if a task finishes after navigation.
+fn lift_screen_cmd<M>(origin: ScreenId, cmd: Cmd<M>) -> Cmd<AppMsg>
+where
+    M: Into<ScreenMessage> + Send + 'static,
+{
+    match cmd {
+        Cmd::None => Cmd::None,
+        Cmd::Quit => Cmd::Quit,
+        Cmd::Batch(commands) => Cmd::Batch(
+            commands
+                .into_iter()
+                .map(|command| lift_screen_cmd(origin, command))
+                .collect(),
+        ),
+        Cmd::Sequence(commands) => Cmd::Sequence(
+            commands
+                .into_iter()
+                .map(|command| lift_screen_cmd(origin, command))
+                .collect(),
+        ),
+        Cmd::Msg(message) => Cmd::Msg(AppMsg::ScreenMessage {
+            origin,
+            message: message.into(),
+        }),
+        Cmd::Tick(duration) => Cmd::Tick(duration),
+        Cmd::Log { text, mode } => Cmd::Log { text, mode },
+        Cmd::Task(spec, task) => Cmd::Task(
+            spec,
+            Box::new(move || AppMsg::ScreenMessage {
+                origin,
+                message: task().into(),
+            }),
+        ),
+        Cmd::SaveState => Cmd::SaveState,
+        Cmd::RestoreState => Cmd::RestoreState,
+        Cmd::SetMouseCapture(enabled) => Cmd::SetMouseCapture(enabled),
+        Cmd::SetTickStrategy(strategy) => Cmd::SetTickStrategy(strategy),
+    }
+}
+
 /// Top-level application message.
 pub enum AppMsg {
     /// A raw terminal event forwarded to the current screen.
     ScreenEvent(Event),
+    /// A command result addressed to its originating screen, bypassing shortcuts.
+    ScreenMessage {
+        /// Screen that returned the command.
+        origin: ScreenId,
+        /// Typed result of the command.
+        message: ScreenMessage,
+    },
+    /// A recorded input event, dispatched without recording it again.
+    PlaybackEvent(Event),
     /// Switch to a specific screen.
     SwitchScreen(ScreenId),
     /// Advance to the next screen tab.
@@ -3430,6 +3509,16 @@ impl AppModel {
     fn handle_msg(&mut self, msg: AppMsg, source: EventSource) -> Cmd<AppMsg> {
         match msg {
             AppMsg::Quit => Cmd::Quit,
+            AppMsg::ScreenMessage { origin, message } => match message {
+                ScreenMessage::Event(event) => self.screens.update(origin, &event),
+                ScreenMessage::Unit => Cmd::None,
+                ScreenMessage::ThemeStudio(screens::theme_studio::ThemeStudioMsg::Noop) => {
+                    Cmd::None
+                }
+            },
+            AppMsg::PlaybackEvent(event) => {
+                self.handle_msg(AppMsg::from(event), EventSource::Playback)
+            }
 
             AppMsg::SwitchScreen(id) => {
                 let from = self.display_screen().title();
@@ -3732,18 +3821,19 @@ impl AppModel {
                     self.handle_tour_event(event);
                 }
                 let playback_events = self.screens.macro_recorder.drain_playback_events();
-                for event in playback_events {
-                    let cmd = self.handle_msg(AppMsg::from(event), EventSource::Playback);
-                    if matches!(cmd, Cmd::Quit) {
-                        return Cmd::Quit;
-                    }
-                }
+                // Dispatch each event through the runtime so its effects finish
+                // before the next event updates the model. Nested Quit stops
+                // the remaining playback events as well as their effects.
+                let mut commands: Vec<_> = playback_events
+                    .into_iter()
+                    .map(|event| Cmd::msg(AppMsg::PlaybackEvent(event)))
+                    .collect();
                 if let Some(limit) = self.exit_after_ticks
                     && self.tick_count >= limit
                 {
-                    return Cmd::Quit;
+                    commands.push(Cmd::Quit);
                 }
-                Cmd::None
+                Cmd::sequence(commands)
             }
 
             AppMsg::Resize { width, height } => {
@@ -4217,8 +4307,7 @@ impl AppModel {
                     self.screens.clear_error(self.display_screen());
                     return Cmd::None;
                 }
-                self.screens.update(self.display_screen(), &event);
-                Cmd::None
+                self.screens.update(self.display_screen(), &event)
             }
         }
     }
@@ -4262,9 +4351,11 @@ impl Model for AppModel {
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
         let cmd = self.handle_msg(msg, EventSource::User);
         self.save_pane_workspace_to_disk("autosave", false);
-        // Keep tick cadence in sync with the current screen/mode (tour/vfx/etc).
+        // Establish the current app mode's cadence before this dispatch's
+        // effects. An explicit screen Tick wins for this dispatch; a later
+        // app update may establish its normal baseline again.
         let tick_ms = self.tick_interval_ms().max(1);
-        Cmd::batch(vec![cmd, Cmd::Tick(Duration::from_millis(tick_ms))])
+        Cmd::batch(vec![Cmd::Tick(Duration::from_millis(tick_ms)), cmd])
     }
 
     fn view(&self, frame: &mut Frame) {
@@ -5721,6 +5812,245 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn screen_command_lift_preserves_effect_variants_and_order() {
+        use ftui_render::sanitize::SanitizeMode;
+        use ftui_runtime::tick_strategy::{TickDecision, Uniform};
+
+        let command = Cmd::<()>::Sequence(vec![
+            Cmd::None,
+            Cmd::Quit,
+            Cmd::Batch(vec![Cmd::log_sgr_only("\x1b[31mcolored")]),
+            Cmd::Sequence(Vec::new()),
+            Cmd::Tick(Duration::from_millis(17)),
+            Cmd::log_raw("\x1b[2Jtrusted"),
+            Cmd::SaveState,
+            Cmd::RestoreState,
+            Cmd::SetMouseCapture(true),
+            Cmd::SetTickStrategy(Box::new(Uniform::new(7))),
+        ]);
+        let Cmd::Sequence(commands) = lift_screen_cmd(ScreenId::DeterminismLab, command) else {
+            panic!("sequence identity must be preserved");
+        };
+        let mut commands = commands.into_iter();
+        assert!(matches!(commands.next(), Some(Cmd::None)));
+        assert!(matches!(commands.next(), Some(Cmd::Quit)));
+        let Some(Cmd::Batch(batch)) = commands.next() else {
+            panic!("nested batch must be preserved");
+        };
+        assert!(matches!(
+            batch.as_slice(),
+            [Cmd::Log { text, mode: SanitizeMode::SgrOnly }] if text == "\x1b[31mcolored"
+        ));
+        assert!(matches!(commands.next(), Some(Cmd::Sequence(commands)) if commands.is_empty()));
+        assert!(matches!(
+            commands.next(),
+            Some(Cmd::Tick(duration)) if duration == Duration::from_millis(17)
+        ));
+        assert!(matches!(
+            commands.next(),
+            Some(Cmd::Log { text, mode: SanitizeMode::Raw }) if text == "\x1b[2Jtrusted"
+        ));
+        assert!(matches!(commands.next(), Some(Cmd::SaveState)));
+        assert!(matches!(commands.next(), Some(Cmd::RestoreState)));
+        assert!(matches!(commands.next(), Some(Cmd::SetMouseCapture(true))));
+        let Some(Cmd::SetTickStrategy(mut strategy)) = commands.next() else {
+            panic!("strategy must survive the lift");
+        };
+        assert_eq!(strategy.name(), "Uniform");
+        assert_eq!(
+            strategy.should_tick("other", 6, "active"),
+            TickDecision::Skip
+        );
+        assert_eq!(
+            strategy.should_tick("other", 7, "active"),
+            TickDecision::Tick
+        );
+        assert!(commands.next().is_none());
+    }
+
+    #[test]
+    fn screen_command_lift_handles_all_existing_message_types() {
+        let mut app = AppModel::new();
+        let event = Event::Key(KeyEvent::new(KeyCode::Char('5')));
+        let Cmd::Msg(AppMsg::ScreenMessage { origin, message }) =
+            lift_screen_cmd(ScreenId::LayoutLab, Cmd::msg(event.clone()))
+        else {
+            panic!("event result must be addressed");
+        };
+        assert_eq!(origin, ScreenId::LayoutLab);
+        assert!(matches!(message, ScreenMessage::Event(actual) if actual == event));
+
+        for (expected_origin, command) in [
+            (
+                ScreenId::DeterminismLab,
+                lift_screen_cmd(ScreenId::DeterminismLab, Cmd::msg(())),
+            ),
+            (
+                ScreenId::ThemeStudio,
+                lift_screen_cmd(
+                    ScreenId::ThemeStudio,
+                    Cmd::msg(screens::theme_studio::ThemeStudioMsg::Noop),
+                ),
+            ),
+        ] {
+            let Cmd::Msg(AppMsg::ScreenMessage { origin, message }) = command else {
+                panic!("completion must remain an explicit message");
+            };
+            assert_eq!(origin, expected_origin);
+            match origin {
+                ScreenId::DeterminismLab => assert!(matches!(&message, ScreenMessage::Unit)),
+                ScreenId::ThemeStudio => assert!(matches!(
+                    &message,
+                    ScreenMessage::ThemeStudio(screens::theme_studio::ThemeStudioMsg::Noop)
+                )),
+                _ => panic!("unexpected completion origin"),
+            }
+            assert!(matches!(
+                app.handle_msg(AppMsg::ScreenMessage { origin, message }, EventSource::User),
+                Cmd::None
+            ));
+        }
+        assert_eq!(app.tick_count, 0, "completion must not fabricate a tick");
+        assert_eq!(app.current_screen, ScreenId::Dashboard);
+    }
+
+    #[test]
+    fn screen_task_result_stays_lazy_and_returns_to_its_origin() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::LayoutLab;
+        let executions = Arc::new(AtomicU64::new(0));
+        let task_executions = Arc::clone(&executions);
+        let spec = ftui_runtime::TaskSpec::new(3.0, 19.0).with_name("screen-origin");
+        let command = lift_screen_cmd(
+            ScreenId::LayoutLab,
+            Cmd::task_with_spec(spec, move || {
+                task_executions.fetch_add(1, Ordering::SeqCst);
+                Event::Key(KeyEvent::new(KeyCode::Char('5')))
+            }),
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        app.update(AppMsg::SwitchScreen(ScreenId::DeterminismLab));
+        let Cmd::Task(spec, task) = command else {
+            panic!("task must remain deferred");
+        };
+        assert_eq!(spec.weight.to_bits(), 3.0_f64.to_bits());
+        assert_eq!(spec.estimate_ms.to_bits(), 19.0_f64.to_bits());
+        assert_eq!(spec.name.as_deref(), Some("screen-origin"));
+        // Execute the lifted closure directly to verify its result wrapping;
+        // this component test does not exercise runtime task scheduling.
+        let result = task();
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        app.update(result);
+        assert_eq!(app.current_screen, ScreenId::DeterminismLab);
+        app.current_screen = ScreenId::LayoutLab;
+        assert!(rendered_app_text(&app).contains("Preset 5: Real-World Layout"));
+    }
+
+    #[test]
+    fn determinism_screen_returns_log_after_app_tick_baseline() {
+        use ftui_render::sanitize::SanitizeMode;
+
+        let mut app = AppModel::new();
+        app.enable_deterministic_mode_for_test(37, 16);
+        app.current_screen = ScreenId::DeterminismLab;
+        app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('1')))));
+        assert_eq!(app.current_screen, ScreenId::DeterminismLab);
+        let command = app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('c')))));
+        let Cmd::Batch(commands) = command else {
+            panic!("app cadence and screen log must both be returned");
+        };
+        let [Cmd::Tick(duration), Cmd::Log { text, mode }] = commands.as_slice() else {
+            panic!("baseline must precede the screen effect");
+        };
+        assert_eq!(*duration, Duration::from_millis(37));
+        assert_eq!(*mode, SanitizeMode::Strip);
+        let checksum = text
+            .strip_prefix("[determinism] checksum (Full) live = 0x")
+            .expect("real screen checksum log");
+        assert_eq!(checksum.len(), 16);
+        assert!(checksum.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn screen_command_dispatch_keeps_lazy_and_placeholder_routes() {
+        let mut screens = ScreenStates::default();
+        assert!(!screens.is_lazy_initialized(ScreenId::Shakespeare));
+        assert!(matches!(
+            screens.update(ScreenId::GuidedTour, &Event::Focus(false)),
+            Cmd::None
+        ));
+        assert!(!screens.is_lazy_initialized(ScreenId::Shakespeare));
+        assert!(matches!(
+            screens.update(ScreenId::Shakespeare, &Event::Focus(false)),
+            Cmd::None
+        ));
+        assert!(screens.is_lazy_initialized(ScreenId::Shakespeare));
+        #[cfg(not(feature = "screen-mermaid"))]
+        for id in [ScreenId::MermaidShowcase, ScreenId::MermaidMegaShowcase] {
+            assert!(matches!(
+                screens.update(id, &Event::Focus(false)),
+                Cmd::None
+            ));
+        }
+    }
+
+    #[test]
+    fn macro_playback_delivers_logs_before_quit_without_recording_itself() {
+        use ftui_runtime::simulator::ProgramSimulator;
+
+        let key = |ch| Event::Key(KeyEvent::new(KeyCode::Char(ch)));
+        let mut app = AppModel::new();
+        app.enable_deterministic_mode_for_test(100, 16);
+        app.current_screen = ScreenId::DeterminismLab;
+        let recorder = &mut app.screens.macro_recorder;
+        recorder.update(&key('r'));
+        let events = [
+            key('1'),
+            key('c'),
+            key('2'),
+            key('c'),
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers: Modifiers::CTRL,
+                kind: KeyEventKind::Press,
+            }),
+            key('3'),
+            key('c'),
+        ];
+        for event in &events {
+            recorder.record_event(event, false);
+        }
+        recorder.update(&key('r'));
+        recorder.update(&key('p'));
+        // Advance the real recorder's playback clock beyond this recording,
+        // without sleeping or injecting pending events into private state.
+        recorder.tick(1_000_000);
+        // A new recording must not capture already queued playback input.
+        recorder.update(&key('r'));
+
+        let mut sim = ProgramSimulator::new(app);
+        sim.init();
+        sim.send(AppMsg::Tick);
+        assert!(!sim.is_running());
+        assert_eq!(
+            sim.logs().len(),
+            2,
+            "quit must stop the third checksum event"
+        );
+        let full = sim.logs()[0]
+            .strip_prefix("[determinism] checksum (Full) live = 0x")
+            .expect("first playback effect");
+        let dirty = sim.logs()[1]
+            .strip_prefix("[determinism] checksum (DirtyRows) live = 0x")
+            .expect("second playback effect");
+        assert_eq!(full, dirty);
+        let app = sim.model_mut();
+        app.screens.macro_recorder.update(&key('r'));
+        app.current_screen = ScreenId::MacroRecorder;
+        assert!(rendered_app_text(app).contains("Recorded 0 events"));
+    }
+
+    #[test]
     fn switch_screen_changes_current() {
         let mut app = AppModel::new();
         assert_eq!(app.current_screen, ScreenId::Dashboard);
@@ -6228,6 +6558,7 @@ mod tests {
             (ScreenId::VisualEffects, false, '4', ScreenId::CodeExplorer),
             (ScreenId::VisualEffects, true, '7', ScreenId::FormsInput),
             (ScreenId::I18nDemo, false, '5', ScreenId::WidgetGallery),
+            (ScreenId::DeterminismLab, false, '4', ScreenId::CodeExplorer),
         ] {
             let mut app = AppModel::new();
             app.current_screen = screen;
@@ -6241,7 +6572,11 @@ mod tests {
 
     #[test]
     fn local_number_ownership_preserves_other_global_shortcuts() {
-        for screen in [ScreenId::VisualEffects, ScreenId::I18nDemo] {
+        for screen in [
+            ScreenId::VisualEffects,
+            ScreenId::I18nDemo,
+            ScreenId::DeterminismLab,
+        ] {
             let mut app = AppModel::new();
             app.current_screen = screen;
             if screen == ScreenId::VisualEffects {

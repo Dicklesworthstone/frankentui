@@ -323,6 +323,46 @@ try {
   }
   assert.deepEqual(observations.pageErrors, [], "all positive admission journeys have no uncaught errors");
 
+  // The actual screen command must reach the host through AppModel and the
+  // generated WASM API. Synthetic DOM events use the existing renderer encoder.
+  const screenLogStart = await freshScenario("screen-command-logs");
+  await evaluate(`(() => {
+    const key = (key, code, extra = {}) => window.dispatchEvent(new KeyboardEvent("keydown", { key, code, bubbles: true, ...extra }));
+    // Use the real palette: numeric registry positions vary with features.
+    key("k", "KeyK", { ctrlKey: true });
+    for (const ch of "determinism") key(ch, "Key" + ch.toUpperCase());
+    key("Enter", "Enter"); key("c", "KeyC");
+  })()`);
+  const screenLogs = (start) => records(start).filter((row) => row.event === "log" && row.text.startsWith("[determinism]"));
+  const checksumPattern = /^\[determinism\] checksum \((Full|DirtyRows|FullRedraw)\) live = 0x[0-9a-f]{16}$/;
+  await waitFor(() => records(screenLogStart).some((row) => row.event === "frame" && row.events_processed === 14), "screen navigation and log input processed");
+  await screenshot("determinism-log");
+  await waitFor(() => screenLogs(screenLogStart).length > 0, "actual screen checksum log");
+  assert.equal(screenLogs(screenLogStart).length, 1);
+  assert.equal(screenLogs(screenLogStart)[0].text.match(checksumPattern)?.[1], "DirtyRows");
+  const quitLogStart = observations.console.length;
+  await evaluate(`(() => {
+    const key = (key, code, extra = {}) => window.dispatchEvent(new KeyboardEvent("keydown", { key, code, bubbles: true, ...extra }));
+    for (const number of ["1", "2", "3"]) { key(number, "Digit" + number); key("c", "KeyC"); }
+    key("c", "KeyC", { ctrlKey: true });
+  })()`);
+  await waitFor(() => records(quitLogStart).some((row) => row.event === "quit"), "screen logs followed by quit");
+  const quitRows = records(quitLogStart);
+  const stoppedIndex = quitRows.findIndex((row) => row.event === "step" && !row.running);
+  assert.ok(stoppedIndex >= 0);
+  const stoppedStep = quitRows[stoppedIndex];
+  assert.equal(stoppedStep.rendered, false);
+  assert.equal(stoppedStep.events_processed, 7);
+  assert.ok(!quitRows.slice(stoppedIndex).some((row) => row.event === "frame"), "quit logs must not require a frame");
+  const finalLogs = screenLogs(quitLogStart);
+  assert.deepEqual(finalLogs.map((row) => row.text.match(checksumPattern)?.[1]), ["Full", "DirtyRows", "FullRedraw"]);
+  assert.ok(finalLogs.every((row) => row.frame_idx === stoppedStep.frame_idx));
+  assert.equal(screenLogs(screenLogStart).length, 4, "every requested log arrives exactly once");
+  assert.match(await evaluate(statusText), /stopped/);
+  assert.equal(await evaluate(errorText), "");
+  assert.deepEqual(observations.pageErrors, [], "screen log journey has no uncaught errors");
+  observations.cases.push("real-screen-log-and-nonrendering-quit-delivery");
+
   // Rejection must remain visible with logging OFF, after RAF has stopped,
   // without replacing the recovery anchor or appending unaccepted input to it.
   await send("Page.navigate", { url: `${url.replace("jsonl=1", "jsonl=0")}&scenario=stopped-notice` });

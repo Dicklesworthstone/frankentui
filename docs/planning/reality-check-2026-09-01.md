@@ -14,9 +14,10 @@ The published product is the frozen, tagged commit
 verification and, in the current execution block, connect optional Asupersync
 task execution, bounded web input admission, explicit quit/replay recovery,
 a buildable first-party browser renderer package, and eager local input
-forwarding that prevents producer-queue eviction during browser bursts. The next
-continuation connects existing log trust modes to actual model commands and the
-streaming example; the interactive subprocess application is still unfinished.
+forwarding that prevents producer-queue eviction during browser bursts. Further
+continuations connect log trust modes to model commands and the streaming
+example, propagate screen effects and macro playback, and deliver browser logs
+through quitting steps. The interactive subprocess application is unfinished.
 These changes are on main;
 the published 0.7.0 artifacts remain the tagged source. All **905 lines of
 AGENTS.md and 2,902 lines of README.md** were read afresh, along with both
@@ -344,9 +345,88 @@ registry-consumer journey remain required. Source review also found that
 patches; a non-rendered Log-then-Quit step can leave logs inaccessible to
 `takeLogs`. Repeated patch drains also replace undelivered cached logs.
 Separately, `Screens::update` discards screen-returned commands before the
-application can dispatch them. These unfinished browser/producer behaviors
-remain in `.29.8`; the lower-level `StepProgram` log tests do not prove their
-host delivery.
+application can dispatch them. The continuation below addresses these concrete
+browser/producer defects in `.29.8`; the lower-level `StepProgram` log tests
+alone did not prove their host delivery.
+
+### September 9 screen commands and browser log delivery
+
+Starting at `e6723d74f930347ab82ea99e8acb97114d7de737`, screen updates now
+return their commands through `AppModel`. The exhaustive conversion preserves
+command structure, log policy, lazy task execution and task metadata. Event
+results return to the originating screen even after navigation, bypassing
+global shortcuts. Existing unit and Theme Studio no-op results remain explicit
+no-ops. Macro playback dispatches events in runtime sequence, preserves their
+effects, stops at quit and avoids recording playback again. The application
+establishes its tick baseline before a dispatch's explicit screen timing.
+
+`RunnerCore` retains undelivered logs across both patch APIs, drains live logs
+even when a step quits without rendering, and leaves pending patches and frame
+metadata intact. Model logs retain FIFO order; deferred pane logs follow them,
+without a global chronology claim. Determinism Lab now owns its existing
+1/2/3 strategy keys. Macro Recorder allocates five control rows plus borders,
+making its status and recovery text visible. Nine existing text snapshots were
+edited manually for that extra row and resulting panel shifts; comparison
+rules and tolerances were unchanged.
+
+The first browser baseline used a wrong feature-dependent screen index and is
+**inconclusive about screen arrival**. It is not evidence for the missing-log
+claim. Corrected `weblog-baseline2` uses the real command palette; its retained
+screenshot visibly shows Determinism Lab after 14 processed events, followed
+by a timeout waiting for the checksum log in the previous package. The final
+package passes that identical harness. An initial native candidate also failed
+formatting and two new assertions: one assumed Full instead of the actual
+DirtyRows default, and the other exposed the clipped recorder status. The
+first now explicitly selects Full; the latter's exact assertion remains and
+the layout is fixed. All failed receipts remain retained.
+
+Final full tracked-source manifest (2,497 files, including Cargo.lock):
+`f5dc94f0cc3750a91d49f9c8d53d3021d0299902ed39759e2ad44b213c271f77`.
+DSR receipts under `~/.local/state/dsr/quality-logs/`:
+
+- `frankentui-weblog2-native/20260909T023455-483671/receipt.json`: all eight
+  stages pass, including workspace fmt/check/strict Clippy/strict rustdoc.
+  Tests: 20 selected screen/app tests (1,880 excluded), nine recorder snapshots
+  (283 excluded), 12 existing recorder integration tests and all 68 runner
+  tests. The existing integration helper does not execute returned commands;
+  actual playback-effect evidence comes from the new `ProgramSimulator` test.
+- `frankentui-weblog2-wasm/20260909T023455-483672/receipt.json`: six actual
+  WASM tests, full first-party browser package build, generated bindings and
+  admission/quit-recovery execution pass. These are 115 executed tests across
+  the native and WASM selections, not the whole workspace test suite.
+- `frankentui-weblog2-mac/20260909T023628-491950/receipt.json`: Chrome
+  153.0.8010.36 on Apple M4 Pro/Metal passes ten positive scenarios and four
+  loader-fault cases. Exact assertions observe one DirtyRows log, then ordered
+  Full/DirtyRows/FullRedraw logs on a seven-event, non-rendering quit step.
+  Positive journeys have no uncaught errors; injected loader failures retain
+  their expected exceptions. Five compositor screenshots are retained.
+
+All sources and results remain under
+`/data/retained/ftui-release-20260908-greenlynx/`: `weblog2-source.*`,
+`weblog-native-evidence.tar`, `weblog-wasm-evidence.tar`,
+`weblog2-browser-evidence.tar`, and their DSR wrappers/configurations.
+The final site archive SHA-256 is
+`baf42d127fb3a7d6703e4095a0dda7ee69c47ca92499b0053fb353b3f3e2bdeb`;
+browser observations SHA-256 is
+`29b6227e187fcafe942bf023aecb76217b9b634be8b711aa63b8d4fb8e3375a5`.
+The harness SHA-256 is
+`3f62ae7712c7ba3536f4306e0403566b976845e56b9c622e575e8a2cdf9c1cec`.
+Native and WASM manifests matched before/after, the local tree stayed frozen
+through final receipts, and browser inputs were hash checked before/after.
+Historical renderer and nix warnings remain visible. DSR duration fields are
+still malformed and are not timing evidence. UBS/RCH remain unavailable under
+the documented no-deletion constraints; DSR direct SSH builds were used.
+
+IcyBarn independently reviewed source/assertions and manually edited the nine
+snapshots; GreenLynx reviewed the diff and executed every cited check. This is
+independent source review, not a second independent execution. The task-closure
+test invokes the real lifted closure directly, without claiming asynchronous
+scheduler integration. Browser evidence is JSONL console delivery through real
+generated WASM and synthetic DOM input; it does not prove a visible log widget,
+physical keyboard/IME/mobile operation, or output-flood backpressure. Logs
+remain unbounded if the host does not drain them. Original `.29.7/.29.8/.29.9`
+grapheme, lifecycle, transport and device/GPU obligations stay open. No new
+release was made; these are post-0.7.0 changes on main.
 
 ### Fresh source findings that determine the next work
 
@@ -434,8 +514,14 @@ specific implementation or observation below, not completion of the whole goal):
   native Program/PTY and WASM boundaries.
 - [x] `.32.1`: pass final frozen-source workspace and affected feature gates;
   retain successful receipts and earlier invalidated runs.
-- [ ] `.29.8`: drain final model logs through RunnerCore even when a step quits
-  without rendering; preserve exact-once ordered host retrieval.
+- [x] `.29.8`: drain final model logs through RunnerCore even when a step quits
+  without rendering; preserve exact-once ordered host retrieval across both
+  patch APIs without consuming pending patches or frame metadata.
+- [x] `.29.8`: propagate actual screen effects, retain task origin, execute
+  playback effects in order, stop at quit, and avoid recording playback again.
+- [x] `.29.8`: restore Determinism Lab strategy keys and recorder status/error
+  visibility; verify the actual screen command in the generated browser package
+  against a corrected failing baseline, preserving all existing browser cases.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their

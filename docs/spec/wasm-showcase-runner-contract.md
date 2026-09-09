@@ -399,9 +399,19 @@ Formatted as `"fnv1a64:{hash:016x}"`.
 
 ### Runtime Logs
 
-- Model emits `Cmd::Log(text)` → captured by `WebPresenter`.
+- Model emits `Cmd::log`, `Cmd::log_sgr_only`, `Cmd::log_raw`, or a
+  `Cmd::Log { text, mode }` → policy-filtered logical text captured by
+  `WebPresenter`, without native newline formatting or SGR boundary resets.
 - Host reads: `runner.takeLogs()` → `Array<string>`.
-- Logs are consumed (drained) on each call.
+- Model logs are drained exactly once in emission order, including after a
+  step quits without rendering. Deferred pane logs follow the model logs;
+  this does not promise a shared chronological order across the two sources.
+- Logs survive repeated `takeFlatPatches()` and `prepareFlatPatches()` calls.
+  `takeLogs()` consumes only logs, leaving pending patches, frame index, patch
+  hash, and statistics available to the renderer.
+- Read logs on every step, including a non-rendered final step, before calling
+  `destroy()`. Pending output remains unbounded if a host never drains it;
+  these delivery rules do not establish output-flood backpressure.
 
 ### Host-Side JSONL (for E2E/CI)
 

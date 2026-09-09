@@ -637,10 +637,92 @@ mod tests {
     fn runner_core_take_logs() {
         let mut core = RunnerCore::new(80, 24);
         core.init();
-        let logs = core.take_logs();
-        // Logs may or may not be present depending on AppModel behavior.
-        // Just verify we can drain them.
-        assert!(logs.is_empty() || !logs.is_empty());
+        navigate_to_determinism_lab(&mut core);
+        assert!(push_key(&mut core, "Digit1", 0));
+        assert!(push_key_with_key(&mut core, "c", "KeyC", 0));
+        let result = core.step();
+        assert!(result.running && result.rendered);
+        assert_eq!(result.events_processed, 2);
+        let hash = core.patch_hash().expect("pending frame hash");
+        let stats = core.patch_stats().expect("pending patch stats");
+        assert_checksum_logs(&core.take_logs(), &["Full"]);
+        assert!(core.take_logs().is_empty());
+        assert_eq!(core.patch_hash().as_deref(), Some(hash.as_str()));
+        assert_eq!(core.patch_stats(), Some(stats));
+        assert!(!core.take_flat_patches().cells.is_empty());
+        assert!(core.take_logs().is_empty());
+    }
+
+    fn navigate_to_determinism_lab(core: &mut RunnerCore) {
+        use ftui_demo_showcase::app::ScreenId;
+        let steps = ScreenId::DeterminismLab.index() - ScreenId::Dashboard.index();
+        for _ in 0..steps {
+            assert!(push_key_with_key(core, "L", "KeyL", 1));
+        }
+        let result = core.step();
+        assert!(result.running && result.rendered);
+        assert_eq!(
+            result.events_processed,
+            u32::try_from(steps).expect("screen count fits event counter")
+        );
+        assert!(!core.take_flat_patches().cells.is_empty());
+        assert!(core.take_logs().is_empty());
+    }
+
+    fn assert_checksum_logs(logs: &[String], strategies: &[&str]) {
+        assert_eq!(logs.len(), strategies.len(), "logs: {logs:?}");
+        for (log, strategy) in logs.iter().zip(strategies) {
+            let prefix = format!("[determinism] checksum ({strategy}) live = 0x");
+            let checksum = log.strip_prefix(&prefix).expect("exact screen log prefix");
+            assert_eq!(checksum.len(), 16);
+            assert!(checksum.chars().all(|ch| ch.is_ascii_hexdigit()));
+        }
+    }
+
+    #[test]
+    fn runner_core_model_logs_survive_quit_without_rendering() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        navigate_to_determinism_lab(&mut core);
+        let frame_idx = core.frame_idx();
+        for code in ["Digit1", "Digit2", "Digit3"] {
+            assert!(push_key(&mut core, code, 0));
+            assert!(push_key_with_key(&mut core, "c", "KeyC", 0));
+        }
+        assert!(push_key_with_key(&mut core, "c", "KeyC", 4));
+        let result = core.step();
+        assert!(!result.running);
+        assert!(!result.rendered);
+        assert_eq!(result.events_processed, 7);
+        assert_eq!(result.frame_idx, frame_idx);
+        assert_checksum_logs(&core.take_logs(), &["Full", "DirtyRows", "FullRedraw"]);
+        assert!(core.take_logs().is_empty());
+        assert!(core.take_flat_patches().cells.is_empty());
+        assert_eq!(core.step().events_processed, 0);
+        assert!(core.take_logs().is_empty());
+    }
+
+    #[test]
+    fn runner_core_model_logs_survive_repeated_patch_drains() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        navigate_to_determinism_lab(&mut core);
+        for (index, code) in ["Digit1", "Digit2", "Digit3"].into_iter().enumerate() {
+            assert!(push_key(&mut core, code, 0));
+            assert!(push_key_with_key(&mut core, "c", "KeyC", 0));
+            let result = core.step();
+            assert!(result.running && result.rendered);
+            assert_eq!(result.events_processed, 2);
+            if index == 1 {
+                core.prepare_flat_patches();
+                core.prepare_flat_patches();
+            } else {
+                core.take_flat_patches();
+                core.take_flat_patches();
+            }
+        }
+        assert_checksum_logs(&core.take_logs(), &["Full", "DirtyRows", "FullRedraw"]);
+        assert!(core.take_logs().is_empty());
     }
 
     #[test]

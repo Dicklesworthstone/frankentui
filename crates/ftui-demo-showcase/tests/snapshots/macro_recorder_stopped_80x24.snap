@@ -4,6 +4,7 @@
 │Focus: [Controls]  [Timeline]  [Scenarios]   Ctrl/Alt+Arrows: ↑Controls  ←Time│
 │Quick Start: Enter load scenario  Space record  ↑/↓ scrub timeline            │
 │Space/r record/stop  Enter/p play/pause  Esc stop  L loop  +/- speed          │
+│Recorded 3 events                                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭───────────────────Timeline───────────────────╮╭─────────Event Detail─────────╮
 │○ 001  +   0ms  @    0ms  a                   ││Selected: #000                │
@@ -12,7 +13,6 @@
 │                                              ││Event: a                      │
 │                                              ││Kind: Press                   │
 │                                              ││Modifiers: Modifiers(0x0)     │
-│                                              ││                              │
 │                                              ││                              │
 │                                              ││                              │
 │                                              │╰──────────────────────────────╯

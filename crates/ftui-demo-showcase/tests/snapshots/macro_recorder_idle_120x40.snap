@@ -4,6 +4,7 @@
 │Focus: [Controls]  [Timeline]  [Scenarios]   Ctrl/Alt+Arrows: ↑Controls  ←Timeline  →Scenarios                        │
 │Quick Start: Enter load scenario  Space record  ↑/↓ scrub timeline                                                    │
 │Space/r record/stop  Enter/p play/pause  Esc stop  L loop  +/- speed                                                  │
+│Press Space to record or Enter in Scenarios to load a demo                                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭───────────────────────────────Timeline───────────────────────────────╮╭─────────────────Event Detail─────────────────╮
 │No macro loaded.                                                      ││Select a scenario or record a macro to see det│
@@ -36,5 +37,4 @@
 │                                                                      ││  Open palette, type a target, confirm        │
 │                                                                      ││                                              │
 │                                                                      ││Layout Lab                                    │
-│                                                                      ││  Cycle screens and n/p adjustments           │
 ╰──────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────╯

@@ -1112,6 +1112,10 @@ impl DeterminismLab {
 impl Screen for DeterminismLab {
     type Message = ();
 
+    fn consumes_number_key(&self, key: char) -> bool {
+        matches!(key, '1' | '2' | '3')
+    }
+
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
         let mut cmd = Cmd::none();
 

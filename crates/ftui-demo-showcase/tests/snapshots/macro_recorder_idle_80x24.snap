@@ -4,11 +4,11 @@
 │Focus: [Controls]  [Timeline]  [Scenarios]   Ctrl/Alt+Arrows: ↑Controls  ←Time│
 │Quick Start: Enter load scenario  Space record  ↑/↓ scrub timeline            │
 │Space/r record/stop  Enter/p play/pause  Esc stop  L loop  +/- speed          │
+│Press Space to record or Enter in Scenarios to load a demo                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭───────────────────Timeline───────────────────╮╭─────────Event Detail─────────╮
 │No macro loaded.                              ││Select a scenario or record a │
 │Space to record, or select a scenario and pres││                              │
-│                                              ││                              │
 │                                              ││                              │
 │                                              ││                              │
 │                                              ││                              │
