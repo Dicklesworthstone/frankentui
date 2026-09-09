@@ -98,7 +98,7 @@ use ftui_render::frame::{Frame, HitData, HitId, HitRegion, WidgetBudget, WidgetS
 use ftui_render::frame_guardrails::{
     AlertSeverity, FrameGuardrails, GuardrailKind, GuardrailsConfig,
 };
-use ftui_render::sanitize::sanitize;
+use ftui_render::sanitize::{SanitizeMode, Text};
 use std::any::Any;
 use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
@@ -599,8 +599,10 @@ pub enum Cmd<M> {
     /// Write a log message to the terminal output.
     ///
     /// This writes to the scrollback region in inline mode, or is ignored/handled
-    /// appropriately in alternate screen mode. Safe to use with the One-Writer Rule.
-    Log(String),
+    /// appropriately in alternate screen mode. The policy is applied at the
+    /// output boundary. Prefer [`Cmd::log`] or [`Cmd::log_sgr_only`]; raw output
+    /// is an explicit opt-in that can corrupt terminal state.
+    Log { text: String, mode: SanitizeMode },
     /// Execute a blocking operation on a background thread.
     ///
     /// When effect queue scheduling is enabled, tasks are enqueued and executed
@@ -641,7 +643,7 @@ impl<M: std::fmt::Debug> std::fmt::Debug for Cmd<M> {
             Self::Sequence(cmds) => f.debug_tuple("Sequence").field(cmds).finish(),
             Self::Msg(m) => f.debug_tuple("Msg").field(m).finish(),
             Self::Tick(d) => f.debug_tuple("Tick").field(d).finish(),
-            Self::Log(s) => f.debug_tuple("Log").field(s).finish(),
+            Self::Log { text, mode } => f.debug_tuple("Log").field(text).field(mode).finish(),
             Self::Task(spec, _) => f.debug_struct("Task").field("spec", spec).finish(),
             Self::SaveState => write!(f, "SaveState"),
             Self::RestoreState => write!(f, "RestoreState"),
@@ -676,7 +678,51 @@ impl<M> Cmd<M> {
     /// A newline is appended if not present.
     #[inline]
     pub fn log(msg: impl Into<String>) -> Self {
-        Self::Log(msg.into())
+        Self::Log {
+            text: msg.into(),
+            mode: SanitizeMode::Strip,
+        }
+    }
+
+    /// Log colored text while filtering cursor, clipboard and terminal controls.
+    ///
+    /// The native writer permits only bounded SGR styling and resets styles at
+    /// each line/write. As with [`Self::log`], native output normalizes newlines
+    /// to CRLF and appends a final newline; overlay mode displays only the first
+    /// width-clamped line. Capturing hosts retain logical text without adding
+    /// terminal newlines or reset sequences.
+    #[inline]
+    pub fn log_sgr_only(msg: impl Into<String>) -> Self {
+        Self::Log {
+            text: msg.into(),
+            mode: SanitizeMode::SgrOnly,
+        }
+    }
+
+    /// Log trusted text, including arbitrary terminal commands.
+    ///
+    /// The caller asserts the contents are trusted. Cursor movement, mode
+    /// changes and clearing can corrupt inline chrome. Prefer
+    /// [`Self::log_sgr_only`] for compiler/test output. This is a logical log
+    /// message: native CRLF normalization and final-newline insertion still
+    /// apply, so this is not a byte-transparent transport.
+    #[inline]
+    pub fn log_raw(msg: impl Into<String>) -> Self {
+        Self::Log {
+            text: msg.into(),
+            mode: SanitizeMode::Raw,
+        }
+    }
+
+    /// Log annotated text using its explicit output policy.
+    ///
+    /// The output boundary reapplies the policy even when the marker was
+    /// constructed directly. See [`Self::log_raw`] for trusted-text behavior.
+    pub fn log_text(text: Text<'_>) -> Self {
+        Self::Log {
+            text: text.as_str().to_owned(),
+            mode: text.mode(),
+        }
     }
 
     /// Create a batch of commands.
@@ -711,7 +757,7 @@ impl<M> Cmd<M> {
             Self::Sequence(_) => "Sequence",
             Self::Msg(_) => "Msg",
             Self::Tick(_) => "Tick",
-            Self::Log(_) => "Log",
+            Self::Log { .. } => "Log",
             Self::Task(..) => "Task",
             Self::SaveState => "SaveState",
             Self::RestoreState => "RestoreState",
@@ -6566,20 +6612,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 self.tick_rate = Some(duration);
                 self.last_tick = Instant::now();
             }
-            Cmd::Log(text) => {
-                let sanitized = sanitize(&text);
-                let mut text_crlf = if sanitized.contains('\n') {
-                    sanitized.replace("\r\n", "\n").replace('\n', "\r\n")
-                } else {
-                    sanitized.into_owned()
-                };
-                if !text_crlf.ends_with("\r\n") {
-                    if text_crlf.ends_with('\n') {
-                        text_crlf.pop();
-                    }
-                    text_crlf.push_str("\r\n");
-                }
-                self.writer.write_log(&text_crlf)?;
+            Cmd::Log { text, mode } => {
+                self.writer.write_log_line_with_mode(&text, mode)?;
             }
             Cmd::Task(spec, f) => {
                 crate::effect_system::record_command_effect("task", 0);
@@ -10062,14 +10096,34 @@ mod tests {
     #[test]
     fn cmd_log_creates_log_command() {
         let cmd: Cmd<TestMsg> = Cmd::log("test message");
-        assert!(matches!(cmd, Cmd::Log(s) if s == "test message"));
+        assert!(
+            matches!(cmd, Cmd::Log { text, mode: SanitizeMode::Strip } if text == "test message")
+        );
     }
 
     #[test]
     fn cmd_log_from_string() {
         let msg = String::from("dynamic message");
         let cmd: Cmd<TestMsg> = Cmd::log(msg);
-        assert!(matches!(cmd, Cmd::Log(s) if s == "dynamic message"));
+        assert!(
+            matches!(cmd, Cmd::Log { text, mode: SanitizeMode::Strip } if text == "dynamic message")
+        );
+    }
+
+    #[test]
+    fn cmd_log_markers_keep_the_explicit_policy() {
+        for (marker, expected) in [
+            (Text::sanitized("hello"), SanitizeMode::Strip),
+            (Text::sgr_only("\x1b[31mhello"), SanitizeMode::SgrOnly),
+            (Text::trusted("\x1b[2Jhello"), SanitizeMode::Raw),
+        ] {
+            let expected_text = marker.as_str().to_owned();
+            let cmd: Cmd<TestMsg> = Cmd::log_text(marker);
+            assert_eq!(cmd.type_name(), "Log");
+            assert!(
+                matches!(cmd, Cmd::Log { text, mode } if text == expected_text && mode == expected)
+            );
+        }
     }
 
     #[test]
@@ -17353,6 +17407,99 @@ mod tests {
         let bytes = program.writer.into_inner().expect("writer output");
         let output = String::from_utf8_lossy(&bytes);
         assert!(output.contains("with newline"));
+    }
+
+    #[test]
+    fn model_log_commands_filter_before_line_formatting() {
+        let mut program =
+            headless_program_with_config(TestModel { value: 0 }, ProgramConfig::default());
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = true;
+        program.writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 3 },
+            UiAnchor::Bottom,
+            caps,
+        );
+        program.writer.set_size(80, 24);
+        program
+            .writer
+            .present_ui(&Buffer::new(80, 3), None, false)
+            .expect("establish log region");
+        assert!(program.writer.scroll_region_active());
+        for text in ["first\nsecond", "first\r\nsecond\r\n"] {
+            program.execute_cmd(Cmd::log(text)).expect("log lines");
+        }
+        program
+            .execute_cmd(Cmd::log("joined\r\x00\nnext"))
+            .expect("filter before normalizing a revealed CRLF");
+        program
+            .execute_cmd(Cmd::log("a\x1b]0;hidden\nline\x07b"))
+            .expect("filter embedded control newline");
+        program
+            .execute_cmd(Cmd::log_sgr_only("\x1b[31mred\x1b[2J\nplain"))
+            .expect("colored command");
+        let output = String::from_utf8(program.writer.into_inner().unwrap()).unwrap();
+        assert_eq!(output.matches("first\r\nsecond\r\n").count(), 2);
+        assert!(output.contains("joined\r\nnext\r\n"));
+        assert!(!output.contains("joined\r\r\n"));
+        // The sanitizer aborts an OSC at LF, preserving that newline and the
+        // printable suffix, while stripping the OSC prefix and BEL.
+        assert!(output.contains("a\r\nlineb\r\n"));
+        assert!(!output.contains("hidden"));
+        assert!(!output.contains("\x1b[2J"));
+        assert!(output.contains("\x1b[31mred\x1b[0m\r"));
+        assert!(output.contains("\x1b[0m\nplain\x1b[0m\r"));
+    }
+
+    #[test]
+    fn model_log_command_propagates_output_failure() {
+        struct FailingWriter;
+        impl Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "log write failed",
+                ))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        struct LoggingModel;
+        impl Model for LoggingModel {
+            type Message = Event;
+            fn init(&mut self) -> Cmd<Event> {
+                Cmd::sequence(vec![Cmd::log_sgr_only("\x1b[31mvisible"), Cmd::quit()])
+            }
+            fn update(&mut self, _: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+            fn view(&self, _: &mut Frame) {
+                panic!("log failure must be returned before rendering");
+            }
+        }
+        let features = BackendFeatures::default();
+        let config = ProgramConfig {
+            screen_mode: ScreenMode::Inline { ui_height: 3 },
+            ..ProgramConfig::default()
+        }
+        .with_signal_interception(false);
+        let writer = TerminalWriter::new(
+            FailingWriter,
+            config.screen_mode,
+            config.ui_anchor,
+            TerminalCapabilities::basic(),
+        );
+        let mut program = Program::with_event_source(
+            LoggingModel,
+            HeadlessEventSource::new(80, 24, features),
+            features,
+            writer,
+            config,
+        )
+        .expect("construct real Program");
+        assert_eq!(program.run().unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     }
 
     // =========================================================================

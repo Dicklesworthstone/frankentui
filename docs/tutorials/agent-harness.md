@@ -87,8 +87,41 @@ terminal scrollback safely.
 
 Notes:
 - Use `LogViewer` to render log lines inside the UI region.
-- Use `Cmd::log` to write to the scrollback region. It sanitizes by default.
+- Use `Cmd::log` to write plain text to the scrollback region. It strips terminal controls.
+- Use `Cmd::log_sgr_only` to retain ANSI colors while stripping cursor, title,
+  clipboard, and terminal-mode commands. The writer resets style at line and UI boundaries.
 - Use `Every` subscriptions for periodic updates.
+
+The runnable `streaming` example submits every generated line to both `LogViewer`
+and `Cmd::log_sgr_only`. Terminal logs accumulate when a scroll region is active
+and log rows are available. The overlay fallback displays only the latest
+width-clamped first line; no available log rows means no terminal log output.
+The example generates messages on a timer; it does not launch or manage a
+subprocess.
+
+Choose a log policy in the model's returned command:
+
+```rust
+use ftui::runtime::Cmd;
+
+let plain: Cmd<()> = Cmd::log("untrusted output");
+let colored: Cmd<()> = Cmd::log_sgr_only("\x1b[31merror: connection closed");
+let trusted: Cmd<()> = Cmd::log_raw("\x1b[34mtrusted terminal output\x1b[0m");
+```
+
+`Cmd::log_raw` permits terminal commands and is only for trusted text.
+`Cmd::log_text` accepts a policy-bearing `ftui::render::sanitize::Text`; the
+writer still applies that policy at output. Native `Program` treats all four
+constructors as logical-line commands: it filters first, normalizes LF/CRLF to
+CRLF, and adds a final CRLF when missing. Raw commands therefore are not a
+byte-transparent stream. Direct `TerminalWriter` methods and standalone
+`OutMsg::Log { bytes, mode }` chunks do not append newlines.
+
+The simulator, experimental `WasmRunner`, and web `StepProgram` capture filtered
+logical strings without native CRLF formatting or style resets. Hosts consuming
+those strings remain responsible for their output surface. The standalone
+render worker carries the same explicit policy, but `Program` currently writes
+directly through its own `TerminalWriter`.
 
 ```rust
 use std::time::Duration;

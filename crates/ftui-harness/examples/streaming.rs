@@ -2,6 +2,9 @@
 //!
 //! Demonstrates streaming log output at high frequency without flicker.
 //! Shows how the LogViewer handles rapid updates while maintaining smooth UI.
+//! Each generated line is also submitted through `Cmd::log_sgr_only`.
+//! Logs accumulate when a scroll region is active; overlay shows the latest line.
+//! This example generates messages; it does not launch a child process.
 //!
 //! Run: `cargo run -p ftui-harness --example streaming`
 
@@ -104,11 +107,19 @@ impl Model for StreamingHarness {
             }
             Msg::StreamTick if !self.paused => {
                 // Push multiple lines per tick to simulate burst output
+                let mut logs = Vec::with_capacity(5);
                 for _ in 0..5 {
                     self.line_count += 1;
                     let line = self.generate_log_line();
-                    self.log.push(line);
+                    self.log.push(line.clone());
+                    let color = match self.line_count % 10 {
+                        0 => 31,
+                        1 | 2 => 33,
+                        _ => 36,
+                    };
+                    logs.push(Cmd::log_sgr_only(format!("\x1b[{color}m{line}")));
                 }
+                return Cmd::batch(logs);
             }
             _ => {}
         }

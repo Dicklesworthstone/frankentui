@@ -287,9 +287,24 @@ fn run_log_injection(mode: &str, strategy: &str, anchor: &str) -> Vec<u8> {
         .get_termios()
         .expect("PTY termios supported");
     session.send_input(b"go\n").expect("acknowledge baseline");
-    session
+    let rendered = session
         .read_until(b"LOG_ACTIVE", timeout)
         .expect("raw-mode handshake");
+    if mode.starts_with("cmd-") {
+        let mut rendered_terminal = VirtualTerminal::new(80, 24);
+        rendered_terminal.feed(&rendered);
+        assert!(rendered_terminal.screen_text().contains("CHROME"));
+        let expected_region = match (strategy, anchor) {
+            ("scroll", "top") => (3, 23),
+            ("scroll", "bottom") => (0, 20),
+            _ => (0, 23),
+        };
+        assert_eq!(
+            rendered_terminal.scroll_region(),
+            expected_region,
+            "Program must establish the requested region before the log event"
+        );
+    }
     let active = session.master().get_termios().expect("read active termios");
     assert_ne!(
         active.local_flags, baseline.local_flags,
@@ -393,10 +408,19 @@ fn assert_no_log_injection(bytes: &[u8]) {
 
 #[test]
 fn pty_log_injection_preserves_text_style_and_terminal_state() {
+    check_log_injection("");
+}
+
+#[test]
+fn pty_model_log_commands_preserve_text_style_and_terminal_state() {
+    check_log_injection("cmd-");
+}
+
+fn check_log_injection(prefix: &str) {
     let expected: String = ADVERSARIAL_PAYLOADS.iter().map(|&(_, text)| text).collect();
     for strategy in ["scroll", "overlay"] {
         for anchor in ["top", "bottom"] {
-            let control_bytes = run_log_injection("control", strategy, anchor);
+            let control_bytes = run_log_injection(&format!("{prefix}control"), strategy, anchor);
             let mut control = VirtualTerminal::new(80, 24);
             control.feed(&control_bytes);
             assert!(
@@ -408,8 +432,12 @@ fn pty_log_injection_preserves_text_style_and_terminal_state() {
                 "control must retain UI chrome"
             );
             for mode in ["strip", "sgr"] {
-                let output = run_log_injection(mode, strategy, anchor);
+                let output = run_log_injection(&format!("{prefix}{mode}"), strategy, anchor);
                 assert_no_log_injection(&output);
+                assert!(
+                    find_sequence(&output, b"COMMAND_AFTER_QUIT_MUST_NOT_APPEAR").is_none(),
+                    "model sequence must stop at quit"
+                );
                 let mut actual = VirtualTerminal::new(80, 24);
                 actual.feed(&output);
                 assert_eq!(
@@ -448,13 +476,23 @@ fn pty_log_injection_preserves_text_style_and_terminal_state() {
 
 #[test]
 fn pty_log_raw_requires_explicit_opt_in_and_restores_termios() {
+    check_raw_log_injection("");
+}
+
+#[test]
+fn pty_model_log_raw_is_explicit_and_restores_termios() {
+    check_raw_log_injection("cmd-");
+}
+
+fn check_raw_log_injection(prefix: &str) {
     for strategy in ["scroll", "overlay"] {
-        let output = run_log_injection("raw", strategy, "bottom");
+        let output = run_log_injection(&format!("{prefix}raw"), strategy, "bottom");
         // The same planted attack must be observable in Raw, so this test
         // cannot pass if the harness always selects the sanitized branch.
         assert!(find_sequence(&output, b"\x1b[2J").is_some());
         assert!(find_sequence(&output, b"\x1b]52;c;aGk=\x07").is_some());
         assert!(find_sequence(&output, b"\x1b[?25h").is_some());
+        assert!(find_sequence(&output, b"COMMAND_AFTER_QUIT_MUST_NOT_APPEAR").is_none());
         // Arbitrary Raw commands may corrupt terminal modes; only the actual
         // kernel termios restoration checked by run_log_injection is promised.
     }

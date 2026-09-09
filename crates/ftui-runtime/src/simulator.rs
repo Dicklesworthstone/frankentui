@@ -26,6 +26,7 @@ use ftui_core::event::Event;
 use ftui_render::buffer::Buffer;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
+use ftui_render::sanitize::{SanitizeMode, sanitize_with};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,8 +67,8 @@ pub enum CmdRecord {
     Sequence(usize),
     /// Tick scheduled.
     Tick(Duration),
-    /// Log message emitted.
-    Log(String),
+    /// Log message after applying its policy, without terminal line formatting.
+    Log { text: String, mode: SanitizeMode },
     /// Background task executed synchronously.
     Task,
     /// Mouse capture toggle (no-op in simulator).
@@ -475,8 +476,12 @@ impl<M: Model> ProgramSimulator<M> {
                 };
                 self.command_log.push(CmdRecord::Tick(duration));
             }
-            Cmd::Log(text) => {
-                self.command_log.push(CmdRecord::Log(text.clone()));
+            Cmd::Log { text, mode } => {
+                let text = sanitize_with(&text, mode).into_owned();
+                self.command_log.push(CmdRecord::Log {
+                    text: text.clone(),
+                    mode,
+                });
                 self.logs.push(text);
             }
             Cmd::SetMouseCapture(enabled) => {
@@ -1090,7 +1095,7 @@ mod tests {
         let log_entries: Vec<_> = log
             .iter()
             .filter_map(|r| {
-                if let CmdRecord::Log(s) = r {
+                if let CmdRecord::Log { text: s, .. } = r {
                     Some(s.as_str())
                 } else {
                     None
@@ -1099,6 +1104,40 @@ mod tests {
             .collect();
 
         assert_eq!(log_entries, vec!["value=1", "value=2"]);
+    }
+
+    #[test]
+    fn log_modes_capture_policy_and_preserve_command_mode() {
+        let mut sim = ProgramSimulator::new(Counter {
+            value: 0,
+            initialized: false,
+        });
+        sim.init();
+        let payload = "a\x1b[31mb\x1b[2Jc\x1b]0;secret\x07d\n";
+        sim.execute_cmd(Cmd::sequence(vec![
+            Cmd::log(payload),
+            Cmd::log_sgr_only(payload),
+            Cmd::log_raw(payload),
+            Cmd::quit(),
+            Cmd::log("unreachable"),
+        ]));
+        assert_eq!(sim.logs(), &["abcd\n", "a\x1b[31mbcd\n", payload]);
+        let records: Vec<_> = sim
+            .command_log()
+            .iter()
+            .filter_map(|record| match record {
+                CmdRecord::Log { text, mode } => Some((text.as_str(), *mode)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            records,
+            [
+                ("abcd\n", SanitizeMode::Strip),
+                ("a\x1b[31mbcd\n", SanitizeMode::SgrOnly),
+                (payload, SanitizeMode::Raw),
+            ]
+        );
     }
 
     #[test]

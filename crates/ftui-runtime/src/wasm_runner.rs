@@ -391,8 +391,9 @@ impl<M: Model> WasmRunner<M> {
             Cmd::Tick(duration) => {
                 self.tick_rate = Some(duration);
             }
-            Cmd::Log(text) => {
-                self.logs.push(text);
+            Cmd::Log { text, mode } => {
+                self.logs
+                    .push(ftui_render::sanitize::sanitize_with(&text, mode).into_owned());
             }
             Cmd::Task(_, f) => {
                 // Execute synchronously (no threads in WASM).
@@ -635,6 +636,26 @@ mod tests {
         let drained = runner.drain_logs();
         assert_eq!(drained, &["hello"]);
         assert!(runner.logs().is_empty());
+    }
+
+    #[test]
+    fn log_modes_capture_policy_text_without_terminal_formatting() {
+        let mut runner = WasmRunner::new(Counter { value: 0 }, 80, 24);
+        runner.init();
+        let payload = "a\x1b[31mb\x1b[2Jc\x1b]0;secret\x07d\n";
+        let mut result = StepResult::default();
+        runner.execute_cmd(
+            Cmd::sequence(vec![
+                Cmd::log(payload),
+                Cmd::log_sgr_only(payload),
+                Cmd::log_raw(payload),
+                Cmd::quit(),
+                Cmd::log("unreachable"),
+            ]),
+            &mut result,
+        );
+        assert!(result.quit);
+        assert_eq!(runner.logs(), &["abcd\n", "a\x1b[31mbcd\n", payload]);
     }
 
     #[test]

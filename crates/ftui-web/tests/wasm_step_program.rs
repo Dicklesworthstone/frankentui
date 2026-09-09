@@ -74,6 +74,39 @@ fn key_event(ch: char) -> Event {
     })
 }
 
+#[wasm_bindgen_test]
+fn model_log_modes_apply_policy_in_actual_wasm() {
+    struct LogModel;
+    impl Model for LogModel {
+        type Message = Event;
+        fn init(&mut self) -> Cmd<Event> {
+            let payload = "a\x1b[31mb\x1b[2Jc\x1b]0;secret\x07d\n";
+            Cmd::sequence(vec![
+                Cmd::log(payload),
+                Cmd::log_sgr_only(payload),
+                Cmd::log_raw(payload),
+                Cmd::quit(),
+                Cmd::log("unreachable"),
+            ])
+        }
+        fn update(&mut self, _: Event) -> Cmd<Event> {
+            Cmd::none()
+        }
+        fn view(&self, _: &mut Frame) {}
+    }
+    let mut program = StepProgram::new(LogModel, 80, 24);
+    program.init().unwrap();
+    assert!(!program.is_running());
+    assert_eq!(
+        program.take_outputs().logs,
+        [
+            "abcd\n",
+            "a\x1b[31mbcd\n",
+            "a\x1b[31mb\x1b[2Jc\x1b]0;secret\x07d\n",
+        ]
+    );
+}
+
 fn buffer_text(buffer: &Buffer) -> String {
     (0..buffer.width())
         .map(|x| {

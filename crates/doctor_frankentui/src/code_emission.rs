@@ -723,7 +723,7 @@ fn emit_cmd_expression(cmd: &crate::state_event_translator::CommandEmission) -> 
     use crate::state_event_translator::CommandKind;
     match cmd.kind {
         CommandKind::Task => format!("ftui_runtime::Cmd::task(\"{}\")", cmd.description),
-        CommandKind::Log => format!("ftui_runtime::Cmd::Log({:?}.into())", cmd.description),
+        CommandKind::Log => format!("ftui_runtime::Cmd::log({:?})", cmd.description),
         CommandKind::Quit => "ftui_runtime::Cmd::Quit".into(),
         CommandKind::Tick => {
             "ftui_runtime::Cmd::Tick(std::time::Duration::from_millis(100))".into()
@@ -1119,7 +1119,7 @@ fn emit_init_cmd_expression(cmd: &crate::state_event_translator::InitCommand) ->
         CommandKind::Tick => {
             "ftui_runtime::Cmd::Tick(std::time::Duration::from_millis(100))".into()
         }
-        CommandKind::Log => format!("ftui_runtime::Cmd::Log({:?}.into())", cmd.description),
+        CommandKind::Log => format!("ftui_runtime::Cmd::log({:?})", cmd.description),
         _ => format!("ftui_runtime::Cmd::None /* TODO: {} */", cmd.description),
     }
 }
@@ -1963,7 +1963,7 @@ mod tests {
         let update = &emission.files["src/update.rs"];
 
         assert!(update.content.contains("Msg::SetCount"));
-        assert!(update.content.contains("Cmd::Log"));
+        assert!(update.content.contains("Cmd::log("));
     }
 
     #[test]

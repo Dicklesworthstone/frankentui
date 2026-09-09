@@ -14,7 +14,9 @@ The published product is the frozen, tagged commit
 verification and, in the current execution block, connect optional Asupersync
 task execution, bounded web input admission, explicit quit/replay recovery,
 a buildable first-party browser renderer package, and eager local input
-forwarding that prevents producer-queue eviction during browser bursts.
+forwarding that prevents producer-queue eviction during browser bursts. The next
+continuation connects existing log trust modes to actual model commands and the
+streaming example; the interactive subprocess application is still unfinished.
 These changes are on main;
 the published 0.7.0 artifacts remain the tagged source. All **905 lines of
 AGENTS.md and 2,902 lines of README.md** were read afresh, along with both
@@ -279,12 +281,79 @@ Standalone producer queue admission, remote auxiliary delivery, graphemes,
 transport flood/reconnect, lifecycle and the full GPU/device matrix remain
 unfinished in the original `.29.7/.29.8/.29.9` items. None is closed by this work.
 
+### September 9 model log continuation
+
+Starting at `eb837a6ceb2bf41f9e45fa65e392ea8194944346`, `.32.1` now carries the
+existing `SanitizeMode` through `Cmd::Log`, native `Program`, simulator,
+experimental `WasmRunner`, web `StepProgram`, and standalone `OutMsg::Log`.
+`Cmd::log` remains the plain-text default; `log_sgr_only`, `log_raw`, and
+`log_text` expose the other existing writer policies without another policy
+type. The native writer filters before logical-line CRLF normalization and
+isolates SGR state. Collectors retain filtered logical text without native
+formatting. Code generation uses the default constructor, and the existing
+streaming example now submits its generated messages to colored terminal
+logging as well as its UI log viewer. Accumulation requires an active scroll
+region with available log rows; overlay shows only the latest width-clamped
+first line, and no log rows means no terminal log output.
+
+The first frozen DSR candidate, `logcmd2`, passed 33 selected runtime tests
+(including experimental and render-thread execution), 20 code-emission tests,
+six actual wasm-bindgen tests in Node, and four real-PTY tests comprising
+28 sessions. Workspace check, strict Clippy and strict rustdoc also passed;
+formatting required four assertion-layout corrections. Both aggregate DSR
+receipts were invalidated because local docs/formatting changed while the
+remote frozen source ran. Those receipts are retained as failures, and the
+corrected final source was then held unchanged for the successful final run.
+Retained sources, wrappers, logs
+and PTY captures live under
+`/data/retained/ftui-release-20260908-greenlynx/`; the first candidate manifest
+SHA-256 is `cb08ac491d0bbfa7b6227342813e3546e0201acc8cb07d97dd2657381aa7277c`.
+
+Final `logcmd3` manifest
+`2b86780197522ea9b4fc3caac7388849895fc78cba33121f4686e62f69f3406d`
+passed native DSR `6d17b8cf-a091-4c54-af66-5a902a19b2f6` and WASM DSR
+`8e6cfb48-ff64-42cc-9119-92cd2219b27c`. Both receipts bind unchanged local
+state; full tracked-file manifests, including Cargo.lock, match before/after
+on their frozen native hosts. All 65 selected tests ran: 33 runtime, two web,
+20 code emission, four PTY (28 sessions), and six actual WASM. Workspace
+format/check/strict Clippy/strict rustdoc and additional runtime
+render-thread/experimental Clippy passed. The showcase WASM build and generated
+binding admission/recovery checks passed. PTY raw bytes and reconstructed
+terminal state are retained in `logcmd3-native-evidence.tar`; WASM logs in
+`logcmd3-wasm-evidence.tar`. This is targeted test evidence, not a full workspace
+test pass. The existing nix future-incompatibility notice remains visible;
+DSR's malformed duration fields are not used as timing evidence.
+
+IcyBarn's source review caught three weak draft assertions before execution:
+Program construction reset the pre-established scroll region, a failed
+initial render could impersonate the expected log-write error, and the first
+OSC/newline case did not distinguish filtering order. The corrected PTY
+journey observes model-owned chrome and the exact active scroll region before
+sending the real key that triggers logging. The error model quits before any
+render, and a CR/NUL/LF case detects reversed filter/normalization order.
+Existing writer tests and the adversarial payload corpus remain intact.
+Review is independent source inspection; GreenLynx owns the executions.
+
+This completes the bounded command-mode integration step. It does
+not establish `Program` dispatch through the standalone render worker,
+macOS/Windows PTY behavior, or the original agent-shell journey. `.32.1` stays
+in progress: bounded child stdout/stderr, partial and invalid-UTF-8 output,
+stdin, descendant cancellation, restart, exact 10,000-line delivery and the
+registry-consumer journey remain required. Source review also found that
+`RunnerCore` transfers model logs to its host cache only while capturing
+patches; a non-rendered Log-then-Quit step can leave logs inaccessible to
+`takeLogs`. Repeated patch drains also replace undelivered cached logs.
+Separately, `Screens::update` discards screen-returned commands before the
+application can dispatch them. These unfinished browser/producer behaviors
+remain in `.29.8`; the lower-level `StepProgram` log tests do not prove their
+host delivery.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | `process_subscription.rs:172–320`: `BufRead::lines`, unbounded sender, null stdin, immediate-child kill/wait. `Cmd::Log` already exists. | `.32.1–.32.3` after `.33.1/.33.2`: reuse working APIs; add the missing complete journey, newline-free/invalid-UTF-8/huge output, blocked consumers, child stdin policy and descendant cancellation. |
+| Interactive process stream | `process_subscription.rs:172–320`: `BufRead::lines`, unbounded sender, null stdin, immediate-child kill/wait. Model commands now expose existing writer trust modes, and the streaming example submits generated messages to that path. | `.32.1–.32.3` after `.33.1/.33.2`: finish the actual child-process journey, newline-free/invalid-UTF-8/huge output, blocked consumers, child stdin policy and descendant cancellation. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -360,6 +429,13 @@ specific implementation or observation below, not completion of the whole goal):
   execution; verify with real recordings rather than simulator labels.
 - [ ] `.28.6`: repair complete coverage discovery and meet unchanged floors;
   the 307-file report still fails 16 checks.
+- [x] `.32.1`: connect existing trust modes to model commands, all command
+  consumers, code emission and the streaming example; exercise actual worker,
+  native Program/PTY and WASM boundaries.
+- [x] `.32.1`: pass final frozen-source workspace and affected feature gates;
+  retain successful receipts and earlier invalidated runs.
+- [ ] `.29.8`: drain final model logs through RunnerCore even when a step quits
+  without rendering; preserve exact-once ordered host retrieval.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their

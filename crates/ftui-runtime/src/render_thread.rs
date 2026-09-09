@@ -31,6 +31,7 @@ use web_time::Instant;
 
 use crate::terminal_writer::{ScreenMode, TerminalWriter};
 use ftui_render::buffer::Buffer;
+use ftui_render::sanitize::SanitizeMode;
 
 /// Maximum number of log messages processed per render-loop iteration.
 ///
@@ -50,7 +51,15 @@ type PendingRender = (Buffer, Option<(u16, u16)>, bool);
 /// Messages sent from the main thread to the render thread.
 #[derive(Debug)]
 pub enum OutMsg {
-    Log(Vec<u8>),
+    /// Write a log chunk using an explicit terminal control policy.
+    ///
+    /// Use [`SanitizeMode::Strip`] for untrusted output. No newline is appended;
+    /// invalid UTF-8 is replaced before the writer applies the selected policy.
+    /// [`SanitizeMode::Raw`] permits terminal commands and requires trusted input.
+    Log {
+        bytes: Vec<u8>,
+        mode: SanitizeMode,
+    },
     Render {
         buffer: Buffer,
         cursor: Option<(u16, u16)>,
@@ -166,7 +175,7 @@ fn render_loop<W: Write + Send>(
 ) {
     let mut loop_count: u64 = 0;
     // Reuse buffer to avoid allocation churn in the hot loop
-    let mut logs: Vec<Vec<u8>> = Vec::with_capacity(LOG_CHUNK_LIMIT * 4);
+    let mut logs: Vec<(Vec<u8>, SanitizeMode)> = Vec::with_capacity(LOG_CHUNK_LIMIT * 4);
     let mut last_render_time = Instant::now();
 
     loop {
@@ -228,8 +237,10 @@ fn render_loop<W: Write + Send>(
                 let is_last_chunk = i == chunks_len - 1;
 
                 // Write chunk
-                for log_bytes in chunk {
-                    if let Err(e) = writer.write_log(&String::from_utf8_lossy(log_bytes)) {
+                for (log_bytes, mode) in chunk {
+                    if let Err(e) =
+                        writer.write_log_with_mode(&String::from_utf8_lossy(log_bytes), *mode)
+                    {
                         let _ = err_tx.try_send(e);
                         return;
                     }
@@ -267,15 +278,15 @@ fn render_loop<W: Write + Send>(
 
 fn process_msg<W: Write>(
     msg: OutMsg,
-    logs: &mut Vec<Vec<u8>>,
+    logs: &mut Vec<(Vec<u8>, SanitizeMode)>,
     latest_render: &mut Option<PendingRender>,
     writer: &mut TerminalWriter<W>,
     shutdown: &mut bool,
     _err_tx: &mpsc::SyncSender<io::Error>,
 ) {
     match msg {
-        OutMsg::Log(bytes) => {
-            logs.push(bytes);
+        OutMsg::Log { bytes, mode } => {
+            logs.push((bytes, mode));
         }
         OutMsg::Render {
             buffer,
@@ -361,13 +372,80 @@ mod tests {
         let (writer, tw) = test_writer();
         let rt = RenderThread::start(writer).unwrap();
 
-        rt.send(OutMsg::Log(b"hello world\n".to_vec())).unwrap();
+        rt.send(OutMsg::Log {
+            bytes: b"hello world\n".to_vec(),
+            mode: SanitizeMode::Strip,
+        })
+        .unwrap();
         std::thread::sleep(Duration::from_millis(50));
         rt.shutdown();
 
         let raw = tw.output();
         let output = String::from_utf8_lossy(&raw);
         assert!(output.contains("hello world"));
+    }
+
+    #[test]
+    fn mixed_log_modes_preserve_fifo_and_filter_controls() {
+        let (writer, tw) = test_writer();
+        let mut rt = RenderThread::start(writer).unwrap();
+        let raw_payload = "RAW:\x1b[34mblue\x1b]0;raw-title\x07\x1b[1J\x1b[?2026h:done\x1b[0m";
+        for (text, mode) in [
+            (
+                "STRIP:\x1b[31mred\x1b[0m\x1b]0;strip-title\x07\x1b[2J\x1b[?1049h:done",
+                SanitizeMode::Strip,
+            ),
+            (
+                "SGR:\x1b[32mgreen\x1b]0;sgr-title\x07\x1b[3J\x1b[?2004h:done",
+                SanitizeMode::SgrOnly,
+            ),
+            ("PLAIN:after", SanitizeMode::Strip),
+            (raw_payload, SanitizeMode::Raw),
+        ] {
+            rt.send(OutMsg::Log {
+                bytes: text.as_bytes().to_vec(),
+                mode,
+            })
+            .unwrap();
+        }
+        rt.send(OutMsg::Shutdown).unwrap();
+        rt.handle.take().unwrap().join().unwrap();
+        assert!(rt.check_error().is_none());
+
+        let output = String::from_utf8(tw.output()).unwrap();
+        let positions = ["STRIP:", "SGR:", "PLAIN:", "RAW:"].map(|marker| {
+            assert_eq!(output.matches(marker).count(), 1, "marker {marker:?}");
+            output.find(marker).unwrap()
+        });
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(output.contains("STRIP:red:done"));
+        for forbidden in ["\x1b[31m", "strip-title", "\x1b[2J", "\x1b[?1049h"] {
+            assert!(!output.contains(forbidden), "strip leaked {forbidden:?}");
+        }
+        assert!(output.contains("SGR:\x1b[32mgreen:done\x1b[0m\x1b8"));
+        for forbidden in ["sgr-title", "\x1b[3J", "\x1b[?2004h"] {
+            assert!(!output.contains(forbidden), "SGR leaked {forbidden:?}");
+        }
+        assert!(output.contains("PLAIN:after"));
+        assert!(output.contains(raw_payload), "raw requires explicit opt-in");
+    }
+
+    #[test]
+    fn raw_log_chunks_preserve_line_endings_without_appending_and_decode_lossily() {
+        let (writer, tw) = test_writer();
+        let mut rt = RenderThread::start(writer).unwrap();
+        rt.send(OutMsg::Log {
+            bytes: b"RAWCHUNK:one\r\ntwo\nbad:\xff:end".to_vec(),
+            mode: SanitizeMode::Raw,
+        })
+        .unwrap();
+        rt.send(OutMsg::Shutdown).unwrap();
+        rt.handle.take().unwrap().join().unwrap();
+        assert!(rt.check_error().is_none());
+
+        let output = String::from_utf8(tw.output()).unwrap();
+        assert!(output.contains("RAWCHUNK:one\r\ntwo\nbad:\u{fffd}:end\x1b8"));
+        assert!(!output.contains("\r\r\n"));
     }
 
     #[test]
@@ -380,7 +458,10 @@ mod tests {
         // plus a render in between
         let mut logs = Vec::new();
         for i in 0..100 {
-            logs.push(OutMsg::Log(format!("log-{i}\n").into_bytes()));
+            logs.push(OutMsg::Log {
+                bytes: format!("log-{i}\n").into_bytes(),
+                mode: SanitizeMode::Strip,
+            });
         }
 
         let mut buf = Buffer::new(10, 5);
@@ -438,11 +519,10 @@ mod tests {
         let rt = RenderThread::start(writer).unwrap();
 
         assert!(
-            rt.try_send(OutMsg::Log(
-                b"try-send-test
-"
-                .to_vec()
-            ))
+            rt.try_send(OutMsg::Log {
+                bytes: b"try-send-test\n".to_vec(),
+                mode: SanitizeMode::Strip,
+            })
             .is_ok()
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -522,13 +602,10 @@ mod tests {
         let rt = RenderThread::start(writer).unwrap();
 
         for i in 0..10 {
-            rt.send(OutMsg::Log(
-                format!(
-                    "msg-{i}
-"
-                )
-                .into_bytes(),
-            ))
+            rt.send(OutMsg::Log {
+                bytes: format!("msg-{i}\n").into_bytes(),
+                mode: SanitizeMode::Strip,
+            })
             .unwrap();
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -543,7 +620,10 @@ mod tests {
 
     #[test]
     fn outmsg_debug_format() {
-        let log = OutMsg::Log(b"hi".to_vec());
+        let log = OutMsg::Log {
+            bytes: b"hi".to_vec(),
+            mode: SanitizeMode::Strip,
+        };
         let dbg = format!("{log:?}");
         assert!(dbg.contains("Log"));
 
@@ -572,11 +652,10 @@ mod tests {
         // Wait for render thread to exit
         std::thread::sleep(Duration::from_millis(100));
         // Now sending should fail (disconnected)
-        let result = rt.send(OutMsg::Log(
-            b"late
-"
-            .to_vec(),
-        ));
+        let result = rt.send(OutMsg::Log {
+            bytes: b"late\n".to_vec(),
+            mode: SanitizeMode::Strip,
+        });
         assert!(result.is_err());
     }
 
@@ -652,11 +731,23 @@ mod tests {
         let rt = RenderThread::start(writer).unwrap();
 
         // Rapidly send different message types in sequence
-        rt.send(OutMsg::Log(b"line-1\n".to_vec())).unwrap();
+        rt.send(OutMsg::Log {
+            bytes: b"line-1\n".to_vec(),
+            mode: SanitizeMode::Strip,
+        })
+        .unwrap();
         rt.send(OutMsg::Resize { w: 20, h: 10 }).unwrap();
-        rt.send(OutMsg::Log(b"line-2\n".to_vec())).unwrap();
+        rt.send(OutMsg::Log {
+            bytes: b"line-2\n".to_vec(),
+            mode: SanitizeMode::Strip,
+        })
+        .unwrap();
         rt.send(OutMsg::SetMode(ScreenMode::AltScreen)).unwrap();
-        rt.send(OutMsg::Log(b"line-3\n".to_vec())).unwrap();
+        rt.send(OutMsg::Log {
+            bytes: b"line-3\n".to_vec(),
+            mode: SanitizeMode::Strip,
+        })
+        .unwrap();
 
         std::thread::sleep(Duration::from_millis(100));
         assert!(rt.check_error().is_none());
@@ -681,13 +772,20 @@ mod tests {
     #[test]
     fn shutdown_helper_disconnects_without_blocking_when_channel_is_full() {
         let (tx, rx) = mpsc::sync_channel::<OutMsg>(1);
-        tx.send(OutMsg::Log(b"queued".to_vec())).unwrap();
+        tx.send(OutMsg::Log {
+            bytes: b"queued".to_vec(),
+            mode: SanitizeMode::Strip,
+        })
+        .unwrap();
         let mut sender = Some(tx);
 
         request_shutdown_and_disconnect(&mut sender);
 
         assert!(sender.is_none());
-        assert!(matches!(rx.recv().unwrap(), OutMsg::Log(bytes) if bytes == b"queued".to_vec()));
+        assert!(matches!(
+            rx.recv().unwrap(),
+            OutMsg::Log { bytes, mode: SanitizeMode::Strip } if bytes == b"queued".to_vec()
+        ));
         assert!(
             rx.recv().is_err(),
             "full-channel shutdown fallback should disconnect once queued work drains"
@@ -746,7 +844,11 @@ mod tests {
             TerminalCapabilities::basic(),
         );
         let rt = RenderThread::start(writer).unwrap();
-        rt.send(OutMsg::Log(b"blocked\n".to_vec())).unwrap();
+        rt.send(OutMsg::Log {
+            bytes: b"blocked\n".to_vec(),
+            mode: SanitizeMode::Strip,
+        })
+        .unwrap();
 
         assert!(
             entered_rx.recv_timeout(Duration::from_secs(1)).is_ok(),

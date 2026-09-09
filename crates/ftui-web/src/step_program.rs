@@ -523,7 +523,8 @@ impl<M: Model> StepProgram<M> {
             Cmd::Tick(duration) => {
                 self.tick_rate = Some(duration);
             }
-            Cmd::Log(text) => {
+            Cmd::Log { text, mode } => {
+                let text = ftui_render::sanitize::sanitize_with(&text, mode);
                 let _ = self.backend.presenter_mut().write_log(&text);
             }
             Cmd::Task(_spec, f) => {
@@ -1065,11 +1066,27 @@ mod tests {
         let mut prog = StepProgram::new(new_counter(5), 80, 24);
         prog.init().unwrap();
 
-        // LogValue emits Cmd::Log("value=5").
+        // LogValue emits Cmd::log("value=5").
         prog.execute_cmd(Cmd::msg(CounterMsg::LogValue));
 
         let outputs = prog.outputs();
         assert_eq!(outputs.logs, vec!["value=5"]);
+    }
+
+    #[test]
+    fn log_modes_capture_policy_text_without_terminal_formatting() {
+        let mut prog = StepProgram::new(new_counter(0), 80, 24);
+        prog.init().unwrap();
+        let payload = "a\x1b[31mb\x1b[2Jc\x1b]0;secret\x07d\n";
+        prog.execute_cmd(Cmd::sequence(vec![
+            Cmd::log(payload),
+            Cmd::log_sgr_only(payload),
+            Cmd::log_raw(payload),
+            Cmd::quit(),
+            Cmd::log("unreachable"),
+        ]));
+        assert!(!prog.is_running());
+        assert_eq!(prog.outputs().logs, ["abcd\n", "a\x1b[31mbcd\n", payload]);
     }
 
     #[test]

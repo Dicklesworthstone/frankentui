@@ -2381,6 +2381,25 @@ impl<W: Write> TerminalWriter<W> {
     }
 
     pub(crate) fn write_log_with_mode(&mut self, text: &str, mode: SanitizeMode) -> io::Result<()> {
+        self.write_log_impl(text, mode, false)
+    }
+
+    /// Emit a model log command as a logical line. Filter before normalizing
+    /// line endings so control parsing sees the original input boundaries.
+    pub(crate) fn write_log_line_with_mode(
+        &mut self,
+        text: &str,
+        mode: SanitizeMode,
+    ) -> io::Result<()> {
+        self.write_log_impl(text, mode, true)
+    }
+
+    fn write_log_impl(
+        &mut self,
+        text: &str,
+        mode: SanitizeMode,
+        logical_line: bool,
+    ) -> io::Result<()> {
         // One-writer discipline vs teardown paths (bd-kdn7n item 2).
         let _output_guard = terminal_output_lock();
         if mode == SanitizeMode::Raw {
@@ -2388,6 +2407,19 @@ impl<W: Write> TerminalWriter<W> {
         }
         // Even publicly constructed Text variants must cross this boundary.
         let sanitized = sanitize_with(text, mode);
+        let sanitized = if logical_line {
+            let mut line = if sanitized.contains('\n') {
+                sanitized.replace("\r\n", "\n").replace('\n', "\r\n")
+            } else {
+                sanitized.into_owned()
+            };
+            if !line.ends_with("\r\n") {
+                line.push_str("\r\n");
+            }
+            std::borrow::Cow::Owned(line)
+        } else {
+            sanitized
+        };
         let text = sanitized.as_ref();
         match self.screen_mode {
             ScreenMode::Inline { ui_height } => self.write_log_inline(ui_height, text, mode),

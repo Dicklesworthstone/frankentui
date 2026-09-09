@@ -1965,6 +1965,8 @@ fn run_log_injection(mode: &str) -> io::Result<()> {
     use ftui_render::buffer::Buffer;
     use ftui_runtime::{TerminalWriter, UiAnchor};
 
+    let command_mode = mode.starts_with("cmd-");
+    let mode = mode.strip_prefix("cmd-").unwrap_or(mode);
     if !matches!(mode, "strip" | "sgr" | "raw" | "control") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2021,35 +2023,87 @@ fn run_log_injection(mode: &str) -> io::Result<()> {
             anchor,
             caps,
         );
-        writer.set_size(width, height);
-        let mut frame = Buffer::new(width, 3);
-        for (x, ch) in (0u16..).zip("CHROME".chars()) {
-            frame.set(x, 0, Cell::from_char(ch));
-        }
-        writer.present_ui(&frame, None, false)?;
-        if writer.scroll_region_active() != scroll {
-            return Err(io::Error::other("requested inline strategy is not active"));
-        }
-        writer.write_log("LOG_ACTIVE")?;
-        let mut ack = [0];
-        io::stdin().read_exact(&mut ack)?;
-        if ack != *b"g" {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "missing raw acknowledgement",
-            ));
-        }
         let payload: String = ftui_harness::ADVERSARIAL_PAYLOADS
             .iter()
             .map(|&(input, expected)| if mode == "control" { expected } else { input })
             .collect();
-        match mode {
-            "strip" | "control" => writer.write_log(&payload)?,
-            "sgr" => writer.write_log_sgr_only(&payload)?,
-            "raw" => writer.write_log_raw(&payload)?,
-            _ => unreachable!("mode validated above"),
+        if command_mode {
+            struct LogCommandModel {
+                command: Option<Cmd<Event>>,
+            }
+            impl Model for LogCommandModel {
+                type Message = Event;
+
+                fn update(&mut self, event: Event) -> Cmd<Event> {
+                    if !matches!(event, Event::Key(key) if key.is_char('g')) {
+                        return Cmd::none();
+                    }
+                    Cmd::sequence(vec![
+                        self.command.take().unwrap_or_default(),
+                        Cmd::quit(),
+                        Cmd::log("COMMAND_AFTER_QUIT_MUST_NOT_APPEAR"),
+                    ])
+                }
+
+                fn view(&self, frame: &mut Frame) {
+                    // The parent acknowledges this real Program render before
+                    // sending the key that causes update() to return the log.
+                    for (x, ch) in (0u16..).zip("CHROME LOG_ACTIVE".chars()) {
+                        frame.buffer.set(x, 0, Cell::from_char(ch));
+                    }
+                }
+            }
+            let command = match mode {
+                "strip" | "control" => Cmd::log(payload),
+                "sgr" => Cmd::log_sgr_only(payload),
+                "raw" => Cmd::log_raw(payload),
+                _ => unreachable!("mode validated above"),
+            };
+            let features = ftui_runtime::BackendFeatures::default();
+            let events = ftui_runtime::CrosstermEventSource::new(session, features);
+            let config = ProgramConfig {
+                screen_mode: ScreenMode::Inline { ui_height: 3 },
+                ui_anchor: anchor,
+                ..ProgramConfig::default()
+            }
+            .with_signal_interception(false);
+            Program::with_event_source(
+                LogCommandModel {
+                    command: Some(command),
+                },
+                events,
+                features,
+                writer,
+                config,
+            )?
+            .run()?;
+        } else {
+            writer.set_size(width, height);
+            let mut frame = Buffer::new(width, 3);
+            for (x, ch) in (0u16..).zip("CHROME".chars()) {
+                frame.set(x, 0, Cell::from_char(ch));
+            }
+            writer.present_ui(&frame, None, false)?;
+            if writer.scroll_region_active() != scroll {
+                return Err(io::Error::other("requested inline strategy is not active"));
+            }
+            writer.write_log("LOG_ACTIVE")?;
+            let mut ack = [0];
+            io::stdin().read_exact(&mut ack)?;
+            if ack != *b"g" {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "missing raw acknowledgement",
+                ));
+            }
+            match mode {
+                "strip" | "control" => writer.write_log(&payload)?,
+                "sgr" => writer.write_log_sgr_only(&payload)?,
+                "raw" => writer.write_log_raw(&payload)?,
+                _ => unreachable!("mode validated above"),
+            }
+            writer.flush()?;
         }
-        writer.flush()?;
         // Writer drops before the session and restores its scroll region.
     }
     println!("LOG_RESTORED");
