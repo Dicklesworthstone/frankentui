@@ -18,8 +18,9 @@ forwarding that prevents producer-queue eviction during browser bursts. Further
 continuations connect log trust modes to model commands and the streaming
 example, propagate screen effects and macro playback, and deliver browser logs
 through quitting steps. The streaming example now launches a real child with
-bounded subscription transport; the full interactive subprocess application
-remains unfinished.
+bounded subscription transport and optional typed stdin with FIFO/EOF handling;
+the full subprocess application, including interrupt/restart and descendant
+ownership, remains unfinished.
 These changes are on main;
 the published 0.7.0 artifacts remain the tagged source. All **905 lines of
 AGENTS.md and 2,902 lines of README.md** were read afresh, along with both
@@ -569,12 +570,70 @@ failures and command-stderr retention. UBS/RCH remain unavailable under their
 documented cleanup constraints; existing nix future-compatibility warnings
 remain visible. No new release was made.
 
+### September 9 bounded stdin and the interactive streaming consumer
+
+`ProcessInput` is a cloneable, single-use endpoint retained by the model.
+Repeated subscription descriptors keep its generation ID and running child;
+a fresh endpoint gives a new run an independent identity. Admission returns
+the original text on Full, Closed or TooLong. The queue holds at most 16 boxed
+UTF-8 payloads of 64 KiB, plus one being written. The worker appends LF without
+normalizing embedded newlines. Explicit close seals admission, drains accepted
+FIFO input, and delivers EOF. Acceptance is not child acknowledgment.
+
+The existing streaming example enables `TextInput` with `--stdin`. Enter
+queues a line and echoes it through sanitized `Cmd::log`; rejected drafts stay
+visible. Typing `q` and bracketed Unicode paste reach the child. Ctrl-D requests
+EOF and Ctrl-C quits; it does not forward SIGINT. Writer errors bypass model
+queue backpressure and supervise immediate-child termination/reaping. Inherited
+stdin can still leave a blocked worker after bounded joining, and an OS write
+can deliver a prefix after cancellation. Draft/model allocations are not capped.
+
+Final source manifest, including Cargo.lock and all 2,497 tracked files:
+`79e2222369eacfdd77bf3f8962ae657e4637320e94b540b086e6a6ec76e36147`.
+Both final DSR runs used the configured `trj` host, sequentially, and the exact
+`nightly-2026-08-31` pin / rustc `90850177249efe0321573c569aec5d12b257f8d6`.
+
+- Native receipt: `frankentui-stdin2-native/20260909T131647-3507669/receipt.json`.
+  Workspace fmt/check/strict Clippy/strict rustdoc pass; 110 selected runtime
+  tests pass (1,882 excluded), 23 lifecycle/effect tests (none excluded), six
+  trace-fixture tests (four excluded), and seven example tests.
+- WASM receipt: `frankentui-stdin2b-wasm/20260909T132126-3528115/receipt.json`.
+  Web/showcase compilation and all six Node tests pass with Node 26.0.0 and
+  checksum-verified wasm-bindgen 0.2.127. Total: 152 selected tests, not the
+  entire workspace suite. The file-watcher deletion test is still excluded.
+- Nine PTY journeys pass. The new roundtrip requires exact literal/Unicode
+  replies, input echoes, EOF and exit accounting. The separate Ctrl-C case
+  checks exactly two log records and reaping before session-leader release.
+  Both observe raw/restored termios and retain the inline log region. CPR9;1
+  is declared protocol emulation; this is not physical-rendering evidence.
+  Native tests separately cover saturated stdin and a failed write with a full
+  one-slot model queue; the latter observes reaping before draining that queue.
+
+All source snapshots, wrappers, receipts and captures are retained under
+`/data/retained/ftui-process-input-20260909-greenlynx/`. Receipt source states
+and log hashes match. The first native attempt failed formatting and a
+deprecated atomic method; both were corrected manually. The first WASM host
+became SSH-unresponsive during compilation; only our local build connection
+was ended, so its remote completion is unknown. Its failed receipt is retained.
+The replacement host's first preflight selected system Node 22 through the
+restricted PATH; selecting its installed Node 26 fixed that setup error without
+relaxing checks. DSR duration fields remain malformed and are not timing proof.
+
+DustySalmon implemented the consumer, GreenLynx the runtime and verification,
+and IcyBarn independently reviewed source/tests and the observer. Review replaced
+an allocator-address identity proposal with generations and strengthened the
+quit observer's exact-output assertion. No existing test was weakened. UBS/RCH
+remain unavailable under the documented deletion constraint; no Actions ran.
+Original `.32.1` remains in progress with signal/restart, partial-byte output,
+descendant ownership, full CLI/log/link behavior and published-consumer/host
+acceptance intact. This increment does not create a new release.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr reaches the streaming example and Cmd logs through a 256-message queue and 64-message dispatch batches. Complete UTF-8 lines are bounded to 64 KiB; invalid/oversized output produces a supervised error and reaps the immediate child even with a full queue. Normal/maximum-line delivery and seven PTY journeys pass. Stdin remains null. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, interactive input, descendant cancellation, restart, full CLI and published-consumer proof. Bounded-line refusal does not complete arbitrary streaming. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example and Cmd logs through bounded queues/batches. Complete UTF-8 lines are capped at 64 KiB. Optional stdin preserves FIFO/EOF through a 16-line input queue; failures are supervised independently of model backpressure. Nine PTY journeys include literal/Unicode input, EOF and immediate-child cleanup. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, interrupt/restart, descendant ownership, full CLI/log/link behavior and published-consumer/host proof. Queue admission is not child acknowledgment. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -678,6 +737,10 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.32.1`: verify 139 selected tests and seven actual PTY journeys,
   including maximum-line delivery; pass final workspace/WASM gates and retain
   the failed formatting/lint candidate with independent review corrections.
+- [x] `.32.1`: connect bounded stdin and persistent subscription identity to
+  the existing TextInput consumer; preserve rejected drafts and accepted FIFO/EOF.
+- [x] `.32.1`: verify 152 selected tests, nine PTY journeys, strict workspace
+  gates and WASM checks; retain first-candidate and host/preflight failures.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
@@ -691,8 +754,9 @@ specific implementation or observation below, not completion of the whole goal):
 2. **Deliver the original agent-harness story.** Complete output trust modes
    `.33.1/.33.2`, then bounded subprocess input/output/cancel/restart and actual
    PTY journey `.32.1–.32.3`. The published minimal and streaming examples are
-   foundations. Main now streams a real child under stable inline chrome;
-   byte-safe partial output, child input, descendant cancellation and restart
+   foundations. Main now streams a real child with optional interactive stdin
+   under stable inline chrome; byte-safe partial output, descendant cancellation,
+   signal forwarding and restart
    remain required before calling the full journey complete.
 3. **Finish real browser and accessibility consumers.** Use the already-built
    WASM artifact as a starting point, finish reproducible host packaging and

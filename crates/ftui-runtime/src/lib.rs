@@ -148,7 +148,9 @@ pub use locale::{
     Locale, LocaleContext, LocaleOverride, current_locale, detect_system_locale, set_locale,
 };
 pub use log_sink::LogSink;
-pub use process_subscription::{ProcessEvent, ProcessSubscription};
+pub use process_subscription::{
+    ProcessEvent, ProcessInput, ProcessInputError, ProcessSubscription,
+};
 #[cfg(feature = "crossterm-compat")]
 pub use program::CrosstermEventSource;
 #[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]

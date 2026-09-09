@@ -19,6 +19,7 @@ Run the examples:
 cargo run -p ftui-harness --example minimal
 cargo run -p ftui-harness --example streaming
 cargo run -p ftui-harness --example streaming -- --exit-when-child-exits -- seq 1 10000
+cargo run -p ftui-harness --example streaming -- --stdin --exit-when-child-exits -- cat
 ```
 
 ## Part 1: Hello World Harness (< 50 LOC)
@@ -102,9 +103,29 @@ With no arguments the example generates messages on a timer. A command after
 and plain-text `Cmd::log` output. Stderr lines have a `[stderr]` prefix. The
 status records the child's exit code or signal and the total stdout/stderr line
 count. Add `--exit-when-child-exits` to exit after logging that final status;
-otherwise the chrome remains visible until `q` or Ctrl-C. This TUI example logs
+otherwise the chrome remains visible until you quit. This TUI example logs
 the child's exit code; its own exit code reports whether the application ran
 successfully, so it is not a shell command wrapper.
+
+Add `--stdin` before `-- COMMAND` to show a focused `TextInput` and feedback row
+within the same 15-row inline UI. Enter queues the draft and an LF. Only accepted
+input clears the editor and produces a sanitized `[stdin queued]` echo; that
+echo reports queue admission, not child acknowledgment. Queue-full, closed-input
+and oversized-line errors leave the draft visible with retry or correction instructions.
+Paste uses the single-line editor: line breaks and tabs become spaces, and
+other control characters are removed. While the child is running, `q` is text;
+Ctrl-C quits the TUI and stops the immediate child, without forwarding SIGINT.
+Ctrl-D requests EOF after accepted input drains; it preserves any unsubmitted
+draft. A child that does not read can prevent that drain, so Ctrl-C remains
+available. Without `--stdin`, `q` still quits and the child receives closed stdin.
+
+The model keeps one `ProcessInput` handle and passes its clone to
+`ProcessSubscription::stdin` on every subscription update, preserving the
+subscription ID. Its queue admits at most 16 lines of up to 64 KiB of UTF-8 bytes
+each, plus one line being written. Sending never waits for pipe capacity;
+child exit, stop or I/O failure can discard accepted input. The draft itself is
+not byte capped. A handle belongs to one process run; a future restart needs a
+fresh handle. This example does not implement restart or process-tree control.
 
 The runtime's shared subscription queue holds at most 256 messages, and a loop
 iteration drains at most 64 before returning to terminal work. After a full
@@ -125,9 +146,10 @@ Natural exit waits for captured output delivery; timeout/cancellation can
 interrupt that drain, and a full canceled queue may prevent final-status
 delivery. A descendant that keeps a captured pipe open can delay natural
 completion indefinitely unless a timeout or cancellation interrupts the drain.
-The current example closes child stdin and stops the immediate child;
-interactive input, byte-safe partial output and descendant cleanup remain part
-of the unfinished agent-shell journey.
+The example stops the immediate child. A descendant can also retain stdin and
+keep an input worker blocked after cancellation; a blocked write may deliver a
+prefix before it returns. Byte-safe partial output, descendant cleanup and the
+remaining restart/registry workflow are still unfinished agent-shell work.
 
 Choose a log policy in the model's returned command:
 

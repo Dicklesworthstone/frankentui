@@ -39,9 +39,10 @@
 use crate::subscription::{StopSignal, StopTrigger, SubId, Subscription, SubscriptionSender};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{self, BufRead, Read};
+use std::io::{self, BufRead, Read, Write};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use web_time::{Duration, Instant};
 
 /// Events emitted by a [`ProcessSubscription`].
@@ -57,8 +58,145 @@ pub enum ProcessEvent {
     Signaled(i32),
     /// The process was killed by the subscription (stop signal or timeout).
     Killed,
-    /// Spawning, monitoring, or reading process output failed.
+    /// Spawning, monitoring, or process pipe I/O failed.
     Error(String),
+}
+
+/// Maximum queued input lines, excluding the one currently being written.
+pub const PROCESS_INPUT_CAPACITY: usize = 16;
+
+/// A rejected input line. The original text is returned without modification.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProcessInputError {
+    /// The bounded queue has no room; retry after the child reads input.
+    Full(String),
+    /// Input was closed, or its process run ended.
+    Closed(String),
+    /// The line exceeds [`MAX_PROCESS_LINE_BYTES`] UTF-8 bytes.
+    TooLong(String),
+}
+
+#[derive(Debug)]
+struct ProcessInputState {
+    sender: Option<mpsc::SyncSender<Box<str>>>,
+    receiver: Option<mpsc::Receiver<Box<str>>>,
+}
+
+/// Bounded, cloneable input for one [`ProcessSubscription`] run.
+///
+/// Keep this handle in the model and pass a clone to [`ProcessSubscription::stdin`]
+/// each time `subscriptions()` is rebuilt. Clones share one queue and identity.
+/// A fresh handle is required to start another process run. Dropping a clone
+/// does not close input; call [`close`](Self::close) to request EOF.
+///
+/// Sending never waits for pipe I/O or queue capacity. At most
+/// [`PROCESS_INPUT_CAPACITY`] lines are queued, plus one being written, each
+/// limited to [`MAX_PROCESS_LINE_BYTES`] bytes. Acceptance means queued, not
+/// acknowledged by the child; stop, exit, or I/O failure can discard pending
+/// input. A worker writes accepted lines in FIFO order with an appended LF.
+#[derive(Clone, Debug)]
+pub struct ProcessInput {
+    id: u64,
+    state: Arc<Mutex<ProcessInputState>>,
+}
+
+impl Default for ProcessInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProcessInput {
+    /// Create input for a single future process run. Lines may be queued now.
+    #[must_use]
+    pub fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let (sender, receiver) = mpsc::sync_channel(PROCESS_INPUT_CAPACITY);
+        Self {
+            id: NEXT_ID
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("process input identity space exhausted"),
+            state: Arc::new(Mutex::new(ProcessInputState {
+                sender: Some(sender),
+                receiver: Some(receiver),
+            })),
+        }
+    }
+
+    /// Queue UTF-8 text followed by LF, preserving any embedded newlines.
+    ///
+    /// Returns the unchanged text on rejection. Oversized input is checked
+    /// before queue state. The short state lock never covers child I/O.
+    pub fn try_send_line(&self, line: String) -> Result<(), ProcessInputError> {
+        if line.len() > MAX_PROCESS_LINE_BYTES {
+            return Err(ProcessInputError::TooLong(line));
+        }
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(sender) = &state.sender else {
+            return Err(ProcessInputError::Closed(line));
+        };
+        // Do not retain excess capacity supplied by the caller in the queue.
+        match sender.try_send(line.into_boxed_str()) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(line)) => Err(ProcessInputError::Full(line.into())),
+            Err(mpsc::TrySendError::Disconnected(line)) => {
+                Err(ProcessInputError::Closed(line.into()))
+            }
+        }
+    }
+
+    /// Reject future sends, drain accepted lines, then close the child's stdin.
+    ///
+    /// This is idempotent across clones. Drain still depends on the child
+    /// reading; stop/timeout can cancel it. Closing before spawn gives EOF
+    /// after any lines already queued.
+    pub fn close(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .sender
+            .take();
+    }
+
+    fn claim(&self) -> Option<(ProcessInputRun, mpsc::Receiver<Box<str>>)> {
+        let receiver = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .receiver
+            .take()?;
+        Some((ProcessInputRun(self.clone()), receiver))
+    }
+}
+
+struct ProcessInputRun(ProcessInput);
+
+impl Drop for ProcessInputRun {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+fn write_process_input(
+    mut stdin: std::process::ChildStdin,
+    receiver: mpsc::Receiver<Box<str>>,
+    stop: StopSignal,
+) -> io::Result<()> {
+    loop {
+        match receiver.recv_timeout(PROCESS_READER_JOIN_POLL) {
+            Ok(line) => {
+                if stop.is_stopped() {
+                    return Err(io::Error::other("queued stdin was canceled before writing"));
+                }
+                stdin.write_all(line.as_bytes())?;
+                stdin.write_all(b"\n")?;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) if stop.is_stopped() => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
 }
 
 /// A subscription that spawns and monitors an external process.
@@ -79,11 +217,17 @@ pub enum ProcessEvent {
 /// and reap the immediate child, and produce one error instead of a normal
 /// exit. That error reports incomplete output and any child cleanup failure.
 /// Inherited descendant pipes cannot be interrupted by the reader stop signal.
+/// Input is closed by default; [`stdin`](Self::stdin) enables a bounded input
+/// worker. Its I/O failures terminate and reap the immediate child, like output
+/// failures. Inherited descendant stdin can also keep a worker blocked after
+/// cancellation; joins are bounded, but descendant cleanup is not provided.
+/// A blocked OS write can deliver a prefix even after stop is requested.
 pub struct ProcessSubscription<M: Send + 'static> {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
     timeout: Option<Duration>,
+    input: Option<ProcessInput>,
     id: SubId,
     explicit_id: bool,
     make_msg: std::sync::Arc<dyn Fn(ProcessEvent) -> M + Send + Sync>,
@@ -116,8 +260,6 @@ impl std::fmt::Display for ProcessReadError {
         }
     }
 }
-
-type ProcessReaderHandle = std::thread::JoinHandle<Result<(), ProcessReadError>>;
 
 fn read_process_line<R: BufRead>(
     reader: &mut R,
@@ -190,7 +332,10 @@ fn forward_lines<R: Read, M: Send + 'static>(
     Ok(())
 }
 
-fn take_reader_error(handle: &mut Option<ProcessReaderHandle>, stream: &str) -> Option<String> {
+fn take_reader_error<E: std::fmt::Display>(
+    handle: &mut Option<std::thread::JoinHandle<Result<(), E>>>,
+    stream: &str,
+) -> Option<String> {
     if !handle
         .as_ref()
         .is_some_and(std::thread::JoinHandle::is_finished)
@@ -200,7 +345,7 @@ fn take_reader_error(handle: &mut Option<ProcessReaderHandle>, stream: &str) -> 
     match handle.take()?.join() {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(format!("{stream} {error}")),
-        Err(_) => Some(format!("{stream} reader panicked")),
+        Err(_) => Some(format!("{stream} worker panicked")),
     }
 }
 
@@ -233,6 +378,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         args: &[String],
         env: &[(String, String)],
         timeout: Option<Duration>,
+        input: Option<&ProcessInput>,
     ) -> SubId {
         let mut h = DefaultHasher::new();
         "ProcessSubscription".hash(&mut h);
@@ -240,12 +386,19 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         args.hash(&mut h);
         env.hash(&mut h);
         timeout.map(|duration| duration.as_nanos()).hash(&mut h);
+        input.map(|input| input.id).hash(&mut h);
         h.finish()
     }
 
     fn refresh_id(&mut self) {
         if !self.explicit_id {
-            self.id = Self::computed_id(&self.program, &self.args, &self.env, self.timeout);
+            self.id = Self::computed_id(
+                &self.program,
+                &self.args,
+                &self.env,
+                self.timeout,
+                self.input.as_ref(),
+            );
         }
     }
 
@@ -258,12 +411,13 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         make_msg: impl Fn(ProcessEvent) -> M + Send + Sync + 'static,
     ) -> Self {
         let program = program.into();
-        let id = Self::computed_id(&program, &[], &[], None);
+        let id = Self::computed_id(&program, &[], &[], None, None);
         Self {
             program,
             args: Vec::new(),
             env: Vec::new(),
             timeout: None,
+            input: None,
             id,
             explicit_id: false,
             make_msg: std::sync::Arc::new(make_msg),
@@ -303,6 +457,18 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         self
     }
 
+    /// Connect bounded input for this process run.
+    ///
+    /// Reuse clones of the same handle when rebuilding subscriptions. A new
+    /// handle changes the automatic subscription ID. An already-used handle
+    /// produces an error before spawning; use a new handle for a restart.
+    #[must_use]
+    pub fn stdin(mut self, input: ProcessInput) -> Self {
+        self.input = Some(input);
+        self.refresh_id();
+        self
+    }
+
     /// Override the subscription ID (for explicit deduplication control).
     #[must_use]
     pub fn with_id(mut self, id: SubId) -> Self {
@@ -320,12 +486,34 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
     fn run(&self, sender: SubscriptionSender<M>, stop: StopSignal) {
         let spawn_start = web_time::Instant::now();
         let sub_id = self.id;
+        let input_run = if let Some(input) = &self.input {
+            let Some(run) = input.claim() else {
+                let _ = send_terminal_message(
+                    &sender,
+                    &stop,
+                    self.timeout.map(|timeout| spawn_start + timeout),
+                    (self.make_msg)(ProcessEvent::Error(
+                        "stdin handle was already used; create fresh input for a new run"
+                            .to_owned(),
+                    )),
+                );
+                return;
+            };
+            Some(run)
+        } else {
+            None
+        };
+        let (_input_guard, input_receiver) = input_run.unzip();
 
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .stdin(Stdio::null());
+            .stdin(if input_receiver.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            });
 
         for (k, v) in &self.env {
             cmd.env(k, v);
@@ -344,6 +532,9 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 c
             }
             Err(e) => {
+                if let Some(input) = &self.input {
+                    input.close();
+                }
                 tracing::warn!(
                     target: crate::telemetry_schema::TARGET_PROCESS,
                     sub_id,
@@ -372,6 +563,18 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         // Use the cancellation token for cooperative stop coordination.
         let token = stop.cancellation_token().clone();
         let (reader_stop, reader_trigger) = StopSignal::new();
+        let (input_stop, input_trigger) = StopSignal::new();
+        let stop_input = || {
+            if let Some(input) = &self.input {
+                input.close();
+            }
+            input_trigger.stop();
+        };
+        let mut input_handle = input_receiver
+            .zip(child.stdin.take())
+            .map(|(receiver, stdin)| {
+                std::thread::spawn(move || write_process_input(stdin, receiver, input_stop))
+            });
         let reader_sender = sender.with_stop_signal(reader_stop.clone());
         let poll_interval = Duration::from_millis(50);
         let mut stdout_handle = stdout.map(|stdout| {
@@ -400,8 +603,10 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             // prevent supervising a child whose other stream has failed.
             if let Some(error) = take_reader_error(&mut stdout_handle, "stdout")
                 .or_else(|| take_reader_error(&mut stderr_handle, "stderr"))
+                .or_else(|| take_reader_error(&mut input_handle, "stdin write failed"))
             {
                 reader_trigger.stop();
+                stop_input();
                 break output_failure_event(&error, &mut child);
             }
             match child.try_wait() {
@@ -435,6 +640,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                         "process wait error"
                     );
                     reader_trigger.stop();
+                    stop_input();
                     break ProcessEvent::Error(format!("wait error: {e}"));
                 }
             }
@@ -450,6 +656,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     "killing process"
                 );
                 reader_trigger.stop();
+                stop_input();
                 let _ = child.kill();
                 let _ = child.wait();
                 break ProcessEvent::Killed;
@@ -464,11 +671,14 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     "killing process"
                 );
                 reader_trigger.stop();
+                stop_input();
                 let _ = child.kill();
                 let _ = child.wait();
                 break ProcessEvent::Killed;
             }
         };
+
+        stop_input();
 
         if matches!(
             final_event,
@@ -480,6 +690,7 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             loop {
                 if let Some(error) = take_reader_error(&mut stdout_handle, "stdout")
                     .or_else(|| take_reader_error(&mut stderr_handle, "stderr"))
+                    .or_else(|| take_reader_error(&mut input_handle, "stdin write failed"))
                 {
                     reader_trigger.stop();
                     final_event = output_failure_event(&error, &mut child);
@@ -507,10 +718,19 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
         }
 
         if let Some(handle) = stdout_handle {
-            join_reader_thread_bounded(handle, "stdout", sub_id, &reader_trigger);
+            let _ = join_reader_thread_bounded(handle, "stdout", sub_id, &reader_trigger);
         }
         if let Some(handle) = stderr_handle {
-            join_reader_thread_bounded(handle, "stderr", sub_id, &reader_trigger);
+            let _ = join_reader_thread_bounded(handle, "stderr", sub_id, &reader_trigger);
+        }
+        if let Some(handle) = input_handle
+            && let Some(error) = join_reader_thread_bounded(handle, "stdin", sub_id, &input_trigger)
+            && matches!(
+                final_event,
+                ProcessEvent::Exited(_) | ProcessEvent::Signaled(_)
+            )
+        {
+            final_event = output_failure_event(&error, &mut child);
         }
 
         if send_terminal_message(
@@ -565,12 +785,12 @@ fn process_exit_event(status: std::process::ExitStatus) -> ProcessEvent {
     ProcessEvent::Exited(status.code().unwrap_or(-1))
 }
 
-fn join_reader_thread_bounded(
-    handle: ProcessReaderHandle,
+fn join_reader_thread_bounded<E: std::fmt::Display + Send + 'static>(
+    handle: std::thread::JoinHandle<Result<(), E>>,
     stream: &'static str,
     sub_id: SubId,
     reader_trigger: &StopTrigger,
-) {
+) -> Option<String> {
     let start = Instant::now();
     while !handle.is_finished() {
         if start.elapsed() >= PROCESS_READER_JOIN_TIMEOUT {
@@ -580,17 +800,26 @@ fn join_reader_thread_bounded(
                 sub_id,
                 stream,
                 timeout_ms = PROCESS_READER_JOIN_TIMEOUT.as_millis() as u64,
-                "process reader thread did not exit within timeout; detaching"
+                "process pipe worker did not exit within timeout; detaching"
             );
             detach_reader_join(handle, stream);
-            return;
+            return Some(format!(
+                "{stream} worker did not stop; I/O may be incomplete"
+            ));
         }
         std::thread::sleep(PROCESS_READER_JOIN_POLL);
     }
-    let _ = handle.join();
+    match handle.join() {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("{stream} I/O failed: {error}")),
+        Err(_) => Some(format!("{stream} worker panicked")),
+    }
 }
 
-fn detach_reader_join(handle: ProcessReaderHandle, stream: &'static str) {
+fn detach_reader_join<E: Send + 'static>(
+    handle: std::thread::JoinHandle<Result<(), E>>,
+    stream: &'static str,
+) {
     let _ = std::thread::Builder::new()
         .name(format!("ftui-process-{stream}-detached-join"))
         .spawn(move || {
@@ -607,6 +836,314 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     enum TestMsg {
         Proc(ProcessEvent),
+    }
+
+    #[test]
+    fn input_admission_bounds_payload_and_returns_rejected_text() {
+        let input = ProcessInput::new();
+        let mut overallocated = String::with_capacity(MAX_PROCESS_LINE_BYTES * 8);
+        overallocated.push_str("tiny");
+        input.try_send_line(overallocated).unwrap();
+        for index in 1..PROCESS_INPUT_CAPACITY {
+            input.try_send_line(index.to_string()).unwrap();
+        }
+        assert_eq!(
+            input.try_send_line("retry 🦀".to_owned()),
+            Err(ProcessInputError::Full("retry 🦀".to_owned()))
+        );
+        let oversized = "x".repeat(MAX_PROCESS_LINE_BYTES + 1);
+        assert_eq!(
+            input.try_send_line(oversized.clone()),
+            Err(ProcessInputError::TooLong(oversized))
+        );
+        input.clone().close();
+        assert_eq!(
+            input.try_send_line("closed".to_owned()),
+            Err(ProcessInputError::Closed("closed".to_owned()))
+        );
+        let (_guard, receiver) = input.claim().expect("close still permits first run");
+        assert_eq!(receiver.recv().unwrap().into_string().capacity(), 4);
+        for index in 1..PROCESS_INPUT_CAPACITY {
+            assert_eq!(&*receiver.recv().unwrap(), index.to_string());
+        }
+        assert!(matches!(receiver.recv(), Err(mpsc::RecvError)));
+        assert!(input.claim().is_none());
+    }
+
+    #[test]
+    fn input_identity_and_claim_ownership_survive_descriptor_rebuilds() {
+        let input = ProcessInput::new();
+        let sub = || ProcessSubscription::new("sh", |event| event).stdin(input.clone());
+        let id = sub().id();
+        assert_eq!(
+            sub().with_id(7).arg("one").stdin(ProcessInput::new()).id(),
+            7
+        );
+        assert_eq!(id, sub().id());
+        assert_ne!(id, ProcessSubscription::new("sh", |event| event).id());
+        assert_ne!(
+            id,
+            ProcessSubscription::new("sh", |event| event)
+                .stdin(ProcessInput::new())
+                .id()
+        );
+        let (guard, receiver) = input.claim().unwrap();
+        assert!(input.claim().is_none());
+        drop(sub());
+        input.try_send_line("still open".to_owned()).unwrap();
+        assert_eq!(&*receiver.recv().unwrap(), "still open");
+        drop(guard);
+        assert_eq!(
+            input.try_send_line("late".to_owned()),
+            Err(ProcessInputError::Closed("late".to_owned()))
+        );
+    }
+
+    #[cfg(unix)]
+    fn input_process(script: &str, input: &ProcessInput) -> ProcessSubscription<ProcessEvent> {
+        ProcessSubscription::new("sh", |event| event)
+            .args(["-c", script])
+            .stdin(input.clone())
+            .timeout(Duration::from_secs(5))
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_input_roundtrip_eof_and_fresh_run_survive_reconciliation() {
+        use crate::subscription::SubscriptionManager;
+        let mut manager = SubscriptionManager::new();
+        let script = "printf 'pid=%s\\n' \"$$\"; while IFS= read -r line; do printf '%s\\n' \"$line\"; done; printf 'EOF\\n'";
+        let receive = |manager: &SubscriptionManager<ProcessEvent>, count: usize| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut events = Vec::new();
+            while events.len() < count && Instant::now() < deadline {
+                events.extend(manager.drain_messages());
+                thread::sleep(Duration::from_millis(5));
+            }
+            events
+        };
+        let mut previous_id = None;
+        for _ in 0..2 {
+            let input = ProcessInput::new();
+            let id = input_process(script, &input).id();
+            assert_ne!(previous_id, Some(id));
+            previous_id = Some(id);
+            manager.reconcile(vec![Box::new(input_process(script, &input))]);
+            let started = receive(&manager, 1);
+            assert!(
+                matches!(started.as_slice(), [ProcessEvent::Stdout(line)] if line.starts_with("pid="))
+            );
+            for (text, expected) in [
+                ("alpha", vec!["alpha"]),
+                ("🦀 $() \\ literal", vec!["🦀 $() \\ literal"]),
+                ("", vec![""]),
+                ("embedded\nline", vec!["embedded", "line"]),
+            ] {
+                manager.reconcile(vec![Box::new(input_process(script, &input))]);
+                input.try_send_line(text.to_owned()).unwrap();
+                let expected: Vec<_> = expected
+                    .into_iter()
+                    .map(|line| ProcessEvent::Stdout(line.to_owned()))
+                    .collect();
+                assert_eq!(receive(&manager, expected.len()), expected);
+            }
+            input.close();
+            assert_eq!(
+                receive(&manager, 2),
+                [
+                    ProcessEvent::Stdout("EOF".to_owned()),
+                    ProcessEvent::Exited(0)
+                ]
+            );
+            assert_eq!(
+                input.try_send_line("after EOF".to_owned()),
+                Err(ProcessInputError::Closed("after EOF".to_owned()))
+            );
+            assert!(manager.drain_messages().is_empty());
+        }
+        manager.stop_all();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_input_drains_full_queue_and_maximum_line_before_eof() {
+        let input = ProcessInput::new();
+        let mut expected = Vec::new();
+        for index in 0..PROCESS_INPUT_CAPACITY {
+            let line = if index == 0 {
+                "x".repeat(MAX_PROCESS_LINE_BYTES)
+            } else {
+                index.to_string()
+            };
+            input.try_send_line(line.clone()).unwrap();
+            expected.push(ProcessEvent::Stdout(line));
+        }
+        assert_eq!(
+            input.try_send_line("overflow".to_owned()),
+            Err(ProcessInputError::Full("overflow".to_owned()))
+        );
+        input.close();
+        let sub = input_process("cat", &input);
+        let (sender, receiver) = mpsc::sync_channel(256);
+        let (stop, _trigger) = StopSignal::new();
+        sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+        expected.push(ProcessEvent::Exited(0));
+        assert_eq!(receiver.into_iter().collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_input_natural_exit_and_spawn_failure_close_open_ingress() {
+        for program in ["sh", "/ftui-process-input-command-does-not-exist"] {
+            let input = ProcessInput::new();
+            let sub = ProcessSubscription::new(program, |event| event)
+                .args(["-c", "exit 0"])
+                .stdin(input.clone())
+                .timeout(Duration::from_secs(5));
+            let (sender, receiver) = mpsc::sync_channel(256);
+            let (stop, _trigger) = StopSignal::new();
+            sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+            let events: Vec<_> = receiver.into_iter().collect();
+            if program == "sh" {
+                assert_eq!(events, [ProcessEvent::Exited(0)]);
+            } else {
+                assert!(
+                    matches!(events.as_slice(), [ProcessEvent::Error(error)] if error.starts_with("Failed to spawn"))
+                );
+            }
+            assert_eq!(
+                input.try_send_line("late".to_owned()),
+                Err(ProcessInputError::Closed("late".to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn input_writer_reports_canceled_pending_line_instead_of_success() {
+        let input = ProcessInput::new();
+        input.try_send_line("pending".to_owned()).unwrap();
+        let (_guard, receiver) = input.claim().unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", "exec sleep 60"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (stop, trigger) = StopSignal::new();
+        trigger.stop();
+        let result = write_process_input(child.stdin.take().unwrap(), receiver, stop);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "queued stdin was canceled before writing"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_input_blocked_pipe_does_not_block_admission_or_stop() {
+        let input = ProcessInput::new();
+        let sub = input_process("printf '%s\\n' \"$$\"; exec sleep 60", &input);
+        let (sender, receiver) = mpsc::sync_channel(256);
+        let (stop, trigger) = StopSignal::new();
+        let handle =
+            thread::spawn(move || sub.run(SubscriptionSender::new(sender, stop.clone()), stop));
+        let ProcessEvent::Stdout(pid) = receiver.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("missing live child PID")
+        };
+        let pid: u32 = pid.parse().unwrap();
+        let payload = "x".repeat(MAX_PROCESS_LINE_BYTES);
+        let started = Instant::now();
+        let mut full = false;
+        for _ in 0..PROCESS_INPUT_CAPACITY + 2 {
+            match input.try_send_line(payload.clone()) {
+                Ok(()) => {}
+                Err(ProcessInputError::Full(unsent)) => {
+                    assert_eq!(unsent, payload);
+                    full = true;
+                    break;
+                }
+                other => panic!("unexpected admission: {other:?}"),
+            }
+        }
+        let admission_elapsed = started.elapsed();
+        // Give the worker time to enter a write exceeding the pipe capacity.
+        thread::sleep(Duration::from_millis(100));
+        let retry = input.try_send_line(payload);
+        let before_stop = Instant::now();
+        trigger.stop();
+        handle.join().unwrap();
+        let stopped_in = before_stop.elapsed();
+        let reaped = std::fs::metadata(format!("/proc/{pid}"))
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+        assert!(full);
+        assert!(admission_elapsed < Duration::from_secs(1));
+        // One line can move from the queue to the blocked worker after Full.
+        assert!(matches!(retry, Ok(()) | Err(ProcessInputError::Full(_))));
+        assert!(stopped_in < Duration::from_secs(2));
+        assert!(reaped, "child must be reaped before test cleanup");
+        assert_eq!(
+            input.try_send_line("late".to_owned()),
+            Err(ProcessInputError::Closed("late".to_owned()))
+        );
+        assert_eq!(
+            receiver.into_iter().collect::<Vec<_>>(),
+            [ProcessEvent::Killed]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_input_write_failure_reaps_child_despite_full_model_queue() {
+        let input = ProcessInput::new();
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let sub = ProcessSubscription::new("sh", move |event| {
+            observed_tx.send(event.clone()).unwrap();
+            event
+        })
+        .args(["-c", "exec 0<&-; printf '%s\\n' \"$$\"; exec sleep 60"])
+        .stdin(input.clone())
+        .timeout(Duration::from_secs(5));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(ProcessEvent::Stdout("prefix".to_owned()))
+            .unwrap();
+        let (stop, trigger) = StopSignal::new();
+        let handle =
+            thread::spawn(move || sub.run(SubscriptionSender::new(sender, stop.clone()), stop));
+        let ProcessEvent::Stdout(pid) = observed_rx.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("missing live PID")
+        };
+        let pid: u32 = pid.parse().unwrap();
+        input
+            .try_send_line("cannot reach closed pipe".to_owned())
+            .unwrap();
+        let terminal = observed_rx.recv_timeout(Duration::from_secs(5));
+        let reaped = std::fs::metadata(format!("/proc/{pid}"))
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+        // Observe supervision/reaping before releasing model backpressure.
+        assert_eq!(
+            receiver.recv().unwrap(),
+            ProcessEvent::Stdout("prefix".to_owned())
+        );
+        let delivered = receiver.recv_timeout(Duration::from_secs(5));
+        trigger.stop();
+        handle.join().unwrap();
+        let terminal = terminal.unwrap();
+        assert!(
+            matches!(&terminal, ProcessEvent::Error(error) if error.starts_with("stdin write failed") && error.contains("reaped:")),
+            "{terminal:?}"
+        );
+        assert_eq!(delivered.unwrap(), terminal);
+        assert!(reaped, "writer error must reap child before model drains");
+        assert_eq!(
+            input.try_send_line("late".to_owned()),
+            Err(ProcessInputError::Closed("late".to_owned()))
+        );
+        assert!(receiver.try_recv().is_err());
     }
 
     fn collect_lines(bytes: &[u8], read_capacity: usize) -> Result<Vec<String>, ProcessReadError> {
