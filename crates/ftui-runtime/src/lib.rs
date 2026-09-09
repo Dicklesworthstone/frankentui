@@ -1,3 +1,5 @@
+#![cfg_attr(unix, feature(unix_send_signal))]
+#![cfg_attr(target_os = "linux", feature(linux_pidfd))]
 #![forbid(unsafe_code)]
 
 //! FrankenTUI Runtime
@@ -149,7 +151,8 @@ pub use locale::{
 };
 pub use log_sink::LogSink;
 pub use process_subscription::{
-    ProcessEvent, ProcessInput, ProcessInputError, ProcessSubscription,
+    ProcessControl, ProcessControlError, ProcessControlStatus, ProcessEvent, ProcessInput,
+    ProcessInputError, ProcessInterruptStatus, ProcessSubscription,
 };
 #[cfg(feature = "crossterm-compat")]
 pub use program::CrosstermEventSource;

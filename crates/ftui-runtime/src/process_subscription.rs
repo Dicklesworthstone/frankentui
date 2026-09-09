@@ -62,6 +62,216 @@ pub enum ProcessEvent {
     Error(String),
 }
 
+/// Result of the most recent interrupt request for one process run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessInterruptStatus {
+    /// No interrupt has been requested.
+    Idle,
+    /// One interrupt is waiting for the supervisor.
+    Pending,
+    /// The operating system accepted SIGINT; the child may ignore it.
+    Sent,
+    /// Signal delivery failed; no successful delivery is claimed.
+    Failed(String),
+    /// The run closed before the pending request was delivered.
+    Canceled,
+}
+
+/// A snapshot of one process run, independent of model queue capacity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessControlStatus {
+    /// Immediate child PID while control is open. Never use it to send signals.
+    pub pid: Option<u32>,
+    /// The supervisor accepts no further requests for this run.
+    pub closed: bool,
+    /// No child was spawned, or the supervisor confirmed that it was reaped.
+    ///
+    /// This does not prove output drain completion. Wait for this run's terminal
+    /// [`ProcessEvent`] as well before replacing its subscription.
+    pub can_restart: bool,
+    /// Outcome of the most recent interrupt request.
+    pub interrupt: ProcessInterruptStatus,
+}
+
+/// Why an interrupt could not be admitted. No child I/O occurs during admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessControlError {
+    /// The supervisor has not spawned this run yet.
+    NotRunning,
+    /// This run no longer accepts requests.
+    Closed,
+    /// One request is already waiting; there is no unbounded request queue.
+    AlreadyPending,
+    /// SIGINT delivery is not supported on this platform.
+    Unsupported,
+}
+
+#[derive(Debug)]
+struct ProcessControlState {
+    claimed: bool,
+    status: ProcessControlStatus,
+}
+
+/// Cloneable interrupt control for exactly one [`ProcessSubscription`] run.
+///
+/// Keep the handle in the model, rebuilding subscriptions with clones. Tag
+/// process messages with [`generation`](Self::generation) to reject delayed
+/// messages after a restart. Use a fresh handle for each new run. Dropping a
+/// descriptor or a handle clone does not close an active run.
+///
+/// Requests never wait for child I/O or model/stdin queue capacity. The owning
+/// supervisor sends SIGINT to the immediate child on Unix, without a shell or
+/// process-group signal. Linux requires a retained pidfd; if unavailable,
+/// delivery fails instead of falling back to a potentially reused PID. Other
+/// Unix platforms require the supervisor to remain the child's sole reaper.
+#[derive(Clone, Debug)]
+pub struct ProcessControl {
+    id: u64,
+    state: Arc<Mutex<ProcessControlState>>,
+}
+
+impl Default for ProcessControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProcessControl {
+    /// Create control for a future process run.
+    #[must_use]
+    pub fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            id: NEXT_ID
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("process control identity space exhausted"),
+            state: Arc::new(Mutex::new(ProcessControlState {
+                claimed: false,
+                status: ProcessControlStatus {
+                    pid: None,
+                    closed: false,
+                    can_restart: true,
+                    interrupt: ProcessInterruptStatus::Idle,
+                },
+            })),
+        }
+    }
+
+    /// Stable identity shared by clones; fresh handles have distinct identities.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.id
+    }
+
+    /// Read one consistent snapshot. A closed handle need not mean output drained.
+    #[must_use]
+    pub fn status(&self) -> ProcessControlStatus {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .status
+            .clone()
+    }
+
+    /// Admit one interrupt for the supervisor to deliver.
+    ///
+    /// Admission is not delivery. Read [`status`](Self::status) for the outcome;
+    /// even `Sent` does not imply that a child handler ran or the child exited.
+    pub fn request_interrupt(&self) -> Result<(), ProcessControlError> {
+        if !cfg!(unix) {
+            return Err(ProcessControlError::Unsupported);
+        }
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let status = &mut state.status;
+        if status.closed {
+            return Err(ProcessControlError::Closed);
+        }
+        if status.pid.is_none() {
+            return Err(ProcessControlError::NotRunning);
+        }
+        if status.interrupt == ProcessInterruptStatus::Pending {
+            return Err(ProcessControlError::AlreadyPending);
+        }
+        status.interrupt = ProcessInterruptStatus::Pending;
+        Ok(())
+    }
+
+    fn claim(&self) -> Option<ProcessControlRun> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.claimed {
+            return None;
+        }
+        state.claimed = true;
+        Some(ProcessControlRun(self.clone()))
+    }
+
+    fn started(&self, pid: u32) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.status.pid = Some(pid);
+        state.status.can_restart = false;
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.status.pid = None;
+        state.status.closed = true;
+        if state.status.interrupt == ProcessInterruptStatus::Pending {
+            state.status.interrupt = ProcessInterruptStatus::Canceled;
+        }
+    }
+
+    fn confirm_reaped(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .status
+            .can_restart = true;
+    }
+
+    fn dispatch_interrupt(&self, child: &std::process::Child) {
+        let status = self.status();
+        if status.closed || status.interrupt != ProcessInterruptStatus::Pending {
+            return;
+        }
+        // Only the supervisor calls this, before reaping. No state lock spans
+        // the OS call, and no message queue is needed to publish its result.
+        let result = interrupt_child(child);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.status.interrupt = match result {
+            Ok(()) => ProcessInterruptStatus::Sent,
+            Err(error) => ProcessInterruptStatus::Failed(error.to_string()),
+        };
+    }
+}
+
+struct ProcessControlRun(ProcessControl);
+
+impl Drop for ProcessControlRun {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+#[cfg(unix)]
+fn interrupt_child(child: &std::process::Child) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    std::os::linux::process::ChildExt::pidfd(child).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("retained pidfd unavailable; interrupt not sent: {error}"),
+        )
+    })?;
+    std::os::unix::process::ChildExt::send_signal(child, rustix::process::Signal::INT.as_raw())
+}
+
+#[cfg(not(unix))]
+fn interrupt_child(_child: &std::process::Child) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "SIGINT is unsupported",
+    ))
+}
+
 /// Maximum queued input lines, excluding the one currently being written.
 pub const PROCESS_INPUT_CAPACITY: usize = 16;
 
@@ -222,12 +432,16 @@ fn write_process_input(
 /// failures. Inherited descendant stdin can also keep a worker blocked after
 /// cancellation; joins are bounded, but descendant cleanup is not provided.
 /// A blocked OS write can deliver a prefix even after stop is requested.
+/// Optional [`control`](Self::control) admits interrupts independently of those
+/// queues. Its generation belongs to one run. Restart only after that run's
+/// terminal event and confirmed child cleanup, using a fresh control handle.
 pub struct ProcessSubscription<M: Send + 'static> {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
     timeout: Option<Duration>,
     input: Option<ProcessInput>,
+    control: Option<ProcessControl>,
     id: SubId,
     explicit_id: bool,
     make_msg: std::sync::Arc<dyn Fn(ProcessEvent) -> M + Send + Sync>,
@@ -379,6 +593,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         env: &[(String, String)],
         timeout: Option<Duration>,
         input: Option<&ProcessInput>,
+        control: Option<&ProcessControl>,
     ) -> SubId {
         let mut h = DefaultHasher::new();
         "ProcessSubscription".hash(&mut h);
@@ -387,6 +602,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         env.hash(&mut h);
         timeout.map(|duration| duration.as_nanos()).hash(&mut h);
         input.map(|input| input.id).hash(&mut h);
+        control.map(ProcessControl::generation).hash(&mut h);
         h.finish()
     }
 
@@ -398,6 +614,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
                 &self.env,
                 self.timeout,
                 self.input.as_ref(),
+                self.control.as_ref(),
             );
         }
     }
@@ -411,13 +628,14 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         make_msg: impl Fn(ProcessEvent) -> M + Send + Sync + 'static,
     ) -> Self {
         let program = program.into();
-        let id = Self::computed_id(&program, &[], &[], None, None);
+        let id = Self::computed_id(&program, &[], &[], None, None, None);
         Self {
             program,
             args: Vec::new(),
             env: Vec::new(),
             timeout: None,
             input: None,
+            control: None,
             id,
             explicit_id: false,
             make_msg: std::sync::Arc::new(make_msg),
@@ -469,6 +687,17 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         self
     }
 
+    /// Attach supervisor-owned interrupt control for this run.
+    ///
+    /// Clones preserve the automatic subscription ID. A fresh handle changes
+    /// it, including when stdin is disabled. A used handle cannot spawn again.
+    #[must_use]
+    pub fn control(mut self, control: ProcessControl) -> Self {
+        self.control = Some(control);
+        self.refresh_id();
+        self
+    }
+
     /// Override the subscription ID (for explicit deduplication control).
     #[must_use]
     pub fn with_id(mut self, id: SubId) -> Self {
@@ -486,8 +715,28 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
     fn run(&self, sender: SubscriptionSender<M>, stop: StopSignal) {
         let spawn_start = web_time::Instant::now();
         let sub_id = self.id;
+        let _control_guard = if let Some(control) = &self.control {
+            let Some(guard) = control.claim() else {
+                let _ = send_terminal_message(
+                    &sender,
+                    &stop,
+                    self.timeout.map(|timeout| spawn_start + timeout),
+                    (self.make_msg)(ProcessEvent::Error(
+                        "control handle was already used; create fresh control for a new run"
+                            .to_owned(),
+                    )),
+                );
+                return;
+            };
+            Some(guard)
+        } else {
+            None
+        };
         let input_run = if let Some(input) = &self.input {
             let Some(run) = input.claim() else {
+                if let Some(control) = &self.control {
+                    control.close();
+                }
                 let _ = send_terminal_message(
                     &sender,
                     &stop,
@@ -519,6 +768,11 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             cmd.env(k, v);
         }
 
+        #[cfg(target_os = "linux")]
+        if self.control.is_some() {
+            std::os::linux::process::CommandExt::create_pidfd(&mut cmd, true);
+        }
+
         let mut child = match cmd.spawn() {
             Ok(c) => {
                 tracing::debug!(
@@ -532,6 +786,9 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 c
             }
             Err(e) => {
+                if let Some(control) = &self.control {
+                    control.close();
+                }
                 if let Some(input) = &self.input {
                     input.close();
                 }
@@ -555,6 +812,10 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 return;
             }
         };
+
+        if let Some(control) = &self.control {
+            control.started(child.id());
+        }
 
         let deadline = self.timeout.map(|t| web_time::Instant::now() + t);
         let stdout = child.stdout.take();
@@ -676,8 +937,19 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 let _ = child.wait();
                 break ProcessEvent::Killed;
             }
+            if let Some(control) = &self.control {
+                control.dispatch_interrupt(&child);
+            }
         };
 
+        if let Some(control) = &self.control {
+            control.close();
+            // Closing admission is not proof of cleanup. Only an observed
+            // reaped status permits a consumer to offer a safe restart.
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                control.confirm_reaped();
+            }
+        }
         stop_input();
 
         if matches!(
@@ -836,6 +1108,462 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     enum TestMsg {
         Proc(ProcessEvent),
+    }
+
+    #[test]
+    fn control_generation_claim_and_descriptor_identity_are_single_run() {
+        let control = ProcessControl::new();
+        assert_eq!(control.generation(), control.clone().generation());
+        assert_ne!(control.generation(), ProcessControl::new().generation());
+        assert_eq!(
+            control.status(),
+            ProcessControlStatus {
+                pid: None,
+                closed: false,
+                can_restart: true,
+                interrupt: ProcessInterruptStatus::Idle,
+            }
+        );
+        assert_eq!(
+            control.request_interrupt(),
+            Err(if cfg!(unix) {
+                ProcessControlError::NotRunning
+            } else {
+                ProcessControlError::Unsupported
+            })
+        );
+        let descriptor =
+            || ProcessSubscription::new("child", |event| event).control(control.clone());
+        let id = descriptor().id();
+        assert_eq!(id, descriptor().id());
+        assert_ne!(id, ProcessSubscription::new("child", |event| event).id());
+        assert_ne!(
+            id,
+            ProcessSubscription::new("child", |event| event)
+                .control(ProcessControl::new())
+                .id()
+        );
+        assert_eq!(
+            descriptor().with_id(71).control(ProcessControl::new()).id(),
+            71
+        );
+        let guard = control.claim().expect("first claim");
+        assert!(control.claim().is_none());
+        drop(descriptor());
+        assert!(
+            !control.status().closed,
+            "unused descriptors do not close the owner"
+        );
+        drop(guard);
+        assert!(control.status().closed);
+        assert!(control.status().can_restart, "no child was spawned");
+        assert!(
+            control.claim().is_none(),
+            "closed generations cannot be reused"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn control_pending_close_preserves_uncertain_cleanup_and_completed_outcomes() {
+        // These are state-machine assertions, not evidence of child execution.
+        let control = ProcessControl::new();
+        let guard = control.claim().unwrap();
+        control.started(123);
+        assert!(!control.status().can_restart);
+        assert_eq!(control.request_interrupt(), Ok(()));
+        assert_eq!(
+            control.request_interrupt(),
+            Err(ProcessControlError::AlreadyPending)
+        );
+        drop(guard);
+        assert_eq!(
+            control.status(),
+            ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart: false,
+                interrupt: ProcessInterruptStatus::Canceled,
+            }
+        );
+        assert_eq!(
+            control.request_interrupt(),
+            Err(ProcessControlError::Closed)
+        );
+        control.confirm_reaped();
+        assert!(control.status().can_restart);
+        assert_eq!(control.status().interrupt, ProcessInterruptStatus::Canceled);
+
+        for outcome in [
+            ProcessInterruptStatus::Sent,
+            ProcessInterruptStatus::Failed("delivery failed".to_owned()),
+        ] {
+            let control = ProcessControl::new();
+            let guard = control.claim().unwrap();
+            control.started(123);
+            control.state.lock().unwrap().status.interrupt = outcome.clone();
+            drop(guard);
+            assert_eq!(control.status().interrupt, outcome);
+            assert!(!control.status().can_restart);
+        }
+    }
+
+    #[cfg(unix)]
+    fn controlled_python(
+        script: &str,
+        control: &ProcessControl,
+    ) -> ProcessSubscription<ProcessEvent> {
+        ProcessSubscription::new("python3", |event| event)
+            .args(["-u", "-c", script])
+            .control(control.clone())
+            .timeout(Duration::from_secs(5))
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_control_interrupt_continues_stdin_and_duplicate_claim_keeps_owner() {
+        let control = ProcessControl::new();
+        let input = ProcessInput::new();
+        let script = "import signal,sys\ncount=0\ndef interrupt(signum,frame):\n global count\n count+=1\n print('INT-ACK',flush=True)\n if count==2:\n  raise SystemExit(0)\nsignal.signal(signal.SIGINT,interrupt)\nprint('READY',flush=True)\nfor line in sys.stdin:\n print('reply='+line.removesuffix('\\n'),flush=True)\nprint('EOF',flush=True)\nwhile True:\n signal.pause()";
+        let sub = controlled_python(script, &control).stdin(input.clone());
+        let (sender, receiver) = mpsc::sync_channel(256);
+        let (stop, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+        });
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+            ProcessEvent::Stdout("READY".to_owned())
+        );
+        let running = control.status();
+        assert!(running.pid.is_some());
+        assert!(!running.closed);
+        assert!(!running.can_restart);
+
+        let duplicate = controlled_python("raise SystemExit(99)", &control);
+        let (duplicate_sender, duplicate_receiver) = mpsc::sync_channel(1);
+        let (duplicate_stop, _duplicate_trigger) = StopSignal::new();
+        duplicate.run(
+            SubscriptionSender::new(duplicate_sender, duplicate_stop.clone()),
+            duplicate_stop,
+        );
+        assert_eq!(
+            duplicate_receiver.into_iter().collect::<Vec<_>>(),
+            [ProcessEvent::Error(
+                "control handle was already used; create fresh control for a new run".to_owned()
+            )]
+        );
+        assert_eq!(
+            control.status(),
+            running,
+            "duplicate claim must not close its owner"
+        );
+
+        control.request_interrupt().unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+            ProcessEvent::Stdout("INT-ACK".to_owned())
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while control.status().interrupt == ProcessInterruptStatus::Pending
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(control.status().interrupt, ProcessInterruptStatus::Sent);
+        assert_eq!(control.status().pid, running.pid);
+        input
+            .try_send_line("still alive 🦀 $() \\".to_owned())
+            .unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+            ProcessEvent::Stdout("reply=still alive 🦀 $() \\".to_owned())
+        );
+        input.close();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+            ProcessEvent::Stdout("EOF".to_owned())
+        );
+        assert_eq!(control.status().pid, running.pid, "EOF only closes stdin");
+        assert!(!control.status().closed);
+        control.request_interrupt().unwrap();
+        let events: Vec<_> = (0..2)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        handle.join().unwrap();
+        // All positive observations precede any test-requested stop.
+        trigger.stop();
+        assert_eq!(
+            events,
+            [
+                ProcessEvent::Stdout("INT-ACK".to_owned()),
+                ProcessEvent::Exited(0)
+            ]
+        );
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            control.status(),
+            ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart: true,
+                interrupt: ProcessInterruptStatus::Sent,
+            }
+        );
+        assert_eq!(
+            control.request_interrupt(),
+            Err(ProcessControlError::Closed)
+        );
+    }
+
+    #[test]
+    fn control_spawn_failure_closes_admission_without_claiming_a_child() {
+        let control = ProcessControl::new();
+        let sub =
+            ProcessSubscription::new("/ftui-process-control-command-does-not-exist", |event| {
+                event
+            })
+            .control(control.clone())
+            .timeout(Duration::from_secs(2));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let (stop, _trigger) = StopSignal::new();
+        sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+        let events: Vec<_> = receiver.into_iter().collect();
+        assert!(
+            matches!(events.as_slice(), [ProcessEvent::Error(error)] if error.starts_with("Failed to spawn"))
+        );
+        assert_eq!(
+            control.status(),
+            ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart: true,
+                interrupt: ProcessInterruptStatus::Idle,
+            }
+        );
+        assert!(control.claim().is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn control_interrupt_refuses_child_without_retained_pidfd() {
+        let script = "import signal,sys\nsignal.alarm(5)\nprint('READY',flush=True)\nprint(sys.stdin.readline().removesuffix('\\n'),flush=True)";
+        let mut command = Command::new("python3");
+        command
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        std::os::linux::process::CommandExt::create_pidfd(&mut command, false);
+        let mut child = command.spawn().unwrap();
+        let mut output = io::BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        output.read_line(&mut ready).unwrap();
+        let result = interrupt_child(&child);
+        let mut stdin = child.stdin.take().unwrap();
+        let written = stdin.write_all(b"STILL-ALIVE\n");
+        drop(stdin);
+        let mut tail = String::new();
+        let read = output.read_to_string(&mut tail);
+        let status = child.wait().unwrap();
+        // Refusal and the subsequent actual roundtrip are checked after natural
+        // completion; no cleanup signal can manufacture successful survival.
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(
+            error
+                .to_string()
+                .starts_with("retained pidfd unavailable; interrupt not sent:")
+        );
+        assert_eq!(ready, "READY\n");
+        written.unwrap();
+        read.unwrap();
+        assert_eq!(tail, "STILL-ALIVE\n");
+        assert!(status.success());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_control_interrupt_bypasses_full_output_and_blocked_input_queues() {
+        let control = ProcessControl::new();
+        let input = ProcessInput::new();
+        let payload = "x".repeat(MAX_PROCESS_LINE_BYTES);
+        for _ in 0..PROCESS_INPUT_CAPACITY {
+            input.try_send_line(payload.clone()).unwrap();
+        }
+        let (observed_sender, observed_receiver) = mpsc::channel();
+        let script = "import os,signal\ncount=0\ndef interrupt(signum,frame):\n global count\n count+=1\n if count==1:\n  os.write(2,b'INT-ACK\\n')\n else:\n  os._exit(73)\nsignal.signal(signal.SIGINT,interrupt)\nprint('READY '+str(os.getpid()),flush=True)\nfor index in range(257):\n print('out:'+str(index),flush=True)\nwhile True:\n signal.pause()";
+        let sub = ProcessSubscription::new("python3", move |event| {
+            // These observations precede model-channel admission. They prove
+            // supervision while full, not delivery of the unaccepted suffix.
+            if matches!(&event, ProcessEvent::Stdout(line) if line == "out:256")
+                || matches!(&event, ProcessEvent::Stderr(line) if line == "INT-ACK")
+                || matches!(&event, ProcessEvent::Error(_))
+            {
+                observed_sender.send(event.clone()).unwrap();
+            }
+            event
+        })
+        .args(["-u", "-c", script])
+        .stdin(input.clone())
+        .control(control.clone())
+        .timeout(Duration::from_secs(5));
+        let (sender, receiver) = mpsc::sync_channel(256);
+        let (stop, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+        });
+        let ProcessEvent::Stdout(ready) = receiver.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("missing actual child readiness");
+        };
+        let pid: u32 = ready.strip_prefix("READY ").unwrap().parse().unwrap();
+        assert_eq!(
+            observed_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap(),
+            ProcessEvent::Stdout("out:256".to_owned())
+        );
+        // The only stdout reader reached conversion of line 257 after putting
+        // exactly 256 lines into the undrained channel. The child never reads
+        // stdin; a maximum-sized write plus LF cannot finish in its pipe.
+        let mut input_full = false;
+        for _ in 0..PROCESS_INPUT_CAPACITY + 2 {
+            match input.try_send_line(payload.clone()) {
+                Ok(()) => {}
+                Err(ProcessInputError::Full(line)) => {
+                    assert_eq!(line, payload);
+                    input_full = true;
+                    break;
+                }
+                other => panic!("unexpected input admission: {other:?}"),
+            }
+        }
+        assert!(input_full);
+        let requested_at = Instant::now();
+        control.request_interrupt().unwrap();
+        assert_eq!(
+            observed_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap(),
+            ProcessEvent::Stderr("INT-ACK".to_owned())
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while control.status().interrupt == ProcessInterruptStatus::Pending
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(control.status().interrupt, ProcessInterruptStatus::Sent);
+        // This is a distinct request after the first handler acknowledgment.
+        control.request_interrupt().unwrap();
+        let terminal = observed_receiver.recv_timeout(Duration::from_secs(2));
+        let status_before_drain = control.status();
+        let elapsed_before_drain = requested_at.elapsed();
+        let reaped_before_drain = std::fs::metadata(format!("/proc/{pid}"))
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+        // Release backpressure only after capturing the child and supervisor
+        // observations. Cleanup cannot make those prior observations pass.
+        let delivered: Vec<_> = receiver.into_iter().collect();
+        handle.join().unwrap();
+        trigger.stop();
+        let terminal = terminal.unwrap();
+        assert!(
+            matches!(&terminal, ProcessEvent::Error(error)
+                if error.starts_with("stdin write failed")
+                    && error.contains("reaped:")
+                    && error.contains("Exited(73)")),
+            "pending stdin must report its actual SIGINT exit and incomplete I/O: {terminal:?}"
+        );
+        assert!(
+            reaped_before_drain,
+            "child still existed before model drain"
+        );
+        assert!(elapsed_before_drain < Duration::from_secs(2));
+        assert_eq!(
+            status_before_drain,
+            ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart: true,
+                interrupt: ProcessInterruptStatus::Sent,
+            }
+        );
+        let mut expected: Vec<_> = (0..256)
+            .map(|index| ProcessEvent::Stdout(format!("out:{index}")))
+            .collect();
+        expected.push(terminal);
+        assert_eq!(delivered, expected, "accepted FIFO prefix must survive");
+        assert_eq!(
+            control.request_interrupt(),
+            Err(ProcessControlError::Closed)
+        );
+        assert_eq!(
+            input.try_send_line("late".to_owned()),
+            Err(ProcessInputError::Closed("late".to_owned()))
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_control_fresh_generation_restarts_after_terminal_without_stale_interrupts() {
+        use crate::subscription::SubscriptionManager;
+        let mut manager = SubscriptionManager::new();
+        let script = "import signal\ndef interrupt(signum,frame):\n print('INT-EXIT',flush=True)\n raise SystemExit(37)\nsignal.signal(signal.SIGINT,interrupt)\nprint('READY',flush=True)\nwhile True:\n signal.pause()";
+        let receive = |manager: &SubscriptionManager<(u64, ProcessEvent)>, count: usize| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut events = Vec::new();
+            while events.len() < count && Instant::now() < deadline {
+                events.extend(manager.drain_messages());
+                thread::sleep(Duration::from_millis(5));
+            }
+            events
+        };
+        let mut previous: Option<(ProcessControl, SubId)> = None;
+        for _ in 0..2 {
+            let control = ProcessControl::new();
+            let generation = control.generation();
+            let descriptor = || {
+                ProcessSubscription::new("python3", move |event| (generation, event))
+                    .args(["-u", "-c", script])
+                    .control(control.clone())
+                    .timeout(Duration::from_secs(5))
+            };
+            let id = descriptor().id();
+            if let Some((old, old_id)) = &previous {
+                assert_ne!(old.generation(), generation);
+                assert_ne!(*old_id, id);
+            }
+            // There is deliberately no intermediate reconcile([]): the fresh
+            // generation must replace the finished, still-registered old ID.
+            manager.reconcile(vec![Box::new(descriptor())]);
+            assert_eq!(
+                receive(&manager, 1),
+                [(generation, ProcessEvent::Stdout("READY".to_owned()))]
+            );
+            let running = control.status();
+            if let Some((old, _)) = &previous {
+                assert_eq!(old.request_interrupt(), Err(ProcessControlError::Closed));
+                assert_eq!(old.request_interrupt(), Err(ProcessControlError::Closed));
+                assert_eq!(control.status(), running);
+            }
+            manager.reconcile(vec![Box::new(descriptor())]);
+            assert_eq!(manager.active_count(), 1);
+            assert_eq!(control.status(), running);
+            control.request_interrupt().unwrap();
+            assert_eq!(
+                receive(&manager, 2),
+                [
+                    (generation, ProcessEvent::Stdout("INT-EXIT".to_owned())),
+                    (generation, ProcessEvent::Exited(37)),
+                ]
+            );
+            assert!(control.status().closed);
+            assert!(control.status().can_restart);
+            assert_eq!(control.status().interrupt, ProcessInterruptStatus::Sent);
+            assert!(manager.drain_messages().is_empty());
+            previous = Some((control, id));
+        }
+        manager.stop_all();
     }
 
     #[test]
