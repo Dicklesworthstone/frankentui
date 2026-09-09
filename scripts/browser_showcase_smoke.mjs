@@ -84,7 +84,19 @@ async function waitFor(check, name, timeout = 30000) {
 const errorText = 'document.getElementById("error-overlay")?.textContent || ""';
 const statusText = 'document.getElementById("status")?.textContent || ""';
 const linkExpr = 'document.querySelector(\'a[download="frankentui-unprocessed-input.jsonl"]\')';
-const records = () => observations.console.flatMap((text) => { try { return [JSON.parse(text)]; } catch { return []; } });
+const records = (start = 0) => observations.console.slice(start).flatMap((text) => { try { return [JSON.parse(text)]; } catch { return []; } });
+async function freshScenario(name) {
+  const start = observations.console.length;
+  await send("Page.navigate", { url: `${url}&scenario=${name}` });
+  await waitFor(() => records(start).some((row) => row.event === "frame"), `fresh ${name} frame`);
+  assert.equal(await evaluate(errorText), "");
+  return observations.console.length;
+}
+async function recoveredInput(name) {
+  await waitFor(() => evaluate(`Boolean(${linkExpr})`), name);
+  const payload = await evaluate(`(async () => (await fetch(${linkExpr}.href)).text())()`);
+  return payload.trim().split("\n").map((line) => JSON.parse(line));
+}
 async function screenshot(name) {
   const shot = await send("Page.captureScreenshot", { format: "png" });
   await writeFile(`${output}/${name}.png`, Buffer.from(shot.data, "base64"), { flag: "wx" });
@@ -189,6 +201,152 @@ try {
   await screenshot("recovery");
   observations.cases.push("quit-tail-browser-keyboard-download");
   assert.deepEqual(observations.pageErrors, [], "positive flow has no uncaught errors");
+
+  // One browser task delays RAF consumption. The real producer must not evict
+  // the leading quit while accepting a burst of more than 4096 input events.
+  const burstStart = await freshScenario("count-burst");
+  await evaluate(`(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "q", code: "KeyQ", bubbles: true }));
+    for (let i = 0; i < 4097; i++) {
+      const data = new DataTransfer(); data.setData("text", "burst-" + i + " 你好 👩‍💻");
+      window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true }));
+    }
+  })()`);
+  const burstTail = await recoveredInput("quit survives producer count overflow");
+  assert.deepEqual(burstTail.map((row) => row.data.text), Array.from({ length: 4095 }, (_, i) => `burst-${i} 你好 👩‍💻`), "every accepted paste survives in FIFO order");
+  const burstAdmission = records(burstStart).filter((row) => row.event === "input_admission");
+  assert.equal(burstAdmission.length, 4098);
+  assert.deepEqual(burstAdmission.map((row) => row.sequence), Array.from({ length: 4098 }, (_, i) => burstAdmission[0].sequence + i));
+  assert.ok(burstAdmission.slice(0, 4096).every((row) => row.outcome === "accepted" && row.normalized.length === 1 && row.normalized[0].outcome === "queued"));
+  assert.deepEqual(burstAdmission.slice(4096).map((row) => row.outcome), ["rejected", "rejected"]);
+  assert.deepEqual(burstAdmission[4096].normalized, [{ index: 0, outcome: "rejected" }]);
+  assert.equal(burstAdmission[4097].reason, "stopped");
+  assert.ok(burstAdmission.slice(0, 4097).every((row) => row.vt_chunks_discarded === 1 && row.ime_records_discarded === 0), "local VT copies drain on each call");
+  assert.equal(records(burstStart).find((row) => row.event === "step" && !row.running).events_processed, 1, "only q is processed; paste tail is recovered");
+  observations.cases.push("producer-count-burst-exact-quit-tail");
+
+  // The producer can synthesize a start before an update. With one queue slot
+  // left, that prefix is accepted and must survive the rejected primary.
+  const partialStart = await freshScenario("partial-composition");
+  await evaluate(`(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "q", code: "KeyQ", bubbles: true }));
+    for (let i = 0; i < 4094; i++) {
+      const data = new DataTransfer(); data.setData("text", "partial-" + i);
+      window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true }));
+    }
+    document.getElementById("terminal-canvas").dispatchEvent(new CompositionEvent("compositionupdate", { data: "unaccepted 你好", bubbles: true }));
+  })()`);
+  const partialTail = await recoveredInput("recover synthetic composition prefix");
+  assert.deepEqual(partialTail.slice(0, -1).map((row) => row.data.text), Array.from({ length: 4094 }, (_, i) => `partial-${i}`));
+  assert.deepEqual(partialTail.at(-1).data, { kind: "ime", phase: "start", text: "" });
+  const partial = records(partialStart).find((row) => row.event === "input_admission" && row.kind === "composition");
+  assert.equal(partial.outcome, "partial");
+  assert.deepEqual(partial.normalized, [{ index: 0, outcome: "queued" }, { index: 1, outcome: "rejected" }]);
+  assert.equal(partial.ime_records_discarded, 2);
+  observations.cases.push("composition-rewrite-partial-admission");
+
+  // Exact UTF-8 byte boundary: reject both a huge ASCII string and a shorter
+  // multibyte string before normalization, but admit one complete 768 KiB paste.
+  const byteStart = await freshScenario("byte-boundary");
+  await evaluate(`(() => {
+    const paste = text => { const data = new DataTransfer(); data.setData("text", text);
+      window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true })); };
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "q", code: "KeyQ", bubbles: true }));
+    paste("x".repeat(768 * 1024 + 1));
+    paste("界".repeat(768 * 1024 / 3 + 1));
+    const full = "你".repeat((768 * 1024 - 6) / 3) + "FULL01";
+    paste(full); paste(full); paste("after-stop");
+  })()`);
+  const byteTail = await recoveredInput("recover full boundary paste");
+  assert.equal(byteTail.length, 1);
+  assert.equal(byteTail[0].data.text, "你".repeat((768 * 1024 - 6) / 3) + "FULL01");
+  assert.equal(Buffer.byteLength(byteTail[0].data.text), 768 * 1024);
+  const byteAdmission = records(byteStart).filter((row) => row.event === "input_admission");
+  assert.deepEqual(byteAdmission.map((row) => row.outcome), ["accepted", "rejected", "rejected", "accepted", "rejected", "rejected"]);
+  assert.ok(byteAdmission.slice(1, 3).every((row) => row.reason === "text_too_large" && row.normalized.length === 0 && row.vt_chunks_discarded === 0));
+  assert.equal(byteAdmission[3].normalized[0].outcome, "queued");
+  assert.equal(byteAdmission[4].normalized[0].outcome, "rejected");
+  observations.cases.push("producer-utf8-byte-boundary-and-full-paste");
+
+  // Exercise successful capacity drain/retry too, with an active consumer.
+  const retryStart = await freshScenario("byte-retry");
+  await evaluate(`(() => {
+    const paste = text => { const data = new DataTransfer(); data.setData("text", text);
+      window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true })); };
+    for (let i = 0; i < 6; i++) paste(String(i) + "好".repeat(128 * 1024));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "q", code: "KeyQ", bubbles: true }));
+    paste("retry-tail 👩‍💻");
+  })()`);
+  const retryTail = await recoveredInput("recover after successful capacity retries");
+  assert.deepEqual(retryTail.map((row) => row.data.text), ["retry-tail 👩‍💻"]);
+  const retryAdmission = records(retryStart).filter((row) => row.event === "input_admission");
+  assert.equal(retryAdmission.length, 8);
+  assert.ok(retryAdmission.every((row) => row.outcome === "accepted" && row.normalized[0].outcome === "queued"));
+  const retrySteps = records(retryStart).filter((row) => row.event === "step");
+  assert.deepEqual(retrySteps.map((row) => row.events_processed), [2, 2, 3]);
+  assert.deepEqual(retrySteps.map((row) => row.rendered), [true, true, false]);
+  const retryRecords = records(retryStart);
+  for (const step of retrySteps.filter((row) => row.rendered)) {
+    const start = retryRecords.findIndex((row) => row.event === "step" && row.frame_idx === step.frame_idx);
+    const remaining = retryRecords.slice(start + 1);
+    const frame = remaining.findIndex((row) => row.event === "frame" && row.frame_idx === step.frame_idx);
+    const next = remaining.findIndex((row) => row.event === "step" || row.event === "input_admission");
+    assert.ok(frame >= 0 && (next < 0 || frame < next), "each intermediate frame is presented before the retry completes");
+  }
+  await screenshot("byte-retry");
+  observations.cases.push("producer-byte-capacity-drain-retry");
+
+  for (const phase of ["update", "end"]) {
+    const imeStart = await freshScenario(`oversized-ime-${phase}`);
+    await evaluate(`(() => {
+      const canvas = document.getElementById("terminal-canvas");
+      const composition = (phase, data = "") => canvas.dispatchEvent(new CompositionEvent("composition" + phase, { data, bubbles: true }));
+      composition("start"); composition("update", "stale-preedit");
+      composition(${JSON.stringify(phase)}, "界".repeat(768 * 1024 / 3 + 1));
+      if (${JSON.stringify(phase)} === "update") composition("end");
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "q", code: "KeyQ", bubbles: true }));
+      const data = new DataTransfer(); data.setData("text", "ime-${phase}-tail");
+      window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true }));
+    })()`);
+    const imeTail = await recoveredInput(`ordinary key works after oversized IME ${phase}`);
+    assert.deepEqual(imeTail.map((row) => row.data.text), [`ime-${phase}-tail`]);
+    const imeAdmission = records(imeStart).filter((row) => row.event === "input_admission");
+    const rejection = imeAdmission.find((row) => row.reason === "text_too_large");
+    assert.equal(rejection.outcome, "rejected");
+    assert.deepEqual(rejection.normalized, []);
+    assert.deepEqual(rejection.cancellation.normalized, [{ index: 0, outcome: "queued" }]);
+    assert.equal(rejection.cancellation.ime_records_discarded, 1);
+    if (phase === "update") assert.ok(imeAdmission.some((row) => row.reason === "composition_cancelled" && row.normalized.length === 0), "failed session's trailing end is rejected");
+    assert.ok(imeAdmission.some((row) => row.kind === "key" && row.normalized[0]?.outcome === "queued"), "q is not suppressed by stale composition state");
+    assert.equal(records(imeStart).find((row) => row.event === "step" && !row.running).events_processed, 4, "start/update/cancel/q only; stale preedit is never committed");
+    observations.cases.push(`cancel-oversized-composition-${phase}`);
+  }
+  assert.deepEqual(observations.pageErrors, [], "all positive admission journeys have no uncaught errors");
+
+  // Rejection must remain visible with logging OFF, after RAF has stopped,
+  // without replacing the recovery anchor or appending unaccepted input to it.
+  await send("Page.navigate", { url: `${url.replace("jsonl=1", "jsonl=0")}&scenario=stopped-notice` });
+  await waitFor(() => evaluate('location.search.includes("jsonl=0") && document.getElementById("loading-overlay") && document.getElementById("status") && getComputedStyle(document.getElementById("loading-overlay")).opacity === "0" && document.getElementById("status").textContent.includes("panes")'), "quiet showcase startup");
+  const quietStart = observations.console.length;
+  await evaluate(`(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "q", code: "KeyQ", bubbles: true }));
+    const data = new DataTransfer(); data.setData("text", "quiet accepted tail");
+    window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true }));
+  })()`);
+  const quietTail = await recoveredInput("quiet recovery link");
+  const quietHref = await evaluate(`${linkExpr}.href`);
+  assert.deepEqual(quietTail.map((row) => row.data.text), ["quiet accepted tail"]);
+  await evaluate(`(() => {
+    const data = new DataTransfer(); data.setData("text", "quiet rejected canary");
+    window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true }));
+  })()`);
+  assert.equal(await evaluate('document.getElementById("input-rejection-count")?.textContent.trim() || ""'), "— 1 input rejected");
+  assert.equal(await evaluate(`${linkExpr}.href`), quietHref);
+  assert.deepEqual(await recoveredInput("quiet recovery unchanged"), quietTail);
+  assert.ok(!records(quietStart).some((row) => row.event === "input_admission"));
+  assert.ok(!observations.console.some((line) => line.includes("quiet rejected canary")));
+  assert.deepEqual(observations.pageErrors, [], "quiet admission journey has no uncaught errors");
+  observations.cases.push("visible-stopped-rejection-with-logging-off");
 
   for (const name of ["missing", "corrupt", "revision", "abi"]) {
     fault = name;

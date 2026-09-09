@@ -94,8 +94,13 @@ and both JS/WASM packages together. The host verifies package bytes against
 `pkg/manifest.json` before execution and checks the renderer API contract.
 Deploy the complete `site/` directory together. Integrity checks detect mixed or
 corrupt packages; they do not authenticate a manifest or prevent a coherent
-rollback of an entire site. The historical renderer's queue overflow policy,
-grapheme transport and full browser/device matrix remain open work.
+rollback of an entire site. The local host forwards input immediately into the
+bounded runner instead of accumulating it in the historical renderer's
+drop-oldest queue. It bounds each producer input object's combined text to
+768 KiB of UTF-8 before encoding, cancels oversized compositions, and reports rejected input without
+printing its contents. Accepted input remaining after quit is downloadable;
+later rejections leave that recovery link intact. The standalone renderer's
+queue policy, grapheme transport and full browser/device matrix remain open.
 
 For a real browser smoke test, launch Chrome with a retained profile and CDP
 endpoint on the DSR host, then use Node 22+ directly (no automation package):
@@ -106,8 +111,10 @@ node scripts/browser_showcase_smoke.mjs SITE NEW_EVIDENCE_DIR CDP_URL
 
 The test exercises actual rendering startup/resize, quit-tail recovery and a
 keyboard-activated browser download, plus missing/corrupt/wrong-revision/ABI
-package failures. It asserts visible compositor pixels and retains screenshots
-and browser observations. Synthetic DOM inputs
+package failures. Input checks cover a 4,098-event burst, partial composition
+admission, exact UTF-8 byte boundaries, capacity drain/retry frames, oversized
+IME cancellation and visible rejection with logging off. It asserts visible
+compositor pixels and retains screenshots and browser observations. Synthetic DOM inputs
 do not establish physical keyboard/IME/mobile behavior; inspect the recorded
 renderer backend before making GPU claims.
 

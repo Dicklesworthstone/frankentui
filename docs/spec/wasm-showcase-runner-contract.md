@@ -265,56 +265,66 @@ term.render();
 
 ### Real-Time Mode
 
+The runnable reference is
+[`frankentui_showcase_demo.html`](../../crates/ftui-showcase-wasm/frankentui_showcase_demo.html).
+Its `safeTermInput` helper encodes and drains input **inside each DOM callback**.
+Waiting until the next animation frame lets the pinned renderer's historical
+drop-oldest queue silently evict input during a burst. The runner is the only
+waiting input queue in this local host.
+
+`safeTermInput` checks the UTF-8 size of `data`, `key`, and `code` before calling
+the producer, with a combined limit of 768 KiB per `safeTermInput` input object.
+This matches the pinned producer's paste rejection cap and also bounds
+composition payloads before encoding. Mobile helpers can split one DOM text
+event into individual key objects; this is not an aggregate limit on that
+original DOM event. Oversized IME
+updates or commits cancel the active composition; trailing events from a
+cancelled session cannot commit stale preedit. A new composition start resets
+that state.
+
+After each producer call, the host forwards every normalized record, including
+synthetic composition starts. Each record receives a `queued`, `surface_only`,
+or `rejected` outcome. On capacity pressure it steps the runner, presents every
+intermediate patch, and retries once. A quit during that step rejects the new
+record while preserving the already accepted tail. A DOM event can therefore
+be partly accepted; the host accounts for its entire normalized suffix instead
+of throwing over it. Rejections remain visible even with JSONL logging off and
+after the recovery link appears. No input contents are printed in diagnostics.
+
+The local showcase has no remote PTY or IME trace consumer. It explicitly drains
+and discards the producer's unused VT-byte and IME-diagnostic mirrors after each
+call, rather than retaining those duplicate payloads. This local policy does
+not establish delivery for a remote consumer or repair the standalone producer
+API's count-only, drop-oldest queues.
+
+The host's clock/frame loop uses these helpers as follows (this is an excerpt,
+not a standalone host):
+
 ```js
-function stepAndPresent() {
-    const result = runner.step();
-    if (result.rendered) {
-        const patches = runner.takeFlatPatches();
-        term.applyPatchBatchFlat(patches.spans, patches.cells);
-        term.render();
-    }
-    if (!result.running && result.events_pending > 0) {
-        throw new Error(`Runner stopped with ${result.events_pending} accepted inputs pending; contents withheld`);
-    }
-    return result;
-}
-
-runner.init();
-const initial = runner.takeFlatPatches(); // Preserve init output before retries.
-if (initial.cells.length > 0) {
-    term.applyPatchBatchFlat(initial.spans, initial.cells);
-    term.render();
-}
-
 let lastTs = 0;
 function frame(timestamp) {
     const dt = lastTs === 0 ? 16.0 : timestamp - lastTs;
     lastTs = timestamp;
-
     runner.advanceTime(dt);  // milliseconds, f64
 
-    const inputs = term.drainEncodedInputs();
-    for (const json of inputs) {
-        let input;
-        try { input = JSON.parse(json); }
-        catch { throw new Error("Malformed input rejected; contents withheld"); }
-        if (input?.kind === "touch" || input?.kind === "accessibility") continue;
-        if (runner.pushEncodedInput(json)) continue;
-        // Drain and apply every intermediate batch before one retry.
-        if (!stepAndPresent().running || !runner.pushEncodedInput(json)) {
-            throw new Error("Input rejected after draining; contents withheld");
-        }
+    // DOM callbacks have already admitted input into the bounded runner.
+    const result = stepAndPresentRunner();
+    if (result.running) {
+        requestAnimationFrame(frame);
+    } else {
+        retainPendingRunnerInput(); // Downloadable accepted FIFO tail.
+        runner.destroy();
     }
-
-    const result = stepAndPresent();
-    if (result.running) requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 ```
 
-This example halts on permanent rejection; a host may instead show a redacted
-status under an explicit rejection policy. Host drain/retry storage also needs
-bounds. This example is not evidence of browser verification.
+Initialization's patches must likewise be presented before any input retry can
+produce another frame. A successful admission means queued, not processed:
+`step.events_processed` records processing, and `takePendingInputTrace()`
+recovers accepted events remaining after quit. The reference smoke script
+checks these distinctions through the real packages; synthetic DOM composition
+events do not establish physical IME, mobile, or Safari behavior.
 
 `advanceTime(dt_ms)` ignores non-finite/non-positive deltas and clamps accepted
 deltas to a representable `Duration`.

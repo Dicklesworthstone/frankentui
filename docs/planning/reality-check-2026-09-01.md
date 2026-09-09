@@ -13,7 +13,8 @@ The published product is the frozen, tagged commit
 `798efa0bb746601cea78b75ad8bc859f738a6456`. Subsequent changes repair doctor
 verification and, in the current execution block, connect optional Asupersync
 task execution, bounded web input admission, explicit quit/replay recovery,
-and a buildable first-party browser renderer package.
+a buildable first-party browser renderer package, and eager local input
+forwarding that prevents producer-queue eviction during browser bursts.
 These changes are on main;
 the published 0.7.0 artifacts remain the tagged source. All **905 lines of
 AGENTS.md and 2,902 lines of README.md** were read afresh, along with both
@@ -202,11 +203,87 @@ passing checks. The historical renderer warning, Linux blank viewport,
 producer drop-oldest/byte limits, graphemes, physical input/IME, device loss,
 fallback and full mobile/Safari matrix remain explicit limits.
 
+### September 9 local browser input continuation
+
+Starting from `a1bf94026f0dfa921e32b2cf2a6fef9653f48d09`, a real Mac browser
+reproduction dispatched `q` followed by 4,097 distinct Unicode pastes in one
+DOM task. The unchanged host waited until RAF to drain the producer, which
+evicted the leading quit from its 4,096-entry queue. The app kept running;
+DSR `frankentui-browser-admission-baseline`, run
+`b1945422-a433-4689-8399-725d7c22bcd0`, failed at
+`quit survives producer count overflow`. This is an observed input-loss defect,
+not merely the earlier source finding.
+
+The host now forwards each producer call immediately into the bounded Rust
+runner. It reports every normalized record's admission, including a synthetic
+IME prefix accepted before its primary is rejected. Capacity retries present
+each intermediate frame. A 768 KiB combined UTF-8 limit per producer input
+object bounds paste/composition before encoding; an oversized composition
+cancels stale preedit. Unused local VT-byte and IME-diagnostic copies are drained
+and discarded explicitly. Rejection remains visible with logging disabled,
+including after shutdown, while the accepted-tail download remains intact.
+
+The final package build is DSR `frankentui-browser5`, run
+`54973286-1de2-454f-899b-1952a1882faf`, exit 0, source-manifest SHA256
+`f3ce230632cd8a18fbc566d3336241e9325f99cd179735233d99a31bc5f013f5`.
+It uses the same pinned renderer, locks, exact dated toolchain, target and
+features as build3. JS/WASM hashes are unchanged; the updated host SHA256 is
+`3d3ef229c9fae17eb13c89e745b308edbd8174c146871981f7b6bd41842e490b`.
+Workspace fmt, locked all-target check, strict Clippy and strict rustdoc all
+passed under DSR `frankentui-browser4-native`, run
+`5450afaf-58c3-4bd6-a351-0f0382b91729`, on manifest
+`6ed25f0ae88597cefd28ee2929c7bd6987df03bc62652488ce71c72be38b5325`.
+All Rust, dependency, toolchain and build-helper bytes match the final tree;
+later differences are HTML, browser tests, documentation and Beads. This block
+changes no Rust and does not claim a new execution of the prior Rust suites.
+
+DSR `frankentui-browser-mac5`, run `3da81773-bd36-44b5-b8c6-4b7cdd2e885c`,
+exit 0, runs final smoke SHA256
+`c257a39a7f92f6b8b9b1159840f1724547675b4c5e46a0d4c7c44cefc59e8e76`
+against the final host on Chrome `153.0.8010.36`, Apple M4 Pro/Metal. All nine
+positive journeys and four loader negatives execute. The burst recovers
+exactly 4,095 original pastes in FIFO order and explicitly rejects the two
+later pastes. Partial composition recovers the accepted synthetic start.
+Byte checks recover the complete 768 KiB Unicode paste, reject ASCII and
+multibyte over-limit text, and preserve the exact accepted tail on pressure.
+The drain/retry journey observes processed counts `[2, 2, 3]`, rendered flags
+`[true, true, false]`, and each intermediate frame before the next admission.
+Separate oversized IME update/end cases process start/update/cancel/quit
+without committing stale preedit. Logging-off rejection preserves the recovery
+href and bytes. Four actual compositor screenshots pass the unchanged
+16-color guard (5,572/3,901/3,820/3,864); the retry screenshot was inspected.
+
+Retained evidence under `/data/retained/ftui-release-20260908-greenlynx/`:
+
+- `browser5-site.tar`: SHA256
+  `6c718dbf99d819a1f45d90d25b5fb37a608be3e5b59c901fdd22c2cb662a5cc0`.
+- `browser-admission-evidence/evidence5/observations.json`: SHA256
+  `aa581e167bc0373bdf9e7ad3a3a9ae0454e5743e77d94abefbe2809fe508b898`.
+- `browser-admission-evidence/evidence5/byte-retry.png`: SHA256
+  `0a0b54443f3c09387b97a554230bb6d25cb2afa6351b79254a876ac05e5ae8f4`.
+- `browser-admission-evidence/admission-baseline-evidence/` retains the failed
+  old-host run. `browser5.sh/.yaml`, `browser4-native.sh/.yaml` and
+  `browser-mac5.sh/.yaml` record exact DSR commands; corresponding receipts and
+  complete logs remain under `~/.local/state/dsr/quality-logs/`. Invalid DSR
+  duration fields remain unusable as timing measurements.
+
+IcyBarn independently reviewed source and test assertions; GreenLynx executed
+the browser checks. Review caught the initially invisible stopped rejection,
+an old RAF-only documentation sample and potentially vacuous retry assertions;
+all were corrected before this final run. No screenshot golden or tolerance
+was changed. Synthetic DOM/CDP events are not physical IME/mobile proof. The
+retry test checks processing counts, not each processed paste's semantic effect
+inside the dashboard. Mobile helpers split some DOM text events into individual
+key inputs, so the per-object text cap is not an aggregate mobile-event limit.
+Standalone producer queue admission, remote auxiliary delivery, graphemes,
+transport flood/reconnect, lifecycle and the full GPU/device matrix remain
+unfinished in the original `.29.7/.29.8/.29.9` items. None is closed by this work.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
-| Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; Rust and JS recovery return the accepted FIFO tail without executing it. The rebuilt historical renderer still drops its oldest queued input on overflow before this boundary. | `.29.7/.29.8/.29.9`: actual Mac browser rendering and recovery download now pass. Fix the producer queue and grapheme transport, then complete the original browser/GPU/IME/mobile matrix and packaging validation obligations. |
+| Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
 | Interactive process stream | `process_subscription.rs:172–320`: `BufRead::lines`, unbounded sender, null stdin, immediate-child kill/wait. `Cmd::Log` already exists. | `.32.1–.32.3` after `.33.1/.33.2`: reuse working APIs; add the missing complete journey, newline-free/invalid-UTF-8/huge output, blocked consumers, child stdin policy and descendant cancellation. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
@@ -261,6 +338,18 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.29.8`: drive synthetic quit plus Unicode paste through the real renderer
   and Rust model; verify exact recovered JSONL, stable link after zoom and an
   actual keyboard-activated browser download with matching file bytes.
+- [x] `.29.8`: reproduce leading-quit eviction with 4,097 following pastes in
+  the unchanged real browser host; retain the failed baseline.
+- [x] `.29.8`: eagerly forward normalized producer output, bound text per input
+  object, drain unused local mirrors, and account for partial IME admission.
+- [x] `.29.8`: run exact FIFO count/UTF-8 capacity, full-paste, intermediate-frame
+  retry, oversized IME cancellation and logging-off stopped-rejection checks.
+- [x] `.29.8`: retain all earlier pixel/resize/keyboard-download/loader controls,
+  execute final DSR browser and workspace gates, and correct independent review
+  findings without changing original acceptance or closing the full item.
+- [ ] `.29.8/.29.9`: repair standalone historical producer admission and
+  auxiliary/transport consumers; exercise output flood and reconnect alongside
+  the existing physical input/IME, touch, lifecycle and GPU obligations.
 - [ ] `.29.7`: finish the explicitly requested isolated artifact/contract unit
   and boundary validation, along with the original expanded host obligations.
 - [ ] `.29.7–.29.9`: finish first-party renderer packaging and execute current

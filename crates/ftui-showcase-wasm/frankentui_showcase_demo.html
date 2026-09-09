@@ -266,12 +266,27 @@ const paneTouchPointers = new Set();
 const activeTouchPointerIds = new Set();
 let paneGhostDecay = null;
 let paneOverlaySyncFailed = false;
+let rejectedInputCount = 0;
+
+function updateInputRejectionStatus() {
+  if (!rejectedInputCount) return;
+  let counter = document.getElementById("input-rejection-count");
+  if (!counter) {
+    counter = document.createElement("span");
+    counter.id = "input-rejection-count";
+    counter.setAttribute("role", "status");
+    counter.setAttribute("aria-live", "polite");
+    status.append(counter);
+  }
+  counter.textContent = ` — ${rejectedInputCount} input rejected`;
+}
 
 function showError(msg) {
   errorDiv.textContent = msg;
   errorDiv.classList.add("visible");
   loadingOverlay.classList.add("hidden");
   status.textContent = "Error";
+  updateInputRejectionStatus();
   console.error("[ShowcaseDemo]", msg);
 }
 
@@ -398,7 +413,7 @@ try {
   ) {
     throw new Error("Unsupported first-party renderer API contract");
   }
-  for (const method of ["init", "applyPatchBatchFlat", "render", "input", "drainEncodedInputs", "destroy"]) {
+  for (const method of ["init", "applyPatchBatchFlat", "render", "input", "drainEncodedInputs", "drainEncodedInputBytes", "drainImeCompositionJsonl", "destroy"]) {
     if (typeof term[method] !== "function") throw new Error(`Renderer is missing ${method}`);
   }
   for (const method of ["init", "step", "pushEncodedInput", "takeFlatPatches", "takePendingInputTrace"]) {
@@ -801,6 +816,7 @@ function renderPaneGhost(state) {
 
 function updatePaneStatusSuffix(state) {
   if (!state) return;
+  if (!runner.isRunning() || errorDiv.classList.contains("visible")) return;
   const timeline = `${state.timeline_cursor || 0}/${state.timeline_length || 0}`;
   const selected = Array.isArray(state.selected_ids) ? state.selected_ids.length : 0;
   const zone = state.dock_zone ? ` ${state.dock_zone}` : "";
@@ -816,6 +832,7 @@ function updatePaneStatusSuffix(state) {
     status.textContent =
       `${currentCols}\u00d7${currentRows} \u2014 panes ${timeline} sel ${selected}${modeText}${glideText}${snapText}`;
   }
+  updateInputRejectionStatus();
 }
 
 function syncPaneOverlayFromRunner() {
@@ -1155,6 +1172,9 @@ function retainPendingRunnerInput(destination = status) {
 // patch batch: later diffs depend on these frames having reached the terminal.
 function stepAndPresentRunner() {
   const result = runner.step();
+  if (result.events_processed > 0 || !result.running) {
+    jsonl({ event: "step", ...result, ts: Date.now() });
+  }
   if (result.rendered) {
     const patches = takeRunnerPatches();
     if (patches.cells.length > 0) {
@@ -1182,23 +1202,21 @@ function stepAndPresentRunner() {
 }
 
 function pushRunnerInput(input) {
-  if (runner.pushEncodedInput(input)) return true;
+  if (!runner.isRunning()) return "rejected";
+  if (runner.pushEncodedInput(input)) return "queued";
   // These events belong to the display surface and have no runner mapping.
   let decoded;
   try { decoded = JSON.parse(input); } catch (_) { /* Report without parser text below. */ }
   const kind = decoded?.kind;
   if (kind === "touch" || kind === "accessibility" ||
-      (kind === "wheel" && (decoded.dx ?? 0) === 0 && (decoded.dy ?? 0) === 0)) return false;
+      (kind === "wheel" && (decoded.dx ?? 0) === 0 && (decoded.dy ?? 0) === 0)) return "surface_only";
   if (!stepAndPresentRunner().running) {
-    throw new Error("Runner stopped before pending input could be accepted");
+    return "rejected";
   }
-  if (runner.pushEncodedInput(input)) return true;
+  if (runner.pushEncodedInput(input)) return "queued";
   // A retry on an empty queue can still reject malformed/unsupported input or
   // a payload that exceeds the byte cap. Report the rejection without its text.
-  status.textContent = "Input rejected: unsupported event or text exceeds capacity";
-  console.warn("Runner rejected input after draining; input contents withheld");
-  jsonl({ event: "input_rejected", reason: "unsupported_or_oversized", ts: Date.now() });
-  return false;
+  return "rejected";
 }
 
 // Navigate to a specific screen if requested via URL.
@@ -1263,6 +1281,7 @@ function setRunningStatusText() {
   } else {
     status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
   }
+  updateInputRejectionStatus();
 }
 
 let pendingGeometrySync = false;
@@ -1366,20 +1385,106 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 }
 
 // ── Input forwarding ───────────────────────────────────────────────────
-// DOM events -> FrankenTermWeb.input() -> drainEncodedInputs() -> runner
+// Encode and forward in the same DOM callback. The pinned producer rewrites
+// one input into at most two records; never let its drop-oldest queue build up.
+// The runner is the only waiting input queue in this local showcase.
+const MAX_HOST_INPUT_TEXT_BYTES = 768 * 1024; // Pinned producer's paste limit.
+const inputTextEncoder = new TextEncoder();
+let inputSequence = 0;
+let rejectedComposition = false;
 
-function safeTermInput(ev) {
+function inputTextFits(ev) {
+  let bytes = 0;
+  for (const field of ["data", "key", "code"]) {
+    const text = ev[field];
+    if (typeof text !== "string") continue;
+    // Reject obviously huge strings before allocating an encoded copy.
+    if (text.length > MAX_HOST_INPUT_TEXT_BYTES - bytes) return false;
+    bytes += inputTextEncoder.encode(text).length;
+    if (bytes > MAX_HOST_INPUT_TEXT_BYTES) return false;
+  }
+  return true;
+}
+
+function forwardSurfaceInput(ev) {
+  let reason = null;
+  let inputs;
+  let vtChunks = 0;
+  let imeRecords = 0;
   try {
     term.input(ev);
-    return true;
   } catch (_) {
-    // Events and renderer exception messages can contain paste/IME contents.
-    // Report the failure without either payload.
-    console.error("[ShowcaseDemo] term.input failed; input contents withheld");
-    status.textContent = "Input rejected by terminal surface";
-    jsonl({ event: "input_rejected", reason: "terminal_input_failed", ts: Date.now() });
-    return false;
+    reason = "terminal_input_failed";
+  } finally {
+    // This is a local application, with no remote PTY or IME trace consumer.
+    // Discard these duplicate/diagnostic copies explicitly, after every call;
+    // their old count-only queues otherwise retain arbitrarily large payloads.
+    inputs = term.drainEncodedInputs();
+    vtChunks = term.drainEncodedInputBytes().length;
+    imeRecords = term.drainImeCompositionJsonl("showcase-local", 0n, "").length;
   }
+  const normalized = [];
+  let runnerFailed = false;
+  for (let index = 0; index < inputs.length; index++) {
+    let outcome = "rejected";
+    if (!runnerFailed) {
+      try {
+        outcome = pushRunnerInput(inputs[index]);
+      } catch (_) {
+        runnerFailed = true;
+        reason = "runner_input_failed";
+      }
+    }
+    // Preserve a queued synthetic prefix if the primary is rejected after quit.
+    // Account for every remaining record; never throw past this drained suffix.
+    normalized.push({ index, outcome });
+  }
+  if (runnerFailed) {
+    showError("Input forwarding failed. Save unprocessed input before reloading.");
+    retainPendingRunnerInput(errorDiv);
+    runner.destroy();
+  }
+  return { normalized, reason, vt_chunks_discarded: vtChunks, ime_records_discarded: imeRecords };
+}
+
+function safeTermInput(ev) {
+  const sequence = inputSequence++;
+  let reason = null;
+  let result = { normalized: [], vt_chunks_discarded: 0, ime_records_discarded: 0 };
+  let cancellation = null;
+  if (!runner.isRunning() || errorDiv.classList.contains("visible")) {
+    reason = "stopped";
+  } else if (ev.kind === "composition" && rejectedComposition && ev.phase !== "start") {
+    reason = "composition_cancelled";
+    if (ev.phase === "end" || ev.phase === "cancel") rejectedComposition = false;
+  } else if (!inputTextFits(ev)) {
+    reason = "text_too_large";
+    if (ev.kind === "composition") {
+      // Do not leave stale preedit active or commit it on a trailing empty end.
+      rejectedComposition = ev.phase !== "end" && ev.phase !== "cancel";
+      cancellation = forwardSurfaceInput({ kind: "composition", phase: "cancel" });
+    }
+  } else {
+    if (ev.kind === "composition" && ev.phase === "start") rejectedComposition = false;
+    result = forwardSurfaceInput(ev);
+    reason = result.reason;
+  }
+  const queued = result.normalized.some((record) => record.outcome === "queued");
+  const rejected = Boolean(reason) || result.normalized.some((record) => record.outcome === "rejected");
+  const outcome = rejected ? (queued ? "partial" : "rejected")
+    : result.normalized.length ? "accepted" : "suppressed";
+  if (rejected) {
+    rejectedInputCount++;
+    // Preserve a stopped application's recovery link and never print input text.
+    if (runner.isRunning() && !errorDiv.classList.contains("visible")) {
+      status.textContent = `Input rejected: ${reason || "runner capacity or unsupported input"}`;
+    }
+    updateInputRejectionStatus();
+    jsonl({ event: "input_rejected", sequence, reason: reason || "runner_rejected", ts: Date.now() });
+  }
+  jsonl({ event: "input_admission", sequence, kind: ev.kind, outcome, ...result, reason,
+    cancellation, ts: Date.now() });
+  return !rejected;
 }
 
 function isCoarsePointerDevice() {
@@ -2518,6 +2623,7 @@ canvas.addEventListener("touchcancel", (e) => {
 
 // ── Host frame loop ────────────────────────────────────────────────────
 function frame(timestamp) {
+  if (errorDiv.classList.contains("visible")) return;
   try {
     const dt = lastTs === 0 ? 16.0 : timestamp - lastTs;
     lastTs = timestamp;
@@ -2528,13 +2634,7 @@ function frame(timestamp) {
     // 2. Advance deterministic clock.
     runner.advanceTime(dt);
 
-    // 3. Drain normalized inputs from FrankenTermWeb -> push to runner.
-    const inputs = term.drainEncodedInputs();
-    for (let i = 0; i < inputs.length; i++) {
-      pushRunnerInput(inputs[i]);
-    }
-
-    // 4. Step the application.
+    // 3. Input already reached the bounded runner in its DOM callback.
     const result = stepAndPresentRunner();
     syncPaneOverlayFromRunner();
 
@@ -2543,6 +2643,7 @@ function frame(timestamp) {
       requestAnimationFrame(frame);
     } else {
       status.textContent = `${currentCols}\u00d7${currentRows} \u2014 stopped (${totalFrames} frames)`;
+      updateInputRejectionStatus();
       jsonl({ event: "quit", total_frames: totalFrames, ts: Date.now() });
       retainPendingRunnerInput();
       runner.destroy();
