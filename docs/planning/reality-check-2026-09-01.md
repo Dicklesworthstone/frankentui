@@ -624,16 +624,71 @@ and IcyBarn independently reviewed source/tests and the observer. Review replace
 an allocator-address identity proposal with generations and strengthened the
 quit observer's exact-output assertion. No existing test was weakened. UBS/RCH
 remain unavailable under the documented deletion constraint; no Actions ran.
-Original `.32.1` remains in progress with signal/restart, partial-byte output,
+At this checkpoint, original `.32.1` remained in progress with signal/restart, partial-byte output,
 descendant ownership, full CLI/log/link behavior and published-consumer/host
 acceptance intact. This increment does not create a new release.
+
+### September 9 supervised interrupts and same-command restart
+
+`ProcessControl` now gives each run a shared generation, PID/status snapshot
+and one pending interrupt independent of stdin and model queue capacity. The
+supervisor owns Unix SIGINT delivery; Linux requires a retained pidfd and refuses
+numeric-PID fallback. Sent means OS acceptance, not handler acknowledgment.
+Closed admission is separate from confirmed child reaping and output completion.
+
+The existing streaming consumer attaches control in every command mode. First
+Ctrl-C requests an interrupt; a second distinct press within two seconds quits.
+Repeats are ignored and exactly two seconds starts another request window. F5
+restarts after the current terminal event and confirmed cleanup, retaining the
+log/draft and creating fresh control/input handles. Generation tags reject every
+old process event before mutation. Final interrupt feedback precedes terminal
+status even when a short run finishes before the 250 ms status poll.
+
+Verified code is committed in `97c958c6` and `b6d6076f`, with the complete tested
+snapshot at `95f7558f547534ead316f322fc89f9adfe9289c1`. Its 2,497-file manifest is
+`7c2516e1ef5f8273fa40e5e29bbd7e0af91c46c45e105e6c9a5508ba5192525f`.
+Final DSR receipts are `frankentui-control2b-native/20260909T141013-3820816` and
+`frankentui-control2-wasm/20260909T141049-3825376`. Both used the configured `trj`
+host sequentially, pinned nightly/rustc, and an isolated copy of that commit.
+Source states and log hashes match. All required workspace fmt/check/strict
+Clippy/strict rustdoc and web/showcase WASM checks pass. The 164 selected tests
+comprise 117 runtime (1,882 excluded), 23 lifecycle/effect, six trace-fixture
+(four excluded), 12 example and six Node/WASM tests. The deletion-test exclusion
+is unchanged; this is not the full workspace suite or other-native-host proof.
+
+All 12 PTY journeys pass, including actual handler acknowledgment with continued
+stdin, interrupt-then-quit, and restart both with and without stdin. They check
+exact child records, the restart boundary, permitted control feedback, raw and
+restored termios, and immediate-child absence before releasing the retained
+session leader. Native tests additionally prove interrupts after EOF, refusal
+without a pidfd followed by child survival, and reaping with both queues full
+before model drain. Synthetic timing/status tests are labeled as such. CPR9;1
+is declared protocol emulation; no physical-rendering or descendant proof is claimed.
+
+Artifacts and all four receipts are retained under
+`/data/retained/ftui-process-control-20260909-greenlynx/`. Candidate1 failed only
+formatting, corrected manually. Candidate2 passed every command but DSR rejected
+its moving-revision aggregate: an outside commit operation advanced shared main
+during verification. Every file still matched the tested manifest. The final
+native rerun and WASM run used an isolated, retained copy of the committed source.
+Neither failed aggregate is reported as passing. DSR duration fields remain
+malformed; existing nix future-compatibility warnings remain visible. UBS/RCH
+remain unavailable under their documented deletion constraints; no Actions ran.
+
+DustySalmon implemented the consumer and reviewed final wiring; IcyBarn added
+runtime tests and reviewed the observer; GreenLynx implemented control and ran
+DSR. Review caught missed terminal feedback and overly broad control-row filtering;
+both were corrected before final proof. Original `.32.1` stays in progress:
+partial-byte output, descendant ownership, unchecked kill/wait failure reporting,
+full CLI/log/link behavior and published-consumer/host acceptance remain. No new
+release was made. A successful immediate-child interrupt does not settle those gaps.
 
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr reaches the streaming example and Cmd logs through bounded queues/batches. Complete UTF-8 lines are capped at 64 KiB. Optional stdin preserves FIFO/EOF through a 16-line input queue; failures are supervised independently of model backpressure. Nine PTY journeys include literal/Unicode input, EOF and immediate-child cleanup. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, interrupt/restart, descendant ownership, full CLI/log/link behavior and published-consumer/host proof. Queue admission is not child acknowledgment. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5; 12 PTY journeys include handler acknowledgment, continued input and two restart modes. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, cleanup-error reporting, full CLI/log/link behavior and published-consumer/host proof. Queue admission and signal acceptance are not child acknowledgment. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -741,6 +796,10 @@ specific implementation or observation below, not completion of the whole goal):
   the existing TextInput consumer; preserve rejected drafts and accepted FIFO/EOF.
 - [x] `.32.1`: verify 152 selected tests, nine PTY journeys, strict workspace
   gates and WASM checks; retain first-candidate and host/preflight failures.
+- [x] `.32.1`: connect supervisor-owned SIGINT and fresh-generation restart to
+  Ctrl-C/F5; preserve EOF control, old-event rejection and final outcome feedback.
+- [x] `.32.1`: verify 164 selected tests, 12 PTY journeys and required native/WASM
+  gates at `95f7558f`; retain formatting and moving-revision failures.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
@@ -755,9 +814,9 @@ specific implementation or observation below, not completion of the whole goal):
    `.33.1/.33.2`, then bounded subprocess input/output/cancel/restart and actual
    PTY journey `.32.1–.32.3`. The published minimal and streaming examples are
    foundations. Main now streams a real child with optional interactive stdin
-   under stable inline chrome; byte-safe partial output, descendant cancellation,
-   signal forwarding and restart
-   remain required before calling the full journey complete.
+   under stable inline chrome, with immediate-child SIGINT and same-command
+   restart. Byte-safe partial output, descendant cancellation and cleanup-error
+   reporting remain required before calling the full journey complete.
 3. **Finish real browser and accessibility consumers.** Use the already-built
    WASM artifact as a starting point, finish reproducible host packaging and
    bounded admission, then GPU/IME/mobile proof. In parallel, complete widget
