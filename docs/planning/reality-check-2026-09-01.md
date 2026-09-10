@@ -980,6 +980,55 @@ remain. Wrapped/search-highlighted links and physical terminal clicking are
 not established by this work. These are development changes after 0.7.0,
 not a new release.
 
+### September 10 unterminated child prompt previews
+
+The streaming consumer opts into `ProcessSubscription::partial_output(true)`.
+Growing cumulative UTF-8 prefixes now reach the model before the reader waits
+for more bytes. Each stream keeps its own sanitized preview, with the most
+recent nonempty one visible in the feedback row at both normal and compact
+three-row heights. Control and input-error feedback takes priority. Completed
+lines clear their preview and enter the existing log/counter path exactly once;
+terminal status and restart clear both previews, and stale generations are
+ignored. Preview text never gains automatic links, including in raw log mode.
+
+The default subscription remains complete-line-only. The new option participates
+in automatic subscription identity. The reader retains incomplete UTF-8 scalars
+and a possible CRLF delimiter, preserves original controls for whole-prefix
+sanitization, and uses the existing 64 KiB line limit and interruptible queue.
+Earlier prefixes may be visible before a later malformed or oversized read
+fails. Cumulative copying can add work for slowly dribbling output. This solves
+prompt visibility; byte-transparent fragment logging, arbitrary binary output,
+forced child flushing and interruption of blocked OS reads remain absent.
+
+Verification is in progress against the retained `prompt1` source. Seven new
+runtime tests and three consumer tests cover boundaries, real stdin handshakes,
+default-disabled behavior, backpressure cancellation, terminal/restart state,
+safe compact rendering and feedback precedence. The new PTY observer retains
+all 26 prior journeys and 13 startup checks, adding two prompt handshakes that
+send input only after exact text/counters appear in a completed terminal frame.
+Its fixed 24-by-80 terminal observer has synthetic positive/negative controls;
+it is not a general terminal emulator or physical display proof.
+
+The pre-feature binary fails both new journeys at input stage zero while the
+prior 26 pass; no reply is sent before a prompt appears. Child alarms end the
+missing-preview cases after eight seconds, with termios restored and children
+gone. `prompt0` then stopped at three formatting differences in new runtime
+tests; these were corrected manually without changing assertions.
+
+Staging failures are also retained: root's `git clone --local` failed on a
+cross-filesystem hard link and Git removed its incomplete destination, contrary
+to the no-deletion rule. No project/source archive was lost. Root replaced that
+route with explicit retained copies. A subsequent `/tmp` quota failure left an
+incomplete checkout, preserved in place; verification staging moved to
+`/data/retained/ftui-partial-prompts-20260910-greenlynx/`. New snapshots use
+fail-fast explicit copies and retained extraction. Concurrent commits
+`e1ef46ae`, `8fa14189` and `139eea6a` captured portions of the shared changes;
+their source matched the frozen candidate, but those commits were not
+individually verified and were not rewritten.
+
+Original `.32.1` remains in progress for the facade example, byte-transparent
+partial logs, descendant ownership and original consumer/host acceptance.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
