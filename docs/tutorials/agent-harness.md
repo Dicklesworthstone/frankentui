@@ -132,8 +132,31 @@ colors. Raw output can change cursor position, terminal modes, and styling;
 it can disrupt the chrome and subsequent logs. Raw still uses the same bounded
 UTF-8 line transport and line-ending normalization, so it is not byte-transparent.
 
+`--exit-after-ms=N` ends the whole session after a nonnegative number of
+milliseconds from model initialization. `FTUI_AGENT_SHELL_EXIT_AFTER_MS` supplies
+the default; the CLI overrides it, including invalid environment values. Zero
+quits during initialization without starting a child. The deadline survives F5,
+child exit and paused generated output. It is checked on accepted model updates
+and the existing timers (250 ms for a child, 50 ms for generated output), so slow
+updates or terminal writes can delay it. A later cutoff logs a session notice, quits,
+and requests normal immediate-child cleanup; queued output and final child
+status can be omitted. It is not a hard deadline for process reaping.
+
+The status counters are `L` (delivered child lines), `B` (their original UTF-8
+payload bytes plus one normalized LF per line), and `E` (stderr lines). `B`
+excludes the stderr prefix and generated logs, and is not an exact pipe-byte
+count: original CRLF and an unterminated EOF line are normalized. Elapsed time
+measures the model-observed run, including startup and output drain; it freezes
+at the terminal event. F5 resets those counters and elapsed time for the new
+run, while preserving the session deadline and log history.
+
 Add `--stdin` before `-- COMMAND` to show a focused `TextInput` and feedback row
-within the same 15-row inline UI. Enter queues the draft and an LF. Only accepted
+within the inline UI. The default is 15 rows; `--ui-height=3` keeps a compact
+status/input/hint layout, leaving more space for terminal scrollback. Heights
+from 3 through 65,535 are accepted, and the runtime clamps the rendered frame
+to the actual terminal height. Controls keep their rows before the log viewer;
+a one- or two-row viewer renders without a border. A terminal too short or
+narrow for the controls still clips them. Enter queues the draft and an LF. Only accepted
 input clears the editor and produces a sanitized `[stdin queued]` echo; that
 echo reports queue admission, not child acknowledgment. Queue-full, closed-input
 and oversized-line errors leave the draft visible with retry or correction instructions.

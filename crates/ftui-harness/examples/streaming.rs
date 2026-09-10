@@ -17,6 +17,11 @@
 //! Ctrl-C requests an interrupt; press again within two seconds to quit.
 //! F5 restarts after final output arrives and child cleanup is confirmed.
 //! Quitting stops the immediate child, not an entire descendant tree.
+//! --ui-height=3 reserves compact status/input/hint rows (default: 15).
+//! --exit-after-ms=N sets a cooperative session deadline, including after
+//! child exit or restart. FTUI_AGENT_SHELL_EXIT_AFTER_MS supplies its default.
+//! Zero exits at initialization without starting the child. A cutoff can omit
+//! queued output; it is not a guarantee that cleanup completes at that instant.
 //!
 //! Run: `cargo run -p ftui-harness --example streaming`
 //! Or: `cargo run -p ftui-harness --example streaming -- --exit-when-child-exits -- seq 1 10000`
@@ -46,6 +51,11 @@ struct StreamingHarness {
     log: LogViewer,
     log_state: LogViewerState,
     line_count: usize,
+    byte_count: usize,
+    stderr_count: usize,
+    session_started: Instant,
+    run_started: Instant,
+    run_elapsed: Duration,
     paused: bool,
     options: StreamingOptions,
     child_finished: bool,
@@ -62,22 +72,40 @@ struct StreamingHarness {
     input_feedback: &'static str,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct StreamingOptions {
     command: Vec<String>,
     exit_when_child_exits: bool,
     stdin: bool,
     log_mode: SanitizeMode,
+    ui_height: u16,
+    exit_after: Option<Duration>,
+}
+
+impl Default for StreamingOptions {
+    fn default() -> Self {
+        Self {
+            command: Vec::new(),
+            exit_when_child_exits: false,
+            stdin: false,
+            log_mode: SanitizeMode::Strip,
+            ui_height: 15,
+            exit_after: None,
+        }
+    }
 }
 
 impl StreamingOptions {
     fn parse(
         arguments: impl IntoIterator<Item = String>,
         environment_log_mode: Option<std::ffi::OsString>,
+        environment_exit_after_ms: Option<std::ffi::OsString>,
     ) -> std::io::Result<Self> {
         let mut options = Self::default();
         let mut arguments = arguments.into_iter();
         let mut log_mode = None;
+        let mut ui_height = None;
+        let mut exit_after_ms = None;
         while let Some(argument) = arguments.next() {
             if log_mode.is_some()
                 && (argument == "--log-mode" || argument.starts_with("--log-mode="))
@@ -87,9 +115,44 @@ impl StreamingOptions {
                     "--log-mode may only be supplied once",
                 ));
             }
+            for (name, supplied) in [
+                ("--ui-height", ui_height.is_some()),
+                ("--exit-after-ms", exit_after_ms.is_some()),
+            ] {
+                if supplied
+                    && (argument == name
+                        || argument
+                            .strip_prefix(name)
+                            .is_some_and(|tail| tail.starts_with('=')))
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("{name} may only be supplied once"),
+                    ));
+                }
+            }
             match argument.as_str() {
                 "--exit-when-child-exits" => options.exit_when_child_exits = true,
                 "--stdin" => options.stdin = true,
+                "--ui-height" | "--exit-after-ms" => {
+                    let value = arguments.next().ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("{argument} requires a nonnegative integer"),
+                        )
+                    })?;
+                    if argument == "--ui-height" {
+                        ui_height = Some(std::ffi::OsString::from(value));
+                    } else {
+                        exit_after_ms = Some(std::ffi::OsString::from(value));
+                    }
+                }
+                value if value.starts_with("--ui-height=") => {
+                    ui_height = Some(std::ffi::OsString::from(&value[12..]));
+                }
+                value if value.starts_with("--exit-after-ms=") => {
+                    exit_after_ms = Some(std::ffi::OsString::from(&value[16..]));
+                }
                 "--log-mode" => {
                     log_mode = Some(std::ffi::OsString::from(arguments.next().ok_or_else(
                         || {
@@ -116,10 +179,24 @@ impl StreamingOptions {
                 _ => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        "usage: streaming [--stdin] [--exit-when-child-exits] [--log-mode=sanitized|sgr-only|raw] [-- COMMAND ARGS...]",
+                        "usage: streaming [--stdin] [--exit-when-child-exits] [--log-mode=sanitized|sgr-only|raw] [--ui-height=N] [--exit-after-ms=N] [-- COMMAND ARGS...]",
                     ));
                 }
             }
+        }
+        if let Some(value) = ui_height {
+            let error = "ui height must be an integer from 3 through 65535";
+            let value = Self::parse_integer(&value, error)?;
+            options.ui_height = u16::try_from(value)
+                .ok()
+                .filter(|height| *height >= 3)
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        }
+        if let Some(value) = exit_after_ms.or(environment_exit_after_ms) {
+            options.exit_after = Some(Duration::from_millis(Self::parse_integer(
+                &value,
+                "exit-after-ms must be a nonnegative u64 integer",
+            )?));
         }
         if options.exit_when_child_exits && options.command.is_empty() {
             return Err(std::io::Error::new(
@@ -160,6 +237,14 @@ impl StreamingOptions {
         Ok(options)
     }
 
+    fn parse_integer(value: &std::ffi::OsStr, error: &'static str) -> std::io::Result<u64> {
+        value
+            .to_str()
+            .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|text| text.parse().ok())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
+    }
+
     fn log_mode_name(&self) -> &'static str {
         match self.log_mode {
             SanitizeMode::Strip => "sanitized",
@@ -194,6 +279,7 @@ impl From<Event> for Msg {
 
 impl StreamingHarness {
     fn new(options: StreamingOptions) -> Self {
+        let started = Instant::now();
         let mut log = LogViewer::new(10_000);
         if options.command.is_empty() {
             log.push("High-volume streaming demo started");
@@ -209,6 +295,11 @@ impl StreamingHarness {
             log,
             log_state: LogViewerState::default(),
             line_count: 0,
+            byte_count: 0,
+            stderr_count: 0,
+            session_started: started,
+            run_started: started,
+            run_elapsed: Duration::ZERO,
             paused: false,
             child_finished: false,
             child_status: "PROCESS".to_owned(),
@@ -226,6 +317,24 @@ impl StreamingHarness {
             input_feedback: "Enter sends; Ctrl-D closes input; Ctrl-C interrupts, twice quits.",
             options,
         }
+    }
+
+    fn advance_clock(&mut self, now: Instant) -> Option<Cmd<Msg>> {
+        if !self.child_finished {
+            self.run_elapsed = now.saturating_duration_since(self.run_started);
+        }
+        self.options
+            .exit_after
+            .filter(|limit| now.saturating_duration_since(self.session_started) >= *limit)
+            .map(|limit| {
+                Cmd::sequence(vec![
+                    Cmd::log(format!(
+                        "[session] time limit reached ({} ms)",
+                        limit.as_millis()
+                    )),
+                    Cmd::quit(),
+                ])
+            })
     }
 
     fn submit_input(&mut self) -> Cmd<Msg> {
@@ -405,6 +514,10 @@ impl StreamingHarness {
         self.quit_armed_at = None;
         self.control_feedback = None;
         self.line_count = 0;
+        self.byte_count = 0;
+        self.stderr_count = 0;
+        self.run_started = Instant::now();
+        self.run_elapsed = Duration::ZERO;
         self.child_finished = false;
         self.child_status = "PROCESS".to_owned();
         self.input.set_focused(self.options.stdin);
@@ -434,10 +547,29 @@ impl Model for StreamingHarness {
     type Message = Msg;
 
     fn init(&mut self) -> Cmd<Self::Message> {
-        Cmd::None
+        self.session_started = Instant::now();
+        self.run_started = self.session_started;
+        self.run_elapsed = Duration::ZERO;
+        if self.options.exit_after == Some(Duration::ZERO) {
+            Cmd::quit()
+        } else {
+            Cmd::none()
+        }
     }
 
     fn update(&mut self, msg: Msg) -> Cmd<Self::Message> {
+        if let Msg::Process { generation, .. } = &msg
+            && self
+                .process_control
+                .as_ref()
+                .map(ProcessControl::generation)
+                != Some(*generation)
+        {
+            return Cmd::none();
+        }
+        if let Some(command) = self.advance_clock(Instant::now()) {
+            return command;
+        }
         match msg {
             Msg::Key(k) if matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
                 if k.modifiers.contains(Modifiers::CTRL) && k.code == KeyCode::Char('c') {
@@ -498,18 +630,12 @@ impl Model for StreamingHarness {
                     return self.apply_control_status(control.status());
                 }
             }
-            Msg::Process { generation, event } => {
-                if self
-                    .process_control
-                    .as_ref()
-                    .map(ProcessControl::generation)
-                    != Some(generation)
-                {
-                    return Cmd::none();
-                }
+            Msg::Process { event, .. } => {
                 let status = match event {
                     ProcessEvent::Stdout(line) => {
                         self.line_count = self.line_count.saturating_add(1);
+                        self.byte_count =
+                            self.byte_count.saturating_add(line.len()).saturating_add(1);
                         self.log.push(sanitize(&line).into_owned());
                         return Cmd::Log {
                             text: line,
@@ -518,6 +644,9 @@ impl Model for StreamingHarness {
                     }
                     ProcessEvent::Stderr(line) => {
                         self.line_count = self.line_count.saturating_add(1);
+                        self.byte_count =
+                            self.byte_count.saturating_add(line.len()).saturating_add(1);
+                        self.stderr_count = self.stderr_count.saturating_add(1);
                         let text = format!("[stderr] {line}");
                         self.log.push(sanitize(&text).into_owned());
                         return Cmd::Log {
@@ -561,7 +690,7 @@ impl Model for StreamingHarness {
             Flex::vertical()
                 .constraints([
                     Constraint::Fixed(1),
-                    Constraint::Min(3),
+                    Constraint::Min(0),
                     Constraint::Fixed(1),
                     Constraint::Fixed(1),
                 ])
@@ -570,13 +699,13 @@ impl Model for StreamingHarness {
             Flex::vertical()
                 .constraints([
                     Constraint::Fixed(1),
-                    Constraint::Min(3),
+                    Constraint::Min(0),
                     Constraint::Fixed(1),
                 ])
                 .split(area)
         } else {
             Flex::vertical()
-                .constraints([Constraint::Fixed(1), Constraint::Min(3)])
+                .constraints([Constraint::Fixed(1), Constraint::Min(0)])
                 .split(area)
         };
 
@@ -597,8 +726,11 @@ impl Model for StreamingHarness {
         };
         let lines_text = if self.process_control.is_some() {
             format!(
-                "Lines: {}  {}",
+                "L:{} B:{} E:{} {:.1}s {}",
                 self.line_count,
+                self.byte_count,
+                self.stderr_count,
+                self.run_elapsed.as_secs_f64(),
                 self.options.log_mode_name()
             )
         } else {
@@ -627,8 +759,14 @@ impl Model for StreamingHarness {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded);
 
-        let inner = log_block.inner(chunks[1]);
-        log_block.render(chunks[1], frame);
+        let inner = if chunks[1].height >= 3 {
+            log_block.render(chunks[1], frame);
+            log_block.inner(chunks[1])
+        } else {
+            // A short viewer spends its rows on text; compact three-row
+            // interactive chrome has no viewer and retains its input/hint.
+            chunks[1]
+        };
 
         let mut state = self.log_state.clone();
         self.log.render(inner, frame, &mut state);
@@ -662,11 +800,11 @@ impl Model for StreamingHarness {
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
         if let Some((program, arguments)) = self.options.command.split_first() {
             return if self.child_finished {
-                if self.process_can_restart {
+                if self.process_can_restart && self.options.exit_after.is_none() {
                     Vec::new()
                 } else {
-                    // A retained reaper can confirm cleanup after the terminal
-                    // error. Keep polling, without creating another process.
+                    // Keep cleanup readiness and the session deadline live
+                    // after terminal output, without creating another process.
                     vec![Box::new(Every::new(Duration::from_millis(250), || {
                         Msg::PollControl
                     }))]
@@ -699,9 +837,11 @@ fn main() -> std::io::Result<()> {
     let options = StreamingOptions::parse(
         std::env::args().skip(1),
         std::env::var_os("FTUI_AGENT_SHELL_LOG_MODE"),
+        std::env::var_os("FTUI_AGENT_SHELL_EXIT_AFTER_MS"),
     )?;
+    let ui_height = options.ui_height;
     App::new(StreamingHarness::new(options))
-        .screen_mode(ScreenMode::Inline { ui_height: 15 })
+        .screen_mode(ScreenMode::Inline { ui_height })
         .run()
 }
 
@@ -748,6 +888,7 @@ mod tests {
             ]
             .map(str::to_owned),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(options.command, ["echo", "--flag", "a b", "$(literal)"]);
@@ -756,13 +897,14 @@ mod tests {
         let interactive = StreamingOptions::parse(
             ["--stdin", "--exit-when-child-exits", "--", "cat", "--stdin"].map(str::to_owned),
             None,
+            None,
         )
         .unwrap();
         assert!(interactive.stdin);
         assert!(interactive.exit_when_child_exits);
         assert_eq!(interactive.command, ["cat", "--stdin"]);
         assert_eq!(
-            StreamingOptions::parse([], None).unwrap(),
+            StreamingOptions::parse([], None, None).unwrap(),
             StreamingOptions::default()
         );
         for arguments in [
@@ -773,7 +915,7 @@ mod tests {
             vec!["echo"],
         ] {
             assert_eq!(
-                StreamingOptions::parse(arguments.into_iter().map(str::to_owned), None)
+                StreamingOptions::parse(arguments.into_iter().map(str::to_owned), None, None)
                     .unwrap_err()
                     .kind(),
                 std::io::ErrorKind::InvalidInput
@@ -801,13 +943,15 @@ mod tests {
                     "cat".to_owned(),
                 ],
             ] {
-                let options = StreamingOptions::parse(arguments, Some("invalid".into())).unwrap();
+                let options =
+                    StreamingOptions::parse(arguments, Some("invalid".into()), None).unwrap();
                 assert_eq!(options.log_mode, mode);
                 assert_eq!(options.log_mode_name(), value);
             }
             let options = StreamingOptions::parse(
                 ["--", "cat", "--log-mode=raw"].map(str::to_owned),
                 Some(value.into()),
+                None,
             )
             .unwrap();
             assert_eq!(options.log_mode, mode);
@@ -816,19 +960,262 @@ mod tests {
         let options = StreamingOptions::parse(
             ["--log-mode=sanitized", "--", "cat"].map(str::to_owned),
             Some("raw".into()),
+            None,
         )
         .unwrap();
         assert_eq!(options.log_mode, SanitizeMode::Strip);
         assert_eq!(
-            StreamingOptions::parse(["--", "cat"].map(str::to_owned), None)
+            StreamingOptions::parse(["--", "cat"].map(str::to_owned), None, None)
                 .unwrap()
                 .log_mode,
             SanitizeMode::Strip
         );
         assert_eq!(
-            StreamingOptions::parse([], Some("invalid".into())).unwrap(),
+            StreamingOptions::parse([], Some("invalid".into()), None).unwrap(),
             StreamingOptions::default()
         );
+    }
+
+    #[test]
+    fn sizing_and_deadline_options_validate_before_startup() {
+        let options = StreamingOptions::parse(
+            [
+                "--ui-height=3",
+                "--exit-after-ms",
+                "0",
+                "--",
+                "cat",
+                "--ui-height=9",
+            ]
+            .map(str::to_owned),
+            None,
+            Some("invalid".into()),
+        )
+        .unwrap();
+        assert_eq!(options.ui_height, 3);
+        assert_eq!(options.exit_after, Some(Duration::ZERO));
+        assert_eq!(options.command, ["cat", "--ui-height=9"]);
+        let options = StreamingOptions::parse(
+            ["--ui-height", "65535"].map(str::to_owned),
+            None,
+            Some("1500".into()),
+        )
+        .unwrap();
+        assert_eq!(options.ui_height, u16::MAX);
+        assert_eq!(options.exit_after, Some(Duration::from_millis(1500)));
+        for arguments in [
+            vec!["--ui-height"],
+            vec!["--ui-height="],
+            vec!["--ui-height=2"],
+            vec!["--ui-height=65536"],
+            vec!["--ui-height=+3"],
+            vec!["--ui-height=3", "--ui-height", "4"],
+            vec!["--exit-after-ms"],
+            vec!["--exit-after-ms="],
+            vec!["--exit-after-ms=-1"],
+            vec!["--exit-after-ms=+1"],
+            vec!["--exit-after-ms=18446744073709551616"],
+            vec!["--exit-after-ms=1", "--exit-after-ms=2"],
+            vec!["--exit-after-ms=\x1b[2J"],
+        ] {
+            let error =
+                StreamingOptions::parse(arguments.into_iter().map(str::to_owned), None, None)
+                    .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(!error.to_string().contains('\x1b'));
+        }
+        for value in ["", " 1", "1.5", "invalid"] {
+            assert!(StreamingOptions::parse([], None, Some(value.into())).is_err());
+        }
+        let options = StreamingOptions::parse(
+            ["--exit-after-ms=18446744073709551615"].map(str::to_owned),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(options.exit_after, Some(Duration::from_millis(u64::MAX)));
+    }
+
+    #[test]
+    fn synthetic_session_deadline_survives_pause_exit_and_restart() {
+        let mut model = interactive_model();
+        model.options.exit_after = Some(Duration::from_secs(10));
+        assert!(matches!(model.init(), Cmd::None));
+        let started = model.session_started;
+        let poll = model.subscriptions()[1].id();
+        assert!(
+            model
+                .advance_clock(started + Duration::from_millis(9999))
+                .is_none()
+        );
+        assert_eq!(model.run_elapsed, Duration::from_millis(9999));
+        let _ = model.finish_child("EXIT 0".to_owned(), None);
+        assert_eq!(model.subscriptions().len(), 1);
+        assert_eq!(model.subscriptions()[0].id(), poll);
+        for can_restart in [false, true] {
+            let _ = model.apply_control_status(ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart,
+                interrupt: ProcessInterruptStatus::Idle,
+            });
+            assert_eq!(model.subscriptions().len(), 1);
+            assert_eq!(model.subscriptions()[0].id(), poll);
+        }
+        let frozen = model.run_elapsed;
+        let Cmd::Sequence(commands) = model
+            .advance_clock(started + Duration::from_secs(10))
+            .unwrap()
+        else {
+            panic!("deadline must log then quit");
+        };
+        assert!(
+            matches!(commands.as_slice(), [Cmd::Log { text, mode: SanitizeMode::Strip }, Cmd::Quit]
+            if text == "[session] time limit reached (10000 ms)")
+        );
+        assert_eq!(model.run_elapsed, frozen);
+        let _ = model.restart_child_with_status(ProcessControlStatus {
+            pid: None,
+            closed: true,
+            can_restart: true,
+            interrupt: ProcessInterruptStatus::Idle,
+        });
+        assert_eq!(model.session_started, started);
+        assert_eq!(model.run_elapsed, Duration::ZERO);
+        assert_eq!(model.subscriptions()[1].id(), poll);
+        assert!(
+            model
+                .advance_clock(started + Duration::from_secs(11))
+                .is_some()
+        );
+
+        let mut paused = StreamingHarness::new(StreamingOptions {
+            exit_after: Some(Duration::from_secs(1)),
+            ..StreamingOptions::default()
+        });
+        paused.paused = true;
+        paused.session_started = Instant::now() - Duration::from_secs(2);
+        assert_eq!(paused.subscriptions().len(), 1);
+        assert!(matches!(paused.update(Msg::StreamTick), Cmd::Sequence(_)));
+        assert_eq!(paused.line_count, 0);
+
+        let mut zero = StreamingHarness::new(StreamingOptions {
+            command: vec!["must-not-start".to_owned()],
+            exit_after: Some(Duration::ZERO),
+            ..StreamingOptions::default()
+        });
+        assert!(matches!(zero.init(), Cmd::Quit));
+        let generation = zero.process_control.as_ref().unwrap().generation();
+        assert!(matches!(zero.update(key(KeyCode::F(5))), Cmd::Sequence(_)));
+        assert_eq!(
+            zero.process_control.as_ref().unwrap().generation(),
+            generation
+        );
+    }
+
+    #[test]
+    fn normalized_child_byte_counters_freeze_and_reset_with_the_run() {
+        let mut model = interactive_model();
+        for event in [
+            ProcessEvent::Stdout("🦀\x1b[31m".to_owned()),
+            ProcessEvent::Stderr("é".to_owned()),
+            ProcessEvent::Stdout(String::new()),
+        ] {
+            let _ = model.update(process_message(&model, event));
+        }
+        assert_eq!(
+            (model.line_count, model.byte_count, model.stderr_count),
+            (3, 14, 1)
+        );
+        let elapsed = model.run_elapsed;
+        assert!(matches!(
+            model.update(Msg::Process {
+                generation: u64::MAX,
+                event: ProcessEvent::Stdout("old".to_owned()),
+            }),
+            Cmd::None
+        ));
+        assert_eq!(model.run_elapsed, elapsed);
+        let _ = model.control_note("note".to_owned());
+        model.input.set_value("input");
+        let _ = model.submit_input();
+        assert_eq!(model.byte_count, 14);
+        model.line_count = usize::MAX;
+        model.byte_count = usize::MAX;
+        model.stderr_count = usize::MAX;
+        let _ = model.update(process_message(
+            &model,
+            ProcessEvent::Stderr("overflow".to_owned()),
+        ));
+        assert_eq!(
+            (model.line_count, model.byte_count, model.stderr_count),
+            (usize::MAX, usize::MAX, usize::MAX)
+        );
+        let _ = model.update(process_message(&model, ProcessEvent::Exited(0)));
+        let frozen = model.run_elapsed;
+        let _ = model.advance_clock(Instant::now() + Duration::from_secs(5));
+        assert_eq!(model.run_elapsed, frozen);
+        let _ = model.restart_child_with_status(ProcessControlStatus {
+            pid: None,
+            closed: true,
+            can_restart: true,
+            interrupt: ProcessInterruptStatus::Idle,
+        });
+        assert_eq!(
+            (model.line_count, model.byte_count, model.stderr_count),
+            (0, 0, 0)
+        );
+        assert_eq!(model.run_elapsed, Duration::ZERO);
+    }
+
+    #[test]
+    fn compact_chrome_reserves_input_and_hint_before_the_viewer() {
+        let mut model = interactive_model();
+        let _ = model.update(process_message(
+            &model,
+            ProcessEvent::Stdout("viewer-sentinel".to_owned()),
+        ));
+        model.input.set_value("retained draft");
+        model.process_input.as_ref().unwrap().close();
+        let _ = model.submit_input();
+        model.run_elapsed = Duration::from_millis(1500);
+        for height in [3, 4, 5, 15] {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(100, height, &mut pool);
+            model.view(&mut frame);
+            let row = |y| -> String {
+                frame
+                    .buffer
+                    .row_cells(y)
+                    .iter()
+                    .filter_map(|cell| cell.content.as_char())
+                    .collect()
+            };
+            assert_eq!(row(height - 2).trim_end(), "> retained draft");
+            assert_eq!(row(height - 1).trim_end(), model.input_feedback);
+            assert!(row(0).contains("L:1 B:16 E:0 1.5s sanitized"));
+            if height == 3 {
+                assert!(!row(1).contains("viewer-sentinel"));
+            } else {
+                assert!((1..height - 2).any(|y| row(y).contains("viewer-sentinel")));
+            }
+        }
+        for (width, height) in [(0, 0), (1, 1), (2, 2), (3, 2)] {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(width, height, &mut pool);
+            model.view(&mut frame);
+            assert_eq!(
+                (frame.width(), frame.height()),
+                (width.max(1), height.max(1))
+            );
+            assert!(
+                frame
+                    .buffer
+                    .cells()
+                    .iter()
+                    .all(|cell| cell.content.as_char() != Some('\x1b'))
+            );
+        }
     }
 
     #[test]
@@ -843,14 +1230,15 @@ mod tests {
             vec!["--log-mode=raw", "--log-mode=sanitized", "--", "cat"],
             vec!["--log-mode", "raw", "--log-mode", "sgr-only", "--", "cat"],
         ] {
-            let error = StreamingOptions::parse(arguments.into_iter().map(str::to_owned), None)
-                .unwrap_err();
+            let error =
+                StreamingOptions::parse(arguments.into_iter().map(str::to_owned), None, None)
+                    .unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
             assert!(!error.to_string().contains('\x1b'));
         }
         for value in ["", " RAW", "sgr", "\x1b]2;ATTACK\x07"] {
             let error =
-                StreamingOptions::parse(["--", "cat"].map(str::to_owned), Some(value.into()))
+                StreamingOptions::parse(["--", "cat"].map(str::to_owned), Some(value.into()), None)
                     .unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
             assert!(!error.to_string().contains('\x1b'));
@@ -864,17 +1252,33 @@ mod tests {
 
         let invalid = std::ffi::OsString::from_vec(vec![0xff]);
         assert_eq!(
-            StreamingOptions::parse(["--", "cat"].map(str::to_owned), Some(invalid.clone()))
-                .unwrap_err()
-                .kind(),
+            StreamingOptions::parse(
+                ["--", "cat"].map(str::to_owned),
+                Some(invalid.clone()),
+                None
+            )
+            .unwrap_err()
+            .kind(),
             std::io::ErrorKind::InvalidInput
         );
         let options = StreamingOptions::parse(
             ["--log-mode=sanitized", "--", "cat"].map(str::to_owned),
-            Some(invalid),
+            Some(invalid.clone()),
+            None,
         )
         .unwrap();
         assert_eq!(options.log_mode, SanitizeMode::Strip);
+        assert!(StreamingOptions::parse([], None, Some(invalid.clone())).is_err());
+        assert_eq!(
+            StreamingOptions::parse(
+                ["--exit-after-ms=0"].map(str::to_owned),
+                None,
+                Some(invalid),
+            )
+            .unwrap()
+            .exit_after,
+            Some(Duration::ZERO)
+        );
     }
 
     #[test]
