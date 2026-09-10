@@ -11906,6 +11906,79 @@ mod tests {
     }
 
     #[test]
+    fn inline_mode_program_frames_clamp_to_terminal_height_through_resizes() {
+        use std::cell::RefCell;
+
+        #[derive(Default)]
+        struct FrameSizeTracker {
+            frame_sizes: RefCell<Vec<(u16, u16)>>,
+        }
+
+        impl Model for FrameSizeTracker {
+            type Message = Event;
+
+            fn update(&mut self, _event: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                self.frame_sizes
+                    .borrow_mut()
+                    .push((frame.width(), frame.height()));
+            }
+        }
+
+        // Exercise Program's actual sizing path without supplying a model
+        // frame size. The headless backend does not establish PTY behavior.
+        let mut program = headless_program_with_config(
+            FrameSizeTracker::default(),
+            ProgramConfig {
+                screen_mode: ScreenMode::Inline { ui_height: 64 },
+                ..ProgramConfig::default()
+            },
+        );
+        program.render_frame().expect("render initial inline frame");
+        assert_eq!(program.model().frame_sizes.borrow().as_slice(), &[(80, 24)]);
+        assert_eq!(program.writer.ui_height(), 64);
+
+        for (width, height, expected_height) in [
+            (40, 3, 3),
+            (96, 18, 18),
+            (120, 90, 64),
+            (90, 70, 64),
+            (80, 24, 24),
+            (0, 0, 1),
+        ] {
+            program
+                .apply_resize(width, height, Duration::ZERO, false)
+                .expect("apply inline terminal resize");
+            program.render_frame().expect("render resized inline frame");
+            assert_eq!(
+                program.model().frame_sizes.borrow().last(),
+                Some(&(width.max(1), expected_height)),
+                "terminal resize to {width}x{height}"
+            );
+            assert_eq!(
+                program.writer.ui_height(),
+                64,
+                "resizing must retain the configured inline height"
+            );
+        }
+        assert_eq!(
+            program.model().frame_sizes.borrow().as_slice(),
+            &[
+                (80, 24),
+                (40, 3),
+                (96, 18),
+                (120, 64),
+                (90, 64),
+                (80, 24),
+                (1, 1)
+            ]
+        );
+    }
+
+    #[test]
     fn altscreen_frame_uses_full_terminal_height() {
         // Regression test: in alt-screen mode, frame should use full terminal height.
         use crate::terminal_writer::{ScreenMode, TerminalWriter, UiAnchor};
@@ -11940,11 +12013,8 @@ mod tests {
         );
         writer.set_size(80, 10);
 
-        // ui_height() returns configured value, but present_inline clamps
-        // The Frame should be created with ui_height (100), which is later
-        // clamped during presentation. For safety, we should use the min.
-        // Note: This documents current behavior. A stricter fix might
-        // have ui_height() return min(ui_height, term_height).
+        // ui_height() retains the configured value. render_height_hint() and
+        // present_inline clamp the model frame and visible region separately.
         assert_eq!(writer.ui_height(), 100);
     }
 

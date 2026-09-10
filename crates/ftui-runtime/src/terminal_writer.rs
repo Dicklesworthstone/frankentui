@@ -1018,11 +1018,13 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Height to use for rendering a frame.
     ///
+    /// Fixed inline heights are clamped to the current terminal height so
+    /// models lay out their controls within the rows that can be presented.
     /// In inline auto mode, this returns the configured maximum (clamped to
     /// terminal height) so measurement can determine actual UI height.
     pub fn render_height_hint(&self) -> u16 {
         match self.screen_mode {
-            ScreenMode::Inline { ui_height } => ui_height,
+            ScreenMode::Inline { ui_height } => ui_height.min(self.term_height),
             ScreenMode::InlineAuto {
                 min_height,
                 max_height,
@@ -6667,13 +6669,27 @@ mod tests {
 
     #[test]
     fn render_height_hint_inline_fixed() {
-        let writer = TerminalWriter::new(
+        let mut writer = TerminalWriter::new(
             Vec::new(),
             ScreenMode::Inline { ui_height: 7 },
             UiAnchor::Bottom,
             basic_caps(),
         );
         assert_eq!(writer.render_height_hint(), 7);
+        writer.set_size(80, 3);
+        assert_eq!(writer.render_height_hint(), 3);
+        writer.set_size(80, 24);
+        assert_eq!(writer.render_height_hint(), 7);
+        let mut oversized = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline {
+                ui_height: u16::MAX,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        oversized.set_size(80, 24);
+        assert_eq!(oversized.render_height_hint(), 24);
     }
 
     // =========================================================================
