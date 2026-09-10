@@ -2678,6 +2678,24 @@ impl<W: Write> TerminalWriter<W> {
         &mut self.links
     }
 
+    /// Apply the program's opt-in link lifetime policy at initialization.
+    pub(crate) fn set_hyperlink_limit(&mut self, limit: usize) {
+        self.links = LinkRegistry::with_frame_limit(limit);
+        self.prev_buffer = None;
+        self.reset_diff_strategy();
+    }
+
+    /// Start a managed render while preserving the last presented frame's IDs.
+    /// Spare/clone buffers are reset or overwritten before reuse, so they are
+    /// not roots. Unmanaged registries leave all IDs untouched.
+    pub(crate) fn begin_link_frame(&mut self) {
+        if let Some(previous) = self.prev_buffer.as_ref() {
+            self.links.begin_frame(&[previous]);
+        } else {
+            self.links.begin_frame(&[]);
+        }
+    }
+
     /// Borrow the grapheme pool and link registry together.
     ///
     /// This avoids double-borrowing `self` at call sites that need both.
@@ -3201,6 +3219,83 @@ mod tests {
             !output.windows(SYNC_END.len()).any(|w| w == SYNC_END),
             "sync end must be suppressed in tmux/screen/zellij environments"
         );
+    }
+
+    #[test]
+    fn managed_hyperlinks_repaint_after_failed_borrowed_present() {
+        let state = Rc::new(RefCell::new(FaultState::default()));
+        let backend = SingleWriteFaultWriter::new(Rc::clone(&state), 1, 1);
+        let mut caps = basic_caps();
+        caps.osc8_hyperlinks = true;
+        let mut writer =
+            TerminalWriter::new(backend, ScreenMode::AltScreen, UiAnchor::Bottom, caps);
+        writer.set_size(1, 1);
+        writer.set_hyperlink_limit(1);
+        writer.begin_link_frame();
+        let old_id = writer.links_mut().register("https://failed.test");
+        let mut buffer = Buffer::new(1, 1);
+        buffer.set_raw(
+            0,
+            0,
+            Cell::from_char('L').with_attrs(CellAttrs::new(StyleFlags::empty(), old_id)),
+        );
+        writer
+            .present_ui(&buffer, None, false)
+            .expect_err("write fault");
+        assert!(state.borrow().injected_failure_triggered);
+        assert!(writer.prev_buffer.is_none());
+
+        writer.begin_link_frame();
+        let new_id = writer.links_mut().register("https://recovered.test");
+        assert_eq!(new_id, old_id, "failed baseline permits safe reuse");
+        buffer.set_raw(
+            0,
+            0,
+            Cell::from_char('L').with_attrs(CellAttrs::new(StyleFlags::empty(), new_id)),
+        );
+        writer
+            .present_ui(&buffer, None, false)
+            .expect("recovered present");
+        assert_eq!(writer.links().len(), 1);
+        let bytes = state.borrow().bytes.clone();
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("\x1b]8;;https://recovered.test\x07L\x1b[0m\x1b]8;;\x07"));
+        // BufWriter retains serialized bytes on the injected first-write
+        // failure. Retrying may flush that old frame before the full repaint;
+        // an I/O error is not a rollback. Require the final target, not absence
+        // of the earlier frame's bytes. Inspect before Drop can clean up.
+        let targets: Vec<_> = output
+            .split("\x1b]8;;")
+            .skip(1)
+            .filter_map(|part| part.split_once('\x07'))
+            .map(|(url, _)| url)
+            .filter(|url| !url.is_empty())
+            .collect();
+        assert_eq!(targets, ["https://failed.test", "https://recovered.test"]);
+        let mut terminal = ftui_render::terminal_model::TerminalModel::new(1, 1);
+        terminal.process(output.as_bytes());
+        let cell = terminal.cell(0, 0).unwrap();
+        assert_eq!(cell.text, "L");
+        assert_eq!(
+            terminal.link_url(cell.link_id),
+            Some("https://recovered.test")
+        );
+        assert!(!terminal.has_dangling_link());
+    }
+
+    #[test]
+    fn unmanaged_hyperlinks_keep_cached_ids_across_frame_preparation() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        let id = writer.links_mut().register("https://cached.test");
+        for _ in 0..3 {
+            writer.begin_link_frame();
+            assert_eq!(writer.links().get(id), Some("https://cached.test"));
+        }
     }
 
     #[test]

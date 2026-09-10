@@ -1,4 +1,4 @@
-# FrankenTUI Reality Check and Bridge Plan (updated 2026-09-09)
+# FrankenTUI Reality Check and Bridge Plan (updated 2026-09-10)
 
 ## Current assessment: 2026-09-08, after publication of 0.7.0
 
@@ -888,12 +888,104 @@ new admission. Existing wrapping/search-highlight paths also flatten link
 spans. None of these separate behaviors is claimed fixed by the constructor
 change; the new test covers explicit spans in the unwrapped viewer.
 
+### September 10 bounded automatic child hyperlinks
+
+The streaming example now recognizes literal HTTP(S) targets in clean child
+stdout/stderr records and renders explicit link spans in its unwrapped viewer.
+The original child log command and its selected trust mode are unchanged.
+Each record admits at most 32 link occurrences, each target at most 4,096 bytes;
+records containing original control characters remain plain after sanitization.
+Prose punctuation stays visible outside the target. This is conservative token
+recognition, not a complete URL validator or automatic URL opening.
+
+`LogViewer::retain_links_for_last_lines(200)` expires only link metadata from
+older records, preserving text, style, filtering/search state and the existing
+10,000-record history. The example also opts into
+`App::new(...).with_hyperlink_limit(200)`: the runtime admits at most 200 distinct
+IDs per frame and retains at most 400 registry slots. It pins the last successful
+presentation before each actual render, allowing unused and abandoned-frame
+URLs to retire without aliasing IDs during a diff. Unmanaged registries retain
+their existing behavior. Applications opting in must register URLs during every
+view instead of caching numeric IDs. The lower-level registry can pin additional
+pending buffers; slot exhaustion leaves new links plain.
+
+The new tests exercise exact cell/link behavior, bounded registry growth,
+pending roots, repeated abandoned renders, changing destinations beneath the
+same visible labels, borrowed-write failure recovery, metadata expiry, parser
+boundaries and stale process generations. The Program test manually discards
+an actual rendered buffer; it does not induce a timed budget overrun. The new
+writer fault starts before any successful presentation. Prior writer tests
+separately cover failure with an existing baseline. The PTY observer retains
+the previous 24 journeys and 13 startup checks and adds clean/tainted HTTP(S)
+output with supported and disabled hyperlink capabilities. Its added oracles
+require exact stdout order, allow stderr interleaving, bind each emitted target
+to its visible literal URL, and require links closed before logs and teardown.
+
+Final `auto4` source passes 718 selected native tests: 417 renderer, 65 viewer,
+208 runtime/writer and 28 streaming-example tests. Workspace formatting,
+all-target check, strict all-target Clippy, strict rustdoc and the actual
+consumer build pass. DSR's `frankentui-auto4-native/20260910T141410-1868589`
+aggregate receipt remains **failed** because its new PTY observer was wrong;
+the individual stage results are retained. The corrected observer's separate
+`frankentui-auto4-pty3/20260910T143022-1936544` receipt passes all 26 real PTY
+journeys and 13 startup cases using the identical consumer binary. The
+`frankentui-auto4-wasm/20260910T142414-1915082` receipt passes the web/showcase
+WASM checks and six actual Node WASM tests, for 724 selected native/WASM tests.
+
+All runs use configured host `trj` and pinned `nightly-2026-08-31`
+(`rustc` commit `90850177249efe0321573c569aec5d12b257f8d6`). The 2,497-file source
+manifest is `a41021a57955d004cb93294ef82a62d9b7a6e86a32d51df62ebdba22fba74cf9`;
+consumer SHA256 is `e1543928bcd288d5a8c33b057ffd7bdc7ae77fbbddfc62c6edfb23d2ea760506`.
+Final observer SHA256 is
+`19e33f149ca50c59feec5d9818ebd47a2d5f80aa073104e074c0faaf3da89776`.
+Archives, scripts, immutable configurations, raw PTY captures and successful
+and failed receipts are retained under
+`/data/retained/ftui-auto-links-20260910-greenlynx/`. The remote evidence archive
+has SHA256 `7bd54e111776f8878cca31adceb3a1c28a47f28543a16014498059da8628a22d`.
+Later report/Bead edits do not alter the tested code. DSR's malformed duration
+fields provide no timing evidence.
+
+Failure chain: `auto0` stopped at formatting; `auto1` exposed two new test API
+mistakes (indexing `Buffer` and assuming `StyleFlags: Default`), corrected to
+`set_raw` and `StyleFlags::empty`. `auto2` failed a new writer assertion that
+incorrectly treated a failed buffered write as rollback. Independent review of
+the pinned standard-library source confirmed that retry can flush the previous
+serialized frame before repainting. The corrected test checks the exact emitted
+target sequence, final terminal cell target and closed scope before Drop.
+`auto3` stopped at formatting that assertion. `auto4` then passed all Rust gates
+and tests but failed the added observer's immediate-close assumption; `pty2`
+accepted SGR reset but still rejected a demonstrated cursor move before close.
+Both captures and presenter-source reviews show nonpainting transitions, with
+no extra linked text. Observer 3 checks every scope, exact labels and target
+set; it permits only SGR0 and in-bounds CUP after the literal label. Synthetic
+negative controls reject extra text, conceal styling, malformed/out-of-bounds
+commands, nested or missing closes, wrong targets and log leakage. Replay of
+the retained failed captures was a comparison; the later PTY3 run is the live
+process evidence. No existing test assertions, goldens or acceptance conditions
+were weakened. These oracle mistakes cost avoidable reruns; they are not product
+defects or additional delivered features.
+
+This is a selected suite, not full-workspace test execution. Renderer, viewer
+and runtime filters respectively exclude 1,447, 3,303 and 1,801 tests, including
+the two known file-deleting writer tests prohibited by Rule 1. Those tests still
+compile under the all-target gates. Existing `nix 0.28` future-compatibility
+warnings remain visible. PTY CPR replies are explicitly emulated; no physical
+terminal click, browser pixel or expanded host matrix is claimed. RCH and UBS
+remain unavailable under their documented deletion constraints; verification
+used DSR with retained direct SSH execution and manual review. No Actions ran.
+
+Original `.32.1` remains in progress: the facade `agent_shell` example,
+partial-byte output, descendant ownership and original consumer/host acceptance
+remain. Wrapped/search-highlighted links and physical terminal clicking are
+not established by this work. These are development changes after 0.7.0,
+not a new release.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select child log policy and session deadline; compact chrome and per-run metrics are wired in. Twenty-four PTY journeys cover the existing controls plus compact output/input and deadline behavior. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, facade example, links and remaining original behavior, and published-consumer/host proof. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select child log policy and session deadline; compact chrome and per-run metrics are wired in. Clean child HTTP(S) tokens receive bounded viewer links with presented-frame ID protection. Twenty-six PTY journeys cover the controls, compact output/input, deadlines and enabled/disabled links. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, facade example and remaining original behavior, and published-consumer/host proof. Wrapped/highlighted link retention remains incomplete. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -1021,6 +1113,11 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.32.1`: correct the missing zero sentinel in `LinkRegistry::default()`;
   preserve first-link target binding through the existing unwrapped viewer;
   verify 703 selected tests and required native/WASM gates at manifest `1d2e635e`.
+- [x] `.32.1`: recognize clean child HTTP(S) tokens, expire old link metadata,
+  bound frame admission/registry slots and protect presented IDs during diffing.
+- [x] `.32.1`: verify 724 selected native/WASM tests, 26 real PTY journeys,
+  13 startup cases and required workspace gates against manifest `a41021a5`;
+  retain failed test/observer attempts and independently reviewed corrections.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output-trust acceptance and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their

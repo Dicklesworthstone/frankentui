@@ -132,6 +132,32 @@ colors. Raw output can change cursor position, terminal modes, and styling;
 it can disrupt the chrome and subsequent logs. Raw still uses the same bounded
 UTF-8 line transport and line-ending normalization, so it is not byte-transparent.
 
+The child-output viewer recognizes literal HTTP(S) URLs in records that contain
+no C0/C1 controls. Their visible labels and targets retain the original Unicode,
+query and fragment text. Whitespace, angle brackets and quotation marks delimit
+tokens; leading prose brackets and trailing sentence punctuation stay outside
+the target. Balanced parentheses within a URL are retained, while unmatched
+closing prose brackets are excluded. Targets longer than 4,096 UTF-8 bytes,
+empty authorities, backslash-containing targets and other schemes remain plain.
+This is conservative prose recognition, not a full URL validator. Any original
+control character, including an SGR or OSC escape, makes the whole record plain
+after sanitization, so stripping escapes cannot manufacture a trusted target.
+
+At most 32 occurrences per child record receive link metadata. The example uses
+`LogViewer::retain_links_for_last_lines(200)` to remove targets from older records
+while preserving their exact text and styles within the existing 10,000-record
+history. This opt-in builder also applies to records already present; its default
+leaves links intact, and increasing the limit cannot restore removed targets.
+The example's `App::new(...).with_hyperlink_limit(200)` separately bounds distinct links
+in each frame and retained registry slots to twice that limit. Excess links
+remain visible as plain text. Input echoes, control/status messages and generated
+demo lines do not receive automatic links. These links belong to the viewer;
+terminal log commands retain the selected trust mode and do not gain automatic
+OSC8 links. Unsupported hyperlink capabilities produce plain viewer output.
+Wrapped or search-highlighted lines can lose span links, and compact interactive
+chrome with no viewer has no visible links. In-memory view tests do not establish
+physical terminal clicking or behavior across terminal hosts.
+
 `--exit-after-ms=N` ends the whole session after a nonnegative number of
 milliseconds from model initialization. `FTUI_AGENT_SHELL_EXIT_AFTER_MS` supplies
 the default; the CLI overrides it, including invalid environment values. Zero

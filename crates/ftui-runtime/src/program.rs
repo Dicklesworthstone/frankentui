@@ -3222,6 +3222,16 @@ pub struct ProgramConfig {
     pub screen_mode: ScreenMode,
     /// UI anchor for inline mode.
     pub ui_anchor: UiAnchor,
+    /// Optional maximum distinct hyperlinks admitted per rendered frame.
+    ///
+    /// Retains at most twice this many registry slots so the last presented
+    /// frame keeps stable IDs during diffing. Excess links render as plain
+    /// text. Models opting in must register URLs on each view, rather than
+    /// cache numeric link IDs across frames. `None` preserves unmanaged IDs;
+    /// `Some(0)` disables link registration. The limit is clamped to half the
+    /// 24-bit ID space. Applying it to an existing writer invalidates its IDs
+    /// and presentation baseline.
+    pub hyperlink_limit: Option<usize>,
     /// Frame budget configuration.
     pub budget: FrameBudgetConfig,
     /// Runtime load-governor configuration.
@@ -3315,6 +3325,7 @@ impl Default for ProgramConfig {
         Self {
             screen_mode: ScreenMode::Inline { ui_height: 4 },
             ui_anchor: UiAnchor::Bottom,
+            hyperlink_limit: None,
             budget: FrameBudgetConfig::default(),
             load_governor: LoadGovernorConfig::default(),
             diff_config: RuntimeDiffConfig::default(),
@@ -3444,6 +3455,14 @@ impl ProgramConfig {
     #[must_use]
     pub fn with_budget(mut self, budget: FrameBudgetConfig) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// Bound per-frame hyperlink admission and retire unused URLs.
+    /// See [`Self::hyperlink_limit`] for the ID lifetime contract.
+    #[must_use]
+    pub fn with_hyperlink_limit(mut self, limit: usize) -> Self {
+        self.hyperlink_limit = Some(limit);
         self
     }
 
@@ -5285,6 +5304,9 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             config.diff_config.clone(),
         )
         .with_capability_decisions(capability_decisions);
+        if let Some(limit) = config.hyperlink_limit {
+            writer.set_hyperlink_limit(limit);
+        }
         writer.set_scroll_region_verified(
             scroll_region.verdict,
             scroll_region.rows,
@@ -5464,6 +5486,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let height = height.max(1);
 
         let mut writer = writer;
+        if let Some(limit) = config.hyperlink_limit {
+            writer.set_hyperlink_limit(limit);
+        }
         writer.set_size(width, height);
 
         let evidence_sink = EvidenceSink::from_config(&config.evidence_sink)?;
@@ -7223,6 +7248,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // Reset the per-frame arena so widgets get fresh scratch space.
         self.frame_arena.reset();
 
+        // Pin the successful presentation baseline before registering this
+        // frame's URLs. Also retire links from any abandoned render, since a
+        // budget decision can skip presentation after model.view has run.
+        self.writer.begin_link_frame();
+
         // Note: Frame borrows the pool and links from writer.
         // We scope it so it drops before we call present_ui (which needs exclusive writer access).
         let buffer = self.writer.take_render_buffer(self.width, frame_height);
@@ -7790,6 +7820,13 @@ pub struct AppBuilder<M: Model> {
 }
 
 impl<M: Model> AppBuilder<M> {
+    /// Bound hyperlinks per frame and retire URLs no longer displayed.
+    /// See [`ProgramConfig::hyperlink_limit`] for the ID lifetime contract.
+    pub fn with_hyperlink_limit(mut self, limit: usize) -> Self {
+        self.config.hyperlink_limit = Some(limit);
+        self
+    }
+
     /// Set the screen mode.
     pub fn screen_mode(mut self, mode: ScreenMode) -> Self {
         self.config.screen_mode = mode;
@@ -11906,6 +11943,101 @@ mod tests {
     }
 
     #[test]
+    fn managed_hyperlinks_survive_changed_targets_abandoned_frames_and_resizes() {
+        use ftui_render::cell::{Cell, CellAttrs, StyleFlags};
+
+        struct LinkModel {
+            targets: [String; 2],
+        }
+
+        impl Model for LinkModel {
+            type Message = Event;
+
+            fn update(&mut self, _event: Event) -> Cmd<Event> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                for (x, (label, target)) in ['L', 'R'].iter().zip(&self.targets).enumerate() {
+                    let id = frame.register_link(target);
+                    frame.buffer.set_raw(
+                        x as u16,
+                        0,
+                        Cell::from_char(*label).with_attrs(CellAttrs::new(StyleFlags::empty(), id)),
+                    );
+                }
+            }
+        }
+
+        for limit in [0, 1, 2] {
+            let model = LinkModel {
+                targets: Default::default(),
+            };
+            // Use the public constructor and App configuration, rather than
+            // the test helper that assembles Program fields directly.
+            let builder = App::new(model).with_hyperlink_limit(limit);
+            let config = builder
+                .config
+                .with_forced_size(2, 1)
+                .with_signal_interception(false)
+                .without_load_governor()
+                .without_conformal()
+                .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)));
+            let mut caps = TerminalCapabilities::basic();
+            caps.osc8_hyperlinks = true;
+            let writer =
+                TerminalWriter::new(Vec::new(), ScreenMode::AltScreen, UiAnchor::Bottom, caps);
+            let events = HeadlessEventSource::new(2, 1, BackendFeatures::default());
+            let mut program = Program::with_event_source(
+                builder.model,
+                events,
+                BackendFeatures::default(),
+                writer,
+                config,
+            )
+            .expect("construct actual program");
+            let mut expected_links = Vec::new();
+            for index in 0..256 {
+                if index % 3 == 0 {
+                    program.model.targets = [
+                        format!("https://abandoned.test/{index}/left"),
+                        format!("https://abandoned.test/{index}/right"),
+                    ];
+                    // A render that never reaches present must not consume
+                    // admission or unpin the last successful frame next time.
+                    let _abandoned = program.render_buffer(1);
+                }
+                if index % 64 == 0 {
+                    program
+                        .apply_resize(2 + (index / 64) % 2, 1, Duration::ZERO, false)
+                        .expect("resize between link frames");
+                }
+                program.model.targets = [
+                    format!("https://shown.test/{index}/left"),
+                    format!("https://shown.test/{index}/right"),
+                ];
+                expected_links.extend(program.model.targets.iter().take(limit).cloned());
+                program
+                    .render_frame()
+                    .expect("render and present changed URLs");
+                assert!(program.writer.links().len() <= 2 * limit);
+                assert!(program.writer.links().slot_count() <= 2 * limit);
+            }
+            let output = String::from_utf8(program.writer.into_inner().unwrap()).unwrap();
+            let actual_links: Vec<_> = output
+                .split("\x1b]8;;")
+                .skip(1)
+                .filter_map(|part| part.split_once('\x07'))
+                .map(|(url, _)| url)
+                .filter(|url| !url.is_empty())
+                .collect();
+            assert_eq!(actual_links, expected_links, "per-frame limit {limit}");
+            assert!(!output.contains("abandoned.test"));
+            assert!(output.contains('L') && output.contains('R'));
+        }
+    }
+
+    #[test]
     fn inline_mode_program_frames_clamp_to_terminal_height_through_resizes() {
         use std::cell::RefCell;
 
@@ -12336,6 +12468,9 @@ mod tests {
             capabilities,
             config.diff_config.clone(),
         );
+        if let Some(limit) = config.hyperlink_limit {
+            writer.set_hyperlink_limit(limit);
+        }
         let frame_timing = config.frame_timing.clone();
         writer.set_timing_enabled(frame_timing.is_some());
 

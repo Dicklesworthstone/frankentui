@@ -15,7 +15,9 @@
 //! assert_eq!(registry.get(id), Some("https://example.com"));
 //! ```
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
+
+use crate::buffer::Buffer;
 
 const MAX_LINK_ID: u32 = 0x00FF_FFFF;
 const MAX_URL_BYTES: usize = 4096;
@@ -37,6 +39,15 @@ pub struct LinkRegistry {
     lookup: AHashMap<String, u32>,
     /// Reusable IDs from removed links.
     free_list: Vec<u32>,
+    /// Optional admission and retention policy for frame-scoped links.
+    frame: Option<FrameLinks>,
+}
+
+#[derive(Debug, Clone)]
+struct FrameLinks {
+    limit: usize,
+    admitted: AHashSet<u32>,
+    protected: AHashSet<u32>,
 }
 
 impl Default for LinkRegistry {
@@ -52,39 +63,130 @@ impl LinkRegistry {
             links: vec![None],
             lookup: AHashMap::new(),
             free_list: Vec::new(),
+            frame: None,
         }
+    }
+
+    /// Create a registry admitting at most `limit` distinct link IDs per frame.
+    ///
+    /// The limit is clamped to half the 24-bit ID range. At most twice that
+    /// many nonzero slots are allocated, allowing disjoint previous/current
+    /// frames to coexist. A zero limit disables registration. URLs retain the
+    /// same 4096-byte limit as unmanaged registries.
+    ///
+    /// Call [`Self::begin_frame`] before building each frame, supplying every
+    /// presented or pending buffer whose IDs must remain valid. Numeric IDs
+    /// are not durable handles: keep the URL and register it again each frame.
+    /// Omitted IDs may be reused for another URL. Additional retained buffers
+    /// can exhaust the slot budget; registration then returns zero (plain text).
+    #[must_use]
+    pub fn with_frame_limit(limit: usize) -> Self {
+        Self {
+            frame: Some(FrameLinks {
+                limit: limit.min(MAX_LINK_ID as usize / 2),
+                admitted: AHashSet::new(),
+                protected: AHashSet::new(),
+            }),
+            ..Self::new()
+        }
+    }
+
+    /// Retain IDs in the supplied buffers and begin a new admission interval.
+    ///
+    /// This does nothing for registries created with [`Self::new`] or
+    /// [`Self::default`]. Managed registries remove every other URL, permitting
+    /// its slot to be reused. Include the last successfully presented buffer
+    /// and every pending buffer that will still be compared or presented;
+    /// registering a URL does not retain it across this call on its own.
+    ///
+    /// Call only when starting another frame, after abandoning or retaining
+    /// any previous render attempt. In particular, do not omit the presented
+    /// buffer after a skipped render: ID reuse could hide a changed URL from
+    /// a cell diff when its visible label stays the same.
+    pub fn begin_frame(&mut self, buffers: &[&Buffer]) {
+        let Some(frame) = &mut self.frame else {
+            return;
+        };
+        frame.protected.clear();
+        for buffer in buffers {
+            for cell in buffer.cells() {
+                let id = cell.attrs.link_id();
+                if self.links.get(id as usize).is_some_and(Option::is_some) {
+                    frame.protected.insert(id);
+                }
+            }
+        }
+        for (index, slot) in self.links.iter_mut().enumerate().skip(1) {
+            let id = index as u32;
+            if !frame.protected.contains(&id)
+                && let Some(url) = slot.take()
+            {
+                self.lookup.remove(&url);
+                self.free_list.push(id);
+            }
+        }
+        frame.admitted.clear();
+    }
+
+    /// Per-frame admission limit, or `None` for an unmanaged registry.
+    #[must_use]
+    pub fn frame_limit(&self) -> Option<usize> {
+        self.frame.as_ref().map(|frame| frame.limit)
+    }
+
+    /// Number of allocated nonzero slots, including currently vacant slots.
+    ///
+    /// This measures slot growth, not the allocator capacity of the backing
+    /// vector. Managed registries never exceed twice [`Self::frame_limit`].
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        self.links.len() - 1
     }
 
     /// Register a URL and return its link ID.
     ///
-    /// If the URL is already registered, returns the existing ID.
+    /// If the URL is already registered, returns the existing ID when frame
+    /// admission permits it. Repeating a successful registration within one
+    /// frame costs no additional admission. Unsafe URLs, admission exhaustion,
+    /// and slot exhaustion return zero without consuming admission.
     pub fn register(&mut self, url: &str) -> u32 {
         if !is_safe_osc8_url(url) {
             return 0;
         }
 
-        if let Some(&id) = self.lookup.get(url) {
-            return id;
-        }
-
-        let id = if let Some(id) = self.free_list.pop() {
-            id
-        } else {
-            let id = self.links.len() as u32;
-            debug_assert!(id <= MAX_LINK_ID, "link id overflow");
-            if id > MAX_LINK_ID {
-                return 0;
-            }
-            self.links.push(None);
-            id
-        };
-
-        if id == 0 || id > MAX_LINK_ID {
+        let existing = self.lookup.get(url).copied();
+        if let Some(frame) = &self.frame
+            && !existing.is_some_and(|id| frame.admitted.contains(&id))
+            && frame.admitted.len() >= frame.limit
+        {
             return 0;
         }
 
-        self.links[id as usize] = Some(url.to_string());
-        self.lookup.insert(url.to_string(), id);
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            let id = if let Some(id) = self.free_list.pop() {
+                id
+            } else {
+                let max_slots = self
+                    .frame
+                    .as_ref()
+                    .map_or(MAX_LINK_ID as usize, |frame| frame.limit * 2);
+                if self.slot_count() >= max_slots {
+                    return 0;
+                }
+                let id = self.links.len() as u32;
+                self.links.push(None);
+                id
+            };
+            self.links[id as usize] = Some(url.to_string());
+            self.lookup.insert(url.to_string(), id);
+            id
+        };
+
+        if let Some(frame) = &mut self.frame {
+            frame.admitted.insert(id);
+        }
         id
     }
 
@@ -98,8 +200,18 @@ impl LinkRegistry {
     }
 
     /// Unregister a link by ID.
+    ///
+    /// In a managed registry this has no effect on IDs protected by the last
+    /// [`Self::begin_frame`] roots or admitted in the current frame. A later
+    /// `begin_frame` naturally retires them if no supplied buffer retains them.
+    /// Unmanaged callers must stop using an ID before unregistering it.
     pub fn unregister(&mut self, id: u32) {
         if id == 0 {
+            return;
+        }
+        if let Some(frame) = &self.frame
+            && (frame.protected.contains(&id) || frame.admitted.contains(&id))
+        {
             return;
         }
 
@@ -114,11 +226,20 @@ impl LinkRegistry {
     }
 
     /// Clear all links.
+    ///
+    /// This explicitly invalidates every numeric ID, including protected
+    /// managed IDs. Discard retained buffers and invalidate any presentation
+    /// diff baseline before reusing the registry. The frame limit is preserved,
+    /// while admission and retention start fresh.
     pub fn clear(&mut self) {
         self.links.clear();
         self.links.push(None);
         self.lookup.clear();
         self.free_list.clear();
+        if let Some(frame) = &mut self.frame {
+            frame.admitted.clear();
+            frame.protected.clear();
+        }
     }
 
     /// Number of registered links.
@@ -157,6 +278,10 @@ impl LinkRegistry {
         total += self.lookup.keys().map(String::capacity).sum::<usize>();
 
         total += self.free_list.capacity() * core::mem::size_of::<u32>();
+        if let Some(frame) = &self.frame {
+            total += (frame.admitted.capacity() + frame.protected.capacity())
+                * core::mem::size_of::<u32>();
+        }
 
         total
     }
@@ -165,6 +290,269 @@ impl LinkRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell::Cell;
+    use crate::diff::BufferDiff;
+
+    fn linked_labels(ids: &[u32]) -> Buffer {
+        let mut buffer = Buffer::new(ids.len() as u16, 1);
+        for (x, &id) in ids.iter().enumerate() {
+            let mut cell = Cell::from_char('X');
+            cell.attrs = cell.attrs.with_link(id);
+            buffer.set_raw(x as u16, 0, cell);
+        }
+        buffer
+    }
+
+    // These exercise the registry with real Buffer/BufferDiff operations.
+    // They do not establish runtime root selection or terminal click behavior.
+    #[test]
+    fn managed_same_label_target_changes_remain_visible_to_diff() {
+        let mut registry = LinkRegistry::with_frame_limit(1);
+        let mut previous = linked_labels(&[0]);
+        let mut previous_url = None;
+        for url in [
+            "https://example.com/a",
+            "https://example.com/b",
+            "https://example.com/c",
+            "https://example.com/a",
+        ] {
+            registry.begin_frame(&[&previous]);
+            let previous_id = previous.get(0, 0).unwrap().attrs.link_id();
+            let id = registry.register(url);
+            assert_ne!(id, 0);
+            assert_ne!(id, previous_id);
+            assert_eq!(registry.get(id), Some(url));
+            assert_eq!(registry.get(previous_id), previous_url);
+            let next = linked_labels(&[id]);
+            assert_eq!(BufferDiff::compute(&previous, &next).len(), 1);
+            previous = next;
+            previous_url = Some(url);
+        }
+        assert_eq!(registry.slot_count(), 2);
+    }
+
+    #[test]
+    fn managed_slot_high_water_stays_at_twice_limit_over_many_urls() {
+        const LIMIT: usize = 4;
+        let mut registry = LinkRegistry::with_frame_limit(LIMIT);
+        let mut previous = linked_labels(&[0; LIMIT]);
+        let mut previous_urls: Vec<String> = Vec::new();
+        for frame in 0..300 {
+            registry.begin_frame(&[&previous]);
+            let urls: Vec<_> = (0..LIMIT)
+                .map(|index| format!("https://example.com/{frame}/{index}"))
+                .collect();
+            let ids: Vec<_> = urls.iter().map(|url| registry.register(url)).collect();
+            assert!(ids.iter().all(|id| *id != 0));
+            for (index, url) in previous_urls.iter().enumerate() {
+                let old_id = previous.get(index as u16, 0).unwrap().attrs.link_id();
+                assert_eq!(registry.get(old_id), Some(url.as_str()));
+                assert!(!ids.contains(&old_id));
+            }
+            for (&id, url) in ids.iter().zip(&urls) {
+                assert_eq!(registry.get(id), Some(url.as_str()));
+                assert_eq!(registry.register(url), id);
+            }
+            assert_eq!(registry.register("https://example.com/over-budget"), 0);
+            assert_eq!(
+                registry.slot_count(),
+                if frame == 0 { LIMIT } else { 2 * LIMIT }
+            );
+            assert_eq!(registry.len(), if frame == 0 { LIMIT } else { 2 * LIMIT });
+            let next = linked_labels(&ids);
+            assert_eq!(BufferDiff::compute(&previous, &next).len(), LIMIT);
+            previous = next;
+            previous_urls = urls;
+        }
+    }
+
+    #[test]
+    fn managed_abandoned_frames_reclaim_slots_without_unpinning_presented_links() {
+        let mut registry = LinkRegistry::with_frame_limit(1);
+        let shown_id = registry.register("https://example.com/shown");
+        let shown = linked_labels(&[shown_id]);
+        for attempt in 0..200 {
+            // The previous attempted frame was abandoned; only shown remains.
+            registry.begin_frame(&[&shown]);
+            registry.begin_frame(&[&shown]);
+            let url = format!("https://example.com/attempt/{attempt}");
+            let id = registry.register(&url);
+            let abandoned = linked_labels(&[id]);
+            assert_ne!(id, 0);
+            assert_ne!(id, shown_id);
+            assert_eq!(registry.get(shown_id), Some("https://example.com/shown"));
+            assert_eq!(registry.get(id), Some(url.as_str()));
+            assert_eq!(BufferDiff::compute(&shown, &abandoned).len(), 1);
+            assert_eq!(registry.slot_count(), 2);
+            assert_eq!(registry.len(), 2);
+        }
+        registry.begin_frame(&[&shown]);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.slot_count(), 2);
+        assert_eq!(registry.register("https://example.com/shown"), shown_id);
+        assert_eq!(
+            BufferDiff::compute(&shown, &linked_labels(&[shown_id])).len(),
+            0
+        );
+    }
+
+    #[test]
+    fn managed_pending_roots_prevent_reuse_and_slot_rejection_costs_no_admission() {
+        let mut registry = LinkRegistry::with_frame_limit(1);
+        let a = registry.register("https://example.com/a");
+        let shown = linked_labels(&[a]);
+        registry.begin_frame(&[&shown]);
+        let b = registry.register("https://example.com/b");
+        let pending = linked_labels(&[b]);
+        assert_ne!(a, b);
+
+        registry.begin_frame(&[&shown, &pending, &shown]);
+        assert_eq!(registry.register("https://example.com/c"), 0);
+        assert_eq!(registry.get(a), Some("https://example.com/a"));
+        assert_eq!(registry.get(b), Some("https://example.com/b"));
+        // The failed new slot did not consume the one available admission.
+        assert_eq!(registry.register("https://example.com/b"), b);
+        assert_eq!(registry.register("https://example.com/b"), b);
+        assert_eq!(registry.register("https://example.com/a"), 0);
+        assert_eq!(registry.slot_count(), 2);
+
+        registry.begin_frame(&[&pending]);
+        let c = registry.register("https://example.com/c");
+        assert_eq!(c, a);
+        assert_eq!(registry.get(b), Some("https://example.com/b"));
+        assert_eq!(registry.get(c), Some("https://example.com/c"));
+        assert_eq!(BufferDiff::compute(&pending, &linked_labels(&[c])).len(), 1);
+    }
+
+    #[test]
+    fn managed_admission_counts_distinct_successful_ids_and_rejects_unsafe_urls() {
+        let mut registry = LinkRegistry::with_frame_limit(2);
+        for rejected in [
+            "https://example.com/\x1b[2J".to_owned(),
+            "https://example.com/\n".to_owned(),
+            "a".repeat(MAX_URL_BYTES + 1),
+        ] {
+            assert_eq!(registry.register(&rejected), 0);
+        }
+        assert_eq!(registry.slot_count(), 0);
+        let max_length = "a".repeat(MAX_URL_BYTES);
+        let a = registry.register(&max_length);
+        assert_ne!(a, 0);
+        for _ in 0..20 {
+            assert_eq!(registry.register(&max_length), a);
+        }
+        let b = registry.register("https://example.com/b");
+        assert_ne!(b, 0);
+        assert_ne!(a, b);
+        assert_eq!(registry.register("https://example.com/c"), 0);
+        assert_eq!(registry.slot_count(), 2);
+
+        let shown = linked_labels(&[a, b]);
+        registry.begin_frame(&[&shown]);
+        assert_eq!(registry.register("https://example.com/b"), b);
+        assert_eq!(registry.register(&max_length), a);
+        assert_eq!(registry.register("https://example.com/b"), b);
+        assert_eq!(registry.register("https://example.com/c"), 0);
+    }
+
+    #[test]
+    fn managed_unregister_cannot_recycle_pinned_or_current_frame_ids() {
+        let mut registry = LinkRegistry::with_frame_limit(1);
+        {
+            let a = registry.register("https://example.com/a");
+            let shown = linked_labels(&[a]);
+            registry.unregister(a);
+            assert_eq!(registry.get(a), Some("https://example.com/a"));
+            assert_eq!(registry.register("https://example.com/b"), 0);
+
+            registry.begin_frame(&[&shown]);
+            registry.unregister(a);
+            let b = registry.register("https://example.com/b");
+            let next = linked_labels(&[b]);
+            registry.unregister(b);
+            registry.unregister(u32::MAX);
+            registry.unregister(0);
+            assert_eq!(registry.get(a), Some("https://example.com/a"));
+            assert_eq!(registry.get(b), Some("https://example.com/b"));
+            assert_ne!(a, b);
+
+            registry.begin_frame(&[&next]);
+            assert_eq!(registry.get(a), None);
+            assert_eq!(registry.get(b), Some("https://example.com/b"));
+            assert_eq!(registry.register("https://example.com/c"), a);
+        }
+        // All buffers are discarded before this explicit invalidation.
+        registry.clear();
+        assert_eq!(registry.frame_limit(), Some(1));
+        assert_eq!(registry.len(), 0);
+        assert_eq!(registry.slot_count(), 0);
+        assert_eq!(registry.register("https://example.com/fresh"), 1);
+        assert_eq!(registry.register("https://example.com/overflow"), 0);
+    }
+
+    #[test]
+    fn managed_zero_and_overflow_limits_are_bounded_without_preallocation() {
+        let mut disabled = LinkRegistry::with_frame_limit(0);
+        disabled.begin_frame(&[&linked_labels(&[0, MAX_LINK_ID])]);
+        assert_eq!(disabled.frame_limit(), Some(0));
+        assert_eq!(disabled.register("https://example.com"), 0);
+        disabled.clear();
+        assert_eq!(disabled.frame_limit(), Some(0));
+        assert_eq!(disabled.slot_count(), 0);
+        assert_eq!(disabled.register("https://example.com"), 0);
+
+        let mut maximum = LinkRegistry::with_frame_limit(usize::MAX);
+        assert_eq!(maximum.frame_limit(), Some(MAX_LINK_ID as usize / 2));
+        assert_eq!(maximum.slot_count(), 0);
+        assert_eq!(maximum.register("https://example.com"), 1);
+        assert_eq!(maximum.slot_count(), 1);
+    }
+
+    #[test]
+    fn unmanaged_frame_boundaries_leave_urls_and_reuse_behavior_unchanged() {
+        for mut registry in [LinkRegistry::new(), LinkRegistry::default()] {
+            assert_eq!(registry.frame_limit(), None);
+            let a = registry.register("https://example.com/a");
+            registry.begin_frame(&[]);
+            assert_eq!(registry.get(a), Some("https://example.com/a"));
+            assert_eq!(registry.register("https://example.com/a"), a);
+            registry.unregister(a);
+            assert_eq!(registry.register("https://example.com/b"), a);
+            for index in 0..300 {
+                assert_ne!(
+                    registry.register(&format!("https://example.com/{index}")),
+                    0
+                );
+            }
+            assert_eq!(registry.slot_count(), 301);
+            registry.begin_frame(&[]);
+            assert_eq!(registry.len(), 301);
+            registry.clear();
+            assert_eq!(registry.frame_limit(), None);
+            assert_eq!(registry.slot_count(), 0);
+        }
+    }
+
+    #[test]
+    fn managed_clone_preserves_admission_and_retention_independently() {
+        let mut original = LinkRegistry::with_frame_limit(1);
+        let a = original.register("https://example.com/a");
+        let shown = linked_labels(&[a]);
+        original.begin_frame(&[&shown]);
+        let b = original.register("https://example.com/b");
+        let mut cloned = original.clone();
+        cloned.unregister(a);
+        cloned.unregister(b);
+        assert_eq!(cloned.get(a), Some("https://example.com/a"));
+        assert_eq!(cloned.get(b), Some("https://example.com/b"));
+        assert_eq!(cloned.register("https://example.com/c"), 0);
+        cloned.begin_frame(&[]);
+        assert!(cloned.is_empty());
+        assert_ne!(cloned.register("https://example.com/c"), 0);
+        assert_eq!(original.get(a), Some("https://example.com/a"));
+        assert_eq!(original.get(b), Some("https://example.com/b"));
+        assert_eq!(original.register("https://example.com/c"), 0);
+    }
 
     #[test]
     fn register_and_get() {

@@ -176,6 +176,8 @@ pub struct LogViewer {
     virt: Virtualized<Text>,
     /// Maximum lines to retain (memory bound).
     max_lines: usize,
+    /// Optional trailing line count whose span links are retained.
+    link_retention_lines: Option<usize>,
     /// Line wrapping mode.
     wrap_mode: LogWrapMode,
     /// Default style for lines.
@@ -218,6 +220,7 @@ impl LogViewer {
         Self {
             virt: Virtualized::new(max_lines).with_follow(true),
             max_lines,
+            link_retention_lines: None,
             wrap_mode: LogWrapMode::NoWrap,
             style: Style::default(),
             highlight_style: None,
@@ -235,6 +238,42 @@ impl LogViewer {
     pub fn wrap_mode(mut self, mode: LogWrapMode) -> Self {
         self.wrap_mode = mode;
         self
+    }
+
+    /// Keep hyperlink metadata only on the newest `lines` retained records.
+    ///
+    /// Older records keep their text and styling, but their spans lose link
+    /// targets. This applies immediately to existing records and after each
+    /// appended line, including lines within a multi-line push. Zero strips all
+    /// links. By default, links remain for the full text retention period.
+    /// Increasing this limit cannot restore targets already removed.
+    #[must_use]
+    pub fn retain_links_for_last_lines(mut self, lines: usize) -> Self {
+        self.link_retention_lines = Some(lines);
+        for index in 0..self.virt.len().saturating_sub(lines) {
+            self.strip_line_links(index);
+        }
+        self
+    }
+
+    fn strip_line_links(&mut self, index: usize) {
+        let Some(text) = self.virt.get_mut(index) else {
+            return;
+        };
+        if !text
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans())
+            .any(|span| span.link.is_some())
+        {
+            return;
+        }
+        *text = Text::from_lines(std::mem::take(text).into_iter().map(|line| {
+            Line::from_spans(line.into_iter().map(|mut span| {
+                span.link = None;
+                span
+            }))
+        }));
     }
 
     /// Set the default style for lines.
@@ -332,6 +371,17 @@ impl LogViewer {
             }
 
             self.virt.push(item);
+
+            // Only one record crosses the metadata boundary per appended line.
+            if let Some(lines) = self.link_retention_lines
+                && let Some(index) = self
+                    .virt
+                    .len()
+                    .checked_sub(lines)
+                    .and_then(|n| n.checked_sub(1))
+            {
+                self.strip_line_links(index);
+            }
 
             // Enforce capacity
             if self.virt.len() > self.max_lines {
@@ -2234,6 +2284,131 @@ mod tests {
         log.push("match 7");
         assert!(log.filtered_scroll_offset >= offset_at_bottom);
         assert!(log.is_at_bottom());
+    }
+
+    #[test]
+    fn link_retention_builder_preserves_text_styles_and_search_state() {
+        let mut log = LogViewer::new(10);
+        for number in 0..4 {
+            log.push(FtuiText::from_spans([
+                Span::styled(format!("match {number}"), Style::new().bold())
+                    .link(format!("https://example.com/{number}")),
+                Span::styled(" plain", Style::new().italic()),
+            ]));
+        }
+        log.set_filter(Some("match"));
+        assert_eq!(log.search("match"), 4);
+        log.scroll_up(1);
+        let original = log.clone();
+        let log = log.retain_links_for_last_lines(2);
+        assert_eq!(log.len(), 4);
+        assert_eq!(log.filter, original.filter);
+        assert_eq!(log.filtered_indices, original.filtered_indices);
+        assert_eq!(log.filtered_scroll_offset, original.filtered_scroll_offset);
+        assert_eq!(log.virt.scroll_offset(), original.virt.scroll_offset());
+        assert_eq!(log.auto_scroll_enabled(), original.auto_scroll_enabled());
+        assert_eq!(
+            format!("{:?}", log.search),
+            format!("{:?}", original.search)
+        );
+        assert_eq!(
+            format!("{:?}", log.filter_stats),
+            format!("{:?}", original.filter_stats)
+        );
+        for index in 0..4 {
+            let before = original.virt.get(index).unwrap();
+            let after = log.virt.get(index).unwrap();
+            assert_eq!(after.to_plain_text(), format!("match {index} plain"));
+            let before = before.lines()[0].spans();
+            let after = after.lines()[0].spans();
+            assert_eq!(after.len(), before.len());
+            for (before, after) in before.iter().zip(after) {
+                assert_eq!(after.content, before.content);
+                assert_eq!(after.style, before.style);
+                assert_eq!(
+                    after.link,
+                    if index < 2 { None } else { before.link.clone() }
+                );
+            }
+            assert!(
+                before[0].link.is_some(),
+                "default retention keeps every link"
+            );
+        }
+    }
+
+    #[test]
+    fn link_retention_expires_each_multiline_push_and_survives_eviction() {
+        let linked_line = |number| {
+            Line::from_spans([
+                Span::raw(format!("line {number}")).link(format!("https://example.com/{number}"))
+            ])
+        };
+        let mut log = LogViewer::new(3).retain_links_for_last_lines(2);
+        log.push(FtuiText::from_lines((0..5).map(linked_line)));
+        assert_eq!(log.len(), 3);
+        for index in 0..3 {
+            let item = log.virt.get(index).unwrap();
+            assert_eq!(item.to_plain_text(), format!("line {}", index + 2));
+            assert_eq!(item.lines()[0].spans()[0].link.is_some(), index > 0);
+        }
+        let mut log = log.retain_links_for_last_lines(usize::MAX);
+        assert!(
+            log.virt.get(0).unwrap().lines()[0].spans()[0]
+                .link
+                .is_none()
+        );
+        log.push(FtuiText::from_line(linked_line(5)));
+        for index in 0..3 {
+            assert!(
+                log.virt.get(index).unwrap().lines()[0].spans()[0]
+                    .link
+                    .is_some()
+            );
+        }
+        let mut log = log.retain_links_for_last_lines(0);
+        log.push(FtuiText::from_lines([linked_line(6), linked_line(7)]));
+        for index in 0..3 {
+            let item = log.virt.get(index).unwrap();
+            assert_eq!(item.to_plain_text(), format!("line {}", index + 5));
+            assert!(item.lines()[0].spans()[0].link.is_none());
+        }
+        log.clear();
+        log.push(FtuiText::from_line(linked_line(8)));
+        assert_eq!(log.len(), 1);
+        assert!(
+            log.virt.get(0).unwrap().lines()[0].spans()[0]
+                .link
+                .is_none()
+        );
+        let mut empty = LogViewer::new(0).retain_links_for_last_lines(0);
+        empty.push(FtuiText::from_line(linked_line(9)));
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn link_retention_keeps_all_ten_thousand_text_records_and_last_two_hundred_targets() {
+        let mut log = LogViewer::new(10_000).retain_links_for_last_lines(200);
+        for number in 0..10_001 {
+            log.push(FtuiText::from_spans([
+                Span::raw(format!("line {number}")).link(format!("https://example.com/{number}"))
+            ]));
+            if number >= 9_999 {
+                assert_eq!(log.len(), 10_000);
+                let first = number - 9_999;
+                for index in 0..10_000 {
+                    let item = log.virt.get(index).unwrap();
+                    assert_eq!(item.to_plain_text(), format!("line {}", first + index));
+                    let link = item.lines()[0].spans()[0].link.as_deref();
+                    if index < 9_800 {
+                        assert_eq!(link, None);
+                    } else {
+                        let expected = format!("https://example.com/{}", first + index);
+                        assert_eq!(link, Some(expected.as_str()));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

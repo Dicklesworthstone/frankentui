@@ -39,6 +39,7 @@ use ftui_runtime::{
     ProcessEvent, ProcessInput, ProcessInputError, ProcessInterruptStatus, ProcessSubscription,
     ScreenMode, Subscription,
 };
+use ftui_text::{Span, Text};
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
@@ -46,6 +47,110 @@ use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::status_line::{StatusItem, StatusLine};
 use ftui_widgets::{StatefulWidget, Widget};
+
+const CHILD_LINKS_PER_RECORD: usize = 32;
+const CHILD_LINK_RETENTION_LINES: usize = 200;
+const MAX_CHILD_LINK_BYTES: usize = 4096;
+
+/// Recognize literal URLs in control-free child text, without changing its
+/// sanitized display. An escape-bearing record stays plain: sanitization must
+/// never turn an OSC target or fragments around controls into a trusted link.
+fn child_viewer_text(original: &str) -> Text<'static> {
+    let plain = sanitize(original).into_owned();
+    if plain.is_empty() || original.chars().any(char::is_control) {
+        return Text::raw(plain);
+    }
+
+    let mut spans = Vec::new();
+    let mut copied_until = 0;
+    let mut token_start = 0;
+    let mut link_count = 0;
+    let boundaries = plain
+        .char_indices()
+        .filter(|(_, c)| {
+            c.is_whitespace() || matches!(*c, '<' | '>' | '"' | '\'' | '`' | '“' | '”' | '‘' | '’')
+        })
+        .map(|(index, c)| (index, index + c.len_utf8()))
+        .chain(std::iter::once((plain.len(), plain.len())));
+    for (token_end, next_start) in boundaries {
+        let token = &plain[token_start..token_end];
+        let candidate = token.trim_start_matches(['(', '[', '{']);
+        let url = trim_url_punctuation(candidate);
+        if link_count < CHILD_LINKS_PER_RECORD && is_literal_http_url(url) {
+            let start = token_start + token.len() - candidate.len();
+            let end = start + url.len();
+            if copied_until < start {
+                spans.push(Span::raw(plain[copied_until..start].to_owned()));
+            }
+            spans.push(Span::raw(url.to_owned()).link(url.to_owned()));
+            copied_until = end;
+            link_count += 1;
+        }
+        token_start = next_start;
+    }
+    if copied_until < plain.len() || spans.is_empty() {
+        spans.push(Span::raw(plain[copied_until..].to_owned()));
+    }
+    Text::from_spans(spans)
+}
+
+fn trim_url_punctuation(mut token: &str) -> &str {
+    let mut opening = [0usize; 3];
+    let mut closing = [0usize; 3];
+    for c in token.chars() {
+        match c {
+            '(' => opening[0] += 1,
+            '[' => opening[1] += 1,
+            '{' => opening[2] += 1,
+            ')' => closing[0] += 1,
+            ']' => closing[1] += 1,
+            '}' => closing[2] += 1,
+            _ => {}
+        }
+    }
+    loop {
+        let trimmed = token.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+        let Some(last) = trimmed.chars().next_back() else {
+            return trimmed;
+        };
+        let bracket = match last {
+            ')' => 0,
+            ']' => 1,
+            '}' => 2,
+            _ => return trimmed,
+        };
+        if closing[bracket] <= opening[bracket] {
+            return trimmed;
+        }
+        closing[bracket] -= 1;
+        token = &trimmed[..trimmed.len() - last.len_utf8()];
+    }
+}
+
+fn is_literal_http_url(url: &str) -> bool {
+    if url.len() > MAX_CHILD_LINK_BYTES || url.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return false;
+    }
+    let authority_start = if url
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+        8
+    } else if url
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+    {
+        7
+    } else {
+        return false;
+    };
+    let authority = url[authority_start..]
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    !authority.is_empty() && !url.contains('\\')
+}
 
 struct StreamingHarness {
     log: LogViewer,
@@ -280,7 +385,8 @@ impl From<Event> for Msg {
 impl StreamingHarness {
     fn new(options: StreamingOptions) -> Self {
         let started = Instant::now();
-        let mut log = LogViewer::new(10_000);
+        let mut log =
+            LogViewer::new(10_000).retain_links_for_last_lines(CHILD_LINK_RETENTION_LINES);
         if options.command.is_empty() {
             log.push("High-volume streaming demo started");
             log.push("Press SPACE to pause/resume, Q to quit");
@@ -636,7 +742,7 @@ impl Model for StreamingHarness {
                         self.line_count = self.line_count.saturating_add(1);
                         self.byte_count =
                             self.byte_count.saturating_add(line.len()).saturating_add(1);
-                        self.log.push(sanitize(&line).into_owned());
+                        self.log.push(child_viewer_text(&line));
                         return Cmd::Log {
                             text: line,
                             mode: self.options.log_mode,
@@ -648,7 +754,7 @@ impl Model for StreamingHarness {
                             self.byte_count.saturating_add(line.len()).saturating_add(1);
                         self.stderr_count = self.stderr_count.saturating_add(1);
                         let text = format!("[stderr] {line}");
-                        self.log.push(sanitize(&text).into_owned());
+                        self.log.push(child_viewer_text(&text));
                         return Cmd::Log {
                             text,
                             mode: self.options.log_mode,
@@ -842,6 +948,7 @@ fn main() -> std::io::Result<()> {
     let ui_height = options.ui_height;
     App::new(StreamingHarness::new(options))
         .screen_mode(ScreenMode::Inline { ui_height })
+        .with_hyperlink_limit(CHILD_LINK_RETENTION_LINES)
         .run()
 }
 
@@ -873,6 +980,297 @@ mod tests {
             generation: model.process_control.as_ref().unwrap().generation(),
             event,
         }
+    }
+
+    fn text_links(text: &Text<'_>) -> Vec<(String, String)> {
+        text.lines()
+            .iter()
+            .flat_map(|line| line.spans())
+            .filter_map(|span| {
+                span.link
+                    .as_ref()
+                    .map(|url| (span.as_str().to_owned(), url.to_string()))
+            })
+            .collect()
+    }
+
+    fn model_view_links(
+        model: &StreamingHarness,
+        width: u16,
+        height: u16,
+    ) -> (Vec<(String, String)>, String) {
+        let mut pool = GraphemePool::new();
+        let mut registry = ftui_render::link_registry::LinkRegistry::default();
+        let mut frame = Frame::with_links(width, height, &mut pool, &mut registry);
+        model.view(&mut frame);
+        let buffer = frame.buffer;
+        let mut labels = std::collections::BTreeMap::<u32, String>::new();
+        let mut visible = String::new();
+        for y in 0..buffer.height() {
+            for cell in buffer.row_cells(y) {
+                let character = cell.content.as_char().unwrap_or(' ');
+                visible.push(character);
+                if cell.attrs.link_id() != 0 {
+                    labels
+                        .entry(cell.attrs.link_id())
+                        .or_default()
+                        .push(character);
+                }
+            }
+            visible.push('\n');
+        }
+        let links = labels
+            .into_iter()
+            .map(|(id, label)| {
+                (
+                    registry.get(id).expect("rendered link resolves").to_owned(),
+                    label,
+                )
+            })
+            .collect();
+        (links, visible)
+    }
+
+    #[test]
+    fn child_http_links_preserve_literal_unicode_queries_and_prose() {
+        let input = "See (https://example.com/a_(b)). <HTTP://例え.test:8080/🦀?q=café&x=1#part>, \
+                     \"https://example.com/same\" and https://example.com/same!";
+        let text = child_viewer_text(input);
+        assert_eq!(text.to_plain_text(), input);
+        let expected = [
+            "https://example.com/a_(b)",
+            "HTTP://例え.test:8080/🦀?q=café&x=1#part",
+            "https://example.com/same",
+            "https://example.com/same",
+        ];
+        assert_eq!(
+            text_links(&text),
+            expected.map(|url| (url.to_owned(), url.to_owned()))
+        );
+        let text = child_viewer_text("");
+        assert_eq!(text.to_plain_text(), "");
+        assert!(text_links(&text).is_empty());
+    }
+
+    #[test]
+    fn child_http_links_never_promote_control_bearing_or_non_http_records() {
+        for scalar in (0..=0x1f).chain(0x7f..=0x9f) {
+            let control = char::from_u32(scalar).unwrap();
+            let input = format!("https://example.com/before{control}https://example.com/after");
+            let text = child_viewer_text(&input);
+            assert_eq!(text.to_plain_text(), sanitize(&input), "U+{scalar:04X}");
+            assert!(text_links(&text).is_empty(), "U+{scalar:04X}");
+        }
+        for input in [
+            "\x1b]8;;https://attacker.test/target\x07https://example.com/label\x1b]8;;\x07",
+            "https://example.com/\x1b[31mjoined\x1b[0m",
+            "safe \x1b]2;https://attacker.test/title\x07 https://example.com/end",
+            "ftp://example.com mailto:user@example.com javascript:alert(1)",
+            "http:// https:// https:///path https://?query https://#fragment",
+            "prefixhttps://example.com https://example.com\\different-host",
+        ] {
+            let text = child_viewer_text(input);
+            assert_eq!(text.to_plain_text(), sanitize(input));
+            assert!(text_links(&text).is_empty(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn child_http_links_bound_targets_and_keep_excess_tokens_plain() {
+        let prefix = "https://example.com/";
+        let exact = format!(
+            "{prefix}{}",
+            "x".repeat(MAX_CHILD_LINK_BYTES - prefix.len())
+        );
+        assert_eq!(exact.len(), 4096);
+        assert_eq!(
+            text_links(&child_viewer_text(&exact)),
+            [(exact.clone(), exact.clone())]
+        );
+        let oversized = format!("{exact}x");
+        let text = child_viewer_text(&oversized);
+        assert_eq!(text.to_plain_text(), oversized);
+        assert!(text_links(&text).is_empty());
+
+        let urls: Vec<_> = (0..33)
+            .map(|n| format!("https://example.com/{n}"))
+            .collect();
+        let input = urls.join(" ");
+        let text = child_viewer_text(&input);
+        assert_eq!(text.to_plain_text(), input);
+        assert_eq!(
+            text_links(&text),
+            urls[..32]
+                .iter()
+                .map(|url| (url.clone(), url.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            text.lines()[0].spans().last().unwrap().as_str(),
+            " https://example.com/32"
+        );
+        let punctuated = format!("https://example.com/a{}", ")".repeat(60_000));
+        let text = child_viewer_text(&punctuated);
+        assert_eq!(text.to_plain_text(), punctuated);
+        let target = "https://example.com/a";
+        assert_eq!(text_links(&text), [(target.to_owned(), target.to_owned())]);
+    }
+
+    #[test]
+    fn child_http_links_reach_model_view_without_changing_log_trust_policy() {
+        for mode in [
+            SanitizeMode::Strip,
+            SanitizeMode::SgrOnly,
+            SanitizeMode::Raw,
+        ] {
+            let mut model = interactive_model();
+            model.options.log_mode = mode;
+            for (event, expected) in [
+                (
+                    ProcessEvent::Stdout("see https://example.com/out".to_owned()),
+                    "see https://example.com/out",
+                ),
+                (
+                    ProcessEvent::Stderr("https://example.com/err".to_owned()),
+                    "[stderr] https://example.com/err",
+                ),
+                (
+                    ProcessEvent::Stdout("\x1b[31mhttps://example.com/plain\x1b[0m".to_owned()),
+                    "\x1b[31mhttps://example.com/plain\x1b[0m",
+                ),
+            ] {
+                assert!(matches!(
+                    model.update(process_message(&model, event)),
+                    Cmd::Log { text, mode: actual } if text == expected && actual == mode
+                ));
+            }
+            model.input.set_value("https://example.com/input");
+            assert!(matches!(
+                model.submit_input(),
+                Cmd::Log {
+                    mode: SanitizeMode::Strip,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                model.control_note("https://example.com/control".to_owned()),
+                Cmd::Log {
+                    mode: SanitizeMode::Strip,
+                    ..
+                }
+            ));
+            let (links, visible) = model_view_links(&model, 100, 20);
+            assert_eq!(
+                links,
+                ["https://example.com/out", "https://example.com/err"]
+                    .map(|url| (url.to_owned(), url.to_owned()))
+            );
+            for line in [
+                "see https://example.com/out",
+                "[stderr] https://example.com/err",
+                "https://example.com/plain",
+                "[stdin queued] https://example.com/input",
+                "[process control] https://example.com/control",
+            ] {
+                assert!(visible.contains(line), "{line}");
+            }
+            assert_eq!(model.line_count, 3);
+            assert_eq!(model.stderr_count, 1);
+        }
+    }
+
+    #[test]
+    fn child_http_links_expire_after_two_hundred_records_without_losing_text() {
+        let mut model = interactive_model();
+        model.log.clear();
+        for number in 0..201 {
+            let input = format!("https://example.com/{number}");
+            assert!(matches!(
+                model.update(process_message(&model, ProcessEvent::Stdout(input.clone()))),
+                Cmd::Log { text, mode: SanitizeMode::Strip } if text == input
+            ));
+        }
+        let (links, visible) = model_view_links(&model, 80, 210);
+        assert_eq!(model.log.len(), 201);
+        let expected: Vec<_> = (1..201)
+            .map(|number| {
+                let url = format!("https://example.com/{number}");
+                (url.clone(), url)
+            })
+            .collect();
+        assert_eq!(links, expected);
+        for number in 0..201 {
+            assert!(
+                visible
+                    .lines()
+                    .any(|line| line.contains(&format!("https://example.com/{number} ")))
+            );
+        }
+        for (width, height) in [(0, 0), (1, 1), (80, 3)] {
+            let (links, _) = model_view_links(&model, width, height);
+            assert!(links.is_empty(), "compact frame {width}x{height}");
+        }
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 15, &mut pool);
+        model.view(&mut frame);
+        assert!(
+            frame
+                .buffer
+                .cells()
+                .iter()
+                .all(|cell| cell.attrs.link_id() == 0)
+        );
+    }
+
+    #[test]
+    fn synthetic_restart_retains_linked_text_and_rejects_stale_link_metadata() {
+        let mut model = interactive_model();
+        let previous = model.process_control.as_ref().unwrap().generation();
+        let old = "https://example.com/old";
+        let fresh = "https://example.com/fresh";
+        assert!(matches!(
+            model.update(process_message(&model, ProcessEvent::Stdout(old.to_owned()))),
+            Cmd::Log { text, mode: SanitizeMode::Strip } if text == old
+        ));
+        let _ = model.update(process_message(&model, ProcessEvent::Exited(0)));
+        let command = model.restart_child_with_status(ProcessControlStatus {
+            pid: None,
+            closed: true,
+            can_restart: true,
+            interrupt: ProcessInterruptStatus::Idle,
+        });
+        assert!(matches!(
+            command,
+            Cmd::Log {
+                mode: SanitizeMode::Strip,
+                ..
+            }
+        ));
+        for event in [
+            ProcessEvent::Stdout("https://example.com/stale-out".to_owned()),
+            ProcessEvent::Stderr("https://example.com/stale-err".to_owned()),
+        ] {
+            assert!(matches!(
+                model.update(Msg::Process {
+                    generation: previous,
+                    event,
+                }),
+                Cmd::None
+            ));
+        }
+        assert!(matches!(
+            model.update(process_message(&model, ProcessEvent::Stdout(fresh.to_owned()))),
+            Cmd::Log { text, mode: SanitizeMode::Strip } if text == fresh
+        ));
+        let (links, visible) = model_view_links(&model, 100, 20);
+        assert_eq!(
+            links,
+            [old, fresh].map(|url| (url.to_owned(), url.to_owned()))
+        );
+        assert!(!visible.contains("stale-out") && !visible.contains("stale-err"));
+        assert!(visible.contains("[process] EXIT 0 lines=1"));
+        assert!(visible.contains("[process] RESTART run="));
+        assert_eq!(model.line_count, 1);
     }
 
     #[test]
