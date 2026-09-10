@@ -2567,7 +2567,12 @@ mod tests {
             }
             assert_eq!(
                 complete,
-                ["", "🦀é\x1b]2;hidden\x07prompt>", "inside\rcarriage", "last\r"]
+                [
+                    "",
+                    "🦀é\x1b]2;hidden\x07prompt>",
+                    "inside\rcarriage",
+                    "last\r"
+                ]
             );
         }
     }
@@ -2800,12 +2805,16 @@ os.write(1,b'tail\r')
         // Do not drain the first admitted prefix. The second conversion is
         // observed before bounded queue admission, not as delivered output.
         assert_eq!(
-            observed_receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+            observed_receiver
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap(),
             "a"
         );
         input.try_send_line("next".to_owned()).unwrap();
         assert_eq!(
-            observed_receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+            observed_receiver
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap(),
             "ab"
         );
         let stopped = Instant::now();
