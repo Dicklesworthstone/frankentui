@@ -235,8 +235,9 @@ buffer and at most one unsent line. Arbitrary model messages and retained model
 history have no byte limit imposed by this queue.
 
 The example opts into `ProcessSubscription::partial_output(true)`. When a child
-flushes an unterminated prompt, the feedback row shows a cumulative `[stdout]`
-or `[stderr]` preview before the next pipe read. This works with both the default
+flushes an unterminated prompt, the reader emits a cumulative preview before
+its next pipe read. The example renders it asynchronously in the feedback row,
+prefixed with `[stdout]` or `[stderr]`. This works with both the default
 viewer and compact three-row interactive chrome. The most recently updated
 nonempty preview is shown; each stream retains its own pending text. Control
 and input-error feedback takes priority. Previews are always sanitized, including

@@ -983,9 +983,10 @@ not a new release.
 ### September 10 unterminated child prompt previews
 
 The streaming consumer opts into `ProcessSubscription::partial_output(true)`.
-Growing cumulative UTF-8 prefixes now reach the model before the reader waits
-for more bytes. Each stream keeps its own sanitized preview, with the most
-recent nonempty one visible in the feedback row at both normal and compact
+Growing cumulative UTF-8 prefixes enter the model queue before the reader waits
+for more bytes; rendering happens asynchronously. Each stream keeps its own
+sanitized preview, with the most recent nonempty one visible in the feedback row
+at both normal and compact
 three-row heights. Control and input-error feedback takes priority. Completed
 lines clear their preview and enter the existing log/counter path exactly once;
 terminal status and restart clear both previews, and stale generations are
@@ -1000,20 +1001,57 @@ fails. Cumulative copying can add work for slowly dribbling output. This solves
 prompt visibility; byte-transparent fragment logging, arbitrary binary output,
 forced child flushing and interruption of blocked OS reads remain absent.
 
-Verification is in progress against the retained `prompt1` source. Seven new
-runtime tests and three consumer tests cover boundaries, real stdin handshakes,
+Final `prompt1` passes 63 process-subscription tests, 31 streaming-example tests
+and six actual Node WASM tests: 100 selected native/WASM tests. Workspace
+formatting, all-target check, strict all-target Clippy, strict rustdoc, the
+consumer build and web/showcase WASM checks pass. Seven new runtime tests and
+three consumer tests cover boundaries, real stdin handshakes,
 default-disabled behavior, backpressure cancellation, terminal/restart state,
 safe compact rendering and feedback precedence. The new PTY observer retains
 all 26 prior journeys and 13 startup checks, adding two prompt handshakes that
 send input only after exact text/counters appear in a completed terminal frame.
 Its fixed 24-by-80 terminal observer has synthetic positive/negative controls;
-it is not a general terminal emulator or physical display proof.
+it is not a general terminal emulator or physical display proof. All 28 real
+PTY journeys and 13 startup checks pass. Each added journey preserves the exact
+seven completed log records, restores termios and confirms the immediate child
+is gone before releasing its supervisor.
+
+Successful DSR receipts are
+`frankentui-prompt1-native/20260910T160546-2389718`,
+`frankentui-prompt1-pty/20260910T160945-2412789` and
+`frankentui-prompt1-wasm/20260910T161006-2414533`. They use configured host `trj`
+and pinned `nightly-2026-08-31`, rustc commit
+`90850177249efe0321573c569aec5d12b257f8d6`. The 2,497-file manifest is
+`38aae95662cc3e3f8162871ab839e0c16d386eea4b267a1b16bb4ca9a08bb34b`;
+consumer SHA256 is `46ce36fcfa7e12915158cf5a79a555e40017bb4cc6f42aa5e100ac03185a2cbc`.
+The identical observer used for the failed baseline and successful candidate has
+SHA256 `770b972eff666c482f1c85f61c016338072bc5d14bb55cb083bf783998f12f3c`.
+Source archives, raw terminal captures, scripts and all five successful/failed
+DSR receipts are retained under
+`/data/retained/ftui-partial-prompts-20260910-greenlynx/`; its remote-evidence
+archive has SHA256 `391eed544dae437c7a42d2ff776b9f7c9279386aa7d294e46f50f8f195c7578c`.
+Later report/Bead edits and the tutorial's clarification that rendering is
+asynchronous do not change tested Rust source.
+
+This selection excludes 1,953 other runtime library tests. The known deleting
+writer/watcher tests were not executed; all-target gates still compile them.
+Existing `nix 0.28` future-compatibility warnings remain visible. CPR replies are
+emulated; no full-workspace suite, physical-terminal or expanded host matrix is
+claimed. Malformed DSR duration fields receive no timing credit. RCH and UBS
+remain unavailable under their documented deletion constraints; verification
+used retained DSR direct SSH execution and manual review. No Actions or release
+ran.
 
 The pre-feature binary fails both new journeys at input stage zero while the
 prior 26 pass; no reply is sent before a prompt appears. Child alarms end the
 missing-preview cases after eight seconds, with termios restored and children
 gone. `prompt0` then stopped at three formatting differences in new runtime
-tests; these were corrected manually without changing assertions.
+tests; these were corrected manually without changing assertions. During final
+review root incorrectly announced a combined-conceal weakness based on an
+earlier observer draft. Inspection and synthetic controls against the exact
+executed observer confirmed it already rejected `1;8m` and `0;8m` while allowing
+color values of 8. That claim was retracted; no observer change or additional
+terminal run was needed. It is not a fixed product defect.
 
 Staging failures are also retained: root's `git clone --local` failed on a
 cross-filesystem hard link and Git removed its incomplete destination, contrary
@@ -1021,10 +1059,10 @@ to the no-deletion rule. No project/source archive was lost. Root replaced that
 route with explicit retained copies. A subsequent `/tmp` quota failure left an
 incomplete checkout, preserved in place; verification staging moved to
 `/data/retained/ftui-partial-prompts-20260910-greenlynx/`. New snapshots use
-fail-fast explicit copies and retained extraction. Concurrent commits
-`e1ef46ae`, `8fa14189` and `139eea6a` captured portions of the shared changes;
-their source matched the frozen candidate, but those commits were not
-individually verified and were not rewritten.
+fail-fast explicit copies and retained extraction. Concurrent commits captured
+portions of the shared changes, including the final formatting correction;
+combined Rust source matched the frozen candidate. Those commits were not
+individually verified or rewritten.
 
 Original `.32.1` remains in progress for the facade example, byte-transparent
 partial logs, descendant ownership and original consumer/host acceptance.
@@ -1034,7 +1072,7 @@ partial logs, descendant ownership and original consumer/host acceptance.
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select child log policy and session deadline; compact chrome and per-run metrics are wired in. Clean child HTTP(S) tokens receive bounded viewer links with presented-frame ID protection. Twenty-six PTY journeys cover the controls, compact output/input, deadlines and enabled/disabled links. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, facade example and remaining original behavior, and published-consumer/host proof. Wrapped/highlighted link retention remains incomplete. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select child log policy and session deadline; compact chrome and per-run metrics are wired in. Clean child HTTP(S) tokens receive bounded viewer links with presented-frame ID protection. Sanitized cumulative UTF-8 previews expose unterminated prompts before input without duplicating completed logs. Twenty-eight PTY journeys cover controls, compact output/input, deadlines, enabled/disabled links and prompt-gated replies. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, facade example and remaining original behavior, and published-consumer/host proof. Wrapped/highlighted link retention remains incomplete. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -1167,6 +1205,13 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.32.1`: verify 724 selected native/WASM tests, 26 real PTY journeys,
   13 startup cases and required workspace gates against manifest `a41021a5`;
   retain failed test/observer attempts and independently reviewed corrections.
+- [x] `.32.1`: expose unterminated stdout/stderr prompts through opt-in bounded
+  cumulative UTF-8 events and safe normal/compact previews; preserve complete
+  records, counters, feedback priority and generation cleanup.
+- [x] `.32.1`: verify 100 selected native/WASM tests, 28 real PTY journeys,
+  13 startup cases and required workspace gates against manifest `38aae956`;
+  retain the failing baseline, formatting/staging failures and retracted draft
+  verifier concern without changing original acceptance or closing the item.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output-trust acceptance and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
