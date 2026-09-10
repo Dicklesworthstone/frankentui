@@ -12,7 +12,8 @@
 //! The generated demo retains color independently of child log mode.
 //! ProcessSubscription delivers complete UTF-8 lines up to 64 KiB. Oversized
 //! lines or invalid UTF-8 terminate the child and report incomplete output.
-//! Partial lines wait for a newline or EOF; binary output is unsupported.
+//! Unterminated UTF-8 lines appear as sanitized previews in the feedback row;
+//! only completed lines enter scrollback and counters. Binary output is unsupported.
 //! Child stdin is closed unless --stdin enables a single-line input editor.
 //! Ctrl-C requests an interrupt; press again within two seconds to quit.
 //! F5 restarts after final output arrives and child cleanup is confirmed.
@@ -173,6 +174,9 @@ struct StreamingHarness {
     interrupt_status: ProcessInterruptStatus,
     quit_armed_at: Option<Instant>,
     control_feedback: Option<String>,
+    stdout_preview: Option<String>,
+    stderr_preview: Option<String>,
+    preview_stderr: bool,
     input: TextInput,
     input_feedback: &'static str,
 }
@@ -417,6 +421,9 @@ impl StreamingHarness {
             interrupt_status: ProcessInterruptStatus::Idle,
             quit_armed_at: None,
             control_feedback: None,
+            stdout_preview: None,
+            stderr_preview: None,
+            preview_stderr: false,
             input: TextInput::new()
                 .with_placeholder("Type a line for the child...")
                 .with_focused(options.stdin),
@@ -443,6 +450,37 @@ impl StreamingHarness {
             })
     }
 
+    fn partial_preview(&self) -> Option<(&'static str, &str)> {
+        let stdout = self
+            .stdout_preview
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .map(|text| ("[stdout] ", text));
+        let stderr = self
+            .stderr_preview
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .map(|text| ("[stderr] ", text));
+        if self.preview_stderr {
+            stderr.or(stdout)
+        } else {
+            stdout.or(stderr)
+        }
+    }
+
+    fn render_feedback(&self, fallback: &str, area: Rect, frame: &mut Frame) {
+        if let Some(feedback) = &self.control_feedback {
+            Paragraph::new(feedback.as_str()).render(area, frame);
+        } else if let Some((prefix, preview)) = self.partial_preview() {
+            // Render the cumulative sanitized preview through the normal frame.
+            // It is never a log fragment or a source of automatic hyperlinks.
+            Paragraph::new(Text::from_spans([Span::raw(prefix), Span::raw(preview)]))
+                .render(area, frame);
+        } else {
+            Paragraph::new(fallback).render(area, frame);
+        }
+    }
+
     fn submit_input(&mut self) -> Cmd<Msg> {
         let Some(process_input) = &self.process_input else {
             return Cmd::none();
@@ -459,14 +497,17 @@ impl StreamingHarness {
             }
             Err(ProcessInputError::Full(_)) => {
                 self.input_feedback = "Input queue full; retry Enter after the child reads.";
+                self.control_feedback = Some(self.input_feedback.to_owned());
                 Cmd::none()
             }
             Err(ProcessInputError::Closed(_)) => {
                 self.input_feedback = "Stdin closed; draft kept. Ctrl-C interrupts, twice quits.";
+                self.control_feedback = Some(self.input_feedback.to_owned());
                 Cmd::none()
             }
             Err(ProcessInputError::TooLong(_)) => {
                 self.input_feedback = "Input exceeds 64 KiB; shorten the draft.";
+                self.control_feedback = Some(self.input_feedback.to_owned());
                 Cmd::none()
             }
         }
@@ -563,6 +604,8 @@ impl StreamingHarness {
         self.child_finished = true;
         self.quit_armed_at = None;
         self.control_feedback = None;
+        self.stdout_preview = None;
+        self.stderr_preview = None;
         // A short run can finish before the next poll. Publish an unseen
         // interrupt outcome before the terminal log, including before Quit.
         let control_note =
@@ -619,6 +662,9 @@ impl StreamingHarness {
         self.interrupt_status = ProcessInterruptStatus::Idle;
         self.quit_armed_at = None;
         self.control_feedback = None;
+        self.stdout_preview = None;
+        self.stderr_preview = None;
+        self.preview_stderr = false;
         self.line_count = 0;
         self.byte_count = 0;
         self.stderr_count = 0;
@@ -695,7 +741,7 @@ impl Model for StreamingHarness {
                             }
                             self.input_feedback =
                                 "EOF requested; queued input drains before closing stdin.";
-                            self.control_feedback = None;
+                            self.control_feedback = Some(self.input_feedback.to_owned());
                         }
                         KeyCode::PageUp => self.log.page_up(&self.log_state),
                         KeyCode::PageDown => self.log.page_down(&self.log_state),
@@ -738,7 +784,22 @@ impl Model for StreamingHarness {
             }
             Msg::Process { event, .. } => {
                 let status = match event {
+                    ProcessEvent::StdoutPartial(text) => {
+                        if !self.child_finished {
+                            self.stdout_preview = Some(sanitize(&text).into_owned());
+                            self.preview_stderr = false;
+                        }
+                        return Cmd::none();
+                    }
+                    ProcessEvent::StderrPartial(text) => {
+                        if !self.child_finished {
+                            self.stderr_preview = Some(sanitize(&text).into_owned());
+                            self.preview_stderr = true;
+                        }
+                        return Cmd::none();
+                    }
                     ProcessEvent::Stdout(line) => {
+                        self.stdout_preview = None;
                         self.line_count = self.line_count.saturating_add(1);
                         self.byte_count =
                             self.byte_count.saturating_add(line.len()).saturating_add(1);
@@ -749,6 +810,7 @@ impl Model for StreamingHarness {
                         };
                     }
                     ProcessEvent::Stderr(line) => {
+                        self.stderr_preview = None;
                         self.line_count = self.line_count.saturating_add(1);
                         self.byte_count =
                             self.byte_count.saturating_add(line.len()).saturating_add(1);
@@ -883,23 +945,16 @@ impl Model for StreamingHarness {
                 .split(chunks[2]);
             Paragraph::new("> ").render(input_parts[0], frame);
             self.input.render(input_parts[1], frame);
-            Paragraph::new(
-                self.control_feedback
-                    .as_deref()
-                    .unwrap_or(self.input_feedback),
-            )
-            .render(chunks[3], frame);
+            self.render_feedback(self.input_feedback, chunks[3], frame);
         } else if self.process_control.is_some() {
-            let feedback = self.control_feedback.as_deref().unwrap_or(
-                if self.child_finished && self.process_can_restart {
-                    "F5 restarts; Q or Ctrl-C quits."
-                } else if self.child_finished {
-                    "Child cleanup unconfirmed; Q or Ctrl-C quits."
-                } else {
-                    "Q quits; Ctrl-C interrupts, twice within 2s quits."
-                },
-            );
-            Paragraph::new(feedback).render(chunks[2], frame);
+            let feedback = if self.child_finished && self.process_can_restart {
+                "F5 restarts; Q or Ctrl-C quits."
+            } else if self.child_finished {
+                "Child cleanup unconfirmed; Q or Ctrl-C quits."
+            } else {
+                "Q quits; Ctrl-C interrupts, twice within 2s quits."
+            };
+            self.render_feedback(feedback, chunks[2], frame);
         }
     }
 
@@ -922,6 +977,7 @@ impl Model for StreamingHarness {
                     Msg::Process { generation, event }
                 })
                 .args(arguments.iter().cloned())
+                .partial_output(true)
                 .control(control.clone());
                 if let Some(input) = &self.process_input {
                     subscription = subscription.stdin(input.clone());
@@ -982,6 +1038,176 @@ mod tests {
         }
     }
 
+    #[test]
+    fn partial_previews_replace_each_stream_without_logging_or_counting() {
+        let mut model = interactive_model();
+        let initial_lines = model.log.len();
+        for (event, expected) in [
+            (
+                ProcessEvent::StdoutPartial("Name".into()),
+                ("[stdout] ", "Name"),
+            ),
+            (
+                ProcessEvent::StdoutPartial("Name: ".into()),
+                ("[stdout] ", "Name: "),
+            ),
+            (
+                ProcessEvent::StderrPartial("Warning? ".into()),
+                ("[stderr] ", "Warning? "),
+            ),
+        ] {
+            assert!(matches!(
+                model.update(process_message(&model, event)),
+                Cmd::None
+            ));
+            assert_eq!(model.partial_preview(), Some(expected));
+            assert_eq!(model.log.len(), initial_lines);
+            assert_eq!(
+                (model.line_count, model.byte_count, model.stderr_count),
+                (0, 0, 0)
+            );
+        }
+        assert!(matches!(
+            model.update(process_message(
+                &model,
+                ProcessEvent::Stderr("Warning? yes".into())
+            )),
+            Cmd::Log { text, mode: SanitizeMode::Strip } if text == "[stderr] Warning? yes"
+        ));
+        assert_eq!(model.partial_preview(), Some(("[stdout] ", "Name: ")));
+        assert!(model.stderr_preview.is_none());
+        assert!(matches!(
+            model.update(process_message(
+                &model,
+                ProcessEvent::Stdout("Name: Ada".into())
+            )),
+            Cmd::Log { text, mode: SanitizeMode::Strip } if text == "Name: Ada"
+        ));
+        assert!(model.partial_preview().is_none());
+        assert_eq!(model.log.len(), initial_lines + 2);
+        assert_eq!(
+            (model.line_count, model.byte_count, model.stderr_count),
+            (2, 23, 1)
+        );
+    }
+
+    #[test]
+    fn partial_previews_render_safely_in_compact_chrome_and_preserve_input_feedback() {
+        for mode in [
+            SanitizeMode::Strip,
+            SanitizeMode::SgrOnly,
+            SanitizeMode::Raw,
+        ] {
+            let mut model = interactive_model();
+            model.options.log_mode = mode;
+            model.input.set_value("Ada");
+            let _ = model.update(process_message(
+                &model,
+                ProcessEvent::StdoutPartial(
+                    "Name: 🦀 \x1b[31mred\x1b]8;;https://attack.test\x07?".into(),
+                ),
+            ));
+            for height in [3, 15] {
+                let (links, visible) = model_view_links(&model, 100, height);
+                assert!(links.is_empty());
+                assert_eq!(
+                    visible.lines().last().unwrap().trim_end(),
+                    "[stdout] Name: 🦀 red?"
+                );
+                assert!(visible.contains("> Ada"));
+                assert!(!visible.contains("attack.test") && !visible.contains('\x1b'));
+            }
+            let _ = model.update(process_message(
+                &model,
+                ProcessEvent::StdoutPartial("https://plain.test/prompt?".into()),
+            ));
+            let (links, visible) = model_view_links(&model, 100, 3);
+            assert!(links.is_empty(), "incomplete records never create links");
+            assert_eq!(
+                visible.lines().last().unwrap().trim_end(),
+                "[stdout] https://plain.test/prompt?"
+            );
+            model.process_input.as_ref().unwrap().close();
+            assert!(matches!(model.submit_input(), Cmd::None));
+            let (_, visible) = model_view_links(&model, 100, 3);
+            assert_eq!(
+                visible.lines().last().unwrap().trim_end(),
+                model.input_feedback
+            );
+            assert!(visible.contains("> Ada"));
+            let _ = model.control_note("Interrupt pending.".into());
+            let (_, visible) = model_view_links(&model, 100, 3);
+            assert_eq!(
+                visible.lines().last().unwrap().trim_end(),
+                "Interrupt pending."
+            );
+        }
+        let mut model = StreamingHarness::new(StreamingOptions {
+            command: vec!["child".into()],
+            ..StreamingOptions::default()
+        });
+        let _ = model.update(process_message(
+            &model,
+            ProcessEvent::StderrPartial("Continue?".into()),
+        ));
+        let (_, visible) = model_view_links(&model, 80, 3);
+        assert_eq!(
+            visible.lines().last().unwrap().trim_end(),
+            "[stderr] Continue?"
+        );
+    }
+
+    #[test]
+    fn terminal_and_restart_clear_previews_and_reject_stale_updates() {
+        for terminal in [
+            ProcessEvent::Exited(0),
+            ProcessEvent::Error("pipe failed".into()),
+        ] {
+            let mut model = interactive_model();
+            let previous = model.process_control.as_ref().unwrap().generation();
+            for event in [
+                ProcessEvent::StdoutPartial("out?".into()),
+                ProcessEvent::StderrPartial("err?".into()),
+            ] {
+                let _ = model.update(process_message(&model, event));
+            }
+            let _ = model.update(process_message(&model, terminal));
+            assert!(model.stdout_preview.is_none() && model.stderr_preview.is_none());
+            let _ = model.update(process_message(
+                &model,
+                ProcessEvent::StdoutPartial("late".into()),
+            ));
+            assert!(model.partial_preview().is_none());
+            let _ = model.restart_child_with_status(ProcessControlStatus {
+                pid: None,
+                closed: true,
+                can_restart: true,
+                interrupt: ProcessInterruptStatus::Idle,
+            });
+            let _ = model.update(process_message(
+                &model,
+                ProcessEvent::StdoutPartial("fresh?".into()),
+            ));
+            for event in [
+                ProcessEvent::StdoutPartial("old".into()),
+                ProcessEvent::StderrPartial("old".into()),
+            ] {
+                assert!(matches!(
+                    model.update(Msg::Process {
+                        generation: previous,
+                        event
+                    }),
+                    Cmd::None
+                ));
+            }
+            assert_eq!(model.partial_preview(), Some(("[stdout] ", "fresh?")));
+            assert_eq!(
+                (model.line_count, model.byte_count, model.stderr_count),
+                (0, 0, 0)
+            );
+        }
+    }
+
     fn text_links(text: &Text<'_>) -> Vec<(String, String)> {
         text.lines()
             .iter()
@@ -1008,13 +1234,20 @@ mod tests {
         let mut visible = String::new();
         for y in 0..buffer.height() {
             for cell in buffer.row_cells(y) {
-                let character = cell.content.as_char().unwrap_or(' ');
-                visible.push(character);
+                if cell.is_continuation() {
+                    continue;
+                }
+                let text = if let Some(id) = cell.content.grapheme_id() {
+                    pool.get(id).expect("rendered grapheme resolves").to_owned()
+                } else {
+                    cell.content.as_char().unwrap_or(' ').to_string()
+                };
+                visible.push_str(&text);
                 if cell.attrs.link_id() != 0 {
                     labels
                         .entry(cell.attrs.link_id())
                         .or_default()
-                        .push(character);
+                        .push_str(&text);
                 }
             }
             visible.push('\n');
