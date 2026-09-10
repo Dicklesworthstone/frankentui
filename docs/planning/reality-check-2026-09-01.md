@@ -736,12 +736,56 @@ DSR/direct SSH and manual review were used. No Actions or new release ran.
 Original `.32.1` remains in progress for partial-byte output, descendants,
 full CLI/log/link behavior and published-consumer/host acceptance.
 
+### September 10 child log-mode selection
+
+The streaming consumer now exposes `--log-mode=sanitized|sgr-only|raw`
+(also `--log-mode VALUE`) and `FTUI_AGENT_SHELL_LOG_MODE`. CLI overrides the
+environment, including malformed environment values; sanitized remains the
+default. Invalid or repeated options fail before application startup. The
+environment setting applies only to child output, and an explicit option
+requires a command. The status bar shows the selected policy, which survives
+F5 restart. Only child stdout/stderr receives that policy: the viewer and
+generated input/control/status logs stay sanitized. Raw remains trusted,
+potentially disruptive terminal output over the existing UTF-8 line transport.
+
+DSR receipt `frankentui-logmode2-native/20260909T221849-1868641` passes all nine
+commands on `trj` with pinned `nightly-2026-08-31`. Its isolated base is `8dff3f10`
+plus the frozen changes; all 2,497 source files match manifest
+`1f5119b5fc260bc16651fa12d6916a37313648ff28e377b6aebeb9e5fc9fc2ab`.
+Workspace formatting/check/strict Clippy/strict rustdoc pass. Selected tests:
+129 sanitizer (1,726 excluded), 211 writer/sink/command (1,794 excluded), and
+18 consumer. Two existing writer tests that remove evidence files were
+explicitly excluded under Rule 1. This is not a full-suite or cross-platform run.
+
+Seventeen real PTY journeys pass: the previous twelve plus default filtering,
+CLI override to sanitized, CLI SGR over invalid environment, environment SGR,
+and explicit raw. Exact child records bind SGR colors to the intended text and
+verify line resets; planted clear/cursor/alternate-screen/OSC commands are
+absent in filtered modes. An OSC title probe reaches only raw. Five real
+startup-negative invocations verify exact safe parser diagnostics and no
+completed child marker. PTY captures retain termios restoration, per-record
+scroll-region checks and declared CPR9;1 emulation; they are not physical
+terminal rendering evidence. Unit tests separately cover non-Unicode
+environment, sanitized viewer cells, restart persistence and stale messages.
+
+Evidence is retained in `/data/retained/ftui-log-mode-20260910-greenlynx/`;
+native archive SHA256 is
+`d36ae0907a5d18260189bed4842cc3ae4e18f7cdf10537943720a2f9e1676d68`.
+Candidate1 failed four formatting locations only, manually corrected before
+the final rerun. Independent source/observer review strengthened the new
+assertions before execution; it does not constitute independent execution.
+DSR duration fields remain malformed and the existing nix future-compatibility
+warning remains visible. RCH/UBS deletion restrictions still apply; no Actions,
+WASM run or release occurred in this increment. Original `.32.1` stays open
+for the facade example, remaining CLI/status/link features, partial-byte output,
+descendant ownership and published-consumer/host acceptance.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. Twelve PTY journeys include handler acknowledgment, continued input and two restart modes. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, full CLI/log/link behavior and published-consumer/host proof. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select sanitized, SGR-only or raw child logs. Seventeen PTY journeys include handler acknowledgment, continued input, two restart modes and the output policies. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, facade example, remaining CLI/status/link behavior and published-consumer/host proof. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -858,7 +902,10 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.32.1`: verify 172 selected tests, 12 PTY journeys and required native/WASM
   gates against manifest `132448a9`; retain the failed formatting candidate and
   distinguish pidfd exit recovery from unexecuted ECHILD failure coverage.
-- [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output trust and the bounded
+- [x] `.32.1`: expose child log policy through CLI/environment with sanitized
+  defaults, safe validation, visible mode and restart persistence; verify 358
+  selected tests, 17 PTY journeys, five startup cases and strict workspace gates.
+- [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output-trust acceptance and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
   independent negative controls; successful compilation alone is insufficient.

@@ -101,12 +101,36 @@ and log rows are available. The overlay fallback displays only the latest
 width-clamped first line; no available log rows means no terminal log output.
 With no arguments the example generates messages on a timer. A command after
 `--` starts a real `ProcessSubscription`: stdout and stderr feed the log viewer
-and plain-text `Cmd::log` output. Stderr lines have a `[stderr]` prefix. The
+and plain-text terminal logs by default. Stderr lines have a `[stderr]` prefix. The
 status records the child's exit code or signal and the total stdout/stderr line
 count. Add `--exit-when-child-exits` to exit after logging that final status;
 otherwise the chrome remains visible until you quit. This TUI example logs
 the child's exit code; its own exit code reports whether the application ran
 successfully, so it is not a shell command wrapper.
+
+Use `--log-mode=sgr-only` before `-- COMMAND` to retain the child's SGR styling,
+for example:
+
+```bash
+cargo run -p ftui-harness --example streaming -- --log-mode=sgr-only --exit-when-child-exits -- printf '\033[31mred diagnostic\033[0m\n'
+```
+
+The three modes are `sanitized` (strip escapes, the default), `sgr-only`
+(retain bounded SGR styling and strip terminal commands), and `raw` (trusted
+terminal commands allowed). The process status bar shows the selected mode.
+`FTUI_AGENT_SHELL_LOG_MODE` sets the child-output default; an explicit CLI option
+overrides it, including an invalid environment value. `--log-mode VALUE` also
+works. Missing, invalid, or repeated options fail before the TUI and child start.
+The CLI option requires a child command; the environment setting has no effect
+on the generated demo. Arguments after `--` are passed literally to the child.
+
+Only child stdout/stderr uses the selected policy. The on-screen log viewer,
+input echoes, control feedback, and final status remain sanitized. SGR-only
+resets styling at each delivered line boundary so it cannot carry into the next
+line or chrome; SGR includes attributes such as conceal and inverse, not just
+colors. Raw output can change cursor position, terminal modes, and styling;
+it can disrupt the chrome and subsequent logs. Raw still uses the same bounded
+UTF-8 line transport and line-ending normalization, so it is not byte-transparent.
 
 Add `--stdin` before `-- COMMAND` to show a focused `TextInput` and feedback row
 within the same 15-row inline UI. Enter queues the draft and an LF. Only accepted

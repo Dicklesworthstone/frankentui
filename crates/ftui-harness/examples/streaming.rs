@@ -6,7 +6,10 @@
 //! Logs accumulate when a scroll region is active; overlay shows the latest line.
 //! Without arguments this generates messages. Pass a command after `--` to
 //! stream a real child's stdout/stderr through the same model and log writer.
-//! Child output uses plain-text sanitization; the generated demo retains color.
+//! Child output defaults to plain-text sanitization. --log-mode=sgr-only keeps
+//! SGR styling; --log-mode=raw trusts terminal commands and can disrupt the UI.
+//! FTUI_AGENT_SHELL_LOG_MODE supplies a default; the CLI option takes precedence.
+//! The generated demo retains color independently of child log mode.
 //! ProcessSubscription delivers complete UTF-8 lines up to 64 KiB. Oversized
 //! lines or invalid UTF-8 terminate the child and report incomplete output.
 //! Partial lines wait for a newline or EOF; binary output is unsupported.
@@ -25,7 +28,7 @@ use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, PasteEvent};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
-use ftui_render::sanitize::sanitize;
+use ftui_render::sanitize::{SanitizeMode, sanitize};
 use ftui_runtime::{
     App, Cmd, Every, Model, ProcessControl, ProcessControlError, ProcessControlStatus,
     ProcessEvent, ProcessInput, ProcessInputError, ProcessInterruptStatus, ProcessSubscription,
@@ -64,16 +67,42 @@ struct StreamingOptions {
     command: Vec<String>,
     exit_when_child_exits: bool,
     stdin: bool,
+    log_mode: SanitizeMode,
 }
 
 impl StreamingOptions {
-    fn parse(arguments: impl IntoIterator<Item = String>) -> std::io::Result<Self> {
+    fn parse(
+        arguments: impl IntoIterator<Item = String>,
+        environment_log_mode: Option<std::ffi::OsString>,
+    ) -> std::io::Result<Self> {
         let mut options = Self::default();
         let mut arguments = arguments.into_iter();
+        let mut log_mode = None;
         while let Some(argument) = arguments.next() {
+            if log_mode.is_some()
+                && (argument == "--log-mode" || argument.starts_with("--log-mode="))
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "--log-mode may only be supplied once",
+                ));
+            }
             match argument.as_str() {
                 "--exit-when-child-exits" => options.exit_when_child_exits = true,
                 "--stdin" => options.stdin = true,
+                "--log-mode" => {
+                    log_mode = Some(std::ffi::OsString::from(arguments.next().ok_or_else(
+                        || {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "--log-mode requires sanitized, sgr-only, or raw",
+                            )
+                        },
+                    )?));
+                }
+                value if value.starts_with("--log-mode=") => {
+                    log_mode = Some(std::ffi::OsString::from(&value[11..]));
+                }
                 "--" => {
                     options.command.extend(arguments);
                     if options.command.is_empty() {
@@ -87,7 +116,7 @@ impl StreamingOptions {
                 _ => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        "usage: streaming [--stdin] [--exit-when-child-exits] [-- COMMAND ARGS...]",
+                        "usage: streaming [--stdin] [--exit-when-child-exits] [--log-mode=sanitized|sgr-only|raw] [-- COMMAND ARGS...]",
                     ));
                 }
             }
@@ -104,7 +133,39 @@ impl StreamingOptions {
                 "--stdin requires a command after --",
             ));
         }
+        if options.command.is_empty() {
+            if log_mode.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "child log mode requires a command after --",
+                ));
+            }
+            // The environment setting belongs to child output, not the
+            // generated demonstration's SGR-only messages.
+            return Ok(options);
+        }
+        if let Some(value) = log_mode.or(environment_log_mode) {
+            options.log_mode = match value.to_str() {
+                Some("sanitized") => SanitizeMode::Strip,
+                Some("sgr-only") => SanitizeMode::SgrOnly,
+                Some("raw") => SanitizeMode::Raw,
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "log mode must be sanitized, sgr-only, or raw",
+                    ));
+                }
+            };
+        }
         Ok(options)
+    }
+
+    fn log_mode_name(&self) -> &'static str {
+        match self.log_mode {
+            SanitizeMode::Strip => "sanitized",
+            SanitizeMode::SgrOnly => "sgr-only",
+            SanitizeMode::Raw => "raw",
+        }
     }
 }
 
@@ -450,13 +511,19 @@ impl Model for StreamingHarness {
                     ProcessEvent::Stdout(line) => {
                         self.line_count = self.line_count.saturating_add(1);
                         self.log.push(sanitize(&line).into_owned());
-                        return Cmd::log(line);
+                        return Cmd::Log {
+                            text: line,
+                            mode: self.options.log_mode,
+                        };
                     }
                     ProcessEvent::Stderr(line) => {
                         self.line_count = self.line_count.saturating_add(1);
                         let text = format!("[stderr] {line}");
                         self.log.push(sanitize(&text).into_owned());
-                        return Cmd::log(text);
+                        return Cmd::Log {
+                            text,
+                            mode: self.options.log_mode,
+                        };
                     }
                     ProcessEvent::Exited(code) => format!("EXIT {code}"),
                     ProcessEvent::Signaled(signal) => format!("SIGNAL {signal}"),
@@ -528,7 +595,15 @@ impl Model for StreamingHarness {
         } else {
             "STREAMING"
         };
-        let lines_text = format!("Lines: {}", self.line_count);
+        let lines_text = if self.process_control.is_some() {
+            format!(
+                "Lines: {}  {}",
+                self.line_count,
+                self.options.log_mode_name()
+            )
+        } else {
+            format!("Lines: {}", self.line_count)
+        };
 
         let hint = if self.options.command.is_empty() {
             StatusItem::key_hint("SPACE", "Pause")
@@ -621,7 +696,10 @@ impl Model for StreamingHarness {
 }
 
 fn main() -> std::io::Result<()> {
-    let options = StreamingOptions::parse(std::env::args().skip(1))?;
+    let options = StreamingOptions::parse(
+        std::env::args().skip(1),
+        std::env::var_os("FTUI_AGENT_SHELL_LOG_MODE"),
+    )?;
     App::new(StreamingHarness::new(options))
         .screen_mode(ScreenMode::Inline { ui_height: 15 })
         .run()
@@ -632,7 +710,6 @@ mod tests {
     use super::*;
     use ftui_core::event::KeyEvent;
     use ftui_render::grapheme_pool::GraphemePool;
-    use ftui_render::sanitize::SanitizeMode;
     use ftui_runtime::process_subscription::{MAX_PROCESS_LINE_BYTES, PROCESS_INPUT_CAPACITY};
 
     fn interactive_model() -> StreamingHarness {
@@ -670,6 +747,7 @@ mod tests {
                 "$(literal)",
             ]
             .map(str::to_owned),
+            None,
         )
         .unwrap();
         assert_eq!(options.command, ["echo", "--flag", "a b", "$(literal)"]);
@@ -677,13 +755,14 @@ mod tests {
         assert!(!options.stdin);
         let interactive = StreamingOptions::parse(
             ["--stdin", "--exit-when-child-exits", "--", "cat", "--stdin"].map(str::to_owned),
+            None,
         )
         .unwrap();
         assert!(interactive.stdin);
         assert!(interactive.exit_when_child_exits);
         assert_eq!(interactive.command, ["cat", "--stdin"]);
         assert_eq!(
-            StreamingOptions::parse([]).unwrap(),
+            StreamingOptions::parse([], None).unwrap(),
             StreamingOptions::default()
         );
         for arguments in [
@@ -694,11 +773,196 @@ mod tests {
             vec!["echo"],
         ] {
             assert_eq!(
-                StreamingOptions::parse(arguments.into_iter().map(str::to_owned))
+                StreamingOptions::parse(arguments.into_iter().map(str::to_owned), None)
                     .unwrap_err()
                     .kind(),
                 std::io::ErrorKind::InvalidInput
             );
+        }
+    }
+
+    #[test]
+    fn child_log_mode_cli_overrides_environment_and_keeps_child_arguments_literal() {
+        for (value, mode) in [
+            ("sanitized", SanitizeMode::Strip),
+            ("sgr-only", SanitizeMode::SgrOnly),
+            ("raw", SanitizeMode::Raw),
+        ] {
+            for arguments in [
+                vec![
+                    format!("--log-mode={value}"),
+                    "--".to_owned(),
+                    "cat".to_owned(),
+                ],
+                vec![
+                    "--log-mode".to_owned(),
+                    value.to_owned(),
+                    "--".to_owned(),
+                    "cat".to_owned(),
+                ],
+            ] {
+                let options = StreamingOptions::parse(arguments, Some("invalid".into())).unwrap();
+                assert_eq!(options.log_mode, mode);
+                assert_eq!(options.log_mode_name(), value);
+            }
+            let options = StreamingOptions::parse(
+                ["--", "cat", "--log-mode=raw"].map(str::to_owned),
+                Some(value.into()),
+            )
+            .unwrap();
+            assert_eq!(options.log_mode, mode);
+            assert_eq!(options.command, ["cat", "--log-mode=raw"]);
+        }
+        let options = StreamingOptions::parse(
+            ["--log-mode=sanitized", "--", "cat"].map(str::to_owned),
+            Some("raw".into()),
+        )
+        .unwrap();
+        assert_eq!(options.log_mode, SanitizeMode::Strip);
+        assert_eq!(
+            StreamingOptions::parse(["--", "cat"].map(str::to_owned), None)
+                .unwrap()
+                .log_mode,
+            SanitizeMode::Strip
+        );
+        assert_eq!(
+            StreamingOptions::parse([], Some("invalid".into())).unwrap(),
+            StreamingOptions::default()
+        );
+    }
+
+    #[test]
+    fn malformed_or_repeated_child_log_modes_fail_without_echoing_terminal_controls() {
+        for arguments in [
+            vec!["--log-mode"],
+            vec!["--log-mode="],
+            vec!["--log-mode=raw"],
+            vec!["--log-mode=", "--", "cat"],
+            vec!["--log-mode=RAW", "--", "cat"],
+            vec!["--log-mode=\x1b]2;ATTACK\x07", "--", "cat"],
+            vec!["--log-mode=raw", "--log-mode=sanitized", "--", "cat"],
+            vec!["--log-mode", "raw", "--log-mode", "sgr-only", "--", "cat"],
+        ] {
+            let error = StreamingOptions::parse(arguments.into_iter().map(str::to_owned), None)
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(!error.to_string().contains('\x1b'));
+        }
+        for value in ["", " RAW", "sgr", "\x1b]2;ATTACK\x07"] {
+            let error =
+                StreamingOptions::parse(["--", "cat"].map(str::to_owned), Some(value.into()))
+                    .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(!error.to_string().contains('\x1b'));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_log_mode_environment_is_rejected_unless_overridden() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid = std::ffi::OsString::from_vec(vec![0xff]);
+        assert_eq!(
+            StreamingOptions::parse(["--", "cat"].map(str::to_owned), Some(invalid.clone()))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let options = StreamingOptions::parse(
+            ["--log-mode=sanitized", "--", "cat"].map(str::to_owned),
+            Some(invalid),
+        )
+        .unwrap();
+        assert_eq!(options.log_mode, SanitizeMode::Strip);
+    }
+
+    #[test]
+    fn selected_policy_only_reaches_child_logs_and_survives_restart() {
+        for mode in [
+            SanitizeMode::Strip,
+            SanitizeMode::SgrOnly,
+            SanitizeMode::Raw,
+        ] {
+            let mut model = interactive_model();
+            model.options.log_mode = mode;
+            let previous = model.process_control.as_ref().unwrap().generation();
+            for (event, text) in [
+                (
+                    ProcessEvent::Stdout("out\x1b[31mred\x1b[2J".to_owned()),
+                    "out\x1b[31mred\x1b[2J",
+                ),
+                (
+                    ProcessEvent::Stderr("err\x1b]2;ATTACK\x07end".to_owned()),
+                    "[stderr] err\x1b]2;ATTACK\x07end",
+                ),
+            ] {
+                assert!(matches!(
+                    model.update(process_message(&model, event)),
+                    Cmd::Log { text: actual, mode: policy } if actual == text && policy == mode
+                ));
+            }
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(100, 15, &mut pool);
+            model.view(&mut frame);
+            let rendered: String = frame
+                .buffer
+                .cells()
+                .iter()
+                .filter_map(|cell| cell.content.as_char())
+                .collect();
+            assert!(rendered.contains("outred"));
+            assert!(rendered.contains("[stderr] errend"));
+            assert!(rendered.contains(model.options.log_mode_name()));
+            assert!(!rendered.contains("ATTACK"));
+            assert!(!rendered.contains('\x1b'));
+            model.input.set_value("input\x1b[31m");
+            assert!(matches!(
+                model.submit_input(),
+                Cmd::Log {
+                    mode: SanitizeMode::Strip,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                model.control_note("control\x1b[2J".to_owned()),
+                Cmd::Log { text, mode: SanitizeMode::Strip } if text == "[process control] control"
+            ));
+            assert!(matches!(
+                model.update(process_message(
+                    &model,
+                    ProcessEvent::Error("failure\x1b[2J".to_owned())
+                )),
+                Cmd::Log { text, mode: SanitizeMode::Strip }
+                if text == "[process] ERROR: failure lines=2"));
+            assert!(matches!(
+                model.restart_child_with_status(ProcessControlStatus {
+                    pid: None,
+                    closed: true,
+                    can_restart: true,
+                    interrupt: ProcessInterruptStatus::Idle,
+                }),
+                Cmd::Log {
+                    mode: SanitizeMode::Strip,
+                    ..
+                }
+            ));
+            assert_ne!(
+                model.process_control.as_ref().unwrap().generation(),
+                previous
+            );
+            assert_eq!(model.options.log_mode, mode);
+            assert!(matches!(
+                model.update(Msg::Process {
+                    generation: previous,
+                    event: ProcessEvent::Stdout("stale".to_owned()),
+                }),
+                Cmd::None
+            ));
+            assert!(matches!(
+                model.update(process_message(&model, ProcessEvent::Stdout("fresh".to_owned()))),
+                Cmd::Log { text, mode: policy } if text == "fresh" && policy == mode
+            ));
         }
     }
 
@@ -708,6 +972,7 @@ mod tests {
             command: vec!["echo".to_owned()],
             exit_when_child_exits: true,
             stdin: false,
+            ..StreamingOptions::default()
         });
         assert_eq!(model.subscriptions().len(), 2);
         for (event, expected) in [
