@@ -40,3 +40,7 @@ ftui-layout = { path = "../ftui-layout", version = "0.7.0" }
 ftui-runtime = { path = "../ftui-runtime", version = "0.7.0", optional = true }
 ftui-widgets = { path = "../ftui-widgets", version = "0.7.0" }
 ftui-extras = { path = "../ftui-extras", version = "0.7.0", optional = true }
+
+[[example]]
+name = "agent_shell"
+required-features = []

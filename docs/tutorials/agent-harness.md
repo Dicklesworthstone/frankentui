@@ -1,12 +1,14 @@
 # Agent Harness Tutorial
 
 This tutorial shows how to build a Claude/Codex style agent harness using ftui.
-All examples are aligned with the current API in this repo and mirror the
-reference harness code under `crates/ftui-harness/`.
+Examples use the current API in this checkout. The reusable reference model
+lives in `ftui::agent_shell`; its executable uses only the `ftui` facade.
 
 If you want working code right now, start with:
+
+- `crates/ftui/examples/agent_shell.rs` — an interactive child under compact chrome
 - `crates/ftui-harness/examples/minimal.rs`
-- `crates/ftui-harness/examples/streaming.rs`
+- `crates/ftui-harness/examples/streaming.rs` — the same model with generated-demo defaults
 
 ## Prereqs
 
@@ -18,10 +20,20 @@ Run the examples:
 ```bash
 cargo run -p ftui-harness --example minimal
 cargo run -p ftui-harness --example streaming
-cargo run -p ftui-harness --example streaming -- --exit-when-child-exits -- seq 1 10000
-cargo run -p ftui-harness --example streaming -- --stdin --exit-when-child-exits -- cat
-cargo run -p ftui-harness --example streaming -- --stdin -- cat
+cargo run -p ftui --example agent_shell -- --exit-when-child-exits -- seq 1 10000
+cargo run -p ftui --example agent_shell -- --exit-when-child-exits -- cat
+cargo run -p ftui --example agent_shell -- -- cat
 ```
+
+`agent_shell` requires a command after `--`. It defaults to three UI rows,
+sanitized child output and an active input editor: Enter queues a line, Ctrl-D
+closes stdin after queued lines drain, Ctrl-C interrupts the immediate child,
+and a second Ctrl-C within two seconds quits. After the child finishes, F5
+restarts it; `q`, Esc or Ctrl-C quits. Without `--exit-when-child-exits`, the UI
+stays open after exit. Use `--ui-height=15` to show the retained log viewer above
+the input row. The streaming demo retains its 15-row default and requires
+`--stdin` to enable child input. Both executables assemble the same model through
+`App`; neither calls the other's entry point.
 
 ## Part 1: Hello World Harness (< 50 LOC)
 
@@ -112,7 +124,7 @@ Use `--log-mode=sgr-only` before `-- COMMAND` to retain the child's SGR styling,
 for example:
 
 ```bash
-cargo run -p ftui-harness --example streaming -- --log-mode=sgr-only --exit-when-child-exits -- printf '\033[31mred diagnostic\033[0m\n'
+cargo run -p ftui --example agent_shell -- --log-mode=sgr-only --exit-when-child-exits -- printf '\033[31mred diagnostic\033[0m\n'
 ```
 
 The three modes are `sanitized` (strip escapes, the default), `sgr-only`
@@ -176,8 +188,9 @@ measures the model-observed run, including startup and output drain; it freezes
 at the terminal event. F5 resets those counters and elapsed time for the new
 run, while preserving the session deadline and log history.
 
-Add `--stdin` before `-- COMMAND` to show a focused `TextInput` and feedback row
-within the inline UI. The default is 15 rows; `--ui-height=3` keeps a compact
+In the streaming demo, add `--stdin` before `-- COMMAND` to show a focused
+`TextInput` and feedback row; `agent_shell` enables them by default. Streaming
+defaults to 15 rows and agent shell to three. `--ui-height=3` selects a compact
 status/input/hint layout, leaving more space for terminal scrollback. Heights
 from 3 through 65,535 are accepted, and the runtime clamps the rendered frame
 to the actual terminal height. Controls keep their rows before the log viewer;
@@ -190,7 +203,8 @@ Paste uses the single-line editor: line breaks and tabs become spaces, and
 other control characters are removed. While the child is running, `q` is text.
 Ctrl-D requests EOF after accepted input drains; it preserves any unsubmitted
 draft. A child that does not read can prevent that drain, so Ctrl-C remains
-available. Without `--stdin`, `q` still quits and the child receives closed stdin.
+available. In the streaming demo without `--stdin`, `q` still quits and the child
+receives closed stdin.
 
 The model keeps one `ProcessInput` handle and passes its clone to
 `ProcessSubscription::stdin` on every subscription update, preserving the
@@ -647,6 +661,8 @@ fn update(&mut self, _msg: Msg) -> Cmd<Msg> {
 
 ## Next steps
 
+- Read the single-facade executable: `crates/ftui/examples/agent_shell.rs`
+- Reuse or study its model: `crates/ftui/src/agent_shell.rs`
 - Read the reference harness app: `crates/ftui-harness/src/main.rs`
 - Explore the examples: `crates/ftui-harness/examples/`
 - Review screen mode trade-offs: `docs/concepts/screen-modes.md`

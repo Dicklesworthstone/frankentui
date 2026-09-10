@@ -1067,12 +1067,109 @@ individually verified or rewritten.
 Original `.32.1` remains in progress for the facade example, byte-transparent
 partial logs, descendant ownership and original consumer/host acceptance.
 
+### September 10 public-facade agent shell
+
+`cargo run -p ftui --example agent_shell -- -- cat` now selects the named
+reference application through default-feature `ftui`. It requires a child
+command and defaults to sanitized logs, enabled stdin and three rows of chrome.
+It stays open after the child's final output; `q`, Esc or Ctrl-C quits, and F5
+restarts after confirmed immediate-child cleanup. `--exit-when-child-exits`
+selects automatic exit. The executable assembles `App` itself through `ftui`
+imports and never directly writes terminal output.
+
+The existing streaming model, configuration and all 31 original tests now live
+once in the native `ftui::agent_shell` module. This deliberately expands the
+facade to include a reusable reference-application component; its library
+documentation names that role. Configuration accepts explicit arguments and
+environment values, without reading globals or opening a terminal. Private
+state remains inside the model. The old streaming executable independently
+assembles the same model with its generated-demo, fifteen-row and opt-in-stdin
+defaults. Its facade dev-dependency enables only `runtime`, preserving the
+standalone harness's existing Crossterm backend; the new canonical executable
+uses the facade's default native backend on Unix. No source include crosses a
+package boundary and no facade dependency on the verification harness is added.
+
+The complete original test-module prefix is byte-identical, including helpers
+and assertions. Two shared-model tests add canonical defaults/overrides and
+Esc after exit; two executable tests use only `ftui` imports to check the actual
+three-row input and missing-command boundary. The old streaming target no
+longer owns duplicate tests; its executable build and original real PTY suite
+remain required. Root's independent source comparison confirmed the preserved
+31 tests, not just their names or count.
+
+Final `shell2`, manifest
+`a7e693b0c41cfc2987b5a609ad511f0445cf5ebc27fc6895c902377e2e6a5cb7`,
+passes 90 facade/model tests, two canonical-example tests and six actual Node
+WASM tests: 98 selected tests. Both executables build; workspace formatting,
+all-target check, strict Clippy and strict rustdoc pass. An isolated consumer
+with only default-feature `ftui` as a source dependency checks successfully and
+has no harness dependency. Cargo's package-file listing includes both the new
+module and example. Headless/runtime-only facade WASM builds and existing
+web/showcase WASM checks pass; the native subprocess module is intentionally
+absent on WASM.
+
+Successful DSR receipts are
+`frankentui-shell2-native/20260910T192034-3162070`,
+`frankentui-shell2-pty/20260910T192336-3179478` and
+`frankentui-shell2-wasm/20260910T192414-3182841`. All use configured host `trj`
+with `nightly-2026-08-31`, rustc commit
+`90850177249efe0321573c569aec5d12b257f8d6`. Canonical executable SHA256 is
+`f086cd4a48da767cb3f0cff1e5b9910d2adb041b8dc32eebb39f3d59db2189ce`;
+streaming executable SHA256 is
+`46d6d16870a814d47ccda51dba4c965a86a6d3ab80f812f6c34b5417d6deed21`.
+Final observer SHA256 is
+`9489e58993053349f7c2f885d15ab3e59cd7547dae4c7adeec12f72fb667516b`.
+Source archives, raw captures, scripts and successful/failed receipts remain
+under `/data/retained/ftui-agent-shell-20260910-greenlynx/`; the remote evidence
+archive has SHA256 `af678a367b1f8bd4438bc87630ebf40c003112080022f92f8b4c9cb2daaf57c1`.
+Only later report/Bead records differ from the verified 2,499-file snapshot.
+
+`shell0` was retained but not executed: review corrected the new harness
+dependency's default features before building. `shell1` passed 90 facade/model
+tests, two executable tests, both builds, isolated default-ftui-only consumer
+compilation, package-file inclusion, fmt, workspace check and strict Clippy,
+then failed two new module rustdoc links. Explicit qualified targets correct
+those links without suppressing the documentation gate. The failed aggregate
+receipt remains failed despite its passing constituent stages.
+
+The terminal observer preserves all 28 earlier streaming journeys and the
+original 13 startup cases. Five new journeys exercise the canonical executable
+without stdin/height flags: ordered 10,000-line output, sanitization, two prompt
+handshakes, interrupt/restart and remaining open for Esc after exit. Four
+startup cases reject a missing command before terminal output. Independent
+review found a new observer race that could record Esc before processing an
+already-ready exit notification. Two readiness guards correct it before any
+live execution. All 33 real PTY journeys and 17 startup checks pass. The canonical
+10,000-line case records exactly 10,001 logs including final status; prompt
+replies follow the observed frames and preserve seven exact completed logs;
+restart observes two distinct immediate children and their absence before
+supervisor release. Termios and terminal-mode restoration pass. The Esc claim
+is a completed exit frame and no observed exit notification for 250 ms before
+the key, not atomic causation or physical pixels. CPR remains explicitly
+emulated, and the observer implements a bounded ANSI subset.
+
+This is selected native/WASM execution, not the full workspace test suite or a
+broader physical-host matrix. RCH and UBS remain unavailable under their
+documented deletion constraints; DSR used serial retained SSH execution and
+manual review. No code, assertion, threshold or snapshot was changed to evade
+a failing gate. Existing `nix 0.28` future-compatibility warnings remain visible;
+malformed DSR duration fields receive no timing credit.
+
+Original `.32.1` remains in progress. Descendant ownership, byte-transparent
+partial logging, original consumer/host acceptance and named tracing remain.
+The current input echo explicitly reports queue admission as `[stdin queued]`;
+stderr retains its existing plain prefix, and the three-row editor remains
+unbordered so its only row stays usable. These are explicit differences from
+the original presentation details, not silently completed acceptance items.
+Package-file inclusion and an isolated source dependency are not a newly
+published crate or a registry-consumer proof. No release or Actions ran.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select child log policy and session deadline; compact chrome and per-run metrics are wired in. Clean child HTTP(S) tokens receive bounded viewer links with presented-frame ID protection. Sanitized cumulative UTF-8 previews expose unterminated prompts before input without duplicating completed logs. Twenty-eight PTY journeys cover controls, compact output/input, deadlines, enabled/disabled links and prompt-gated replies. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, facade example and remaining original behavior, and published-consumer/host proof. Wrapped/highlighted link retention remains incomplete. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select child log policy and session deadline; compact chrome and per-run metrics are wired in. Clean child HTTP(S) tokens receive bounded viewer links with presented-frame ID protection. Sanitized cumulative UTF-8 previews expose unterminated prompts before input without duplicating completed logs. The named `ftui` agent-shell example shares the model with compact interactive defaults. Thirty-three PTY journeys cover both executables, including default facade input, ordered 10k logs, restart and Esc after exit. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, remaining original behavior and published-consumer/host proof. Named tracing and original presentation details remain. Wrapped/highlighted link retention remains incomplete. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -1212,6 +1309,13 @@ specific implementation or observation below, not completion of the whole goal):
   13 startup cases and required workspace gates against manifest `38aae956`;
   retain the failing baseline, formatting/staging failures and retracted draft
   verifier concern without changing original acceptance or closing the item.
+- [x] `.32.1`: expose the reference model through native `ftui::agent_shell`
+  and add the named facade example with compact interactive defaults; preserve
+  the streaming demo's configuration/backend and all 31 original model tests.
+- [x] `.32.1`: verify 98 selected tests, 33 PTY journeys, 17 startup cases,
+  isolated default-ftui source consumption and required native/WASM gates at
+  manifest `a7e693b0`; retain the failed rustdoc candidate and reviewed observer
+  correction. This is source delivery, not another registry publication.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output-trust acceptance and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
@@ -1227,9 +1331,10 @@ specific implementation or observation below, not completion of the whole goal):
    PTY journey `.32.1–.32.3`. The published minimal and streaming examples are
    foundations. Main now streams a real child with optional interactive stdin
    under stable inline chrome, with immediate-child SIGINT and same-command
-   restart, compact controls and session deadlines. Byte-safe partial output,
-   descendant cancellation, the facade example and remaining original behavior
-   and host acceptance are required before calling the full journey complete.
+   restart, compact controls and session deadlines. The named facade example
+   now shares that model with interactive defaults. Byte-safe partial output,
+   descendant cancellation, remaining original behavior and published-consumer/
+   host acceptance are required before calling the full journey complete.
 3. **Finish real browser and accessibility consumers.** Use the already-built
    WASM artifact as a starting point, finish reproducible host packaging and
    bounded admission, then GPU/IME/mobile proof. In parallel, complete widget

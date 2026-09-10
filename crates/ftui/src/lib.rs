@@ -12,6 +12,8 @@
 //! - Stable public surface area (re-exports).
 //! - Minimal glue and convenience APIs.
 //! - A lightweight prelude for day-to-day use.
+//! - The reusable `agent_shell` model that backs the canonical child-session
+//!   example and streaming demo on native targets with the `runtime` feature.
 //!
 //! # How it fits in the system
 //! - Input layer: provided by `ftui-core`
@@ -22,6 +24,9 @@
 //!
 //! If you only depend on one crate in your application, it should be `ftui`.
 
+/// Shared native inline child-session model, configuration, and messages.
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
+pub mod agent_shell;
 pub mod error;
 
 // --- Core re-exports -------------------------------------------------------

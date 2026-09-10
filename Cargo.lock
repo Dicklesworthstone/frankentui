@@ -1510,6 +1510,7 @@ name = "ftui-harness"
 version = "0.7.0"
 dependencies = [
  "blake3",
+ "ftui",
  "ftui-a11y",
  "ftui-core",
  "ftui-extras",
