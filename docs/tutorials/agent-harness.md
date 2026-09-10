@@ -234,11 +234,34 @@ EOF is payload. Each pipe reader has a bounded assembly buffer, an 8 KiB input
 buffer and at most one unsent line. Arbitrary model messages and retained model
 history have no byte limit imposed by this queue.
 
+The example opts into `ProcessSubscription::partial_output(true)`. When a child
+flushes an unterminated prompt, the feedback row shows a cumulative `[stdout]`
+or `[stderr]` preview before the next pipe read. This works with both the default
+viewer and compact three-row interactive chrome. The most recently updated
+nonempty preview is shown; each stream retains its own pending text. Control
+and input-error feedback takes priority. Previews are always sanitized, including
+in raw/SGR-only log modes, and never create hyperlinks, log records or counter
+increments. A completed line clears that stream's preview and enters scrollback
+once; termination and restart clear both previews. Old-generation updates cannot
+replace the new run's prompt.
+
+Preview events contain the original cumulative valid UTF-8 prefix, so consumers
+must replace their preview rather than append it. The reader holds an incomplete
+UTF-8 scalar and one possible CRLF delimiter until the next read resolves them.
+It preserves original terminal controls for the consumer to sanitize as a whole;
+this avoids treating split escape fragments as independent trusted text. The
+64 KiB line bound and shared queue backpressure still apply. Cumulative previews
+can add copying and queue traffic for output written a few bytes at a time;
+they do not provide byte-efficient or byte-transparent streaming. The default
+subscription remains complete-line-only unless the option is enabled.
+
 Oversized lines, invalid UTF-8 and read errors stop output forwarding and
 request immediate-child termination even if the model queue is full. The final
 error names the stream, failure and actual child cleanup outcome, and reports
 incomplete output. Already admitted lines precede that error; no successful
-exit event follows it. Partial-line and arbitrary binary streaming are unsupported.
+exit event follows it. Earlier valid previews may already be visible; an error
+does not retroactively retract displayed text. Arbitrary binary streaming is
+unsupported.
 Monitoring errors, timeout and cancellation also check termination and reaping.
 `Killed` requires an accepted kill request and an observed reaped status
 (SIGKILL on Unix). Failed or unconfirmed cleanup is an error. After an accepted
@@ -255,7 +278,7 @@ delivery. A descendant that keeps a captured pipe open can delay natural
 completion indefinitely unless a timeout or cancellation interrupts the drain.
 The example stops the immediate child. A descendant can also retain stdin and
 keep an input worker blocked after cancellation; a blocked write may deliver a
-prefix before it returns. Byte-safe partial output, descendant cleanup and the
+prefix before it returns. Byte-transparent partial log output, descendant cleanup and the
 remaining CLI/registry workflow are still unfinished agent-shell work.
 
 Choose a log policy in the model's returned command:

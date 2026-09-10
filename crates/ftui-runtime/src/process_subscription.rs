@@ -53,6 +53,15 @@ pub enum ProcessEvent {
     Stdout(String),
     /// A UTF-8 stderr line, without LF or CRLF, up to [`MAX_PROCESS_LINE_BYTES`].
     Stderr(String),
+    /// Cumulative valid UTF-8 prefix of the pending stdout line.
+    ///
+    /// Emitted only with [`ProcessSubscription::partial_output`]. Replace the
+    /// previous preview; do not append it or count it as a completed line.
+    /// The original controls are retained for whole-prefix sanitization.
+    StdoutPartial(String),
+    /// Cumulative pending stderr prefix, with the same contract as
+    /// [`Self::StdoutPartial`].
+    StderrPartial(String),
     /// The process exited with a status code.
     Exited(i32),
     /// The process was terminated by a Unix signal.
@@ -425,11 +434,13 @@ fn write_process_input(
 /// Normal exit waits for stdout/stderr forwarding to finish, including bounded
 /// channel backpressure. The timeout remains active during that drain. If the
 /// drain is canceled after the child exits, an error describes the exit and
-/// incomplete output. Cancellation can reject an unsent line or final status
-/// when the model queue is full; final-status delivery is not guaranteed then.
+/// incomplete output. Cancellation can reject an unsent line, preview, or final
+/// status when the model queue is full; final-status delivery is not guaranteed.
 /// Each UTF-8 line is limited to [`MAX_PROCESS_LINE_BYTES`] payload bytes.
 /// LF and its immediately preceding CR are excluded from the limit. An
 /// unterminated final line is delivered at EOF (preserving any trailing CR).
+/// Opt-in [`partial_output`](Self::partial_output) also previews growing valid
+/// prefixes before the next read blocks. It does not change completed lines.
 /// Oversized lines, invalid UTF-8, and read failures stop forwarding, request
 /// termination of the immediate child, and produce one error instead of a
 /// normal exit. That error reports incomplete output and the cleanup outcome.
@@ -456,6 +467,7 @@ pub struct ProcessSubscription<M: Send + 'static> {
     timeout: Option<Duration>,
     input: Option<ProcessInput>,
     control: Option<ProcessControl>,
+    partial_output: bool,
     id: SubId,
     explicit_id: bool,
     make_msg: std::sync::Arc<dyn Fn(ProcessEvent) -> M + Send + Sync>,
@@ -469,8 +481,8 @@ const PROCESS_REAP_TIMEOUT: Duration = Duration::from_millis(500);
 ///
 /// The LF or CRLF delimiter is excluded. Each reader's assembly buffer holds
 /// at most this many bytes plus one possible CR delimiter, alongside an 8 KiB
-/// input buffer and one in-flight line of at most this many bytes. This does
-/// not bound allocations in the message conversion callback or model.
+/// input buffer and one in-flight line or preview of at most this many bytes.
+/// This does not bound allocations in the message conversion callback or model.
 pub const MAX_PROCESS_LINE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
@@ -494,8 +506,10 @@ fn read_process_line<R: BufRead>(
     reader: &mut R,
     line: &mut Vec<u8>,
     stop: &StopSignal,
+    mut preview: Option<&mut dyn FnMut(&str) -> bool>,
 ) -> Result<Option<String>, ProcessReadError> {
     line.clear();
+    let mut previewed_bytes = 0;
     loop {
         if stop.is_stopped() {
             return Ok(None);
@@ -531,6 +545,30 @@ fn read_process_line<R: BufRead>(
             }
             break;
         }
+        if let Some(preview) = preview.as_mut() {
+            let prefix = match std::str::from_utf8(line) {
+                Ok(text) => text,
+                Err(error) if error.error_len().is_none() => {
+                    // Preserve an incomplete scalar for the next physical read.
+                    std::str::from_utf8(&line[..error.valid_up_to()])
+                        .map_err(ProcessReadError::InvalidUtf8)?
+                }
+                Err(error) => return Err(ProcessReadError::InvalidUtf8(error)),
+            };
+            // A final CR might be the first half of CRLF. Keep it in assembly
+            // but do not expose it until another payload byte or EOF resolves it.
+            let prefix = if line.last() == Some(&b'\r') {
+                prefix.strip_suffix('\r').unwrap_or(prefix)
+            } else {
+                prefix
+            };
+            if prefix.len() > previewed_bytes {
+                if !preview(prefix) {
+                    return Ok(None);
+                }
+                previewed_bytes = prefix.len();
+            }
+        }
     }
     if line.len() > MAX_PROCESS_LINE_BYTES {
         return Err(ProcessReadError::LineTooLong);
@@ -545,11 +583,25 @@ fn forward_lines<R: Read, M: Send + 'static>(
     reader: R,
     sender: SubscriptionSender<M>,
     stop: StopSignal,
+    partial_output: bool,
     make_msg: impl Fn(String) -> M,
+    make_partial: impl Fn(String) -> M,
 ) -> Result<(), ProcessReadError> {
     let mut reader = io::BufReader::with_capacity(8 * 1024, reader);
     let mut line = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
-    while let Some(line) = read_process_line(&mut reader, &mut line, &stop)? {
+    let mut preview = |prefix: &str| {
+        if stop.is_stopped() {
+            return false;
+        }
+        let message = make_partial(prefix.to_owned());
+        !stop.is_stopped() && sender.send(message).is_ok()
+    };
+    while let Some(line) = read_process_line(
+        &mut reader,
+        &mut line,
+        &stop,
+        partial_output.then_some(&mut preview as &mut dyn FnMut(&str) -> bool),
+    )? {
         if stop.is_stopped() {
             break;
         }
@@ -765,6 +817,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         timeout: Option<Duration>,
         input: Option<&ProcessInput>,
         control: Option<&ProcessControl>,
+        partial_output: bool,
     ) -> SubId {
         let mut h = DefaultHasher::new();
         "ProcessSubscription".hash(&mut h);
@@ -774,6 +827,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         timeout.map(|duration| duration.as_nanos()).hash(&mut h);
         input.map(|input| input.id).hash(&mut h);
         control.map(ProcessControl::generation).hash(&mut h);
+        partial_output.hash(&mut h);
         h.finish()
     }
 
@@ -786,6 +840,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
                 self.timeout,
                 self.input.as_ref(),
                 self.control.as_ref(),
+                self.partial_output,
             );
         }
     }
@@ -799,7 +854,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
         make_msg: impl Fn(ProcessEvent) -> M + Send + Sync + 'static,
     ) -> Self {
         let program = program.into();
-        let id = Self::computed_id(&program, &[], &[], None, None, None);
+        let id = Self::computed_id(&program, &[], &[], None, None, None, false);
         Self {
             program,
             args: Vec::new(),
@@ -807,6 +862,7 @@ impl<M: Send + 'static> ProcessSubscription<M> {
             timeout: None,
             input: None,
             control: None,
+            partial_output: false,
             id,
             explicit_id: false,
             make_msg: std::sync::Arc::new(make_msg),
@@ -865,6 +921,29 @@ impl<M: Send + 'static> ProcessSubscription<M> {
     #[must_use]
     pub fn control(mut self, control: ProcessControl) -> Self {
         self.control = Some(control);
+        self.refresh_id();
+        self
+    }
+
+    /// Preview pending stdout/stderr lines before LF or EOF (default: false).
+    ///
+    /// Each nonempty preview replaces the prior preview for that stream. It
+    /// contains the original cumulative valid UTF-8 prefix, including controls;
+    /// sanitize the whole prefix when rendering, rather than individual pieces.
+    /// An incomplete UTF-8 scalar and one possible CRLF delimiter are retained
+    /// until resolved. Completed [`ProcessEvent::Stdout`] and
+    /// [`ProcessEvent::Stderr`] events remain unchanged, including trailing CR
+    /// at EOF. Clear previews on completed lines and terminal events.
+    ///
+    /// Previews share the bounded, interruptible output queue and the 64 KiB
+    /// line bound; they can be delayed by backpressure. Earlier prefixes may
+    /// already be visible when a later read fails UTF-8 or size validation.
+    /// This does not force an unflushed child to write, interrupt a blocked OS
+    /// read, or provide arbitrary binary streaming. Changing this setting
+    /// changes the automatic subscription ID.
+    #[must_use]
+    pub fn partial_output(mut self, enabled: bool) -> Self {
+        self.partial_output = enabled;
         self.refresh_id();
         self
     }
@@ -1016,14 +1095,20 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             });
         let reader_sender = sender.with_stop_signal(reader_stop.clone());
         let poll_interval = Duration::from_millis(50);
+        let partial_output = self.partial_output;
         let mut stdout_handle = stdout.map(|stdout| {
             let sender_out = reader_sender.clone();
             let stop_out = reader_stop.clone();
             let make_msg_out = std::sync::Arc::clone(&make_msg_ref);
             std::thread::spawn(move || {
-                forward_lines(stdout, sender_out, stop_out, |line| {
-                    (make_msg_out.as_ref())(ProcessEvent::Stdout(line))
-                })
+                forward_lines(
+                    stdout,
+                    sender_out,
+                    stop_out,
+                    partial_output,
+                    |line| (make_msg_out.as_ref())(ProcessEvent::Stdout(line)),
+                    |prefix| (make_msg_out.as_ref())(ProcessEvent::StdoutPartial(prefix)),
+                )
             })
         });
         let mut stderr_handle = stderr.map(|stderr| {
@@ -1031,9 +1116,14 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             let stop_err = reader_stop.clone();
             let make_msg_err = std::sync::Arc::clone(&make_msg_ref);
             std::thread::spawn(move || {
-                forward_lines(stderr, sender_err, stop_err, |line| {
-                    (make_msg_err.as_ref())(ProcessEvent::Stderr(line))
-                })
+                forward_lines(
+                    stderr,
+                    sender_err,
+                    stop_err,
+                    partial_output,
+                    |line| (make_msg_err.as_ref())(ProcessEvent::Stderr(line)),
+                    |prefix| (make_msg_err.as_ref())(ProcessEvent::StderrPartial(prefix)),
+                )
             })
         });
 
@@ -2418,10 +2508,350 @@ mod tests {
         let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
         let (stop, _trigger) = StopSignal::new();
         let mut lines = Vec::new();
-        while let Some(line) = read_process_line(&mut reader, &mut pending, &stop)? {
+        while let Some(line) = read_process_line(&mut reader, &mut pending, &stop, None)? {
             lines.push(line);
         }
         Ok(lines)
+    }
+
+    #[test]
+    fn partial_output_identity_is_stable_and_distinct_from_line_only() {
+        let plain = ProcessSubscription::new("cat", |event| event);
+        let enabled = ProcessSubscription::new("cat", |event| event).partial_output(true);
+        assert_ne!(plain.id(), enabled.id());
+        assert_eq!(
+            enabled.id(),
+            ProcessSubscription::new("cat", |event| event)
+                .partial_output(true)
+                .id()
+        );
+        assert_eq!(plain.id(), enabled.partial_output(false).id());
+        assert_eq!(
+            ProcessSubscription::new("cat", |event| event)
+                .with_id(42)
+                .partial_output(true)
+                .id(),
+            42
+        );
+    }
+
+    #[test]
+    fn partial_prefixes_preserve_utf8_controls_and_crlf_across_read_boundaries() {
+        let input = "\n🦀é\x1b]2;hidden\x07prompt>\r\ninside\rcarriage\nlast\r";
+        for capacity in 1..=input.len() {
+            let mut reader = io::BufReader::with_capacity(capacity, input.as_bytes());
+            let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+            let (stop, _trigger) = StopSignal::new();
+            let mut complete = Vec::new();
+            loop {
+                let mut previews = Vec::new();
+                let mut preview = |text: &str| {
+                    previews.push(text.to_owned());
+                    true
+                };
+                let line = read_process_line(&mut reader, &mut pending, &stop, Some(&mut preview))
+                    .unwrap();
+                let Some(line) = line else {
+                    assert!(previews.is_empty());
+                    break;
+                };
+                let mut length = 0;
+                for prefix in previews {
+                    assert!(!prefix.is_empty());
+                    assert!(line.starts_with(&prefix));
+                    assert!(prefix.len() > length);
+                    length = prefix.len();
+                    assert!(!prefix.contains('\u{fffd}'));
+                }
+                complete.push(line);
+            }
+            assert_eq!(
+                complete,
+                ["", "🦀é\x1b]2;hidden\x07prompt>", "inside\rcarriage", "last\r"]
+            );
+        }
+    }
+
+    #[test]
+    fn partial_prefix_validation_keeps_line_bounds_and_stop_before_another_read() {
+        for delimiter in ["", "\n", "\r\n"] {
+            let input = format!("{}{delimiter}", "x".repeat(MAX_PROCESS_LINE_BYTES));
+            let mut reader = io::BufReader::with_capacity(8192, input.as_bytes());
+            let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+            let capacity = pending.capacity();
+            let (stop, _trigger) = StopSignal::new();
+            let mut largest = 0;
+            let mut preview = |prefix: &str| {
+                assert!(prefix.len() <= MAX_PROCESS_LINE_BYTES);
+                largest = largest.max(prefix.len());
+                true
+            };
+            let line = read_process_line(&mut reader, &mut pending, &stop, Some(&mut preview))
+                .unwrap()
+                .unwrap();
+            assert_eq!(line.len(), MAX_PROCESS_LINE_BYTES);
+            assert!(largest > 0);
+            assert_eq!(pending.capacity(), capacity);
+        }
+
+        for input in [
+            vec![b'x'; MAX_PROCESS_LINE_BYTES + 1],
+            b"safe\xff".to_vec(),
+            b"safe\xf0\x9f".to_vec(),
+        ] {
+            let mut reader = io::BufReader::with_capacity(8192, input.as_slice());
+            let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+            let (stop, _trigger) = StopSignal::new();
+            let mut preview = |prefix: &str| {
+                assert!(prefix.len() <= MAX_PROCESS_LINE_BYTES);
+                assert!(!prefix.contains('\u{fffd}'));
+                true
+            };
+            assert!(matches!(
+                read_process_line(&mut reader, &mut pending, &stop, Some(&mut preview)),
+                Err(ProcessReadError::LineTooLong | ProcessReadError::InvalidUtf8(_))
+            ));
+            assert!(pending.len() <= MAX_PROCESS_LINE_BYTES + 1);
+        }
+
+        let mut reader = io::BufReader::with_capacity(3, io::Cursor::new(b"pending forever"));
+        let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
+        let (stop, trigger) = StopSignal::new();
+        let mut preview = |prefix: &str| {
+            assert_eq!(prefix, "pen");
+            trigger.stop();
+            false
+        };
+        assert_eq!(
+            read_process_line(&mut reader, &mut pending, &stop, Some(&mut preview)).unwrap(),
+            None
+        );
+        assert_eq!(reader.get_ref().position(), 3);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_partial_prompt_precedes_reply_and_preserves_split_utf8_controls_and_crlf() {
+        let input = ProcessInput::new();
+        let control = ProcessControl::new();
+        let script = r#"import os,signal,sys
+signal.alarm(5)
+os.write(1,b'prompt \xf0\x9f')
+assert sys.stdin.readline() == 'utf8\n'
+os.write(1,b'\xa6\x80 \x1b]')
+assert sys.stdin.readline() == 'osc\n'
+os.write(1,b'2;hidden\x07 ready>')
+assert sys.stdin.readline() == 'answer\n'
+os.write(1,b'\r')
+os.write(2,b'CR-WRITTEN\n')
+assert sys.stdin.readline() == 'lf\n'
+os.write(1,b'\nnormal\r\n')
+os.write(2,b'err>')
+assert sys.stdin.readline() == 'err\n'
+os.write(2,b'\r\n')
+os.write(1,b'tail\r')
+"#;
+        let sub = controlled_python(script, &control)
+            .stdin(input.clone())
+            .partial_output(true);
+        let (sender, receiver) = mpsc::sync_channel(256);
+        let (stop, _trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+        });
+        let mut previous_length = 0;
+        for (expected, reply) in [
+            ("prompt ", "utf8"),
+            ("prompt 🦀 \x1b]", "osc"),
+            ("prompt 🦀 \x1b]2;hidden\x07 ready>", "answer"),
+        ] {
+            loop {
+                let ProcessEvent::StdoutPartial(prefix) =
+                    receiver.recv_timeout(Duration::from_secs(3)).unwrap()
+                else {
+                    panic!("expected a pending stdout prefix before the reply");
+                };
+                assert!(expected.starts_with(&prefix));
+                assert!(prefix.len() > previous_length);
+                previous_length = prefix.len();
+                if prefix == expected {
+                    break;
+                }
+            }
+            assert!(!control.status().closed);
+            // The real child is waiting for this reply: no LF/EOF can unlock
+            // the expected preview. Disabled previews fail at the first wait.
+            input.try_send_line(reply.to_owned()).unwrap();
+        }
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
+                ProcessEvent::StderrPartial(prefix) => assert!("CR-WRITTEN".starts_with(&prefix)),
+                ProcessEvent::Stderr(line) => {
+                    assert_eq!(line, "CR-WRITTEN");
+                    break;
+                }
+                event => panic!("unexpected event while CR is held: {event:?}"),
+            }
+        }
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        input.try_send_line("lf".to_owned()).unwrap();
+        let expected_stdout = ["prompt 🦀 \x1b]2;hidden\x07 ready>", "normal", "tail\r"];
+        let mut stdout = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
+                ProcessEvent::Stdout(line) => stdout.push(line),
+                ProcessEvent::StdoutPartial(prefix) => {
+                    assert!(expected_stdout[stdout.len()].starts_with(&prefix));
+                }
+                ProcessEvent::StderrPartial(prefix) => {
+                    assert!("err>".starts_with(&prefix));
+                    if prefix == "err>" {
+                        break;
+                    }
+                }
+                event => panic!("unexpected event before stderr reply: {event:?}"),
+            }
+        }
+        input.try_send_line("err".to_owned()).unwrap();
+        let mut stderr = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
+                ProcessEvent::Stdout(line) => stdout.push(line),
+                ProcessEvent::Stderr(line) => stderr.push(line),
+                ProcessEvent::StdoutPartial(prefix) => {
+                    assert!(expected_stdout[stdout.len()].starts_with(&prefix));
+                    assert!(!prefix.ends_with('\r'));
+                }
+                ProcessEvent::Exited(code) => {
+                    assert_eq!(code, 0);
+                    break;
+                }
+                event => panic!("unexpected event after reply: {event:?}"),
+            }
+        }
+        handle.join().unwrap();
+        assert_eq!(stdout, expected_stdout);
+        assert_eq!(stderr, ["err>"]);
+        assert!(receiver.try_recv().is_err());
+        assert!(control.status().can_restart);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_partial_output_is_disabled_by_default_without_changing_completed_lines() {
+        let input = ProcessInput::new();
+        let control = ProcessControl::new();
+        let script = "import os,signal,sys\nsignal.alarm(5)\nos.write(1,b'prompt>')\nos.write(2,b'READY\\n')\nassert sys.stdin.readline()=='reply\\n'\nos.write(1,b'\\r\\nnormal\\n')";
+        let sub = controlled_python(script, &control).stdin(input.clone());
+        let (sender, receiver) = mpsc::sync_channel(256);
+        let (stop, _trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+        });
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+            ProcessEvent::Stderr("READY".to_owned())
+        );
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        input.try_send_line("reply".to_owned()).unwrap();
+        let events: Vec<_> = (0..3)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(3)).unwrap())
+            .collect();
+        handle.join().unwrap();
+        assert_eq!(
+            events,
+            [
+                ProcessEvent::Stdout("prompt>".to_owned()),
+                ProcessEvent::Stdout("normal".to_owned()),
+                ProcessEvent::Exited(0)
+            ]
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_partial_queue_backpressure_remains_interruptible() {
+        let input = ProcessInput::new();
+        let control = ProcessControl::new();
+        let (observed_sender, observed_receiver) = mpsc::channel();
+        let sub = ProcessSubscription::new("python3", move |event| {
+            if let ProcessEvent::StdoutPartial(prefix) = &event {
+                observed_sender.send(prefix.clone()).unwrap();
+            }
+            event
+        })
+        .args(["-u", "-c", "import os,signal,sys\nsignal.alarm(5)\nos.write(1,b'a')\nassert sys.stdin.readline()=='next\\n'\nos.write(1,b'b')\nsignal.pause()"])
+        .stdin(input.clone())
+        .control(control.clone())
+        .partial_output(true)
+        .timeout(Duration::from_secs(5));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let (stop, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+        });
+        // Do not drain the first admitted prefix. The second conversion is
+        // observed before bounded queue admission, not as delivered output.
+        assert_eq!(
+            observed_receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+            "a"
+        );
+        input.try_send_line("next".to_owned()).unwrap();
+        assert_eq!(
+            observed_receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+            "ab"
+        );
+        let stopped = Instant::now();
+        trigger.stop();
+        handle.join().unwrap();
+        assert!(stopped.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            receiver.into_iter().collect::<Vec<_>>(),
+            [ProcessEvent::StdoutPartial("a".to_owned())]
+        );
+        assert!(control.status().can_restart);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_partial_output_errors_preserve_bounds_and_never_report_success() {
+        for (payload, reason) in [
+            ("b'x'*65537", "line exceeds"),
+            ("b'valid\\xff'", "invalid UTF-8"),
+            ("b'valid\\xf0\\x9f'", "invalid UTF-8"),
+        ] {
+            let control = ProcessControl::new();
+            let script = format!("import os,signal\nsignal.alarm(5)\nos.write(1,{payload})");
+            let sub = controlled_python(&script, &control).partial_output(true);
+            let (sender, receiver) = mpsc::sync_channel(256);
+            let (stop, _trigger) = StopSignal::new();
+            let handle = thread::spawn(move || {
+                sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+            });
+            loop {
+                match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
+                    ProcessEvent::StdoutPartial(prefix) => {
+                        assert!(prefix.len() <= MAX_PROCESS_LINE_BYTES);
+                        assert!(!prefix.contains('\u{fffd}'));
+                    }
+                    ProcessEvent::Error(error) => {
+                        assert!(error.contains(reason), "{error}");
+                        break;
+                    }
+                    event => panic!("invalid output must not succeed: {event:?}"),
+                }
+            }
+            handle.join().unwrap();
+            assert!(receiver.try_recv().is_err());
+            assert!(control.status().can_restart);
+        }
     }
 
     #[test]
@@ -2482,7 +2912,7 @@ mod tests {
         let capacity = pending.capacity();
         let (stop, trigger) = StopSignal::new();
         assert!(matches!(
-            read_process_line(&mut reader, &mut pending, &stop),
+            read_process_line(&mut reader, &mut pending, &stop, None),
             Err(ProcessReadError::LineTooLong)
         ));
         assert!(pending.len() <= MAX_PROCESS_LINE_BYTES + 1);
@@ -2491,7 +2921,7 @@ mod tests {
         assert!(consumed <= (MAX_PROCESS_LINE_BYTES + 8192) as u64);
         trigger.stop();
         assert_eq!(
-            read_process_line(&mut reader, &mut pending, &stop).unwrap(),
+            read_process_line(&mut reader, &mut pending, &stop, None).unwrap(),
             None
         );
         assert_eq!(reader.get_ref().position(), consumed);
@@ -2520,11 +2950,11 @@ mod tests {
         let mut pending = Vec::with_capacity(MAX_PROCESS_LINE_BYTES + 1);
         let (stop, _trigger) = StopSignal::new();
         assert_eq!(
-            read_process_line(&mut reader, &mut pending, &stop).unwrap(),
+            read_process_line(&mut reader, &mut pending, &stop, None).unwrap(),
             Some("good".to_owned())
         );
         assert!(matches!(
-            read_process_line(&mut reader, &mut pending, &stop),
+            read_process_line(&mut reader, &mut pending, &stop, None),
             Err(ProcessReadError::Io(error)) if error.kind() == io::ErrorKind::Other
         ));
     }
