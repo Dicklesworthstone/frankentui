@@ -29,7 +29,7 @@ fn is_safe_osc8_url(url: &str) -> bool {
 }
 
 /// Registry for OSC 8 hyperlink URLs.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LinkRegistry {
     /// Link slots indexed by ID (0 reserved for "no link").
     links: Vec<Option<String>>,
@@ -37,6 +37,12 @@ pub struct LinkRegistry {
     lookup: AHashMap<String, u32>,
     /// Reusable IDs from removed links.
     free_list: Vec<u32>,
+}
+
+impl Default for LinkRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LinkRegistry {
@@ -372,10 +378,29 @@ mod tests {
 
     #[test]
     fn default_trait_creates_empty_registry() {
-        let registry = LinkRegistry::default();
+        let mut registry = LinkRegistry::default();
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
         assert_eq!(registry.get(0), None);
+
+        // Rejected input must not consume the first usable slot.
+        assert_eq!(registry.register("https://example.com/\x1b[2J"), 0);
+        let first = registry.register("https://example.com/first");
+        assert_eq!(first, 1);
+        assert_eq!(registry.get(first), Some("https://example.com/first"));
+        assert_eq!(registry.register("https://example.com/first"), first);
+        let second = registry.register("https://example.com/second");
+        assert_eq!(second, 2);
+        assert_eq!(registry.len(), 2);
+
+        let cloned = registry.clone();
+        registry.unregister(first);
+        assert_eq!(registry.register("https://example.com/reused"), first);
+        assert_eq!(cloned.get(first), Some("https://example.com/first"));
+        assert_eq!(registry.get(0), None);
+        registry.clear();
+        assert!(registry.is_empty());
+        assert_eq!(registry.register("https://example.com/after-clear"), 1);
     }
 
     #[test]

@@ -2237,6 +2237,67 @@ mod tests {
     }
 
     #[test]
+    fn first_hyperlink_from_default_registry_reaches_presenter() {
+        use ftui_core::terminal_capabilities::TerminalCapabilities;
+        use ftui_render::buffer::Buffer;
+        use ftui_render::diff::BufferDiff;
+        use ftui_render::link_registry::LinkRegistry;
+        use ftui_render::presenter::Presenter;
+        use ftui_text::Span;
+
+        let url = "https://example.com/first";
+        let mut log = LogViewer::new(2);
+        log.push(FtuiText::from_spans([
+            Span::raw("first").link(url),
+            Span::raw(" plain"),
+        ]));
+        log.push(FtuiText::from_spans([Span::raw("again").link(url)]));
+        let mut pool = GraphemePool::new();
+        let mut links = LinkRegistry::default();
+        let mut frame = Frame::with_links(11, 2, &mut pool, &mut links);
+        log.render(
+            Rect::new(0, 0, 11, 2),
+            &mut frame,
+            &mut LogViewerState::default(),
+        );
+        assert_eq!(line_text(&frame, 0, 11), "first plain");
+        assert_eq!(line_text(&frame, 1, 11), "again      ");
+        for y in 0..2 {
+            for x in 0..11 {
+                assert_eq!(
+                    frame.buffer.get(x, y).unwrap().attrs.link_id(),
+                    u32::from(x < 5),
+                    "link ownership at ({x}, {y})"
+                );
+            }
+        }
+        let buffer = frame.buffer;
+        assert_eq!(links.len(), 1);
+        assert_eq!(links.get(1), Some(url));
+        let diff = BufferDiff::compute(&Buffer::new(11, 2), &buffer);
+        for enabled in [true, false] {
+            let mut caps = TerminalCapabilities::basic();
+            caps.osc8_hyperlinks = enabled;
+            let mut presenter = Presenter::new(Vec::new(), caps);
+            presenter
+                .present_with_pool(&buffer, &diff, Some(&pool), Some(&links))
+                .unwrap();
+            let output = String::from_utf8(presenter.into_inner().unwrap()).unwrap();
+            if enabled {
+                assert!(
+                    output.contains("\x1b]8;;https://example.com/first\x07first\x1b]8;;\x07 plain")
+                );
+                assert!(output.contains("\x1b]8;;https://example.com/first\x07again\x1b]8;;\x07"));
+                assert_eq!(output.matches(url).count(), 2);
+            } else {
+                assert!(!output.contains("\x1b]8;"));
+                assert!(output.contains("first plain"));
+                assert!(output.contains("again"));
+            }
+        }
+    }
+
+    #[test]
     fn test_markup_parsing_preserves_spans() {
         let mut log = LogViewer::new(100);
         let text = ftui_text::markup::parse_markup("[bold]Hello[/bold] [fg=red]world[/fg]!")

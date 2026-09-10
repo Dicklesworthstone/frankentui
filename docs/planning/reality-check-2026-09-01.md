@@ -845,6 +845,49 @@ RCH/UBS deletion restrictions still apply; no Actions or new release ran.
 Original `.32.1` remains in progress for the facade example, links and remaining
 original behavior, partial-byte output, descendants and consumer/host acceptance.
 
+### September 10 first-hyperlink initialization
+
+Tracing the remaining link consumer exposed a public API defect:
+`LinkRegistry::default()` did not reserve slot zero, so its first valid
+registration returned the no-link ID. `Default` now delegates to `new()`.
+The expanded constructor test checks the first target, rejection, deduplication,
+reuse, clone independence and clearing. A new LogViewer/Frame/diff/Presenter
+test checks exact linked and plain cells, OSC 8 target/text/close sequences,
+and plain output when hyperlink capability is disabled. `TerminalWriter`
+already used `new()`; this fixes callers using `Default`, not an observed
+failure in the existing streaming example.
+
+DSR receipts `frankentui-link4-native/20260910T003307-2657156` and
+`frankentui-link4-wasm/20260910T003416-2657133` pass all required workspace and
+affected WASM gates on `trj` with the pinned nightly. The 2,497-file manifest is
+`1d2e635e141dd4c8a909b264ca6e6782aeddb5829a8d373e1d1c91b648e2753a`;
+source stability and config/log hashes were verified. The 703 selected tests
+comprise 408 renderer (1,447 excluded), 62 viewer (3,303 excluded), 205 writer
+and sink (1,801 excluded), 22 streaming and six Node/WASM tests. The two known
+writer tests that remove evidence remain unexecuted under Rule 1. This is
+in-memory emission proof, not a new PTY run, physical-click test or full suite.
+
+Baseline `link0` reproduces the constructor's returned-ID-zero failure. Its
+widget test did not execute because my test accessed a private capability
+field; the public constructor corrected that compile error. Review briefly
+suggested a wrong link-close sequence, then retracted it after tracing emitted
+spaces; the original exact assertion was restored before execution. `link3`
+passes every behavior/lint/doc gate but fails one formatting location; `link4`
+changes only that line layout and passes. Draft snapshots `link1` and `link2`
+were not executed. Evidence is retained in
+`/data/retained/ftui-first-link-20260910-greenlynx/`, including earlier failures.
+Malformed DSR duration fields receive no timing credit; the existing nix
+future-compatibility warning remains. RCH/UBS restrictions still apply; no
+Actions or release ran.
+
+Automatic child URL linking remains open. A bounded recent-URL list alone
+cannot bound the persistent registry, and recycling an ID still present in the
+previous frame can hide a changed target from the cell diff. Any managed
+retirement must preserve IDs referenced by presented/pending frames and bound
+new admission. Existing wrapping/search-highlight paths also flatten link
+spans. None of these separate behaviors is claimed fixed by the constructor
+change; the new test covers explicit spans in the unwrapped viewer.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
@@ -975,6 +1018,9 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.32.1`: verify 372 selected tests, 24 PTY journeys, 13 startup cases and
   required workspace/WASM gates against manifest `afbbdf6f`; retain first-candidate
   failures and distinguish headless resize proof from fixed-size PTY execution.
+- [x] `.32.1`: correct the missing zero sentinel in `LinkRegistry::default()`;
+  preserve first-link target binding through the existing unwrapped viewer;
+  verify 703 selected tests and required native/WASM gates at manifest `1d2e635e`.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output-trust acceptance and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
