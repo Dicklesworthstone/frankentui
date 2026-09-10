@@ -780,12 +780,77 @@ WASM run or release occurred in this increment. Original `.32.1` stays open
 for the facade example, remaining CLI/status/link features, partial-byte output,
 descendant ownership and published-consumer/host acceptance.
 
+### September 10 session controls and compact inline frames
+
+The streaming consumer now accepts `--ui-height=N` (3–65,535; its existing
+default remains 15) and `--exit-after-ms=N`, with
+`FTUI_AGENT_SHELL_EXIT_AFTER_MS` as the deadline fallback. CLI values override
+the environment; invalid or duplicate options fail before application startup.
+Zero exits during init before starting the child. Later deadlines remain active
+after child exit, while the generated demo is paused, and across F5 restart.
+They are cooperative session limits, not hard child-reaping deadlines; a cutoff
+can omit queued output and the eventual child status.
+
+The status line adds normalized record bytes, stderr records and elapsed run
+time. Byte counts include one newline per received record, not original pipe
+bytes. Elapsed time freezes when the model receives a terminal event; F5 resets
+run metrics while preserving the session deadline. Compact layout reserves
+status, input and hint rows before allocating the viewer. Independent review
+also found that fixed inline rendering allocated the configured height even
+when the terminal was shorter. `TerminalWriter` now clamps its frame hint to
+the actual terminal height; an actual headless `Program` regression asserts
+seven exact frame sizes through shrink/grow resizes, including normalized
+one-cell frames for zero-sized terminal input.
+This headless test is distinct from the fixed-size PTY journeys below.
+
+Final DSR receipts `frankentui-session2-native/20260909T231022-2200325` and
+`frankentui-session2-wasm/20260909T231407-2199879` pass on configured `trj` with
+the exact pinned nightly. Their isolated base is `daaa55b1` plus frozen changes;
+all 2,497 tracked files match manifest
+`afbbdf6f967061609de0c95b2e28b301e4d13cfae5784991a23e10d411f45cf3`.
+The source, config and receipt log hashes were checked. Another committer
+landed implementation commits `740be12e` and `fd1bf7bb` during verification;
+current source at `b801a124` matches the complete tested manifest.
+Workspace formatting/check/strict Clippy/strict rustdoc and web/showcase WASM
+checks pass. The 372 selected tests comprise 129 sanitizer (1,726 excluded),
+215 runtime/Program (1,791 excluded), 22 consumer and six Node/WASM tests.
+The two known writer tests that remove evidence remain explicitly unexecuted
+under Rule 1. This is not the full workspace suite or the full host matrix.
+
+All 24 real PTY journeys and 13 startup-negative cases pass. The previous 17
+journeys remain, with compact 10,000-line/stdin cases, idle/flood/finished/paused
+deadlines and zero-init added. Exact scrollback regions use row 21 for three-row
+chrome and row 9 for the default 15 rows in a 24-row PTY. The pause oracle checks
+the actual status row, complete ordered generated batches and no generated logs
+after pause; a viewer marker alone cannot pass it. In live idle/flood cases,
+immediate-child cleanup is observed before releasing the retained PTY session
+leader, so session teardown cannot masquerade as consumer cleanup. Captures
+retain exact records and termios/mode
+restoration assertions. CPR replies are declared protocol emulation, not
+physical terminal rendering evidence.
+
+Evidence is retained in `/data/retained/ftui-session-controls-20260910-greenlynx/`;
+native/WASM archive SHA256 is
+`cae3e3ef4335b56bda3ea3134f159e0d5ccfa7ee3a1cfb411210c7387213014b`.
+Candidate1 failed formatting and one Clippy `collapsible_if` check; manual
+formatting and an equivalent let-chain fixed both without suppressions.
+Its first pause oracle was too permissive; independent review strengthened it
+before the successful candidate2 execution. Failed artifacts remain retained.
+The first receipt's config hash predates adding candidate2 entries; the original
+prefix was reconstructed separately and matches that hash. Its source and log
+hashes remain valid. Final receipt config hashes match the retained current
+configuration. DSR duration fields remain malformed and receive no timing
+credit; the existing nix future-compatibility warning remains visible.
+RCH/UBS deletion restrictions still apply; no Actions or new release ran.
+Original `.32.1` remains in progress for the facade example, links and remaining
+original behavior, partial-byte output, descendants and consumer/host acceptance.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
 |---|---|---|
 | Bounded browser interaction | `WebEventSource` bounds pending events to 4,096 and retained text allocations to 1 MiB. Admission errors propagate through recorder, runner and JS bindings. Explicit v2 steps replay non-rendering quit; recovery returns the accepted FIFO tail. The local host eagerly forwards producer output and bounds each input object's text; real count/byte/IME boundary checks pass. Standalone historical producer queues still drop oldest on overflow. | `.29.7/.29.8/.29.9`: finish standalone producer admission and grapheme transport, then the original browser/GPU/IME/mobile matrix and packaging validation obligations. Local showcase success does not close remote or physical-host requirements. |
-| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select sanitized, SGR-only or raw child logs. Seventeen PTY journeys include handler acknowledgment, continued input, two restart modes and the output policies. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, facade example, remaining CLI/status/link behavior and published-consumer/host proof. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
+| Interactive process stream | Real child stdout/stderr reaches the streaming example through bounded queues/batches and 64 KiB lines. Optional stdin preserves FIFO/EOF through a 16-line queue. Supervisor-owned SIGINT and generation-tagged restart are wired into Ctrl-C/F5. Cleanup reports actual outcomes, bounds foreground reaping and preserves wait-error ownership uncertainty; late confirmation refreshes restart readiness. CLI/environment select child log policy and session deadline; compact chrome and per-run metrics are wired in. Twenty-four PTY journeys cover the existing controls plus compact output/input and deadline behavior. | `.32.1–.32.3` after `.33.1/.33.2`: finish arbitrary partial-byte output, descendant ownership, facade example, links and remaining original behavior, and published-consumer/host proof. Queue admission and signal acceptance are not child acknowledgment; background wait failure remains unconfirmed cleanup. |
 | Full Asupersync/shadow behavior | `RuntimeLane::Asupersync` now selects the existing blocking-task executor when compiled with `asupersync-executor`; absent-feature fallback and actual backend selection are reported by both constructors. Production `rollout_policy` still only configures/logs it; no live dual-lane comparison is dispatched. | `.30.1/.30.3`: finish shared semantic checksums, actual recorded comparison and candidate execution without duplicating external effects. Preserve the responsive Spawned default unless measured evidence supports changing it. |
 | Accessibility | `program.rs:3230–3244` makes collection opt-in and evidence text private by default; `docs/ACCESSIBILITY.md` explicitly lists absent OS bridge, container scopes and focus ownership. | `.13.8–.13.11`: complete semantics and one real host/AT journey, retaining privacy canaries. Do not describe tree-shaped data as a screen-reader integration. |
 | Advertised algorithms | `runtime/src/lib.rs` feature-gates research modules; Flex/Grid do not call `egraph::solve_layout`. `render/src/budget.rs:171–200` explicitly disclaims a formal alpha bound. | G07/G45: distinguish library API, experimental implementation, live default and conditional theorem. Preserve useful code; verify benefits before wiring it into defaults. |
@@ -905,6 +970,11 @@ specific implementation or observation below, not completion of the whole goal):
 - [x] `.32.1`: expose child log policy through CLI/environment with sanitized
   defaults, safe validation, visible mode and restart persistence; verify 358
   selected tests, 17 PTY journeys, five startup cases and strict workspace gates.
+- [x] `.32.1`: add compact UI height, session deadline and per-run metrics;
+  clamp fixed inline frames to terminal size and retain input/hint rows.
+- [x] `.32.1`: verify 372 selected tests, 24 PTY journeys, 13 startup cases and
+  required workspace/WASM gates against manifest `afbbdf6f`; retain first-candidate
+  failures and distinguish headless resize proof from fixed-size PTY execution.
 - [ ] `.33.1/.33.2` then `.32.1–.32.3`: finish output-trust acceptance and the bounded
   subprocess/PTY input, streaming, cancellation and restart journey.
 - [ ] `.6.25/.6.26`: finish reproducible WASM size/export guards and their
@@ -920,8 +990,9 @@ specific implementation or observation below, not completion of the whole goal):
    PTY journey `.32.1–.32.3`. The published minimal and streaming examples are
    foundations. Main now streams a real child with optional interactive stdin
    under stable inline chrome, with immediate-child SIGINT and same-command
-   restart. Byte-safe partial output, descendant cancellation and cleanup-error
-   reporting remain required before calling the full journey complete.
+   restart, compact controls and session deadlines. Byte-safe partial output,
+   descendant cancellation, the facade example and remaining original behavior
+   and host acceptance are required before calling the full journey complete.
 3. **Finish real browser and accessibility consumers.** Use the already-built
    WASM artifact as a starting point, finish reproducible host packaging and
    bounded admission, then GPU/IME/mobile proof. In parallel, complete widget
