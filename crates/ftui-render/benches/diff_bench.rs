@@ -20,20 +20,44 @@ struct DiffStats {
     total_us: u128,
 }
 
-/// Create a pair of buffers where only `pct` percent of cells differ.
-fn make_pair(width: u16, height: u16, change_pct: f64) -> (Buffer, Buffer) {
+/// Require an exact cell count so a density label cannot silently round down.
+fn change_count(width: u16, height: u16, change_pct: u8) -> u64 {
+    assert!(width > 0 && height > 0, "fixture dimensions must be nonzero");
+    assert!(change_pct <= 100, "fixture density cannot exceed 100%");
+    let scaled = u64::from(width) * u64::from(height) * u64::from(change_pct);
+    assert_eq!(scaled % 100, 0, "fixture density must select whole cells");
+    scaled / 100
+}
+
+/// Check fixture contents before timing, independently of the diff under test.
+fn assert_changed_cells(old: &Buffer, new: &Buffer, expected: u64) {
+    assert_eq!((old.width(), old.height()), (new.width(), new.height()));
+    let actual = old
+        .cells()
+        .iter()
+        .zip(new.cells())
+        .filter(|(old, new)| old != new)
+        .count();
+    assert_eq!(u64::try_from(actual).unwrap(), expected);
+}
+
+/// Create a pair with exactly `change_pct` percent of cells changed.
+fn make_pair(width: u16, height: u16, change_pct: u8) -> (Buffer, Buffer) {
+    let to_change = change_count(width, height, change_pct);
     let mut old = Buffer::new(width, height);
     let mut new = old.clone();
     old.clear_dirty();
     new.clear_dirty();
 
-    let total = width as usize * height as usize;
-    let to_change = ((total as f64) * change_pct / 100.0) as usize;
+    let total = u64::from(width) * u64::from(height);
 
     for i in 0..to_change {
-        let x = (i * 7 + 3) as u16 % width;
-        let y = (i * 11 + 5) as u16 % height;
-        let ch = char::from_u32(('A' as u32) + (i as u32 % 26)).unwrap();
+        // Evenly spaced row-major positions are unique because total >= to_change.
+        // Both factors are below 2^32, so their product fits in u64.
+        let index = i * total / to_change;
+        let x = u16::try_from(index % u64::from(width)).unwrap();
+        let y = u16::try_from(index / u64::from(width)).unwrap();
+        let ch = char::from(b'A' + u8::try_from(i % 26).unwrap());
         new.set_raw(
             x,
             y,
@@ -41,6 +65,7 @@ fn make_pair(width: u16, height: u16, change_pct: f64) -> (Buffer, Buffer) {
         );
     }
 
+    assert_changed_cells(&old, &new, to_change);
     (old, new)
 }
 
@@ -52,33 +77,32 @@ fn make_pair(width: u16, height: u16, change_pct: f64) -> (Buffer, Buffer) {
 fn make_pair_rows(
     width: u16,
     height: u16,
-    change_pct: f64,
+    change_pct: u8,
     tile_h: u16,
     bands: &[usize],
 ) -> (Buffer, Buffer) {
+    let to_change = change_count(width, height, change_pct);
+    assert!(tile_h > 0, "fixture tile height must be nonzero");
     let mut old = Buffer::new(width, height);
     let mut new = old.clone();
     old.clear_dirty();
     new.clear_dirty();
 
-    let mut rows: Vec<u16> = Vec::new();
-    for &band in bands {
-        let start = band * tile_h as usize;
-        let end = ((band + 1) * tile_h as usize).min(height as usize);
-        for y in start..end {
-            rows.push(y as u16);
-        }
-    }
-    if rows.is_empty() {
-        return (old, new);
-    }
-
-    let total = width as usize * height as usize;
-    let to_change = ((total as f64) * change_pct / 100.0) as usize;
+    // Walk real rows once: repeated bands cannot duplicate eligible cells, and
+    // an out-of-range band cannot overflow coordinate arithmetic.
+    let rows: Vec<u16> = (0..height)
+        .filter(|y| bands.contains(&(usize::from(*y) / usize::from(tile_h))))
+        .collect();
+    let eligible = u64::from(width) * u64::try_from(rows.len()).unwrap();
+    assert!(
+        to_change <= eligible,
+        "fixture bands cannot hold requested density"
+    );
     for i in 0..to_change {
-        let x = (i * 7 + 3) as u16 % width;
-        let y = rows[i % rows.len()];
-        let ch = char::from_u32(('A' as u32) + (i as u32 % 26)).unwrap();
+        let index = i * eligible / to_change;
+        let x = u16::try_from(index % u64::from(width)).unwrap();
+        let y = rows[usize::try_from(index / u64::from(width)).unwrap()];
+        let ch = char::from(b'A' + u8::try_from(i % 26).unwrap());
         new.set_raw(
             x,
             y,
@@ -86,6 +110,7 @@ fn make_pair_rows(
         );
     }
 
+    assert_changed_cells(&old, &new, to_change);
     (old, new)
 }
 
@@ -227,7 +252,7 @@ fn bench_diff_identical(c: &mut Criterion) {
     for (w, h) in [(80, 24), (120, 40), (200, 60)] {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
-        let (old, new) = make_pair(w, h, 0.0);
+        let (old, new) = make_pair(w, h, 0);
         group.bench_with_input(
             BenchmarkId::new("compute", format!("{w}x{h}")),
             &(),
@@ -244,7 +269,7 @@ fn bench_diff_sparse(c: &mut Criterion) {
     for (w, h) in [(80, 24), (120, 40), (200, 60)] {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
-        let (old, new) = make_pair(w, h, 5.0);
+        let (old, new) = make_pair(w, h, 5);
         group.bench_with_input(
             BenchmarkId::new("compute", format!("{w}x{h}")),
             &(),
@@ -267,7 +292,7 @@ fn bench_diff_sparse_rows(c: &mut Criterion) {
     for (w, h) in [(120u16, 40u16), (200u16, 60u16), (240u16, 80u16)] {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
-        let (old, new) = make_pair_rows(w, h, 5.0, tile_h, bands);
+        let (old, new) = make_pair_rows(w, h, 5, tile_h, bands);
         let label = format!("{w}x{h}");
 
         group.bench_with_input(
@@ -344,7 +369,7 @@ fn bench_diff_heavy(c: &mut Criterion) {
     for (w, h) in [(80, 24), (120, 40), (200, 60)] {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
-        let (old, new) = make_pair(w, h, 50.0);
+        let (old, new) = make_pair(w, h, 50);
         group.bench_with_input(
             BenchmarkId::new("compute", format!("{w}x{h}")),
             &(),
@@ -361,7 +386,7 @@ fn bench_diff_full(c: &mut Criterion) {
     for (w, h) in [(80, 24), (120, 40), (200, 60)] {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
-        let (old, new) = make_pair(w, h, 100.0);
+        let (old, new) = make_pair(w, h, 100);
         group.bench_with_input(
             BenchmarkId::new("compute", format!("{w}x{h}")),
             &(),
@@ -375,7 +400,7 @@ fn bench_diff_full(c: &mut Criterion) {
 fn bench_diff_runs(c: &mut Criterion) {
     let mut group = c.benchmark_group("diff/runs");
 
-    for (w, h, pct) in [(80, 24, 5.0), (80, 24, 50.0), (200, 60, 5.0)] {
+    for (w, h, pct) in [(80, 24, 5), (80, 24, 50), (200, 60, 5)] {
         let (old, new) = make_pair(w, h, pct);
         let diff = BufferDiff::compute(&old, &new);
         group.bench_with_input(
@@ -403,7 +428,7 @@ fn bench_full_vs_dirty(c: &mut Criterion) {
         group.throughput(Throughput::Elements(cells));
 
         // Sparse 2% changes - representative of large-screen micro-updates
-        let (old_sparse, new_sparse) = make_pair(w, h, 2.0);
+        let (old_sparse, new_sparse) = make_pair(w, h, 2);
 
         group.bench_with_input(
             BenchmarkId::new("compute", format!("{w}x{h}@2%")),
@@ -418,7 +443,7 @@ fn bench_full_vs_dirty(c: &mut Criterion) {
         );
 
         // Sparse 5% changes - dirty diff should win
-        let (old, new) = make_pair(w, h, 5.0);
+        let (old, new) = make_pair(w, h, 5);
 
         group.bench_with_input(
             BenchmarkId::new("compute", format!("{w}x{h}@5%")),
@@ -437,6 +462,8 @@ fn bench_full_vs_dirty(c: &mut Criterion) {
         for x in 0..w {
             single_row.set_raw(x, 0, Cell::from_char('X').with_fg(PackedRgba::RED));
         }
+        assert_changed_cells(&old, &single_row, u64::from(w));
+        assert_eq!(single_row.dirty_row_count(), 1);
 
         group.bench_with_input(
             BenchmarkId::new("compute", format!("{w}x{h}@1row")),
@@ -501,10 +528,10 @@ fn bench_selector_vs_fixed(c: &mut Criterion) {
     let mut group = c.benchmark_group("diff/selector_vs_fixed");
 
     let scenarios = [
-        (200u16, 60u16, 2.0f64),
-        (200u16, 60u16, 50.0f64),
-        (240u16, 80u16, 2.0f64),
-        (240u16, 80u16, 35.0f64),
+        (200u16, 60u16, 2),
+        (200u16, 60u16, 50),
+        (240u16, 80u16, 2),
+        (240u16, 80u16, 35),
     ];
 
     for (w, h, pct) in scenarios {
@@ -567,15 +594,18 @@ fn bench_diff_span_sparse_stats(c: &mut Criterion) {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
 
-        for (label, pct) in [("sparse_5pct", Some(5.0)), ("single_row", None)] {
+        for (label, pct) in [("sparse_5pct", Some(5)), ("single_row", None)] {
             let (old, new) = if let Some(pct) = pct {
                 make_pair(w, h, pct)
             } else {
-                let old = Buffer::new(w, h);
+                let mut old = Buffer::new(w, h);
+                old.clear_dirty();
                 let mut new = old.clone();
                 for x in 0..w {
                     new.set_raw(x, 0, Cell::from_char('X'));
                 }
+                assert_changed_cells(&old, &new, u64::from(w));
+                assert_eq!(new.dirty_row_count(), 1);
                 (old, new)
             };
 
@@ -618,7 +648,7 @@ fn bench_diff_span_dense_regression(c: &mut Criterion) {
     for (w, h) in [(200, 60), (240, 80)] {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
-        let (old, new) = make_pair(w, h, 50.0);
+        let (old, new) = make_pair(w, h, 50);
 
         group.bench_with_input(
             BenchmarkId::new("dense_gate", format!("{w}x{h}@50%")),
@@ -668,7 +698,7 @@ fn bench_diff_tile_sparse_stats(c: &mut Criterion) {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
 
-        for pct in [1.0f64, 2.0f64] {
+        for pct in [1, 2] {
             let (old, new) = make_pair(w, h, pct);
             let label = format!("{w}x{h}@{pct}%");
 
@@ -749,7 +779,7 @@ fn bench_diff_tile_dense_regression(c: &mut Criterion) {
     for (w, h) in [(320u16, 90u16), (400u16, 100u16)] {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
-        let (old, new) = make_pair(w, h, 50.0);
+        let (old, new) = make_pair(w, h, 50);
 
         group.bench_with_input(
             BenchmarkId::new("dense_gate", format!("{w}x{h}@50%")),
@@ -799,7 +829,7 @@ fn bench_diff_large_screen(c: &mut Criterion) {
         group.throughput(Throughput::Elements(cells));
 
         // Sparse changes (typical use case)
-        let (old, new) = make_pair(w, h, 2.0);
+        let (old, new) = make_pair(w, h, 2);
 
         group.bench_with_input(
             BenchmarkId::new("compute", format!("{w}x{h}@2%")),
@@ -1019,7 +1049,7 @@ fn bench_diff_cells_per_second(c: &mut Criterion) {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
 
-        for pct in [0.0, 5.0, 50.0, 100.0] {
+        for pct in [0, 5, 50, 100] {
             let (old, new) = make_pair(w, h, pct);
             let label = format!("{w}x{h}@{pct}%");
 

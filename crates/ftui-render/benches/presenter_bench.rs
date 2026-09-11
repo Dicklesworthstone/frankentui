@@ -22,14 +22,17 @@ fn benchmark_capabilities() -> TerminalCapabilities {
         .build()
 }
 
-/// Create a pair of buffers where `pct` percent of cells have changed,
+/// Create a pair of buffers where exactly `change_pct` percent of cells have changed,
 /// with varied styles to exercise the presenter's state tracking.
-fn make_styled_pair(width: u16, height: u16, change_pct: f64) -> (Buffer, Buffer) {
+fn make_styled_pair(width: u16, height: u16, change_pct: u8) -> (Buffer, Buffer) {
+    assert!(width > 0 && height > 0, "fixture dimensions must be nonzero");
+    assert!(change_pct <= 100, "fixture density cannot exceed 100%");
+    let total = u64::from(width) * u64::from(height);
+    let scaled = total * u64::from(change_pct);
+    assert_eq!(scaled % 100, 0, "fixture density must select whole cells");
+    let to_change = scaled / 100;
     let old = Buffer::new(width, height);
     let mut new = old.clone();
-
-    let total = width as usize * height as usize;
-    let to_change = ((total as f64) * change_pct / 100.0) as usize;
 
     let colors = [
         PackedRgba::rgb(255, 0, 0),
@@ -40,14 +43,26 @@ fn make_styled_pair(width: u16, height: u16, change_pct: f64) -> (Buffer, Buffer
     ];
 
     for i in 0..to_change {
-        let x = (i * 7 + 3) as u16 % width;
-        let y = (i * 11 + 5) as u16 % height;
-        let ch = char::from_u32(('A' as u32) + (i as u32 % 26)).unwrap();
-        let fg = colors[i % colors.len()];
-        let bg = colors[(i + 2) % colors.len()];
+        // Evenly spaced row-major positions are unique because total >= to_change.
+        // Both factors are below 2^32, so their product fits in u64.
+        let index = i * total / to_change;
+        let x = u16::try_from(index % u64::from(width)).unwrap();
+        let y = u16::try_from(index / u64::from(width)).unwrap();
+        let ch = char::from(b'A' + u8::try_from(i % 26).unwrap());
+        let color_index = usize::try_from(i % u64::try_from(colors.len()).unwrap()).unwrap();
+        let fg = colors[color_index];
+        let bg = colors[(color_index + 2) % colors.len()];
         new.set_raw(x, y, Cell::from_char(ch).with_fg(fg).with_bg(bg));
     }
 
+    // Untimed fixture preflight: inspect cells directly, not through BufferDiff.
+    let actual = old
+        .cells()
+        .iter()
+        .zip(new.cells())
+        .filter(|(old, new)| old != new)
+        .count();
+    assert_eq!(u64::try_from(actual).unwrap(), to_change);
     (old, new)
 }
 
@@ -72,7 +87,7 @@ fn bench_present_sparse(c: &mut Criterion) {
     let caps = benchmark_capabilities();
 
     for (w, h) in [(80, 24), (120, 40), (200, 60)] {
-        let (old, new) = make_styled_pair(w, h, 5.0);
+        let (old, new) = make_styled_pair(w, h, 5);
         let diff = BufferDiff::compute(&old, &new);
 
         group.throughput(Throughput::Elements(diff.len() as u64));
@@ -91,7 +106,7 @@ fn bench_present_heavy(c: &mut Criterion) {
     let caps = benchmark_capabilities();
 
     for (w, h) in [(80, 24), (120, 40), (200, 60)] {
-        let (old, new) = make_styled_pair(w, h, 50.0);
+        let (old, new) = make_styled_pair(w, h, 50);
         let diff = BufferDiff::compute(&old, &new);
 
         group.throughput(Throughput::Elements(diff.len() as u64));
@@ -110,7 +125,7 @@ fn bench_present_full(c: &mut Criterion) {
     let caps = benchmark_capabilities();
 
     for (w, h) in [(80, 24), (200, 60)] {
-        let (old, new) = make_styled_pair(w, h, 100.0);
+        let (old, new) = make_styled_pair(w, h, 100);
         let diff = BufferDiff::compute(&old, &new);
 
         group.throughput(Throughput::Elements(diff.len() as u64));
@@ -129,12 +144,7 @@ fn bench_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("pipeline/truecolor/diff_and_present");
     let caps = benchmark_capabilities();
 
-    for (w, h, pct) in [
-        (80, 24, 5.0),
-        (80, 24, 50.0),
-        (200, 60, 5.0),
-        (200, 60, 50.0),
-    ] {
+    for (w, h, pct) in [(80, 24, 5), (80, 24, 50), (200, 60, 5), (200, 60, 50)] {
         let (old, new) = make_styled_pair(w, h, pct);
 
         group.throughput(Throughput::Elements(w as u64 * h as u64));
