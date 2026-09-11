@@ -12,6 +12,9 @@
 //!   cargo run --release --bin profile_sweep -p ftui-demo-showcase -- --cycles 10 --render-mode pipeline --arena-mode on  --json
 
 use std::alloc::System;
+use std::fs::OpenOptions;
+use std::io::{self, BufWriter, Write};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use ftui_core::event::Event;
@@ -69,12 +72,14 @@ struct Args {
     arena_mode: ArenaMode,
     render_mode: RenderMode,
     json: bool,
+    capture_ansi: Option<PathBuf>,
 }
 
 fn print_usage_to(mut writer: impl std::io::Write) {
     writeln!(
         writer,
-        "Usage: profile_sweep [--cycles N] [--render-mode view|pipeline] [--arena-mode off|on] [--json]\n\
+        "Usage: profile_sweep [--cycles N] [--render-mode view|pipeline] [--arena-mode off|on] [--json] [--capture-ansi PATH]\n\
+         --capture-ansi requires pipeline mode and creates a new retained binary capture file.\n\
          Example: profile_sweep --cycles 10 --render-mode pipeline --arena-mode on --json"
     )
     .expect("writing usage should succeed");
@@ -91,6 +96,7 @@ fn parse_args() -> Args {
     let mut arena_mode = ArenaMode::Off;
     let mut render_mode = RenderMode::Pipeline;
     let mut json = false;
+    let mut capture_ansi = None;
 
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -128,6 +134,18 @@ fn parse_args() -> Args {
             "--json" => {
                 json = true;
             }
+            "--capture-ansi" => {
+                if capture_ansi.is_some() {
+                    usage_error_and_exit("--capture-ansi may only be specified once");
+                }
+                let Some(value) = it.next() else {
+                    usage_error_and_exit("Missing value after --capture-ansi");
+                };
+                if value.is_empty() {
+                    usage_error_and_exit("--capture-ansi requires a nonempty path");
+                }
+                capture_ansi = Some(PathBuf::from(value));
+            }
             "--help" | "-h" => {
                 print_usage_to(std::io::stdout());
                 std::process::exit(0);
@@ -141,12 +159,99 @@ fn parse_args() -> Args {
     if cycles == 0 {
         usage_error_and_exit("--cycles must be greater than zero");
     }
+    if capture_ansi.is_some() && render_mode != RenderMode::Pipeline {
+        usage_error_and_exit("--capture-ansi requires --render-mode pipeline");
+    }
 
     Args {
         cycles,
         arena_mode,
         render_mode,
         json,
+        capture_ansi,
+    }
+}
+
+/// Retained ANSI stream, version 1. All integers are little-endian.
+///
+/// Header: `FTUIANSI`, version u16, expected frame count u64.
+/// Each record: payload length u64, columns u16, rows u16, zero-based cycle u64,
+/// UTF-8 screen slug length u32, ANSI length u64, slug bytes, then exact ANSI bytes.
+/// The payload length excludes its own u64 prefix. Readers must require the
+/// declared frame count and EOF immediately after the final record.
+struct AnsiCapture<W> {
+    writer: W,
+    expected_frames: u64,
+    written_frames: u64,
+}
+
+impl<W: Write> AnsiCapture<W> {
+    fn new(mut writer: W, expected_frames: u64) -> io::Result<Self> {
+        if expected_frames == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty ANSI capture",
+            ));
+        }
+        writer.write_all(b"FTUIANSI")?;
+        writer.write_all(&1u16.to_le_bytes())?;
+        writer.write_all(&expected_frames.to_le_bytes())?;
+        Ok(Self {
+            writer,
+            expected_frames,
+            written_frames: 0,
+        })
+    }
+
+    fn write_frame(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        screen: &str,
+        cycle: u64,
+        ansi: &[u8],
+    ) -> io::Result<()> {
+        if self.written_frames >= self.expected_frames
+            || cols == 0
+            || rows == 0
+            || screen.is_empty()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid ANSI frame identity",
+            ));
+        }
+        let screen_len = u32::try_from(screen.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "ANSI screen slug too long")
+        })?;
+        let ansi_len = u64::try_from(ansi.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ANSI frame too long"))?;
+        let payload_len = 24u64
+            .checked_add(u64::from(screen_len))
+            .and_then(|length| length.checked_add(ansi_len))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ANSI record too long"))?;
+
+        self.writer.write_all(&payload_len.to_le_bytes())?;
+        self.writer.write_all(&cols.to_le_bytes())?;
+        self.writer.write_all(&rows.to_le_bytes())?;
+        self.writer.write_all(&cycle.to_le_bytes())?;
+        self.writer.write_all(&screen_len.to_le_bytes())?;
+        self.writer.write_all(&ansi_len.to_le_bytes())?;
+        self.writer.write_all(screen.as_bytes())?;
+        self.writer.write_all(ansi)?;
+        self.written_frames += 1;
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<W> {
+        if self.written_frames != self.expected_frames {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "incomplete ANSI capture",
+            ));
+        }
+        self.writer.flush()?;
+        Ok(self.writer)
     }
 }
 
@@ -167,6 +272,7 @@ fn sorted_copy(values: &[u64]) -> Vec<u64> {
 fn metric_summary_json(sorted: &[u64]) -> serde_json::Value {
     serde_json::json!({
         "p50": percentile(sorted, 0.50),
+        "p90": percentile(sorted, 0.90),
         "p95": percentile(sorted, 0.95),
         "p99": percentile(sorted, 0.99),
         "max": sorted.last().copied().unwrap_or(0),
@@ -254,6 +360,8 @@ fn pipeline_metrics_json(
     }
 
     serde_json::json!({
+        "changed_cells_total": sorted_changed_cells.iter().sum::<u64>(),
+        "bytes_emitted_total": sorted_bytes.iter().sum::<u64>(),
         "changed_cells_per_frame": {
             "p50": percentile(sorted_changed_cells, 0.50),
             "p95": percentile(sorted_changed_cells, 0.95),
@@ -319,6 +427,8 @@ impl ScreenMetrics {
             let sorted_present_us = sorted_copy(&self.present_us);
             let sorted_bytes = sorted_copy(&self.bytes);
             serde_json::json!({
+                "changed_cells_total": self.changed_cells.iter().sum::<u64>(),
+                "bytes_emitted_total": self.bytes.iter().sum::<u64>(),
                 "changed_cells_per_frame": metric_summary_json(&sorted_changed_cells),
                 "present_us": metric_summary_json(&sorted_present_us),
                 "bytes_emitted": metric_summary_json(&sorted_bytes),
@@ -340,12 +450,27 @@ impl ScreenMetrics {
     }
 }
 
-fn main() {
+fn main() -> io::Result<()> {
     let args = parse_args();
 
     let sizes: &[(u16, u16)] = &[(80, 24), (120, 40)];
     let screen_ids = screens::screen_ids();
-    let total_frames = screen_ids.len() * sizes.len() * args.cycles;
+    let total_frames = screen_ids
+        .len()
+        .checked_mul(sizes.len())
+        .and_then(|frames| frames.checked_mul(args.cycles))
+        .unwrap_or_else(|| usage_error_and_exit("--cycles exceeds the supported frame count"));
+    let mut capture = args
+        .capture_ansi
+        .as_ref()
+        .map(|path| {
+            let expected_frames = u64::try_from(total_frames).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "ANSI frame count too large")
+            })?;
+            let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+            AnsiCapture::new(BufWriter::new(file), expected_frames)
+        })
+        .transpose()?;
     let per_screen_capacity = args.cycles * sizes.len();
     let mut screen_metrics = screen_ids
         .iter()
@@ -420,6 +545,17 @@ fn main() {
 
                 let elapsed_us = frame_start.elapsed().as_micros().min(u64::MAX as u128) as u64;
                 let alloc_delta = alloc_region.change();
+                // The sink already owns the full Presenter output. Capture only
+                // after both measurements, with all capture work behind this branch.
+                if let Some(capture) = capture.as_mut() {
+                    capture.write_frame(
+                        cols,
+                        rows,
+                        screen.slug(),
+                        u64::try_from(cycle).expect("cycle fits declared frame count"),
+                        &pipeline.sink,
+                    )?;
+                }
                 let frame_allocs = alloc_delta.allocations as u64;
                 let frame_alloc_bytes = alloc_delta.bytes_allocated as u64;
                 per_frame_allocs.push(frame_allocs);
@@ -459,6 +595,9 @@ fn main() {
         }
     }
 
+    if let Some(capture) = capture {
+        capture.finish()?.get_ref().sync_all()?;
+    }
     let elapsed = start.elapsed();
     let elapsed_secs = elapsed.as_secs_f64();
     let renders_per_sec = if elapsed_secs > 0.0 {
@@ -494,7 +633,7 @@ fn main() {
     sorted_bytes.sort_unstable();
 
     if args.json {
-        let summary = serde_json::json!({
+        let mut summary = serde_json::json!({
             "arena_mode": args.arena_mode.as_str(),
             "render_mode": args.render_mode.as_str(),
             "color_depth": PROFILE_COLOR_DEPTH.as_str(),
@@ -508,6 +647,7 @@ fn main() {
             "renders_per_sec": renders_per_sec,
             "frame_time_us": {
                 "p50": p50_us,
+                "p90": percentile(&sorted_us, 0.90),
                 "p95": p95_us,
                 "p99": p99_us,
                 "max": max_us
@@ -544,6 +684,16 @@ fn main() {
                 .map(|metrics| metrics.to_json(args.render_mode))
                 .collect::<Vec<_>>()
         });
+        if let Some(path) = &args.capture_ansi {
+            summary["ansi_capture"] = serde_json::json!({
+                "path": path,
+                "format": "FTUIANSI",
+                "version": 1,
+                "frames": total_frames,
+                "included_in_frame_metrics": false,
+                "included_in_elapsed_time": true,
+            });
+        }
         println!("{summary}");
     } else {
         let mut summary = format!(
@@ -580,7 +730,15 @@ fn main() {
             ));
         }
         eprintln!("{summary}");
+        if let Some(path) = &args.capture_ansi {
+            eprintln!(
+                "ANSI capture: {} (FTUIANSI v1, {} frames; capture I/O is included only in overall elapsed time)",
+                path.display(),
+                total_frames
+            );
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -609,7 +767,11 @@ mod tests {
         Presenter::new(&mut missing_context, harness.caps)
             .present(&harness.scratch, &diff)
             .unwrap();
-        assert!(!String::from_utf8(missing_context).unwrap().contains("e\u{301}"));
+        assert!(
+            !String::from_utf8(missing_context)
+                .unwrap()
+                .contains("e\u{301}")
+        );
 
         let (bytes, changed, _) = harness.present(&pool);
         assert_eq!(bytes as usize, harness.sink.len());
@@ -617,11 +779,85 @@ mod tests {
         let ansi = std::str::from_utf8(&harness.sink).unwrap();
         assert!(ansi.contains("e\u{301}"), "{ansi:?}");
         assert!(ansi.contains("https://example.com/profile"), "{ansi:?}");
-        assert!(ansi.contains("\u{1b}]8;;\u{1b}\\"), "link must close: {ansi:?}");
+        assert!(
+            ansi.contains("\u{1b}]8;;\u{7}"),
+            "link must close: {ansi:?}"
+        );
+
+        let mut capture = AnsiCapture::new(Vec::new(), 1).unwrap();
+        capture
+            .write_frame(8, 1, "pooled", 0, &harness.sink)
+            .unwrap();
+        let captured = capture.finish().unwrap();
+        // Fixed header (18), record prefix (8), identity fields (24), slug (6).
+        assert_eq!(&captured[56..], harness.sink.as_slice());
+        assert_eq!(captured.len(), 56 + harness.sink.len());
 
         harness.scratch.reset_for_frame();
         harness.scratch.set(0, 0, cell);
         let (_, unchanged, _) = harness.present(&pool);
         assert_eq!(unchanged, 0);
+    }
+
+    #[test]
+    fn ansi_capture_has_exact_versioned_frame_boundaries() {
+        let mut capture = AnsiCapture::new(Vec::new(), 2).unwrap();
+        capture.write_frame(80, 24, "a", 9, b"\x1b[31mA\n").unwrap();
+        capture
+            .write_frame(120, 40, "界", 10, &[0xff, 0, 0x1b])
+            .unwrap();
+        let bytes = capture.finish().unwrap();
+
+        let expected = [
+            b"FTUIANSI\x01\0\x02\0\0\0\0\0\0\0".as_slice(),
+            // First payload: 24 fixed bytes + 1 slug byte + 7 ANSI bytes = 32.
+            b"\x20\0\0\0\0\0\0\0\x50\0\x18\0\x09\0\0\0\0\0\0\0".as_slice(),
+            b"\x01\0\0\0\x07\0\0\0\0\0\0\0a\x1b[31mA\n".as_slice(),
+            // Second payload: UTF-8 slug length is 3 bytes, not 1 character.
+            b"\x1e\0\0\0\0\0\0\0\x78\0\x28\0\x0a\0\0\0\0\0\0\0".as_slice(),
+            b"\x03\0\0\0\x03\0\0\0\0\0\0\0".as_slice(),
+            "界".as_bytes(),
+            &[0xff, 0, 0x1b],
+        ]
+        .concat();
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn ansi_capture_accepts_empty_output_but_rejects_incomplete_or_extra_frames() {
+        assert!(AnsiCapture::new(Vec::new(), 0).is_err());
+        let mut capture = AnsiCapture::new(Vec::new(), 2).unwrap();
+        capture.write_frame(80, 24, "empty", 0, &[]).unwrap();
+        assert_eq!(
+            capture.finish().unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+
+        let mut capture = AnsiCapture::new(Vec::new(), 1).unwrap();
+        capture.write_frame(80, 24, "empty", 0, &[]).unwrap();
+        let completed_len = capture.writer.len();
+        assert!(capture.write_frame(80, 24, "extra", 1, b"x").is_err());
+        assert_eq!(capture.writer.len(), completed_len);
+        let bytes = capture.finish().unwrap();
+        assert_eq!(bytes.len(), 18 + 8 + 24 + 5);
+        assert_eq!(&bytes[42..50], &[0; 8]); // Empty ANSI payload length.
+    }
+
+    #[test]
+    fn ansi_capture_rejects_invalid_identity_and_propagates_write_errors() {
+        let mut capture = AnsiCapture::new(Vec::new(), 1).unwrap();
+        for (cols, rows, screen) in [(0, 24, "screen"), (80, 0, "screen"), (80, 24, "")] {
+            assert!(capture.write_frame(cols, rows, screen, 0, b"ansi").is_err());
+            assert_eq!(capture.writer.len(), 18); // Header only; no partial record.
+        }
+
+        let mut header_only = [0u8; 18];
+        let writer = io::Cursor::new(header_only.as_mut_slice());
+        let mut capture = AnsiCapture::new(writer, 1).unwrap();
+        let error = capture
+            .write_frame(80, 24, "screen", 0, b"ansi")
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+        assert_eq!(capture.written_frames, 0);
     }
 }

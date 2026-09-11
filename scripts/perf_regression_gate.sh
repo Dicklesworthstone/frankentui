@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Performance Regression Gate (bd-3fc.4)
 #
-# Compares criterion benchmark results against tests/baseline.json percentile
-# budgets. Exits non-zero if any observed mean exceeds the baseline p99 by more
-# than the configured threshold_pct.
+# Compares Criterion central estimates against the configured baseline ceilings.
+# Missing evidence fails. This is not a measurement of individual-operation tails.
 #
 # Usage:
 #   ./scripts/perf_regression_gate.sh              # Run benchmarks + check
@@ -11,7 +10,7 @@
 #   ./scripts/perf_regression_gate.sh --quick       # CI-friendly (fast sampling)
 #   ./scripts/perf_regression_gate.sh --json        # Emit JSONL report
 #   ./scripts/perf_regression_gate.sh --flamegraph  # Generate flamegraphs
-#   ./scripts/perf_regression_gate.sh --update      # Update baseline with actuals
+#   ./scripts/perf_regression_gate.sh --update      # Refused: no raw tail samples
 
 set -euo pipefail
 
@@ -27,11 +26,8 @@ RESULTS_DIR="${PROJECT_ROOT}/target/regression-gate"
 REPORT_FILE="${RESULTS_DIR}/regression_report.jsonl"
 RUN_ID="$(date +%Y%m%dT%H%M%S)-$$"
 
-if command -v rch >/dev/null 2>&1; then
-    CARGO=(rch exec -- cargo)
-else
-    CARGO=(cargo)
-fi
+# The caller owns the pinned native DSR execution lane.
+CARGO=(cargo)
 
 # Colors
 RED='\033[0;31m'
@@ -65,7 +61,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --check-only  Parse existing criterion output without re-running"
             echo "  --json        Emit JSONL structured report to $RESULTS_DIR"
             echo "  --flamegraph  Generate flamegraphs per benchmark (requires cargo-flamegraph)"
-            echo "  --update      Update baseline.json with observed actuals"
+            echo "  --update      Refused: Criterion estimates cannot establish tail percentiles"
             exit 0
             ;;
         *)
@@ -74,6 +70,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Refuse before creating directories/logs or changing any baseline. The former
+# mean*{2,4,10} updater fabricated tail statistics; no raw-tail input is supported.
+if [[ "$UPDATE_BASELINE" == "true" ]]; then
+    echo "ERROR: --update requires actual distribution inputs; Criterion central estimates cannot establish p50/p95/p99/p999. No files changed." >&2
+    exit 2
+fi
 
 # =============================================================================
 # Helpers
@@ -92,13 +95,11 @@ json_escape() {
 # Format nanoseconds for human display.
 format_ns() {
     local ns="$1"
-    if [[ "$ns" -ge 1000000 ]]; then
-        printf "%.2fms" "$(echo "$ns / 1000000" | bc -l)"
-    elif [[ "$ns" -ge 1000 ]]; then
-        printf "%.2fus" "$(echo "$ns / 1000" | bc -l)"
-    else
-        printf "%dns" "$ns"
-    fi
+    awk -v ns="$ns" 'BEGIN {
+        if (ns >= 1000000) printf "%.2fms", ns / 1000000
+        else if (ns >= 1000) printf "%.2fus", ns / 1000
+        else printf "%.3gns", ns
+    }'
 }
 
 load_slo_threshold_pct() {
@@ -110,7 +111,7 @@ load_slo_threshold_pct() {
             sub(/[[:space:]]*#.*/, "", value)
             gsub(/[[:space:]]/, "", value)
             if (value ~ /^[0-9]+([.][0-9]+)?$/) {
-                printf "%.0f\n", value * 100
+                printf "%.17g\n", value * 100
                 exit
             }
         }
@@ -130,61 +131,64 @@ slo_metric_declared() {
 }
 
 # Parse criterion text output for a benchmark name.
-# Returns: "<mean_ns> <ci_low_ns> <ci_high_ns>" or "-1 -1 -1" if not found.
+# Returns central/lower/upper estimates in ns; missing or invalid records fail.
 parse_criterion_stats() {
     local file="$1"
     local benchmark="$2"
 
-    awk -v b="$benchmark" '
-        function trim(s) {
-            sub(/^[[:space:]]+/, "", s)
-            sub(/[[:space:]]+$/, "", s)
-            return s
-        }
-        function to_ns(val, unit,    ns) {
-            if (unit == "ps") ns = val / 1000.0
-            else if (unit == "ns") ns = val
-            else if (unit == "us" || unit == "µs") ns = val * 1000.0
-            else if (unit == "ms") ns = val * 1000000.0
-            else if (unit == "s") ns = val * 1000000000.0
-            else ns = -1
-            return ns
-        }
-        function parse_time_line(line,    m, low, mid, high, low_u, mid_u, high_u, low_ns, mid_ns, high_ns) {
-            if (match(line, /\[([0-9.]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([0-9.]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([0-9.]+)[[:space:]]+([^[:space:]]+)\]/, m)) {
-                low = m[1] + 0.0;  low_u = m[2]
-                mid = m[3] + 0.0;  mid_u = m[4]
-                high = m[5] + 0.0; high_u = m[6]
-                low_ns = to_ns(low, low_u)
-                mid_ns = to_ns(mid, mid_u)
-                high_ns = to_ns(high, high_u)
-                if (low_ns < 0 || mid_ns < 0 || high_ns < 0) return 0
-                printf "%.0f %.0f %.0f\n", mid_ns, low_ns, high_ns
-                printed = 1
-                return 1
-            }
-            return 0
-        }
-        BEGIN { want_next_time = 0; printed = 0; }
-        {
-            t = trim($0)
-            if (index(t, b) == 1) {
-                rest = substr(t, length(b) + 1)
-                if (rest ~ /^[[:space:]]+time:/) {
-                    if (parse_time_line(t)) exit
-                }
-            }
-            if (t == b) {
-                want_next_time = 1
-                next
-            }
-            if (want_next_time && $0 ~ /time:/) {
-                if (parse_time_line($0)) exit
-                want_next_time = 0
-            }
-        }
-        END { if (!printed) print "-1 -1 -1" }
-    ' "$file"
+    python3 - "$file" "$benchmark" <<'PY'
+import decimal
+import math
+import pathlib
+import re
+import sys
+
+path, benchmark = sys.argv[1:]
+number = r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+unit = r"(?:ps|ns|us|µs|μs|ms|s)"
+value = rf"({number})\s+({unit})"
+times = re.compile(rf"time:\s*\[\s*{value}\s+{value}\s+{value}\s*\]")
+header = re.compile(re.escape(benchmark) + r"(?:[ \t]+(time:.*))?")
+scales = {"ps": "0.001", "ns": "1", "us": "1000", "µs": "1000",
+          "μs": "1000", "ms": "1000000", "s": "1000000000"}
+
+try:
+    records = []
+    pending = False
+    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if pending:
+            if not line[:1].isspace() or not text.startswith("time:"):
+                raise ValueError("header has no adjacent timing record")
+            records.append(text)
+            pending = False
+            continue
+        match = header.fullmatch(text)
+        if match:
+            if match[1] is None:
+                pending = True
+            else:
+                records.append(match[1])
+    if pending or len(records) != 1:
+        raise ValueError("expected exactly one complete timing record")
+    match = times.fullmatch(records[0])
+    if match is None:
+        raise ValueError("malformed timing record")
+    values = [decimal.Decimal(match[i]) * decimal.Decimal(scales[match[i + 1]])
+              for i in (1, 3, 5)]
+    if any(not math.isfinite(float(v)) or float(v) <= 0 or v > 2**53 - 1
+           for v in values):
+        raise ValueError("timing must be finite, positive and at most 2^53-1 ns")
+    low, middle, high = values
+    if not low <= middle <= high:
+        raise ValueError("timing confidence bounds are not ordered")
+    print(*(format(v, "f") for v in (middle, low, high)))
+except (OSError, UnicodeError, ValueError, decimal.DecimalException) as error:
+    print(f"{benchmark}: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 # =============================================================================
@@ -232,8 +236,12 @@ run_benchmarks() {
         # Optional flamegraph generation.
         if [[ "$FLAMEGRAPH" == "true" ]] && command -v cargo-flamegraph >/dev/null 2>&1; then
             log "  Generating flamegraph for ${bench}..."
-            "${CARGO[@]}" flamegraph --bench "$bench" -p "$pkg" \
-                -o "${RESULTS_DIR}/${bench}.svg" -- --bench 2>/dev/null || true
+            if ! "${CARGO[@]}" flamegraph --bench "$bench" -p "$pkg" \
+                -o "${RESULTS_DIR}/${bench}.svg" -- --bench \
+                2>"${RESULTS_DIR}/${bench}.flamegraph.stderr.txt"; then
+                echo "ERROR: flamegraph failed; stderr retained at ${RESULTS_DIR}/${bench}.flamegraph.stderr.txt" >&2
+                return 1
+            fi
         fi
     done <<< "$targets"
 }
@@ -251,9 +259,56 @@ check_regression() {
         log "${RED}ERROR: Baseline file not found: ${BASELINE_FILE}${NC}"
         return 1
     fi
+    # jq keeps the last duplicate key. Reject duplicates before it can discard
+    # a configured obligation, including escaped-equivalent and nested keys.
+    if ! python3 - "$BASELINE_FILE" <<'PY'
+import json
+import sys
+
+
+def unique_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+
+def reject_constant(value):
+    raise ValueError(f"non-JSON numeric constant: {value}")
+
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as source:
+        json.load(source, object_pairs_hook=unique_keys, parse_constant=reject_constant)
+except (OSError, ValueError) as error:
+    print(f"ERROR: invalid baseline JSON: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+    then
+        return 3
+    fi
+    # Missing/null tolerance means zero; false and every other nonnumber fail.
+    if ! jq -e '
+        type == "object" and
+        ([to_entries[] | select(.key | startswith("_") | not)] | length > 0) and
+        all(to_entries[] | select(.key | startswith("_") | not);
+            (.value | type == "object") and
+            (.value.p99_ns | type == "number") and
+            .value.p99_ns > 0 and .value.p99_ns <= 9007199254740991 and
+            (.value.threshold_pct == null or (.value.threshold_pct | type == "number")) and
+            (.value.threshold_pct // 0) >= 0 and (.value.threshold_pct // 0) <= 100)
+    ' "$BASELINE_FILE" >/dev/null; then
+        echo "ERROR: baseline must contain thresholds with positive finite ns ceilings and valid tolerances" >&2
+        return 3
+    fi
 
     local slo_threshold_pct
-    slo_threshold_pct="$(load_slo_threshold_pct)"
+    if ! slo_threshold_pct=$(load_slo_threshold_pct); then
+        echo "ERROR: failed to read SLO threshold" >&2
+        return 3
+    fi
     local slo_threshold_json="null"
     if [[ -n "$slo_threshold_pct" ]]; then
         slo_threshold_json="$slo_threshold_pct"
@@ -264,6 +319,7 @@ check_regression() {
     local skipped=0
     local warned=0
     local total=0
+    local incomplete=0
 
     # Initialize JSONL report.
     if [[ "$JSON_OUTPUT" == "true" ]]; then
@@ -273,7 +329,7 @@ check_regression() {
 
     # Table header.
     printf "${BOLD}%-25s %-40s %12s %12s %8s %8s %10s${NC}\n" \
-        "Category" "Criterion Name" "Observed" "p99 Budget" "Delta%" "Thresh%" "Status"
+        "Category" "Criterion Name" "Estimate" "Ceiling" "Delta%" "Thresh%" "Status"
     printf "%-25s %-40s %12s %12s %8s %8s %10s\n" \
         "$(printf '%.0s-' {1..25})" "$(printf '%.0s-' {1..40})" \
         "$(printf '%.0s-' {1..12})" "$(printf '%.0s-' {1..12})" \
@@ -282,7 +338,10 @@ check_regression() {
 
     # Iterate over baseline entries.
     local keys
-    keys=$(jq -r 'to_entries[] | select(.key | startswith("_") | not) | .key' "$BASELINE_FILE")
+    if ! keys=$(jq -r 'to_entries[] | select(.key | startswith("_") | not) | .key' "$BASELINE_FILE"); then
+        echo "ERROR: failed to enumerate required thresholds" >&2
+        return 3
+    fi
 
     while IFS= read -r key; do
         ((total++))
@@ -299,10 +358,10 @@ check_regression() {
             local category
             category=$(jq -r --arg key "$key" '.[$key].category // "baseline-only"' "$BASELINE_FILE")
             printf "%-25s %-40s %12s %12s %8s %8s ${YELLOW}%10s${NC}\n" \
-                "$key" "$category" "N/A" "$(format_ns "$p99_ns")" "-" "-" "SKIP"
-            ((skipped++))
+                "$key" "$category" "N/A" "$(format_ns "$p99_ns")" "-" "-" "INCOMPLETE"
+            ((incomplete+=1))
             if [[ "$JSON_OUTPUT" == "true" ]]; then
-                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":null,\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"skip\",\"reason\":\"non_criterion_baseline\"}" >> "$REPORT_FILE"
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":null,\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"unbound_required_threshold\"}" >> "$REPORT_FILE"
             fi
             continue
         fi
@@ -329,65 +388,68 @@ check_regression() {
 
         local effective_threshold_pct
         effective_threshold_pct="$threshold_pct"
-        if [[ -n "$slo_threshold_pct" && "$slo_threshold_pct" -lt "$effective_threshold_pct" ]]; then
-            effective_threshold_pct="$slo_threshold_pct"
+        if [[ -n "$slo_threshold_pct" ]]; then
+            if ! effective_threshold_pct=$(awk -v configured="$threshold_pct" -v slo="$slo_threshold_pct" '
+                BEGIN { printf "%.17g\n", configured < slo ? configured : slo }
+            '); then
+                echo "ERROR: failed to resolve SLO tolerance for $key" >&2
+                return 3
+            fi
         fi
 
         # Find the result file.
         local result_file="${RESULTS_DIR}/${bench_file}.txt"
         if [[ ! -f "$result_file" ]] || [[ ! -s "$result_file" ]]; then
-            # Also try the bench_budget.sh results directory.
-            local alt_file="${PROJECT_ROOT}/target/benchmark-results/${bench_file}.txt"
-            if [[ -f "$alt_file" ]] && [[ -s "$alt_file" ]]; then
-                result_file="$alt_file"
-            else
-                printf "%-25s %-40s %12s %12s %8s %8s ${YELLOW}%10s${NC}\n" \
-                    "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${effective_threshold_pct}%" "SKIP"
-                ((skipped++))
-                if [[ "$JSON_OUTPUT" == "true" ]]; then
-                    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"skip\",\"reason\":\"no_results\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
-                fi
-                continue
-            fi
-        fi
-
-        # Parse criterion output.
-        local mean_ns ci_low_ns ci_high_ns
-        read -r mean_ns ci_low_ns ci_high_ns <<< "$(parse_criterion_stats "$result_file" "$criterion_name")"
-
-        if [[ "$mean_ns" == "-1" ]]; then
-            printf "%-25s %-40s %12s %12s %8s %8s ${YELLOW}%10s${NC}\n" \
-                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${effective_threshold_pct}%" "SKIP"
-            ((skipped++))
+            printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${effective_threshold_pct}%" "INCOMPLETE"
+            ((incomplete+=1))
             if [[ "$JSON_OUTPUT" == "true" ]]; then
-                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"skip\",\"reason\":\"parse_failed\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"no_results\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
             fi
             continue
         fi
 
-        # Compute percentage delta from p99 baseline.
-        local max_allowed_ns delta_pct status status_color
-        max_allowed_ns=$(echo "$p99_ns * (100 + $effective_threshold_pct) / 100" | bc)
-
-        if [[ "$p99_ns" -gt 0 ]]; then
-            delta_pct=$(echo "scale=1; ($mean_ns - $p99_ns) * 100 / $p99_ns" | bc)
-        else
-            delta_pct="0"
+        # Parse criterion output.
+        local stats mean_ns ci_low_ns ci_high_ns
+        if ! stats=$(parse_criterion_stats "$result_file" "$criterion_name"); then
+            printf "%-25s %-40s %12s %12s %8s %8s ${RED}%10s${NC}\n" \
+                "$key" "$criterion_name" "N/A" "$(format_ns "$p99_ns")" "-" "${effective_threshold_pct}%" "INCOMPLETE"
+            ((incomplete+=1))
+            if [[ "$JSON_OUTPUT" == "true" ]]; then
+                echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"category\":\"$key\",\"criterion_name\":\"$criterion_name\",\"slo_metric\":\"$(json_escape "$slo_metric")\",\"status\":\"incomplete\",\"reason\":\"parse_failed\",\"threshold_pct\":$threshold_pct,\"effective_threshold_pct\":$effective_threshold_pct,\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
+            fi
+            continue
         fi
+        read -r mean_ns ci_low_ns ci_high_ns <<< "$stats"
 
-        if [[ "$mean_ns" -gt "$max_allowed_ns" ]]; then
-            status="REGRESS"
+        # Compare the observed central estimate without rounding away sub-ns
+        # regressions. The configured field name does not make this a tail SLO.
+        local comparison max_allowed_ns delta_pct status status_color
+        if ! comparison=$(awk -v actual="$mean_ns" -v budget="$p99_ns" -v tolerance="$effective_threshold_pct" '
+            BEGIN {
+                limit = budget * (1 + tolerance / 100)
+                status = actual > limit ? "REGRESS" : actual > budget ? "WARN" : "PASS"
+                printf "%s %.17g %.17g\n", status, limit, (actual - budget) * 100 / budget
+            }
+        '); then
+            echo "ERROR: regression comparison failed for $key" >&2
+            return 3
+        fi
+        read -r status max_allowed_ns delta_pct <<< "$comparison"
+
+        if [[ "$status" == "REGRESS" ]]; then
             status_color="$RED"
             ((failed++))
-        elif [[ "$mean_ns" -gt "$p99_ns" ]]; then
-            status="WARN"
+        elif [[ "$status" == "WARN" ]]; then
             status_color="$YELLOW"
             ((warned++))
             ((passed++))
-        else
-            status="PASS"
+        elif [[ "$status" == "PASS" ]]; then
             status_color="$GREEN"
             ((passed++))
+        else
+            echo "ERROR: invalid regression comparison for $key" >&2
+            return 3
         fi
 
         printf "%-25s %-40s %12s %12s %8s %8s ${status_color}%10s${NC}\n" \
@@ -413,81 +475,28 @@ check_regression() {
     log "  Regressions: $failed"
     log "  Warned:     $warned"
     log "  Skipped:    $skipped"
+    log "  Incomplete: $incomplete"
 
     if [[ "$JSON_OUTPUT" == "true" ]]; then
-        echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"summary\",\"total\":$total,\"passed\":$passed,\"failed\":$failed,\"warned\":$warned,\"skipped\":$skipped,\"slo_file\":\"$(json_escape "$SLO_FILE")\",\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
+        echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"summary\",\"total\":$total,\"passed\":$passed,\"failed\":$failed,\"warned\":$warned,\"skipped\":$skipped,\"incomplete\":$incomplete,\"slo_file\":\"$(json_escape "$SLO_FILE")\",\"slo_threshold_pct\":$slo_threshold_json}" >> "$REPORT_FILE"
         log ""
         log "Report: $REPORT_FILE"
     fi
 
-    if [[ "$failed" -gt 0 ]]; then
+    if [[ "$total" -eq 0 || "$incomplete" -gt 0 || $((passed + failed)) -ne "$total" ]]; then
+        log "${RED}INCOMPLETE: every configured threshold requires bound, valid evidence.${NC}"
+        return 3
+    elif [[ "$failed" -gt 0 ]]; then
         log ""
         log "${RED}REGRESSION DETECTED: ${failed} benchmark(s) exceeded baseline + threshold.${NC}"
-        log "Review the results above and either fix the regression or update the baseline:"
-        log "  ${BOLD}./scripts/perf_regression_gate.sh --update${NC}"
+        log "Review the retained results and fix the regression; estimates cannot justify rewriting tail baselines."
         return 1
     else
         log ""
-        log "${GREEN}All benchmarks within regression threshold.${NC}"
+        log "${GREEN}All configured central-estimate checks complete and within their ceilings.${NC}"
+        log "This does not establish individual-operation p99 or runtime lifecycle SLOs."
         return 0
     fi
-}
-
-# =============================================================================
-# Baseline Update
-# =============================================================================
-
-update_baseline() {
-    log "${BLUE}=== Updating Baseline with Observed Values ===${NC}"
-
-    if [[ ! -f "$BASELINE_FILE" ]]; then
-        log "${RED}ERROR: Baseline file not found: ${BASELINE_FILE}${NC}"
-        return 1
-    fi
-
-    local keys
-    keys=$(jq -r 'to_entries[] | select(.key | startswith("_") | not) | .key' "$BASELINE_FILE")
-    local updated=0
-
-    while IFS= read -r key; do
-        local criterion_name bench_file
-        criterion_name=$(jq -r --arg key "$key" '.[$key].criterion_name // ""' "$BASELINE_FILE")
-        bench_file=$(jq -r --arg key "$key" '.[$key].bench_file // ""' "$BASELINE_FILE")
-        [[ -n "$criterion_name" && -n "$bench_file" ]] || continue
-
-        local result_file="${RESULTS_DIR}/${bench_file}.txt"
-        if [[ ! -f "$result_file" ]]; then
-            result_file="${PROJECT_ROOT}/target/benchmark-results/${bench_file}.txt"
-        fi
-        [[ -f "$result_file" ]] || continue
-
-        local mean_ns ci_low_ns ci_high_ns
-        read -r mean_ns ci_low_ns ci_high_ns <<< "$(parse_criterion_stats "$result_file" "$criterion_name")"
-        [[ "$mean_ns" == "-1" ]] && continue
-
-        # Update p50 with observed mean. Set p95 = 2x mean, p99 = 4x mean, p999 = 10x mean.
-        # These multipliers provide reasonable headroom for normal variance.
-        local p50="$mean_ns"
-        local p95=$(echo "$mean_ns * 2" | bc)
-        local p99=$(echo "$mean_ns * 4" | bc)
-        local p999=$(echo "$mean_ns * 10" | bc)
-
-        # Update the baseline file in-place using jq.
-        local tmp
-        tmp=$(mktemp)
-        jq --arg key "$key" \
-           --argjson p50 "$p50" --argjson p95 "$p95" \
-           --argjson p99 "$p99" --argjson p999 "$p999" \
-           '.[$key].p50_ns = $p50 | .[$key].p95_ns = $p95 | .[$key].p99_ns = $p99 | .[$key].p999_ns = $p999 | ._updated = (now | strftime("%Y-%m-%d"))' \
-           "$BASELINE_FILE" > "$tmp"
-        mv "$tmp" "$BASELINE_FILE"
-        ((updated++))
-
-        log "  Updated ${key}: p50=$(format_ns "$p50") p95=$(format_ns "$p95") p99=$(format_ns "$p99") p999=$(format_ns "$p999")"
-    done <<< "$keys"
-
-    log ""
-    log "${GREEN}Updated ${updated} baseline entries.${NC}"
 }
 
 # =============================================================================
@@ -500,15 +509,17 @@ main() {
     log "Baseline: $BASELINE_FILE"
     log ""
 
+    for dependency in python3 awk jq; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            echo "ERROR: required gate dependency not found: $dependency" >&2
+            exit 3
+        fi
+    done
+
     mkdir -p "$RESULTS_DIR"
 
     if [[ "$CHECK_ONLY" != "true" ]]; then
         run_benchmarks || exit $?
-    fi
-
-    if [[ "$UPDATE_BASELINE" == "true" ]]; then
-        update_baseline
-        exit 0
     fi
 
     local exit_code=0

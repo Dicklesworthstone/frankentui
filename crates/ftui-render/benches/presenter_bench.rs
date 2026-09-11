@@ -25,7 +25,10 @@ fn benchmark_capabilities() -> TerminalCapabilities {
 /// Create a pair of buffers where exactly `change_pct` percent of cells have changed,
 /// with varied styles to exercise the presenter's state tracking.
 fn make_styled_pair(width: u16, height: u16, change_pct: u8) -> (Buffer, Buffer) {
-    assert!(width > 0 && height > 0, "fixture dimensions must be nonzero");
+    assert!(
+        width > 0 && height > 0,
+        "fixture dimensions must be nonzero"
+    );
     assert!(change_pct <= 100, "fixture density cannot exceed 100%");
     let total = u64::from(width) * u64::from(height);
     let scaled = total * u64::from(change_pct);

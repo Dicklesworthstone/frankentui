@@ -1,12 +1,15 @@
 //! Benchmarks for the production-faithful demo render pipeline (bd-h0un4).
 //!
-//! Measures `view -> diff -> present` for real ftui-demo-showcase screens while
-//! reusing buffers, diff storage, and the ANSI sink so results reflect the live
-//! render path rather than per-frame allocation noise.
+//! Each measured iteration runs exactly 200 `Tick -> view -> diff -> present`
+//! updates for a fresh screen, reusing buffers, diff storage, the grapheme pool,
+//! and the ANSI sink throughout. Initialization and teardown are excluded so
+//! adaptive sampling cannot change the trajectory measured by each iteration.
 
 #![forbid(unsafe_code)]
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{
+    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+};
 use ftui_core::event::Event;
 use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 use ftui_demo_showcase::app::{AppModel, ScreenId};
@@ -18,8 +21,10 @@ use ftui_render::link_registry::LinkRegistry;
 use ftui_render::presenter::Presenter;
 use ftui_runtime::{Cmd, Model};
 use std::hint::black_box;
+use std::time::{Duration, Instant};
 
 const BENCHMARK_COLOR_DEPTH: ColorDepth = ColorDepth::TrueColor;
+const TICKS_PER_ITERATION: u64 = 200;
 
 struct PipelineHarness {
     current: Buffer,
@@ -82,28 +87,40 @@ fn benchmark_screens() -> &'static [(ScreenId, &'static str)] {
 }
 
 fn bench_demo_pipeline(c: &mut Criterion) {
-    let mut group = c.benchmark_group("demo_pipeline/truecolor/reused_buffer");
+    let mut group = c.benchmark_group("demo_pipeline/truecolor/reused_buffer_200_ticks");
+    group.sampling_mode(SamplingMode::Flat);
 
     for &(cols, rows) in &[(80, 24), (120, 40)] {
         let cells = cols as u64 * rows as u64;
         for &(screen, label) in benchmark_screens() {
-            group.throughput(Throughput::Elements(cells));
+            group.throughput(Throughput::Elements(cells * TICKS_PER_ITERATION));
             group.bench_with_input(
                 BenchmarkId::new(label, format!("{cols}x{rows}")),
                 &(screen, cols, rows),
                 |b, &(screen, cols, rows)| {
-                    let mut app = AppModel::new();
-                    let _: Cmd<_> = app.init();
-                    app.current_screen = screen;
-                    let _: Cmd<_> = app.update(Event::Tick.into());
-                    let mut pool = GraphemePool::new();
-                    let mut pipeline = PipelineHarness::new(cols, rows);
+                    b.iter_custom(|iterations| {
+                        let mut elapsed = Duration::ZERO;
+                        for _ in 0..iterations {
+                            // Initialize the same deterministic starting state for
+                            // every trajectory, outside its measured interval.
+                            let mut app = AppModel::new();
+                            let _: Cmd<_> = app.init();
+                            app.current_screen = screen;
+                            let _: Cmd<_> = app.update(Event::Tick.into());
+                            let mut pool = GraphemePool::new();
+                            let mut pipeline = PipelineHarness::new(cols, rows);
 
-                    b.iter(|| {
-                        let _: Cmd<_> = app.update(Event::Tick.into());
-                        pipeline.render(&mut app, cols, rows, &mut pool);
-                        black_box(pipeline.diff.len());
-                        black_box(pipeline.sink.len());
+                            let started = Instant::now();
+                            for _ in 0..TICKS_PER_ITERATION {
+                                let _: Cmd<_> = app.update(Event::Tick.into());
+                                pipeline.render(&mut app, cols, rows, &mut pool);
+                                black_box(pipeline.diff.len());
+                                black_box(pipeline.sink.len());
+                            }
+                            elapsed += started.elapsed();
+                            // Model and retained render state drop after timing.
+                        }
+                        elapsed
                     });
                 },
             );

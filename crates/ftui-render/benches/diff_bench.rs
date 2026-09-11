@@ -22,7 +22,10 @@ struct DiffStats {
 
 /// Require an exact cell count so a density label cannot silently round down.
 fn change_count(width: u16, height: u16, change_pct: u8) -> u64 {
-    assert!(width > 0 && height > 0, "fixture dimensions must be nonzero");
+    assert!(
+        width > 0 && height > 0,
+        "fixture dimensions must be nonzero"
+    );
     assert!(change_pct <= 100, "fixture density cannot exceed 100%");
     let scaled = u64::from(width) * u64::from(height) * u64::from(change_pct);
     assert_eq!(scaled % 100, 0, "fixture density must select whole cells");

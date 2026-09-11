@@ -2,7 +2,7 @@
 # Performance Budget Enforcement Script (bd-3cwi)
 #
 # Validates that benchmark results meet documented performance budgets.
-# Exit 0 = all budgets met, Exit 1 = at least one budget exceeded.
+# Exit 0 = every selected budget measured and met; missing evidence fails.
 #
 # Usage:
 #   ./scripts/bench_budget.sh              # Run all benchmarks with budget checks
@@ -23,11 +23,9 @@ PERF_LOG="${RESULTS_DIR}/perf_log.jsonl"
 CONFIDENCE_LOG="${RESULTS_DIR}/perf_confidence.jsonl"
 RUN_ID="$(date +%Y%m%dT%H%M%S)-$$"
 
-if command -v rch >/dev/null 2>&1; then
-    CARGO_BENCH_RUNNER=(rch exec -- cargo)
-else
-    CARGO_BENCH_RUNNER=(cargo)
-fi
+# The caller runs this script on the pinned native DSR host. Never select an
+# implicit remote wrapper or local fallback from tool availability.
+CARGO_BENCH_RUNNER=(cargo)
 
 # Performance budgets (name:max_ns:description)
 # These are based on AGENTS.md requirements and documented in bd-3cwi
@@ -293,12 +291,15 @@ log_confidence_summary() {
     local likely_regression="$5"
     local likely_noise="$6"
     local uncertain="$7"
+    local required="$8"
+    local incomplete="$9"
+    local excluded="${10}"
     local os_json arch_json cpu_json
     os_json="$(json_escape "$HOST_OS")"
     arch_json="$(json_escape "$HOST_ARCH")"
     cpu_json="$(json_escape "$HOST_CPU_MODEL")"
 
-    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"summary\",\"totals\":{\"passed\":$passed,\"failed\":$failed,\"panicked\":$panicked,\"skipped\":$skipped},\"confidence_hints\":{\"likely_regression\":$likely_regression,\"likely_noise\":$likely_noise,\"uncertain\":$uncertain},\"loss_matrix\":{\"false_positive\":$LOSS_FALSE_POSITIVE,\"false_negative\":$LOSS_FALSE_NEGATIVE},\"hardware\":{\"os\":\"$os_json\",\"arch\":\"$arch_json\",\"cpu_model\":\"$cpu_json\",\"cpu_cores\":$HOST_CPU_CORES}}" >> "$CONFIDENCE_LOG"
+    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"summary\",\"totals\":{\"required\":$required,\"passed\":$passed,\"failed\":$failed,\"panicked\":$panicked,\"skipped\":$skipped,\"incomplete\":$incomplete,\"excluded\":$excluded},\"confidence_hints\":{\"likely_regression\":$likely_regression,\"likely_noise\":$likely_noise,\"uncertain\":$uncertain},\"loss_matrix\":{\"false_positive\":$LOSS_FALSE_POSITIVE,\"false_negative\":$LOSS_FALSE_NEGATIVE},\"hardware\":{\"os\":\"$os_json\",\"arch\":\"$arch_json\",\"cpu_model\":\"$cpu_json\",\"cpu_cores\":$HOST_CPU_CORES}}" >> "$CONFIDENCE_LOG"
 }
 
 run_benchmarks() {
@@ -337,9 +338,9 @@ run_benchmarks() {
     # NOTE: frankenterm-core / frankenterm-web are no longer workspace members
     # (see README "Web/WASM Backend"), so their parser_patch_bench / renderer_bench
     # cannot be built here. In --quick mode CI validates the in-tree core render hot
-    # paths (cell/buffer/diff/present/pipeline) added above; the frankenterm and
-    # web/* budget entries below resolve to SKIP (empty result files), which never
-    # fails the gate.
+    # paths (cell/buffer/diff/present/pipeline) added above. The full scope still
+    # requires the configured external budgets: absent results are INCOMPLETE,
+    # not a pass. Quick-mode exclusions are reported separately.
 
     for bench_spec in "${benches[@]}"; do
         IFS=':' read -r pkg bench features <<< "$bench_spec"
@@ -418,77 +419,63 @@ parse_criterion_stats() {
     local file="$1"
     local benchmark="$2"
 
-    # Criterion output has two common shapes:
-    #
-    # 1) Single-line:
-    #    "bench/name    time:   [1.23 ns 1.45 ns 1.67 ns]"
-    #
-    # 2) Multi-line (often when throughput is enabled):
-    #    "bench/name"
-    #    "            time:   [1.23 us 1.45 us 1.67 us]"
-    #
-    # We parse the lower/middle/upper estimates and return integer nanoseconds
-    # as: "<middle_ns> <low_ns> <high_ns>". "-1 -1 -1" means not found.
-    awk -v b="$benchmark" '
-        function trim(s) {
-            sub(/^[[:space:]]+/, "", s)
-            sub(/[[:space:]]+$/, "", s)
-            return s
-        }
-        function to_ns(val, unit,    ns) {
-            if (unit == "ps") ns = val / 1000.0
-            else if (unit == "ns") ns = val
-            else if (unit == "us" || unit == "µs") ns = val * 1000.0
-            else if (unit == "ms") ns = val * 1000000.0
-            else if (unit == "s") ns = val * 1000000000.0
-            else ns = -1
-            return ns
-        }
-        function parse_time_line(line,    m, low, mid, high, low_u, mid_u, high_u, low_ns, mid_ns, high_ns) {
-            # Extract lower/middle/upper estimates from "[a unit b unit c unit]".
-            if (match(line, /\[([0-9.]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([0-9.]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([0-9.]+)[[:space:]]+([^[:space:]]+)\]/, m)) {
-                low = m[1] + 0.0
-                low_u = m[2]
-                mid = m[3] + 0.0
-                mid_u = m[4]
-                high = m[5] + 0.0
-                high_u = m[6]
-                low_ns = to_ns(low, low_u)
-                mid_ns = to_ns(mid, mid_u)
-                high_ns = to_ns(high, high_u)
-                if (low_ns < 0 || mid_ns < 0 || high_ns < 0) return 0
-                printf "%.0f %.0f %.0f\n", mid_ns, low_ns, high_ns
-                printed = 1
-                return 1
-            }
-            return 0
-        }
-        BEGIN { want_next_time = 0; printed = 0; }
-        {
-            t = trim($0)
+    # Require exactly one record for this identity, with no intervening benchmark
+    # between a standalone header and its time line. Preserve fractional ns.
+    python3 - "$file" "$benchmark" <<'PY'
+import decimal
+import math
+import pathlib
+import re
+import sys
 
-            # One-line format: "<bench>  time: [..]"
-            if (index(t, b) == 1) {
-                rest = substr(t, length(b) + 1)
-                if (rest ~ /^[[:space:]]+time:/) {
-                    if (parse_time_line(t)) exit
-                }
-            }
+path, benchmark = sys.argv[1:]
+number = r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+unit = r"(?:ps|ns|us|µs|μs|ms|s)"
+value = rf"({number})\s+({unit})"
+times = re.compile(rf"time:\s*\[\s*{value}\s+{value}\s+{value}\s*\]")
+header = re.compile(re.escape(benchmark) + r"(?:[ \t]+(time:.*))?")
+scales = {"ps": "0.001", "ns": "1", "us": "1000", "µs": "1000",
+          "μs": "1000", "ms": "1000000", "s": "1000000000"}
 
-            # Multi-line format: "<bench>" then later "time: [..]"
-            if (t == b) {
-                want_next_time = 1
-                next
-            }
-            if (want_next_time && $0 ~ /time:/) {
-                if (parse_time_line($0)) exit
-                want_next_time = 0
-            }
-        }
-        END {
-            if (!printed) print "-1 -1 -1"
-        }
-    ' "$file"
+try:
+    records = []
+    pending = False
+    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if pending:
+            if not line[:1].isspace() or not text.startswith("time:"):
+                raise ValueError("header has no adjacent timing record")
+            records.append(text)
+            pending = False
+            continue
+        match = header.fullmatch(text)
+        if match:
+            if match[1] is None:
+                pending = True
+            else:
+                records.append(match[1])
+    if pending or len(records) != 1:
+        raise ValueError("expected exactly one complete timing record")
+    match = times.fullmatch(records[0])
+    if match is None:
+        raise ValueError("malformed timing record")
+    values = [decimal.Decimal(match[i]) * decimal.Decimal(scales[match[i + 1]])
+              for i in (1, 3, 5)]
+    # Keep timing arithmetic within the exact integer range of the downstream
+    # double-precision diagnostics; reject overflow/underflow, never coerce to 0.
+    if any(not math.isfinite(float(v)) or float(v) <= 0 or v > 2**53 - 1
+           for v in values):
+        raise ValueError("timing must be finite, positive and at most 2^53-1 ns")
+    low, middle, high = values
+    if not low <= middle <= high:
+        raise ValueError("timing confidence bounds are not ordered")
+    print(*(format(v, "f") for v in (middle, low, high)))
+except (OSError, UnicodeError, ValueError, decimal.DecimalException) as error:
+    print(f"{benchmark}: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 compute_confidence_metrics() {
@@ -575,6 +562,9 @@ check_budgets() {
     local likely_noise=0
     local likely_regression=0
     local uncertain=0
+    local required=0
+    local incomplete=0
+    local excluded=0
 
     printf "%-50s %15s %15s %10s\n" "Benchmark" "Actual" "Budget" "Status"
     printf "%-50s %15s %15s %10s\n" "---------" "------" "------" "------"
@@ -582,6 +572,19 @@ check_budgets() {
     for benchmark in "${!BUDGETS[@]}"; do
         local budget_ns="${BUDGETS[$benchmark]}"
         local panic_ns=$((budget_ns * PANIC_MULTIPLIER))
+
+        if [[ "$QUICK_MODE" == "true" ]]; then
+            case "$benchmark" in
+                cell/*|buffer/*|diff/*|present/*|pipeline/*) ;;
+                *)
+                    ((excluded+=1))
+                    printf "%-50s %15s %15s ${YELLOW}%10s${NC}\n" "$benchmark" "unverified" "${budget_ns}ns" "EXCLUDED"
+                    log_json "excluded_quick_scope" "$benchmark" null "$budget_ns" "null"
+                    continue
+                    ;;
+            esac
+        fi
+        ((required+=1))
 
         # Determine which result file to check
         local result_file
@@ -599,56 +602,45 @@ check_budgets() {
             *) result_file="" ;;
         esac
 
-        if [[ -z "$result_file" ]] || [[ ! -f "$result_file" ]]; then
-            printf "%-50s %15s %15s ${YELLOW}%10s${NC}\n" "$benchmark" "N/A" "${budget_ns}ns" "SKIP"
-            ((skipped++))
-            log_json "skip" "$benchmark" 0 "$budget_ns" "null"
-            log_confidence_json "$benchmark" "skip" 0 "$budget_ns" "null" "null" "null" "null" "null" "null" "null" "null" "null" "allow" "insufficient_data" "null" "null" "null"
+        if [[ -z "$result_file" ]] || [[ ! -s "$result_file" ]]; then
+            printf "%-50s %15s %15s ${RED}%10s${NC}\n" "$benchmark" "N/A" "${budget_ns}ns" "INCOMPLETE"
+            ((incomplete+=1))
+            log_json "incomplete" "$benchmark" null "$budget_ns" "false"
+            log_confidence_json "$benchmark" "incomplete" null "$budget_ns" "null" "null" "null" "null" "null" "null" "null" "null" "null" "block" "missing_results" "null" "null" "null"
             continue
         fi
 
-        # Parse the benchmark name for Criterion lookup
-        local criterion_name
-        criterion_name=$(echo "$benchmark" | sed 's|/|/|g')
-
-        local actual_ns ci_low_ns ci_high_ns
-        read -r actual_ns ci_low_ns ci_high_ns <<< "$(parse_criterion_stats "$result_file" "$criterion_name")"
-
-        if [[ "$actual_ns" == "-1" ]]; then
-            printf "%-50s %15s %15s ${YELLOW}%10s${NC}\n" "$benchmark" "N/A" "${budget_ns}ns" "SKIP"
-            ((skipped++))
-            log_json "skip" "$benchmark" 0 "$budget_ns" "null"
-            log_confidence_json "$benchmark" "skip" 0 "$budget_ns" "null" "null" "null" "null" "null" "null" "null" "null" "null" "allow" "insufficient_data" "null" "null" "null"
+        local stats actual_ns ci_low_ns ci_high_ns
+        if ! stats=$(parse_criterion_stats "$result_file" "$benchmark"); then
+            printf "%-50s %15s %15s ${RED}%10s${NC}\n" "$benchmark" "N/A" "${budget_ns}ns" "INCOMPLETE"
+            ((incomplete+=1))
+            log_json "incomplete" "$benchmark" null "$budget_ns" "false"
+            log_confidence_json "$benchmark" "incomplete" null "$budget_ns" "null" "null" "null" "null" "null" "null" "null" "null" "null" "block" "invalid_results" "null" "null" "null"
             continue
         fi
+        read -r actual_ns ci_low_ns ci_high_ns <<< "$stats"
 
         local status status_color pass_json
-        if [[ "$actual_ns" -gt "$panic_ns" ]]; then
-            status="PANIC"
-            status_color="$RED"
-            pass_json="false"
-            ((panicked++))
-        elif [[ "$actual_ns" -gt "$budget_ns" ]]; then
-            status="FAIL"
-            status_color="$YELLOW"
-            pass_json="false"
-            ((failed++))
-        else
-            status="PASS"
-            status_color="$GREEN"
-            pass_json="true"
-            ((passed++))
+        if ! status=$(awk -v actual="$actual_ns" -v budget="$budget_ns" -v panic="$panic_ns" '
+            BEGIN { print (actual > panic ? "PANIC" : actual > budget ? "FAIL" : "PASS") }
+        '); then
+            echo "ERROR: budget comparison failed for $benchmark" >&2
+            return 3
         fi
+        case "$status" in
+            PANIC) status_color="$RED"; pass_json=false; ((panicked+=1)) ;;
+            FAIL) status_color="$YELLOW"; pass_json=false; ((failed+=1)) ;;
+            PASS) status_color="$GREEN"; pass_json=true; ((passed+=1)) ;;
+            *) echo "ERROR: invalid budget comparison for $benchmark" >&2; return 3 ;;
+        esac
 
         # Format times for display
         local actual_display budget_display
-        if [[ "$actual_ns" -ge 1000000 ]]; then
-            actual_display="$((actual_ns / 1000000))ms"
-        elif [[ "$actual_ns" -ge 1000 ]]; then
-            actual_display="$((actual_ns / 1000))us"
-        else
-            actual_display="${actual_ns}ns"
-        fi
+        actual_display=$(awk -v ns="$actual_ns" 'BEGIN {
+            if (ns >= 1000000) printf "%.3gms", ns / 1000000
+            else if (ns >= 1000) printf "%.3gus", ns / 1000
+            else printf "%.3gns", ns
+        }')
 
         if [[ "$budget_ns" -ge 1000000 ]]; then
             budget_display="$((budget_ns / 1000000))ms"
@@ -661,9 +653,12 @@ check_budgets() {
         printf "%-50s %15s %15s ${status_color}%10s${NC}\n" \
             "$benchmark" "$actual_display" "$budget_display" "$status"
 
-        local sigma_ns z_score p_regression e_value bayes_factor loss_block loss_allow decision hint ci_width_ns relative_ci_width variance_ns2
-        read -r sigma_ns z_score p_regression e_value bayes_factor loss_block loss_allow decision hint ci_width_ns relative_ci_width variance_ns2 <<< \
-            "$(compute_confidence_metrics "$status" "$actual_ns" "$budget_ns" "$ci_low_ns" "$ci_high_ns")"
+        local confidence sigma_ns z_score p_regression e_value bayes_factor loss_block loss_allow decision hint ci_width_ns relative_ci_width variance_ns2
+        if ! confidence=$(compute_confidence_metrics "$status" "$actual_ns" "$budget_ns" "$ci_low_ns" "$ci_high_ns"); then
+            echo "ERROR: confidence diagnostics failed for $benchmark" >&2
+            return 3
+        fi
+        read -r sigma_ns z_score p_regression e_value bayes_factor loss_block loss_allow decision hint ci_width_ns relative_ci_width variance_ns2 <<< "$confidence"
 
         case "$hint" in
             likely_noise) ((likely_noise++)) ;;
@@ -684,11 +679,15 @@ check_budgets() {
     log "  Failed:  $failed"
     log "  Panicked: $panicked"
     log "  Skipped: $skipped"
+    log "  Required: $required; incomplete: $incomplete; explicitly excluded: $excluded"
     log "  Confidence hints: likely_regression=$likely_regression likely_noise=$likely_noise uncertain=$uncertain"
     log ""
-    log_confidence_summary "$passed" "$failed" "$panicked" "$skipped" "$likely_regression" "$likely_noise" "$uncertain"
+    log_confidence_summary "$passed" "$failed" "$panicked" "$skipped" "$likely_regression" "$likely_noise" "$uncertain" "$required" "$incomplete" "$excluded"
 
-    if [[ "$panicked" -gt 0 ]]; then
+    if [[ "$required" -eq 0 || "$incomplete" -gt 0 || $((passed + failed + panicked)) -ne "$required" ]]; then
+        log "${RED}INCOMPLETE: every selected budget requires one valid measurement.${NC}"
+        return 3
+    elif [[ "$panicked" -gt 0 ]]; then
         log "${RED}PANIC: $panicked benchmark(s) exceeded 2x budget!${NC}"
         log "This indicates a severe performance regression."
         return 2
@@ -697,7 +696,7 @@ check_budgets() {
         log "Consider investigating before merge."
         return 1
     else
-        log "${GREEN}All budgets met!${NC}"
+        log "${GREEN}All $required selected budgets measured and met; $excluded outside the explicit quick scope remain unverified.${NC}"
         return 0
     fi
 }
@@ -710,6 +709,13 @@ main() {
     log "${BLUE}Performance Budget Validation (bd-3cwi)${NC}"
     log "Run ID: $RUN_ID"
     log ""
+
+    for dependency in python3 awk; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            echo "ERROR: required gate dependency not found: $dependency" >&2
+            exit 3
+        fi
+    done
 
     mkdir -p "$RESULTS_DIR"
     : > "$PERF_LOG"
@@ -732,11 +738,11 @@ main() {
         log "${YELLOW}Budget exceeded; rerunning once to reduce false positives...${NC}"
         snapshot_results "run1"
         run_benchmarks
-        exit_code=0
-        check_budgets || exit_code=$?
-        if [[ "$exit_code" -eq 0 ]]; then
+        local rerun_exit_code=0
+        check_budgets || rerun_exit_code=$?
+        if [[ "$rerun_exit_code" -eq 0 ]]; then
             log ""
-            log "${GREEN}Rerun passed. Treating initial failure as noise.${NC}"
+            log "${YELLOW}Diagnostic rerun passed; the original failure remains nonzero.${NC}"
             log "Saved first-run artifacts under: ${RESULTS_DIR}/*.run1.txt and perf_log.run1.jsonl"
         fi
     fi
