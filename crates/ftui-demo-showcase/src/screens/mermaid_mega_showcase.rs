@@ -2269,6 +2269,8 @@ impl MermaidMegaState {
 pub struct MermaidMegaShowcaseScreen {
     state: MermaidMegaState,
     cache: RefCell<MegaRenderCache>,
+    /// Omit volatile timing values from the UI, retaining measured telemetry.
+    pub(crate) deterministic_display: bool,
     /// Separate cache for the comparison (right-side) layout.
     comparison_cache: RefCell<MegaRenderCache>,
     /// Cached diagram region for mouse hit testing.
@@ -2294,6 +2296,7 @@ impl MermaidMegaShowcaseScreen {
         Self {
             state: MermaidMegaState::default(),
             cache: RefCell::new(MegaRenderCache::empty()),
+            deterministic_display: determinism::is_demo_deterministic(),
             comparison_cache: RefCell::new(MegaRenderCache::empty()),
             layout_diagram: std::cell::Cell::new(Rect::default()),
             layout_side_panel: std::cell::Cell::new(Rect::default()),
@@ -3325,36 +3328,31 @@ impl MermaidMegaShowcaseScreen {
         for l in lines.drain(..) {
             colored_lines.push((l, info_cell.fg));
         }
-        if let Some(ms) = cache.parse_ms {
-            colored_lines.push((
-                format!("Parse: {ms:.1}ms"),
-                Self::classify_timing_color(ms, PARSE_MS_GOOD, PARSE_MS_OK),
-            ));
-        } else {
-            colored_lines.push(("Parse: -".to_string(), info_cell.fg));
-        }
-        if let Some(ms) = cache.layout_ms {
-            colored_lines.push((
-                format!("Layout: {ms:.1}ms"),
-                Self::classify_timing_color(ms, LAYOUT_MS_GOOD, LAYOUT_MS_OK),
-            ));
-        } else {
-            colored_lines.push(("Layout: -".to_string(), info_cell.fg));
-        }
-        if let Some(ms) = cache.render_ms {
-            colored_lines.push((
-                format!("Render: {ms:.1}ms"),
-                Self::classify_timing_color(ms, RENDER_MS_GOOD, RENDER_MS_OK),
-            ));
-        } else {
-            colored_lines.push(("Render: -".to_string(), info_cell.fg));
+        for (label, value, good, ok) in [
+            ("Parse", cache.parse_ms, PARSE_MS_GOOD, PARSE_MS_OK),
+            ("Layout", cache.layout_ms, LAYOUT_MS_GOOD, LAYOUT_MS_OK),
+            ("Render", cache.render_ms, RENDER_MS_GOOD, RENDER_MS_OK),
+        ] {
+            let line = if self.deterministic_display {
+                (format!("{label}: n/a"), info_cell.fg)
+            } else if let Some(ms) = value {
+                (
+                    format!("{label}: {ms:.1}ms"),
+                    Self::classify_timing_color(ms, good, ok),
+                )
+            } else {
+                (format!("{label}: -"), info_cell.fg)
+            };
+            colored_lines.push(line);
         }
         // Total time
         let total_ms = [cache.parse_ms, cache.layout_ms, cache.render_ms]
             .iter()
             .filter_map(|v| *v)
             .sum::<f32>();
-        if total_ms > 0.0 {
+        if self.deterministic_display {
+            colored_lines.push(("Total: n/a".to_string(), info_cell.fg));
+        } else if total_ms > 0.0 {
             colored_lines.push((
                 format!("Total: {total_ms:.1}ms"),
                 Self::classify_timing_color(total_ms, TOTAL_MS_GOOD, TOTAL_MS_OK),
@@ -3427,23 +3425,19 @@ impl MermaidMegaShowcaseScreen {
         }
         colored_lines.push((String::new(), info_cell.fg));
         // Running averages
-        if cache.parse_stats.count() > 1 {
-            colored_lines.push((
-                format!("Parse avg: {}", cache.parse_stats.summary()),
-                info_cell.fg,
-            ));
-        }
-        if cache.layout_stats.count() > 1 {
-            colored_lines.push((
-                format!("Layout avg: {}", cache.layout_stats.summary()),
-                info_cell.fg,
-            ));
-        }
-        if cache.render_stats.count() > 1 {
-            colored_lines.push((
-                format!("Render avg: {}", cache.render_stats.summary()),
-                info_cell.fg,
-            ));
+        for (label, stats) in [
+            ("Parse", &cache.parse_stats),
+            ("Layout", &cache.layout_stats),
+            ("Render", &cache.render_stats),
+        ] {
+            if stats.count() > 1 {
+                let summary = if self.deterministic_display {
+                    "n/a".to_string()
+                } else {
+                    stats.summary()
+                };
+                colored_lines.push((format!("{label} avg: {summary}"), info_cell.fg));
+            }
         }
         colored_lines.push((String::new(), info_cell.fg));
         colored_lines.push((
@@ -3466,9 +3460,13 @@ impl MermaidMegaShowcaseScreen {
             colored_lines.push((format!("Debounce: {}", cache.debounce_skips), info_cell.fg));
         }
         if let Some(last) = cache.last_layout_instant {
-            let ago_ms = last.elapsed().as_millis();
-            if ago_ms < 2000 {
-                colored_lines.push((format!("Recomputed: {ago_ms}ms ago"), info_cell.fg));
+            if self.deterministic_display {
+                colored_lines.push(("Recomputed: n/a".to_string(), info_cell.fg));
+            } else {
+                let ago_ms = last.elapsed().as_millis();
+                if ago_ms < 2000 {
+                    colored_lines.push((format!("Recomputed: {ago_ms}ms ago"), info_cell.fg));
+                }
             }
         }
         if cache.layout_budget_exceeded {
@@ -7760,10 +7758,89 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_metrics_display_preserves_measurements() {
+        use crate::theme;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let _guard = theme::ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
+        let render = |screen: &MermaidMegaShowcaseScreen| {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(60, 64, &mut pool);
+            screen.render_side_panel(Rect::new(0, 0, 60, 64), &mut frame);
+            let cells = frame.buffer.cells().to_vec();
+            let text: String = cells
+                .iter()
+                .map(|cell| cell.content.as_char().unwrap_or(' '))
+                .collect();
+            (cells, text)
+        };
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.deterministic_display = true;
+        screen.ensure_render_cache(Rect::new(0, 0, 120, 40));
+        assert!(screen.cache.borrow().parse_ms.is_some());
+        let mut first_cells = None;
+        for (value, age_secs) in [(1.0, 0), (100.0, 3)] {
+            {
+                let mut cache = screen.cache.borrow_mut();
+                let cache = &mut *cache;
+                cache.parse_ms = Some(value);
+                cache.layout_ms = Some(value * 2.0);
+                cache.render_ms = Some(value * 3.0);
+                cache.last_layout_instant = Some(
+                    Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(age_secs))
+                        .unwrap(),
+                );
+                for stats in [
+                    &mut cache.parse_stats,
+                    &mut cache.layout_stats,
+                    &mut cache.render_stats,
+                ] {
+                    *stats = RunningStats::new(20);
+                    stats.push(value);
+                    stats.push(value * 2.0);
+                }
+            }
+            let (cells, text) = render(&screen);
+            for label in [
+                "Parse: n/a",
+                "Layout: n/a",
+                "Render: n/a",
+                "Total: n/a",
+                "Parse avg: n/a",
+                "Layout avg: n/a",
+                "Render avg: n/a",
+                "Recomputed: n/a",
+            ] {
+                assert!(text.contains(label), "missing {label}");
+            }
+            if let Some(first) = first_cells.as_ref() {
+                assert_eq!(first, &cells, "timings and age must not change cells");
+            } else {
+                first_cells = Some(cells);
+            }
+            assert_eq!(screen.cache.borrow().parse_ms, Some(value));
+            assert_eq!(screen.cache.borrow().layout_ms, Some(value * 2.0));
+            assert_eq!(screen.cache.borrow().render_ms, Some(value * 3.0));
+        }
+
+        screen.deterministic_display = false;
+        let live = render(&screen);
+        assert!(live.1.contains("Parse: 100.0ms"));
+        assert!(live.1.contains("Total: 600.0ms"));
+        assert!(
+            !live.1.contains("Recomputed:"),
+            "old live age remains hidden"
+        );
+        assert_ne!(first_cells.unwrap(), live.0);
+    }
+
+    #[test]
     fn metrics_panel_shows_color_coded_timings() {
         use ftui_render::grapheme_pool::GraphemePool;
 
-        let screen = MermaidMegaShowcaseScreen::new();
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.deterministic_display = false;
         // Ensure the render cache is populated with timing data.
         let area = Rect::new(0, 0, 120, 40);
         screen.ensure_render_cache(area);

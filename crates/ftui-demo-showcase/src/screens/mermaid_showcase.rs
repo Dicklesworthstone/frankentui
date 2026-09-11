@@ -2309,6 +2309,8 @@ enum MermaidShowcaseAction {
 pub struct MermaidShowcaseScreen {
     state: MermaidShowcaseState,
     cache: RefCell<MermaidRenderCache>,
+    /// Omit volatile timing values from the UI, retaining measured telemetry.
+    pub(crate) deterministic_display: bool,
     /// Cached samples panel area for mouse hit-testing.
     layout_samples: StdCell<Rect>,
     /// Cached viewport area for mouse hit-testing.
@@ -2352,6 +2354,7 @@ impl MermaidShowcaseScreen {
         Self {
             state: MermaidShowcaseState::new(),
             cache: RefCell::new(MermaidRenderCache::empty()),
+            deterministic_display: determinism::is_demo_deterministic(),
             layout_samples: StdCell::new(Rect::new(0, 0, 0, 0)),
             layout_viewport: StdCell::new(Rect::new(0, 0, 0, 0)),
             layout_right: StdCell::new(Rect::new(0, 0, 0, 0)),
@@ -3386,12 +3389,16 @@ impl MermaidShowcaseScreen {
         };
         let metrics = if area.width >= 120 {
             if self.state.metrics_visible {
-                format!(
-                    "parse {}ms | layout {}ms | render {}ms",
-                    self.state.metrics.parse_ms.unwrap_or(0.0),
-                    self.state.metrics.layout_ms.unwrap_or(0.0),
-                    self.state.metrics.render_ms.unwrap_or(0.0)
-                )
+                if self.deterministic_display {
+                    "parse n/a | layout n/a | render n/a".to_string()
+                } else {
+                    format!(
+                        "parse {}ms | layout {}ms | render {}ms",
+                        self.state.metrics.parse_ms.unwrap_or(0.0),
+                        self.state.metrics.layout_ms.unwrap_or(0.0),
+                        self.state.metrics.render_ms.unwrap_or(0.0)
+                    )
+                }
             } else {
                 "metrics hidden (m)".to_string()
             }
@@ -3643,38 +3650,25 @@ impl MermaidShowcaseScreen {
                 }
             }
 
-            // Parse timing.
-            let parse_val = metrics.parse_ms.unwrap_or(0.0);
-            let parse_level = classify_lower(parse_val, PARSE_MS_GOOD, PARSE_MS_OK);
-            lines.push(Line::from_spans(vec![
-                Span::styled("Parse: ", muted),
-                Span::styled(
-                    format!("{parse_val:.2} ms"),
-                    Style::new().fg(parse_level.color()),
-                ),
-            ]));
-
-            // Layout timing.
-            let layout_val = metrics.layout_ms.unwrap_or(0.0);
-            let layout_level = classify_lower(layout_val, LAYOUT_MS_GOOD, LAYOUT_MS_OK);
-            lines.push(Line::from_spans(vec![
-                Span::styled("Layout: ", muted),
-                Span::styled(
-                    format!("{layout_val:.2} ms"),
-                    Style::new().fg(layout_level.color()),
-                ),
-            ]));
-
-            // Render timing.
-            let render_val = metrics.render_ms.unwrap_or(0.0);
-            let render_level = classify_lower(render_val, RENDER_MS_GOOD, RENDER_MS_OK);
-            lines.push(Line::from_spans(vec![
-                Span::styled("Render: ", muted),
-                Span::styled(
-                    format!("{render_val:.2} ms"),
-                    Style::new().fg(render_level.color()),
-                ),
-            ]));
+            for (label, value, good, ok) in [
+                ("Parse: ", metrics.parse_ms, PARSE_MS_GOOD, PARSE_MS_OK),
+                ("Layout: ", metrics.layout_ms, LAYOUT_MS_GOOD, LAYOUT_MS_OK),
+                ("Render: ", metrics.render_ms, RENDER_MS_GOOD, RENDER_MS_OK),
+            ] {
+                let (text, style) = if self.deterministic_display {
+                    ("n/a".to_string(), muted)
+                } else {
+                    let value = value.unwrap_or(0.0);
+                    (
+                        format!("{value:.2} ms"),
+                        Style::new().fg(classify_lower(value, good, ok).color()),
+                    )
+                };
+                lines.push(Line::from_spans(vec![
+                    Span::styled(label, muted),
+                    Span::styled(text, style),
+                ]));
+            }
 
             // Viewport info (neutral).
             if let Some((cols, rows)) = self.state.viewport_size_override {
@@ -5280,6 +5274,63 @@ mod tests {
         }
     }
     // --- Metrics integration ---
+
+    #[test]
+    fn deterministic_metrics_display_preserves_measurements() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let _guard = theme::ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
+        let render = |screen: &MermaidShowcaseScreen| {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(240, 42, &mut pool);
+            screen.render_metrics_panel(&mut frame, Rect::new(0, 0, 60, 40));
+            screen.render_footer(&mut frame, Rect::new(0, 40, 240, 1));
+            let cells = frame.buffer.cells().to_vec();
+            let text: String = cells
+                .iter()
+                .map(|cell| cell.content.as_char().unwrap_or(' '))
+                .collect();
+            (cells, text)
+        };
+        let mut screen = new_screen();
+        screen.deterministic_display = true;
+        screen.state.metrics.parse_ms = Some(1.25);
+        screen.state.metrics.layout_ms = Some(2.5);
+        screen.state.metrics.render_ms = Some(3.75);
+        let first = render(&screen);
+        for label in ["Parse: n/a", "Layout: n/a", "Render: n/a"] {
+            assert!(first.1.contains(label), "missing {label}");
+        }
+        assert!(first.1.contains("parse n/a | layout n/a | render n/a"));
+
+        screen.state.metrics.parse_ms = Some(125.0);
+        screen.state.metrics.layout_ms = Some(250.0);
+        screen.state.metrics.render_ms = Some(375.0);
+        assert_eq!(first.0, render(&screen).0, "timings must not change cells");
+        let telemetry = screen.harness_frame_telemetry(0);
+        assert_eq!(telemetry.parse_ms, Some(125.0));
+        assert_eq!(telemetry.layout_ms, Some(250.0));
+        assert_eq!(telemetry.render_ms, Some(375.0));
+
+        screen.deterministic_display = false;
+        let live = render(&screen);
+        assert!(live.1.contains("Parse: 125.00 ms"));
+        assert!(live.1.contains("parse 125ms | layout 250ms | render 375ms"));
+        assert_ne!(
+            first.0, live.0,
+            "interactive timing display must remain live"
+        );
+
+        screen.deterministic_display = true;
+        screen.state.metrics.parse_ms = None;
+        screen.state.metrics.layout_ms = None;
+        screen.state.metrics.render_ms = None;
+        assert_eq!(
+            first.0,
+            render(&screen).0,
+            "missing timings stay unavailable"
+        );
+    }
 
     #[test]
     fn metrics_populated_on_init() {

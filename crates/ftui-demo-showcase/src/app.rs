@@ -2908,6 +2908,7 @@ impl AppModel {
                 .enable_deterministic_mode(perf_tick_ms);
             app.screens
                 .set_visual_effects_deterministic_tick_ms(vfx_tick_ms);
+            app.screens.voi_overlay.deterministic_tick_ms = Some(perf_tick_ms.max(1));
         }
         app
     }
@@ -2938,6 +2939,11 @@ impl AppModel {
         self.screens
             .set_visual_effects_deterministic_tick_ms(vfx_tick_ms);
         self.screens.voi_overlay.deterministic_tick_ms = Some(tick_ms);
+        #[cfg(feature = "screen-mermaid")]
+        {
+            self.screens.mermaid_showcase.deterministic_display = true;
+            self.screens.mermaid_mega_showcase.deterministic_display = true;
+        }
     }
 
     pub fn enable_pane_workspace_persistence(&mut self, path: impl Into<PathBuf>) {
@@ -5810,6 +5816,95 @@ mod tests {
     use serial_test::serial;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    #[cfg(feature = "screen-mermaid")]
+    fn deterministic_helper_configures_mermaid_display() {
+        let mut app = AppModel::new();
+        app.screens.mermaid_showcase.deterministic_display = false;
+        app.screens.mermaid_mega_showcase.deterministic_display = false;
+
+        app.enable_deterministic_mode_for_test(37, 16);
+
+        assert!(app.screens.mermaid_showcase.deterministic_display);
+        assert!(app.screens.mermaid_mega_showcase.deterministic_display);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn deterministic_environment_configures_voi_overlay() {
+        const CHILD_CASE: &str = "FTUI_TEST_VOI_ENV_CASE";
+        if let Ok(case) = std::env::var(CHILD_CASE) {
+            let expected_tick_ms = match case.as_str() {
+                "explicit" => Some(37),
+                "default" => Some(100),
+                "off" => None,
+                _ => panic!("unknown VOI environment case: {case}"),
+            };
+            let mut app = AppModel::new();
+            assert_eq!(
+                app.screens.voi_overlay.deterministic_tick_ms,
+                expected_tick_ms
+            );
+            if let Some(tick_ms) = expected_tick_ms {
+                let mut control = AppModel::new();
+                control.enable_deterministic_mode_for_test(tick_ms, tick_ms);
+                app.current_screen = ScreenId::VoiOverlay;
+                control.current_screen = ScreenId::VoiOverlay;
+                for tick in 1..=90 {
+                    app.update(AppMsg::Tick);
+                    control.update(AppMsg::Tick);
+                    if matches!(tick, 1 | 7 | 17 | 20 | 34 | 45 | 68 | 90) {
+                        assert_eq!(
+                            rendered_app_text(&app),
+                            rendered_app_text(&control),
+                            "environment and test-helper VOI output differ at tick {tick}"
+                        );
+                    }
+                }
+            }
+            println!("FTUI_VOI_ENV_CASE_OK:{case}");
+            return;
+        }
+
+        // Child-only environment configuration avoids unsafe process-global
+        // mutation and races with other tests constructing AppModel.
+        for (case, deterministic, tick_ms) in [
+            ("explicit", "1", Some("37")),
+            ("default", "1", None),
+            ("off", "0", Some("37")),
+        ] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "app::tests::deterministic_environment_configures_voi_overlay",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_CASE, case)
+                .env("FTUI_DEMO_DETERMINISTIC", deterministic)
+                .env_remove("FTUI_DETERMINISTIC")
+                .env_remove("E2E_DETERMINISTIC")
+                .env_remove("FTUI_DEMO_TICK_MS")
+                .env_remove("FTUI_DEMO_FIXED_TICK_MS")
+                .env_remove("FTUI_TICK_MS");
+            if let Some(tick_ms) = tick_ms {
+                command.env("FTUI_DEMO_TICK_MS", tick_ms);
+            }
+            let output = command.output().expect("run isolated VOI environment case");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "VOI environment case {case} failed: {stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                stdout.contains(&format!("FTUI_VOI_ENV_CASE_OK:{case}")),
+                "VOI environment case {case} did not execute: {stdout}"
+            );
+        }
+    }
 
     #[test]
     fn screen_command_lift_preserves_effect_variants_and_order() {
