@@ -1,10 +1,15 @@
-//! Benchmarks for display width calculation (bd-16k)
+//! Benchmarks for display width calculation and styled wrapping (bd-16k).
 //!
 //! Run with: cargo bench -p ftui-text
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use ftui_text::display_width;
+use criterion::{
+    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+};
+use ftui_style::Style;
+use ftui_text::{Line, Span, WrapMode, display_width};
+use std::borrow::Cow;
 use std::hint::black_box;
+use std::time::Duration;
 
 // =============================================================================
 // Test Data
@@ -213,6 +218,73 @@ fn bench_segment_width(c: &mut Criterion) {
     group.finish();
 }
 
+/// Exercise actual styled Line wrapping without Paragraph's result cache.
+/// Geometric ASCII sizes expose suffix rescanning; width one is a supported
+/// narrow viewport boundary, while width 80 covers ordinary terminal layout.
+/// Each iteration wraps one preconstructed line and drops the resulting lines.
+fn bench_styled_char_wrap(c: &mut Criterion) {
+    let mut group = c.benchmark_group("text/styled_char_wrap");
+    group.sample_size(20);
+    group.sampling_mode(SamplingMode::Flat);
+    group.warm_up_time(Duration::from_millis(400));
+    group.measurement_time(Duration::from_secs(1));
+    group.nresamples(10_000);
+
+    let mut cases = Vec::new();
+    for len in [1_024usize, 4_096, 16_384] {
+        for width in [1usize, 80] {
+            cases.push((format!("ascii_width_{width}"), "x".repeat(len), len, width));
+        }
+    }
+    cases.push(("wide_width_80".to_owned(), "界".repeat(1_024), 2_048, 80));
+    cases.push((
+        "zwj_width_80".to_owned(),
+        "👩\u{200d}💻".repeat(1_024),
+        2_048,
+        80,
+    ));
+
+    let style = Style::new().bold();
+    let link = "https://example.invalid/styled-wrap";
+    for (family, content, cells, width) in &cases {
+        for owned in [false, true] {
+            let span_content = if owned {
+                Cow::Owned(content.clone())
+            } else {
+                Cow::Borrowed(content.as_str())
+            };
+            let line = Line::from_spans([Span::styled(span_content, style).link(link)]);
+            let name = format!("{}_{family}", if owned { "owned" } else { "borrowed" });
+
+            // These corpora contain no whitespace; every grapheme has known
+            // width one or two, and all selected widths divide wide glyphs.
+            // Exact text, style and link assertions run outside measured work.
+            let wrapped = line.wrap(*width, WrapMode::Char);
+            assert_eq!(wrapped.len(), cells.div_ceil(*width), "{name}");
+            assert_eq!(
+                wrapped.iter().map(Line::to_plain_text).collect::<String>(),
+                *content,
+                "{name}"
+            );
+            for output in &wrapped {
+                for span in output.spans() {
+                    assert_eq!(span.style, Some(style), "{name}");
+                    assert_eq!(span.link.as_deref(), Some(link), "{name}");
+                }
+            }
+            drop(wrapped);
+
+            group.throughput(Throughput::Bytes(content.len() as u64));
+            group.bench_with_input(
+                BenchmarkId::new(name, cells),
+                &line,
+                |b, line| b.iter(|| black_box(line.wrap(black_box(*width), WrapMode::Char))),
+            );
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_ascii_width,
@@ -223,6 +295,7 @@ criterion_group!(
     bench_zwj_width,
     bench_cache_vs_direct,
     bench_segment_width,
+    bench_styled_char_wrap,
 );
 
 criterion_main!(benches);
