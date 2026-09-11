@@ -6,6 +6,7 @@
 ││Focus: [Controls]  [Timeline]  [Scenarios]   Ctrl/Alt+Arrows: ↑Controls  ←Ti││
 ││Quick Start: Enter load scenario  Space record  ↑/↓ scrub timeline          ││
 ││Space/r record/stop  Enter/p play/pause  Esc stop  L loop  +/- speed        ││
+││Press Space to record or Enter in Scenarios to load a demo                  ││
 │╰────────────────────────────────────────────────────────────────────────────╯│
 │╭──────────────────Timeline───────────────────╮╭────────Event Detail─────────╮│
 ││No macro loaded.                             ││Select a scenario or record a││
@@ -18,7 +19,6 @@
 ││                                             │╭───────Scenario Runner───────╮│
 ││                                             ││Preset scenarios (Enter to lo││
 ││                                             ││                             ││
-││                                             ││Tab Tour                     ││
 │╰─────────────────────────────────────────────╯╰─────────────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Macro Recorder [13/45] [h] [cmd] [p] [d]  Tab/Shift+Tab: next/prev   0x0 00:00 
+ Macro Recorder [13/45] [h] [cmd] [p] [d]  Tab/Shift+Tab: next/prev   0x0 00:00
