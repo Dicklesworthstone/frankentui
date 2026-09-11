@@ -23,6 +23,7 @@ struct CachedParagraphMetrics {
     text_width: usize,
     text_height: usize,
     min_width: usize,
+    min_width_computed: bool,
     line_widths: Arc<[usize]>,
 }
 
@@ -205,11 +206,28 @@ impl<'a> Paragraph<'a> {
         hash_value(&self.text)
     }
 
-    fn cached_metrics(&self) -> CachedParagraphMetrics {
+    fn cached_metrics(&self, include_min_width: bool) -> CachedParagraphMetrics {
         let text_hash = self.text_hash();
         PARAGRAPH_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if let Some(metrics) = cache.metrics.get(&text_hash) {
+            if let Some(metrics) = cache.metrics.get_mut(&text_hash) {
+                // Rendering only needs line widths. Derive the longest word
+                // once if intrinsic measurement later requests the same text.
+                if include_min_width && !metrics.min_width_computed {
+                    let min_width = self
+                        .text
+                        .lines()
+                        .iter()
+                        .map(line_min_width)
+                        .max()
+                        .unwrap_or(0);
+                    metrics.min_width = if min_width == 0 {
+                        metrics.text_width
+                    } else {
+                        min_width
+                    };
+                    metrics.min_width_computed = true;
+                }
                 return metrics.clone();
             }
 
@@ -220,7 +238,9 @@ impl<'a> Paragraph<'a> {
             for line in self.text.lines() {
                 let width = line.width();
                 text_width = text_width.max(width);
-                min_width = min_width.max(line_min_width(line));
+                if include_min_width {
+                    min_width = min_width.max(line_min_width(line));
+                }
                 line_widths.push(width);
             }
 
@@ -232,6 +252,7 @@ impl<'a> Paragraph<'a> {
                 } else {
                     min_width
                 },
+                min_width_computed: include_min_width,
                 line_widths: Arc::from(line_widths),
             };
 
@@ -426,7 +447,7 @@ impl Widget for Paragraph<'_> {
             }
         };
 
-        let metrics = self.cached_metrics();
+        let metrics = self.cached_metrics(false);
         let rendered_lines: Option<CachedWrappedParagraph> = self
             .wrap
             .map(|wrap_mode| self.cached_wrapped_lines(text_area.width as usize, wrap_mode));
@@ -462,7 +483,7 @@ impl Widget for Paragraph<'_> {
 }
 impl MeasurableWidget for Paragraph<'_> {
     fn measure(&self, available: Size) -> SizeConstraints {
-        let metrics = self.cached_metrics();
+        let metrics = self.cached_metrics(true);
         let text_width = metrics.text_width;
         let text_height = metrics.text_height;
         let min_width = metrics.min_width;
@@ -498,7 +519,9 @@ impl MeasurableWidget for Paragraph<'_> {
             };
 
         // Convert to u16, saturating at MAX
-        let min_w = (min_width as u16).saturating_add(chrome_width);
+        let min_w = u16::try_from(min_width)
+            .unwrap_or(u16::MAX)
+            .saturating_add(chrome_width);
         // Only require 1 line minimum if there's actual content
         let min_h = if preferred_height > 0 {
             (1u16).saturating_add(chrome_height)
@@ -506,8 +529,12 @@ impl MeasurableWidget for Paragraph<'_> {
             chrome_height
         };
 
-        let pref_w = (preferred_width as u16).saturating_add(chrome_width);
-        let pref_h = (preferred_height as u16).saturating_add(chrome_height);
+        let pref_w = u16::try_from(preferred_width)
+            .unwrap_or(u16::MAX)
+            .saturating_add(chrome_width);
+        let pref_h = u16::try_from(preferred_height)
+            .unwrap_or(u16::MAX)
+            .saturating_add(chrome_height);
 
         SizeConstraints {
             min: Size::new(min_w, min_h),
@@ -525,18 +552,18 @@ impl MeasurableWidget for Paragraph<'_> {
 impl Paragraph<'_> {
     #[cfg_attr(not(test), allow(dead_code))]
     fn calculate_min_width(&self) -> usize {
-        self.cached_metrics().min_width
+        self.cached_metrics(true).min_width
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn estimate_wrapped_height(&self, wrap_width: usize) -> usize {
         if wrap_width == 0 {
-            return self.cached_metrics().text_height;
+            return self.cached_metrics(false).text_height;
         }
 
         self.wrap
             .map(|wrap_mode| self.cached_wrapped_lines(wrap_width, wrap_mode).lines.len())
-            .unwrap_or_else(|| self.cached_metrics().text_height)
+            .unwrap_or_else(|| self.cached_metrics(false).text_height)
             .max(1)
     }
 }
@@ -736,6 +763,187 @@ mod tests {
         ]);
 
         assert_eq!(line_min_width(&line), 5);
+    }
+
+    #[test]
+    fn intrinsic_minimum_preserves_whitespace_unicode_and_span_boundaries() {
+        let cases = [
+            (Text::raw(""), 0),
+            (Text::raw("   "), 3),
+            (Text::raw("     \na"), 1),
+            (Text::raw("e\u{301} x"), 1),
+            (Text::raw("ab\tc"), 2),
+            (Text::raw("a\0b\x7fc"), 3),
+            (
+                Text::from(Line::from_spans([
+                    Span::raw("hel"),
+                    Span::styled("lo", Style::new().bold()),
+                ])),
+                5,
+            ),
+            (
+                Text::from(Line::from_spans([Span::raw("ab"), Span::raw("界")])),
+                4,
+            ),
+        ];
+        let area = Rect::new(0, 0, 16, 3);
+        for (text, expected_minimum) in cases {
+            let paragraph = Paragraph::new(text);
+            for render_first in [true, false] {
+                PARAGRAPH_CACHE.with(|cache| *cache.borrow_mut() = ParagraphCacheState::default());
+                let mut pool = GraphemePool::new();
+                let mut frame = Frame::new(area.width, area.height, &mut pool);
+                if render_first {
+                    paragraph.render(area, &mut frame);
+                }
+                let measured = paragraph.measure(Size::new(area.width, area.height));
+                assert_eq!(measured.min.width, expected_minimum, "{paragraph:?}");
+                paragraph.render(area, &mut frame);
+                assert_eq!(paragraph.measure(Size::new(1, 1)), measured);
+            }
+        }
+    }
+
+    #[test]
+    fn intrinsic_measurement_is_independent_of_render_order_and_chrome() {
+        let paragraph = Paragraph::new("hello world").wrap(WrapMode::Word);
+        let area = Rect::new(0, 0, 6, 2);
+        for render_first in [true, false] {
+            PARAGRAPH_CACHE.with(|cache| *cache.borrow_mut() = ParagraphCacheState::default());
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(6, 2, &mut pool);
+            if render_first {
+                paragraph.render(area, &mut frame);
+            }
+            let measured = paragraph.measure(Size::new(6, 2));
+            assert_eq!(measured.min, Size::new(5, 1));
+            assert_eq!(measured.preferred, Size::new(6, 2));
+            paragraph.render(area, &mut frame);
+            assert_eq!(raw_row_text(&frame, 0), "hello ");
+            assert_eq!(raw_row_text(&frame, 1), "world ");
+
+            let bordered = paragraph.clone().block(Block::bordered());
+            let measured = bordered.measure(Size::new(10, 6));
+            assert_eq!(measured.min, Size::new(9, 5));
+            assert_eq!(measured.preferred, Size::new(10, 6));
+            let unwrapped = paragraph.clone().wrap(WrapMode::None);
+            assert_eq!(
+                unwrapped.measure(Size::new(6, 2)).preferred,
+                Size::new(11, 1)
+            );
+        }
+    }
+
+    #[test]
+    fn intrinsic_minimum_survives_actual_metrics_eviction() {
+        let original = Paragraph::new("hello world");
+        let available = Size::new(16, 2);
+        let area = Rect::new(0, 0, 16, 2);
+        for measure_first in [true, false] {
+            PARAGRAPH_CACHE.with(|cache| *cache.borrow_mut() = ParagraphCacheState::default());
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(16, 2, &mut pool);
+            original.render(area, &mut frame);
+            if measure_first {
+                assert_eq!(original.measure(available).min.width, 5);
+            }
+            for index in 0..PARAGRAPH_METRICS_CACHE_CAPACITY {
+                Paragraph::new(format!("entry{index} xxxx")).render(area, &mut frame);
+            }
+            PARAGRAPH_CACHE.with(|cache| {
+                let cache = cache.borrow();
+                assert_eq!(cache.metrics.len(), PARAGRAPH_METRICS_CACHE_CAPACITY);
+                assert!(!cache.metrics.contains_key(&original.text_hash()));
+            });
+            let measured = original.measure(available);
+            assert_eq!(measured.min, Size::new(5, 1));
+            assert_eq!(measured.preferred, Size::new(11, 1));
+            original.render(area, &mut frame);
+            assert_eq!(raw_row_text(&frame, 0), "hello world     ");
+        }
+    }
+
+    #[test]
+    fn intrinsic_measurement_preserves_resolved_unicode_rendering() {
+        let paragraph = Paragraph::new("e\u{301} 界");
+        for render_first in [true, false] {
+            PARAGRAPH_CACHE.with(|cache| *cache.borrow_mut() = ParagraphCacheState::default());
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(4, 1, &mut pool);
+            if render_first {
+                paragraph.render(Rect::new(0, 0, 4, 1), &mut frame);
+            }
+            let measured = paragraph.measure(Size::new(4, 1));
+            assert_eq!(measured.min, Size::new(2, 1));
+            assert_eq!(measured.preferred, Size::new(4, 1));
+            paragraph.render(Rect::new(0, 0, 4, 1), &mut frame);
+            let accent = frame
+                .buffer
+                .get(0, 0)
+                .unwrap()
+                .content
+                .grapheme_id()
+                .unwrap();
+            assert_eq!(frame.pool.get(accent), Some("e\u{301}"));
+            assert_eq!(frame.buffer.get(1, 0).unwrap().content.as_char(), Some(' '));
+            let wide = frame
+                .buffer
+                .get(2, 0)
+                .unwrap()
+                .content
+                .grapheme_id()
+                .unwrap();
+            assert_eq!(frame.pool.get(wide), Some("界"));
+            assert!(frame.buffer.get(3, 0).unwrap().content.is_continuation());
+        }
+    }
+
+    #[test]
+    fn intrinsic_width_saturates_before_adding_chrome() {
+        for (width, expected_plain, expected_bordered) in [
+            (65_534, 65_534, 65_535),
+            (65_535, 65_535, 65_535),
+            (65_536, 65_535, 65_535),
+            (131_071, 65_535, 65_535),
+        ] {
+            let paragraph = Paragraph::new("x".repeat(width));
+            let measured = paragraph.measure(Size::new(80, 24));
+            assert_eq!(measured.min, Size::new(expected_plain, 1));
+            assert_eq!(measured.preferred, Size::new(expected_plain, 1));
+
+            let bordered = paragraph.block(Block::bordered());
+            let measured = bordered.measure(Size::new(80, 24));
+            assert_eq!(measured.min, Size::new(expected_bordered, 5));
+            assert_eq!(measured.preferred, Size::new(expected_bordered, 5));
+        }
+    }
+
+    #[test]
+    fn intrinsic_height_saturates_before_adding_chrome() {
+        for (height, expected_plain) in [(65_534, 65_534), (65_535, 65_535), (65_536, 65_535)] {
+            let paragraph = Paragraph::new(Text::from_lines(vec![Line::raw("x"); height]));
+            let measured = paragraph.measure(Size::new(80, 24));
+            assert_eq!(measured.min, Size::new(1, 1));
+            assert_eq!(measured.preferred, Size::new(1, expected_plain));
+
+            let bordered = paragraph.block(Block::bordered());
+            let measured = bordered.measure(Size::new(80, 24));
+            assert_eq!(measured.min, Size::new(5, 5));
+            assert_eq!(measured.preferred, Size::new(5, u16::MAX));
+        }
+    }
+
+    #[test]
+    fn intrinsic_wrapped_height_saturates_at_terminal_dimension_limit() {
+        let paragraph = Paragraph::new("x".repeat(65_536)).wrap(WrapMode::Char);
+        let measured = paragraph.measure(Size::new(1, 24));
+        assert_eq!(measured.min, Size::new(u16::MAX, 1));
+        assert_eq!(measured.preferred, Size::new(1, u16::MAX));
+
+        let bordered = paragraph.block(Block::bordered());
+        let measured = bordered.measure(Size::new(5, 24));
+        assert_eq!(measured.min, Size::new(u16::MAX, 5));
+        assert_eq!(measured.preferred, Size::new(5, u16::MAX));
     }
 
     #[test]

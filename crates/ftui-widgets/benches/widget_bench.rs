@@ -2,14 +2,18 @@
 //!
 //! Run with: cargo bench -p ftui-widgets
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use ftui_core::geometry::Rect;
+use criterion::{
+    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+};
+use ftui_core::geometry::{Rect, Size};
 use ftui_layout::Constraint;
 use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_style::Style;
-use ftui_text::Text;
+use ftui_text::{Line, Span, Text};
+use ftui_widgets::MeasurableWidget;
+use ftui_widgets::SizeConstraints;
 use ftui_widgets::StatefulWidget;
 use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
@@ -20,6 +24,8 @@ use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::table::{Row, Table};
 use ftui_widgets::virtualized::Virtualized;
+use std::collections::BTreeSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::hint::black_box;
 
 // ============================================================================
@@ -116,6 +122,154 @@ fn bench_paragraph_wrapped(c: &mut Criterion) {
                 para.render(area, &mut frame);
                 black_box(&frame.buffer);
             })
+        });
+    }
+
+    group.finish();
+}
+
+/// Separate the cost of populating Paragraph's metrics cache from a cache hit.
+/// The production cache holds 256 FIFO entries. Cycling 512 distinct text hashes
+/// ensures every cold access evicts its previous entry before it is revisited.
+/// Cold iterations traverse the complete corpus; their elapsed time is per 512
+/// paragraphs, while throughput is paragraphs per second. Hot iterations use one.
+fn bench_paragraph_cache(c: &mut Criterion) {
+    const CORPUS_LEN: usize = 512;
+    let mut group = c.benchmark_group("widget/paragraph_cache");
+    // Equal-duration batches avoid very short initial samples in the bounded
+    // focused/broad measurement window. Every cold iteration still visits all
+    // 512 entries; this changes sampling, not the measured corpus.
+    group.sampling_mode(SamplingMode::Flat);
+    let available = Size::new(80, 4);
+    let area = Rect::from_size(available.width, available.height);
+
+    for family in ["ascii", "ascii_controls", "mixed_unicode", "long_ascii"] {
+        let mut hashes = BTreeSet::new();
+        let paragraphs: Vec<Paragraph<'static>> = (0..CORPUS_LEN)
+            .map(|index| {
+                let prefix = format!("{index:03} ");
+                let (text, min_width, preferred_width, height) = match family {
+                    "ascii" => {
+                        let word_len = 8 + index % 16;
+                        let text = Text::from_line(Line::from_spans([
+                            Span::raw(prefix),
+                            Span::raw("alpha "),
+                            Span::raw("x".repeat(word_len / 2)),
+                            Span::styled("x".repeat(word_len - word_len / 2), Style::new().bold()),
+                            Span::raw(" tail"),
+                        ]));
+                        // A word crossing a styled span boundary remains one word.
+                        (text, word_len, 15 + word_len, 1)
+                    }
+                    "ascii_controls" => {
+                        let word_len = 2 + index % 4;
+                        let text = Text::raw(format!(
+                            "{prefix}aa\0bb\u{7f}cc\t{}\u{b}eee\u{c}f\rg\nnext",
+                            "d".repeat(word_len)
+                        ));
+                        // NUL/DEL are zero-width within a word; VT/FF break words
+                        // with zero width. Tab/CR occupy one cell; LF splits lines.
+                        (text, 6, 17 + word_len, 2)
+                    }
+                    "mixed_unicode" => {
+                        let wide_chars = 2 + index % 3;
+                        let text = Text::from_spans([
+                            Span::raw(prefix),
+                            Span::raw("e\u{301}"),
+                            Span::styled("e\u{301} ", Style::new().bold()),
+                            Span::raw("界".repeat(wide_chars)),
+                            Span::raw(" 👩‍💻\u{2003}tail"),
+                        ]);
+                        (text, 2 * wide_chars, 15 + 2 * wide_chars, 1)
+                    }
+                    "long_ascii" => {
+                        let word_len = 4096 + index % 64;
+                        let text = Text::raw(format!("{prefix}{} tail", "x".repeat(word_len)));
+                        (text, word_len, 9 + word_len, 1)
+                    }
+                    _ => unreachable!(),
+                };
+                // Paragraph keys its cache by this exact Text hash. Distinct
+                // strings alone would not detect an accidental key collision.
+                let mut hasher = DefaultHasher::new();
+                text.hash(&mut hasher);
+                assert!(
+                    hashes.insert(hasher.finish()),
+                    "duplicate {family} cache key"
+                );
+                let expected = SizeConstraints::at_least(
+                    Size::new(u16::try_from(min_width).unwrap(), 1),
+                    Size::new(u16::try_from(preferred_width).unwrap(), height),
+                );
+                let paragraph = Paragraph::from_static_text(text);
+                assert_eq!(paragraph.measure(available), expected, "{family}/{index}");
+                paragraph
+            })
+            .collect();
+        assert_eq!(hashes.len(), CORPUS_LEN);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(available.width, available.height, &mut pool);
+        for (index, paragraph) in paragraphs.iter().enumerate() {
+            frame.buffer.clear();
+            paragraph.render(area, &mut frame);
+            for (x, digit) in format!("{index:03}").chars().enumerate() {
+                assert_eq!(
+                    frame
+                        .buffer
+                        .get(u16::try_from(x).unwrap(), 0)
+                        .unwrap()
+                        .content
+                        .as_char(),
+                    Some(digit),
+                    "{family}/{index} rendered identity"
+                );
+            }
+            if family == "ascii_controls" {
+                assert_eq!(frame.buffer.get(0, 1).unwrap().content.as_char(), Some('n'));
+                assert_eq!(frame.buffer.get(3, 1).unwrap().content.as_char(), Some('t'));
+            }
+        }
+
+        group.throughput(Throughput::Elements(CORPUS_LEN as u64));
+        group.bench_function(BenchmarkId::new("render_cold_512", family), |b| {
+            // Prime a complete sweep before EACH Criterion invocation, including
+            // short warmup samples. Starting at zero then guarantees cache misses.
+            for paragraph in &paragraphs {
+                black_box(paragraph.measure(available));
+            }
+            b.iter(|| {
+                for paragraph in &paragraphs {
+                    frame.buffer.clear();
+                    paragraph.render(area, &mut frame);
+                    black_box(&frame.buffer);
+                }
+            });
+        });
+        group.throughput(Throughput::Elements(1));
+        group.bench_function(BenchmarkId::new("render_hot_1", family), |b| {
+            paragraphs[0].render(area, &mut frame);
+            b.iter(|| {
+                frame.buffer.clear();
+                paragraphs[0].render(area, &mut frame);
+                black_box(&frame.buffer);
+            });
+        });
+        group.throughput(Throughput::Elements(CORPUS_LEN as u64));
+        group.bench_function(BenchmarkId::new("measure_cold_512", family), |b| {
+            for paragraph in &paragraphs {
+                black_box(paragraph.measure(available));
+            }
+            b.iter(|| {
+                for paragraph in &paragraphs {
+                    black_box(paragraph.measure(black_box(available)));
+                }
+            });
+        });
+        group.throughput(Throughput::Elements(1));
+        group.bench_function(BenchmarkId::new("measure_hot_1", family), |b| {
+            black_box(paragraphs[0].measure(available));
+            b.iter(|| black_box(paragraphs[0].measure(black_box(available))));
         });
     }
 
@@ -518,6 +672,7 @@ criterion_group!(
     bench_block_render,
     bench_paragraph_render,
     bench_paragraph_wrapped,
+    bench_paragraph_cache,
     bench_table_render,
     bench_log_ring_push,
     bench_log_ring_push_at_capacity,
