@@ -313,7 +313,8 @@ fn benchmark_gate_loads_real_baseline_json() {
     let gate = BenchmarkGate::load_baseline_json("real_baseline_p99", &json, "p99_ns")
         .expect("real baseline.json should parse");
 
-    // All metrics well under budget
+    // Synthetic input exercises the gate contract, not runtime performance.
+    // Every required metric in the real baseline must be represented.
     let measurements = vec![
         Measurement::new("frame_render", 1_000_000.0).unit("ns"),
         Measurement::new("layout_computation", 10_000.0).unit("ns"),
@@ -325,6 +326,10 @@ fn benchmark_gate_loads_real_baseline_json() {
         Measurement::new("buffer_new_80x24", 10_000.0).unit("ns"),
         Measurement::new("buffer_new_200x60", 40_000.0).unit("ns"),
         Measurement::new("cell_bits_eq", 5.0).unit("ns"),
+        Measurement::new("runtime_shutdown_latency", 2_500_000.0).unit("ns"),
+        Measurement::new("runtime_first_frame", 5_000_000.0).unit("ns"),
+        Measurement::new("runtime_command_roundtrip", 250_000.0).unit("ns"),
+        Measurement::new("runtime_effect_queue_drain", 1_000_000.0).unit("ns"),
     ];
 
     let result = gate.evaluate(&measurements);
@@ -333,7 +338,13 @@ fn benchmark_gate_loads_real_baseline_json() {
         "all under-budget measurements should pass: {}",
         result.summary()
     );
-    assert_eq!(result.pass_count, 10);
+    assert_eq!(result.pass_count, 14);
+
+    // The old ten-metric fixture silently omitted four required runtime
+    // measurements; it must no longer certify the full baseline.
+    let incomplete = gate.evaluate(&measurements[..10]);
+    assert!(!incomplete.passed());
+    assert_eq!(incomplete.validation_errors.len(), 4);
 }
 
 // ============================================================================

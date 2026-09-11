@@ -35,6 +35,7 @@
 //! assert!(report.passed(), "gauntlet failed: {}", report.summary());
 //! ```
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use crate::baseline_capture::{FixtureFamily, MetricBaseline, MetricCategory};
@@ -529,8 +530,11 @@ impl GauntletReport {
 ///
 /// Pure and deterministic: unit-testable with synthetic `MetricBaseline`
 /// records. A regression is flagged when the candidate's p95/p99 exceeds the
-/// baseline by more than the configured percentage (baselines at or below
-/// zero are skipped — there is nothing meaningful to regress against).
+/// baseline by more than the configured percentage. A zero baseline permits
+/// only a zero candidate value. Every latency metric in the nonempty baseline
+/// is required exactly once in the candidate, in the same unit. Invalid inputs
+/// fail as observability gaps; other metric categories are outside this gate.
+/// Callers must separately ensure that every required fixture is compared.
 #[must_use]
 pub fn compare_tail_latency(
     fixture_id: &str,
@@ -539,25 +543,67 @@ pub fn compare_tail_latency(
     config: &GauntletConfig,
 ) -> Vec<GateFailure> {
     let mut failures = Vec::new();
-    for base in baseline {
-        if base.category != MetricCategory::Latency {
-            continue;
+    let invalid = |reason| GateFailure {
+        fixture_id: fixture_id.to_string(),
+        reason,
+        category: FailureCategory::ObservabilityGap,
+        artifacts: artifact_names(GauntletGate::TailLatency),
+    };
+    for (label, threshold) in [
+        ("p95", config.p95_regression_threshold_pct),
+        ("p99", config.p99_regression_threshold_pct),
+    ] {
+        if !threshold.is_finite() || threshold < 0.0 {
+            failures.push(invalid(format!("invalid {label} regression threshold")));
         }
-        let Some(cand) = candidate
-            .iter()
-            .find(|m| m.metric == base.metric && m.category == MetricCategory::Latency)
-        else {
-            failures.push(GateFailure {
-                fixture_id: fixture_id.to_string(),
-                reason: format!(
-                    "latency metric '{}' missing from candidate run",
-                    base.metric
-                ),
-                category: FailureCategory::ObservabilityGap,
-                artifacts: artifact_names(GauntletGate::TailLatency),
-            });
-            continue;
-        };
+    }
+
+    let mut required = BTreeMap::new();
+    let mut measured = BTreeMap::new();
+    for (side, metrics, indexed) in [
+        ("baseline", baseline, &mut required),
+        ("candidate", candidate, &mut measured),
+    ] {
+        for metric in metrics {
+            if metric.category != MetricCategory::Latency {
+                continue;
+            }
+            if !valid_latency_metric(metric) {
+                failures.push(invalid(format!(
+                    "invalid {side} latency metric '{}'",
+                    metric.metric
+                )));
+            }
+            if indexed.insert(metric.metric.as_str(), metric).is_some() {
+                failures.push(invalid(format!(
+                    "duplicate {side} latency metric '{}'",
+                    metric.metric
+                )));
+            }
+        }
+    }
+    if required.is_empty() {
+        failures.push(invalid("baseline contains no latency metrics".to_string()));
+    }
+    for (name, base) in &required {
+        match measured.get(name) {
+            None => failures.push(invalid(format!(
+                "latency metric '{name}' missing from candidate run"
+            ))),
+            Some(cand) if cand.unit != base.unit => failures.push(invalid(format!(
+                "latency metric '{name}' has mismatched units: baseline '{}' candidate '{}'",
+                base.unit, cand.unit
+            ))),
+            Some(_) => {}
+        }
+    }
+    if !failures.is_empty() {
+        return failures;
+    }
+
+    for (name, base) in required {
+        // Coverage and uniqueness were checked before any numeric comparison.
+        let cand = measured[name];
         for (label, base_value, cand_value, threshold_pct) in [
             (
                 "p95",
@@ -572,11 +618,12 @@ pub fn compare_tail_latency(
                 config.p99_regression_threshold_pct,
             ),
         ] {
-            if base_value <= 0.0 || !base_value.is_finite() || !cand_value.is_finite() {
-                continue;
-            }
             let limit = base_value * (1.0 + threshold_pct / 100.0);
-            if cand_value > limit {
+            if !limit.is_finite() {
+                failures.push(invalid(format!(
+                    "latency metric '{name}' {label} regression ceiling is not finite"
+                )));
+            } else if cand_value > limit {
                 failures.push(GateFailure {
                     fixture_id: fixture_id.to_string(),
                     reason: format!(
@@ -591,6 +638,22 @@ pub fn compare_tail_latency(
         }
     }
     failures
+}
+
+fn valid_latency_metric(metric: &MetricBaseline) -> bool {
+    let p = &metric.percentiles;
+    let ordered = [p.min, p.p50, p.p95, p.p99, p.p999, p.max];
+    !metric.metric.trim().is_empty()
+        && !metric.unit.trim().is_empty()
+        && metric.sample_count > 0
+        && ordered.iter().all(|value| value.is_finite() && *value >= 0.0)
+        // Interpolating equal samples can round adjacent percentiles differently.
+        && ordered.windows(2).all(|pair| {
+            pair[0] <= pair[1] || pair[0] - pair[1] <= 4.0 * f64::EPSILON * pair[0]
+        })
+        && [metric.mean, metric.stddev, metric.cv]
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0)
 }
 
 fn artifact_names(gate: GauntletGate) -> Vec<String> {
