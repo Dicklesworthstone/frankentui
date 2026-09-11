@@ -779,7 +779,9 @@ pub(crate) fn draw_text_span_scrolled(
         0
     };
 
-    let mut visual_pos: u16 = 0;
+    // The logical span may extend beyond the terminal coordinate range.
+    let scroll_x = usize::from(scroll_x);
+    let mut visual_pos: usize = 0;
 
     for grapheme in content.graphemes(true) {
         if x >= max_x {
@@ -790,7 +792,7 @@ pub(crate) fn draw_text_span_scrolled(
             continue;
         }
 
-        let next_visual_pos = visual_pos.saturating_add(w as u16);
+        let next_visual_pos = visual_pos.saturating_add(w);
 
         // Check if this grapheme is visible
         if next_visual_pos <= scroll_x {

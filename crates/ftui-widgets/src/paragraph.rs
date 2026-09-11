@@ -372,15 +372,15 @@ impl Widget for Paragraph<'_> {
         let scroll_offset = self.scroll.0 as usize;
 
         let mut render_line = |line: &ftui_text::Line, line_width: usize, y: u16| {
-            let scroll_x = self.scroll.1;
+            let scroll_x = usize::from(self.scroll.1);
             let start_x = align_x(text_area, line_width, self.alignment);
 
-            // Let's iterate spans.
-            // `span_visual_offset`: relative to line start.
-            let mut span_visual_offset = 0;
+            // Logical text widths can exceed the terminal coordinate range.
+            let mut span_visual_offset: usize = 0;
 
             // Alignment offset relative to text_area.x
-            let alignment_offset = start_x.saturating_sub(text_area.x);
+            let alignment_offset = usize::from(start_x.saturating_sub(text_area.x));
+            let visible_width = usize::from(text_area.right().saturating_sub(text_area.x));
 
             for span in line.spans() {
                 let span_width = span.width();
@@ -390,25 +390,24 @@ impl Widget for Paragraph<'_> {
                 let line_rel_start = alignment_offset.saturating_add(span_visual_offset);
 
                 // Check visibility
-                if line_rel_start.saturating_add(span_width as u16) <= scroll_x {
+                if line_rel_start.saturating_add(span_width) <= scroll_x {
                     // Fully scrolled out to the left
-                    span_visual_offset = span_visual_offset.saturating_add(span_width as u16);
+                    span_visual_offset = span_visual_offset.saturating_add(span_width);
                     continue;
                 }
 
-                // Calculate actual draw position.
-                let (draw_x, local_scroll) = if line_rel_start < scroll_x {
-                    // Partially scrolled out left
-                    (text_area.x, scroll_x - line_rel_start)
-                } else {
-                    // Start is visible
-                    (text_area.x.saturating_add(line_rel_start - scroll_x), 0)
-                };
-
-                if draw_x >= text_area.right() {
+                let draw_offset = line_rel_start.saturating_sub(scroll_x);
+                if draw_offset >= visible_width {
                     // Fully clipped to the right
                     break;
                 }
+
+                // Narrow only after clipping proves the coordinate fits. The
+                // local scroll is bounded by the original u16 scroll offset.
+                let draw_x = text_area.x
+                    + u16::try_from(draw_offset).expect("visible paragraph offset fits u16");
+                let local_scroll = u16::try_from(scroll_x.saturating_sub(line_rel_start))
+                    .expect("local paragraph scroll is bounded by u16 scroll");
 
                 // At NoStyling+, ignore span-level styles entirely
                 let span_style = if deg.apply_styling() {
@@ -443,7 +442,7 @@ impl Widget for Paragraph<'_> {
                     );
                 }
 
-                span_visual_offset = span_visual_offset.saturating_add(span_width as u16);
+                span_visual_offset = span_visual_offset.saturating_add(span_width);
             }
         };
 
@@ -741,6 +740,121 @@ mod tests {
         // Should skip Line1, show Line2 and Line3
         assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('L'));
         assert_eq!(frame.buffer.get(4, 0).unwrap().content.as_char(), Some('2'));
+    }
+
+    #[test]
+    fn render_long_span_visible_prefix_at_u16_boundaries() {
+        for width in [65_535, 65_536, 65_537, 131_072] {
+            let content = format!("ABCDE{}", "x".repeat(width - 5));
+            let paragraph = Paragraph::new(content);
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(7, 1, &mut pool);
+            paragraph.render(Rect::new(1, 0, 5, 1), &mut frame);
+
+            assert_eq!(raw_row_text(&frame, 0), " ABCDE ", "width {width}");
+        }
+    }
+
+    #[test]
+    fn render_long_span_at_max_horizontal_scroll() {
+        for (tail, expected) in [
+            ("", "      "),
+            ("A", "A     "),
+            ("ABCDE", "ABCDE "),
+            ("ABCDEFGH", "ABCDEF"),
+        ] {
+            let content = format!("{}{tail}", "x".repeat(65_535));
+            let paragraph = Paragraph::new(content).scroll((0, u16::MAX));
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(6, 1, &mut pool);
+            paragraph.render(Rect::new(0, 0, 6, 1), &mut frame);
+
+            assert_eq!(raw_row_text(&frame, 0), expected, "tail {tail:?}");
+        }
+    }
+
+    #[test]
+    fn render_max_horizontal_scroll_preserves_span_positions_and_styles() {
+        use ftui_render::cell::PackedRgba;
+
+        for (prefix_width, expected, red_start, green_start) in [
+            (65_534, " BCD   ", 1, 2),
+            (65_535, " ABCD  ", 1, 3),
+            (65_536, " xABCD ", 2, 4),
+        ] {
+            let paragraph = Paragraph::new(Text::from(Line::from_spans([
+                Span::raw("x".repeat(prefix_width)),
+                Span::styled("AB", Style::new().fg(PackedRgba::RED)),
+                Span::styled("CD", Style::new().fg(PackedRgba::GREEN)),
+            ])))
+            .scroll((0, u16::MAX));
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(7, 1, &mut pool);
+            paragraph.render(Rect::new(1, 0, 5, 1), &mut frame);
+
+            assert_eq!(raw_row_text(&frame, 0), expected, "prefix {prefix_width}");
+            for x in red_start..green_start {
+                assert_eq!(frame.buffer.get(x, 0).unwrap().fg, PackedRgba::RED);
+            }
+            for x in green_start..green_start + 2 {
+                assert_eq!(frame.buffer.get(x, 0).unwrap().fg, PackedRgba::GREEN);
+            }
+        }
+    }
+
+    #[test]
+    fn render_long_wide_span_clips_at_viewport_edge() {
+        let paragraph = Paragraph::new("界".repeat(32_768));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        paragraph.render(Rect::new(1, 0, 3, 1), &mut frame);
+
+        let wide = frame
+            .buffer
+            .get(1, 0)
+            .unwrap()
+            .content
+            .grapheme_id()
+            .expect("the visible whole wide grapheme must be rendered");
+        assert_eq!(frame.pool.get(wide), Some("界"));
+        assert!(frame.buffer.get(2, 0).unwrap().is_continuation());
+        assert_eq!(frame.buffer.get(3, 0).unwrap().content.as_char(), Some(' '));
+        for x in [0, 4] {
+            assert_eq!(
+                *frame.buffer.get(x, 0).unwrap(),
+                ftui_render::cell::Cell::default()
+            );
+        }
+    }
+
+    #[test]
+    fn render_max_horizontal_scroll_clips_whole_wide_graphemes() {
+        let content = format!("{}界A界B", "x".repeat(65_535));
+        let paragraph = Paragraph::new(content).scroll((0, u16::MAX));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 1, &mut pool);
+        paragraph.render(Rect::new(0, 0, 4, 1), &mut frame);
+
+        let wide = frame
+            .buffer
+            .get(0, 0)
+            .unwrap()
+            .content
+            .grapheme_id()
+            .expect("a wide grapheme beginning at the scroll offset must remain visible");
+        assert_eq!(frame.pool.get(wide), Some("界"));
+        assert!(frame.buffer.get(1, 0).unwrap().is_continuation());
+        assert_eq!(frame.buffer.get(2, 0).unwrap().content.as_char(), Some('A'));
+        assert_eq!(frame.buffer.get(3, 0).unwrap().content.as_char(), Some(' '));
+
+        // Preserve the existing clipping policy: omit a partially scrolled wide
+        // grapheme, then draw the following whole graphemes at the left edge.
+        let content = format!("{}界AB", "x".repeat(65_534));
+        let paragraph = Paragraph::new(content).scroll((0, u16::MAX));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 1, &mut pool);
+        paragraph.render(Rect::new(0, 0, 4, 1), &mut frame);
+        assert_eq!(raw_row_text(&frame, 0), "AB  ");
     }
 
     #[test]
