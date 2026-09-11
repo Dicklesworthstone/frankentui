@@ -1275,12 +1275,16 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     reason = "timeout",
                     "killing process"
                 );
-                stop_process_io();
-                break stopped_process_event(
+                // Keep the child's pipes open until termination is observed.
+                // Closing a reader first can turn our kill into SIGPIPE while
+                // the child is blocked writing to a full model queue.
+                let event = stopped_process_event(
                     "process timed out",
                     &mut child,
                     &mut child_wait_error,
                 );
+                stop_process_io();
+                break event;
             }
 
             if token.wait_timeout(poll_interval) {
@@ -1291,8 +1295,10 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                     reason = "cancellation",
                     "killing process"
                 );
+                let event =
+                    stopped_process_event("process canceled", &mut child, &mut child_wait_error);
                 stop_process_io();
-                break stopped_process_event("process canceled", &mut child, &mut child_wait_error);
+                break event;
             }
             if let Some(control) = &self.control {
                 control.dispatch_interrupt(&child);
@@ -3331,6 +3337,38 @@ os.write(1,b'tail\r')
     }
 
     #[cfg(target_os = "linux")]
+    fn child_has_sigstop(pid: rustix::process::Pid) -> rustix::io::Result<bool> {
+        use rustix::process::{Signal, WaitId, WaitIdOptions, waitid};
+
+        // A ptraced child can report /proc state `t` for an unrelated syscall
+        // stop. Require the actual SIGSTOP event, leaving it waitable so this
+        // observer never takes child status away from the supervisor.
+        Ok(waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::STOPPED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        )?
+        .is_some_and(|status| status.stopping_signal() == Some(Signal::STOP.as_raw())))
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_process_stop_oracle_rejects_running_child_without_reaping() {
+        let (mut child, _stdin, _output) = spawn_cleanup_probe();
+        let observed = child_has_sigstop(rustix::process::Pid::from_child(&child));
+        let still_running = child.try_wait();
+        // Retain observations before explicit cleanup; cleanup is not the
+        // evidence that the stop oracle left a live child under its owner.
+        let cleanup = cleanup_child(&mut child, &mut None);
+        assert_eq!(observed, Ok(false), "a running child has no SIGSTOP event");
+        assert!(matches!(still_running, Ok(None)));
+        assert!(cleanup.kill_sent);
+        assert_eq!(
+            cleanup.status.map(process_exit_event),
+            Some(ProcessEvent::Signaled(rustix::process::Signal::KILL.as_raw()))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
     fn assert_reader_failure_with_full_queue(output: &str, reason: &str) {
         let (observed_tx, observed_rx) = stdmpsc::channel();
         let sub = ProcessSubscription::new("sh", move |event| {
@@ -3367,18 +3405,28 @@ os.write(1,b'tail\r')
             handle.join().expect("stop child without PID");
             panic!("expected actual child PID, got {first:?}");
         };
+        let wait_pid = rustix::process::Pid::from_raw(
+            i32::try_from(pid).expect("Linux child PID fits i32"),
+        )
+        .expect("child PID is nonzero");
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
-            if status.lines().any(|line| line.starts_with("State:\tT")) {
+            let stopped = child_has_sigstop(wait_pid);
+            if matches!(stopped, Ok(true)) {
                 break;
             }
-            if Instant::now() >= deadline {
+            if stopped.is_err() || Instant::now() >= deadline {
                 trigger.stop();
                 handle.join().expect("stop child that did not pause");
-                panic!("child never stopped: {status}");
+                panic!("child never reported SIGSTOP: {stopped:?}");
             }
             thread::sleep(Duration::from_millis(5));
+        }
+        let retained_stop = child_has_sigstop(wait_pid);
+        if !matches!(retained_stop, Ok(true)) {
+            trigger.stop();
+            handle.join().expect("stop child whose status was consumed");
+            panic!("SIGSTOP observation must leave status waitable: {retained_stop:?}");
         }
         let resumed = Command::new("kill")
             .args(["-CONT", &pid.to_string()])
@@ -4076,6 +4124,98 @@ os.write(1,b'tail\r')
         assert_eq!(
             received, expected,
             "already accepted output remains in FIFO order"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_process_cancel_kills_blocked_writer_before_closing_pipe() {
+        assert_blocked_writer_is_killed(false);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_process_timeout_kills_blocked_writer_before_closing_pipe() {
+        assert_blocked_writer_is_killed(true);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_blocked_writer_is_killed(timeout: bool) {
+        let (tx, rx) = stdmpsc::sync_channel(256);
+        let expected: Vec<_> = (0..256)
+            .map(|index| ProcessEvent::Stdout(format!("accepted-{index}")))
+            .collect();
+        for event in &expected {
+            tx.send(event.clone()).expect("fill application queue");
+        }
+        let (observed_tx, observed_rx) = stdmpsc::channel();
+        let (done_tx, done_rx) = stdmpsc::channel();
+        // Restore SIGPIPE's default action so premature reader closure has an
+        // observable terminal status. The child stays inside an actual blocking
+        // pipe write while the reader waits for model queue capacity.
+        let script = "import os,signal\nsignal.alarm(15)\nsignal.signal(signal.SIGPIPE,signal.SIG_DFL)\nprint(os.getpid(),flush=True)\nwhile True: os.write(1,b'x'*65536)";
+        let mut sub = ProcessSubscription::new("python3", move |event| {
+            observed_tx
+                .send(event.clone())
+                .expect("observe process callback before model backpressure");
+            event
+        })
+        .args(["-u", "-c", script]);
+        if timeout {
+            sub = sub.timeout(Duration::from_secs(3));
+        }
+        let (signal, trigger) = StopSignal::new();
+        let handle = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(tx, signal.clone()), signal);
+            done_tx.send(()).expect("observe supervisor completion");
+        });
+        let first = observed_rx.recv_timeout(Duration::from_secs(5));
+        let pid = match &first {
+            Ok(ProcessEvent::Stdout(line)) => line.parse::<u32>().ok(),
+            _ => None,
+        };
+        let Some(pid) = pid else {
+            trigger.stop();
+            handle.join().expect("stop child without PID");
+            panic!("expected actual blocked writer PID, got {first:?}");
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let wait = std::fs::read_to_string(format!("/proc/{pid}/wchan"))
+                .unwrap_or_default();
+            if wait.contains("pipe_write") {
+                break;
+            }
+            if Instant::now() >= deadline {
+                trigger.stop();
+                handle.join().expect("stop child that did not block writing");
+                panic!("child never entered a blocking pipe write: {wait:?}");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if !timeout {
+            trigger.stop();
+        }
+        let done = done_rx.recv_timeout(Duration::from_secs(5));
+        // Cleanup precedes assertions even when termination failed. No model
+        // queue slot is released until both the child and workers have stopped.
+        trigger.stop();
+        handle.join().expect("join blocked writer supervisor");
+        assert!(done.is_ok(), "full queue blocked termination: {done:?}");
+        assert_eq!(
+            observed_rx.try_iter().collect::<Vec<_>>(),
+            [ProcessEvent::Killed],
+            "cancel and timeout must reap SIGKILL, not induce SIGPIPE or EOF"
+        );
+        assert!(
+            std::fs::metadata(format!("/proc/{pid}"))
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound),
+            "the immediate child must already be reaped"
+        );
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            expected,
+            "the entire previously accepted prefix survives without a drain"
         );
     }
 
