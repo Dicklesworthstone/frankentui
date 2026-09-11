@@ -1164,6 +1164,75 @@ the original presentation details, not silently completed acceptance items.
 Package-file inclusion and an isolated source dependency are not a newly
 published crate or a registry-consumer proof. No release or Actions ran.
 
+### September 10 interruptible Unix process pipes
+
+`ProcessSubscription` now makes only the parent-owned Unix pipe endpoints
+nonblocking. Readiness polling preserves immediate data/space wakeups while
+checking cancellation at most one 50 ms poll later, subject to scheduling.
+Would-block does not become EOF, `write_all` keeps the exact unwritten suffix,
+and canceled writes return an error that stops its retry loop. The existing
+line parser, bounded queues, partial previews and child wait/kill ownership
+remain unchanged. A syscall can still race cancellation and deliver a prefix.
+Non-Unix pipes retain their existing blocking behavior.
+
+Three new Linux tests join the 63 unchanged process tests. A live negative
+control restores blocking mode and confirms that the same worker-completion
+observer rejects it until peer cleanup. The positive run releases both output
+workers while the child keeps its endpoints open, without converting pending
+prefixes into completed lines. A full 4 KiB stdin pipe releases its writer
+before the child reads; the child receives exactly the already-written 4,096
+`x` bytes, no LF or duplication, with its own endpoint still blocking.
+
+The actual-descendant test runs in an isolated exact-test subprocess. Only that
+test process enables adoption; production gains no global subreaper. After the
+leader is reaped with exit 42, cancellation removes both worker TIDs and parent
+pipe descriptors while the descendant remains alive. The descendant then
+observes broken pipes before its fixture release permits exit 7 and exact-child
+reaping. Two accepted lines remain exact, held prefixes never become EOF lines,
+and the terminal error retains `Exited(42)` and incomplete-output context.
+These Linux tests require visible `/proc` kernel wait symbols. Arbitrary
+blocking message callbacks, descendant termination/reaping by the runtime,
+and non-Unix pipe cancellation remain outside the proven behavior.
+
+Frozen candidate `pipe1` has source-manifest SHA256
+`ac34c04a7bfaf4026b723cd9659452e396dfc2b4266271f75ac0d3ba74e35cbf`.
+Its 66 process, 90 facade/model and two canonical-example tests pass: 158
+selected native tests; the isolated rerun is the same descendant test, not an
+extra distinct case. Both examples, package-file inclusion and the isolated
+source consumer pass, as do workspace formatting, all-target check, strict
+Clippy and strict rustdoc. The unchanged 33-journey/17-startup PTY suite also
+passes against both new binaries, including exact 10,000-line delivery,
+interactive input, prompt previews, restart and terminal restoration. This is
+selected Linux execution, not a full workspace test run, broader host matrix,
+registry-consumer proof or physical-terminal rendering. CPR remains emulated.
+
+DSR receipts are `frankentui-pipe1-native/20260910T212050-3856266` and
+`frankentui-pipe1-pty/20260910T214311-4042637`, using configured host `trj`
+and exact `nightly-2026-08-31` rustc
+`90850177249efe0321573c569aec5d12b257f8d6`. Runtime source SHA256 is
+`a7bebc910e8e1f8eef5402d77f1e0b41de646c2c747a12f0d43bf8df71eaf304`;
+canonical binary SHA256 is
+`11e8685b5a790ee714655e12d09fd2d32a78f5fd5fdd886006789365d64bf68f`;
+streaming binary SHA256 is
+`6992ece42e6c4fe17c35e73e5d64f4e46472bafa1ac623cee714d8b9f4495ae8`.
+Retained scripts, snapshots, receipts and raw captures live under
+`/data/retained/ftui-process-pipes-20260910-greenlynx/`; evidence archive SHA256
+is `0891a7eac2d6e642554345bc09a1d9dd4f0f110c7b8b2f66c0c0effb535e4d9f`.
+All 33 capture hashes and the receipt config/log/source bindings were checked.
+The explicit per-file manifest identifies the source; DSR's Git fingerprint
+did not distinguish the two formatting candidates and is insufficient alone.
+Only later report/Bead records differ from the tested 2,499-file snapshot.
+Existing `nix 0.28` future-compatibility warnings remain visible. Malformed DSR
+duration fields receive no timing credit. RCH and UBS remain unavailable under
+their documented deletion constraints; no Actions or release publication ran.
+
+`pipe0` stopped at six formatting differences before any tests ran; its failed
+DSR receipt is retained. Both independent reviewers identified test-handshake
+races before execution; the child now checks blocking flags only after adapter
+setup, and the stdin fixture avoids a check-then-pause signal race. No original
+test, assertion, tolerance or requirement was weakened. Original `.32.1`
+remains in progress for descendant ownership and its other original acceptance.
+
 ### Fresh source findings that determine the next work
 
 | User promise | Current source evidence | Existing owner and required outcome |
@@ -1335,6 +1404,8 @@ specific implementation or observation below, not completion of the whole goal):
    now shares that model with interactive defaults. Byte-safe partial output,
    descendant cancellation, remaining original behavior and published-consumer/
    host acceptance are required before calling the full journey complete.
+   Unix parent-pipe workers now stop despite inherited endpoints; descendant
+   termination/reaping and non-Unix pipe interruption remain outstanding.
 3. **Finish real browser and accessibility consumers.** Use the already-built
    WASM artifact as a starting point, finish reproducible host packaging and
    bounded admission, then GPU/IME/mobile proof. In parallel, complete widget

@@ -402,10 +402,14 @@ impl Drop for ProcessInputRun {
 }
 
 fn write_process_input(
-    mut stdin: std::process::ChildStdin,
+    stdin: std::process::ChildStdin,
     receiver: mpsc::Receiver<Box<str>>,
     stop: StopSignal,
 ) -> io::Result<()> {
+    #[cfg(unix)]
+    let mut stdin = process_pipe(stdin, stop.clone())?;
+    #[cfg(not(unix))]
+    let mut stdin = stdin;
     loop {
         match receiver.recv_timeout(PROCESS_READER_JOIN_POLL) {
             Ok(line) => {
@@ -421,6 +425,80 @@ fn write_process_input(
         }
     }
     Ok(())
+}
+
+// Only the parent-owned endpoint becomes nonblocking. The child's opposite
+// endpoint remains blocking, including copies inherited by its descendants.
+#[cfg(unix)]
+fn process_pipe<P: std::os::fd::AsFd>(pipe: P, stop: StopSignal) -> io::Result<ProcessPipe<P>> {
+    rustix::io::ioctl_fionbio(&pipe, true)?;
+    Ok(ProcessPipe { pipe, stop })
+}
+
+#[cfg(unix)]
+struct ProcessPipe<P> {
+    pipe: P,
+    stop: StopSignal,
+}
+
+#[cfg(unix)]
+impl<P: std::os::fd::AsFd> ProcessPipe<P> {
+    fn wait_ready(&self, interest: rustix::event::PollFlags) -> io::Result<()> {
+        let mut fds = [rustix::event::PollFd::new(&self.pipe, interest)];
+        // Readiness wakes immediately for data/space/EOF. The finite timeout
+        // bounds cancellation latency even when a descendant holds the pipe.
+        let timeout = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 50_000_000,
+        };
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<P: Read + std::os::fd::AsFd> Read for ProcessPipe<P> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            if self.stop.is_stopped() {
+                // read_process_line checks stop before retrying Interrupted.
+                return Err(io::Error::from(io::ErrorKind::Interrupted));
+            }
+            match self.pipe.read(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.wait_ready(rustix::event::PollFlags::IN)?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<P: Write + std::os::fd::AsFd> Write for ProcessPipe<P> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        loop {
+            if self.stop.is_stopped() {
+                // write_all retries Interrupted; cancellation must terminate
+                // that loop rather than spinning on a permanently stopped run.
+                return Err(io::Error::other("stdin write canceled before completion"));
+            }
+            match self.pipe.write(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.wait_ready(rustix::event::PollFlags::OUT)?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.pipe.flush()
+    }
 }
 
 /// A subscription that spawns and monitors an external process.
@@ -452,11 +530,14 @@ fn write_process_input(
 /// disabled. Late reaping does not turn the earlier error into success. Linux
 /// retains a pidfd when available; after a wait error, targets without a
 /// retained process handle refuse further waits and signals for that PID.
-/// Inherited descendant pipes cannot be interrupted by the reader stop signal.
+/// On Unix, parent pipe endpoints use nonblocking I/O and readiness waits;
+/// cancellation stops the workers even if descendants retain their endpoints.
+/// Other targets still use blocking pipes and bounded joins, so an inherited
+/// endpoint can keep a detached worker alive after cancellation.
 /// Input is closed by default; [`stdin`](Self::stdin) enables a bounded input
-/// worker. Inherited descendant stdin can also keep a worker blocked after
-/// cancellation; joins are bounded, but descendant cleanup is not provided.
-/// A blocked OS write can deliver a prefix even after stop is requested.
+/// worker. Descendant termination and reaping are not provided on any target.
+/// Cancellation is not an atomic write boundary: a prefix may already have
+/// reached the child, and an I/O syscall can race with the stop request.
 /// Optional [`control`](Self::control) admits interrupts independently of those
 /// queues. Its generation belongs to one run. Restart only after that run's
 /// terminal event and confirmed child cleanup, using a fresh control handle.
@@ -938,9 +1019,10 @@ impl<M: Send + 'static> ProcessSubscription<M> {
     /// Previews share the bounded, interruptible output queue and the 64 KiB
     /// line bound; they can be delayed by backpressure. Earlier prefixes may
     /// already be visible when a later read fails UTF-8 or size validation.
-    /// This does not force an unflushed child to write, interrupt a blocked OS
-    /// read, or provide arbitrary binary streaming. Changing this setting
-    /// changes the automatic subscription ID.
+    /// This does not force an unflushed child to write or provide arbitrary
+    /// binary streaming. Unix pipe cancellation is independent of this setting;
+    /// other targets can still block in OS reads. Changing this setting changes
+    /// the automatic subscription ID.
     #[must_use]
     pub fn partial_output(mut self, enabled: bool) -> Self {
         self.partial_output = enabled;
@@ -1101,6 +1183,9 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             let stop_out = reader_stop.clone();
             let make_msg_out = std::sync::Arc::clone(&make_msg_ref);
             std::thread::spawn(move || {
+                #[cfg(unix)]
+                let stdout =
+                    process_pipe(stdout, stop_out.clone()).map_err(ProcessReadError::Io)?;
                 forward_lines(
                     stdout,
                     sender_out,
@@ -1116,6 +1201,9 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
             let stop_err = reader_stop.clone();
             let make_msg_err = std::sync::Arc::clone(&make_msg_ref);
             std::thread::spawn(move || {
+                #[cfg(unix)]
+                let stderr =
+                    process_pipe(stderr, stop_err.clone()).map_err(ProcessReadError::Io)?;
                 forward_lines(
                     stderr,
                     sender_err,
@@ -2448,6 +2536,181 @@ mod tests {
         assert_eq!(
             receiver.into_iter().collect::<Vec<_>>(),
             [ProcessEvent::Killed]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn await_pipe_wait(task: &std::path::Path) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let state = std::fs::read_to_string(task.join("wchan")).unwrap();
+            // Observe an actual kernel pipe/readiness wait before cancellation.
+            // The blocking implementation reaches pipe_read/pipe_write; the
+            // interruptible implementation reaches poll_schedule_timeout.
+            if state.contains("poll") || state.contains("pipe_read") || state.contains("pipe_write")
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "worker never waited on its pipe: {state}"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_output_workers_cancel_while_child_keeps_both_pipes_open() {
+        // Seed the original blocking-pipe defect as a live negative control;
+        // the same observer must reject completion before fixture cleanup.
+        assert_output_worker_lifetime(false);
+        assert_output_worker_lifetime(true);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_output_worker_lifetime(nonblocking: bool) {
+        let script = "import os,signal\nsignal.alarm(8)\nassert os.read(0,1)==b'R'\nassert all(os.get_blocking(fd) for fd in (0,1,2))\nos.write(1,b'out-prefix')\nos.write(2,b'err-prefix')\nsignal.pause()";
+        let mut child = Command::new("python3")
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (stop, trigger) = StopSignal::new();
+        let (sender, receiver) = mpsc::sync_channel(8);
+        let (task_sender, task_receiver) = mpsc::channel();
+        let start_worker = |pipe: Box<dyn ReadPipe>, stream: &'static str| {
+            let stop = stop.clone();
+            let sender = sender.clone();
+            let task_sender = task_sender.clone();
+            thread::spawn(move || {
+                let pipe = process_pipe(pipe, stop.clone()).map_err(ProcessReadError::Io)?;
+                if !nonblocking {
+                    rustix::io::ioctl_fionbio(&pipe.pipe, false)
+                        .map_err(|error| ProcessReadError::Io(error.into()))?;
+                }
+                task_sender
+                    .send(std::fs::read_link("/proc/thread-self").unwrap())
+                    .unwrap();
+                forward_lines(
+                    pipe,
+                    SubscriptionSender::new(sender, stop.clone()),
+                    stop,
+                    true,
+                    |line| format!("{stream}:line:{line}"),
+                    |prefix| format!("{stream}:partial:{prefix}"),
+                )
+            })
+        };
+        let stdout_worker = start_worker(Box::new(stdout), "out");
+        let stderr_worker = start_worker(Box::new(stderr), "err");
+        let tasks = [task_receiver.recv().unwrap(), task_receiver.recv().unwrap()];
+        child.stdin.as_mut().unwrap().write_all(b"R").unwrap();
+        let mut previews = [
+            receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+            receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+        ];
+        previews.sort();
+        assert_eq!(
+            previews,
+            ["err:partial:err-prefix", "out:partial:out-prefix"]
+        );
+        for task in tasks {
+            await_pipe_wait(&std::path::Path::new("/proc").join(task));
+        }
+        trigger.stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !(stdout_worker.is_finished() && stderr_worker.is_finished())
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let workers_finished_before_cleanup =
+            stdout_worker.is_finished() && stderr_worker.is_finished();
+        let child_alive_before_cleanup = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        stdout_worker.join().unwrap().unwrap();
+        stderr_worker.join().unwrap().unwrap();
+        assert_eq!(
+            workers_finished_before_cleanup, nonblocking,
+            "only nonblocking workers should finish before peer cleanup"
+        );
+        assert!(child_alive_before_cleanup);
+        assert!(
+            receiver.try_iter().next().is_none(),
+            "cancellation must not complete the pending prefixes as EOF lines"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    trait ReadPipe: Read + std::os::fd::AsFd + Send {}
+
+    #[cfg(target_os = "linux")]
+    impl<P: Read + std::os::fd::AsFd + Send> ReadPipe for P {}
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_input_worker_cancels_full_pipe_and_closes_it_before_child_exits() {
+        use std::os::unix::process::ChildExt;
+
+        let script = "import fcntl,os,signal,sys,time\nsignal.alarm(8)\nfcntl.fcntl(0,fcntl.F_SETPIPE_SZ,4096)\nready=False\ndef release(*args):\n global ready\n ready=True\nsignal.signal(signal.SIGUSR1,release)\nprint('READY',flush=True)\nwhile not ready:\n time.sleep(0.005)\ndata=sys.stdin.buffer.read()\nprint(str(len(data))+':'+str(data==b'x'*len(data))+':'+str(os.get_blocking(0)),flush=True)";
+        let mut child = Command::new("python3")
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout = io::BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).unwrap();
+        assert_eq!(ready, "READY\n");
+        let input = ProcessInput::new();
+        input
+            .try_send_line("x".repeat(MAX_PROCESS_LINE_BYTES))
+            .unwrap();
+        let (_guard, receiver) = input.claim().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let (stop, trigger) = StopSignal::new();
+        let (task_sender, task_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            task_sender
+                .send(std::fs::read_link("/proc/thread-self").unwrap())
+                .unwrap();
+            write_process_input(stdin, receiver, stop)
+        });
+        await_pipe_wait(&std::path::Path::new("/proc").join(task_receiver.recv().unwrap()));
+        trigger.stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let worker_finished_before_release = worker.is_finished();
+        let child_alive_before_release = child.try_wait().unwrap().is_none();
+        child
+            .send_signal(rustix::process::Signal::USR1.as_raw())
+            .unwrap();
+        let result = worker.join().unwrap();
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        let status = child.wait().unwrap();
+        assert!(
+            worker_finished_before_release,
+            "stdin worker depended on child reading or exiting"
+        );
+        assert!(child_alive_before_release);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "stdin write canceled before completion"
+        );
+        assert!(status.success());
+        assert_eq!(
+            output, "4096:True:True\n",
+            "only the exact written prefix should arrive, without LF, duplication or changed child blocking mode"
         );
     }
 
@@ -3928,6 +4191,280 @@ os.write(1,b'tail\r')
             msgs.iter()
                 .any(|m| matches!(m, TestMsg::Proc(ProcessEvent::Killed))),
             "must emit Killed event"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_descendant_output_pipes_close_after_leader_exit_before_fixture_release() {
+        use rustix::process::{Pid, WaitOptions, set_child_subreaper, waitpid};
+        use std::net::TcpListener;
+        use std::path::PathBuf;
+
+        const CHILD_ENV: &str = "FTUI_DESCENDANT_PIPE_ISOLATED_TEST";
+        const TEST_NAME: &str = concat!(
+            "process_subscription::tests::",
+            "real_descendant_output_pipes_close_after_leader_exit_before_fixture_release"
+        );
+        let isolated_parent = std::env::var(CHILD_ENV)
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok());
+        let isolated_run = isolated_parent.is_some()
+            && isolated_parent == rustix::process::getppid().map(|pid| pid.as_raw_nonzero().get())
+            && std::env::args().skip(1).eq([
+                "--exact",
+                TEST_NAME,
+                "--nocapture",
+                "--test-threads=1",
+            ]);
+        if !isolated_run {
+            // Subreaper state belongs only to this exact-test subprocess. The
+            // ordinary test runner must not adopt or reap unrelated children.
+            let mut isolated = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, std::process::id().to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("spawn isolated descendant test");
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Some(status) = isolated.try_wait().unwrap() {
+                    let mut report = String::new();
+                    isolated
+                        .stdout
+                        .take()
+                        .unwrap()
+                        .read_to_string(&mut report)
+                        .unwrap();
+                    print!("{report}");
+                    assert!(
+                        status.success(),
+                        "isolated descendant test failed: {status}"
+                    );
+                    assert!(
+                        report.contains(&format!("test {TEST_NAME} ... ok"))
+                            && report.contains("1 passed; 0 failed"),
+                        "the exact isolated test must execute, not pass with zero selected tests"
+                    );
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    isolated.kill().expect("stop timed-out isolated test");
+                    isolated.wait().expect("reap isolated test");
+                    panic!("isolated descendant test exceeded its safety deadline");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        // rustix 1.1.3 represents this boolean prctl argument as Option<Pid>.
+        set_child_subreaper(Pid::from_raw(1)).expect("enable isolated fixture adoption");
+        let baseline_tasks: Vec<_> = std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        let await_output_workers = || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let mut workers = Vec::new();
+                for entry in std::fs::read_dir("/proc/self/task").unwrap() {
+                    let task = entry.unwrap().path();
+                    if baseline_tasks.contains(&task) {
+                        continue;
+                    }
+                    let state = match std::fs::read_to_string(task.join("wchan")) {
+                        Ok(state) => state,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => panic!("cannot inspect actual worker wait: {error}"),
+                    };
+                    if state.contains("poll") || state.contains("pipe_read") {
+                        workers.push(task);
+                    }
+                }
+                if workers.len() == 2 {
+                    return workers;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "expected two actual output pipe waits, found {workers:?}"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let script = r#"import os,signal,socket,sys
+signal.alarm(15)
+gate_read,gate_write=os.pipe()
+leader=os.getpid()
+descendant=os.fork()
+if descendant:
+ os.close(gate_write)
+ assert os.read(gate_read,1)==b'X'
+ os._exit(42)
+os.close(gate_read)
+signal.alarm(15)
+sock=socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=5)
+sock.sendall((str(leader)+' '+str(os.getpid())+' '+os.readlink('/proc/self/fd/1')+' '+os.readlink('/proc/self/fd/2')+'\n').encode())
+assert sock.recv(1)==b'B'
+sock.sendall(('BLOCKING '+str(os.get_blocking(1))+' '+str(os.get_blocking(2))+'\n').encode())
+os.write(1,b'accepted-out\nheld-out')
+os.write(2,b'accepted-err\nheld-err')
+assert sock.recv(1)==b'X'
+os.write(gate_write,b'X')
+os.close(gate_write)
+assert sock.recv(1)==b'R'
+closed=[]
+for fd in (1,2):
+ try:
+  os.write(fd,b'probe')
+  closed.append(False)
+ except BrokenPipeError:
+  closed.append(True)
+sock.sendall(('CLOSED '+str(closed[0])+' '+str(closed[1])+'\n').encode())
+assert sock.recv(1)==b'F'
+os._exit(7)
+"#;
+        let control = ProcessControl::new();
+        let sub = ProcessSubscription::new("python3", TestMsg::Proc)
+            .args(["-u", "-c", script])
+            .arg(listener.local_addr().unwrap().port().to_string())
+            .control(control.clone());
+        let (sender, receiver) = stdmpsc::sync_channel(256);
+        let (stop, trigger) = StopSignal::new();
+        let supervisor = thread::spawn(move || {
+            sub.run(SubscriptionSender::new(sender, stop.clone()), stop);
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "descendant did not connect");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("descendant connection failed: {error}"),
+            }
+        };
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut socket = io::BufReader::new(socket);
+        let mut hello = String::new();
+        socket.read_line(&mut hello).unwrap();
+        let fields: Vec<_> = hello.split_whitespace().collect();
+        assert_eq!(fields.len(), 4, "actual descendant identities and pipe IDs");
+        let leader: u32 = fields[0].parse().unwrap();
+        let descendant = Pid::from_raw(fields[1].parse().unwrap()).unwrap();
+        let pipe_ids = [PathBuf::from(fields[2]), PathBuf::from(fields[3])];
+        assert_ne!(pipe_ids[0], pipe_ids[1]);
+        assert!(fields[2..].iter().all(|pipe| pipe.starts_with("pipe:[")));
+        // A real read/readiness wait means both adapters have been configured.
+        // Only then ask the descendant to inspect its own endpoint flags.
+        await_output_workers();
+        socket.get_mut().write_all(b"B").unwrap();
+        let mut flags = String::new();
+        socket.read_line(&mut flags).unwrap();
+        assert_eq!(flags, "BLOCKING True True\n");
+        let mut accepted = [
+            receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+            receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+        ];
+        accepted.sort_by_key(|event| matches!(event, TestMsg::Proc(ProcessEvent::Stderr(_))));
+        assert_eq!(
+            accepted,
+            [
+                TestMsg::Proc(ProcessEvent::Stdout("accepted-out".to_owned())),
+                TestMsg::Proc(ProcessEvent::Stderr("accepted-err".to_owned())),
+            ]
+        );
+        let workers = await_output_workers();
+        socket.get_mut().write_all(b"X").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !control.status().can_restart {
+            assert!(Instant::now() < deadline, "leader was not reaped");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            std::fs::metadata(format!("/proc/{leader}"))
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        );
+        assert!(
+            waitpid(Some(descendant), WaitOptions::NOHANG)
+                .unwrap()
+                .is_none()
+        );
+        assert!(workers.iter().all(|task| task.exists()));
+        trigger.stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !supervisor.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let supervisor_finished = supervisor.is_finished();
+        let workers_gone = workers.iter().all(|task| {
+            std::fs::metadata(task).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        });
+        let mut retained_pipes = Vec::new();
+        for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
+            match std::fs::read_link(entry.unwrap().path()) {
+                Ok(target) if pipe_ids.contains(&target) => retained_pipes.push(target),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => panic!("cannot inspect retained pipe endpoint: {error}"),
+            }
+        }
+        let descendant_alive = waitpid(Some(descendant), WaitOptions::NOHANG)
+            .unwrap()
+            .is_none();
+        // Capture worker/FD state before any fixture release or child cleanup.
+        // R only probes the still-live descendant's endpoints; F permits exit.
+        socket.get_mut().write_all(b"R").unwrap();
+        let mut closed = String::new();
+        socket.read_line(&mut closed).unwrap();
+        let alive_after_probe = waitpid(Some(descendant), WaitOptions::NOHANG)
+            .unwrap()
+            .is_none();
+        socket.get_mut().write_all(b"F").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            if let Some((pid, status)) = waitpid(Some(descendant), WaitOptions::NOHANG).unwrap() {
+                assert_eq!(pid, descendant);
+                break status;
+            }
+            assert!(Instant::now() < deadline, "adopted descendant did not exit");
+            thread::sleep(Duration::from_millis(5));
+        };
+        supervisor.join().unwrap();
+        assert!(
+            supervisor_finished,
+            "supervision depended on fixture release"
+        );
+        assert!(workers_gone, "output workers survived canceled pipe reads");
+        assert!(
+            retained_pipes.is_empty(),
+            "retained endpoints: {retained_pipes:?}"
+        );
+        assert!(descendant_alive && alive_after_probe);
+        assert_eq!(closed, "CLOSED True True\n");
+        assert_eq!(status.exit_status(), Some(7));
+        assert_eq!(
+            waitpid(Some(descendant), WaitOptions::NOHANG).unwrap_err(),
+            rustix::io::Errno::CHILD
+        );
+        assert!(
+            std::fs::metadata(format!("/proc/{}", descendant.as_raw_nonzero()))
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        );
+        assert_eq!(
+            receiver.try_iter().collect::<Vec<_>>(),
+            [TestMsg::Proc(ProcessEvent::Error(
+                "output drain canceled after Exited(42); stdout/stderr output is incomplete"
+                    .to_owned()
+            ))],
+            "accepted lines stay exact; pending prefixes must not become EOF lines"
         );
     }
 
