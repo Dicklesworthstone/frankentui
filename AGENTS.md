@@ -76,6 +76,13 @@ GitHub Actions was disabled in the repository settings on 2026-09-06; keep it di
 - If DSR is missing a project configuration or host, configure or repair that
   DSR path; do not switch to GitHub Actions. Historical `.github/` files are
   not authorization to use Actions, and removing files still requires permission.
+- Retained source copies can preserve timestamps. With the pinned Cargo,
+  `-Zchecksum-freshness` only enables the feature: also set
+  `CARGO_BUILD_FINGERPRINT=content` for DSR compilation. Verify selected Cargo
+  fingerprints actually say `content` and retain source/binary hashes. A
+  2026-09-11 executable A/B probe demonstrated stale output with the flag alone
+  and correct rebuilding with both settings, including migration of an existing
+  target directory. A successful command alone does not prove binary freshness.
 
 ### Key Dependencies
 
