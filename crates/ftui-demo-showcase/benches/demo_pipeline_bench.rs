@@ -14,6 +14,7 @@ use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
+use ftui_render::link_registry::LinkRegistry;
 use ftui_render::presenter::Presenter;
 use ftui_runtime::{Cmd, Model};
 use std::hint::black_box;
@@ -26,6 +27,7 @@ struct PipelineHarness {
     diff: BufferDiff,
     sink: Vec<u8>,
     caps: TerminalCapabilities,
+    links: LinkRegistry,
 }
 
 impl PipelineHarness {
@@ -39,7 +41,9 @@ impl PipelineHarness {
             sink: Vec::with_capacity((cols as usize * rows as usize).max(4096) * 8),
             caps: TerminalCapabilities::builder()
                 .color_depth(BENCHMARK_COLOR_DEPTH)
+                .osc8_hyperlinks(true)
                 .build(),
+            links: LinkRegistry::new(),
         }
     }
 
@@ -49,6 +53,7 @@ impl PipelineHarness {
         self.scratch.reset_for_frame();
 
         let mut frame = Frame::from_buffer(std::mem::take(&mut self.scratch), pool);
+        frame.set_links(&mut self.links);
         app.view(&mut frame);
         self.scratch = frame.buffer;
 
@@ -58,7 +63,7 @@ impl PipelineHarness {
         {
             let mut presenter = Presenter::new(&mut self.sink, self.caps);
             presenter
-                .present(&self.scratch, &self.diff)
+                .present_with_pool(&self.scratch, &self.diff, Some(pool), Some(&self.links))
                 .expect("demo pipeline bench present should succeed");
         }
 

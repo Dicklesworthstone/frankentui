@@ -23,6 +23,7 @@ use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
+use ftui_render::link_registry::LinkRegistry;
 use ftui_render::presenter::Presenter;
 use ftui_runtime::{Cmd, Model};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
@@ -137,6 +138,10 @@ fn parse_args() -> Args {
         }
     }
 
+    if cycles == 0 {
+        usage_error_and_exit("--cycles must be greater than zero");
+    }
+
     Args {
         cycles,
         arena_mode,
@@ -174,6 +179,7 @@ struct PipelineHarness {
     diff: BufferDiff,
     sink: Vec<u8>,
     caps: TerminalCapabilities,
+    links: LinkRegistry,
 }
 
 impl PipelineHarness {
@@ -187,7 +193,9 @@ impl PipelineHarness {
             sink: Vec::with_capacity((cols as usize * rows as usize).max(4096) * 8),
             caps: TerminalCapabilities::builder()
                 .color_depth(PROFILE_COLOR_DEPTH)
+                .osc8_hyperlinks(true)
                 .build(),
+            links: LinkRegistry::new(),
         }
     }
 
@@ -204,19 +212,24 @@ impl PipelineHarness {
         self.scratch.reset_for_frame();
 
         let mut frame = Frame::from_buffer(std::mem::take(&mut self.scratch), pool);
+        frame.set_links(&mut self.links);
         if let Some(arena_ref) = arena {
             frame.set_arena(arena_ref);
         }
         app.view(&mut frame);
         self.scratch = frame.buffer;
 
+        self.present(pool)
+    }
+
+    fn present(&mut self, pool: &GraphemePool) -> (u64, usize, u64) {
         self.diff.compute_dirty_into(&self.current, &self.scratch);
 
         self.sink.clear();
         let present = {
             let mut presenter = Presenter::new(&mut self.sink, self.caps);
             presenter
-                .present(&self.scratch, &self.diff)
+                .present_with_pool(&self.scratch, &self.diff, Some(pool), Some(&self.links))
                 .expect("profile_sweep present should succeed")
         };
 
@@ -485,6 +498,8 @@ fn main() {
             "arena_mode": args.arena_mode.as_str(),
             "render_mode": args.render_mode.as_str(),
             "color_depth": PROFILE_COLOR_DEPTH.as_str(),
+            "osc8_hyperlinks": true,
+            "presenter_context": "grapheme_pool_and_link_registry",
             "cycles": args.cycles,
             "screen_count": screen_ids.len(),
             "sizes": sizes.iter().map(|(w, h)| serde_json::json!({"cols": w, "rows": h})).collect::<Vec<_>>(),
@@ -565,5 +580,48 @@ fn main() {
             ));
         }
         eprintln!("{summary}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ftui_render::cell::{Cell, CellContent};
+
+    #[test]
+    fn pipeline_preserves_pooled_graphemes_and_registered_links() {
+        let mut harness = PipelineHarness::new(8, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::from_buffer(std::mem::take(&mut harness.scratch), &mut pool);
+        frame.set_links(&mut harness.links);
+        let link = frame.register_link("https://example.com/profile");
+        assert_ne!(link, 0);
+        let grapheme = frame.pool.intern("e\u{301}", 1);
+        let mut cell = Cell::new(CellContent::from_grapheme(grapheme));
+        cell.attrs = cell.attrs.with_link(link);
+        frame.buffer.set(0, 0, cell);
+        harness.scratch = frame.buffer;
+
+        // This was the old harness path: the same cell loses its pooled text
+        // and URL when presentation receives neither registry.
+        let diff = BufferDiff::compute(&harness.current, &harness.scratch);
+        let mut missing_context = Vec::new();
+        Presenter::new(&mut missing_context, harness.caps)
+            .present(&harness.scratch, &diff)
+            .unwrap();
+        assert!(!String::from_utf8(missing_context).unwrap().contains("e\u{301}"));
+
+        let (bytes, changed, _) = harness.present(&pool);
+        assert_eq!(bytes as usize, harness.sink.len());
+        assert_eq!(changed, 1);
+        let ansi = std::str::from_utf8(&harness.sink).unwrap();
+        assert!(ansi.contains("e\u{301}"), "{ansi:?}");
+        assert!(ansi.contains("https://example.com/profile"), "{ansi:?}");
+        assert!(ansi.contains("\u{1b}]8;;\u{1b}\\"), "link must close: {ansi:?}");
+
+        harness.scratch.reset_for_frame();
+        harness.scratch.set(0, 0, cell);
+        let (_, unchanged, _) = harness.present(&pool);
+        assert_eq!(unchanged, 0);
     }
 }
