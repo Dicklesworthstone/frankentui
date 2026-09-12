@@ -1,0 +1,14 @@
+[
+  {"name":"braces in char literals", "source":"#[cfg(test)] mod tests { let x = '{'; } env::var(\"FTUI_REAL\");", "expected":["FTUI_REAL"]},
+  {"name":"production after test module", "source":"#[cfg(test)] mod tests { env::var(\"FTUI_FAKE\"); } env::var(\"FTUI_REAL\");", "expected":["FTUI_REAL"]},
+  {"name":"test attribute inside string", "source":"const HELP: &str = \"#[cfg(test)] mod tests\"; env::var(\"FTUI_REAL\");", "expected":["FTUI_REAL"]},
+  {"name":"raw string read", "source":"env::var(r##\"FTUI_REAL\"##);", "expected":["FTUI_REAL"]},
+  {"name":"literal and helper reads", "source":"std::env::var(\"FTUI_HARNESS_VIEW\"); get_env(\"FTUI_DEMO_SCREEN\");", "expected":["FTUI_DEMO_SCREEN","FTUI_HARNESS_VIEW"]},
+  {"name":"comments and help are not reads", "source":"// env::var(\"FTUI_FAKE\")\n/* outer /* env::var(\"FTUI_FAKE\") */ end */ const HELP: &str = \"env::var(\\\"FTUI_FAKE\\\")\";", "expected":[]},
+  {"name":"raw help string is not a read", "source":"const HELP: &str = r#\"get_env(\"FTUI_FAKE\")\"#;", "expected":[]},
+  {"name":"test-only reads excluded", "source":"env_flag(\"FTUI_HARNESS_BOCPD\"); #[cfg(test)] mod tests { env::var(\"FTUI_FAKE\"); }", "expected":["FTUI_HARNESS_BOCPD"]},
+  {"name":"seed helper", "source":"seed_from_env(&[\"FTUI_DEMO_SEED\", \"FTUI_SEED\"], 0)", "expected":["FTUI_DEMO_SEED","FTUI_SEED"]},
+  {"name":"tagged export", "markdown":"<!-- env:ftui-harness -->\n```bash\nexport FTUI_HARNESS_VIEW=default\n```", "expected":[["ftui-harness","FTUI_HARNESS_VIEW",3]]},
+  {"name":"wrong binary still attributed", "markdown":"FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase", "expected":[["ftui-demo-showcase","FTUI_HARNESS_VIEW",1]]},
+  {"name":"tag does not bleed into other block", "markdown":"<!-- env:ftui-harness -->\n```bash\nFTUI_HARNESS_VIEW=default\n```\n```bash\nFTUI_FAKE=1\n```", "expected":[["ftui-harness","FTUI_HARNESS_VIEW",3]]}
+]

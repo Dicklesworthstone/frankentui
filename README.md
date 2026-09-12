@@ -543,6 +543,19 @@ export FTUI_HARNESS_LOG_LINES=25         # generate this many startup log lines
 export FTUI_HARNESS_LOG_MARKUP=true      # parse markup in loaded log lines
 export FTUI_HARNESS_LOG_FILE=/path/to/log.txt  # read lines into the log viewer
 export FTUI_HARNESS_EXIT_AFTER_MS=0      # 0 disables auto-exit
+
+# Optional controls (uncomment only those you need):
+# export FTUI_HARNESS_AUTO_UI_HEIGHT=true      # grow inline UI above its minimum height
+# export FTUI_HARNESS_ENABLE_KITTY_KEYBOARD=true  # request enhanced keyboard reporting
+# export FTUI_HARNESS_LOCALE=en-US            # runtime locale context
+# export FTUI_HARNESS_SUPPRESS_WELCOME=true   # omit startup welcome lines
+# export FTUI_HARNESS_LOG_KEYS=true          # log received key events
+# export FTUI_HARNESS_DIFF_BAYESIAN=true      # Bayesian diff strategy selection
+# export FTUI_HARNESS_BOCPD=true             # change-point resize coalescing
+# export FTUI_HARNESS_CONFORMAL=true         # conformal frame-budget prediction
+# export FTUI_HARNESS_FRAME_BUDGET_US=16667   # total frame budget, microseconds
+# export FTUI_HARNESS_RENDER_BUDGET_US=8000   # render budget; may raise total budget
+# export FTUI_HARNESS_EVIDENCE_JSONL=/path/to/harness.jsonl  # rendering evidence output
 ```
 
 Harness view names include `default`, `layout-flex-row`, `layout-flex-col`,
@@ -565,10 +578,24 @@ export FTUI_DEMO_EXIT_AFTER_MS=0         # 0 disables auto-exit
 export FTUI_DEMO_DETERMINISTIC=1         # deterministic fixtures and time
 export FTUI_DEMO_SEED=0                  # fixture seed
 export FTUI_DEMO_EVIDENCE_JSONL=/path/to/evidence.jsonl  # write rendering evidence
+
+# Optional controls:
+# export FTUI_DEMO_UI_HEIGHT=20         # --ui-height; inline rows
+# export FTUI_DEMO_UI_MIN_HEIGHT=12     # --ui-min-height; inline-auto minimum
+# export FTUI_DEMO_UI_MAX_HEIGHT=40     # --ui-max-height; inline-auto maximum
+# export FTUI_DEMO_TOUR=true            # --tour; guided tour on launch
+# export FTUI_DEMO_TOUR_SPEED=1.0       # --tour-speed; speed multiplier
+# export FTUI_DEMO_TOUR_START_STEP=1    # --tour-start-step; 1-indexed
+# export FTUI_DEMO_PANE_WORKSPACE=/path/to/panes.json  # --pane-workspace; persisted layout
 ```
 
 For the full showcase CLI and environment list, including tour and VFX controls,
 run `cargo run -p ftui-demo-showcase -- --help`.
+
+Fixture and diagnostic controls are listed with their purposes in
+[`docs/env-internal-allowlist.txt`](docs/env-internal-allowlist.txt).
+`python3 -B scripts/check_env_docs.py` checks binary attribution and the
+environment-variable inventory in the harness main and showcase CLI entry points.
 
 Terminal capability detection uses standard environment variables (`TERM`, `COLORTERM`, `NO_COLOR`, `TMUX`, `ZELLIJ`, `KITTY_WINDOW_ID`).
 

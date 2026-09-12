@@ -1,0 +1,51 @@
+# Exact binary VAR reason entries. No wildcards; stale entries fail the checker.
+ftui-harness FTUI_HARNESS_INPUT_MODE Parser-only input trace fixture instead of the normal runtime.
+ftui-harness FTUI_HARNESS_INSPECTOR_STRESS Generate the inspector stress fixture.
+ftui-harness FTUI_HARNESS_INSPECTOR_GRID_COLS Inspector stress fixture column count.
+ftui-harness FTUI_HARNESS_INSPECTOR_GRID_ROWS Inspector stress fixture row count.
+ftui-harness FTUI_HARNESS_INSPECTOR_DEPTH Inspector stress fixture nesting depth.
+ftui-harness FTUI_HARNESS_LOCALE_OVERRIDE Locale-context fixture override.
+ftui-harness FTUI_HARNESS_LOCALE_SWITCH_TO Locale-context fixture destination locale.
+ftui-harness FTUI_HARNESS_LOCALE_SWITCH_TICKS Schedule the locale fixture switch by tick count.
+ftui-harness FTUI_HARNESS_LOCALE_SWITCH_MS Schedule the locale fixture switch by elapsed milliseconds.
+ftui-harness FTUI_HARNESS_LOG_INJECTION Select the direct writer log-injection fixture.
+ftui-harness FTUI_HARNESS_LOG_STRATEGY Scroll strategy for the log-injection fixture.
+ftui-harness FTUI_HARNESS_LOG_ANCHOR Screen anchor for the log-injection fixture.
+ftui-harness FTUI_HARNESS_WRITER_SESSION Select the direct terminal-writer session fixture.
+ftui-harness FTUI_HARNESS_WRITER_PROFILE Writer-session fixture sizing profile.
+ftui-harness FTUI_HARNESS_WRITER_ANCHOR Writer-session fixture screen anchor.
+ftui-harness FTUI_HARNESS_FLICKER_ANALYZE Run offline flicker analysis instead of the interactive harness.
+ftui-harness FTUI_HARNESS_FLICKER_INPUT Retained capture input for offline flicker analysis.
+ftui-harness FTUI_HARNESS_FLICKER_JSONL Offline flicker analysis report output.
+ftui-harness FTUI_HARNESS_FLICKER_RUN_ID Offline flicker analysis correlation identifier.
+ftui-harness FTUI_HARNESS_MINIMIZE_TRACE Input trace for the offline failure minimizer.
+ftui-harness FTUI_HARNESS_MINIMIZE_OUT Minimized trace output path.
+ftui-harness FTUI_HARNESS_MINIMIZE_REPORT Minimization report output path.
+ftui-harness FTUI_HARNESS_MINIMIZE_LEDGER Minimization attempt ledger output path.
+ftui-harness FTUI_HARNESS_MINIMIZE_MAX_ATTEMPTS Bound the offline minimizer search attempts.
+ftui-harness FTUI_HARNESS_MINIMIZE_MAX_MS Bound the offline minimizer wall time.
+ftui-harness FTUI_HARNESS_MINIMIZE_NO_TIMEOUT Disable the minimizer timeout for controlled investigations.
+ftui-harness FTUI_HARNESS_REPLAY_TRACE Replay a retained trace instead of normal interactive input.
+ftui-harness FTUI_HARNESS_RENDER_TRACE_JSONL Render-trace capture output for deterministic fixtures.
+ftui-harness FTUI_HARNESS_RENDER_TRACE_RUN_ID Render-trace capture correlation identifier.
+ftui-harness FTUI_HARNESS_RENDER_TRACE_SEED Render-trace capture fixture seed.
+ftui-harness FTUI_HARNESS_RENDER_TRACE_MODULE Render-trace capture module label.
+ftui-harness FTUI_HARNESS_RENDER_TRACE_FLUSH Flush each trace event for synchronized fixture clocks.
+ftui-harness FTUI_HARNESS_RENDER_TRACE_START_TS_MS Include trace start time in diagnostic metadata.
+ftui-demo-showcase FTUI_DEMO_VFX_HARNESS Enable the deterministic VFX-only fixture.
+ftui-demo-showcase FTUI_DEMO_VFX_EFFECT Lock the VFX fixture effect.
+ftui-demo-showcase FTUI_DEMO_VFX_TICK_MS Lock VFX fixture tick cadence.
+ftui-demo-showcase FTUI_DEMO_VFX_FRAMES Stop the VFX fixture after a fixed frame count.
+ftui-demo-showcase FTUI_DEMO_VFX_EXIT_AFTER_MS Bound VFX fixture elapsed time.
+ftui-demo-showcase FTUI_DEMO_VFX_SIZE Lock VFX fixture dimensions as COLSxROWS.
+ftui-demo-showcase FTUI_DEMO_VFX_COLS Lock VFX fixture columns.
+ftui-demo-showcase FTUI_DEMO_VFX_ROWS Lock VFX fixture rows.
+ftui-demo-showcase FTUI_DEMO_VFX_SEED VFX fixture seed.
+ftui-demo-showcase FTUI_DEMO_VFX_JSONL VFX fixture report output.
+ftui-demo-showcase FTUI_DEMO_VFX_RUN_ID VFX fixture correlation identifier.
+ftui-demo-showcase FTUI_DEMO_VFX_PERF Enable VFX per-frame timing evidence.
+ftui-demo-showcase FTUI_DEMO_MERMAID_HARNESS Enable the deterministic Mermaid fixture.
+ftui-demo-showcase FTUI_DEMO_MERMAID_TICK_MS Lock Mermaid fixture tick cadence.
+ftui-demo-showcase FTUI_DEMO_MERMAID_SEED Mermaid fixture seed.
+ftui-demo-showcase FTUI_DEMO_MERMAID_JSONL Mermaid fixture report output.
+ftui-demo-showcase FTUI_DEMO_MERMAID_RUN_ID Mermaid fixture correlation identifier.
