@@ -124,7 +124,12 @@ impl<'a> Span<'a> {
         }
 
         let (byte_pos, _actual_width) = find_cell_boundary(&self.content, cell_pos);
+        self.split_at_byte_boundary(byte_pos)
+    }
 
+    // Callers establish a UTF-8 boundary through grapheme traversal or the
+    // printable-ASCII invariant. Keep ownership, styles and links on both sides.
+    fn split_at_byte_boundary(&self, byte_pos: usize) -> (Self, Self) {
         let (left_cow, right_cow) = match &self.content {
             Cow::Borrowed(s) => {
                 let (l, r) = s.split_at(byte_pos);
@@ -885,6 +890,10 @@ fn wrap_line_chars<'a>(line: &Line<'a>, width: usize) -> Vec<Line<'a>> {
     let mut current_width = 0;
 
     for span in line.spans.iter().cloned() {
+        // Every suffix of printable ASCII has one cell per byte. Classify only
+        // once; rescanning each shrinking suffix makes narrow wrapping quadratic.
+        // Unicode and control-containing spans retain their existing width path.
+        let printable_ascii = crate::ascii_width(span.as_str()).is_some();
         let mut remaining = span;
         while !remaining.is_empty() {
             if current_width >= width && !current.is_empty() {
@@ -894,7 +903,11 @@ fn wrap_line_chars<'a>(line: &Line<'a>, width: usize) -> Vec<Line<'a>> {
             }
 
             let available = width.saturating_sub(current_width).max(1);
-            let span_width = remaining.width();
+            let span_width = if printable_ascii {
+                remaining.as_str().len()
+            } else {
+                remaining.width()
+            };
 
             if span_width <= available {
                 current_width += span_width;
@@ -902,7 +915,11 @@ fn wrap_line_chars<'a>(line: &Line<'a>, width: usize) -> Vec<Line<'a>> {
                 break;
             }
 
-            let (left, right) = remaining.split_at_cell(available);
+            let (left, right) = if printable_ascii {
+                remaining.split_at_byte_boundary(available)
+            } else {
+                remaining.split_at_cell(available)
+            };
 
             // Force progress if the first grapheme is too wide for `available`
             // and we are at the start of a line (so we can't wrap further).
@@ -1610,6 +1627,71 @@ mod tests {
         assert_eq!(wrapped.len(), 2);
         assert_eq!(wrapped[0].to_plain_text(), "你");
         assert_eq!(wrapped[1].to_plain_text(), "好");
+    }
+
+    #[test]
+    fn char_wrap_preserves_ascii_controls_and_grapheme_boundaries() {
+        let cases: &[(&str, usize, &[&str])] = &[
+            ("abcd", 1, &["a", "b", "c", "d"]),
+            ("ab  cd", 3, &["ab", " cd"]),
+            ("    ", 1, &["", "", "", ""]),
+            ("a\0", 1, &["a\0"]),
+            ("a\0b", 1, &["a", "\0b"]),
+            ("a\r\nb", 1, &["a", "", "b"]),
+            ("界\u{200b}", 1, &["界\u{200b}"]),
+            ("e\u{301}x", 1, &["e\u{301}", "x"]),
+            ("👩\u{200d}💻x", 1, &["👩\u{200d}💻", "x"]),
+            ("ab  ", 0, &["ab  "]),
+        ];
+        for &(text, width, expected) in cases {
+            for content in [Cow::Borrowed(text), Cow::Owned(text.to_owned())] {
+                let line = Line::from_spans([Span::raw(content)]);
+                let actual: Vec<_> = line
+                    .wrap(width, WrapMode::Char)
+                    .iter()
+                    .map(Line::to_plain_text)
+                    .collect();
+                assert_eq!(actual, expected, "text={text:?}, width={width}");
+            }
+        }
+    }
+
+    #[test]
+    fn char_wrap_preserves_cross_span_styles_links_and_zero_width_tail() {
+        let bold = Style::new().bold();
+        let italic = Style::new().italic();
+        let line = Line::from_spans([
+            Span::styled("ab", bold).link("https://one.invalid"),
+            Span::styled(String::from("cd"), italic).link("https://two.invalid"),
+            Span::raw("\0"),
+        ]);
+        let wrapped = line.wrap(3, WrapMode::Char);
+        assert_eq!(wrapped.len(), 2);
+        assert_eq!(wrapped[0].to_plain_text(), "abc");
+        assert_eq!(wrapped[1].to_plain_text(), "d\0");
+        let first = wrapped[0].spans();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].as_str(), "ab");
+        assert_eq!(first[0].style, Some(bold));
+        assert_eq!(first[0].link.as_deref(), Some("https://one.invalid"));
+        assert_eq!(first[1].as_str(), "c");
+        assert_eq!(first[1].style, Some(italic));
+        assert_eq!(first[1].link.as_deref(), Some("https://two.invalid"));
+        assert_eq!(wrapped[1].spans()[0].style, Some(italic));
+        assert_eq!(
+            wrapped[1].spans()[0].link.as_deref(),
+            Some("https://two.invalid")
+        );
+        assert!(wrapped[1].spans()[1].style.is_none());
+        assert!(wrapped[1].spans()[1].link.is_none());
+
+        let zero_tail = Line::from_spans([Span::raw("a"), Span::raw("\0")]);
+        let actual: Vec<_> = zero_tail
+            .wrap(1, WrapMode::Char)
+            .iter()
+            .map(Line::to_plain_text)
+            .collect();
+        assert_eq!(actual, ["a", "\0"]);
     }
 
     #[test]
