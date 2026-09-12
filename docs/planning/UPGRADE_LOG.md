@@ -16,7 +16,7 @@ Follow-up verification under G35 caught a default-feature rustdoc regression in
 the earlier HAMT-only link repair: `g35a` failed `redundant_explicit_links` at
 `program.rs:1135`. The `final4` HAMT check had not covered that final link text in
 the default workspace feature graph. The link now uses a fully qualified label
-without an explicit target; `g35b` checks both strict documentation builds.
+without an explicit target; `g35b` passed both strict documentation builds.
 This is separate from the 28 full-suite fixture failures awaiting permission.
 
 Registry discovery examined 77 distinct direct dependencies across the workspace
