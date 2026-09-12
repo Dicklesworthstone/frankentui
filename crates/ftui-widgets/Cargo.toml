@@ -25,7 +25,7 @@ workspace = true
 
 [dependencies]
 ahash = "0.8"
-bitflags = "2.13.1"
+bitflags = "2.13.2"
 ftui-a11y = { path = "../ftui-a11y", version = "0.7.0" }
 ftui-core = { path = "../ftui-core", version = "0.7.0" }
 ftui-layout = { path = "../ftui-layout", version = "0.7.0" }

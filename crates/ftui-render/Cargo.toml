@@ -23,9 +23,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_
 
 [dependencies]
 ahash = "0.8"
-bitflags = "2.13.1"
+bitflags = "2.13.2"
 memchr = "2.8.3"
-smallvec = "1.15.1"
+smallvec = "1.16.1"
 unicode-segmentation = "1.13.3"
 web-time = "1.1.0"
 bumpalo = { version = "3.20.3", features = ["collections"] }

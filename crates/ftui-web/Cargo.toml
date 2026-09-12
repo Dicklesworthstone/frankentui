@@ -43,7 +43,7 @@ pretty_assertions = "1.4.1"
 # JSONL evidence validation in SDK adapter/contract tests (bd-2vr05.9.3/.9.6).
 serde_json = "1.0.151"
 tracing-subscriber = { version = "0.3.20", features = ["registry"] }
-wasm-bindgen-test = "0.3.76"
+wasm-bindgen-test = "0.3.78"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # The native benchmark uses Criterion's threaded analysis; WASM runtime tests do not.
