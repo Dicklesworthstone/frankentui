@@ -7,7 +7,7 @@ lives in `ftui::agent_shell`; its executable uses only the `ftui` facade.
 If you want working code right now, start with:
 
 - `crates/ftui/examples/agent_shell.rs` — an interactive child under compact chrome
-- `crates/ftui-harness/examples/minimal.rs`
+- `crates/ftui-harness/examples/minimal.rs` — a 45-line inline hello world with a tick counter
 - `crates/ftui-harness/examples/streaming.rs` — the same model with generated-demo defaults
 
 ## Prereqs
