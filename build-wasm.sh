@@ -29,6 +29,7 @@ RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-too
 [[ "$RUSTUP_TOOLCHAIN" == nightly-????-??-?? ]] || fail 'toolchain must be pinned by date'
 unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS
 export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
+export CARGO_BUILD_FINGERPRINT=content
 export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
 
 renderer_revision=88b402b8be9c70a4405895d4172e449940cab2fe
@@ -70,7 +71,7 @@ build_package() {
   [[ "$target_dir" == /* ]] || fail 'CARGO_TARGET_DIR must be absolute'
   (
     cd "$source"
-    cargo --config 'profile.release.package.ftui-extras.opt-level="z"' \
+    cargo -Zchecksum-freshness --config 'profile.release.package.ftui-extras.opt-level="z"' \
       build --locked --release --lib --target wasm32-unknown-unknown \
       --target-dir "$target_dir" -p "$package"
   )

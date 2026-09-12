@@ -25,6 +25,7 @@ esac
 [[ ! -e "$out" ]] || { echo "Output directory already exists: $out" >&2; exit 2; }
 mkdir "$out"
 export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
+export CARGO_BUILD_FINGERPRINT=content
 export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
 source_commit="$(git rev-parse HEAD)"
 git status --porcelain=v1 --untracked-files=normal > "$out/source-status.txt"
@@ -197,7 +198,7 @@ while IFS= read -r crate; do
     fi
     args=(publish --locked --registry crates-io -p "$crate")
     [[ "$mode" == --dry-run ]] && args+=(--dry-run)
-    if ! cargo "${args[@]}" > "$out/$crate.cargo.log" 2>&1; then
+    if ! cargo -Zchecksum-freshness "${args[@]}" > "$out/$crate.cargo.log" 2>&1; then
         record "$crate" failed "Cargo failed; see $crate.cargo.log (unpublished sibling dependencies can block dry runs)"
         exit 1
     fi
