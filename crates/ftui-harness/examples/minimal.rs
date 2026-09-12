@@ -29,7 +29,7 @@ impl Model for Hello {
     }
     fn view(&self, frame: &mut Frame) {
         Paragraph::new(format!("Hello from FrankenTUI ticks: {}", self.ticks))
-            .block(Block::bordered().title("minimal"))
+            .block(Block::bordered().padding(0).title("minimal"))
             .render(frame.area(), frame);
     }
 }
