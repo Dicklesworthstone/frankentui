@@ -535,8 +535,7 @@ mod tests {
         assert!(contents.contains("Exported content"));
         assert!(contents.contains("ANSI Dump"));
 
-        // Clean up
-        let _ = std::fs::remove_dir_all(&dir);
+        // Retain the export for inspection, including in guarded DSR runs.
     }
 
     #[test]

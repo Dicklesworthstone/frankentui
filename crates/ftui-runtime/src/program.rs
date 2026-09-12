@@ -1132,7 +1132,8 @@ pub enum PaneMuxEnvironment {
 /// Resolved capability matrix describing which pane interaction features
 /// are available in the current terminal + multiplexer environment.
 ///
-/// Derived from [`TerminalCapabilities`] via [`PaneCapabilityMatrix::from_capabilities`].
+/// Derived from [`TerminalCapabilities`](ftui_core::terminal_capabilities::TerminalCapabilities)
+/// via [`PaneCapabilityMatrix::from_capabilities`].
 /// The adapter uses this to decide which code-paths are safe and which
 /// need deterministic fallbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

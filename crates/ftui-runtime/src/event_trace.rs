@@ -1480,7 +1480,11 @@ mod tests {
 
     #[test]
     fn write_and_read_gzip() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::Builder::new()
+            .prefix("ftui-event-trace-")
+            .disable_cleanup(true)
+            .tempdir()
+            .expect("tempdir");
         let path = dir.path().join("trace.jsonl.gz");
 
         {

@@ -988,7 +988,12 @@ mod tests {
     use super::*;
 
     #[cfg(feature = "policy-config")]
-    use tempfile::tempdir;
+    fn tempdir() -> std::io::Result<tempfile::TempDir> {
+        tempfile::Builder::new()
+            .prefix("ftui-policy-")
+            .disable_cleanup(true)
+            .tempdir()
+    }
 
     #[test]
     fn default_matches_component_defaults() {

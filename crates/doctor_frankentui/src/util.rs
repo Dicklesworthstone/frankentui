@@ -547,8 +547,6 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use tempfile::tempdir;
-
     use crate::error::DoctorError;
 
     use super::{
@@ -561,6 +559,13 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+
+    fn tempdir() -> std::io::Result<tempfile::TempDir> {
+        tempfile::Builder::new()
+            .prefix("doctor-util-")
+            .disable_cleanup(true)
+            .tempdir()
+    }
 
     #[test]
     fn parse_duration_supports_ms_s_and_plain_seconds() {
