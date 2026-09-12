@@ -1332,6 +1332,18 @@ mod tests {
     }
 
     #[test]
+    fn wrap_word_groups_nbsp_with_following_word() {
+        assert_eq!(
+            wrap_text("123 \u{00A0}\u{00A0}\u{00A0}foo", 6, WrapMode::Word),
+            vec!["123", "\u{00A0}\u{00A0}\u{00A0}foo"],
+        );
+        assert_eq!(
+            wrap_text("123 \u{00A0}\u{00A0}\u{00A0} foo", 6, WrapMode::Word),
+            vec!["123", "\u{00A0}\u{00A0}\u{00A0}", "foo"],
+        );
+    }
+
+    #[test]
     fn wrap_text_preserves_newlines() {
         let lines = wrap_text("line1\nline2", 20, WrapMode::Word);
         assert_eq!(lines, vec!["line1", "line2"]);
