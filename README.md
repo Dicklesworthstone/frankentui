@@ -92,10 +92,16 @@ For web embedding into `frankentui_website` (Next.js + bun), see the
 # Demo showcase (primary)
 cargo run -p ftui-demo-showcase
 
-# Pick a specific demo view
-FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase
-FTUI_HARNESS_VIEW=visual_effects cargo run -p ftui-demo-showcase
+# Pick a specific showcase screen
+cargo run -p ftui-demo-showcase -- --screen=2   # Dashboard
+FTUI_DEMO_SCREEN=18 cargo run -p ftui-demo-showcase  # Visual Effects
+
+# Agent shell with a real child process
+cargo run -p ftui --example agent_shell -- --exit-when-child-exits -- seq 1 10000
 ```
+
+Run `cargo run -p ftui-demo-showcase -- --help` for screen numbers and options.
+Press 1–9/0 to select screens 1–10, or Tab/Shift+Tab to cycle through screens.
 
 ---
 
@@ -409,6 +415,10 @@ cargo run -p ftui-demo-showcase
 
 ### Run Harness Examples (tests and reference behavior)
 
+`minimal` is a 45-line inline hello world with a tick counter; q, Escape or
+Ctrl-C quits. `streaming` generates high-volume logs and can also run a real
+child command (see the [agent harness tutorial](docs/tutorials/agent-harness.md)).
+
 ```bash
 cargo run -p ftui-harness --example minimal
 cargo run -p ftui-harness --example streaming
@@ -517,20 +527,48 @@ directory verifies and skips already-published versions. Keep the structured
 
 ## Configuration
 
-FrankenTUI is configuration‑light. The harness is configured via environment variables:
+The following variables configure the reference harness binary,
+`cargo run -p ftui-harness`. Export them in your shell or prefix the command
+with assignments; the binary does not load a `.env` file automatically.
+
+<!-- env:ftui-harness -->
 
 ```bash
-# .env (example)
-FTUI_HARNESS_SCREEN_MODE=inline   # inline | alt
-FTUI_HARNESS_UI_HEIGHT=12         # rows reserved for UI
-FTUI_HARNESS_VIEW=layout-grid     # view selector
-FTUI_HARNESS_ENABLE_MOUSE=true
-FTUI_HARNESS_ENABLE_FOCUS=true
-FTUI_HARNESS_LOG_LINES=25
-FTUI_HARNESS_LOG_MARKUP=true
-FTUI_HARNESS_LOG_FILE=/path/to/log.txt
-FTUI_HARNESS_EXIT_AFTER_MS=0      # 0 disables auto-exit
+export FTUI_HARNESS_SCREEN_MODE=inline   # inline | alt
+export FTUI_HARNESS_UI_HEIGHT=12         # rows reserved for UI
+export FTUI_HARNESS_VIEW=layout-grid     # harness fixture selector
+export FTUI_HARNESS_ENABLE_MOUSE=true    # enable mouse events
+export FTUI_HARNESS_ENABLE_FOCUS=true    # enable focus events
+export FTUI_HARNESS_LOG_LINES=25         # generate this many startup log lines
+export FTUI_HARNESS_LOG_MARKUP=true      # parse markup in loaded log lines
+export FTUI_HARNESS_LOG_FILE=/path/to/log.txt  # read lines into the log viewer
+export FTUI_HARNESS_EXIT_AFTER_MS=0      # 0 disables auto-exit
 ```
+
+Harness view names include `default`, `layout-flex-row`, `layout-flex-col`,
+`layout-grid`, `layout-nested`, `widget-block`, `widget-paragraph`, `widget-table`,
+`widget-list`, `widget-input`, `widget-inspector`, `widget-budget`, `tile-skip`,
+`span-diff`, `selector-storm`, and `locale-context`. Unknown names select the
+default view. Harness examples have their own options: of these harness settings,
+`minimal` uses only auto-exit, rounded up to its 250 ms tick interval.
+
+The showcase, `cargo run -p ftui-demo-showcase`, has separate controls.
+Command-line flags take precedence over environment defaults.
+
+<!-- env:ftui-demo-showcase -->
+
+```bash
+export FTUI_DEMO_SCREEN=2                # --screen=N; 1-indexed
+export FTUI_DEMO_SCREEN_MODE=alt         # --screen-mode=alt|inline|inline-auto
+export FTUI_DEMO_MOUSE=auto              # --mouse=on|off|auto
+export FTUI_DEMO_EXIT_AFTER_MS=0         # 0 disables auto-exit
+export FTUI_DEMO_DETERMINISTIC=1         # deterministic fixtures and time
+export FTUI_DEMO_SEED=0                  # fixture seed
+export FTUI_DEMO_EVIDENCE_JSONL=/path/to/evidence.jsonl  # write rendering evidence
+```
+
+For the full showcase CLI and environment list, including tour and VFX controls,
+run `cargo run -p ftui-demo-showcase -- --help`.
 
 Terminal capability detection uses standard environment variables (`TERM`, `COLORTERM`, `NO_COLOR`, `TMUX`, `ZELLIJ`, `KITTY_WINDOW_ID`).
 
@@ -1266,7 +1304,10 @@ Mouse must be enabled in the session and supported by your terminal.
 
 ```bash
 FTUI_HARNESS_ENABLE_MOUSE=true cargo run -p ftui-harness
+FTUI_DEMO_MOUSE=on cargo run -p ftui-demo-showcase
 ```
+
+For tmux, enable mouse forwarding with `set -g mouse on` in your tmux configuration.
 
 ### “output flickers”
 
