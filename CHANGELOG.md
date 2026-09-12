@@ -33,6 +33,92 @@ tag's recorded timezone; the internal milestone uses its commit date.
 
 ---
 
+## 0.8.0 — release preparation
+
+Publication and the six-platform artifact matrix are being verified. The latest
+published release remains 0.7.0 until those steps finish.
+
+### Added
+
+- Public `ftui::agent_shell` and the `agent_shell` example run a child command
+  inside an inline UI with editable stdin, EOF, interruption, restart after
+  confirmed cleanup, session deadlines, and explicit child-log policies
+  ([`d0ae9b1f`](https://github.com/Dicklesworthstone/frankentui/commit/d0ae9b1f),
+  [`b9b8a4a7`](https://github.com/Dicklesworthstone/frankentui/commit/b9b8a4a7)).
+- `ProcessSubscription::partial_output(true)` delivers cumulative UTF-8 previews
+  of unterminated stdout and stderr prompts, independently of complete line events
+  ([`139eea6a`](https://github.com/Dicklesworthstone/frankentui/commit/139eea6a)).
+- `Cmd::log_sgr_only`, `Cmd::log_raw`, and `Cmd::log_text` preserve explicit log
+  policies across native, simulator, render-thread, and web consumers
+  ([`4f4657b2`](https://github.com/Dicklesworthstone/frankentui/commit/4f4657b2)).
+- Golden trace v2 records initialization, idle steps, and nonrendering quit, and
+  checks event accounting, clock values, outcomes, and hash chains during replay
+  ([`10ac5cd5`](https://github.com/Dicklesworthstone/frankentui/commit/10ac5cd5)).
+
+### Runtime and browser behavior
+
+- Subscription delivery uses a cancellation-aware queue bounded to 256 messages
+  and dispatch batches of 64, allowing terminal input and rendering during floods
+  ([`e36a43f5`](https://github.com/Dicklesworthstone/frankentui/commit/e36a43f5)).
+- Browser admission bounds queued events to 4,096 and allocated payload to 1 MiB.
+  Callers receive admission errors; accepted FIFO tails survive quit and remain
+  downloadable ([`482bd550`](https://github.com/Dicklesworthstone/frankentui/commit/482bd550),
+  [`eb837a6c`](https://github.com/Dicklesworthstone/frankentui/commit/eb837a6c)).
+- The browser build verifies renderer package hashes and ABI before startup
+  ([`a1bf9402`](https://github.com/Dicklesworthstone/frankentui/commit/a1bf9402)).
+
+### Fixed
+
+- Executor selection resolves the available feature-dependent lane once and
+  respects explicit overrides
+  ([`436ab6df`](https://github.com/Dicklesworthstone/frankentui/commit/436ab6df)).
+- Showcase commands and playback side effects reach the runtime; pending browser
+  logs survive patch application and nonrendering quit
+  ([`1e8a21ee`](https://github.com/Dicklesworthstone/frankentui/commit/1e8a21ee)).
+- Unix process cancellation retains pipe readers until immediate-child exit is
+  observed, avoiding spurious SIGPIPE errors. Restart waits for confirmed reaping
+  ([`20b82780`](https://github.com/Dicklesworthstone/frankentui/commit/20b82780),
+  [`bfa16f7e`](https://github.com/Dicklesworthstone/frankentui/commit/bfa16f7e)).
+- Inline UI height clamps to terminal height during startup and resize
+  ([`740be12e`](https://github.com/Dicklesworthstone/frankentui/commit/740be12e)).
+- Hyperlink registration preserves its first link; optional limits protect IDs
+  still referenced by presented or pending buffers
+  ([`1f1b58d1`](https://github.com/Dicklesworthstone/frankentui/commit/1f1b58d1),
+  [`b19636ed`](https://github.com/Dicklesworthstone/frankentui/commit/b19636ed)).
+- Paragraph scrolling clips logical offsets before narrowing coordinates, and
+  intrinsic size calculations saturate rather than overflowing
+  ([`b0cc1163`](https://github.com/Dicklesworthstone/frankentui/commit/b0cc1163),
+  [`89a72f8f`](https://github.com/Dicklesworthstone/frankentui/commit/89a72f8f)).
+- Deterministic Mermaid output suppresses volatile timing, and the doctor
+  comparator validates raw evidence while normalizing only declared volatile fields
+  ([`634e6557`](https://github.com/Dicklesworthstone/frankentui/commit/634e6557),
+  [`0ae2c02e`](https://github.com/Dicklesworthstone/frankentui/commit/0ae2c02e)).
+
+### API migrations
+
+- The `hamt` feature's persistent collections now come from maintained `imbl`
+  instead of `im`, removing known `im`/`sized-chunks` unsoundness from the current
+  workspace dependency graph. The reexported types have a new crate identity;
+  `HashMap` and `HashSet` no longer implement `Hash` or `PartialOrd`.
+- Custom `Subscription::run` implementations accept `SubscriptionSender<M>`
+  instead of `std::sync::mpsc::Sender<M>` and must handle cancellation/backpressure.
+- Exhaustive log-command matches use `Cmd::Log { text, mode }`; log constructors
+  provide the corresponding policies.
+- Web admission methods return `Result<(), WebBackendError>`. Handle
+  `InputQueueFull` and preserve rejected input for retry.
+- Re-record v1 golden traces for exact v2 replay; changing the schema label cannot
+  reconstruct missing step or clock metadata.
+- Exhaustive `ProcessEvent` matches must cover `StdoutPartial` and `StderrPartial`.
+  These replace cumulative previews. `Killed` requires confirmed child termination
+  and reaping; unconfirmed cleanup is reported as `Error`.
+
+### Dependencies
+
+- Updated the fourteen outdated direct dependencies and kept the WASM binding
+  schema consistent across the runner, renderer lockfile, and CLI 0.2.128.
+- Replaced yanked transitive chacha20 0.10.1 with 0.10.2, which corrects SSE4.1
+  instructions mistakenly used in its SSE2 backends.
+
 ## [v0.7.0] -- 2026-09-08 (GitHub Release)
 
 Published at 17:03:52 UTC from
