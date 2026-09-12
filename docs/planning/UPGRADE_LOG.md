@@ -4,11 +4,20 @@
 
 Status: release test gate awaits permission for fixture filesystem operations.
 Source starts at `1f08de0e` (workspace version 0.7.0); nothing is published yet.
-The existing, uncommitted ASCII wrapping candidate is preserved. It is included
-in the initial dependency test snapshot, but has not been accepted for release.
+The existing ASCII wrapping candidate is preserved. It is included in the initial
+dependency test snapshot, but has not been accepted for release. A concurrent
+agent committed it as `661e82fb` during the September 12 follow-up; its bytes are
+unchanged and that commit does not establish performance acceptance.
 All compilation and verification use DSR on native hosts with the pinned
 `nightly-2026-08-31`, checksum freshness, and content fingerprints. GitHub Actions
 remains disabled.
+
+Follow-up verification under G35 caught a default-feature rustdoc regression in
+the earlier HAMT-only link repair: `g35a` failed `redundant_explicit_links` at
+`program.rs:1135`. The `final4` HAMT check had not covered that final link text in
+the default workspace feature graph. The link now uses a fully qualified label
+without an explicit target; `g35b` checks both strict documentation builds.
+This is separate from the 28 full-suite fixture failures awaiting permission.
 
 Registry discovery examined 77 distinct direct dependencies across the workspace
 and excluded fuzz project. Raw registry responses and the manifest/lock inventory
