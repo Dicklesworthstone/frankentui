@@ -1294,7 +1294,7 @@ strategy); set them to `0` to force the conservative path.
 | Stable API | ❌ Not yet | Yes (post‑v1) |
 | Widget ecosystem | ✅ 80+ direct widget implementations | Expanding |
 | Formal compatibility matrix | ⚠️ In progress | Yes |
-| Asupersync execution lane | ⚠️ Falls back to Structured | Migration infrastructure complete, executor pending |
+| Asupersync execution lane | ✅ Blocking task pool with `ftui-runtime/asupersync-executor`; otherwise falls back to Structured | Structured subscription cancellation retained |
 | crates.io publishing | ✅ 17 of 20 crates (all libraries) | Showcase targets stay workspace-local |
 
 ---
