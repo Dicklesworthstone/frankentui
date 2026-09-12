@@ -275,11 +275,9 @@ fn bench_styled_char_wrap(c: &mut Criterion) {
             drop(wrapped);
 
             group.throughput(Throughput::Bytes(content.len() as u64));
-            group.bench_with_input(
-                BenchmarkId::new(name, cells),
-                &line,
-                |b, line| b.iter(|| black_box(line.wrap(black_box(*width), WrapMode::Char))),
-            );
+            group.bench_with_input(BenchmarkId::new(name, cells), &line, |b, line| {
+                b.iter(|| black_box(line.wrap(black_box(*width), WrapMode::Char)))
+            });
         }
     }
     group.finish();

@@ -1278,11 +1278,8 @@ impl<M: Send + 'static> Subscription<M> for ProcessSubscription<M> {
                 // Keep the child's pipes open until termination is observed.
                 // Closing a reader first can turn our kill into SIGPIPE while
                 // the child is blocked writing to a full model queue.
-                let event = stopped_process_event(
-                    "process timed out",
-                    &mut child,
-                    &mut child_wait_error,
-                );
+                let event =
+                    stopped_process_event("process timed out", &mut child, &mut child_wait_error);
                 stop_process_io();
                 break event;
             }
@@ -3364,7 +3361,9 @@ os.write(1,b'tail\r')
         assert!(cleanup.kill_sent);
         assert_eq!(
             cleanup.status.map(process_exit_event),
-            Some(ProcessEvent::Signaled(rustix::process::Signal::KILL.as_raw()))
+            Some(ProcessEvent::Signaled(
+                rustix::process::Signal::KILL.as_raw()
+            ))
         );
     }
 
@@ -3405,10 +3404,9 @@ os.write(1,b'tail\r')
             handle.join().expect("stop child without PID");
             panic!("expected actual child PID, got {first:?}");
         };
-        let wait_pid = rustix::process::Pid::from_raw(
-            i32::try_from(pid).expect("Linux child PID fits i32"),
-        )
-        .expect("child PID is nonzero");
+        let wait_pid =
+            rustix::process::Pid::from_raw(i32::try_from(pid).expect("Linux child PID fits i32"))
+                .expect("child PID is nonzero");
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let stopped = child_has_sigstop(wait_pid);
@@ -4181,14 +4179,15 @@ os.write(1,b'tail\r')
         };
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            let wait = std::fs::read_to_string(format!("/proc/{pid}/wchan"))
-                .unwrap_or_default();
+            let wait = std::fs::read_to_string(format!("/proc/{pid}/wchan")).unwrap_or_default();
             if wait.contains("pipe_write") {
                 break;
             }
             if Instant::now() >= deadline {
                 trigger.stop();
-                handle.join().expect("stop child that did not block writing");
+                handle
+                    .join()
+                    .expect("stop child that did not block writing");
                 panic!("child never entered a blocking pipe write: {wait:?}");
             }
             thread::sleep(Duration::from_millis(5));
