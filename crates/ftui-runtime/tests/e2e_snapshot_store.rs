@@ -14,7 +14,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use ftui_runtime::undo::{SnapshotConfig, SnapshotStore};
-use im::{HashMap as ImHashMap, Vector as ImVector};
+use imbl::{HashMap as ImHashMap, Vector as ImVector};
 use web_time::Instant;
 
 // ============================================================================
@@ -41,15 +41,47 @@ fn hash_state<T: Hash>(state: &T) -> String {
 }
 
 // ============================================================================
-// Editor state model (im::HashMap + im::Vector)
+// Editor state model (imbl::HashMap + imbl::Vector)
 // ============================================================================
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
 struct EditorState {
     lines: ImVector<String>,
     cursor_line: usize,
     cursor_col: usize,
     metadata: ImHashMap<String, String>,
+}
+
+// Hash maps have no iteration-order contract. Canonicalize test fingerprints
+// by key so the undo oracle depends only on state, not map construction order.
+fn sorted_entries<K: Ord, V>(map: &ImHashMap<K, V>) -> Vec<(&K, &V)> {
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_unstable_by_key(|(key, _)| *key);
+    entries
+}
+
+impl Hash for EditorState {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.lines.hash(state);
+        self.cursor_line.hash(state);
+        self.cursor_col.hash(state);
+        sorted_entries(&self.metadata).hash(state);
+    }
+}
+
+#[test]
+fn state_hash_tracks_values_independently_of_map_insertion_order() {
+    let mut first = EditorState::new();
+    let mut second = EditorState::new();
+    for (key, value) in [("alpha", "one"), ("beta", "two"), ("gamma", "three")] {
+        first.set_metadata(key.to_owned(), value.to_owned());
+    }
+    for (key, value) in [("gamma", "three"), ("beta", "two"), ("alpha", "one")] {
+        second.set_metadata(key.to_owned(), value.to_owned());
+    }
+    assert_eq!(hash_state(&first), hash_state(&second));
+    second.set_metadata("beta".to_owned(), "changed".to_owned());
+    assert_ne!(hash_state(&first), hash_state(&second));
 }
 
 impl EditorState {
@@ -95,11 +127,19 @@ impl EditorState {
 // Form state model
 // ============================================================================
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
 struct FormState {
     fields: ImHashMap<String, String>,
     focused_field: Option<String>,
     validation_errors: ImVector<String>,
+}
+
+impl Hash for FormState {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        sorted_entries(&self.fields).hash(state);
+        self.focused_field.hash(state);
+        self.validation_errors.hash(state);
+    }
 }
 
 impl FormState {
@@ -128,13 +168,23 @@ impl FormState {
 // Tree state model
 // ============================================================================
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
 struct TreeState {
     nodes: ImHashMap<u32, String>,
     children: ImHashMap<u32, ImVector<u32>>,
     expanded: ImHashMap<u32, bool>,
     selected: Option<u32>,
     next_id: u32,
+}
+
+impl Hash for TreeState {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        sorted_entries(&self.nodes).hash(state);
+        sorted_entries(&self.children).hash(state);
+        sorted_entries(&self.expanded).hash(state);
+        self.selected.hash(state);
+        self.next_id.hash(state);
+    }
 }
 
 impl TreeState {
@@ -465,10 +515,10 @@ fn e2e_structural_sharing_memory_efficiency() {
     assert_eq!(store.undo_depth(), 100);
 
     // Verify all snapshots are accessible and distinct
-    let final_hash = hash_state(store.current().unwrap().as_ref());
+    let final_hash = hash_state(&sorted_entries(store.current().unwrap().as_ref()));
 
     store.undo().unwrap();
-    let prev_hash = hash_state(store.current().unwrap().as_ref());
+    let prev_hash = hash_state(&sorted_entries(store.current().unwrap().as_ref()));
     assert_ne!(final_hash, prev_hash, "consecutive snapshots should differ");
 
     // Memory check: Arc strong counts show sharing

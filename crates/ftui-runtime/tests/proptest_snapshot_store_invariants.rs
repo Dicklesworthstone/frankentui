@@ -6,10 +6,10 @@
 //! - Random edit/snapshot/undo/redo sequences always restore exact prior state.
 //! - Redo after undo restores the exact snapshot.
 //! - Depth limits are never exceeded.
-//! - Structural sharing: 100 snapshots of 10K-element im::HashMap < 2x memory.
+//! - Structural sharing: 100 snapshots of 10K-element imbl::HashMap < 2x memory.
 //! - Total snapshot count is always correct.
 
-use im::HashMap as ImHashMap;
+use imbl::HashMap as ImHashMap;
 use proptest::prelude::*;
 use std::sync::Arc;
 
@@ -297,7 +297,7 @@ proptest! {
 }
 
 // ============================================================================
-// Invariant 10: im::HashMap structural sharing — memory < 2x single copy
+// Invariant 10: imbl::HashMap structural sharing — memory < 2x single copy
 // ============================================================================
 
 proptest! {

@@ -6,7 +6,7 @@
 //! [`Arc`]-based structural sharing. Each call to [`push`](SnapshotStore::push)
 //! clones the `Arc` (not the state), so 1000 snapshots of a large state
 //! cost barely more than a single copy when the state uses persistent
-//! data structures (e.g., `im::HashMap`, `im::Vector`).
+//! data structures (e.g., `imbl::HashMap`, `imbl::Vector`).
 //!
 //! # Architecture
 //!
@@ -36,7 +36,7 @@
 //! # When to Use
 //!
 //! Use `SnapshotStore` when your state type `T` uses persistent collections
-//! (e.g., `im::HashMap`, `im::Vector`) so that `Arc::new(state.clone())`
+//! (e.g., `imbl::HashMap`, `imbl::Vector`) so that `Arc::new(state.clone())`
 //! is cheap thanks to structural sharing. For command-pattern undo
 //! (reversible mutations), use [`HistoryManager`](super::HistoryManager).
 //!
@@ -84,7 +84,7 @@ impl SnapshotConfig {
 /// A snapshot-based undo/redo store using `Arc<T>` for structural sharing.
 ///
 /// `T` should ideally use persistent data structures internally (e.g.,
-/// `im::HashMap`) so that cloning is O(1) and snapshots share memory.
+/// `imbl::HashMap`) so that cloning is O(1) and snapshots share memory.
 ///
 /// # Invariants
 ///
@@ -255,7 +255,7 @@ impl<T> SnapshotStore<T> {
 /// Persistent collection types for snapshot-friendly state.
 ///
 /// When the `hamt` feature is enabled, this module re-exports types from
-/// the [`im`] crate. These collections use hash-array-mapped tries (HAMT)
+/// the [`imbl`] crate. These collections use hash-array-mapped tries (HAMT)
 /// and relaxed-radix-balanced trees (RRB) for O(log n) structural sharing
 /// on clone.
 ///
@@ -272,7 +272,7 @@ impl<T> SnapshotStore<T> {
 /// ```
 #[cfg(feature = "hamt")]
 pub mod persistent {
-    pub use im::{HashMap, HashSet, OrdMap, OrdSet, Vector};
+    pub use imbl::{HashMap, HashSet, OrdMap, OrdSet, Vector};
 }
 
 // ============================================================================
@@ -556,12 +556,12 @@ mod tests {
     }
 
     // ====================================================================
-    // im crate integration tests (always available via dev-dependency)
+    // imbl crate integration tests (always available via dev-dependency)
     // ====================================================================
 
     #[test]
-    fn im_hashmap_structural_sharing() {
-        use im::HashMap;
+    fn imbl_hashmap_structural_sharing() {
+        use imbl::HashMap;
 
         let mut map = HashMap::new();
         for i in 0..1000 {
@@ -590,8 +590,8 @@ mod tests {
     }
 
     #[test]
-    fn im_vector_structural_sharing() {
-        use im::Vector;
+    fn imbl_vector_structural_sharing() {
+        use imbl::Vector;
 
         let mut vec: Vector<u32> = (0..1000).collect();
 
@@ -613,8 +613,8 @@ mod tests {
     }
 
     #[test]
-    fn im_hashmap_many_snapshots_memory_efficiency() {
-        use im::HashMap;
+    fn imbl_hashmap_many_snapshots_memory_efficiency() {
+        use imbl::HashMap;
 
         // Create a "large" state
         let mut state: HashMap<String, Vec<u8>> = HashMap::new();
@@ -639,6 +639,25 @@ mod tests {
             assert_eq!(prev.len(), 100);
         }
         assert!(store.undo().is_none());
+    }
+
+    #[cfg(feature = "hamt")]
+    #[test]
+    fn persistent_ordset_snapshots_survive_insertion_and_removal() {
+        let mut values = super::persistent::OrdSet::new();
+        values.insert(2);
+        values.insert(1);
+        let mut store = SnapshotStore::with_default_config();
+        store.push(values.clone());
+        values.insert(3);
+        values.remove(&1);
+        store.push(values);
+
+        let original = store.undo().unwrap();
+        assert_eq!(original.iter().copied().collect::<Vec<_>>(), vec![1, 2]);
+        let changed = store.redo().unwrap();
+        assert_eq!(changed.iter().copied().collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(original.iter().copied().collect::<Vec<_>>(), vec![1, 2]);
     }
 
     #[test]

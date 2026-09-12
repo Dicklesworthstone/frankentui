@@ -37,8 +37,8 @@ crossterm-compat = ["ftui-core/crossterm"]
 # `Program::with_native_backend()` constructor using `ftui-tty`.
 native-backend = ["dep:ftui-tty"]
 # Enable persistent data structures (HAMT) for O(1) snapshot-based undo/redo.
-# Re-exports `im` crate types (HashMap, Vector, OrdMap) through `ftui_runtime::undo::persistent`.
-hamt = ["dep:im"]
+# Re-exports `imbl` crate types (HashMap, Vector, OrdMap) through `ftui_runtime::undo::persistent`.
+hamt = ["dep:imbl"]
 # Enable event trace recording and replay for deterministic debugging.
 # Adds JSONL + gzip serialization of input events with nanosecond timestamps.
 event-trace = ["dep:serde", "dep:serde_json", "dep:flate2"]
@@ -76,7 +76,7 @@ tracing = "0.1.41"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 web-time = "1.1.0"
-asupersync = { version = "0.4.9", optional = true }
+asupersync = { version = "0.4.11", optional = true }
 
 # Optional telemetry dependencies (feature-gated)
 opentelemetry = { version = "0.32", optional = true }
@@ -89,9 +89,9 @@ tracing-subscriber = { version = "0.3.20", features = ["registry", "env-filter"]
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 serde_json = { version = "1.0.151", optional = true }
 base64 = { version = "0.23", optional = true }
-im = { version = "15.1", optional = true }
-flate2 = { version = "1.1", optional = true }
-toml = { version = "1.1.3", optional = true }
+imbl = { version = "7.0.2", optional = true }
+flate2 = { version = "1.1.10", optional = true }
+toml = { version = "1.1.6", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.3", features = ["event", "process"] }
@@ -105,8 +105,8 @@ tempfile = "3.22.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 base64 = "0.23"
-im = "15.1"
-flate2 = "1.1"
+imbl = "7.0.2"
+flate2 = "1.1.10"
 # OpenTelemetry testing infrastructure (kept in lockstep with the optional
 # runtime deps above so the test build resolves a single otel version set)
 opentelemetry = "0.32"
