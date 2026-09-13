@@ -1736,6 +1736,13 @@ pub enum AppMsg {
     },
     /// A recorded input event, dispatched without recording it again.
     PlaybackEvent(Event),
+    /// An input the guided tour performs on the active screen.
+    ///
+    /// Routed straight to the screen, bypassing the global and tour key
+    /// handling: while a tour is running those own Space and the arrow keys for
+    /// pause and step control, so a tour step that needs to press them on the
+    /// screen cannot go through the ordinary path.
+    TourInput(Event),
     /// Switch to a specific screen.
     SwitchScreen(ScreenId),
     /// Advance to the next screen tab.
@@ -3544,6 +3551,11 @@ impl AppModel {
                 self.handle_msg(AppMsg::from(event), EventSource::Playback)
             }
 
+            AppMsg::TourInput(event) => {
+                // Deliberately not handle_msg: see the variant's documentation.
+                self.screens.update(self.display_screen(), &event)
+            }
+
             AppMsg::SwitchScreen(id) => {
                 let from = self.display_screen().title();
                 if id == ScreenId::GuidedTour {
@@ -3844,6 +3856,10 @@ impl AppModel {
                 if let Some(event) = self.tour.advance(Duration::from_millis(tick_ms)) {
                     self.handle_tour_event(event);
                 }
+                // Perform the current step's scheduled keystrokes. Taken after
+                // advance() so a step that just rolled over starts from its own
+                // action list rather than replaying the previous step's tail.
+                let tour_inputs = self.tour.take_due_actions();
                 let playback_events = self.screens.macro_recorder.drain_playback_events();
                 // Dispatch each event through the runtime so its effects finish
                 // before the next event updates the model. Nested Quit stops
@@ -3851,6 +3867,11 @@ impl AppModel {
                 let mut commands: Vec<_> = playback_events
                     .into_iter()
                     .map(|event| Cmd::msg(AppMsg::PlaybackEvent(event)))
+                    .chain(
+                        tour_inputs
+                            .into_iter()
+                            .map(|input| Cmd::msg(AppMsg::TourInput(tour_input_event(input)))),
+                    )
                     .collect();
                 if let Some(limit) = self.exit_after_ticks
                     && self.tick_count >= limit
@@ -4617,6 +4638,23 @@ fn pane_workspace_source_version(payload: &str) -> String {
 enum UndoAction {
     Undo,
     Redo,
+}
+
+/// Translate a scheduled tour keystroke into the key event a screen expects.
+fn tour_input_event(input: crate::tour::TourInput) -> Event {
+    use crate::tour::TourInput;
+    let code = match input {
+        TourInput::Char(ch) => KeyCode::Char(ch),
+        TourInput::Enter => KeyCode::Enter,
+        TourInput::Esc => KeyCode::Escape,
+        TourInput::Tab => KeyCode::Tab,
+        TourInput::Backspace => KeyCode::Backspace,
+        TourInput::Up => KeyCode::Up,
+        TourInput::Down => KeyCode::Down,
+        TourInput::Left => KeyCode::Left,
+        TourInput::Right => KeyCode::Right,
+    };
+    Event::Key(KeyEvent::new(code))
 }
 
 impl AppModel {
@@ -6185,7 +6223,8 @@ mod tests {
             let mut app = AppModel::new();
             assert!(app.goto_screen_index(idx), "index {idx} should be in range");
             assert_eq!(
-                app.current_screen, expected,
+                app.current_screen,
+                expected,
                 "?screen={} landed on the wrong screen",
                 idx + 1
             );

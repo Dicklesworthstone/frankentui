@@ -84,6 +84,36 @@
 	    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
 	    backdrop-filter: blur(2px);
 	  }
+	  /* Edge-swipe affordance: a touch device has no Tab key, so dragging in
+	     from either bezel changes screen. This tracks the drag so the gesture
+	     is discoverable and cancellable rather than a hidden shortcut. */
+	  #edge-swipe-hint {
+	    position: fixed;
+	    top: 0;
+	    bottom: 0;
+	    width: 0;
+	    max-width: 42vw;
+	    display: none;
+	    align-items: center;
+	    justify-content: center;
+	    pointer-events: none;
+	    z-index: 14;
+	    background: linear-gradient(var(--edge-dir, to right),
+	      rgba(120, 200, 255, 0.28), rgba(120, 200, 255, 0));
+	    transition: opacity 120ms ease-out;
+	  }
+	  #edge-swipe-hint.armed {
+	    display: flex;
+	  }
+	  #edge-swipe-glyph {
+	    font: 22px/1 "Pragmasevka NF", monospace;
+	    color: #dff0ff;
+	    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+	    opacity: 0.9;
+	  }
+	  #edge-swipe-hint.ready #edge-swipe-glyph {
+	    color: #9ff2b6;
+	  }
 	  #pane-ghost-alt-1,
 	  #pane-ghost-alt-2 {
 	    position: fixed;
@@ -219,6 +249,7 @@
 <div id="pane-ghost-alt-2" aria-hidden="true"></div>
 <div id="pane-selection-halo" aria-hidden="true"></div>
 <div id="pane-dock-hint" aria-hidden="true"></div>
+<div id="edge-swipe-hint" aria-hidden="true"><span id="edge-swipe-glyph"></span></div>
 <div id="touch-zoom">
   <button id="mobile-kb-toggle" aria-pressed="false" title="Toggle keyboard mode">KB</button>
 </div>
@@ -2360,6 +2391,69 @@ const TAP_MAX_DIST = 10;   // px
 const TAP_MAX_TIME = 300;  // ms
 const MAX_TOUCH_WHEEL_STEPS_PER_MOVE = 16;
 
+// ── Edge swipe: change screen without a Tab key ─────────────────────────
+// Touch devices have no Tab/Shift+Tab, which is how screens are cycled, so the
+// 45 screens were unreachable on a phone. Dragging inward from a bezel moves
+// between them: from the left edge goes back, from the right edge goes forward,
+// matching the platform convention for back/forward.
+const EDGE_SWIPE_ZONE_PX = 44;      // how near a bezel the drag must start
+const EDGE_SWIPE_ARM_PX = 16;       // travel before the gesture takes over
+const EDGE_SWIPE_COMMIT_PX = 72;    // travel required to actually switch
+let edgeSwipeFrom = 0;              // -1 left bezel, +1 right bezel, 0 none
+let edgeSwipeArmed = false;
+const edgeSwipeHint = document.getElementById("edge-swipe-hint");
+const edgeSwipeGlyph = document.getElementById("edge-swipe-glyph");
+
+function edgeSwipeZoneFor(rect) {
+  // Proportional on large viewports, but never smaller than a thumb.
+  return Math.max(EDGE_SWIPE_ZONE_PX, rect.width * 0.07);
+}
+
+function updateEdgeSwipeHint(travel) {
+  if (!edgeSwipeHint) return;
+  const ready = travel >= EDGE_SWIPE_COMMIT_PX;
+  edgeSwipeHint.classList.add("armed");
+  edgeSwipeHint.classList.toggle("ready", ready);
+  edgeSwipeHint.style.width = `${Math.min(travel, window.innerWidth * 0.42)}px`;
+  if (edgeSwipeFrom < 0) {
+    edgeSwipeHint.style.left = "0px";
+    edgeSwipeHint.style.right = "auto";
+    edgeSwipeHint.style.setProperty("--edge-dir", "to right");
+  } else {
+    edgeSwipeHint.style.right = "0px";
+    edgeSwipeHint.style.left = "auto";
+    edgeSwipeHint.style.setProperty("--edge-dir", "to left");
+  }
+  if (edgeSwipeGlyph) {
+    edgeSwipeGlyph.textContent = edgeSwipeFrom < 0 ? "‹ prev" : "next ›";
+  }
+}
+
+function clearEdgeSwipe() {
+  edgeSwipeFrom = 0;
+  edgeSwipeArmed = false;
+  if (edgeSwipeHint) {
+    edgeSwipeHint.classList.remove("armed", "ready");
+    edgeSwipeHint.style.width = "0px";
+  }
+}
+
+function commitEdgeSwipe(totalDx) {
+  if (Math.abs(totalDx) < EDGE_SWIPE_COMMIT_PX) return false;
+  // Left bezel dragged inward = back, right bezel dragged inward = forward.
+  const back = edgeSwipeFrom < 0;
+  pushRunnerInput(JSON.stringify({
+    kind: "key",
+    phase: "down",
+    key: back ? "BackTab" : "Tab",
+    code: "Tab",
+    mods: back ? 1 : 0,
+    repeat: false,
+  }));
+  jsonl({ event: "edge_swipe", direction: back ? "prev" : "next", dx: Math.round(totalDx), ts: Date.now() });
+  return true;
+}
+
 function resetTransientPointerAndTouchState() {
   cancelKeyboardLongPressTracker();
   mouseButtonsDown = 0;
@@ -2374,6 +2468,7 @@ function resetTransientPointerAndTouchState() {
   touchScrollAccX = 0;
   touchScrollAccY = 0;
   pinchStartDist = 0;
+  clearEdgeSwipe();
 }
 
 window.addEventListener("blur", resetTransientPointerAndTouchState, { capture: true });
@@ -2453,7 +2548,21 @@ canvas.addEventListener("touchstart", (e) => {
     touchStartTime = Date.now();
     touchScrollAccX = 0;
     touchScrollAccY = 0;
+    // Remember whether this drag began on a bezel; touchmove decides if it
+    // becomes a screen change or an ordinary scroll.
+    const bounds = canvas.getBoundingClientRect();
+    const localX = touches[0].clientX - bounds.left;
+    const zone = edgeSwipeZoneFor(bounds);
+    edgeSwipeArmed = false;
+    if (localX <= zone) {
+      edgeSwipeFrom = -1;
+    } else if (localX >= bounds.width - zone) {
+      edgeSwipeFrom = 1;
+    } else {
+      edgeSwipeFrom = 0;
+    }
   } else if (touches.length === 2) {
+    clearEdgeSwipe();
     touchState = TOUCH_PINCHING;
     pinchStartDist = pinchDistance(touches[0], touches[1]);
     pinchStartZoom = userZoom;
@@ -2502,6 +2611,32 @@ canvas.addEventListener("touchmove", (e) => {
     const dy = cy - touchLastY;
     touchLastX = cx;
     touchLastY = cy;
+
+    // A drag that started on a bezel and pulls inward is a screen change, not
+    // a scroll. Claim it before the scroll accumulator sees any movement, so
+    // the two gestures never fight over the same finger.
+    if (edgeSwipeFrom !== 0) {
+      const totalDx = cx - touchStartX;
+      const totalDy = cy - touchStartY;
+      const inward = Math.sign(totalDx) === -edgeSwipeFrom;
+      if (
+        !edgeSwipeArmed &&
+        inward &&
+        Math.abs(totalDx) >= EDGE_SWIPE_ARM_PX &&
+        Math.abs(totalDx) > Math.abs(totalDy)
+      ) {
+        edgeSwipeArmed = true;
+      } else if (!edgeSwipeArmed && Math.abs(totalDy) > Math.abs(totalDx)) {
+        // Mostly vertical: this is a scroll that happened to start near an
+        // edge. Stop considering it a swipe for the rest of the gesture.
+        edgeSwipeFrom = 0;
+      }
+      if (edgeSwipeArmed) {
+        touchState = TOUCH_SCROLLING;
+        updateEdgeSwipeHint(Math.abs(totalDx));
+        return;
+      }
+    }
 
     // Once movement exceeds tap threshold, switch to scrolling.
     if (touchState === TOUCH_TRACKING) {
@@ -2575,6 +2710,24 @@ canvas.addEventListener("touchend", (e) => {
     }
     return;
   }
+  // An armed edge swipe consumes the gesture: commit it if it travelled far
+  // enough, and never let it fall through to the tap path below.
+  if (edgeSwipeArmed) {
+    const t = e.changedTouches[0];
+    if (t) {
+      commitEdgeSwipe(t.clientX - touchStartX);
+    }
+    clearEdgeSwipe();
+    if (e.touches.length === 0) {
+      touchState = TOUCH_IDLE;
+      touchScrollAccX = 0;
+      touchScrollAccY = 0;
+      pinchStartDist = 0;
+    }
+    return;
+  }
+  clearEdgeSwipe();
+
   // If we were tracking a single finger and it ended quickly without much movement, it's a tap.
   if (touchState === TOUCH_TRACKING && e.changedTouches.length > 0) {
     const elapsed = Date.now() - touchStartTime;
@@ -2623,6 +2776,7 @@ canvas.addEventListener("touchcancel", (e) => {
   touchScrollAccX = 0;
   touchScrollAccY = 0;
   pinchStartDist = 0;
+  clearEdgeSwipe();
 }, { passive: false });
 
 // ── Host frame loop ────────────────────────────────────────────────────

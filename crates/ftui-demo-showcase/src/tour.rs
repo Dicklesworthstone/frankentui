@@ -10,11 +10,13 @@ use std::time::Duration;
 use ftui_core::geometry::Rect;
 
 use crate::app::ScreenId;
-use crate::screens::{self, ScreenCategory, ScreenMeta};
+use crate::screens::{self, ScreenCategory};
 
 const SPEED_MIN: f64 = 0.25;
 const SPEED_MAX: f64 = 4.0;
-const DEFAULT_STEP_DURATION_MS: u64 = 6200;
+/// Slack a step must leave after its final action, so the screen has time to
+/// show the result before the tour moves on.
+const ACTION_TAIL_MS: u64 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TourAdvanceReason {
@@ -36,6 +38,55 @@ pub enum TourEvent {
     },
 }
 
+/// A key the tour presses on the active screen while a step is running.
+///
+/// The tour narrates *and* drives: a step that talks about search actually
+/// types a query and walks the matches, so the viewer sees the feature work
+/// instead of reading a caption about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TourInput {
+    Char(char),
+    Enter,
+    Esc,
+    Tab,
+    Backspace,
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// A [`TourInput`] scheduled at an offset into its step, in tour time (so it
+/// follows the speed multiplier and pauses with the tour).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TourAction {
+    pub at_ms: u64,
+    pub input: TourInput,
+}
+
+impl TourAction {
+    pub const fn new(at_ms: u64, input: TourInput) -> Self {
+        Self { at_ms, input }
+    }
+}
+
+/// Expand `text` into one keystroke per character, `every_ms` apart, starting
+/// at `start_ms`. Used to type search queries and markdown samples.
+pub fn typed(start_ms: u64, every_ms: u64, text: &str) -> Vec<TourAction> {
+    text.chars()
+        .enumerate()
+        .map(|(i, ch)| TourAction::new(start_ms + (i as u64) * every_ms, TourInput::Char(ch)))
+        .collect()
+}
+
+/// Repeat one input `count` times, `every_ms` apart, starting at `start_ms`.
+/// Used to walk search matches and cycle samples.
+pub fn repeated(start_ms: u64, every_ms: u64, count: usize, input: TourInput) -> Vec<TourAction> {
+    (0..count)
+        .map(|i| TourAction::new(start_ms + (i as u64) * every_ms, input))
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct TourStep {
     pub id: String,
@@ -45,6 +96,8 @@ pub struct TourStep {
     pub hint: Option<&'static str>,
     pub duration: Duration,
     pub highlight: Option<TourHighlight>,
+    /// Keystrokes this step performs, sorted by `at_ms`.
+    pub actions: Vec<TourAction>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +168,9 @@ pub struct GuidedTourState {
     step_elapsed: Duration,
     steps: Vec<TourStep>,
     resume_screen: ScreenId,
+    /// How many of the current step's actions have already been handed out.
+    /// Actions are sorted by `at_ms`, so this doubles as the cursor into them.
+    actions_fired: usize,
 }
 
 impl Default for GuidedTourState {
@@ -133,6 +189,7 @@ impl GuidedTourState {
             step_elapsed: Duration::ZERO,
             steps: build_steps(),
             resume_screen: ScreenId::Dashboard,
+            actions_fired: 0,
         }
     }
 
@@ -171,6 +228,7 @@ impl GuidedTourState {
         self.speed = normalize_speed(speed);
         self.step_index = start_step.min(self.steps.len().saturating_sub(1));
         self.step_elapsed = Duration::ZERO;
+        self.actions_fired = 0;
         self.resume_screen = resume_screen;
     }
 
@@ -183,6 +241,7 @@ impl GuidedTourState {
         self.active = false;
         self.paused = false;
         self.step_elapsed = Duration::ZERO;
+        self.actions_fired = 0;
         screen
     }
 
@@ -222,6 +281,30 @@ impl GuidedTourState {
         self.next_step(TourAdvanceReason::Auto)
     }
 
+    /// Hand back the current step's actions whose scheduled offset has passed,
+    /// in order, each exactly once.
+    ///
+    /// Call after [`Self::advance`] on the same tick. A paused tour yields
+    /// nothing, so the demo freezes where the viewer paused it rather than
+    /// replaying a burst of keystrokes on resume.
+    pub fn take_due_actions(&mut self) -> Vec<TourInput> {
+        if !self.active || self.paused {
+            return Vec::new();
+        }
+        let Some(step) = self.steps.get(self.step_index) else {
+            return Vec::new();
+        };
+        let mut due = Vec::new();
+        while let Some(action) = step.actions.get(self.actions_fired) {
+            if Duration::from_millis(action.at_ms) > self.step_elapsed {
+                break;
+            }
+            due.push(action.input);
+            self.actions_fired += 1;
+        }
+        due
+    }
+
     pub fn next_step(&mut self, reason: TourAdvanceReason) -> Option<TourEvent> {
         if !self.active || self.steps.is_empty() {
             return None;
@@ -231,10 +314,12 @@ impl GuidedTourState {
             self.active = false;
             self.paused = false;
             self.step_elapsed = Duration::ZERO;
+            self.actions_fired = 0;
             return Some(TourEvent::Finished { last_screen: from });
         }
         self.step_index += 1;
         self.step_elapsed = Duration::ZERO;
+        self.actions_fired = 0;
         let to = self.active_screen();
         Some(TourEvent::StepChanged { from, to, reason })
     }
@@ -249,6 +334,7 @@ impl GuidedTourState {
         let from = self.active_screen();
         self.step_index = self.step_index.saturating_sub(1);
         self.step_elapsed = Duration::ZERO;
+        self.actions_fired = 0;
         let to = self.active_screen();
         Some(TourEvent::StepChanged {
             from,
@@ -268,6 +354,7 @@ impl GuidedTourState {
         let from = self.active_screen();
         self.step_index = idx;
         self.step_elapsed = Duration::ZERO;
+        self.actions_fired = 0;
         let to = self.active_screen();
         Some(TourEvent::StepChanged {
             from,
@@ -328,200 +415,434 @@ impl GuidedTourState {
 }
 
 fn build_steps() -> Vec<TourStep> {
+    #[allow(clippy::too_many_arguments)]
     fn push_step(
         steps: &mut Vec<TourStep>,
         screen: ScreenId,
         suffix: &'static str,
         blurb: &'static str,
         hint: &'static str,
-        duration: Duration,
-        highlight: Option<TourHighlight>,
+        duration_ms: u64,
+        actions: Vec<TourAction>,
     ) {
         let meta = screens::screen_meta(screen);
         let base = slugify(meta.title);
+        debug_assert!(
+            actions
+                .last()
+                .is_none_or(|last| last.at_ms + ACTION_TAIL_MS <= duration_ms),
+            "tour step {base}:{suffix} schedules an action too close to its end"
+        );
         steps.push(TourStep {
             id: format!("step:{base}:{suffix}"),
             screen,
             title: meta.title,
             blurb,
             hint: Some(hint),
-            duration,
-            highlight,
+            duration: Duration::from_millis(duration_ms),
+            highlight: None,
+            actions,
         });
     }
 
+    /// Concatenate action groups and sort by scheduled offset, so a step can be
+    /// written as independent beats without hand-ordering the result.
+    fn beats(groups: impl IntoIterator<Item = Vec<TourAction>>) -> Vec<TourAction> {
+        let mut all: Vec<TourAction> = groups.into_iter().flatten().collect();
+        all.sort_by_key(|a| a.at_ms);
+        all
+    }
+
+    fn press(at_ms: u64, input: TourInput) -> Vec<TourAction> {
+        vec![TourAction::new(at_ms, input)]
+    }
+
+    use TourInput::{Char, Down, Enter, Esc, Left, Right, Tab};
+
     let mut steps = Vec::new();
 
-    // 2-3 minute "cinematic" tour: more steps, slightly longer defaults.
-    //
-    // Key beats:
-    // - Inline mode scrollback story
-    // - Determinism + checksums
-    // - Time travel / snapshots
-    // - Hit testing + hyperlinks
-    // - Performance budgets / tiers
-    // - One big visual (braille VFX)
+    // The storyboard shows features working rather than describing them: each
+    // step types real queries, walks real results, and cycles real samples.
+    // Steps are kept short so nothing outstays its welcome; the longer ones are
+    // the search beats, which need time to type.
 
-    // Dashboard: make "click what you see" obvious.
+    // ---- Orientation -----------------------------------------------------
     push_step(
         &mut steps,
         ScreenId::Dashboard,
         "overview",
-        "This is the home screen. Every tile is meant to be clicked.",
-        "Click a tile (or press Enter) to jump in.",
-        step_duration(screens::screen_meta(ScreenId::Dashboard)),
-        Some(TourHighlight::new_pct(0.03, 0.12, 0.94, 0.72)),
+        "Every tile here is live and clickable. This whole UI is one Rust binary.",
+        "Click any tile, or press Ctrl+K for the command palette.",
+        3400,
+        Vec::new(),
+    );
+
+    // ---- Text: real search over 5.4 MB of Shakespeare --------------------
+    push_step(
+        &mut steps,
+        ScreenId::Shakespeare,
+        "search",
+        "Searching the complete works of Shakespeare - 5.4 MB, no index, no lag.",
+        "Press / to search, then Enter to walk the matches.",
+        7200,
+        beats([
+            press(250, Char('/')),
+            typed(700, 90, "Hamlet"),
+            // While the search field holds focus, Enter/Down step matches and
+            // `n` would be typed into the query instead.
+            repeated(1700, 900, 6, Enter),
+        ]),
     );
     push_step(
         &mut steps,
-        ScreenId::Dashboard,
+        ScreenId::Shakespeare,
+        "modes",
+        "The same buffer, re-laid-out on demand: view modes, scrolling, jumps.",
+        "m cycles view mode; g and G jump to the ends.",
+        4200,
+        beats([
+            press(200, Esc),
+            press(700, Char('m')),
+            press(1700, Char('m')),
+            press(2600, Char('G')),
+            press(3300, Char('g')),
+        ]),
+    );
+
+    // ---- Text: search a 9 MB C amalgamation ------------------------------
+    push_step(
+        &mut steps,
+        ScreenId::CodeExplorer,
+        "search",
+        "Same engine over sqlite3.c - 9.2 MB of C, searched and highlighted live.",
+        "/ searches; Enter steps through every hit.",
+        7000,
+        beats([
+            press(250, Char('/')),
+            typed(700, 90, "sqlite3_open"),
+            // Same as Shakespeare: the query field owns plain characters.
+            repeated(2000, 900, 5, Enter),
+        ]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::CodeExplorer,
+        "hotspots",
+        "Hotspots and feature spotlights navigate structure, not just text.",
+        "] jumps hotspots; f cycles the spotlight.",
+        4200,
+        beats([
+            press(200, Esc),
+            press(700, Char(']')),
+            press(1600, Char(']')),
+            press(2500, Char('f')),
+            press(3400, Char('f')),
+        ]),
+    );
+
+    // ---- Markdown: streaming render + varied input -----------------------
+    push_step(
+        &mut steps,
+        ScreenId::MarkdownRichText,
+        "stream",
+        "GitHub-flavored markdown streaming in: tables, code, lists, math.",
+        "Space pauses the stream; w and a change wrap and alignment.",
+        5200,
+        beats([
+            press(400, Char('r')),
+            press(1800, Char('w')),
+            press(2700, Char('a')),
+            press(3600, Char('f')),
+        ]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::MarkdownLiveEditor,
+        "typing",
+        "Type markdown, see it render. The preview keeps up keystroke by keystroke.",
+        "Everything you see is being typed live.",
+        6600,
+        beats([
+            typed(300, 55, "# FrankenTUI\n\n"),
+            typed(1600, 45, "- [x] **bold**, `code`, _italic_\n"),
+            typed(3300, 45, "- [ ] tables, math, links\n\n"),
+            typed(4900, 45, "> Rendered as you type.\n"),
+        ]),
+    );
+
+    // ---- Diagrams --------------------------------------------------------
+    #[cfg(feature = "screen-mermaid")]
+    {
+        push_step(
+            &mut steps,
+            ScreenId::MermaidShowcase,
+            "samples",
+            "Mermaid diagrams laid out in the terminal: flowcharts, sequence, state, ER, Gantt.",
+            "j and k walk 29 samples; m shows layout metrics.",
+            6800,
+            beats([press(300, Char('m')), repeated(900, 1100, 5, Char('j'))]),
+        );
+        push_step(
+            &mut steps,
+            ScreenId::MermaidShowcase,
+            "layout",
+            "The layout engine is tunable live: tiers, glyph modes, and render backends.",
+            "l toggles layout, t cycles tier, b cycles render mode.",
+            4600,
+            beats([
+                press(300, Char('l')),
+                press(1300, Char('t')),
+                press(2300, Char('b')),
+                press(3300, Char('f')),
+            ]),
+        );
+        push_step(
+            &mut steps,
+            ScreenId::MermaidMegaShowcase,
+            "mega",
+            "Stress mode: procedurally generated graphs, re-laid-out on every change.",
+            "j walks samples; R reseeds the generator.",
+            4800,
+            beats([repeated(300, 900, 3, Char('j')), press(3200, Char('R'))]),
+        );
+    }
+
+    // ---- Visuals ---------------------------------------------------------
+    push_step(
+        &mut steps,
+        ScreenId::VisualEffects,
+        "effects",
+        "Braille-rasterized effects: reaction-diffusion, metaballs, attractors, fractals.",
+        "Arrow keys switch effects; every one is deterministic math.",
+        7000,
+        beats([repeated(400, 1300, 5, Right)]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::VisualEffects,
+        "textfx",
+        "Text effects run through the same rasterizer, with easing and combos.",
+        "t enters text mode; arrows cycle effects.",
+        4600,
+        beats([press(300, Char('t')), repeated(1200, 1000, 3, Right)]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::DataViz,
+        "charts",
+        "Charts, sparklines and gauges - all cell-addressed, no image layer.",
+        "Arrows switch panels; d flips bar direction.",
+        4800,
+        beats([repeated(300, 900, 3, Right), press(3200, Char('d'))]),
+    );
+
+    // ---- Widgets and layout ---------------------------------------------
+    push_step(
+        &mut steps,
+        ScreenId::WidgetGallery,
+        "widgets",
+        "80+ widgets: inputs, tables, trees, pickers, toasts, palettes.",
+        "j and k walk the sections.",
+        4600,
+        beats([repeated(400, 1000, 4, Char('j'))]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::TableThemeGallery,
+        "tables",
+        "A dedicated table theme engine: striping, emphasis, borders, selection.",
+        "Tab cycles presets; Z and B change zebra and borders.",
+        4600,
+        beats([
+            repeated(300, 900, 3, Tab),
+            press(3100, Char('Z')),
+            press(3800, Char('B')),
+        ]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::LayoutLab,
+        "layout",
+        "Flex and grid solvers with live constraints - and draggable pane workspaces.",
+        "Panes drag, dock, snap, and undo.",
+        3600,
+        beats([repeated(400, 900, 3, Right)]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::ResponsiveDemo,
+        "responsive",
+        "Breakpoints in a terminal: the layout restructures as the viewport changes.",
+        "Resize the window and watch it re-flow.",
+        3000,
+        Vec::new(),
+    );
+
+    // ---- Interaction -----------------------------------------------------
+    push_step(
+        &mut steps,
+        ScreenId::FormsInput,
+        "forms",
+        "Real form controls with validation, undo/redo and focus management.",
+        "Tab moves between fields; Space toggles checkboxes.",
+        5200,
+        beats([
+            typed(300, 70, "frankentui"),
+            press(1500, Tab),
+            typed(1900, 70, "demo@example.com"),
+            press(3400, Tab),
+            press(3900, Char(' ')),
+        ]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::VirtualizedSearch,
+        "virtualized",
+        "A virtualized list with Fenwick-indexed variable heights: O(log n) scrolling.",
+        "/ filters; j walks results without re-laying out the world.",
+        5600,
+        beats([
+            press(300, Char('/')),
+            typed(800, 80, "render"),
+            press(1900, Enter),
+            repeated(2600, 650, 4, Char('j')),
+        ]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::LogSearch,
+        "logs",
+        "Live log stream with search, filters and match stepping.",
+        "/ searches, n steps matches, Space pauses the stream.",
+        5400,
+        beats([
+            press(300, Char('/')),
+            typed(800, 80, "error"),
+            press(1800, Enter),
+            repeated(2500, 700, 3, Char('n')),
+            press(4700, Esc),
+        ]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::CommandPaletteLab,
         "palette",
-        "Navigation is instant: everything is searchable and tagged.",
-        "Press Ctrl+K to open the Command Palette.",
-        Duration::from_millis(5200),
-        Some(TourHighlight::new_pct(0.02, 0.0, 0.96, 0.14)),
+        "The command palette scores matches with a Bayesian evidence ledger.",
+        "Every result can explain exactly why it ranked where it did.",
+        5000,
+        beats([typed(400, 90, "theme")]),
     );
-
-    // Mermaid: terminal-native diagrams with diagnostics.
     push_step(
         &mut steps,
-        ScreenId::MermaidShowcase,
-        "mermaid",
-        "Mermaid diagrams rendered deterministically, with layout metrics and live controls.",
-        "Press m for metrics, t for tier, and j/k to change samples.",
-        step_duration(screens::screen_meta(ScreenId::MermaidShowcase)),
-        Some(TourHighlight::new_pct(0.40, 0.18, 0.58, 0.72)),
+        ScreenId::KanbanBoard,
+        "kanban",
+        "Drag-and-drop board with undo: cards move by keyboard or mouse.",
+        "h and l change column; L moves the card.",
+        4200,
+        beats([
+            repeated(300, 800, 2, Char('j')),
+            press(2000, Char('L')),
+            press(2900, Char('u')),
+        ]),
     );
 
-    // Inline mode story: preserve scrollback while keeping chrome stable.
+    // ---- Theming, i18n, accessibility ------------------------------------
+    push_step(
+        &mut steps,
+        ScreenId::ThemeStudio,
+        "theme",
+        "Themes are data: edit, preview, and export to JSON or a Ghostty config.",
+        "Enter applies a theme; e exports it.",
+        4400,
+        beats([repeated(300, 800, 3, Char('j')), press(2800, Enter)]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::I18nDemo,
+        "i18n",
+        "Locale-aware rendering with BiDi: English, French, German, Japanese, Arabic.",
+        "L cycles locale; D flips RTL.",
+        4400,
+        beats([repeated(300, 900, 3, Char('L')), press(3100, Char('D'))]),
+    );
+    push_step(
+        &mut steps,
+        ScreenId::AccessibilityPanel,
+        "a11y",
+        "A live accessibility tree mirrors the widget tree, with WCAG contrast checks.",
+        "Announcements are emitted as structured evidence.",
+        3400,
+        Vec::new(),
+    );
+
+    // ---- The kernel story ------------------------------------------------
     push_step(
         &mut steps,
         ScreenId::InlineModeStory,
         "scrollback",
-        "Inline mode keeps your terminal scrollback. The UI stays pinned; logs stay real.",
-        "Scroll up: the UI doesn't steal your history.",
-        step_duration(screens::screen_meta(ScreenId::InlineModeStory)),
-        Some(TourHighlight::new_pct(0.0, 0.76, 1.0, 0.24)),
+        "Inline mode keeps your scrollback. The UI pins itself; your history stays real.",
+        "No alt-screen takeover, no lost output.",
+        3600,
+        Vec::new(),
     );
-    push_step(
-        &mut steps,
-        ScreenId::InlineModeStory,
-        "mouse_policy",
-        "Mouse capture is explicit. Inline mode stays scrollback-first by default.",
-        "Toggle mouse and watch what changes (and what doesn't).",
-        Duration::from_millis(5200),
-        Some(TourHighlight::new_pct(0.02, 0.76, 0.96, 0.22)),
-    );
-
-    // Determinism lab: checksums as proof.
     push_step(
         &mut steps,
         ScreenId::DeterminismLab,
         "checksums",
-        "Determinism isn't a vibe: we compute checksums and demand repeatable output.",
-        "Run a check twice. The checksum should match exactly.",
-        step_duration(screens::screen_meta(ScreenId::DeterminismLab)),
-        Some(TourHighlight::new_pct(0.04, 0.20, 0.92, 0.62)),
+        "Determinism is measured, not claimed: identical input, identical checksum.",
+        "Run it twice - the hashes match exactly.",
+        4000,
+        Vec::new(),
     );
-    push_step(
-        &mut steps,
-        ScreenId::DeterminismLab,
-        "shortcuts",
-        "This is built to be driven by shortcuts and evidence, not hidden state.",
-        "Try the on-screen shortcuts and watch the evidence ledger update.",
-        Duration::from_millis(5200),
-        Some(TourHighlight::new_pct(0.0, 0.0, 1.0, 0.20)),
-    );
-
-    // Time travel: replay and scrub.
     push_step(
         &mut steps,
         ScreenId::SnapshotPlayer,
         "replay",
-        "Time travel for terminal UIs: replay frames, inspect diffs, stay deterministic.",
-        "Use j/k (or arrows) to scrub the timeline.",
-        step_duration(screens::screen_meta(ScreenId::SnapshotPlayer)),
-        Some(TourHighlight::new_pct(0.04, 0.72, 0.92, 0.22)),
+        "Time travel: record frames, scrub the timeline, diff what changed.",
+        "Arrows scrub; diff mode shows the deltas.",
+        4400,
+        beats([repeated(400, 900, 4, Right)]),
     );
-    push_step(
-        &mut steps,
-        ScreenId::SnapshotPlayer,
-        "diff",
-        "Diff mode shows what actually changed between frames.",
-        "Toggle diff view and watch the render deltas.",
-        Duration::from_millis(5200),
-        Some(TourHighlight::new_pct(0.04, 0.08, 0.92, 0.62)),
-    );
-
-    // Hyperlinks + hit testing: terminal-native interactivity.
     push_step(
         &mut steps,
         ScreenId::HyperlinkPlayground,
-        "hover_click",
-        "OSC-8 hyperlinks with hit regions: hover/click like a real UI.",
-        "Hover a link, then click it.",
-        step_duration(screens::screen_meta(ScreenId::HyperlinkPlayground)),
-        Some(TourHighlight::new_pct(0.06, 0.18, 0.88, 0.64)),
+        "links",
+        "OSC-8 hyperlinks with real hit regions - hover and click like a GUI.",
+        "Links are addressable cells, not escape-code soup.",
+        3000,
+        Vec::new(),
     );
-    push_step(
-        &mut steps,
-        ScreenId::LayoutInspector,
-        "hit_testing",
-        "Hit testing is first-class. You can inspect what region you're interacting with.",
-        "Open the inspector overlay and click around.",
-        step_duration(screens::screen_meta(ScreenId::LayoutInspector)),
-        Some(TourHighlight::new_pct(0.0, 0.0, 1.0, 1.0)),
-    );
-
-    // Explainability: evidence ledger for changes.
     push_step(
         &mut steps,
         ScreenId::ExplainabilityCockpit,
         "evidence",
-        "Evidence-led debugging: diffs, resizes, budgets, and checksums in one cockpit.",
-        "Toggle a knob and watch what evidence gets recorded.",
-        step_duration(screens::screen_meta(ScreenId::ExplainabilityCockpit)),
-        Some(TourHighlight::new_pct(0.04, 0.18, 0.92, 0.66)),
+        "Every probabilistic decision is logged: diff strategy, budgets, regimes.",
+        "No black boxes - grep the evidence for any frame.",
+        3800,
+        beats([repeated(400, 800, 3, Down)]),
     );
-
-    // Performance HUD: budgets + degradation tiers.
     push_step(
         &mut steps,
         ScreenId::PerformanceHud,
         "budgets",
-        "Budgets are enforced. When the frame is expensive, we degrade intentionally.",
-        "Press t to cycle tiers; watch what drops first.",
-        step_duration(screens::screen_meta(ScreenId::PerformanceHud)),
-        Some(TourHighlight::new_pct(0.62, 0.0, 0.38, 0.30)),
-    );
-    push_step(
-        &mut steps,
-        ScreenId::PerformanceHud,
-        "stress",
-        "Stress the system and see recovery: no flicker, no cursor corruption.",
-        "Use the stress controls, then reset.",
-        Duration::from_millis(5200),
-        Some(TourHighlight::new_pct(0.04, 0.24, 0.56, 0.68)),
+        "Frame budgets are enforced, and degradation is deliberate and recoverable.",
+        "Watch what drops first when the budget tightens.",
+        3800,
+        Vec::new(),
     );
 
-    // Big visual: braille VFX.
+    // ---- Sign-off --------------------------------------------------------
     push_step(
         &mut steps,
-        ScreenId::VisualEffects,
-        "vfx",
-        "A big visual in pure terminal: braille effects, deterministic and fast.",
-        "Switch effects and watch the Perf HUD stay stable.",
-        step_duration(screens::screen_meta(ScreenId::VisualEffects)),
-        Some(TourHighlight::new_pct(0.04, 0.14, 0.92, 0.74)),
-    );
-    push_step(
-        &mut steps,
-        ScreenId::VisualEffects,
-        "vfx_determinism",
-        "Even the flashy stuff is deterministic under fixed seeds and ticks.",
-        "Reseed (deterministically) and compare hashes.",
-        Duration::from_millis(5200),
-        Some(TourHighlight::new_pct(0.62, 0.0, 0.38, 0.26)),
+        ScreenId::QuakeEasterEgg,
+        "quake",
+        "And yes - a raycast Quake level, rendered in text cells. Press Tab to explore.",
+        "WASD moves, arrows look. Thanks for watching.",
+        4600,
+        beats([
+            repeated(300, 500, 4, Char('w')),
+            repeated(2400, 450, 4, Left),
+        ]),
     );
 
     steps
@@ -541,18 +862,6 @@ fn slugify(input: &str) -> String {
         }
     }
     out.trim_matches('_').to_string()
-}
-
-fn step_duration(meta: &ScreenMeta) -> Duration {
-    let base = match meta.category {
-        ScreenCategory::Visuals => DEFAULT_STEP_DURATION_MS + 1800,
-        ScreenCategory::Systems => DEFAULT_STEP_DURATION_MS + 1200,
-        ScreenCategory::Tour => DEFAULT_STEP_DURATION_MS,
-        ScreenCategory::Core => DEFAULT_STEP_DURATION_MS + 800,
-        ScreenCategory::Interaction => DEFAULT_STEP_DURATION_MS + 800,
-        ScreenCategory::Text => DEFAULT_STEP_DURATION_MS + 800,
-    };
-    Duration::from_millis(base)
 }
 
 fn normalize_speed(speed: f64) -> f64 {
@@ -587,6 +896,7 @@ mod tests {
             hint: None,
             duration: Duration::from_millis(duration_ms),
             highlight,
+            actions: Vec::new(),
         }
     }
 
@@ -613,6 +923,197 @@ mod tests {
         let before = tour.step_index();
         let _ = tour.advance(Duration::from_secs(10));
         assert_eq!(before, tour.step_index());
+    }
+
+    #[test]
+    fn actions_fire_once_in_schedule_order() {
+        let mut tour = GuidedTourState::new();
+        tour.steps = vec![TourStep {
+            id: "s".to_string(),
+            screen: ScreenId::Dashboard,
+            title: "T",
+            blurb: "b",
+            hint: None,
+            duration: Duration::from_millis(5000),
+            highlight: None,
+            actions: beats_for_test(),
+        }];
+        tour.active = true;
+
+        // Nothing is due before its offset.
+        let _ = tour.advance(Duration::from_millis(50));
+        assert!(tour.take_due_actions().is_empty());
+
+        // Crossing 100ms and 200ms yields both, in order, exactly once.
+        let _ = tour.advance(Duration::from_millis(200));
+        assert_eq!(
+            tour.take_due_actions(),
+            vec![TourInput::Char('a'), TourInput::Enter]
+        );
+        assert!(tour.take_due_actions().is_empty());
+
+        // A later action still fires on a subsequent tick.
+        let _ = tour.advance(Duration::from_millis(1000));
+        assert_eq!(tour.take_due_actions(), vec![TourInput::Down]);
+    }
+
+    fn beats_for_test() -> Vec<TourAction> {
+        vec![
+            TourAction::new(100, TourInput::Char('a')),
+            TourAction::new(200, TourInput::Enter),
+            TourAction::new(900, TourInput::Down),
+        ]
+    }
+
+    #[test]
+    fn paused_tour_performs_no_actions() {
+        let mut tour = GuidedTourState::new();
+        tour.start(ScreenId::Dashboard, 0, 1.0);
+        tour.pause();
+        let _ = tour.advance(Duration::from_secs(5));
+        assert!(
+            tour.take_due_actions().is_empty(),
+            "a paused tour must not drive the screen"
+        );
+    }
+
+    #[test]
+    fn step_change_resets_the_action_cursor() {
+        let mut tour = GuidedTourState::new();
+        tour.start(ScreenId::Dashboard, 0, 1.0);
+        let _ = tour.advance(Duration::from_millis(400));
+        let _ = tour.take_due_actions();
+        let _ = tour.next_step(TourAdvanceReason::ManualNext);
+        assert_eq!(
+            tour.actions_fired, 0,
+            "the next step must start from its own first action"
+        );
+    }
+
+    #[test]
+    fn typed_and_repeated_expand_on_schedule() {
+        let keys = typed(100, 50, "hi");
+        assert_eq!(
+            keys,
+            vec![
+                TourAction::new(100, TourInput::Char('h')),
+                TourAction::new(150, TourInput::Char('i')),
+            ]
+        );
+        let walk = repeated(0, 10, 3, TourInput::Char('n'));
+        assert_eq!(walk.len(), 3);
+        assert_eq!(walk[2].at_ms, 20);
+    }
+
+    #[test]
+    fn every_step_is_short_and_finishes_its_actions_before_it_ends() {
+        for step in build_steps() {
+            assert!(
+                step.duration <= Duration::from_millis(7500),
+                "{} lingers for {:?}",
+                step.id,
+                step.duration
+            );
+            let mut last = 0;
+            for action in &step.actions {
+                assert!(action.at_ms >= last, "{} has out-of-order actions", step.id);
+                last = action.at_ms;
+            }
+            if let Some(final_action) = step.actions.last() {
+                assert!(
+                    Duration::from_millis(final_action.at_ms + ACTION_TAIL_MS) <= step.duration,
+                    "{} presses its last key with no time left to show the result",
+                    step.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tour_covers_the_headline_screens() {
+        let screens: Vec<ScreenId> = build_steps().iter().map(|s| s.screen).collect();
+        for required in [
+            ScreenId::Shakespeare,
+            ScreenId::CodeExplorer,
+            ScreenId::MarkdownRichText,
+            ScreenId::MarkdownLiveEditor,
+            ScreenId::VisualEffects,
+            ScreenId::DataViz,
+            ScreenId::WidgetGallery,
+            ScreenId::VirtualizedSearch,
+            ScreenId::LogSearch,
+        ] {
+            assert!(
+                screens.contains(&required),
+                "the tour never visits {required:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_steps_actually_type_a_query() {
+        let steps = build_steps();
+        let shakespeare = steps
+            .iter()
+            .find(|s| s.id.contains("search") && s.screen == ScreenId::Shakespeare)
+            .expect("shakespeare search step");
+        assert!(
+            shakespeare
+                .actions
+                .iter()
+                .any(|a| a.input == TourInput::Char('/')),
+            "the search step must open the search bar"
+        );
+        let typed_chars = shakespeare
+            .actions
+            .iter()
+            .filter(|a| matches!(a.input, TourInput::Char(c) if c.is_ascii_alphabetic()))
+            .count();
+        assert!(
+            typed_chars >= 5,
+            "the search step should type a real query, got {typed_chars} letters"
+        );
+    }
+
+    #[test]
+    fn text_search_steps_walk_matches_without_typing_into_the_query() {
+        // Shakespeare and Code Explorer keep focus in the search field after a
+        // query, so Enter/Down step matches while a plain letter is appended to
+        // the query instead. Driving them with `n` produced "Hamletnnnn" and no
+        // matches, which is exactly what this pins.
+        for screen in [ScreenId::Shakespeare, ScreenId::CodeExplorer] {
+            let steps = build_steps();
+            let step = steps
+                .iter()
+                .find(|s| s.screen == screen && s.id.contains("search"))
+                .expect("search step");
+            let slash = step
+                .actions
+                .iter()
+                .position(|a| a.input == TourInput::Char('/'))
+                .expect("search step opens the field with /");
+            // The query is the contiguous run of characters after the slash;
+            // letters inside it are the search term, not navigation.
+            let after_query = slash
+                + 1
+                + step.actions[slash + 1..]
+                    .iter()
+                    .position(|a| !matches!(a.input, TourInput::Char(_)))
+                    .expect("search step must do something after typing the query");
+            let tail = &step.actions[after_query..];
+            let walks_with_enter = tail
+                .iter()
+                .filter(|a| matches!(a.input, TourInput::Enter | TourInput::Down))
+                .count();
+            assert!(
+                walks_with_enter >= 3,
+                "{screen:?} should step matches with Enter/Down"
+            );
+            assert!(
+                !tail.iter().any(|a| matches!(a.input, TourInput::Char(_))),
+                "{screen:?} must not press a plain key while the query field has focus"
+            );
+        }
     }
 
     #[test]

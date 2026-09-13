@@ -174,23 +174,37 @@ pub fn render_guided_tour_overlay(state: &TourOverlayState<'_>, frame: &mut Fram
 
     // Highlights are intentionally disabled (always off) per user preference.
 
-    let width = area.width.min(56);
-    let height = area.height.min(14);
-    if width < 28 || height < 7 {
+    // The callout is a caption, not a panel: it should never be the reason you
+    // cannot see the screen it is describing. Below roughly 80x22 - phones in
+    // portrait, small embeds - it collapses to a single docked line.
+    if area.height < 22 || area.width < 80 {
+        render_guided_tour_strip(state, frame, area);
         return;
     }
-    let default_overlay = Rect::new(area.right().saturating_sub(width), area.y, width, height);
+
+    // Cap at a quarter of the height and just over a third of the width, so the
+    // box shrinks with the viewport instead of holding a fixed 56x14 footprint.
+    let width = area.width.min(48).min(area.width * 2 / 5);
+    let height = area.height.min(9).min(area.height / 4);
+    if width < 28 || height < 6 {
+        render_guided_tour_strip(state, frame, area);
+        return;
+    }
+    // Default to the bottom-right: screens lead with a title bar and their
+    // primary content in the upper-left, so that corner is the cheapest to
+    // cover.
+    let default_overlay = Rect::new(
+        area.right().saturating_sub(width),
+        area.bottom().saturating_sub(height),
+        width,
+        height,
+    );
     let overlay = if let Some(highlight) = state.highlight {
         let candidates = [
             default_overlay,
-            Rect::new(area.x, area.y, width, height),
-            Rect::new(
-                area.right().saturating_sub(width),
-                area.bottom().saturating_sub(height),
-                width,
-                height,
-            ),
             Rect::new(area.x, area.bottom().saturating_sub(height), width, height),
+            Rect::new(area.right().saturating_sub(width), area.y, width, height),
+            Rect::new(area.x, area.y, width, height),
         ];
         candidates
             .into_iter()
@@ -272,44 +286,78 @@ pub fn render_guided_tour_overlay(state: &TourOverlayState<'_>, frame: &mut Fram
         Style::new().fg(theme::fg::MUTED),
     )]));
 
+    // Only list upcoming steps when there is genuinely spare room. The list and
+    // the category legend used to consume most of the box, which is what made
+    // the callout large enough to hide the screen behind it.
     let mut remaining_rows = inner.height.saturating_sub(lines.len() as u16) as usize;
-    if remaining_rows >= 2 {
+    if remaining_rows >= 3 {
         lines.push(Line::from_spans([Span::styled(
-            "Steps:",
+            "Next:",
             Style::new().fg(theme::fg::MUTED).bold(),
         )]));
         remaining_rows = remaining_rows.saturating_sub(1);
-        let legend_reserve = if remaining_rows >= 2 { 1 } else { 0 };
-        let max_steps = remaining_rows.saturating_sub(legend_reserve);
-        for step in state.steps.iter().take(max_steps) {
-            let prefix = if step.is_current { "▶" } else { "•" };
-            let label = format!("{} {} · {}", prefix, step.category.label(), step.title);
+        let max_steps = remaining_rows.min(2);
+        for step in state
+            .steps
+            .iter()
+            .filter(|step| step.index > state.step_index)
+            .take(max_steps)
+        {
+            let label = format!("• {} · {}", step.category.label(), step.title);
             lines.push(Line::from_spans([Span::styled(
                 label,
-                Style::new().fg(theme::fg::PRIMARY),
+                Style::new().fg(theme::fg::MUTED),
             )]));
-        }
-        remaining_rows = inner.height.saturating_sub(lines.len() as u16) as usize;
-        if remaining_rows >= 1 {
-            let mut spans = Vec::new();
-            spans.push(Span::styled(
-                "Legend:",
-                Style::new().fg(theme::fg::MUTED).bold(),
-            ));
-            for category in ScreenCategory::ALL {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    category.short_label(),
-                    Style::new().fg(category_accent(*category)),
-                ));
-            }
-            lines.push(Line::from_spans(spans));
         }
     }
 
     Paragraph::new(Text::from_lines(lines))
         .wrap(WrapMode::Word)
         .render(inner, frame);
+}
+
+/// One-line guided-tour caption docked to the bottom of `area`.
+///
+/// Used on small viewports - phones in portrait, short embeds - where a boxed
+/// callout would cover the screen it is narrating. Everything essential stays:
+/// position, what this step is showing, and how to take over.
+fn render_guided_tour_strip(state: &TourOverlayState<'_>, frame: &mut Frame, area: Rect) {
+    if area.width < 12 || area.height < 3 {
+        return;
+    }
+    let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+
+    let mut spans = vec![
+        Span::styled(
+            format!("{}/{}", state.step_index + 1, state.step_count.max(1)),
+            Style::new().fg(theme::accent::INFO).bold(),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            state.callout_title,
+            Style::new().fg(theme::fg::PRIMARY).bold(),
+        ),
+    ];
+    if state.paused {
+        spans.push(Span::styled(
+            "  PAUSED",
+            Style::new().fg(theme::accent::WARNING).bold(),
+        ));
+    }
+    // Only offer the body text when the row is wide enough to show a useful
+    // amount of it; a three-word fragment is worse than none.
+    if area.width >= 64 {
+        spans.push(Span::raw(" · "));
+        spans.push(Span::styled(
+            state.callout_body,
+            Style::new().fg(theme::fg::SECONDARY),
+        ));
+    }
+
+    clear_chrome_area(frame, row, Style::new().bg(theme::alpha::SURFACE));
+    Paragraph::new(Text::from_lines(vec![Line::from_spans(spans)]))
+        .wrap(WrapMode::None)
+        .render(row, frame);
 }
 
 fn rects_intersect(a: Rect, b: Rect) -> bool {
