@@ -23,7 +23,22 @@ workspace = true
 [dependencies]
 ftui-core = { path = "../ftui-core", version = "0.7.0" }
 ftui-web = { path = "../ftui-web", version = "0.7.0", features = ["input-parser"] }
-ftui-demo-showcase = { path = "../ftui-demo-showcase", version = "0.7.0", default-features = false }
+# default-features = false drops only the two native terminal backends
+# (native-backend, crossterm-compat), which cannot mean anything in a browser.
+# Every other default feature is opted back in, so the browser showcase has the
+# same screens and capabilities as `cargo run -p ftui-demo-showcase`:
+#   screen-mermaid -> ftui-extras/markdown-diagram (mermaid_showcase,
+#                     mermaid_mega_showcase) - the two screens the web build
+#                     used to be missing entirely.
+#   clipboard/image/logging -> previously dropped for wasm binary size, not
+#                     because they fail to build. Parity is worth the bytes.
+ftui-demo-showcase = { path = "../ftui-demo-showcase", version = "0.7.0", default-features = false, features = [
+  "caps-probe",
+  "clipboard",
+  "image",
+  "logging",
+  "screen-mermaid",
+] }
 ftui-layout = { path = "../ftui-layout", version = "0.7.0" }
 serde_json = "1.0.151"
 

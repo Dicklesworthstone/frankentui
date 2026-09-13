@@ -320,7 +320,8 @@ const largeAssetsPromise = (async () => {
   try {
     const shakespeareUrl = "./assets/shakespeare.txt";
     const sqliteUrl      = "./assets/sqlite3.c";
-    const [shakespeare, sqlite] = await Promise.all([
+    const evidenceUrl    = "./assets/evidence.jsonl";
+    const [shakespeare, sqlite, evidence] = await Promise.all([
       fetch(shakespeareUrl).then((r) => {
         if (!r.ok) throw new Error(`GET ${shakespeareUrl} -> ${r.status}`);
         return r.text();
@@ -329,8 +330,12 @@ const largeAssetsPromise = (async () => {
         if (!r.ok) throw new Error(`GET ${sqliteUrl} -> ${r.status}`);
         return r.text();
       }),
+      // The explainability cockpit polls this log from disk in native builds.
+      // It is small and optional: a failure here must not cost the page the
+      // two multi-megabyte blobs above, so it degrades to null on its own.
+      fetch(evidenceUrl).then((r) => (r.ok ? r.text() : null)).catch(() => null),
     ]);
-    return { shakespeare, sqlite };
+    return { shakespeare, sqlite, evidence };
   } catch (e) {
     console.warn("[ShowcaseDemo] Failed to fetch large assets; some screens may be unavailable.", e);
     return null;
@@ -1221,17 +1226,13 @@ function pushRunnerInput(input) {
 
 // Navigate to a specific screen if requested via URL.
 if (START_SCREEN > 0) {
+  // Select the screen directly. This used to synthesize a digit key for the
+  // first ten screens and repeated Tab presses beyond that, which landed one
+  // screen late for ?screen=11 and above: Tab advances from the tour's active
+  // screen, not from current_screen.
   const screenIdx = START_SCREEN - 1;
-  // Send number key press to navigate: '1'-'9' for screens 1-9, '0' for 10.
-  // For screens > 10, we send repeated Tab presses.
-  if (screenIdx < 10) {
-    const key = screenIdx === 9 ? "0" : String(screenIdx + 1);
-    pushRunnerInput(JSON.stringify({ kind: "key", phase: "down", key, code: `Digit${key}`, mods: 0, repeat: false }));
-  } else {
-    // Navigate with Tab presses.
-    for (let i = 0; i < screenIdx; i++) {
-      pushRunnerInput(JSON.stringify({ kind: "key", phase: "down", key: "Tab", code: "Tab", mods: 0, repeat: false }));
-    }
+  if (!runner.gotoScreen(screenIdx)) {
+    console.warn(`[ShowcaseDemo] ?screen=${START_SCREEN} is out of range; staying on the default screen.`);
   }
 }
 
@@ -1249,11 +1250,14 @@ largeAssetsPromise.then((assets) => {
     try {
       const okA = runner.setShakespeareText(assets.shakespeare);
       const okB = runner.setSqliteSource(assets.sqlite);
+      const okC = assets.evidence ? runner.setEvidenceJsonl(assets.evidence) : false;
       jsonl({
         event: "assets_loaded",
         shakespeare_bytes: assets.shakespeare.length,
         sqlite_bytes: assets.sqlite.length,
+        evidence_bytes: assets.evidence ? assets.evidence.length : 0,
         ok: Boolean(okA && okB),
+        evidence_ok: okC,
         ts: Date.now(),
       });
     } catch (e) {

@@ -224,18 +224,64 @@ impl ExplainabilityCockpit {
     fn refresh(&mut self, force: bool) {
         #[cfg(target_arch = "wasm32")]
         {
+            // A browser has no filesystem to poll, so the host injects the same
+            // JSONL once at startup. The blob is immutable for the life of the
+            // page, so a forced refresh re-parses but cannot observe new rows.
             let _ = force;
-            self.data = empty_data(SourceStatus {
-                label: "source: (unavailable on wasm32)".to_string(),
-                status: "Explainability evidence file refresh is disabled in web builds"
-                    .to_string(),
-                hint_lines: vec![
-                    "This screen reads local JSONL files via std::fs in native mode.".to_string(),
-                    "Use a native build to inspect explainability evidence logs.".to_string(),
-                ],
-            });
             self.last_modified = None;
             self.last_size = None;
+
+            let Some(text) = crate::assets::evidence_jsonl() else {
+                self.data = empty_data(SourceStatus {
+                    label: "source: (not supplied by host)".to_string(),
+                    status: "Evidence log has not been provided to this page".to_string(),
+                    hint_lines: vec![
+                        "The embedding page supplies evidence rows via setEvidenceJsonl()."
+                            .to_string(),
+                        "Native builds read the same JSONL from a local path instead.".to_string(),
+                    ],
+                });
+                return;
+            };
+
+            // Match the native reader: keep only the newest MAX_EVIDENCE_LINES.
+            let all: Vec<&str> = text.lines().collect();
+            let lines: &[&str] = if all.len() > MAX_EVIDENCE_LINES {
+                &all[all.len() - MAX_EVIDENCE_LINES..]
+            } else {
+                &all
+            };
+            let parsed = parse_evidence_lines(lines);
+
+            let status = if parsed.parsed_count == 0 {
+                "No evidence entries parsed".to_string()
+            } else {
+                format!(
+                    "Loaded {} entries ({} lines)",
+                    parsed.parsed_count, parsed.line_count
+                )
+            };
+            let data = ExplainabilityData {
+                source: SourceStatus {
+                    label: "source: (host-supplied evidence log)".to_string(),
+                    status,
+                    hint_lines: Vec::new(),
+                },
+                diff: parsed.diff,
+                resize: parsed.resize,
+                budget: parsed.budget,
+                timeline: parsed.timeline,
+            };
+
+            if data.is_empty() {
+                self.data = empty_data(SourceStatus {
+                    label: "source: (host-supplied evidence log)".to_string(),
+                    status: "Evidence log is empty".to_string(),
+                    hint_lines: Vec::new(),
+                });
+            } else {
+                self.data = data;
+            }
         }
 
         #[cfg(not(target_arch = "wasm32"))]

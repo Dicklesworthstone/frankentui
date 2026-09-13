@@ -57,3 +57,25 @@ pub fn sqlite_source() -> Option<&'static str> {
 pub fn set_sqlite_source(text: String) -> bool {
     SQLITE_SOURCE.set(Box::leak(text.into_boxed_str())).is_ok()
 }
+
+// -------------------------------------------------------------------------------------
+// Evidence JSONL (explainability cockpit)
+// -------------------------------------------------------------------------------------
+//
+// Native builds read this from a file path chosen at runtime, so there is no
+// embedded default and no accessor here. A browser has no such file, which used
+// to leave the explainability cockpit permanently empty; the host supplies the
+// same JSONL once at startup instead.
+
+#[cfg(target_arch = "wasm32")]
+static EVIDENCE_JSONL: OnceLock<&'static str> = OnceLock::new();
+
+#[cfg(target_arch = "wasm32")]
+pub fn evidence_jsonl() -> Option<&'static str> {
+    EVIDENCE_JSONL.get().copied()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_evidence_jsonl(text: String) -> bool {
+    EVIDENCE_JSONL.set(Box::leak(text.into_boxed_str())).is_ok()
+}

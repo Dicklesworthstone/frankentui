@@ -81,7 +81,8 @@ build_package() {
 build_package "$output/renderer-source" frankenterm-web FrankenTerm
 build_package "$SCRIPT_DIR" ftui-showcase-wasm ftui_showcase_wasm
 cp crates/ftui-showcase-wasm/frankentui_showcase_demo.html "$output/site/index.html"
-cp crates/ftui-demo-showcase/data/shakespeare.txt crates/ftui-demo-showcase/data/sqlite3.c "$output/site/assets/"
+cp crates/ftui-demo-showcase/data/shakespeare.txt crates/ftui-demo-showcase/data/sqlite3.c \
+  crates/ftui-demo-showcase/data/evidence.jsonl "$output/site/assets/"
 cp fonts/pragmasevka-nf-subset.woff2 "$output/site/fonts/"
 cp "$output/renderer-source/LICENSE" "$output/site/RENDERER-LICENSE"
 cp LICENSE "$output/site/LICENSE"
@@ -98,7 +99,8 @@ inputs = {p.as_posix(): digest(p) for p in sorted(pathlib.Path('crates').rglob('
 for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-wasm.sh',
              'crates/ftui-showcase-wasm/frankentui_showcase_demo.html',
              'crates/ftui-showcase-wasm/renderer.lock', 'fonts/pragmasevka-nf-subset.woff2',
-             'crates/ftui-demo-showcase/data/shakespeare.txt', 'crates/ftui-demo-showcase/data/sqlite3.c'):
+             'crates/ftui-demo-showcase/data/shakespeare.txt', 'crates/ftui-demo-showcase/data/sqlite3.c',
+             'crates/ftui-demo-showcase/data/evidence.jsonl'):
     inputs[name] = digest(pathlib.Path(name))
 source_bytes = json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()
 with (root / 'source-inputs.json').open('xb') as out:

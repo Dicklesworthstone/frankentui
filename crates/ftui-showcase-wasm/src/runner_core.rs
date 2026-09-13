@@ -256,6 +256,13 @@ impl RunnerCore {
         true
     }
 
+    /// Select the screen at `index` in the feature-filtered screen registry.
+    ///
+    /// Returns `false` if `index` is out of range, leaving the screen unchanged.
+    pub fn goto_screen(&mut self, index: usize) -> bool {
+        self.inner.model_mut().goto_screen_index(index)
+    }
+
     /// Process pending events and render if dirty.
     pub fn step(&mut self) -> StepResult {
         if !self.inner.is_initialized() {

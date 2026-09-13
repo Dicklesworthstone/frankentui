@@ -2959,6 +2959,24 @@ impl AppModel {
         }
     }
 
+    /// Switch to the screen at `index` in the feature-filtered screen registry.
+    ///
+    /// Hosts that deep-link to a screen (the browser demo's `?screen=`
+    /// parameter) used to synthesize Tab presses instead. That is fragile: Tab
+    /// advances from [`Self::display_screen`], which is the tour's active
+    /// screen while a tour is running rather than `current_screen`, so the
+    /// landing screen depended on state the host cannot see. Selecting the
+    /// target directly removes that coupling.
+    ///
+    /// Returns `false` if `index` is out of range, leaving the screen unchanged.
+    pub fn goto_screen_index(&mut self, index: usize) -> bool {
+        let Some(id) = screens::screen_ids().get(index).copied() else {
+            return false;
+        };
+        let _ = self.update(AppMsg::SwitchScreen(id));
+        true
+    }
+
     fn clamp_tour_landing_start_step(&mut self) {
         let max_index = self.tour.step_count().saturating_sub(1);
         self.tour_landing_start_step = self.tour_landing_start_step.min(max_index);
@@ -6155,6 +6173,31 @@ mod tests {
 
         app.update(AppMsg::SwitchScreen(ScreenId::Performance));
         assert_eq!(app.current_screen, ScreenId::Performance);
+    }
+
+    #[test]
+    fn goto_screen_index_selects_exact_registry_entry() {
+        let ids = screens::screen_ids();
+        // Every index must land on exactly the screen the registry lists, with
+        // no dependence on where the model happened to start. The browser
+        // demo's ?screen=N deep link is this index plus one.
+        for (idx, &expected) in ids.iter().enumerate() {
+            let mut app = AppModel::new();
+            assert!(app.goto_screen_index(idx), "index {idx} should be in range");
+            assert_eq!(
+                app.current_screen, expected,
+                "?screen={} landed on the wrong screen",
+                idx + 1
+            );
+        }
+    }
+
+    #[test]
+    fn goto_screen_index_rejects_out_of_range() {
+        let mut app = AppModel::new();
+        let before = app.current_screen;
+        assert!(!app.goto_screen_index(screens::screen_ids().len()));
+        assert_eq!(app.current_screen, before, "screen must not change");
     }
 
     #[test]

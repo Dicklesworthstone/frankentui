@@ -607,9 +607,29 @@ impl ShowcaseRunner {
         ftui_demo_showcase::assets::set_sqlite_source(text)
     }
 
+    /// Provide the evidence JSONL for the `ExplainabilityCockpit` screen.
+    ///
+    /// Native builds poll this log from a local path; a browser has no such
+    /// file, so the host supplies the same rows once during startup. Returns
+    /// false if the log was already set.
+    #[wasm_bindgen(js_name = setEvidenceJsonl)]
+    pub fn set_evidence_jsonl(&mut self, text: String) -> bool {
+        ftui_demo_showcase::assets::set_evidence_jsonl(text)
+    }
+
     /// Initialize the model and render the first frame. Call exactly once.
     pub fn init(&mut self) {
         self.inner.init();
+    }
+
+    /// Select a screen by its zero-based index in the screen registry.
+    ///
+    /// Hosts previously deep-linked by synthesizing digit or Tab key presses,
+    /// which landed on the wrong screen because Tab advances relative to the
+    /// guided tour's active screen. Returns false if the index is out of range.
+    #[wasm_bindgen(js_name = gotoScreen)]
+    pub fn goto_screen(&mut self, index: u32) -> bool {
+        self.inner.goto_screen(index as usize)
     }
 
     /// Advance deterministic clock by `dt_ms` milliseconds (real-time mode).
