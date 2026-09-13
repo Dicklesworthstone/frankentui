@@ -10,3 +10,15 @@
 # Temporary
 last-touched
 *.tmp
+
+# fsqlite engine sidecars (br doctor: gitignore.beads_inner_present)
+*.db-journal
+*.db-wal*
+*-fsqlite-ns-gate
+*-fsqlite-ns-use
+*.vacuum-wal-cert*
+*.fsqlite-migration-state
+
+# br's own preserved recovery artifacts (vacuum/rebuild scratch, never source of truth)
+.br_recovery/
+recovery_*/
