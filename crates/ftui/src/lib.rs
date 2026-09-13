@@ -24,6 +24,21 @@
 //!
 //! If you only depend on one crate in your application, it should be `ftui`.
 
+#![cfg_attr(
+    all(
+        feature = "runtime",
+        any(all(feature = "native-backend", unix), feature = "crossterm")
+    ),
+    doc = concat!(
+        "\n# Minimal inline application\n\n",
+        "Run this example with `cargo run -p ftui --example minimal_inline`. ",
+        "It requires a terminal; the documentation test checks compilation.\n\n",
+        "```no_run\n",
+        include_str!("../examples/minimal_inline.rs"),
+        "\n```\n"
+    )
+)]
+
 /// Shared native inline child-session model, configuration, and messages.
 #[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 pub mod agent_shell;
