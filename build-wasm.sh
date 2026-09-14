@@ -9,8 +9,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-if [[ $# != 1 || $1 != /* ]]; then
-  fail 'usage: bash build-wasm.sh /absolute/NEW_OUTPUT_DIR (run through DSR)'
+if [[ $# != 1 || ( $1 != --check-features && $1 != /* ) ]]; then
+  fail 'usage: bash build-wasm.sh /absolute/NEW_OUTPUT_DIR | --check-features (run builds through DSR)'
+fi
+
+# Keep browser-supported native defaults explicit. This catches the observed
+# 43/45-screen build when screen-mermaid was omitted from the WASM dependency.
+# Retire this check if both packages consume one shared feature declaration.
+python3 -B - <<'PY'
+import tomllib
+from pathlib import Path
+native = tomllib.loads(Path('crates/ftui-demo-showcase/Cargo.toml').read_text())
+web = tomllib.loads(Path('crates/ftui-showcase-wasm/Cargo.toml').read_text())
+dependency = web['dependencies']['ftui-demo-showcase']
+backends = {'native-backend', 'crossterm-compat'}
+expected = set(native['features']['default']) - backends
+actual = set(dependency.get('features', []))
+if dependency.get('default-features', True):
+    raise SystemExit('browser feature parity: disable native defaults explicitly')
+missing = expected - actual
+forbidden = actual & (backends | {'default'})
+if missing or forbidden:
+    raise SystemExit(f'browser feature parity: missing={sorted(missing)}, native-only={sorted(forbidden)}')
+print(f'browser feature parity: {len(expected)} required features present ({", ".join(sorted(expected))})')
+PY
+if [[ $1 == --check-features ]]; then
+  exit 0
 fi
 output=$1
 [[ ! -e "$output" && ! -L "$output" ]] || fail "output already exists: $output"

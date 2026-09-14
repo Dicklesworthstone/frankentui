@@ -3,6 +3,9 @@
 # For frankentui-examples, set E2E_MINIMAL_BIN and PTY_CANONICALIZE_BIN to
 # executables built from that checkout through DSR with the pinned toolchain.
 # These focused gates supplement the workspace compiler/lint/doc/test gates.
+# For frankentui-browser, set DSR_BROWSER_OUTPUT to a new absolute directory
+# outside the source checkout. Install the pinned toolchain's wasm32 target and
+# the wasm-bindgen CLI version required by both locks on the native DSR host.
 schema_version: "1.0.0"
 tools:
   frankentui-env-docs:
@@ -16,3 +19,10 @@ tools:
     language: rust
     required_checks:
       - bash tests/e2e/scripts/test_examples.sh
+  frankentui-browser:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - bash build-wasm.sh --check-features
+      - RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web -p ftui-showcase-wasm
+      - bash build-wasm.sh "${DSR_BROWSER_OUTPUT:?Set DSR_BROWSER_OUTPUT to a new absolute directory outside the checkout}"
