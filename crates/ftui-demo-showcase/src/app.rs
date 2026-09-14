@@ -2970,7 +2970,7 @@ impl AppModel {
     ///
     /// Hosts that deep-link to a screen (the browser demo's `?screen=`
     /// parameter) used to synthesize Tab presses instead. That is fragile: Tab
-    /// advances from [`Self::display_screen`], which is the tour's active
+    /// advances from the displayed screen, which is the tour's active
     /// screen while a tour is running rather than `current_screen`, so the
     /// landing screen depended on state the host cannot see. Selecting the
     /// target directly removes that coupling.
