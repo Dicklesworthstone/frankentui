@@ -1329,7 +1329,10 @@ mod tests {
     #[test]
     fn screen_selector_reaches_model_and_preserves_invalid_selection() {
         let mut runner = RunnerCore::new(80, 24);
-        for (index, meta) in ftui_demo_showcase::screens::screen_registry().iter().enumerate() {
+        for (index, meta) in ftui_demo_showcase::screens::screen_registry()
+            .iter()
+            .enumerate()
+        {
             assert!(runner.goto_screen_selector(meta.slug));
             assert_eq!(runner.inner.model().current_screen, meta.id);
             assert!(runner.goto_screen_selector(&(index + 1).to_string()));
