@@ -2750,6 +2750,12 @@ fn open_vfx_writer(path: &str) -> std::io::Result<Box<dyn Write + Send>> {
 /// Implements the Elm architecture: all state lives here, messages drive
 /// transitions, and `view()` is a pure function of state.
 pub struct AppModel {
+    /// Content area from the last rendered frame.
+    ///
+    /// The guided tour addresses pointer positions as fractions of the content
+    /// area so a step reads the same at any terminal size; resolving them needs
+    /// the rect the screen was actually drawn into.
+    last_content_area: Cell<Rect>,
     /// Currently displayed screen.
     pub current_screen: ScreenId,
     /// Guided tour storyboard state.
@@ -2858,6 +2864,7 @@ impl AppModel {
         let exit_after_ticks = determinism::demo_exit_after_ticks();
         init_showcase_diagnostics();
         let mut app = Self {
+            last_content_area: Cell::new(Rect::default()),
             current_screen: ScreenId::Dashboard,
             tour: GuidedTourState::new(),
             tour_landing_start_step: 0,
@@ -3881,6 +3888,8 @@ impl AppModel {
                 // advance() so a step that just rolled over starts from its own
                 // action list rather than replaying the previous step's tail.
                 let tour_inputs = self.tour.take_due_actions();
+                let content_area = self.last_content_area.get();
+                let splitter = self.screens.dashboard.primary_splitter_center();
                 let playback_events = self.screens.macro_recorder.drain_playback_events();
                 // Dispatch each event through the runtime so its effects finish
                 // before the next event updates the model. Nested Quit stops
@@ -3888,8 +3897,9 @@ impl AppModel {
                 let mut commands: Vec<_> = playback_events
                     .into_iter()
                     .map(|event| Cmd::msg(AppMsg::PlaybackEvent(event)))
-                    .chain(tour_inputs.into_iter().flat_map(|input| {
-                        tour_input_events(input).map(|e| Cmd::msg(AppMsg::TourInput(e)))
+                    .chain(tour_inputs.into_iter().filter_map(|action| {
+                        tour_action_event(action, content_area, splitter)
+                            .map(|event| Cmd::msg(AppMsg::TourInput(event)))
                     }))
                     .collect();
                 if let Some(limit) = self.exit_after_ticks
@@ -4456,6 +4466,7 @@ impl Model for AppModel {
             .style(theme::content_border());
 
         let inner = content_block.inner(chunks[1]);
+        self.last_content_area.set(inner);
         content_block.render(chunks[1], frame);
         crate::chrome::register_pane_hit(frame, inner, self.display_screen());
 
@@ -4659,17 +4670,34 @@ enum UndoAction {
     Redo,
 }
 
-/// Translate a scheduled tour keystroke into the key event a screen expects.
-/// Expand a scheduled tour keystroke into the press *and* release a real key
-/// produces.
+/// Translate one scheduled tour action into the event a screen expects.
 ///
-/// Screens that latch a key down until it comes back up - Quake holds forward
-/// motion while `w` is held - would otherwise stay stuck in that state for the
-/// rest of the tour. Every other screen matches on `KeyEventKind::Press` (as do
-/// `TextArea` and `TextInput`), so the trailing release is simply ignored.
-fn tour_input_events(input: crate::tour::TourInput) -> [Event; 2] {
-    use crate::tour::TourInput;
-    let code = match input {
+/// Press and release are separate scheduled actions rather than a pair emitted
+/// together: the gap between them is the point. Quake moves forward only while
+/// `w` is down, so a press and release in the same tick cancel out and the
+/// player never moves. Screens that do not track key state match on
+/// `KeyEventKind::Press` (as do `TextArea` and `TextInput`) and ignore the
+/// release.
+///
+/// Pointer positions arrive as fractions of the content area so a step reads
+/// the same at any terminal size; `content` is the rect the screen was last
+/// drawn into.
+fn tour_action_event(
+    action: crate::tour::TourAction,
+    content: Rect,
+    splitter: Option<(u16, u16)>,
+) -> Option<Event> {
+    use crate::tour::{TourInput, TourPhase, TourPointer, TourPointerAt};
+
+    let resolve = |pct: f32, origin: u16, extent: u16| -> u16 {
+        if extent == 0 {
+            return origin;
+        }
+        let offset = (f32::from(extent) * pct.clamp(0.0, 1.0)).round() as u16;
+        origin.saturating_add(offset.min(extent.saturating_sub(1)))
+    };
+
+    let code = match action.input {
         TourInput::Char(ch) => KeyCode::Char(ch),
         TourInput::Enter => KeyCode::Enter,
         TourInput::Esc => KeyCode::Escape,
@@ -4679,11 +4707,35 @@ fn tour_input_events(input: crate::tour::TourInput) -> [Event; 2] {
         TourInput::Down => KeyCode::Down,
         TourInput::Left => KeyCode::Left,
         TourInput::Right => KeyCode::Right,
+        TourInput::Pointer { kind, at } => {
+            let (x, y) = match at {
+                TourPointerAt::Fraction { x_pct, y_pct } => (
+                    resolve(x_pct, content.x, content.width),
+                    resolve(y_pct, content.y, content.height),
+                ),
+                // Skip the event entirely when the handle has not been laid
+                // out yet: a guessed coordinate would grab whatever happens to
+                // be under it.
+                TourPointerAt::DashboardSplitter { dx_cells } => {
+                    let (sx, sy) = splitter?;
+                    (sx.saturating_add_signed(dx_cells), sy)
+                }
+            };
+            let mouse_kind = match kind {
+                TourPointer::Down => MouseEventKind::Down(MouseButton::Left),
+                TourPointer::Drag => MouseEventKind::Drag(MouseButton::Left),
+                TourPointer::Up => MouseEventKind::Up(MouseButton::Left),
+                TourPointer::Move => MouseEventKind::Moved,
+            };
+            return Some(Event::Mouse(MouseEvent::new(mouse_kind, x, y)));
+        }
     };
-    [
-        Event::Key(KeyEvent::new(code)),
-        Event::Key(KeyEvent::new(code).with_kind(KeyEventKind::Release)),
-    ]
+
+    let key = KeyEvent::new(code);
+    Some(Event::Key(match action.phase {
+        TourPhase::Press => key,
+        TourPhase::Release => key.with_kind(KeyEventKind::Release),
+    }))
 }
 
 impl AppModel {
@@ -6935,7 +6987,7 @@ mod tests {
     fn integration_all_screens_render() {
         let app = AppModel::new();
         for &id in screens::screen_ids() {
-            let mut pool = GraphemePool::new();
+            let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
             let mut frame = Frame::new(120, 40, &mut pool);
             let area = Rect::new(0, 0, 120, 37); // Leave room for nav (2) + status
             app.screens.view(id, &mut frame, area);
@@ -7527,18 +7579,237 @@ mod tests {
     }
 
     #[test]
-    fn tour_input_expands_to_a_press_and_a_release() {
-        // A held key that is never released latches screens that track key
-        // state: Quake keeps moving forward while `w` is down.
-        let [press, release] = tour_input_events(crate::tour::TourInput::Char('w'));
-        match (press, release) {
-            (Event::Key(p), Event::Key(r)) => {
-                assert_eq!(p.code, KeyCode::Char('w'));
-                assert_eq!(p.kind, KeyEventKind::Press);
-                assert_eq!(r.code, KeyCode::Char('w'));
-                assert_eq!(r.kind, KeyEventKind::Release);
+    fn tour_splitter_drag_hits_the_handle_and_resizes() {
+        use crate::tour::{TourInput, TourPointer, TourPointerAt};
+
+        // Render once so the dashboard lays out and publishes its handle.
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::Dashboard;
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let splitter = app
+            .screens
+            .dashboard
+            .primary_splitter_center()
+            .expect("dashboard splitter should be laid out after a render");
+
+        // Every pointer action in the pane step must resolve onto the handle
+        // (the grab) or to a deliberate offset from it (the drag).
+        let step = crate::tour::build_steps()
+            .into_iter()
+            .find(|s| s.id.contains(":panes"))
+            .expect("pane step");
+        let content = app.last_content_area.get();
+        let mut grabbed = false;
+        for action in &step.actions {
+            let TourInput::Pointer { kind, at } = action.input else {
+                panic!("the pane step should only use pointer input");
+            };
+            let event = tour_action_event(*action, content, Some(splitter))
+                .expect("a laid-out splitter resolves");
+            let Event::Mouse(mouse) = event else {
+                panic!("expected a mouse event");
+            };
+            if matches!(kind, TourPointer::Down) {
+                assert!(
+                    app.screens.dashboard.is_splitter_hit(mouse.x, mouse.y),
+                    "the grab at ({}, {}) missed the splitter handle",
+                    mouse.x,
+                    mouse.y
+                );
+                grabbed = true;
             }
-            other => panic!("expected two key events, got {other:?}"),
+            let TourPointerAt::DashboardSplitter { .. } = at else {
+                panic!("the pane step should anchor to the live handle");
+            };
+        }
+        assert!(grabbed, "the pane step never presses the pointer down");
+
+        // Replaying the step through the app must actually move the divider.
+        let before = app.screens.dashboard.primary_splitter_center();
+        for action in &step.actions {
+            if let Some(event) = tour_action_event(*action, content, before) {
+                app.update(AppMsg::TourInput(event));
+            }
+        }
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        let after = app.screens.dashboard.primary_splitter_center();
+        assert_ne!(
+            before, after,
+            "dragging the splitter should have moved the bottom row layout"
+        );
+    }
+
+    #[test]
+    fn tour_splitter_pointer_is_skipped_before_layout() {
+        use crate::tour::{TourAction, TourInput, TourPointer, TourPointerAt};
+        // With no laid-out handle the event must be dropped, not aimed at a
+        // guessed cell that would grab whatever is underneath.
+        let action = TourAction::new(
+            0,
+            TourInput::Pointer {
+                kind: TourPointer::Down,
+                at: TourPointerAt::DashboardSplitter { dx_cells: 0 },
+            },
+        );
+        assert!(tour_action_event(action, Rect::new(0, 0, 80, 24), None).is_none());
+    }
+
+    /// Deliver a message and then every message its command tree asks for,
+    /// depth-first, the way the runtime does. Tour keystrokes arrive as
+    /// `Cmd::Msg`, so a test that only calls `update` never sees them.
+    fn pump(app: &mut AppModel, msg: AppMsg) {
+        fn drain(app: &mut AppModel, cmd: Cmd<AppMsg>) {
+            match cmd {
+                Cmd::Msg(msg) => {
+                    let next = app.update(msg);
+                    drain(app, next);
+                }
+                Cmd::Batch(cmds) | Cmd::Sequence(cmds) => {
+                    for cmd in cmds {
+                        drain(app, cmd);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let cmd = app.update(msg);
+        drain(app, cmd);
+    }
+
+    /// Everything the frame has to say, as text.
+    fn frame_text(frame: &Frame) -> String {
+        let mut out = String::new();
+        for y in 0..frame.buffer.height() {
+            for x in 0..frame.buffer.width() {
+                let Some(cell) = frame.buffer.get(x, y) else {
+                    continue;
+                };
+                if let Some(id) = cell.content.grapheme_id() {
+                    out.push_str(frame.pool.get(id).unwrap_or(" "));
+                } else if let Some(ch) = cell.content.as_char() {
+                    out.push(ch);
+                } else {
+                    out.push(' ');
+                }
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn every_scripted_tour_step_is_answered_by_its_screen() {
+        // A step whose keys the screen ignores narrates a feature without
+        // showing it - which is how the tour came to press `w` at a Quake
+        // player who could not move. Replaying a step's own actions has to
+        // change what is drawn.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        for step in crate::tour::build_steps() {
+            if step.actions.is_empty() {
+                continue;
+            }
+            let mut app = AppModel::new();
+            app.current_screen = step.screen;
+            let mut frame = Frame::new(140, 44, &mut pool);
+            app.view(&mut frame);
+            let before = frame_text(&frame);
+            let content = app.last_content_area.get();
+            let splitter = app.screens.dashboard.primary_splitter_center();
+
+            for action in &step.actions {
+                if let Some(event) = tour_action_event(*action, content, splitter) {
+                    app.update(AppMsg::TourInput(event));
+                }
+            }
+
+            let mut frame = Frame::new(140, 44, &mut pool);
+            app.view(&mut frame);
+            assert_ne!(
+                before,
+                frame_text(&frame),
+                "{} plays its keystrokes and nothing on screen responds",
+                step.id
+            );
+        }
+    }
+
+    #[test]
+    fn tour_quake_step_walks_the_player_down_the_map() {
+        // The end-to-end version of the check below: run the real tick loop on
+        // the real step and confirm the camera travels. The two holds are worth
+        // about half the width of the map; a tap is worth nothing at all.
+        let quake_index = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::QuakeEasterEgg)
+            .expect("the tour visits Quake");
+
+        let mut app = AppModel::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        app.start_tour(quake_index, 1.0);
+
+        let before = app.screens.quake_easter_egg.player_xy();
+        // The step is 7.2s long and the tour pins the tick to 100ms.
+        for _ in 0..72 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let after = app.screens.quake_easter_egg.player_xy();
+        let moved = ((after.0 - before.0).powi(2) + (after.1 - before.1).powi(2)).sqrt();
+        assert!(
+            moved > 0.5,
+            "the Quake step moved the player {moved:.3} units ({before:?} -> {after:?}); \
+             the viewer sees a still frame"
+        );
+    }
+
+    #[test]
+    fn quake_step_holds_movement_long_enough_to_move() {
+        use crate::tour::{TourInput, TourPhase};
+        // Quake sets forward velocity on key-down and clears it on key-up, so
+        // a press and release in the same instant leave the player still.
+        let step = crate::tour::build_steps()
+            .into_iter()
+            .find(|s| s.screen == ScreenId::QuakeEasterEgg)
+            .expect("quake step");
+        let mut held_ms = 0u64;
+        let mut pressed_at: Option<u64> = None;
+        for action in &step.actions {
+            if action.input != TourInput::Char('w') {
+                continue;
+            }
+            match action.phase {
+                TourPhase::Press => pressed_at = Some(action.at_ms),
+                TourPhase::Release => {
+                    let start = pressed_at.take().expect("release without press");
+                    held_ms += action.at_ms - start;
+                }
+            }
+        }
+        assert!(
+            held_ms >= 1000,
+            "forward is held for only {held_ms}ms; the player will barely move"
+        );
+    }
+
+    #[test]
+    fn tour_action_phase_selects_the_key_kind() {
+        use crate::tour::{TourAction, TourInput};
+        let area = Rect::new(0, 0, 80, 24);
+        match tour_action_event(TourAction::new(0, TourInput::Char('w')), area, None) {
+            Some(Event::Key(k)) => {
+                assert_eq!(k.code, KeyCode::Char('w'));
+                assert_eq!(k.kind, KeyEventKind::Press);
+            }
+            other => panic!("expected a key event, got {other:?}"),
+        }
+        match tour_action_event(TourAction::released(0, TourInput::Char('w')), area, None) {
+            Some(Event::Key(k)) => assert_eq!(k.kind, KeyEventKind::Release),
+            other => panic!("expected a key event, got {other:?}"),
         }
     }
 
@@ -8971,5 +9242,37 @@ mod tests {
             !app.evidence_ledger_visible,
             "Ctrl+I should close evidence ledger"
         );
+    }
+}
+
+#[cfg(test)]
+mod tour_pointer_probe {
+    use super::*;
+    use ftui_render::grapheme_pool::GraphemePool;
+
+    /// Not an assertion: prints where the Dashboard's splitter handle lands as
+    /// a fraction of the content area, so the tour's drag coordinates can be
+    /// derived from a real layout instead of guessed.
+    #[test]
+    #[ignore]
+    fn probe_splitter_fraction() {
+        for (w, h) in [(80u16, 24u16), (120, 40), (160, 50)] {
+            let mut app = AppModel::new();
+            app.current_screen = ScreenId::Dashboard;
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(w, h, &mut pool);
+            app.view(&mut frame);
+            let content = app.last_content_area.get();
+            match app.screens.dashboard.primary_splitter_center() {
+                Some((x, y)) => {
+                    let xp = f32::from(x - content.x) / f32::from(content.width);
+                    let yp = f32::from(y - content.y) / f32::from(content.height);
+                    println!(
+                        "{w}x{h}: content={content:?} splitter=({x},{y}) x_pct={xp:.4} y_pct={yp:.4}"
+                    );
+                }
+                None => println!("{w}x{h}: content={content:?} splitter=NOT LAID OUT"),
+            }
+        }
     }
 }

@@ -82,10 +82,35 @@ impl core::ops::Mul<f32> for Vec3 {
     }
 }
 
-const QUAKE_EYE_HEIGHT: f32 = 0.18;
-const QUAKE_GRAVITY: f32 = -0.28;
-const QUAKE_JUMP_VELOCITY: f32 = 0.22;
-const QUAKE_COLLISION_RADIUS: f32 = 0.06;
+// The level is authored in Quake units and scaled by 1/1024, so the player has
+// to be scaled the same way or nothing fits: id's player is 32 units wide and
+// 56 tall, which is 0.031 x 0.055 here. At the old 0.12-wide body the player
+// was twelve feet across and no corridor on the map would admit them.
+const QUAKE_EYE_HEIGHT: f32 = 0.045;
+const QUAKE_GRAVITY: f32 = -0.156;
+const QUAKE_JUMP_VELOCITY: f32 = 0.026;
+const QUAKE_COLLISION_RADIUS: f32 = 0.016;
+/// How far above the feet the body reaches for collision purposes.
+const QUAKE_BODY_HEIGHT: f32 = 0.055;
+/// Ledges no taller than this are walked over rather than bumped into.
+const QUAKE_STEP_HEIGHT: f32 = 0.018;
+/// Playable inset from the level bounding box.
+const QUAKE_PLAY_MARGIN: f32 = 0.02;
+/// Largest distance moved between collision tests, as a fraction of the body
+/// radius. A whole tick of running covers more ground than the body is wide,
+/// and a single test at the destination would step clean through a thin wall.
+const QUAKE_SUBSTEP_FRACTION: f32 = 0.5;
+/// Cap on substeps per tick, so a wild velocity cannot stall the frame.
+const QUAKE_MAX_SUBSTEPS: usize = 8;
+/// How many of the widest floors to try before giving up on a spawn point.
+const QUAKE_SPAWN_CANDIDATES: usize = 24;
+/// Headings sampled when choosing which way a fresh spawn faces.
+const QUAKE_SPAWN_YAW_STEPS: usize = 16;
+/// How far ahead a spawn candidate's sightline is probed, in body radii.
+/// Long enough to tell a hall from an alcove: 40 radii is half the map.
+const QUAKE_SPAWN_PROBE_STEPS: usize = 40;
+/// Side of a collision-grid cell, in world units.
+const QUAKE_GRID_CELL: f32 = 0.03;
 const QUAKE_MOVE_SPEED: f32 = 0.08;
 const QUAKE_STRAFE_SPEED: f32 = 0.07;
 const QUAKE_FRICTION: f32 = 0.85;
@@ -226,6 +251,76 @@ struct WallSeg {
     y1: f32,
     x2: f32,
     y2: f32,
+    /// Vertical extent of the triangle this edge came from.
+    ///
+    /// Collision is solved in 2D, but the level is not flat: rooms sit above
+    /// rooms. Without the span, every wall anywhere in the map blocks the
+    /// floor beneath it and there is nowhere left to stand.
+    z_min: f32,
+    z_max: f32,
+}
+
+/// Uniform grid over the level footprint, mapping a cell to the wall segments
+/// that touch it.
+///
+/// E1M1 is 18k segments once the vertical faces are collected. Scanning all of
+/// them twice a tick is wasteful in a browser, and the spawn search - which
+/// probes hundreds of points - would be unusable without this.
+#[derive(Debug, Clone)]
+struct WallGrid {
+    min_x: f32,
+    min_y: f32,
+    cell: f32,
+    cols: usize,
+    rows: usize,
+    cells: Vec<Vec<u32>>,
+}
+
+impl WallGrid {
+    fn new(walls: &[WallSeg], min: Vec3, max: Vec3) -> Self {
+        let cell = QUAKE_GRID_CELL;
+        let cols = (((max.x - min.x) / cell).ceil() as usize).max(1);
+        let rows = (((max.y - min.y) / cell).ceil() as usize).max(1);
+        let mut grid = Self {
+            min_x: min.x,
+            min_y: min.y,
+            cell,
+            cols,
+            rows,
+            cells: vec![Vec::new(); cols * rows],
+        };
+        for (i, seg) in walls.iter().enumerate() {
+            let (x0, x1, y0, y1) = grid.span(
+                seg.x1.min(seg.x2),
+                seg.x1.max(seg.x2),
+                seg.y1.min(seg.y2),
+                seg.y1.max(seg.y2),
+            );
+            for gy in y0..=y1 {
+                for gx in x0..=x1 {
+                    grid.cells[gy * cols + gx].push(i as u32);
+                }
+            }
+        }
+        grid
+    }
+
+    /// Cell range covering a bounding box, clamped to the grid.
+    fn span(&self, min_x: f32, max_x: f32, min_y: f32, max_y: f32) -> (usize, usize, usize, usize) {
+        let to_col =
+            |v: f32| (((v - self.min_x) / self.cell).floor().max(0.0) as usize).min(self.cols - 1);
+        let to_row =
+            |v: f32| (((v - self.min_y) / self.cell).floor().max(0.0) as usize).min(self.rows - 1);
+        (to_col(min_x), to_col(max_x), to_row(min_y), to_row(max_y))
+    }
+
+    /// Wall indices that could be within `radius` of `(x, y)`.
+    fn near(&self, x: f32, y: f32, radius: f32) -> impl Iterator<Item = u32> + '_ {
+        let (x0, x1, y0, y1) = self.span(x - radius, x + radius, y - radius, y + radius);
+        (y0..=y1)
+            .flat_map(move |gy| (x0..=x1).map(move |gx| gy * self.cols + gx))
+            .flat_map(move |i| self.cells[i].iter().copied())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +396,7 @@ pub struct QuakeE1M1State {
     bounds_min: Vec3,
     bounds_max: Vec3,
     wall_segments: Vec<WallSeg>,
+    wall_grid: WallGrid,
     floor_tris: Vec<FloorTri>,
     world_vertices: Vec<Vec3>,
     camera_vertices: Vec<Vec3>,
@@ -317,17 +413,21 @@ impl Default for QuakeE1M1State {
     fn default() -> Self {
         let (min, max) = Self::compute_bounds();
         let (wall_segments, floor_tris) = Self::build_collision();
+        let wall_grid = WallGrid::new(&wall_segments, min, max);
         let (world_vertices, render_tris) = Self::build_render_mesh(min, max);
         let camera_vertices = vec![Vec3::new(0.0, 0.0, 0.0); world_vertices.len()];
-        let center_x = (min.x + max.x) * 0.5;
-        let center_y = (min.y + max.y) * 0.5;
-        let start = Vec3::new(center_x, center_y, min.z + QUAKE_EYE_HEIGHT);
+        let start = Vec3::new(
+            (min.x + max.x) * 0.5,
+            (min.y + max.y) * 0.5,
+            min.z + QUAKE_EYE_HEIGHT,
+        );
         let mut state = Self {
             player: QuakePlayer::new(start),
             fire_flash: 0.0,
             bounds_min: min,
             bounds_max: max,
             wall_segments,
+            wall_grid,
             floor_tris,
             world_vertices,
             camera_vertices,
@@ -338,8 +438,7 @@ impl Default for QuakeE1M1State {
             move_fwd: 0.0,
             move_side: 0.0,
         };
-        let ground = state.ground_eye_height(center_x, center_y);
-        state.player.pos = Vec3::new(center_x, center_y, ground);
+        state.respawn();
         state
     }
 }
@@ -368,7 +467,7 @@ impl QuakeE1M1State {
         let mut walls = Vec::new();
         let mut floors = Vec::new();
 
-        let mut push_edge = |a: Vec3, b: Vec3| {
+        let mut push_edge = |a: Vec3, b: Vec3, z_min: f32, z_max: f32| {
             let dx = b.x - a.x;
             let dy = b.y - a.y;
             if (dx * dx + dy * dy) <= 1e-6 {
@@ -379,6 +478,8 @@ impl QuakeE1M1State {
                 y1: a.y,
                 x2: b.x,
                 y2: b.y,
+                z_min,
+                z_max,
             });
         };
 
@@ -408,12 +509,18 @@ impl QuakeE1M1State {
             if len <= 1e-6 {
                 continue;
             }
-            // let n = n * (1.0 / len); // normalize
+            // Classify on the unit normal. The raw cross product scales with
+            // triangle area, and at this mesh's scale that is around 1e-6, so
+            // an un-normalized `n.z` compared against 0.35 calls every single
+            // triangle a wall: no floors, and a player sealed in place.
+            let n = n * (1.0 / len);
+            let z_min = w0.z.min(w1.z).min(w2.z);
+            let z_max = w0.z.max(w1.z).max(w2.z);
 
             if n.z.abs() < 0.35 {
-                push_edge(w0, w1);
-                push_edge(w1, w2);
-                push_edge(w2, w0);
+                push_edge(w0, w1, z_min, z_max);
+                push_edge(w1, w2, z_min, z_max);
+                push_edge(w2, w0, z_min, z_max);
             }
 
             if n.z > 0.35
@@ -466,8 +573,18 @@ impl QuakeE1M1State {
         (world_vertices, render_tris)
     }
 
-    fn ground_height_at(&self, x: f32, y: f32) -> Option<f32> {
-        let mut best = None;
+    /// The floor the player would stand on at `(x, y)`, given that their feet
+    /// are at `feet_z`.
+    ///
+    /// The highest floor at or just below the feet wins, so walking under a
+    /// balcony keeps you on the ground instead of snapping you to its
+    /// underside. If nothing is below - the player is over a pit, or the map
+    /// has no floor there - the lowest floor above them is used so they land
+    /// somewhere real rather than falling out of the world.
+    fn ground_height_at(&self, x: f32, y: f32, feet_z: f32) -> Option<f32> {
+        let mut below: Option<f32> = None;
+        let mut above: Option<f32> = None;
+        let ceiling = feet_z + QUAKE_STEP_HEIGHT;
         let eps = 1e-3;
 
         for tri in &self.floor_tris {
@@ -481,29 +598,140 @@ impl QuakeE1M1State {
 
             if w0 >= -eps && w1 >= -eps && w2 >= -eps {
                 let z = w0 * tri.v0.z + w1 * tri.v1.z + w2 * tri.v2.z;
-                if best.is_none_or(|best_z| z > best_z) {
-                    best = Some(z);
+                if z <= ceiling {
+                    if below.is_none_or(|best| z > best) {
+                        below = Some(z);
+                    }
+                } else if above.is_none_or(|best| z < best) {
+                    above = Some(z);
                 }
             }
         }
 
-        best
+        below.or(above)
     }
 
-    fn ground_eye_height(&self, x: f32, y: f32) -> f32 {
-        let ground = self.ground_height_at(x, y).unwrap_or(self.bounds_min.z);
+    fn ground_eye_height(&self, x: f32, y: f32, feet_z: f32) -> f32 {
+        let ground = self
+            .ground_height_at(x, y, feet_z)
+            .unwrap_or(self.bounds_min.z);
         ground + QUAKE_EYE_HEIGHT
     }
 
-    fn collides(&self, x: f32, y: f32) -> bool {
+    /// Whether a body standing at `(x, y)` with its feet at `feet_z` is inside
+    /// a wall.
+    ///
+    /// Only walls the body actually overlaps count. Anything that tops out
+    /// below step height is a kerb to walk over, and anything starting above
+    /// the player's head is a different storey.
+    fn collides(&self, x: f32, y: f32, feet_z: f32) -> bool {
+        // Outside the level counts as solid. Otherwise the open-sightline probe
+        // would rate "walk off the edge of the map" as the clearest direction,
+        // there being no walls out there to stop it.
+        if x < self.bounds_min.x + QUAKE_PLAY_MARGIN
+            || x > self.bounds_max.x - QUAKE_PLAY_MARGIN
+            || y < self.bounds_min.y + QUAKE_PLAY_MARGIN
+            || y > self.bounds_max.y - QUAKE_PLAY_MARGIN
+        {
+            return true;
+        }
         let radius_sq = QUAKE_COLLISION_RADIUS * QUAKE_COLLISION_RADIUS;
-        for seg in &self.wall_segments {
+        let step_z = feet_z + QUAKE_STEP_HEIGHT;
+        let head_z = feet_z + QUAKE_BODY_HEIGHT;
+        for idx in self.wall_grid.near(x, y, QUAKE_COLLISION_RADIUS) {
+            let seg = &self.wall_segments[idx as usize];
+            if seg.z_max <= step_z || seg.z_min >= head_z {
+                continue;
+            }
             let dist_sq = point_segment_distance_sq(x, y, seg.x1, seg.y1, seg.x2, seg.y2);
             if dist_sq < radius_sq {
                 return true;
             }
         }
         false
+    }
+
+    /// Put the player somewhere they can stand, facing open space.
+    ///
+    /// The centre of the bounding box is not a place: on this map it is solid
+    /// rock well below the lowest floor. Starting there wedged the camera
+    /// inside geometry, where every step collided and the level looked frozen.
+    pub fn respawn(&mut self) {
+        let (spot, yaw) = self.pick_spawn();
+        self.player = QuakePlayer::new(spot);
+        self.player.yaw = yaw;
+        self.move_fwd = 0.0;
+        self.move_side = 0.0;
+        self.fire_flash = 0.0;
+    }
+
+    /// A standing spot and the direction to face, chosen for the longest clear
+    /// run ahead.
+    ///
+    /// Floor area picks the shortlist - a wide triangle is a room, a sliver is
+    /// a doorstep - and sightline picks the winner, so the player opens facing
+    /// down a hall instead of into a corner.
+    fn pick_spawn(&self) -> (Vec3, f32) {
+        let mut candidates: Vec<usize> = (0..self.floor_tris.len()).collect();
+        candidates.sort_by(|&a, &b| {
+            self.floor_tris[b]
+                .area
+                .abs()
+                .total_cmp(&self.floor_tris[a].area.abs())
+        });
+
+        let mut best: Option<(f32, Vec3, f32)> = None;
+        for &i in candidates.iter().take(QUAKE_SPAWN_CANDIDATES) {
+            let tri = &self.floor_tris[i];
+            let x = (tri.v0.x + tri.v1.x + tri.v2.x) / 3.0;
+            let y = (tri.v0.y + tri.v1.y + tri.v2.y) / 3.0;
+            let z = (tri.v0.z + tri.v1.z + tri.v2.z) / 3.0;
+            if self.collides(x, y, z) {
+                continue;
+            }
+            let pos = Vec3::new(x, y, z + QUAKE_EYE_HEIGHT);
+            let (yaw, reach) = self.most_open_heading(pos);
+            if best.is_none_or(|(best_reach, ..)| reach > best_reach) {
+                best = Some((reach, pos, yaw));
+            }
+        }
+        if let Some((_, pos, yaw)) = best {
+            return (pos, yaw);
+        }
+
+        // No clear floor at all: the middle of the map at least keeps the
+        // camera inside the level.
+        let x = (self.bounds_min.x + self.bounds_max.x) * 0.5;
+        let y = (self.bounds_min.y + self.bounds_max.y) * 0.5;
+        (
+            Vec3::new(x, y, self.ground_eye_height(x, y, self.bounds_min.z)),
+            0.0,
+        )
+    }
+
+    /// The heading with the longest unobstructed run from `from`, and how far
+    /// that run goes.
+    fn most_open_heading(&self, from: Vec3) -> (f32, f32) {
+        let feet = from.z - QUAKE_EYE_HEIGHT;
+        let mut best_yaw = 0.0;
+        let mut best_reach = -1.0;
+        for i in 0..QUAKE_SPAWN_YAW_STEPS {
+            let yaw = i as f32 * TAU / QUAKE_SPAWN_YAW_STEPS as f32;
+            let (sy, cy) = yaw.sin_cos();
+            let mut reach = 0.0;
+            for step in 1..=QUAKE_SPAWN_PROBE_STEPS {
+                let d = step as f32 * QUAKE_COLLISION_RADIUS;
+                if self.collides(from.x + cy * d, from.y + sy * d, feet) {
+                    break;
+                }
+                reach = d;
+            }
+            if reach > best_reach {
+                best_reach = reach;
+                best_yaw = yaw;
+            }
+        }
+        (best_yaw, best_reach)
     }
 
     pub fn look(&mut self, yaw_delta: f32, pitch_delta: f32) {
@@ -548,42 +776,50 @@ impl QuakeE1M1State {
         self.player.vel.x *= QUAKE_FRICTION;
         self.player.vel.y *= QUAKE_FRICTION;
 
-        let mut nx = self.player.pos.x + self.player.vel.x;
-        let mut ny = self.player.pos.y;
-        if self.collides(nx, ny) {
-            self.player.vel.x = 0.0;
-        } else {
-            self.player.pos.x = nx;
+        let feet_z = self.player.pos.z - QUAKE_EYE_HEIGHT;
+        let travel =
+            (self.player.vel.x * self.player.vel.x + self.player.vel.y * self.player.vel.y).sqrt();
+        let substep = QUAKE_COLLISION_RADIUS * QUAKE_SUBSTEP_FRACTION;
+        let steps = ((travel / substep).ceil() as usize).clamp(1, QUAKE_MAX_SUBSTEPS);
+        let mut dx = self.player.vel.x / steps as f32;
+        let mut dy = self.player.vel.y / steps as f32;
+        for _ in 0..steps {
+            if dx != 0.0 {
+                let nx = self.player.pos.x + dx;
+                if self.collides(nx, self.player.pos.y, feet_z) {
+                    self.player.vel.x = 0.0;
+                    dx = 0.0;
+                } else {
+                    self.player.pos.x = nx;
+                }
+            }
+            if dy != 0.0 {
+                let ny = self.player.pos.y + dy;
+                if self.collides(self.player.pos.x, ny, feet_z) {
+                    self.player.vel.y = 0.0;
+                    dy = 0.0;
+                } else {
+                    self.player.pos.y = ny;
+                }
+            }
         }
-
-        nx = self.player.pos.x;
-        ny = self.player.pos.y + self.player.vel.y;
-        if self.collides(nx, ny) {
-            self.player.vel.y = 0.0;
-        } else {
-            self.player.pos.y = ny;
-        }
-
-        let margin = (QUAKE_COLLISION_RADIUS + 0.02).max(0.04);
-        let min_x = self.bounds_min.x + margin;
-        let max_x = self.bounds_max.x - margin;
-        let min_y = self.bounds_min.y + margin;
-        let max_y = self.bounds_max.y - margin;
-        self.player.pos.x = self.player.pos.x.clamp(min_x, max_x);
-        self.player.pos.y = self.player.pos.y.clamp(min_y, max_y);
 
         if !self.player.grounded {
             self.player.vel.z += QUAKE_GRAVITY * 0.05;
             self.player.pos.z += self.player.vel.z;
         }
 
-        let ground = self.ground_eye_height(self.player.pos.x, self.player.pos.y);
+        let ground = self.ground_eye_height(
+            self.player.pos.x,
+            self.player.pos.y,
+            self.player.pos.z - QUAKE_EYE_HEIGHT,
+        );
 
         if self.player.pos.z <= ground {
             self.player.pos.z = ground;
             self.player.vel.z = 0.0;
             self.player.grounded = true;
-        } else if self.player.pos.z > ground + 0.05 {
+        } else if self.player.pos.z > ground + QUAKE_STEP_HEIGHT {
             self.player.grounded = false;
         }
     }
@@ -878,6 +1114,16 @@ impl QuakeEasterEggScreen {
         };
     }
 
+    /// Where the player is standing, in world units.
+    ///
+    /// Movement is latched on key-down, so a driver that presses and releases
+    /// `w` in the same instant renders a perfectly good frame and never moves.
+    /// Only the position tells those two apart.
+    pub fn player_xy(&self) -> (f32, f32) {
+        let state = self.quake.borrow();
+        (state.player.pos.x, state.player.pos.y)
+    }
+
     fn quality_label(&self) -> &'static str {
         match self.quality {
             FxQuality::Full => "Full",
@@ -918,7 +1164,9 @@ impl Screen for QuakeEasterEggScreen {
                     KeyCode::Char(' ') => self.quake.borrow_mut().jump(),
                     KeyCode::Char('f') => self.quake.borrow_mut().fire(),
                     KeyCode::Char('v') => self.cycle_quality(),
-                    KeyCode::Char('r') => *self.quake.borrow_mut() = QuakeE1M1State::default(),
+                    // Respawn, not rebuild: the level mesh costs 14k triangles
+                    // of setup and has not changed.
+                    KeyCode::Char('r') => self.quake.borrow_mut().respawn(),
                     _ => {}
                 },
                 KeyEventKind::Release => match key.code {
@@ -1470,6 +1718,109 @@ mod tests {
     }
 
     #[test]
+    fn level_has_floors_to_stand_on() {
+        // Triangles are classified by the *unit* normal. Comparing the raw
+        // cross product against 0.35 - as this once did - calls every triangle
+        // on a mesh this small a wall, leaving zero floors and a player sealed
+        // in rock.
+        let state = QuakeE1M1State::default();
+        assert!(
+            state.floor_tris.len() > 1000,
+            "only {} floor triangles: the wall/floor split is broken",
+            state.floor_tris.len()
+        );
+        assert!(!state.wall_segments.is_empty());
+    }
+
+    #[test]
+    fn spawn_is_a_place_a_player_can_stand() {
+        let state = QuakeE1M1State::default();
+        let feet = state.player.pos.z - QUAKE_EYE_HEIGHT;
+        assert!(
+            !state.collides(state.player.pos.x, state.player.pos.y, feet),
+            "spawned inside geometry at {:?}",
+            (state.player.pos.x, state.player.pos.y, state.player.pos.z)
+        );
+        assert!(
+            state
+                .ground_height_at(state.player.pos.x, state.player.pos.y, feet)
+                .is_some(),
+            "spawned over a void"
+        );
+        let (_, reach) = state.most_open_heading(state.player.pos);
+        assert!(reach > 0.1, "spawn faces a wall {reach} units away");
+    }
+
+    #[test]
+    fn holding_forward_walks_the_player_across_the_level() {
+        // The screen only latches velocity; if collision says every direction
+        // is solid the camera never moves and the easter egg looks dead.
+        let mut state = QuakeE1M1State::default();
+        let start = (state.player.pos.x, state.player.pos.y);
+        state.set_move_fwd(1.0);
+        for _ in 0..20 {
+            state.update();
+        }
+        let dx = state.player.pos.x - start.0;
+        let dy = state.player.pos.y - start.1;
+        let travelled = (dx * dx + dy * dy).sqrt();
+        assert!(
+            travelled > 0.2,
+            "two seconds of running covered {travelled:.3} world units"
+        );
+    }
+
+    #[test]
+    fn walls_above_the_head_do_not_block_the_floor_below() {
+        // Collision is solved in 2D, so without the height test the walls of
+        // an upper room would seal the room beneath it.
+        let state = QuakeE1M1State::default();
+        let feet = state.player.pos.z - QUAKE_EYE_HEIGHT;
+        let overhead = state
+            .wall_grid
+            .near(state.player.pos.x, state.player.pos.y, 0.2)
+            .map(|i| &state.wall_segments[i as usize])
+            .any(|seg| seg.z_min >= feet + QUAKE_BODY_HEIGHT);
+        assert!(
+            overhead,
+            "expected some geometry above the spawn to exercise the height test"
+        );
+        assert!(!state.collides(state.player.pos.x, state.player.pos.y, feet));
+    }
+
+    #[test]
+    fn respawn_is_deterministic() {
+        let a = QuakeE1M1State::default();
+        let mut b = QuakeE1M1State::default();
+        b.set_move_fwd(1.0);
+        for _ in 0..10 {
+            b.update();
+        }
+        b.respawn();
+        assert_eq!(a.player.pos.x, b.player.pos.x);
+        assert_eq!(a.player.pos.y, b.player.pos.y);
+        assert_eq!(a.player.yaw, b.player.yaw);
+    }
+
+    #[test]
+    fn running_does_not_tunnel_through_walls() {
+        // A tick of running covers more ground than the body is wide, so the
+        // move is substepped. Without that the player teleports through thin
+        // geometry; with it, every intermediate position is legal.
+        let mut state = QuakeE1M1State::default();
+        state.set_move_fwd(1.0);
+        for _ in 0..40 {
+            state.update();
+            let feet = state.player.pos.z - QUAKE_EYE_HEIGHT;
+            assert!(
+                !state.collides(state.player.pos.x, state.player.pos.y, feet),
+                "ended a tick inside a wall at {:?}",
+                (state.player.pos.x, state.player.pos.y)
+            );
+        }
+    }
+
+    #[test]
     fn state_update_does_not_panic() {
         let mut state = QuakeE1M1State::default();
         state.set_move_fwd(1.0);
@@ -1486,7 +1837,7 @@ mod tests {
     #[test]
     fn state_player_stays_within_bounds_after_movement() {
         let mut state = QuakeE1M1State::default();
-        let margin = (QUAKE_COLLISION_RADIUS + 0.02).max(0.04);
+        let margin = QUAKE_PLAY_MARGIN;
         state.set_move_fwd(1.0);
         for _ in 0..500 {
             state.update();

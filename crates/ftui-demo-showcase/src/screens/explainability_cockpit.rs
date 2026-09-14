@@ -221,6 +221,52 @@ impl ExplainabilityCockpit {
         self.render(frame, overlay_area, CockpitMode::Overlay);
     }
 
+    /// Parse a whole evidence log held in memory and adopt it as the view.
+    ///
+    /// Shared by the browser, which is handed the blob by its host, and by a
+    /// native run with no log of its own, which falls back to the capture that
+    /// ships with the demo.
+    fn load_from_text(&mut self, text: &str, label: &str) {
+        // Match the native file reader: keep only the newest rows.
+        let all: Vec<&str> = text.lines().collect();
+        let lines: &[&str] = if all.len() > MAX_EVIDENCE_LINES {
+            &all[all.len() - MAX_EVIDENCE_LINES..]
+        } else {
+            &all
+        };
+        let parsed = parse_evidence_lines(lines);
+
+        let status = if parsed.parsed_count == 0 {
+            "No evidence entries parsed".to_string()
+        } else {
+            format!(
+                "Loaded {} entries ({} lines)",
+                parsed.parsed_count, parsed.line_count
+            )
+        };
+        let data = ExplainabilityData {
+            source: SourceStatus {
+                label: label.to_string(),
+                status,
+                hint_lines: Vec::new(),
+            },
+            diff: parsed.diff,
+            resize: parsed.resize,
+            budget: parsed.budget,
+            timeline: parsed.timeline,
+        };
+
+        self.data = if data.is_empty() {
+            empty_data(SourceStatus {
+                label: label.to_string(),
+                status: "Evidence log is empty".to_string(),
+                hint_lines: Vec::new(),
+            })
+        } else {
+            data
+        };
+    }
+
     fn refresh(&mut self, force: bool) {
         #[cfg(target_arch = "wasm32")]
         {
@@ -244,54 +290,29 @@ impl ExplainabilityCockpit {
                 return;
             };
 
-            // Match the native reader: keep only the newest MAX_EVIDENCE_LINES.
-            let all: Vec<&str> = text.lines().collect();
-            let lines: &[&str] = if all.len() > MAX_EVIDENCE_LINES {
-                &all[all.len() - MAX_EVIDENCE_LINES..]
-            } else {
-                &all
-            };
-            let parsed = parse_evidence_lines(lines);
-
-            let status = if parsed.parsed_count == 0 {
-                "No evidence entries parsed".to_string()
-            } else {
-                format!(
-                    "Loaded {} entries ({} lines)",
-                    parsed.parsed_count, parsed.line_count
-                )
-            };
-            let data = ExplainabilityData {
-                source: SourceStatus {
-                    label: "source: (host-supplied evidence log)".to_string(),
-                    status,
-                    hint_lines: Vec::new(),
-                },
-                diff: parsed.diff,
-                resize: parsed.resize,
-                budget: parsed.budget,
-                timeline: parsed.timeline,
-            };
-
-            if data.is_empty() {
-                self.data = empty_data(SourceStatus {
-                    label: "source: (host-supplied evidence log)".to_string(),
-                    status: "Evidence log is empty".to_string(),
-                    hint_lines: Vec::new(),
-                });
-            } else {
-                self.data = data;
-            }
+            self.load_from_text(text, "source: (host-supplied evidence log)");
         }
 
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(path) = self.evidence_path.as_ref() else {
-                self.data = empty_data(SourceStatus {
-                    label: "source: (disabled)".to_string(),
-                    status: "Evidence source disabled".to_string(),
-                    hint_lines: default_hint_lines(None),
-                });
+                // No live log configured. Show the capture that ships with the
+                // demo rather than an empty screen explaining an env var: the
+                // cockpit is here to be looked at, and the browser build has
+                // always had rows to show.
+                let text = crate::assets::evidence_jsonl();
+                self.last_modified = None;
+                self.last_size = None;
+                match text {
+                    Some(text) => self.load_from_text(text, "source: (bundled sample capture)"),
+                    None => {
+                        self.data = empty_data(SourceStatus {
+                            label: "source: (disabled)".to_string(),
+                            status: "Evidence source disabled".to_string(),
+                            hint_lines: default_hint_lines(None),
+                        })
+                    }
+                }
                 return;
             };
 
@@ -1416,12 +1437,23 @@ mod tests {
     }
 
     #[test]
-    fn c_key_clears_evidence() {
+    fn c_key_clears_evidence_and_re_reads_the_source() {
+        // `c` drops what has accumulated and reads the source again. With no
+        // live log configured that source is the capture bundled with the
+        // demo, so the panel refills - the test-injected rows are what must
+        // not survive.
         let mut cockpit = make_cockpit_with_timeline();
-        assert!(!cockpit.data.timeline.is_empty());
+        let injected: Vec<u64> = cockpit.data.timeline.iter().map(|e| e.seq).collect();
+        assert!(!injected.is_empty());
+
         cockpit.update(&key_event('c'));
-        assert!(cockpit.data.timeline.is_empty());
-        assert!(cockpit.data.diff.is_none());
+
+        let after: Vec<u64> = cockpit.data.timeline.iter().map(|e| e.seq).collect();
+        assert_ne!(after, injected, "the cleared rows came back");
+        assert_eq!(
+            cockpit.data.source.label,
+            "source: (bundled sample capture)"
+        );
     }
 
     #[test]

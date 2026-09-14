@@ -3546,6 +3546,20 @@ impl Dashboard {
         }
     }
 
+    /// Centre of the first bottom-row splitter handle, if it has been laid out.
+    ///
+    /// Exposed so a driver can aim at the handle instead of guessing at a
+    /// fraction of the screen: the guided tour drags this to show the pane
+    /// workspace resizing, and its test asserts the point it aims at really is
+    /// a splitter hit.
+    pub fn primary_splitter_center(&self) -> Option<(u16, u16)> {
+        let rect = self.layout_bottom_split_primary.get();
+        if rect.width == 0 || rect.height == 0 {
+            return None;
+        }
+        Some((rect.x + rect.width / 2, rect.y + rect.height / 2))
+    }
+
     /// True when `(x, y)` intersects either bottom-row splitter handle.
     pub fn is_splitter_hit(&self, x: u16, y: u16) -> bool {
         self.layout_bottom_split_primary.get().contains(x, y)

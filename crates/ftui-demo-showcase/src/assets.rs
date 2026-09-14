@@ -62,10 +62,15 @@ pub fn set_sqlite_source(text: String) -> bool {
 // Evidence JSONL (explainability cockpit)
 // -------------------------------------------------------------------------------------
 //
-// Native builds read this from a file path chosen at runtime, so there is no
-// embedded default and no accessor here. A browser has no such file, which used
-// to leave the explainability cockpit permanently empty; the host supplies the
-// same JSONL once at startup instead.
+// Native builds read a live log from a path chosen at runtime and fall back to
+// this captured sample when no path is set, so the cockpit always has something
+// real to show. A browser has no filesystem at all, so its host supplies the
+// very same JSONL once at startup.
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn evidence_jsonl() -> Option<&'static str> {
+    Some(include_str!("../data/evidence.jsonl"))
+}
 
 #[cfg(target_arch = "wasm32")]
 static EVIDENCE_JSONL: OnceLock<&'static str> = OnceLock::new();

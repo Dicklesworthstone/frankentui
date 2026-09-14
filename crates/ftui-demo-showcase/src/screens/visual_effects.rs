@@ -5627,13 +5627,19 @@ mod tests {
             quake.move_forward(3.0);
             quake.update();
         }
-        // Player should not be infinitely far from start
         let dx = quake.engine.player.pos[0] - start_pos[0];
         let dy = quake.engine.player.pos[1] - start_pos[1];
         let dist = (dx * dx + dy * dy).sqrt();
+        // Bounded above: walls hold. Bounded below: the walls are not holding
+        // the player in place. An upper bound alone also passes when nothing
+        // moves at all, which is exactly how a frozen camera hides.
         assert!(
             dist < 2000.0,
             "Player escaped map: moved {dist} units from start"
+        );
+        assert!(
+            dist > 50.0,
+            "Player never left the spawn point: moved {dist} units in 500 steps"
         );
     }
 
