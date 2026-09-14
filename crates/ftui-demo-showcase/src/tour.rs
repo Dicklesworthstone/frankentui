@@ -1068,11 +1068,20 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         7200,
         // Movement is latched: forward velocity is set on key-down and cleared
         // on key-up, so the player only moves while `w` is genuinely held.
+        //
+        // The spawn faces its longest clear line, and a run covers it in about
+        // a second and a half. Turning is what keeps the camera alive after
+        // that: holding forward into a wall for the rest of the step is how
+        // this screen came to look frozen even once it could move.
+        //
+        // Turns fire once per tick, so the camera sweeps; spaced any wider they
+        // read as a series of jumps.
         beats([
-            hold(400, Char('w'), 1800),
-            repeated(2500, 260, 5, Left),
-            hold(4200, Char('w'), 1200),
-            repeated(5700, 260, 4, Right),
+            hold(400, Char('w'), 1300),
+            repeated(1900, 100, 14, Left),
+            hold(3500, Char('w'), 700),
+            repeated(4500, 100, 16, Right),
+            hold(6300, Char('w'), 400),
         ]),
     );
 

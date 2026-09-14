@@ -114,6 +114,31 @@ const QUAKE_SPAWN_YAW_STEPS: usize = 16;
 const QUAKE_SPAWN_PROBE_STEPS: usize = 40;
 /// Side of a collision-grid cell, in world units.
 const QUAKE_GRID_CELL: f32 = 0.03;
+/// Camera near plane.
+///
+/// Must stay inside everything the player can physically reach: collision stops
+/// the body one radius from a wall and the eye sits `QUAKE_EYE_HEIGHT` above the
+/// floor, so a near plane beyond either of those clips away the surface you are
+/// standing against and leaves a hole in the middle of the view.
+const QUAKE_NEAR_PLANE: f32 = QUAKE_COLLISION_RADIUS * 0.5;
+/// How far the player's own light reaches, in world units.
+///
+/// The scene is lit by one fixed directional light plus a little ambient, so a
+/// wall facing away from it is nearly black. That never showed before, because
+/// the body was wide enough to keep such a wall outside the near plane; now the
+/// player can stand a finger's width from one and it fills the view. A light
+/// that travels with the camera is both the fix and the depth cue this flat
+/// little renderer was missing.
+const QUAKE_LAMP_RANGE: f32 = 0.35;
+/// How much the player's light adds at point-blank range.
+const QUAKE_LAMP_GAIN: f32 = 0.55;
+
+// Relationships the rest of the file assumes, checked where they are written
+// rather than in a test that can only report them after the fact.
+const _: () = assert!(QUAKE_NEAR_PLANE < QUAKE_COLLISION_RADIUS);
+const _: () = assert!(QUAKE_NEAR_PLANE < QUAKE_EYE_HEIGHT);
+// The playable inset has to clear the body, or the bounds themselves collide.
+const _: () = assert!(QUAKE_PLAY_MARGIN >= QUAKE_COLLISION_RADIUS);
 const QUAKE_MOVE_SPEED: f32 = 0.08;
 const QUAKE_STRAFE_SPEED: f32 = 0.07;
 const QUAKE_FRICTION: f32 = 0.85;
@@ -898,7 +923,7 @@ impl QuakeE1M1State {
         let up = right.cross(forward).normalized();
 
         let proj_scale = w.min(h) * 0.9;
-        let near = 0.04f32;
+        let near = QUAKE_NEAR_PLANE;
         let far = 8.0f32;
 
         let tri_step = match quality {
@@ -1020,7 +1045,9 @@ impl QuakeE1M1State {
                             ^ frame)
                             & 3) as f32
                             / 12.0;
-                        let mut brightness = (light * fade + grain).clamp(0.0, 1.0);
+                        let lamp = (1.0 - z / QUAKE_LAMP_RANGE).clamp(0.0, 1.0);
+                        let mut brightness =
+                            (light * fade + lamp * lamp * QUAKE_LAMP_GAIN + grain).clamp(0.0, 1.0);
                         if self.fire_flash > 0.0 {
                             brightness = (brightness + self.fire_flash * 0.4).min(1.3);
                         }
@@ -1123,14 +1150,15 @@ impl QuakeEasterEggScreen {
         };
     }
 
-    /// Where the player is standing, in world units.
+    /// Where the player is standing and which way they face: `(x, y, yaw)`.
     ///
     /// Movement is latched on key-down, so a driver that presses and releases
     /// `w` in the same instant renders a perfectly good frame and never moves.
-    /// Only the position tells those two apart.
-    pub fn player_xy(&self) -> (f32, f32) {
+    /// Only the pose tells those two apart - and it is also how a driver can
+    /// tell "walked into a wall and stopped" from "still showing the level".
+    pub fn camera_pose(&self) -> (f32, f32, f32) {
         let state = self.quake.borrow();
-        (state.player.pos.x, state.player.pos.y)
+        (state.player.pos.x, state.player.pos.y, state.player.yaw)
     }
 
     fn quality_label(&self) -> &'static str {
@@ -1969,6 +1997,123 @@ mod tests {
         assert!(
             minimal <= reduced,
             "minimal quality should not paint more pixels than reduced quality: {minimal} > {reduced}"
+        );
+    }
+
+    fn centre_coverage(painter: &Painter) -> (usize, usize) {
+        let (width, height) = painter.size();
+        let (w, h) = (i32::from(width), i32::from(height));
+        let (x0, x1) = (w * 2 / 5, w * 3 / 5);
+        let (y0, y1) = (h * 2 / 5, h * 3 / 5);
+        let mut painted = 0;
+        let mut total = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                total += 1;
+                if painter.get(x, y) {
+                    painted += 1;
+                }
+            }
+        }
+        (painted, total)
+    }
+
+    #[test]
+    fn a_wall_at_arms_length_is_lit_by_the_player() {
+        // Pressed against a wall, the whole view is that wall - one collision
+        // radius away. The scene's single fixed light leaves such a face at
+        // ambient, which is very nearly black, so the camera carries its own
+        // light. Without it the player walks up to a wall and the screen goes
+        // dark, which reads exactly like a crash.
+        let mut state = QuakeE1M1State::default();
+        state.player.pos = Vec3::new(-0.42, 0.08, -0.91);
+        state.player.yaw = std::f32::consts::PI;
+        let mut painter = Painter::new(160, 80, Mode::Braille);
+        state.render(&mut painter, 160, 80, FxQuality::Full, 0.0, 0);
+
+        let (pw, ph) = painter.size();
+        let (w, h) = (usize::from(pw), usize::from(ph));
+        let mut nearest = f32::INFINITY;
+        for y in (h * 2 / 5)..(h * 3 / 5) {
+            for x in (w * 2 / 5)..(w * 3 / 5) {
+                let z = state.depth[y * w + x];
+                if z.is_finite() {
+                    nearest = nearest.min(z);
+                }
+            }
+        }
+        assert!(
+            nearest.is_finite() && nearest < QUAKE_LAMP_RANGE,
+            "expected the wall to fill the view within lamp range, nearest surface {nearest}"
+        );
+        let lamp = (1.0 - nearest / QUAKE_LAMP_RANGE).clamp(0.0, 1.0);
+        assert!(
+            lamp * lamp * QUAKE_LAMP_GAIN > 0.25,
+            "the player's light adds only {} at {nearest} away",
+            lamp * lamp * QUAKE_LAMP_GAIN
+        );
+    }
+
+    #[test]
+    fn walls_the_player_walks_into_are_still_drawn() {
+        // Walk into a wall from many spots and check the middle of the view is
+        // a wall rather than a hole. When the near plane sat outside the body
+        // radius, this averaged 0.39 of the centre painted, with two thirds of
+        // the views more than half empty: the player pressed their face to a
+        // wall and saw straight through the level.
+        let template = QuakeE1M1State::default();
+        let mut worst = (usize::MAX, 0usize, (0.0f32, 0.0f32), 0.0f32);
+        let mut sampled = 0;
+        let mut coverage: Vec<f32> = Vec::new();
+        for (i, tri) in template.floor_tris.iter().enumerate() {
+            if i % 17 != 0 {
+                continue;
+            }
+            let x = (tri.v0.x + tri.v1.x + tri.v2.x) / 3.0;
+            let y = (tri.v0.y + tri.v1.y + tri.v2.y) / 3.0;
+            let z = (tri.v0.z + tri.v1.z + tri.v2.z) / 3.0;
+            if template.collides(x, y, z) {
+                continue;
+            }
+            for step in 0..8 {
+                let yaw = step as f32 * TAU / 8.0;
+                let mut state = template.clone();
+                state.player.pos = Vec3::new(x, y, z + QUAKE_EYE_HEIGHT);
+                state.player.yaw = yaw;
+                state.set_move_fwd(1.0);
+                for _ in 0..25 {
+                    state.update();
+                }
+                let mut painter = Painter::new(96, 48, Mode::Braille);
+                state.render(&mut painter, 96, 48, FxQuality::Full, 0.0, 0);
+                let (painted, total) = centre_coverage(&painter);
+                sampled += 1;
+                coverage.push(painted as f32 / total as f32);
+                if painted < worst.0 {
+                    worst = (
+                        painted,
+                        total,
+                        (state.player.pos.x, state.player.pos.y),
+                        yaw,
+                    );
+                }
+            }
+        }
+        let mean = coverage.iter().sum::<f32>() / coverage.len() as f32;
+        let mostly_empty = coverage.iter().filter(|c| **c < 0.5).count();
+        assert!(sampled > 200, "only sampled {sampled} views");
+        assert!(
+            mean > 0.7,
+            "the middle of the view averages {mean:.3} painted across {sampled} walls; \
+             worst {}/{} at {:?} facing {:.2}",
+            worst.0,
+            worst.1,
+            worst.2,
+            worst.3
+        );
+        assert!(
+            mostly_empty * 4 < sampled,
+            "{mostly_empty} of {sampled} wall-facing views are more than half empty"
         );
     }
 
