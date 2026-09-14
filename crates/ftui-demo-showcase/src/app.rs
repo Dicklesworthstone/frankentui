@@ -2984,6 +2984,27 @@ impl AppModel {
         true
     }
 
+    /// Select an available screen by stable slug or one-based decimal position.
+    ///
+    /// Invalid, unavailable, or out-of-range selectors leave navigation unchanged.
+    pub fn goto_screen_selector(&mut self, selector: &str) -> bool {
+        if !selector.is_empty() && selector.bytes().all(|byte| byte.is_ascii_digit()) {
+            return selector
+                .parse::<usize>()
+                .ok()
+                .and_then(|position| position.checked_sub(1))
+                .is_some_and(|index| self.goto_screen_index(index));
+        }
+        let Some(meta) = screens::screen_registry()
+            .iter()
+            .find(|meta| meta.slug == selector)
+        else {
+            return false;
+        };
+        let _ = self.update(AppMsg::SwitchScreen(meta.id));
+        true
+    }
+
     fn clamp_tour_landing_start_step(&mut self) {
         let max_index = self.tour.step_count().saturating_sub(1);
         self.tour_landing_start_step = self.tour_landing_start_step.min(max_index);
@@ -6245,6 +6266,44 @@ mod tests {
         let before = app.current_screen;
         assert!(!app.goto_screen_index(screens::screen_ids().len()));
         assert_eq!(app.current_screen, before, "screen must not change");
+    }
+
+    #[test]
+    fn goto_screen_selector_resolves_slugs_and_one_based_positions() {
+        let mut app = AppModel::new();
+        for (index, meta) in screens::screen_registry().iter().enumerate() {
+            app.start_tour(0, 1.0);
+            assert!(app.goto_screen_selector(meta.slug), "{}", meta.slug);
+            assert_eq!(app.current_screen, meta.id);
+            assert_eq!(app.display_screen(), meta.id);
+            app.start_tour(0, 1.0);
+            assert!(app.goto_screen_selector(&(index + 1).to_string()));
+            assert_eq!(app.current_screen, meta.id);
+            assert_eq!(app.display_screen(), meta.id);
+        }
+    }
+
+    #[test]
+    fn goto_screen_selector_rejects_invalid_input_without_navigation() {
+        let mut app = AppModel::new();
+        for selector in [
+            "",
+            "0",
+            "-1",
+            "+1",
+            "11oops",
+            "1.5",
+            " dashboard",
+            "missing",
+            "184467440737095516160",
+        ] {
+            let before = app.current_screen;
+            assert!(!app.goto_screen_selector(selector), "{selector}");
+            assert_eq!(app.current_screen, before);
+        }
+        assert!(!app.goto_screen_selector(&(screens::screen_registry().len() + 1).to_string()));
+        #[cfg(not(feature = "screen-mermaid"))]
+        assert!(!app.goto_screen_selector("mermaid_showcase"));
     }
 
     #[test]
