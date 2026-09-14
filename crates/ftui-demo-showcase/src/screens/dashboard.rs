@@ -3560,6 +3560,15 @@ impl Dashboard {
         Some((rect.x + rect.width / 2, rect.y + rect.height / 2))
     }
 
+    /// Drop an in-progress splitter drag without moving the divider.
+    ///
+    /// A driver that stops mid-gesture - the guided tour being skipped to the
+    /// next step, say - never sends the mouse-up, and the drag would otherwise
+    /// stay live and keep resizing on the next stray pointer move.
+    pub fn cancel_splitter_drag(&mut self) {
+        self.active_splitter_drag = None;
+    }
+
     /// True when `(x, y)` intersects either bottom-row splitter handle.
     pub fn is_splitter_hit(&self, x: u16, y: u16) -> bool {
         self.layout_bottom_split_primary.get().contains(x, y)

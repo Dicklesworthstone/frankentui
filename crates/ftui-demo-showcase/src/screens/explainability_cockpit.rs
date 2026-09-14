@@ -221,6 +221,21 @@ impl ExplainabilityCockpit {
         self.render(frame, overlay_area, CockpitMode::Overlay);
     }
 
+    /// Adopt an in-memory log that cannot change underneath us.
+    ///
+    /// The tick loop asks for a refresh twice a second; re-parsing a blob that
+    /// is fixed for the life of the process is pure waste, so the byte length
+    /// stands in for the file metadata the polling path compares.
+    fn load_immutable(&mut self, text: &str, label: &str, force: bool) {
+        let size = Some(text.len() as u64);
+        self.last_modified = None;
+        if !force && self.last_size == size {
+            return;
+        }
+        self.last_size = size;
+        self.load_from_text(text, label);
+    }
+
     /// Parse a whole evidence log held in memory and adopt it as the view.
     ///
     /// Shared by the browser, which is handed the blob by its host, and by a
@@ -273,11 +288,9 @@ impl ExplainabilityCockpit {
             // A browser has no filesystem to poll, so the host injects the same
             // JSONL once at startup. The blob is immutable for the life of the
             // page, so a forced refresh re-parses but cannot observe new rows.
-            let _ = force;
-            self.last_modified = None;
-            self.last_size = None;
-
             let Some(text) = crate::assets::evidence_jsonl() else {
+                self.last_modified = None;
+                self.last_size = None;
                 self.data = empty_data(SourceStatus {
                     label: "source: (not supplied by host)".to_string(),
                     status: "Evidence log has not been provided to this page".to_string(),
@@ -290,7 +303,7 @@ impl ExplainabilityCockpit {
                 return;
             };
 
-            self.load_from_text(text, "source: (host-supplied evidence log)");
+            self.load_immutable(text, "source: (host-supplied evidence log)", force);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -300,11 +313,10 @@ impl ExplainabilityCockpit {
                 // demo rather than an empty screen explaining an env var: the
                 // cockpit is here to be looked at, and the browser build has
                 // always had rows to show.
-                let text = crate::assets::evidence_jsonl();
-                self.last_modified = None;
-                self.last_size = None;
-                match text {
-                    Some(text) => self.load_from_text(text, "source: (bundled sample capture)"),
+                match crate::assets::evidence_jsonl() {
+                    Some(text) => {
+                        self.load_immutable(text, "source: (bundled sample capture)", force)
+                    }
                     None => {
                         self.data = empty_data(SourceStatus {
                             label: "source: (disabled)".to_string(),
@@ -1434,6 +1446,28 @@ mod tests {
         assert!(cockpit.paused);
         cockpit.update(&key_event(' '));
         assert!(!cockpit.paused);
+    }
+
+    #[test]
+    fn an_unchanged_bundled_log_is_not_re_parsed() {
+        // tick() asks for a refresh twice a second and the bundled capture
+        // never changes, so an unforced refresh has to be a no-op. Clearing the
+        // view and watching it stay cleared is the observable proof.
+        let mut cockpit = ExplainabilityCockpit::with_evidence_path(None);
+        assert!(!cockpit.data.timeline.is_empty(), "nothing loaded to begin");
+
+        cockpit.data.timeline.clear();
+        cockpit.refresh(false);
+        assert!(
+            cockpit.data.timeline.is_empty(),
+            "an unforced refresh re-parsed a log that cannot have changed"
+        );
+
+        cockpit.refresh(true);
+        assert!(
+            !cockpit.data.timeline.is_empty(),
+            "a forced refresh should re-read the source"
+        );
     }
 
     #[test]

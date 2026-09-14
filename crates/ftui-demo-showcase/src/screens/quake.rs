@@ -101,7 +101,10 @@ const QUAKE_PLAY_MARGIN: f32 = 0.02;
 /// and a single test at the destination would step clean through a thin wall.
 const QUAKE_SUBSTEP_FRACTION: f32 = 0.5;
 /// Cap on substeps per tick, so a wild velocity cannot stall the frame.
-const QUAKE_MAX_SUBSTEPS: usize = 8;
+///
+/// Top speed needs eight; the headroom is so that nudging the move speed does
+/// not silently reintroduce tunnelling. See `the_substep_cap_covers_top_speed`.
+const QUAKE_MAX_SUBSTEPS: usize = 12;
 /// How many of the widest floors to try before giving up on a spawn point.
 const QUAKE_SPAWN_CANDIDATES: usize = 24;
 /// Headings sampled when choosing which way a fresh spawn faces.
@@ -114,7 +117,6 @@ const QUAKE_GRID_CELL: f32 = 0.03;
 const QUAKE_MOVE_SPEED: f32 = 0.08;
 const QUAKE_STRAFE_SPEED: f32 = 0.07;
 const QUAKE_FRICTION: f32 = 0.85;
-const QUAKE_ACCEL: f32 = 0.02;
 
 fn cross2(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     ax * by - ay * bx
@@ -582,6 +584,13 @@ impl QuakeE1M1State {
     /// has no floor there - the lowest floor above them is used so they land
     /// somewhere real rather than falling out of the world.
     fn ground_height_at(&self, x: f32, y: f32, feet_z: f32) -> Option<f32> {
+        let (below, above) = self.floors_at(x, y, feet_z);
+        below.or(above)
+    }
+
+    /// The floors under `(x, y)`, split into the highest at or just below the
+    /// feet and the lowest above them.
+    fn floors_at(&self, x: f32, y: f32, feet_z: f32) -> (Option<f32>, Option<f32>) {
         let mut below: Option<f32> = None;
         let mut above: Option<f32> = None;
         let ceiling = feet_z + QUAKE_STEP_HEIGHT;
@@ -608,7 +617,7 @@ impl QuakeE1M1State {
             }
         }
 
-        below.or(above)
+        (below, above)
     }
 
     fn ground_eye_height(&self, x: f32, y: f32, feet_z: f32) -> f32 {
@@ -1772,20 +1781,38 @@ mod tests {
 
     #[test]
     fn walls_above_the_head_do_not_block_the_floor_below() {
-        // Collision is solved in 2D, so without the height test the walls of
-        // an upper room would seal the room beneath it.
+        // Collision is solved in 2D, so without the height test the walls of an
+        // upper room would seal the room beneath it. Find floor that is stood
+        // on despite a wall passing directly overhead - a multi-storey map has
+        // to have some, and flattened into 2D every bit of it is unreachable.
         let state = QuakeE1M1State::default();
-        let feet = state.player.pos.z - QUAKE_EYE_HEIGHT;
-        let overhead = state
-            .wall_grid
-            .near(state.player.pos.x, state.player.pos.y, 0.2)
-            .map(|i| &state.wall_segments[i as usize])
-            .any(|seg| seg.z_min >= feet + QUAKE_BODY_HEIGHT);
+        let radius_sq = QUAKE_COLLISION_RADIUS * QUAKE_COLLISION_RADIUS;
+        let mut standable_under_a_wall = 0;
+
+        for tri in &state.floor_tris {
+            let x = (tri.v0.x + tri.v1.x + tri.v2.x) / 3.0;
+            let y = (tri.v0.y + tri.v1.y + tri.v2.y) / 3.0;
+            let feet = (tri.v0.z + tri.v1.z + tri.v2.z) / 3.0;
+            let head = feet + QUAKE_BODY_HEIGHT;
+            let blocked_if_flattened = state
+                .wall_grid
+                .near(x, y, QUAKE_COLLISION_RADIUS)
+                .map(|i| &state.wall_segments[i as usize])
+                .any(|seg| {
+                    seg.z_min >= head
+                        && point_segment_distance_sq(x, y, seg.x1, seg.y1, seg.x2, seg.y2)
+                            < radius_sq
+                });
+            if blocked_if_flattened && !state.collides(x, y, feet) {
+                standable_under_a_wall += 1;
+            }
+        }
+
         assert!(
-            overhead,
-            "expected some geometry above the spawn to exercise the height test"
+            standable_under_a_wall > 0,
+            "no floor on this map is stood on with a wall overhead; either the \
+             height test is gone or the level is not what it was"
         );
-        assert!(!state.collides(state.player.pos.x, state.player.pos.y, feet));
     }
 
     #[test]
@@ -1800,6 +1827,58 @@ mod tests {
         assert_eq!(a.player.pos.x, b.player.pos.x);
         assert_eq!(a.player.pos.y, b.player.pos.y);
         assert_eq!(a.player.yaw, b.player.yaw);
+    }
+
+    #[test]
+    fn the_substep_cap_covers_top_speed() {
+        // Collision is a point test at the end of each substep, so the cap has
+        // to leave every substep shorter than the body. If the cap binds before
+        // top speed is cut up finely enough, the player walks through walls.
+        let target =
+            (QUAKE_MOVE_SPEED * QUAKE_MOVE_SPEED + QUAKE_STRAFE_SPEED * QUAKE_STRAFE_SPEED).sqrt();
+        // v' = friction * (v + (target - v) * 0.2) settles here.
+        let terminal = QUAKE_FRICTION * 0.2 * target / (1.0 - QUAKE_FRICTION * 0.8);
+        let substep = QUAKE_COLLISION_RADIUS * QUAKE_SUBSTEP_FRACTION;
+        let needed = (terminal / substep).ceil();
+        assert!(
+            needed <= QUAKE_MAX_SUBSTEPS as f32,
+            "top speed {terminal:.4} needs {needed} substeps but the cap is {QUAKE_MAX_SUBSTEPS}"
+        );
+    }
+
+    #[test]
+    fn walking_never_teleports_the_camera_vertically() {
+        // A player who stays on the ground should rise and fall by at most a
+        // step. `ground_height_at` picking the *highest* floor anywhere under
+        // the player - which is what it used to do - snaps the camera onto
+        // whatever roof happens to be overhead, mid-stride.
+        let mut state = QuakeE1M1State::default();
+        // A turning route, so the walk crosses rooms instead of stopping at
+        // the first wall it meets.
+        state.set_move_fwd(1.0);
+        let mut worst = 0.0f32;
+        let mut worst_at = (0.0f32, 0.0f32);
+        for t in 0..600 {
+            if t % 40 == 39 {
+                state.look(0.4, 0.0);
+            }
+            let before_z = state.player.pos.z;
+            let grounded_before = state.player.grounded;
+            state.update();
+            if grounded_before && state.player.grounded {
+                let dz = (state.player.pos.z - before_z).abs();
+                if dz > worst {
+                    worst = dz;
+                    worst_at = (state.player.pos.x, state.player.pos.y);
+                }
+            }
+        }
+        // Step height plus the slack between a ledge's top edge and the floor
+        // triangle that meets it.
+        assert!(
+            worst <= QUAKE_STEP_HEIGHT * 1.5,
+            "camera rose {worst:.4} in one tick near {worst_at:?}, more than a step"
+        );
     }
 
     #[test]

@@ -124,14 +124,20 @@ impl TourAction {
     }
 }
 
-/// How long a tapped key stays down. Long enough to be a real press for screens
-/// that track key state, short enough to read as a tap.
+/// How long a tapped key stays down.
+///
+/// Shorter than a tick, so press and release are delivered together and the key
+/// is never observably held. That is what a tap should mean - and it is why a
+/// screen that latches a key needs [`hold`] instead, with a duration measured
+/// in ticks rather than milliseconds.
 const TAP_HOLD_MS: u64 = 60;
 
 /// Press and release `input`, holding it for `hold_ms`.
 ///
-/// Use this for keys a screen latches (movement in Quake); [`tap`] is the
-/// right call for everything else.
+/// Use this for keys a screen latches, such as movement in Quake, and give it
+/// several ticks: the tour delivers every action due in a tick at once, so a
+/// hold shorter than the tick interval is indistinguishable from a tap.
+/// [`tap`] is the right call for everything else.
 pub fn hold(at_ms: u64, input: TourInput, hold_ms: u64) -> Vec<TourAction> {
     vec![
         TourAction::new(at_ms, input),
@@ -178,11 +184,24 @@ pub fn repeated(start_ms: u64, every_ms: u64, count: usize, input: TourInput) ->
         .collect()
 }
 
-/// Drag the pointer horizontally across the content area: press at
-/// `(from_x_pct, y_pct)`, move to `to_x_pct` over `steps`, then release.
+/// Move the pointer to a point given as a fraction of the content area, so a
+/// step reads the same at 80x24 and 200x60.
+pub fn hover_at(at_ms: u64, x_pct: f32, y_pct: f32) -> Vec<TourAction> {
+    vec![TourAction::new(
+        at_ms,
+        TourInput::Pointer {
+            kind: TourPointer::Move,
+            at: TourPointerAt::Fraction { x_pct, y_pct },
+        },
+    )]
+}
+
+/// Grab the dashboard's splitter handle and drag it `to_dx_cells` columns
+/// sideways over `steps` moves, `every_ms` apart, then let go.
 ///
-/// Used to drag pane splitters, which is the only honest way to show a
-/// resizable workspace working.
+/// Offsets are measured from where the grab landed, not from the handle's live
+/// position - the handle follows the pointer, so the latter would compound.
+/// This is the only honest way to show a resizable workspace working.
 pub fn drag_splitter(
     start_ms: u64,
     every_ms: u64,
@@ -604,9 +623,18 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::Dashboard,
         "overview",
         "Every tile here is live and clickable. This whole UI is one Rust binary.",
-        "Click any tile, or press Ctrl+K for the command palette.",
-        3400,
-        Vec::new(),
+        "Hover lights a tile up; click one to jump to it, or press Ctrl+K.",
+        5000,
+        // Sweep the pointer along the top row so the tiles light up under it.
+        // That is the claim the blurb makes, and it was previously left to the
+        // viewer to take on faith. The sweep stops short of the pane studio,
+        // which takes the mouse for its own workspace.
+        beats([
+            hover_at(400, 0.08, 0.30),
+            hover_at(1200, 0.25, 0.30),
+            hover_at(2000, 0.45, 0.30),
+            hover_at(2800, 0.62, 0.30),
+        ]),
     );
 
     // ---- Text: real search over 5.4 MB of Shakespeare --------------------
@@ -953,14 +981,16 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         "scrollback",
         "Inline mode keeps your scrollback. The UI pins itself; your history stays real.",
         "t appends a burst of log lines; h resizes the pinned UI, m flips the mode.",
-        6400,
+        7400,
         // Push real output past the pinned UI: the claim is about what happens
-        // to scrollback, so the step has to produce some.
+        // to scrollback, so the step has to produce some. The second `m` puts
+        // the screen back in the mode the blurb is about.
         beats([
             press(400, Char('t')),
             press(1600, Char('t')),
             press(2800, Char('h')),
             press(4200, Char('m')),
+            press(5800, Char('m')),
         ]),
     );
     push_step(
@@ -1211,7 +1241,23 @@ mod tests {
         // the two apart.
         for step in build_steps() {
             let mut down: Vec<(TourInput, u64)> = Vec::new();
+            // Pointer gestures carry their own up/down in the kind, and a drag
+            // left open would swallow the next step's clicks.
+            let mut pointer_down = 0i32;
             for action in &step.actions {
+                if let TourInput::Pointer { kind, .. } = action.input {
+                    match kind {
+                        TourPointer::Down => pointer_down += 1,
+                        TourPointer::Up => pointer_down -= 1,
+                        TourPointer::Drag | TourPointer::Move => {}
+                    }
+                    assert!(
+                        pointer_down >= 0,
+                        "{}: pointer released without being pressed",
+                        step.id
+                    );
+                    continue;
+                }
                 match action.phase {
                     TourPhase::Press => down.push((action.input, action.at_ms)),
                     TourPhase::Release => {
@@ -1231,13 +1277,13 @@ mod tests {
                     }
                 }
             }
-            down.retain(|(input, _)| !matches!(input, TourInput::Pointer { .. }));
             assert!(
                 down.is_empty(),
                 "{}: keys left held: {:?}",
                 step.id,
                 down.iter().map(|(i, _)| *i).collect::<Vec<_>>()
             );
+            assert_eq!(pointer_down, 0, "{}: pointer left held down", step.id);
         }
     }
 

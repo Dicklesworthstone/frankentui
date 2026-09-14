@@ -2756,6 +2756,13 @@ pub struct AppModel {
     /// area so a step reads the same at any terminal size; resolving them needs
     /// the rect the screen was actually drawn into.
     last_content_area: Cell<Rect>,
+    /// Where the in-progress tour pointer gesture was anchored when it went
+    /// down.
+    ///
+    /// A drag is a path in screen space: the handle follows the pointer, so
+    /// resolving each step of the drag against the handle's *current* position
+    /// would compound the offsets and run the divider straight into its stop.
+    tour_pointer_origin: Option<(u16, u16)>,
     /// Currently displayed screen.
     pub current_screen: ScreenId,
     /// Guided tour storyboard state.
@@ -2865,6 +2872,7 @@ impl AppModel {
         init_showcase_diagnostics();
         let mut app = Self {
             last_content_area: Cell::new(Rect::default()),
+            tour_pointer_origin: None,
             current_screen: ScreenId::Dashboard,
             tour: GuidedTourState::new(),
             tour_landing_start_step: 0,
@@ -3332,7 +3340,50 @@ impl AppModel {
         self.emit_tour_jsonl("start", "ok", self.tour.current_step());
     }
 
+    /// The anchor a tour pointer action resolves against.
+    ///
+    /// Latched when the pointer goes down and released when it comes up, so a
+    /// drag describes an absolute path rather than an offset from a handle that
+    /// is itself moving. Non-pointer actions never read the result.
+    fn tour_pointer_anchor(&mut self, action: crate::tour::TourAction) -> Option<(u16, u16)> {
+        use crate::tour::{TourInput, TourPointer, TourPointerAt};
+
+        let TourInput::Pointer {
+            kind,
+            at: TourPointerAt::DashboardSplitter { .. },
+        } = action.input
+        else {
+            return self.screens.dashboard.primary_splitter_center();
+        };
+
+        match kind {
+            TourPointer::Down => {
+                self.tour_pointer_origin = self.screens.dashboard.primary_splitter_center();
+                self.tour_pointer_origin
+            }
+            TourPointer::Up => self
+                .tour_pointer_origin
+                .take()
+                .or_else(|| self.screens.dashboard.primary_splitter_center()),
+            TourPointer::Drag | TourPointer::Move => self
+                .tour_pointer_origin
+                .or_else(|| self.screens.dashboard.primary_splitter_center()),
+        }
+    }
+
+    /// End any pointer gesture the tour left open.
+    ///
+    /// The storyboard always schedules its own mouse-up, but a viewer who skips
+    /// a step or leaves the tour mid-drag never gets there, and a drag nobody
+    /// released keeps resizing on the next pointer move.
+    fn release_tour_pointer(&mut self) {
+        if self.tour_pointer_origin.take().is_some() {
+            self.screens.dashboard.cancel_splitter_drag();
+        }
+    }
+
     fn stop_tour(&mut self, keep_last: bool, reason: &str) {
+        self.release_tour_pointer();
         let screen = self.tour.stop(keep_last);
         self.current_screen = screen;
         self.screens.action_timeline.record_command_event(
@@ -3349,6 +3400,8 @@ impl AppModel {
     fn handle_tour_event(&mut self, event: TourEvent) {
         match event {
             TourEvent::StepChanged { from, to, reason } => {
+                // A gesture belongs to the step that started it.
+                self.release_tour_pointer();
                 let reason_label = match reason {
                     TourAdvanceReason::Auto => "auto",
                     TourAdvanceReason::ManualNext => "manual_next",
@@ -3889,7 +3942,14 @@ impl AppModel {
                 // action list rather than replaying the previous step's tail.
                 let tour_inputs = self.tour.take_due_actions();
                 let content_area = self.last_content_area.get();
-                let splitter = self.screens.dashboard.primary_splitter_center();
+                let tour_commands: Vec<_> = tour_inputs
+                    .into_iter()
+                    .filter_map(|action| {
+                        let anchor = self.tour_pointer_anchor(action);
+                        tour_action_event(action, content_area, anchor)
+                            .map(|event| Cmd::msg(AppMsg::TourInput(event)))
+                    })
+                    .collect();
                 let playback_events = self.screens.macro_recorder.drain_playback_events();
                 // Dispatch each event through the runtime so its effects finish
                 // before the next event updates the model. Nested Quit stops
@@ -3897,10 +3957,7 @@ impl AppModel {
                 let mut commands: Vec<_> = playback_events
                     .into_iter()
                     .map(|event| Cmd::msg(AppMsg::PlaybackEvent(event)))
-                    .chain(tour_inputs.into_iter().filter_map(|action| {
-                        tour_action_event(action, content_area, splitter)
-                            .map(|event| Cmd::msg(AppMsg::TourInput(event)))
-                    }))
+                    .chain(tour_commands)
                     .collect();
                 if let Some(limit) = self.exit_after_ticks
                     && self.tick_count >= limit
@@ -4709,10 +4766,18 @@ fn tour_action_event(
         TourInput::Right => KeyCode::Right,
         TourInput::Pointer { kind, at } => {
             let (x, y) = match at {
-                TourPointerAt::Fraction { x_pct, y_pct } => (
-                    resolve(x_pct, content.x, content.width),
-                    resolve(y_pct, content.y, content.height),
-                ),
+                // Before the first render there is no content area to take a
+                // fraction of, and (0, 0) is a real cell someone could be
+                // pointed at. Drop the event rather than aim at the corner.
+                TourPointerAt::Fraction { x_pct, y_pct } => {
+                    if content.width == 0 || content.height == 0 {
+                        return None;
+                    }
+                    (
+                        resolve(x_pct, content.x, content.width),
+                        resolve(y_pct, content.y, content.height),
+                    )
+                }
                 // Skip the event entirely when the handle has not been laid
                 // out yet: a guessed coordinate would grab whatever happens to
                 // be under it.
@@ -7627,19 +7692,127 @@ mod tests {
         }
         assert!(grabbed, "the pane step never presses the pointer down");
 
-        // Replaying the step through the app must actually move the divider.
+        // Replaying the step through the app must actually move the divider,
+        // and it must go through the same anchor the runtime uses.
         let before = app.screens.dashboard.primary_splitter_center();
         for action in &step.actions {
-            if let Some(event) = tour_action_event(*action, content, before) {
+            let anchor = app.tour_pointer_anchor(*action);
+            if let Some(event) = tour_action_event(*action, content, anchor) {
                 app.update(AppMsg::TourInput(event));
             }
         }
+        assert!(
+            app.tour_pointer_origin.is_none(),
+            "the step left a pointer gesture open"
+        );
+        assert!(
+            !app.screens.dashboard.is_splitter_drag_active(),
+            "the dashboard is still dragging after the step finished"
+        );
         let mut frame = Frame::new(120, 40, &mut pool);
         app.view(&mut frame);
         let after = app.screens.dashboard.primary_splitter_center();
         assert_ne!(
             before, after,
             "dragging the splitter should have moved the bottom row layout"
+        );
+    }
+
+    #[test]
+    fn tour_pointer_fractions_resolve_inside_the_content_area() {
+        use crate::tour::{TourAction, TourInput, TourPointer, TourPointerAt};
+
+        let area = Rect::new(4, 2, 80, 24);
+        let at = |x_pct, y_pct| {
+            let action = TourAction::new(
+                0,
+                TourInput::Pointer {
+                    kind: TourPointer::Move,
+                    at: TourPointerAt::Fraction { x_pct, y_pct },
+                },
+            );
+            match tour_action_event(action, area, None) {
+                Some(Event::Mouse(mouse)) => (mouse.x, mouse.y),
+                other => panic!("expected a mouse event, got {other:?}"),
+            }
+        };
+
+        assert_eq!(at(0.0, 0.0), (4, 2), "0% is the top-left cell");
+        assert_eq!(at(1.0, 1.0), (83, 25), "100% is the last cell, not past it");
+        let (mid_x, mid_y) = at(0.5, 0.5);
+        assert!((44..=45).contains(&mid_x) && (14..=15).contains(&mid_y));
+        // Out-of-range fractions clamp instead of wrapping around the terminal.
+        assert_eq!(at(-1.0, 2.0), (4, 25));
+
+        // No frame drawn yet: there is nothing to take a fraction of.
+        let action = TourAction::new(
+            0,
+            TourInput::Pointer {
+                kind: TourPointer::Move,
+                at: TourPointerAt::Fraction {
+                    x_pct: 0.5,
+                    y_pct: 0.5,
+                },
+            },
+        );
+        assert!(tour_action_event(action, Rect::new(0, 0, 0, 0), None).is_none());
+    }
+
+    #[test]
+    fn a_tour_drag_is_measured_from_where_it_grabbed() {
+        use crate::tour::{TourInput, TourPointer};
+
+        // The handle follows the pointer, so an offset resolved against its
+        // *live* position compounds every step and slams the divider into its
+        // stop. Within one gesture the anchor has to stay where the grab was.
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::Dashboard;
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        let content = app.last_content_area.get();
+
+        let step = crate::tour::build_steps()
+            .into_iter()
+            .find(|s| s.id.contains(":panes"))
+            .expect("pane step");
+
+        let mut gestures: Vec<Vec<Option<(u16, u16)>>> = Vec::new();
+        for action in &step.actions {
+            let anchor = app.tour_pointer_anchor(*action);
+            if matches!(
+                action.input,
+                TourInput::Pointer {
+                    kind: TourPointer::Down,
+                    ..
+                }
+            ) {
+                gestures.push(Vec::new());
+            }
+            gestures
+                .last_mut()
+                .expect("a gesture starts with a pointer down")
+                .push(anchor);
+            if let Some(event) = tour_action_event(*action, content, anchor) {
+                app.update(AppMsg::TourInput(event));
+            }
+            // Re-render so the dashboard republishes the moved handle, which is
+            // what would poison the anchor if it were read live.
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+        }
+
+        assert_eq!(gestures.len(), 2, "the pane step should drag twice");
+        for (i, anchors) in gestures.iter().enumerate() {
+            let first = anchors[0];
+            assert!(
+                anchors.iter().all(|a| *a == first),
+                "gesture {i} moved its own anchor mid-drag: {anchors:?}"
+            );
+        }
+        assert_ne!(
+            gestures[0][0], gestures[1][0],
+            "the first drag did not move the handle, so the test proves nothing"
         );
     }
 
@@ -7680,6 +7853,21 @@ mod tests {
         drain(app, cmd);
     }
 
+    /// Every cell of the frame, styling included.
+    ///
+    /// Text alone is not enough to tell whether a screen responded: hovering a
+    /// dashboard tile only recolours its border, and a text-only comparison
+    /// would call that "nothing happened".
+    fn frame_cells(frame: &Frame) -> Vec<ftui_render::cell::Cell> {
+        let mut out = Vec::new();
+        for y in 0..frame.buffer.height() {
+            for x in 0..frame.buffer.width() {
+                out.push(frame.buffer.get(x, y).copied().unwrap_or_default());
+            }
+        }
+        out
+    }
+
     /// Everything the frame has to say, as text.
     fn frame_text(frame: &Frame) -> String {
         let mut out = String::new();
@@ -7707,32 +7895,47 @@ mod tests {
         // showing it - which is how the tour came to press `w` at a Quake
         // player who could not move. Replaying a step's own actions has to
         // change what is drawn.
+        // Two identical apps, rendered the same number of times; only one is
+        // given the step's input. Comparing them rather than comparing one app
+        // against its own earlier frame keeps the check honest on screens that
+        // redraw differently on their own - the mermaid showcase prints a cache
+        // counter that moves every frame.
         let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
         for step in crate::tour::build_steps() {
             if step.actions.is_empty() {
                 continue;
             }
-            let mut app = AppModel::new();
-            app.current_screen = step.screen;
-            let mut frame = Frame::new(140, 44, &mut pool);
-            app.view(&mut frame);
-            let before = frame_text(&frame);
-            let content = app.last_content_area.get();
-            let splitter = app.screens.dashboard.primary_splitter_center();
+
+            let render = |app: &mut AppModel, pool: &mut _| {
+                let mut frame = Frame::new(140, 44, pool);
+                app.view(&mut frame);
+                (frame_cells(&frame), frame_text(&frame))
+            };
+
+            let mut driven = AppModel::new();
+            driven.current_screen = step.screen;
+            let mut control = AppModel::new();
+            control.current_screen = step.screen;
+
+            // Draw once so anything laid out lazily on a first frame settles.
+            render(&mut driven, &mut pool);
+            render(&mut control, &mut pool);
+            let content = driven.last_content_area.get();
 
             for action in &step.actions {
-                if let Some(event) = tour_action_event(*action, content, splitter) {
-                    app.update(AppMsg::TourInput(event));
+                let anchor = driven.tour_pointer_anchor(*action);
+                if let Some(event) = tour_action_event(*action, content, anchor) {
+                    driven.update(AppMsg::TourInput(event));
                 }
             }
 
-            let mut frame = Frame::new(140, 44, &mut pool);
-            app.view(&mut frame);
-            assert_ne!(
-                before,
-                frame_text(&frame),
-                "{} plays its keystrokes and nothing on screen responds",
-                step.id
+            let (driven_cells, driven_text) = render(&mut driven, &mut pool);
+            let (control_cells, _) = render(&mut control, &mut pool);
+            assert!(
+                driven_cells != control_cells,
+                "{} plays its keystrokes and nothing on screen responds:\n{}",
+                step.id,
+                driven_text
             );
         }
     }
