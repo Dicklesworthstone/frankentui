@@ -36,9 +36,17 @@ tag's recorded timezone; the internal milestone uses its commit date.
 
 ## [v0.8.0] -- 2026-09-13 (GitHub Release)
 
-Published as a GitHub Release with the six-platform artifact matrix. The
-crates.io publication of the 17 library crates is **not** part of this release
-and remains open; `ftui` on crates.io is still 0.7.0.
+Published as a GitHub Release. Two distribution steps are deliberately **not**
+part of it and remain open:
+
+- **Platform binaries.** The six-target artifact matrix is not attached. A dsr
+  configuration for this repository now exists at
+  `~/.config/dsr/repos.d/frankentui.yaml`, but `dsr build` records an empty
+  `source_roots`/`target_hosts` context even after reporting a successful
+  sync, so every target fails its strict source binding. Separately, the ts1
+  build root is not a git checkout, which the strict release path requires.
+- **crates.io.** The 17 library crates are not published; `ftui` on crates.io
+  is still 0.7.0.
 
 ### Added
 
