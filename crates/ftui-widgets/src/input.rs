@@ -573,8 +573,13 @@ impl TextInput {
             None
         };
 
+        // Command/Windows-key chords belong to the host, not the field. Only
+        // CTRL used to be excluded, so on macOS every Cmd+<letter> shortcut
+        // typed its letter: Cmd+V inserted a literal "v" next to the paste.
+        let cmd = key.modifiers.contains(Modifiers::SUPER);
+
         let changed = match key.code {
-            KeyCode::Char(c) if !ctrl => {
+            KeyCode::Char(c) if !ctrl && !cmd => {
                 self.insert_char(c);
                 true
             }
@@ -2356,6 +2361,23 @@ mod tests {
         let cmd = cmd.expect("test command should exist");
         assert_eq!(cmd.widget_id(), input.undo_id());
         assert_eq!(cmd.description(), "Insert text");
+    }
+
+    #[test]
+    fn command_chords_do_not_type_their_letter() {
+        // macOS sends Cmd as SUPER. Cmd+V is the host's paste shortcut; the
+        // field must not also receive a literal "v" beside the pasted text.
+        for ch in ['v', 'c', 'x'] {
+            let mut input = TextInput::new();
+            input.handle_event(&Event::Key(
+                KeyEvent::new(KeyCode::Char(ch)).with_modifiers(Modifiers::SUPER),
+            ));
+            assert_eq!(input.value(), "", "Cmd+{ch} typed into the field");
+        }
+        // A plain character of the same letter still types.
+        let mut input = TextInput::new();
+        input.handle_event(&Event::Key(KeyEvent::new(KeyCode::Char('v'))));
+        assert_eq!(input.value(), "v");
     }
 
     #[test]

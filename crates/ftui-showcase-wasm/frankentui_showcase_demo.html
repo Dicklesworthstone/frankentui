@@ -1901,9 +1901,20 @@ function shouldForwardKeyEvent(e) {
   return true;
 }
 
+// Ctrl/Cmd+V and Shift+Insert must reach the browser untouched. `paste` is a
+// *default action* of this keydown, so the preventDefault() below would stop
+// the clipboard event from ever firing, and forwarding the chord would
+// additionally type its letter into the focused widget.
+function isClipboardPasteShortcut(e) {
+  if (e.altKey) return false;
+  if ((e.ctrlKey || e.metaKey) && String(e.key || "").toLowerCase() === "v") return true;
+  return e.shiftKey && !e.ctrlKey && !e.metaKey && e.key === "Insert";
+}
+
 // Intercept Ctrl+/- (or Cmd+/- on Mac) for zoom, forward everything else.
 window.addEventListener("keydown", (e) => {
   if (!shouldForwardKeyEvent(e)) return;
+  if (isClipboardPasteShortcut(e)) return;
 
   // Zoom modifier: Ctrl on Windows/Linux, Cmd (Meta) on macOS.
   const zoomMod = e.ctrlKey || e.metaKey;
@@ -1979,6 +1990,7 @@ window.addEventListener("keydown", (e) => {
 
 window.addEventListener("keyup", (e) => {
   if (!shouldForwardKeyEvent(e)) return;
+  if (isClipboardPasteShortcut(e)) return;
   e.preventDefault();
   safeTermInput(domKeyToInput(e, "up"));
 }, { capture: true });
@@ -2698,6 +2710,9 @@ canvas.addEventListener("touchend", (e) => {
     touchScrollAccX = 0;
     touchScrollAccY = 0;
     pinchStartDist = 0;
+    // These paths return before the edge-swipe handling below, so they must
+    // clear it themselves or the hint is stranded on screen.
+    clearEdgeSwipe();
     return;
   }
   if (touchGestureSuppressedByPane) {
@@ -2708,6 +2723,7 @@ canvas.addEventListener("touchend", (e) => {
       touchScrollAccY = 0;
       pinchStartDist = 0;
     }
+    clearEdgeSwipe();
     return;
   }
   // An armed edge swipe consumes the gesture: commit it if it travelled far

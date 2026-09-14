@@ -72,10 +72,21 @@ impl TourAction {
 
 /// Expand `text` into one keystroke per character, `every_ms` apart, starting
 /// at `start_ms`. Used to type search queries and markdown samples.
+///
+/// A newline becomes [`TourInput::Enter`], the key a typist actually presses,
+/// rather than a literal `'\n'` character whose fate depends on each widget's
+/// control-character policy.
 pub fn typed(start_ms: u64, every_ms: u64, text: &str) -> Vec<TourAction> {
     text.chars()
         .enumerate()
-        .map(|(i, ch)| TourAction::new(start_ms + (i as u64) * every_ms, TourInput::Char(ch)))
+        .map(|(i, ch)| {
+            let input = if ch == '\n' {
+                TourInput::Enter
+            } else {
+                TourInput::Char(ch)
+            };
+            TourAction::new(start_ms + (i as u64) * every_ms, input)
+        })
         .collect()
 }
 
@@ -664,9 +675,13 @@ fn build_steps() -> Vec<TourStep> {
         ScreenId::LayoutLab,
         "layout",
         "Flex and grid solvers with live constraints - and draggable pane workspaces.",
-        "Panes drag, dock, snap, and undo.",
-        3600,
-        beats([repeated(400, 900, 3, Right)]),
+        "Arrows resize constraints; d flips direction, a cycles alignment.",
+        4200,
+        beats([
+            repeated(300, 700, 2, Right),
+            press(2000, Char('d')),
+            press(2900, Char('a')),
+        ]),
     );
     push_step(
         &mut steps,
@@ -728,9 +743,18 @@ fn build_steps() -> Vec<TourStep> {
         ScreenId::CommandPaletteLab,
         "palette",
         "The command palette scores matches with a Bayesian evidence ledger.",
-        "Every result can explain exactly why it ranked where it did.",
+        "b runs the query benchmark, m cycles the filter, arrows walk results.",
         5000,
-        beats([typed(400, 90, "theme")]),
+        // This screen drives the palette itself - it has no free-text field, so
+        // typing a query here would just hit its single-letter bindings.
+        beats([
+            press(300, Char('b')),
+            repeated(1400, 700, 3, Down),
+            press(3600, Char('m')),
+            // Leave the benchmark off again rather than letting it keep
+            // running queries behind the remaining steps.
+            press(4300, Char('b')),
+        ]),
     );
     push_step(
         &mut steps,
@@ -987,6 +1011,15 @@ mod tests {
         assert_eq!(
             tour.actions_fired, 0,
             "the next step must start from its own first action"
+        );
+    }
+
+    #[test]
+    fn typed_sends_enter_for_newlines() {
+        let keys = typed(0, 10, "a\nb");
+        assert_eq!(
+            keys.iter().map(|k| k.input).collect::<Vec<_>>(),
+            vec![TourInput::Char('a'), TourInput::Enter, TourInput::Char('b')]
         );
     }
 

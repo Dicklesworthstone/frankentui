@@ -3867,11 +3867,9 @@ impl AppModel {
                 let mut commands: Vec<_> = playback_events
                     .into_iter()
                     .map(|event| Cmd::msg(AppMsg::PlaybackEvent(event)))
-                    .chain(
-                        tour_inputs
-                            .into_iter()
-                            .map(|input| Cmd::msg(AppMsg::TourInput(tour_input_event(input)))),
-                    )
+                    .chain(tour_inputs.into_iter().flat_map(|input| {
+                        tour_input_events(input).map(|e| Cmd::msg(AppMsg::TourInput(e)))
+                    }))
                     .collect();
                 if let Some(limit) = self.exit_after_ticks
                     && self.tick_count >= limit
@@ -4641,7 +4639,14 @@ enum UndoAction {
 }
 
 /// Translate a scheduled tour keystroke into the key event a screen expects.
-fn tour_input_event(input: crate::tour::TourInput) -> Event {
+/// Expand a scheduled tour keystroke into the press *and* release a real key
+/// produces.
+///
+/// Screens that latch a key down until it comes back up - Quake holds forward
+/// motion while `w` is held - would otherwise stay stuck in that state for the
+/// rest of the tour. Every other screen matches on `KeyEventKind::Press` (as do
+/// `TextArea` and `TextInput`), so the trailing release is simply ignored.
+fn tour_input_events(input: crate::tour::TourInput) -> [Event; 2] {
     use crate::tour::TourInput;
     let code = match input {
         TourInput::Char(ch) => KeyCode::Char(ch),
@@ -4654,7 +4659,10 @@ fn tour_input_event(input: crate::tour::TourInput) -> Event {
         TourInput::Left => KeyCode::Left,
         TourInput::Right => KeyCode::Right,
     };
-    Event::Key(KeyEvent::new(code))
+    [
+        Event::Key(KeyEvent::new(code)),
+        Event::Key(KeyEvent::new(code).with_kind(KeyEventKind::Release)),
+    ]
 }
 
 impl AppModel {
@@ -7457,6 +7465,22 @@ mod tests {
         app.update(AppMsg::from(start));
         assert!(app.tour.is_active());
         assert_eq!(app.tour.step_index(), target_step);
+    }
+
+    #[test]
+    fn tour_input_expands_to_a_press_and_a_release() {
+        // A held key that is never released latches screens that track key
+        // state: Quake keeps moving forward while `w` is down.
+        let [press, release] = tour_input_events(crate::tour::TourInput::Char('w'));
+        match (press, release) {
+            (Event::Key(p), Event::Key(r)) => {
+                assert_eq!(p.code, KeyCode::Char('w'));
+                assert_eq!(p.kind, KeyEventKind::Press);
+                assert_eq!(r.code, KeyCode::Char('w'));
+                assert_eq!(r.kind, KeyEventKind::Release);
+            }
+            other => panic!("expected two key events, got {other:?}"),
+        }
     }
 
     #[test]

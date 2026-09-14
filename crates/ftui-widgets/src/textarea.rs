@@ -187,9 +187,13 @@ impl TextArea {
         let ctrl = key.modifiers.contains(Modifiers::CTRL);
         let shift = key.modifiers.contains(Modifiers::SHIFT);
         let _alt = key.modifiers.contains(Modifiers::ALT);
+        // Command/Windows-key chords belong to the host, not the buffer. Only
+        // CTRL used to be excluded, so on macOS every Cmd+<letter> shortcut
+        // typed its letter: Cmd+V inserted a literal "v" next to the paste.
+        let cmd = key.modifiers.contains(Modifiers::SUPER);
 
         match key.code {
-            KeyCode::Char(c) if !ctrl => {
+            KeyCode::Char(c) if !ctrl && !cmd => {
                 self.insert_char(c);
                 true
             }
@@ -2226,6 +2230,52 @@ mod tests {
         ta.insert_newline();
         assert_eq!(ta.line_count(), 2);
         assert_eq!(ta.cursor().line, 1);
+    }
+
+    #[test]
+    fn command_chords_do_not_type_their_letter() {
+        // macOS sends Cmd as SUPER. Cmd+V is a paste shortcut handled by the
+        // host; the buffer must not also receive a literal "v". Same for the
+        // other common Cmd chords a user will hit over a focused editor.
+        for (label, ch) in [("paste", 'v'), ("copy", 'c'), ("cut", 'x'), ("all", 'a')] {
+            let mut ta = TextArea::new();
+            let handled = ta.handle_event(&Event::Key(
+                KeyEvent::new(KeyCode::Char(ch)).with_modifiers(Modifiers::SUPER),
+            ));
+            assert_eq!(ta.text(), "", "Cmd+{ch} ({label}) typed into the buffer");
+            assert!(!handled, "Cmd+{ch} ({label}) should be left to the host");
+        }
+    }
+
+    #[test]
+    fn key_release_does_not_type() {
+        // Synthetic drivers (the demo's guided tour) send a press followed by a
+        // release so key-latching screens unlatch. The release must be inert
+        // here, or every driven keystroke would be typed twice.
+        let mut ta = TextArea::new();
+        let handled = ta.handle_event(&Event::Key(
+            KeyEvent::new(KeyCode::Char('x')).with_kind(KeyEventKind::Release),
+        ));
+        assert!(!handled, "a key release should not be consumed as typing");
+        assert_eq!(ta.text(), "");
+    }
+
+    #[test]
+    fn plain_and_shifted_characters_still_type() {
+        let mut ta = TextArea::new();
+        assert!(ta.handle_event(&Event::Key(KeyEvent::new(KeyCode::Char('v')))));
+        assert!(ta.handle_event(&Event::Key(
+            KeyEvent::new(KeyCode::Char('V')).with_modifiers(Modifiers::SHIFT),
+        )));
+        assert_eq!(ta.text(), "vV");
+    }
+
+    #[test]
+    fn paste_event_inserts_clipboard_text() {
+        let mut ta = TextArea::new().with_text("ab");
+        ta.move_to_document_end();
+        assert!(ta.handle_event(&Event::Paste(ftui_core::event::PasteEvent::bracketed("cd"))));
+        assert_eq!(ta.text(), "abcd");
     }
 
     #[test]

@@ -182,10 +182,12 @@ pub fn render_guided_tour_overlay(state: &TourOverlayState<'_>, frame: &mut Fram
         return;
     }
 
-    // Cap at a quarter of the height and just over a third of the width, so the
-    // box shrinks with the viewport instead of holding a fixed 56x14 footprint.
-    let width = area.width.min(48).min(area.width * 2 / 5);
-    let height = area.height.min(9).min(area.height / 4);
+    // At most half the width and a third of the height, and never larger than
+    // 52x9, so the box shrinks with the viewport instead of holding a fixed
+    // 56x14 footprint. Divide before clamping: `area.width * 2` would overflow
+    // u16 on an absurdly wide surface.
+    let width = (area.width / 2).clamp(1, 52);
+    let height = (area.height / 3).clamp(1, 9);
     if width < 28 || height < 6 {
         render_guided_tour_strip(state, frame, area);
         return;
