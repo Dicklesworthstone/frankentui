@@ -6,9 +6,9 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
-Scope window: initial development on 2026-01-31 through the 0.7.0 release
-published on 2026-09-08. The latest published GitHub Release is
-[v0.7.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.7.0).
+Scope window: initial development on 2026-01-31 through the 0.8.0 release
+published on 2026-09-13. The latest published GitHub Release is
+[v0.8.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.8.0).
 `Release` below means a published GitHub Release; `Tag` means a git tag with
 no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 
@@ -16,6 +16,7 @@ no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [v0.8.0] | Release | 2026-09-13 | Browser showcase parity, driven guided tour, touch navigation, clipboard |
 | [v0.7.0] | Release | 2026-09-08 | Default backends, keymaps, runtime accessibility, widgets, terminal fixes |
 | [v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0) | Release | 2026-08-24 | Runtime guardrails, resize SLA, asupersync 0.4.9, color depth |
 | [v0.5.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.5.0) | Release | 2026-07-05 | OpenTUI-import closeout + alien-governance |
@@ -33,10 +34,11 @@ tag's recorded timezone; the internal milestone uses its commit date.
 
 ---
 
-## 0.8.0 — release preparation
+## [v0.8.0] -- 2026-09-13 (GitHub Release)
 
-Publication and the six-platform artifact matrix are being verified. The latest
-published release remains 0.7.0 until those steps finish.
+Published as a GitHub Release with the six-platform artifact matrix. The
+crates.io publication of the 17 library crates is **not** part of this release
+and remains open; `ftui` on crates.io is still 0.7.0.
 
 ### Added
 
@@ -54,6 +56,25 @@ published release remains 0.7.0 until those steps finish.
 - Golden trace v2 records initialization, idle steps, and nonrendering quit, and
   checks event accounting, clock values, outcomes, and hash chains during replay
   ([`10ac5cd5`](https://github.com/Dicklesworthstone/frankentui/commit/10ac5cd5)).
+- The browser showcase reaches native parity at 45 screens. `ftui-showcase-wasm`
+  had taken `ftui-demo-showcase` with `default-features = false`, which dropped
+  `screen-mermaid` and filtered `mermaid_showcase` and `mermaid_mega_showcase`
+  out of the registry; only the two native terminal backends are excluded now
+  ([`90213e1f`](https://github.com/Dicklesworthstone/frankentui/commit/90213e1f)).
+- `AppModel::goto_screen_index` and `ShowcaseRunner::gotoScreen` select a screen
+  by registry index, replacing synthesized digit and Tab keystrokes
+  ([`90213e1f`](https://github.com/Dicklesworthstone/frankentui/commit/90213e1f)).
+- `ShowcaseRunner::setEvidenceJsonl` supplies the explainability cockpit's
+  evidence log, which a browser cannot read from disk
+  ([`90213e1f`](https://github.com/Dicklesworthstone/frankentui/commit/90213e1f)).
+- The guided tour performs the features it narrates: 32 steps over 30 screens
+  type real search queries, walk matches, type markdown against the live
+  preview, and cycle samples, through scheduled `TourAction` keystrokes
+  ([`ab9d0543`](https://github.com/Dicklesworthstone/frankentui/commit/ab9d0543)).
+- Touch devices change screens by dragging in from either bezel, and select text
+  with Shift+drag; Ctrl/Cmd+C copies the selection to the system clipboard
+  ([`ab9d0543`](https://github.com/Dicklesworthstone/frankentui/commit/ab9d0543),
+  [`282c19a5`](https://github.com/Dicklesworthstone/frankentui/commit/282c19a5)).
 
 ### Runtime and browser behavior
 
@@ -68,6 +89,28 @@ published release remains 0.7.0 until those steps finish.
   ([`a1bf9402`](https://github.com/Dicklesworthstone/frankentui/commit/a1bf9402)).
 
 ### Fixed
+
+- `TextArea` and `TextInput` no longer insert a character for Command-key
+  chords. Both excluded only CTRL, so on macOS - where Command arrives as
+  `Modifiers::SUPER` - every `Cmd+<letter>` over a focused field typed its
+  letter, leaving a literal "v" beside every paste
+  ([`e71c2057`](https://github.com/Dicklesworthstone/frankentui/commit/e71c2057)).
+- Clipboard paste reaches the browser showcase. Its keydown handler ended in an
+  unconditional `preventDefault()`, and `paste` is a default action of the
+  Ctrl/Cmd+V keydown, so the clipboard event never fired
+  ([`e71c2057`](https://github.com/Dicklesworthstone/frankentui/commit/e71c2057)).
+- `?screen=N` deep links land on screen N. Beyond screen 10 the page sent N-1
+  Tab presses, and Tab advances from the guided tour's active screen rather than
+  `current_screen`, so `?screen=45` wrapped to the first screen and the last
+  screen was unreachable by URL
+  ([`90213e1f`](https://github.com/Dicklesworthstone/frankentui/commit/90213e1f)).
+- The explainability cockpit renders real evidence in the browser instead of an
+  "unavailable on wasm32" placeholder
+  ([`90213e1f`](https://github.com/Dicklesworthstone/frankentui/commit/90213e1f)).
+- The guided tour callout no longer covers the screen it describes: it is capped
+  at half the width and a third of the height, and collapses to a single docked
+  line on small viewports
+  ([`ab9d0543`](https://github.com/Dicklesworthstone/frankentui/commit/ab9d0543)).
 
 - Executor selection resolves the available feature-dependent lane once and
   respects explicit overrides
@@ -118,6 +161,10 @@ published release remains 0.7.0 until those steps finish.
   schema consistent across the runner, renderer lockfile, and CLI 0.2.128.
 - Replaced yanked transitive chacha20 0.10.1 with 0.10.2, which corrects SSE4.1
   instructions mistakenly used in its SSE2 backends.
+- sqlmodel-console 0.4.3 to 0.5.0. asupersync is already at the newest published
+  0.5.0. getrandom's 0.3.4 line is reported outdated but is retained
+  deliberately: it forces the `wasm_js` feature onto ahash's transitive 0.3
+  dependency, without which wasm builds fail to compile.
 
 ## [v0.7.0] -- 2026-09-08 (GitHub Release)
 
