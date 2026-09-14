@@ -263,6 +263,11 @@ impl RunnerCore {
         self.inner.model_mut().goto_screen_index(index)
     }
 
+    /// Select an available screen by stable slug or one-based decimal position.
+    pub fn goto_screen_selector(&mut self, selector: &str) -> bool {
+        self.inner.model_mut().goto_screen_selector(selector)
+    }
+
     /// Process pending events and render if dirty.
     pub fn step(&mut self) -> StepResult {
         if !self.inner.is_initialized() {
@@ -1320,6 +1325,19 @@ mod tests {
         edge_fling_projection,
     };
     use ftui_layout::{PaneDockPreview, PaneDockZone, PaneResizeGrip, PaneRetentionPolicy};
+
+    #[test]
+    fn screen_selector_reaches_model_and_preserves_invalid_selection() {
+        let mut runner = RunnerCore::new(80, 24);
+        for (index, meta) in ftui_demo_showcase::screens::screen_registry().iter().enumerate() {
+            assert!(runner.goto_screen_selector(meta.slug));
+            assert_eq!(runner.inner.model().current_screen, meta.id);
+            assert!(runner.goto_screen_selector(&(index + 1).to_string()));
+            assert_eq!(runner.inner.model().current_screen, meta.id);
+            assert!(!runner.goto_screen_selector("nonexistent_screen"));
+            assert_eq!(runner.inner.model().current_screen, meta.id);
+        }
+    }
 
     #[test]
     fn log_drain_preserves_pending_frame_and_metadata() {

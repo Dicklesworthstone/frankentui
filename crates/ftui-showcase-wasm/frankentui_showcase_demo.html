@@ -267,7 +267,7 @@ const INITIAL_COLS    = parseInt(params.get("cols"), 10) || 80;
 const INITIAL_ROWS    = parseInt(params.get("rows"), 10) || 24;
 const CELL_WIDTH      = parseInt(params.get("cellWidth"), 10) || 8;
 const CELL_HEIGHT     = parseInt(params.get("cellHeight"), 10) || 16;
-const START_SCREEN    = parseInt(params.get("screen"), 10) || 0;
+const START_SCREEN    = params.get("screen");
 const URL_ZOOM        = parseFloat(params.get("zoom")) || 0;
 // Console JSONL is extremely expensive at 60fps; enable only when debugging.
 const LOG_JSONL       = params.get("jsonl") === "1";
@@ -1263,14 +1263,15 @@ function pushRunnerInput(input) {
 }
 
 // Navigate to a specific screen if requested via URL.
-if (START_SCREEN > 0) {
+if (START_SCREEN !== null) {
   // Select the screen directly. This used to synthesize a digit key for the
   // first ten screens and repeated Tab presses beyond that, which landed one
   // screen late for ?screen=11 and above: Tab advances from the tour's active
   // screen, not from current_screen.
-  const screenIdx = START_SCREEN - 1;
-  if (!runner.gotoScreen(screenIdx)) {
-    console.warn(`[ShowcaseDemo] ?screen=${START_SCREEN} is out of range; staying on the default screen.`);
+  // Stable slugs (for example ?screen=mermaid_showcase) survive registry
+  // reordering. Decimal positions remain one-based; malformed values are rejected.
+  if (!runner.gotoScreenSelector(START_SCREEN)) {
+    console.warn(`[ShowcaseDemo] ?screen=${START_SCREEN} is unknown or unavailable; staying on the default screen.`);
   }
 }
 

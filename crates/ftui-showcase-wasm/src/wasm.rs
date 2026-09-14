@@ -632,6 +632,13 @@ impl ShowcaseRunner {
         self.inner.goto_screen(index as usize)
     }
 
+    /// Select an available screen by stable slug or one-based decimal position.
+    /// Returns false for unknown slugs, malformed positions, or unavailable screens.
+    #[wasm_bindgen(js_name = gotoScreenSelector)]
+    pub fn goto_screen_selector(&mut self, selector: &str) -> bool {
+        self.inner.goto_screen_selector(selector)
+    }
+
     /// Advance deterministic clock by `dt_ms` milliseconds (real-time mode).
     #[wasm_bindgen(js_name = advanceTime)]
     pub fn advance_time(&mut self, dt_ms: f64) {
