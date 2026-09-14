@@ -232,7 +232,7 @@
        aria-label="Terminal content (accessible proxy)"
        aria-live="polite"
        style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;">
-    <p>FrankenTUI demo application. Use Tab and Shift+Tab to navigate between screens. Press ? for help.</p>
+    <p>FrankenTUI demo application. Use Tab and Shift+Tab to navigate between screens, or swipe in from the left or right edge on a touch screen. Shift+drag selects text and Ctrl/Cmd+C copies it; Ctrl/Cmd+V pastes. Press ? for help.</p>
   </div>
 </div>
 <textarea
@@ -577,6 +577,13 @@ const geo = term.fitToContainer(container.clientWidth, container.clientHeight, d
 const initialGeometry = normalizeTerminalGeometry(geo.cols, geo.rows, 80, 24);
 let currentCols = initialGeometry.cols;
 let currentRows = initialGeometry.rows;
+
+// Text-selection state. Declared beside the geometry it is expressed in: the
+// selection is a range of cell offsets, so a column change invalidates it, and
+// the geometry sync below runs long before the mouse handlers are installed.
+let selectionAnchorOffset = null;   // cell offset where a Shift+drag began
+let selectionActive = false;        // a Shift+drag is in progress
+let hasSelection = false;           // a non-empty selection is on screen
 let lastGeometrySignature = "";
 
 const runner = new ShowcaseRunner(currentCols, currentRows);
@@ -1367,6 +1374,11 @@ function applyQueuedGeometrySync(trigger = "frame_tick") {
     if (!runner.resize(currentCols, currentRows)) {
       throw new Error("Runner rejected resize after draining input");
     }
+    if (sizeChanged) {
+      // Cell offsets are relative to the column count, so a reflow would leave
+      // the highlight describing different text than the user selected.
+      clearTerminalSelection();
+    }
     lastGeometrySignature = nextSignature;
   }
 
@@ -1915,6 +1927,7 @@ function isClipboardPasteShortcut(e) {
 window.addEventListener("keydown", (e) => {
   if (!shouldForwardKeyEvent(e)) return;
   if (isClipboardPasteShortcut(e)) return;
+  if (isClipboardCopyShortcut(e)) return;
 
   // Zoom modifier: Ctrl on Windows/Linux, Cmd (Meta) on macOS.
   const zoomMod = e.ctrlKey || e.metaKey;
@@ -1985,14 +1998,94 @@ window.addEventListener("keydown", (e) => {
   }
 
   e.preventDefault();
+  // Typing dismisses the selection, as in any terminal: its cell offsets stop
+  // describing what is on screen as soon as the app redraws.
+  clearTerminalSelection();
   safeTermInput(domKeyToInput(e, "down"));
 }, { capture: true });
 
 window.addEventListener("keyup", (e) => {
   if (!shouldForwardKeyEvent(e)) return;
   if (isClipboardPasteShortcut(e)) return;
+  if (isClipboardCopyShortcut(e)) return;
   e.preventDefault();
   safeTermInput(domKeyToInput(e, "up"));
+}, { capture: true });
+
+// ── Copy out: Shift+drag selects, Ctrl/Cmd+C copies ────────────────────
+//
+// The showcase captures the mouse for its own widgets, so a plain drag can't
+// also mean "select text" - that is why terminals reserve Shift+drag for
+// selection while an application holds the mouse. The renderer keeps the
+// selection overlay and extracts the text; the host only has to map pixels to
+// cells and hand the result to the clipboard.
+
+function cellOffsetFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const cols = Math.max(1, currentCols | 0);
+  const rows = Math.max(1, currentRows | 0);
+  const cellW = Math.max(1e-6, rect.width / cols);
+  const cellH = Math.max(1e-6, rect.height / rows);
+  const x = Math.max(0, Math.min(Math.floor((e.clientX - rect.left) / cellW), cols - 1));
+  const y = Math.max(0, Math.min(Math.floor((e.clientY - rect.top) / cellH), rows - 1));
+  return y * cols + x;
+}
+
+function clearTerminalSelection() {
+  selectionAnchorOffset = null;
+  selectionActive = false;
+  if (!hasSelection) return;
+  hasSelection = false;
+  try {
+    term.clearSelection();
+  } catch (_) { /* renderer torn down */ }
+}
+
+function updateTerminalSelection(e) {
+  if (selectionAnchorOffset === null) return;
+  const head = cellOffsetFromEvent(e);
+  // setSelectionRange takes a half-open [start, end) range of cell offsets, so
+  // the cell under the cursor is included in either drag direction.
+  const start = Math.min(selectionAnchorOffset, head);
+  const end = Math.max(selectionAnchorOffset, head) + 1;
+  try {
+    term.setSelectionRange(start, end);
+    hasSelection = end > start;
+  } catch (_) {
+    hasSelection = false;
+  }
+}
+
+/// True when this event should start/extend a text selection instead of
+/// reaching the application.
+function isSelectionGesture(e) {
+  return e.shiftKey && (e.pointerType === undefined || e.pointerType === "mouse");
+}
+
+// Ctrl/Cmd+C only becomes "copy" when there is something to copy; otherwise it
+// stays an application key (the showcase binds Ctrl+C to quit).
+// Copy only: Ctrl/Cmd+X raises `cut`, not `copy`, and a terminal view has
+// nothing to cut, so it stays an application key rather than being swallowed.
+function isClipboardCopyShortcut(e) {
+  if (e.altKey || !hasSelection) return false;
+  return (e.ctrlKey || e.metaKey) && String(e.key || "").toLowerCase() === "c";
+}
+
+// The browser fires `copy` once its default action survives the keydown above.
+window.addEventListener("copy", (e) => {
+  if (!terminalDomHasFocus()) return;
+  let text = null;
+  try {
+    text = term.copySelection();
+  } catch (_) {
+    text = null;
+  }
+  if (!text) return;
+  e.preventDefault();
+  if (e.clipboardData) {
+    e.clipboardData.setData("text/plain", text);
+  }
+  jsonl({ event: "copy_selection", chars: text.length, ts: Date.now() });
 }, { capture: true });
 
 // Track mouse button state for drag detection.
@@ -2004,6 +2097,16 @@ if ("PointerEvent" in window) {
 	  canvas.addEventListener("pointerdown", (e) => {
 	    const preferKeyboard = useMobileKeyboardForPointer(e.pointerType);
 	    focusTerminalInputTarget(preferKeyboard);
+	    // Shift+drag is a text selection, not application input: claim it before
+	    // the pane adapter or the app can act on it.
+	    if (isSelectionGesture(e)) {
+	      e.preventDefault();
+	      selectionAnchorOffset = cellOffsetFromEvent(e);
+	      selectionActive = true;
+	      updateTerminalSelection(e);
+	      return;
+	    }
+	    clearTerminalSelection();
 	    const pointerId = panePointerIdFromEvent(e);
 	    const touchLikePointer = e.pointerType !== "mouse";
 	    if (touchLikePointer) {
@@ -2062,6 +2165,12 @@ if ("PointerEvent" in window) {
 	  canvas.addEventListener("pointerup", (e) => {
 	    cancelKeyboardLongPressTracker();
 	    e.preventDefault();
+	    // End a Shift+drag selection without letting the app see a stray click.
+	    if (selectionActive) {
+	      updateTerminalSelection(e);
+	      selectionActive = false;
+	      return;
+	    }
 	    const pointerId = panePointerIdFromEvent(e);
 	    paneActivePointers.delete(pointerId);
     paneTouchPointers.delete(pointerId);
@@ -2080,6 +2189,11 @@ if ("PointerEvent" in window) {
   });
 
 	  canvas.addEventListener("pointermove", (e) => {
+	    if (selectionActive) {
+	      e.preventDefault();
+	      updateTerminalSelection(e);
+	      return;
+	    }
 	    const pointerId = panePointerIdFromEvent(e);
 	    if (e.pointerType === "mouse") {
       mouseButtonsDown = e.buttons;
@@ -2172,6 +2286,14 @@ if ("PointerEvent" in window) {
   canvas.addEventListener("mousedown", (e) => {
     e.preventDefault();
     focusTerminalInputTarget(false);
+    // Shift+drag selects text rather than reaching the application.
+    if (isSelectionGesture(e)) {
+      selectionAnchorOffset = cellOffsetFromEvent(e);
+      selectionActive = true;
+      updateTerminalSelection(e);
+      return;
+    }
+    clearTerminalSelection();
     mouseButtonsDown = e.buttons;
     dragButton = e.button;
     paneDispatchPointerDown(e);
@@ -2180,6 +2302,11 @@ if ("PointerEvent" in window) {
   });
   canvas.addEventListener("mouseup", (e) => {
     e.preventDefault();
+    if (selectionActive) {
+      updateTerminalSelection(e);
+      selectionActive = false;
+      return;
+    }
     mouseButtonsDown = e.buttons;
     paneDispatchPointerUp(e);
     persistPaneWorkspace();
@@ -2187,6 +2314,11 @@ if ("PointerEvent" in window) {
     safeTermInput(domMouseToInput(e, "up"));
   });
   canvas.addEventListener("mousemove", (e) => {
+    if (selectionActive) {
+      e.preventDefault();
+      updateTerminalSelection(e);
+      return;
+    }
     mouseButtonsDown = e.buttons;
     if (mouseButtonsDown) {
       const ev = domMouseToInput(e, "drag");
@@ -2462,6 +2594,7 @@ function commitEdgeSwipe(totalDx) {
     mods: back ? 1 : 0,
     repeat: false,
   }));
+  clearTerminalSelection();
   jsonl({ event: "edge_swipe", direction: back ? "prev" : "next", dx: Math.round(totalDx), ts: Date.now() });
   return true;
 }

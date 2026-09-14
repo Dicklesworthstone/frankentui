@@ -1,5 +1,46 @@
 # Dependency Upgrade Log
 
+## 2026-09-13 dependency pass (post-0.7.0 demo/web work)
+
+Surveyed with `cargo outdated --workspace --root-deps-only` on the pinned
+nightly-2026-08-31. This pass is narrow: it accompanies the browser-showcase and
+input work, not the wider bd-3trh0 campaign below.
+
+### sqlmodel-console 0.4.3 -> 0.5.0
+
+Used only by `doctor_frankentui`, and only for three items -
+`OutputMode::detect()`, `OutputMode::as_str()`, `OutputMode::is_agent_environment()`
+(`crates/doctor_frankentui/src/util.rs:13,90,98`). All three are unchanged in
+0.5.0. Verified locally: `cargo test -p doctor_frankentui --lib` 2419 passed,
+`cargo clippy -p doctor_frankentui --all-targets -- -D warnings` clean. Only this
+package's version and checksum changed in the lockfile. This did not go through
+an isolated DSR run like the entries below; if the campaign's release gate needs
+that provenance, re-verify it there.
+
+### asupersync: already current
+
+`ftui-runtime` pins `asupersync = "=0.5.0"` behind the optional
+`asupersync-executor` feature, and 0.5.0 is crates.io's newest stable
+(published 2026-09-12). No change. The local checkout at `/dp/asupersync` has
+newer unpublished commits; this workspace tracks the published crate.
+
+### getrandom 0.3.4: reported outdated, intentionally kept
+
+`crates/ftui-core/Cargo.toml:54-60` takes getrandom **twice** on
+wasm32-unknown-unknown: 0.4.3 directly plus 0.3.4 aliased as `getrandom_03`. The
+0.3 line exists solely to force the `wasm_js` feature onto ahash's transitive 0.3
+dependency; without it wasm builds fail with getrandom's "the `wasm_js` backend
+requires the `wasm_js` feature" compile_error. `cargo outdated` cannot see that
+intent, so it will keep reporting this line. Leave it.
+
+### Not attempted
+
+A broad `cargo update` of compatible patch releases was left alone: the browser
+bundle's integrity manifest binds `Cargo.lock`'s hash (`runner_lock_sha256` in
+`pkg/manifest.json`), so lockfile churn should carry its own rebuild and browser
+verification rather than riding along with unrelated work.
+
+
 ## 2026-09-12 release campaign (bd-3trh0)
 
 Status: release test gate awaits permission for fixture filesystem operations.

@@ -4473,9 +4473,9 @@ dependencies = [
 
 [[package]]
 name = "sqlmodel-console"
-version = "0.4.3"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b122628116a9330786d88865375b9390813e0616921eb1ca468ebc3abc29573"
+checksum = "1074b2defe875f7793be8976900fc3760aa3c1fca74cd69bc93baeed0029acbd"
 dependencies = [
  "serde",
  "serde_json",
