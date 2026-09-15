@@ -632,6 +632,15 @@ impl ShowcaseRunner {
         self.inner.goto_screen(index as usize)
     }
 
+    /// Ordered stable slugs for screens enabled in this compiled module.
+    #[wasm_bindgen(js_name = screenSlugs)]
+    pub fn screen_slugs(&self) -> Array {
+        ftui_demo_showcase::screens::screen_registry()
+            .iter()
+            .map(|meta| JsValue::from_str(meta.slug))
+            .collect()
+    }
+
     /// Select an available screen by stable slug or one-based decimal position.
     /// Returns false for unknown slugs, malformed positions, or unavailable screens.
     #[wasm_bindgen(js_name = gotoScreenSelector)]
