@@ -129,7 +129,7 @@ const QUAKE_NEAR_PLANE: f32 = QUAKE_COLLISION_RADIUS * 0.5;
 /// player can stand a finger's width from one and it fills the view. A light
 /// that travels with the camera is both the fix and the depth cue this flat
 /// little renderer was missing.
-const QUAKE_LAMP_RANGE: f32 = 0.35;
+const QUAKE_LAMP_RANGE: f32 = 0.7;
 /// How much the player's light adds at point-blank range.
 const QUAKE_LAMP_GAIN: f32 = 0.55;
 
@@ -2016,6 +2016,72 @@ mod tests {
             }
         }
         (painted, total)
+    }
+
+    #[test]
+    fn most_of_what_is_drawn_is_bright_enough_to_see() {
+        // The level is lit by one fixed light and a little ambient, so surfaces
+        // turned away from it come out nearly black - a fifth of everything
+        // drawn, before the camera carried a light of its own. This is the
+        // finale of the guided tour; it should not be a dark empty rectangle.
+        let template = QuakeE1M1State::default();
+        let mut dark_total = 0usize;
+        let mut cells_total = 0usize;
+        let mut lum_sum = 0.0f64;
+        for (i, tri) in template.floor_tris.iter().enumerate() {
+            if i % 53 != 0 {
+                continue;
+            }
+            let x = (tri.v0.x + tri.v1.x + tri.v2.x) / 3.0;
+            let y = (tri.v0.y + tri.v1.y + tri.v2.y) / 3.0;
+            let z = (tri.v0.z + tri.v1.z + tri.v2.z) / 3.0;
+            if template.collides(x, y, z) {
+                continue;
+            }
+            for step in 0..4 {
+                let mut state = template.clone();
+                state.player.pos = Vec3::new(x, y, z + QUAKE_EYE_HEIGHT);
+                state.player.yaw = step as f32 * TAU / 4.0;
+                let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+                let mut frame = Frame::new(100, 40, &mut pool);
+                let area = Rect::new(0, 0, 100, 40);
+                let mut painter = Painter::new(0, 0, Mode::Braille);
+                painter.ensure_for_area(area, Mode::Braille);
+                painter.clear();
+                let (pw, ph) = painter.size();
+                state.render(&mut painter, pw, ph, FxQuality::Full, 0.0, 0);
+                Canvas::from_painter_ref(&painter).render(area, &mut frame);
+                for cy in 0..40u16 {
+                    for cx in 0..100u16 {
+                        let Some(cell) = frame.buffer.get(cx, cy) else {
+                            continue;
+                        };
+                        if cell.content.as_char().is_none_or(|c| c == ' ') {
+                            continue;
+                        }
+                        let l = 0.2126 * f64::from(cell.fg.r())
+                            + 0.7152 * f64::from(cell.fg.g())
+                            + 0.0722 * f64::from(cell.fg.b());
+                        cells_total += 1;
+                        lum_sum += l;
+                        if l < 40.0 {
+                            dark_total += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(cells_total > 10_000, "only {cells_total} cells sampled");
+        let mean = lum_sum / cells_total as f64;
+        let too_dark = 100.0 * dark_total as f64 / cells_total as f64;
+        assert!(
+            mean > 55.0,
+            "mean luminance across the level is {mean:.1} of 255"
+        );
+        assert!(
+            too_dark < 18.0,
+            "{too_dark:.1}% of what is drawn is too dark to make out"
+        );
     }
 
     #[test]
