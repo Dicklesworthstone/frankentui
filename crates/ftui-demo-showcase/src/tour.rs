@@ -892,7 +892,10 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         &mut steps,
         ScreenId::VirtualizedSearch,
         "virtualized",
-        "A virtualized list with Fenwick-indexed variable heights: O(log n) scrolling.",
+        // ftui-widgets does have a Fenwick tree for variable row heights, but
+        // this screen is not the one using it: it windows ten thousand uniform
+        // rows. Claim what is on screen.
+        "Ten thousand rows, fuzzy-filtered as you type, with only the window laid out.",
         "/ filters; j walks results without re-laying out the world.",
         5600,
         // "cache" is in the data - CacheManager, and the cached action - so the
@@ -1078,7 +1081,9 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         &mut steps,
         ScreenId::QuakeEasterEgg,
         "quake",
-        "And yes - a raycast Quake level, rendered in text cells. Press Tab to explore.",
+        // Its sibling Doom effect is a raycaster; this one rasterizes triangles
+        // against a depth buffer, which is the more interesting claim anyway.
+        "And yes - a Quake level, depth-buffered and rasterized into text cells.",
         "WASD moves, arrows look. Thanks for watching.",
         7200,
         // Movement is latched: forward velocity is set on key-down and cleared
