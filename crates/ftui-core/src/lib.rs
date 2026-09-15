@@ -39,6 +39,7 @@ pub mod keybinding;
 pub mod logging;
 pub mod mode_typestate;
 pub mod mux_passthrough;
+pub mod osc52;
 pub mod read_optimized;
 pub mod s3_fifo;
 pub mod semantic_event;

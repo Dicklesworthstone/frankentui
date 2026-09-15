@@ -1412,6 +1412,7 @@ version = "0.8.0"
 dependencies = [
  "ahash",
  "arc-swap",
+ "base64 0.23.1",
  "bitflags 2.13.2",
  "criterion",
  "crossterm",

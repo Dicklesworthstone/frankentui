@@ -36,6 +36,7 @@ workspace = true
 [dependencies]
 ahash = "0.8"
 arc-swap = "1.9.2"
+base64 = "0.23.0"
 bitflags = "2.13.2"
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 unicode-display-width = "0.3.0"
