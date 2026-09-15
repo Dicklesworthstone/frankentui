@@ -589,6 +589,8 @@ impl Editor {
 
     /// Delete the current selection if active, returning the deleted text and byte offset.
     /// If nothing was deleted, returns `None`. Does NOT push to the undo stack.
+    /// Leaves the cursor unchanged so the caller can record its pre-edit position
+    /// before moving it to a valid position in the edited text.
     fn extract_selection(&mut self) -> Option<(usize, String)> {
         let sel = self.selection.take()?;
         if sel.is_empty() {
@@ -601,9 +603,6 @@ impl Editor {
         let deleted = self.rope.slice(start_char..end_char).into_owned();
 
         self.rope.remove(start_char..end_char);
-        let nav = CursorNavigator::new(&self.rope);
-        self.cursor = nav.from_byte_index(start_byte);
-
         Some((start_byte, deleted))
     }
 
@@ -614,6 +613,8 @@ impl Editor {
                 byte_offset: start_byte,
                 text: deleted,
             });
+            let nav = CursorNavigator::new(&self.rope);
+            self.cursor = nav.from_byte_index(start_byte);
             true
         } else {
             false
@@ -840,6 +841,88 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_edit_undo_restores_original_cursor_head() {
+        let original = "界e\u{301}\nbeta\ntail";
+        for backwards in [false, true] {
+            for edit in 0..8 {
+                let mut ed = Editor::with_text(original);
+                let start = CursorPosition::new(0, 1, 2);
+                let end = CursorPosition::new(1, 2, 2);
+                let (anchor, head) = if backwards {
+                    (end, start)
+                } else {
+                    (start, end)
+                };
+                ed.set_cursor(anchor);
+                ed.extend_selection_to(head);
+                assert_eq!(ed.selected_text().as_deref(), Some("e\u{301}\nbe"));
+                let expected = match edit {
+                    0 => {
+                        ed.insert_text("XY");
+                        "界XYta\ntail"
+                    }
+                    1 => {
+                        ed.insert_char('é');
+                        "界éta\ntail"
+                    }
+                    2 => {
+                        ed.insert_newline();
+                        "界\nta\ntail"
+                    }
+                    3 => {
+                        assert!(ed.delete_backward());
+                        "界ta\ntail"
+                    }
+                    4 => {
+                        assert!(ed.delete_forward());
+                        "界ta\ntail"
+                    }
+                    5 => {
+                        assert!(ed.delete_word_backward());
+                        "界ta\ntail"
+                    }
+                    6 => {
+                        assert!(ed.delete_word_forward());
+                        "界ta\ntail"
+                    }
+                    _ => {
+                        assert!(ed.delete_to_end_of_line());
+                        "界ta\ntail"
+                    }
+                };
+                assert_eq!(ed.text(), expected);
+                let after = ed.cursor();
+                for _ in 0..2 {
+                    assert!(ed.undo());
+                    assert_eq!(ed.text(), original);
+                    assert_eq!(ed.cursor(), head, "backwards={backwards}, edit={edit}");
+                    assert!(ed.selection().is_none());
+                    assert!(!ed.can_undo());
+                    assert!(ed.redo());
+                    assert_eq!(ed.text(), expected);
+                    assert_eq!(ed.cursor(), after);
+                    assert!(ed.selection().is_none());
+                    assert!(!ed.can_redo());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selection_edit_ignored_input_preserves_selection_and_history() {
+        let mut ed = Editor::with_text("original");
+        ed.select_all();
+        let selection = ed.selection();
+        let cursor = ed.cursor();
+        ed.insert_text("");
+        ed.insert_text("\u{1b}\u{7}");
+        assert_eq!(ed.text(), "original");
+        assert_eq!(ed.selection(), selection);
+        assert_eq!(ed.cursor(), cursor);
+        assert!(!ed.can_undo());
+    }
 
     #[test]
     fn paragraph_selection_preserves_anchor_and_exact_text() {

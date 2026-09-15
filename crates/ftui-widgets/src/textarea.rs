@@ -1733,6 +1733,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selection_edit_keyboard_undo_redo_restores_cursor() {
+        for edit in [KeyCode::Char('X'), KeyCode::Backspace, KeyCode::Delete] {
+            let mut ta = TextArea::new().with_text("界e\u{301}\nsecond");
+            let original_cursor = ta.cursor();
+            let key = |code, modifiers| {
+                Event::Key(KeyEvent {
+                    code,
+                    modifiers,
+                    kind: KeyEventKind::Press,
+                })
+            };
+            ta.handle_event(&key(KeyCode::Char('a'), Modifiers::CTRL));
+            ta.handle_event(&key(edit, Modifiers::empty()));
+            let expected = if edit == KeyCode::Char('X') { "X" } else { "" };
+            assert_eq!(ta.text(), expected);
+            let edited_cursor = ta.cursor();
+            ta.handle_event(&key(KeyCode::Char('z'), Modifiers::CTRL));
+            assert_eq!(ta.text(), "界e\u{301}\nsecond");
+            assert_eq!(ta.cursor(), original_cursor);
+            ta.handle_event(&key(KeyCode::Char('y'), Modifiers::CTRL));
+            assert_eq!(ta.text(), expected);
+            assert_eq!(ta.cursor(), edited_cursor);
+        }
+    }
+
+    #[test]
     fn paragraph_keys_move_select_and_preserve_line_navigation() {
         for soft_wrap in [false, true] {
             let mut ta = TextArea::new()
