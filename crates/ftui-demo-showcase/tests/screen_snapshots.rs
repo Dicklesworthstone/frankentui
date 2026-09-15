@@ -10,7 +10,15 @@
 
 use std::env;
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// The gap the macro-recorder snapshots record between events.
+///
+/// Chosen rather than measured: the recorder renders its duration to the
+/// millisecond, and timing three calls on a busy machine lands on 0ms or 1ms
+/// at random, which made the snapshot fail for reasons that had nothing to do
+/// with rendering.
+const RECORDED_DELAY: Duration = Duration::from_millis(10);
 
 use ftui_core::capability_override::{CapabilityOverride, OverrideGuard, push_override};
 use ftui_core::event::{
@@ -1427,9 +1435,9 @@ fn macro_recorder_stopped_80x24() {
     let mut screen = ftui_demo_showcase::screens::macro_recorder::MacroRecorderScreen::new();
     // Start recording, add events, stop — ends in Stopped with macro data
     screen.update(&press(KeyCode::Char('r')));
-    screen.record_event(&press(KeyCode::Char('a')), false);
-    screen.record_event(&press(KeyCode::Char('b')), false);
-    screen.record_event(&press(KeyCode::Char('c')), false);
+    screen.record_event_with_delay(&press(KeyCode::Char('a')), RECORDED_DELAY, false);
+    screen.record_event_with_delay(&press(KeyCode::Char('b')), RECORDED_DELAY, false);
+    screen.record_event_with_delay(&press(KeyCode::Char('c')), RECORDED_DELAY, false);
     screen.update(&press(KeyCode::Char('r'))); // stop
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
@@ -1442,9 +1450,9 @@ fn macro_recorder_stopped_80x24() {
 fn macro_recorder_stopped_120x40() {
     let mut screen = ftui_demo_showcase::screens::macro_recorder::MacroRecorderScreen::new();
     screen.update(&press(KeyCode::Char('r')));
-    screen.record_event(&press(KeyCode::Char('a')), false);
-    screen.record_event(&press(KeyCode::Char('b')), false);
-    screen.record_event(&press(KeyCode::Char('c')), false);
+    screen.record_event_with_delay(&press(KeyCode::Char('a')), RECORDED_DELAY, false);
+    screen.record_event_with_delay(&press(KeyCode::Char('b')), RECORDED_DELAY, false);
+    screen.record_event_with_delay(&press(KeyCode::Char('c')), RECORDED_DELAY, false);
     screen.update(&press(KeyCode::Char('r')));
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);
@@ -1457,9 +1465,9 @@ fn macro_recorder_stopped_120x40() {
 fn macro_recorder_playing_80x24() {
     let mut screen = ftui_demo_showcase::screens::macro_recorder::MacroRecorderScreen::new();
     screen.update(&press(KeyCode::Char('r')));
-    screen.record_event(&press(KeyCode::Char('a')), false);
-    screen.record_event(&press(KeyCode::Char('b')), false);
-    screen.record_event(&press(KeyCode::Char('c')), false);
+    screen.record_event_with_delay(&press(KeyCode::Char('a')), RECORDED_DELAY, false);
+    screen.record_event_with_delay(&press(KeyCode::Char('b')), RECORDED_DELAY, false);
+    screen.record_event_with_delay(&press(KeyCode::Char('c')), RECORDED_DELAY, false);
     screen.update(&press(KeyCode::Char('r'))); // stop recording
     screen.update(&press(KeyCode::Char('p'))); // start playing
     let mut pool = GraphemePool::new();
@@ -1473,9 +1481,9 @@ fn macro_recorder_playing_80x24() {
 fn macro_recorder_playing_120x40() {
     let mut screen = ftui_demo_showcase::screens::macro_recorder::MacroRecorderScreen::new();
     screen.update(&press(KeyCode::Char('r')));
-    screen.record_event(&press(KeyCode::Char('a')), false);
-    screen.record_event(&press(KeyCode::Char('b')), false);
-    screen.record_event(&press(KeyCode::Char('c')), false);
+    screen.record_event_with_delay(&press(KeyCode::Char('a')), RECORDED_DELAY, false);
+    screen.record_event_with_delay(&press(KeyCode::Char('b')), RECORDED_DELAY, false);
+    screen.record_event_with_delay(&press(KeyCode::Char('c')), RECORDED_DELAY, false);
     screen.update(&press(KeyCode::Char('r')));
     screen.update(&press(KeyCode::Char('p')));
     let mut pool = GraphemePool::new();

@@ -5900,10 +5900,14 @@ impl AppModel {
         } else {
             area.width.clamp(24, 62)
         };
+        // Tall enough to list the steps you are choosing between when there is
+        // room. The landing used to be a five-line card marooned in an empty
+        // rectangle - 13 blank rows at 120x40 - with a start-step control whose
+        // only feedback was the number changing.
         let panel_height = if area.height < 7 {
             area.height
         } else {
-            area.height.clamp(7, 11)
+            area.height.clamp(7, 20)
         };
         let x = area.x + area.width.saturating_sub(panel_width) / 2;
         let y = area.y + area.height.saturating_sub(panel_height) / 2;
@@ -5934,7 +5938,13 @@ impl AppModel {
             .min(step_count.saturating_sub(1))
             + 1;
 
-        let lines = vec![
+        let selected_index = selected_step.saturating_sub(1);
+        let selected_title = self
+            .tour
+            .step(selected_index)
+            .map_or("", |step| step.screen.title());
+
+        let mut lines = vec![
             Line::from_spans([Span::styled(
                 "A 2–3 minute auto-play tour across key screens.",
                 Style::new().fg(theme::fg::PRIMARY),
@@ -5945,20 +5955,52 @@ impl AppModel {
             )]),
             Line::from_spans([Span::styled(
                 format!(
-                    "Start step: {selected_step}/{step_count} · Speed: {:.2}x",
+                    "Start step: {selected_step}/{step_count} · {selected_title} · Speed: {:.2}x",
                     self.tour.speed()
                 ),
                 Style::new().fg(theme::fg::SECONDARY),
             )]),
-            Line::from_spans([Span::styled(
-                "Landing controls: ↑/↓ or j/k step · wheel cycle · +/- speed · r reset",
-                Style::new().fg(theme::fg::MUTED),
-            )]),
-            Line::from_spans([Span::styled(
-                "In-tour controls: Space pause · ←/→ or n/p step · Esc exit",
-                Style::new().fg(theme::fg::SECONDARY),
-            )]),
         ];
+
+        lines.push(Line::from_spans([Span::styled(
+            "↑/↓ or j/k step · wheel cycle · +/- speed · r reset",
+            Style::new().fg(theme::fg::MUTED),
+        )]));
+        lines.push(Line::from_spans([Span::styled(
+            "In tour: Space pause · ←/→ step · Esc exit",
+            Style::new().fg(theme::fg::SECONDARY),
+        )]));
+
+        // A window of the steps around the selection, so the picker shows what
+        // it is picking rather than only a number. Last, because the lines
+        // above wrap on a narrow panel and the list is the part that can be
+        // cut short without losing anything the viewer needs.
+        let list_rows = usize::from(inner.height).saturating_sub(lines.len() + 2);
+        if list_rows >= 3 {
+            let first = selected_index
+                .saturating_sub(list_rows / 2)
+                .min(step_count.saturating_sub(list_rows));
+            for offset in 0..list_rows.min(step_count) {
+                let index = first + offset;
+                let Some(step) = self.tour.step(index) else {
+                    break;
+                };
+                let selected = index == selected_index;
+                lines.push(Line::from_spans([Span::styled(
+                    format!(
+                        "{} {:>2}. {}",
+                        if selected { "▶" } else { " " },
+                        index + 1,
+                        step.screen.title()
+                    ),
+                    if selected {
+                        Style::new().fg(theme::accent::PRIMARY).bold()
+                    } else {
+                        Style::new().fg(theme::fg::MUTED)
+                    },
+                )]));
+            }
+        }
 
         Paragraph::new(Text::from_lines(lines))
             .wrap(WrapMode::Word)
@@ -7974,29 +8016,87 @@ mod tests {
     }
 
     #[test]
-    fn diag_phone_rows() {
-        // Print the first rows of each screen at phone width so jammed text is
-        // visible: a truncated label with the next column's text against it.
+    fn no_screen_leaves_a_large_hole_in_the_middle() {
+        // The table gallery's cards vanished below 90 columns while its preview
+        // panel kept the overall ink respectable, so an ink floor missed it
+        // entirely. A long run of blank rows is the sharper signal, and it is
+        // what a viewer actually notices.
         let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
-        for meta in crate::screens::screen_registry() {
-            let mut app = AppModel::new();
-            app.current_screen = meta.id;
-            let mut frame = Frame::new(40, 30, &mut pool);
-            app.view(&mut frame);
-            for _ in 0..4 {
-                pump(&mut app, AppMsg::Tick);
-            }
-            let mut frame = Frame::new(40, 30, &mut pool);
-            app.view(&mut frame);
-            let text = frame_text(&frame);
-            if meta.slug != "table_theme_gallery" {
-                continue;
-            }
-            eprintln!("--- {}", meta.slug);
-            for line in text.lines() {
-                eprintln!("    |{}|", line.trim_end());
+        for (w, h) in [(40u16, 30u16), (80, 24), (120, 40)] {
+            for meta in crate::screens::screen_registry() {
+                let mut app = AppModel::new();
+                app.current_screen = meta.id;
+                let mut frame = Frame::new(w, h, &mut pool);
+                app.view(&mut frame);
+                for _ in 0..4 {
+                    pump(&mut app, AppMsg::Tick);
+                }
+                let mut frame = Frame::new(w, h, &mut pool);
+                app.view(&mut frame);
+
+                let mut longest = 0;
+                let mut run = 0;
+                for line in frame_text(&frame).lines() {
+                    // A row of nothing but the frame's own border columns.
+                    let inner: String = line
+                        .chars()
+                        .skip(1)
+                        .take(line.chars().count().saturating_sub(2))
+                        .collect();
+                    if inner.trim().is_empty() {
+                        run += 1;
+                        longest = longest.max(run);
+                    } else {
+                        run = 0;
+                    }
+                }
+                // Twelve, because a deliberately centred panel leaves real
+                // margins - the tour landing has nine at 120x40 - while a panel
+                // that failed to draw leaves the whole region: the table
+                // gallery left nineteen.
+                assert!(
+                    longest < 12,
+                    "{} leaves {longest} blank rows at {w}x{h}",
+                    meta.slug
+                );
             }
         }
+    }
+
+    #[test]
+    fn the_landing_shows_which_step_it_will_start_from() {
+        // The start-step control's only feedback was a number: "Start step:
+        // 17/33" tells a viewer nothing about what step 17 is, and the panel
+        // around it was mostly empty anyway.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::GuidedTour;
+
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        let text = frame_text(&frame);
+        assert!(
+            text.contains("▶  1."),
+            "no marked step in the list:\n{text}"
+        );
+
+        // Walk the picker down and the marker should follow.
+        for _ in 0..4 {
+            pump(
+                &mut app,
+                AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('j')))),
+            );
+        }
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        let text = frame_text(&frame);
+        assert!(text.contains("▶  5."), "the marker did not move:\n{text}");
+
+        let title = crate::tour::build_steps()[4].screen.title();
+        assert!(
+            text.contains("Start step: 5/") && text.contains(title),
+            "the selected step is not named:\n{text}"
+        );
     }
 
     #[test]
