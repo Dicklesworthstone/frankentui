@@ -28,6 +28,27 @@
 
 use crate::cursor::{CursorNavigator, CursorPosition};
 use crate::rope::Rope;
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupKind {
+    Insert,
+    DeleteBackward,
+    DeleteForward,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+struct UndoGroup {
+    ops: Vec<EditOp>,
+    before: CursorPosition,
+    after: CursorPosition,
+    kind: GroupKind,
+    last_tick: u64,
+    last_was_space: bool,
+    closed: bool,
+    bytes: usize,
+}
 
 /// A single edit operation for undo/redo.
 #[derive(Debug, Clone)]
@@ -119,16 +140,18 @@ pub struct Editor {
     cursor: CursorPosition,
     /// Active selection (None when no selection).
     selection: Option<Selection>,
-    /// Undo stack: (operation, cursor-before).
-    undo_stack: Vec<(EditOp, CursorPosition)>,
-    /// Redo stack: (operation, cursor-before).
-    redo_stack: Vec<(EditOp, CursorPosition)>,
+    /// Completed and open edit groups.
+    undo_stack: Vec<UndoGroup>,
+    /// Undone groups, retaining their original cursor endpoints.
+    redo_stack: Vec<UndoGroup>,
     /// Maximum undo history depth.
     max_history: usize,
     /// Current size of undo history in bytes.
     current_undo_size: usize,
     /// Maximum size of undo history in bytes (default 10MB).
     max_undo_size: usize,
+    now_tick: u64,
+    coalesce_idle: Duration,
 }
 
 impl Default for Editor {
@@ -150,6 +173,8 @@ impl Editor {
             max_history: 1000,
             current_undo_size: 0,
             max_undo_size: 10 * 1024 * 1024, // 10MB default
+            now_tick: 0,
+            coalesce_idle: Duration::from_millis(500),
         }
     }
 
@@ -168,22 +193,56 @@ impl Editor {
             max_history: 1000,
             current_undo_size: 0,
             max_undo_size: 10 * 1024 * 1024,
+            now_tick: 0,
+            coalesce_idle: Duration::from_millis(500),
         }
     }
 
     /// Set the maximum undo history depth.
     pub fn set_max_history(&mut self, max: usize) {
         self.max_history = max;
+        self.prune_undo();
     }
 
     /// Set the maximum undo history size in bytes.
     pub fn set_max_undo_size(&mut self, bytes: usize) {
         self.max_undo_size = bytes;
-        // Prune if now over limit
-        while self.current_undo_size > self.max_undo_size && !self.undo_stack.is_empty() {
-            let (op, _) = self.undo_stack.remove(0);
-            self.current_undo_size -= op.byte_len();
+        self.prune_undo();
+    }
+
+    /// Set the maximum idle interval between edits in a group (default 500 ms).
+    /// Zero disables coalescing. Changing this setting closes the current group.
+    pub fn set_coalesce_idle(&mut self, idle: Duration) {
+        self.break_undo_group();
+        self.coalesce_idle = idle;
+    }
+
+    /// Supply monotonic milliseconds for subsequent edits; no clock is read here.
+    /// A backwards timestamp closes the group, as when a replay clock restarts.
+    pub fn tick(&mut self, now_ms: u64) {
+        if now_ms < self.now_tick {
+            self.break_undo_group();
         }
+        self.now_tick = now_ms;
+    }
+
+    /// Make the next edit start a new undo group.
+    pub fn break_undo_group(&mut self) {
+        if let Some(group) = self.undo_stack.last_mut() {
+            group.closed = true;
+        }
+    }
+
+    /// Number of retained undo groups (one group is one undo step).
+    #[must_use]
+    pub fn undo_group_count(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    /// Number of primitive edits retained across all undo groups.
+    #[must_use]
+    pub fn undo_op_count(&self) -> usize {
+        self.undo_stack.iter().map(|group| group.ops.len()).sum()
     }
 
     /// Get the full text content as a string.
@@ -206,6 +265,7 @@ impl Editor {
 
     /// Set cursor position (will be clamped to valid bounds). Clears selection.
     pub fn set_cursor(&mut self, pos: CursorPosition) {
+        self.break_undo_group();
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.clamp(pos);
         self.selection = None;
@@ -258,7 +318,7 @@ impl Editor {
     pub fn insert_char(&mut self, ch: char) {
         let mut buf = [0u8; 4];
         let s = ch.encode_utf8(&mut buf);
-        self.insert_text(s);
+        self.insert(s, GroupKind::Insert);
     }
 
     /// Insert text at the cursor position. Deletes selection first if active.
@@ -266,6 +326,11 @@ impl Editor {
     /// Control characters (except newline and tab) are stripped to prevent
     /// terminal corruption.
     pub fn insert_text(&mut self, text: &str) {
+        // Explicit text insertion is a paste, even for a one-character payload.
+        self.insert(text, GroupKind::Other);
+    }
+
+    fn insert(&mut self, text: &str, kind: GroupKind) {
         if text.is_empty() {
             return;
         }
@@ -287,7 +352,7 @@ impl Editor {
                 byte_offset: start_byte,
                 deleted,
                 inserted: sanitized.clone(),
-            });
+            }, GroupKind::Other);
 
             self.rope.insert(char_idx, &sanitized);
 
@@ -302,7 +367,7 @@ impl Editor {
             self.push_undo(EditOp::Insert {
                 byte_offset: byte_idx,
                 text: sanitized.clone(),
-            });
+            }, if sanitized.contains('\n') { GroupKind::Other } else { kind });
 
             self.rope.insert(char_idx, &sanitized);
 
@@ -311,6 +376,7 @@ impl Editor {
             let nav = CursorNavigator::new(&self.rope);
             self.cursor = nav.from_byte_index(new_byte_idx);
         }
+        self.finish_edit();
     }
 
     /// Insert a newline at the cursor position.
@@ -346,12 +412,13 @@ impl Editor {
         self.push_undo(EditOp::Delete {
             byte_offset: start_byte,
             text: deleted,
-        });
+        }, GroupKind::DeleteBackward);
 
         self.rope.remove(start_char..end_char);
 
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.from_byte_index(start_byte);
+        self.finish_edit();
         true
     }
 
@@ -379,13 +446,14 @@ impl Editor {
         self.push_undo(EditOp::Delete {
             byte_offset: start_byte,
             text: deleted,
-        });
+        }, GroupKind::DeleteForward);
 
         self.rope.remove(start_char..end_char);
 
         // Cursor stays at same position, just re-clamp
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.clamp(self.cursor);
+        self.finish_edit();
         true
     }
 
@@ -393,6 +461,7 @@ impl Editor {
     ///
     /// Returns `true` if any text was deleted.
     pub fn delete_word_backward(&mut self) -> bool {
+        self.break_undo_group();
         if self.delete_selection_inner() {
             return true;
         }
@@ -413,12 +482,13 @@ impl Editor {
         self.push_undo(EditOp::Delete {
             byte_offset: start_byte,
             text: deleted,
-        });
+        }, GroupKind::Other);
 
         self.rope.remove(start_char..end_char);
 
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.from_byte_index(start_byte);
+        self.finish_edit();
         true
     }
 
@@ -426,6 +496,7 @@ impl Editor {
     ///
     /// Returns `true` if any text was deleted.
     pub fn delete_word_forward(&mut self) -> bool {
+        self.break_undo_group();
         if self.delete_selection_inner() {
             return true;
         }
@@ -446,13 +517,14 @@ impl Editor {
         self.push_undo(EditOp::Delete {
             byte_offset: start_byte,
             text: deleted,
-        });
+        }, GroupKind::Other);
 
         self.rope.remove(start_char..end_char);
 
         // Re-clamp cursor just in case, matching other forward deletions
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.clamp(self.cursor);
+        self.finish_edit();
         true
     }
 
@@ -460,6 +532,7 @@ impl Editor {
     ///
     /// Returns `true` if any text was deleted.
     pub fn delete_to_end_of_line(&mut self) -> bool {
+        self.break_undo_group();
         if self.delete_selection_inner() {
             return true;
         }
@@ -469,7 +542,9 @@ impl Editor {
 
         if line_end == old_pos {
             // At end of line: delete the newline to join lines
-            return self.delete_forward();
+            let deleted = self.delete_forward();
+            self.break_undo_group();
+            return deleted;
         }
 
         let start_byte = nav.to_byte_index(old_pos);
@@ -481,12 +556,13 @@ impl Editor {
         self.push_undo(EditOp::Delete {
             byte_offset: start_byte,
             text: deleted,
-        });
+        }, GroupKind::Other);
 
         self.rope.remove(start_char..end_char);
 
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.clamp(self.cursor);
+        self.finish_edit();
         true
     }
 
@@ -495,66 +571,90 @@ impl Editor {
     // ====================================================================
 
     /// Push an edit operation onto the undo stack.
-    fn push_undo(&mut self, op: EditOp) {
-        let op_len = op.byte_len();
-        self.undo_stack.push((op, self.cursor));
-        self.current_undo_size += op_len;
-
-        // Prune by count
-        if self.undo_stack.len() > self.max_history {
-            if let Some((removed_op, _)) = self.undo_stack.first() {
-                self.current_undo_size =
-                    self.current_undo_size.saturating_sub(removed_op.byte_len());
-            }
-            self.undo_stack.remove(0);
+    fn push_undo(&mut self, op: EditOp, kind: GroupKind) {
+        let bytes = op.byte_len();
+        let space = matches!(&op, EditOp::Insert { text, .. } if text.chars().all(char::is_whitespace));
+        let join = self.undo_stack.last().is_some_and(|group| {
+            !group.closed
+                && kind != GroupKind::Other
+                && kind == group.kind
+                && self.cursor == group.after
+                && !self.coalesce_idle.is_zero()
+                && Duration::from_millis(self.now_tick.saturating_sub(group.last_tick))
+                    <= self.coalesce_idle
+                // Keep the separator with the word before it: undoing "world"
+                // in "hello world" leaves "hello ".
+                && !(kind == GroupKind::Insert && group.last_was_space && !space)
+        });
+        if join {
+            let group = self.undo_stack.last_mut().expect("join requires a group");
+            group.ops.push(op);
+            group.bytes += bytes;
+            group.last_tick = self.now_tick;
+            group.last_was_space = space;
+        } else {
+            self.undo_stack.push(UndoGroup {
+                ops: vec![op],
+                before: self.cursor,
+                after: self.cursor,
+                kind,
+                last_tick: self.now_tick,
+                last_was_space: space,
+                closed: kind == GroupKind::Other,
+                bytes,
+            });
         }
-
-        // Prune by size
-        while self.current_undo_size > self.max_undo_size && !self.undo_stack.is_empty() {
-            let (removed_op, _) = self.undo_stack.remove(0);
-            self.current_undo_size = self.current_undo_size.saturating_sub(removed_op.byte_len());
-        }
-
+        self.current_undo_size += bytes;
+        self.prune_undo();
         self.redo_stack.clear();
     }
 
-    /// Undo the last edit operation.
+    fn finish_edit(&mut self) {
+        if let Some(group) = self.undo_stack.last_mut() {
+            group.after = self.cursor;
+        }
+    }
+
+    fn prune_undo(&mut self) {
+        while !self.undo_stack.is_empty()
+            && (self.undo_stack.len() > self.max_history
+                || self.current_undo_size > self.max_undo_size)
+        {
+            let group = self.undo_stack.remove(0);
+            self.current_undo_size -= group.bytes;
+        }
+    }
+
+    /// Undo the last group and restore its original cursor position.
     pub fn undo(&mut self) -> bool {
-        let Some((op, cursor_before)) = self.undo_stack.pop() else {
+        self.break_undo_group();
+        let Some(group) = self.undo_stack.pop() else {
             return false;
         };
-        self.current_undo_size = self.current_undo_size.saturating_sub(op.byte_len());
-        let inverse = op.inverse();
-        self.apply_op(&inverse);
-        self.redo_stack.push((inverse, self.cursor));
-        self.cursor = cursor_before;
+        self.current_undo_size -= group.bytes;
+        for op in group.ops.iter().rev() {
+            self.apply_op(&op.inverse());
+        }
+        self.cursor = group.before;
+        self.redo_stack.push(group);
         self.selection = None;
         true
     }
 
-    /// Redo the last undone operation.
+    /// Redo the last undone group and restore its post-edit cursor position.
     pub fn redo(&mut self) -> bool {
-        let Some((op, cursor_before)) = self.redo_stack.pop() else {
+        self.break_undo_group();
+        let Some(group) = self.redo_stack.pop() else {
             return false;
         };
-        let inverse = op.inverse();
-        self.apply_op(&inverse);
-
-        let op_len = inverse.byte_len();
-        self.undo_stack.push((inverse, self.cursor));
-        self.current_undo_size += op_len;
-
-        // Ensure size limit after redo (edge case where redo grows stack)
-        while self.current_undo_size > self.max_undo_size && !self.undo_stack.is_empty() {
-            let (removed_op, _) = self.undo_stack.remove(0);
-            self.current_undo_size = self.current_undo_size.saturating_sub(removed_op.byte_len());
+        for op in &group.ops {
+            self.apply_op(op);
         }
-
-        self.cursor = cursor_before;
+        self.cursor = group.after;
+        self.current_undo_size += group.bytes;
+        self.undo_stack.push(group);
+        self.prune_undo();
         self.selection = None;
-        // Move cursor to the correct position after redo
-        let nav = CursorNavigator::new(&self.rope);
-        self.cursor = nav.clamp(self.cursor);
         true
     }
 
@@ -612,9 +712,10 @@ impl Editor {
             self.push_undo(EditOp::Delete {
                 byte_offset: start_byte,
                 text: deleted,
-            });
+            }, GroupKind::Other);
             let nav = CursorNavigator::new(&self.rope);
             self.cursor = nav.from_byte_index(start_byte);
+            self.finish_edit();
             true
         } else {
             false
@@ -627,6 +728,7 @@ impl Editor {
 
     /// Move cursor left by one grapheme.
     pub fn move_left(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.move_left(self.cursor);
@@ -634,6 +736,7 @@ impl Editor {
 
     /// Move cursor right by one grapheme.
     pub fn move_right(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.move_right(self.cursor);
@@ -641,6 +744,7 @@ impl Editor {
 
     /// Move cursor up one line.
     pub fn move_up(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.move_up(self.cursor);
@@ -648,6 +752,7 @@ impl Editor {
 
     /// Move cursor down one line.
     pub fn move_down(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.move_down(self.cursor);
@@ -655,6 +760,7 @@ impl Editor {
 
     /// Move cursor left by one word.
     pub fn move_word_left(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.move_word_left(self.cursor);
@@ -662,6 +768,7 @@ impl Editor {
 
     /// Move cursor right by one word.
     pub fn move_word_right(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.move_word_right(self.cursor);
@@ -670,6 +777,7 @@ impl Editor {
     /// Clear selection and move to the preceding blank-line paragraph boundary.
     /// See [`CursorNavigator::move_paragraph_up`] for whitespace rules and examples.
     pub fn move_paragraph_up(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.move_paragraph_up(self.cursor);
@@ -678,6 +786,7 @@ impl Editor {
     /// Clear selection and move to the following blank-line paragraph boundary.
     /// See [`CursorNavigator::move_paragraph_down`] for whitespace rules and examples.
     pub fn move_paragraph_down(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.move_paragraph_down(self.cursor);
@@ -685,6 +794,7 @@ impl Editor {
 
     /// Move cursor to start of line.
     pub fn move_to_line_start(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.line_start(self.cursor);
@@ -692,6 +802,7 @@ impl Editor {
 
     /// Move cursor to end of line.
     pub fn move_to_line_end(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.line_end(self.cursor);
@@ -699,6 +810,7 @@ impl Editor {
 
     /// Move cursor to start of document.
     pub fn move_to_document_start(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.document_start();
@@ -706,6 +818,7 @@ impl Editor {
 
     /// Move cursor to end of document.
     pub fn move_to_document_end(&mut self) {
+        self.break_undo_group();
         self.selection = None;
         let nav = CursorNavigator::new(&self.rope);
         self.cursor = nav.document_end();
@@ -759,6 +872,7 @@ impl Editor {
 
     /// Select all text.
     pub fn select_all(&mut self) {
+        self.break_undo_group();
         let nav = CursorNavigator::new(&self.rope);
         let start = nav.document_start();
         let end = nav.document_end();
@@ -771,6 +885,7 @@ impl Editor {
 
     /// Clear current selection without moving cursor.
     pub fn clear_selection(&mut self) {
+        self.break_undo_group();
         self.selection = None;
     }
 
@@ -799,6 +914,7 @@ impl Editor {
 
     /// Extend selection to a specific cursor position.
     pub fn extend_selection_to(&mut self, new_head: CursorPosition) {
+        self.break_undo_group();
         let anchor = match self.selection {
             Some(sel) => sel.anchor,
             None => self.cursor,
