@@ -1,8 +1,8 @@
 //! Turns a screen's keybinding help into keys a touch host can offer as buttons.
 //!
 //! A phone has no keyboard until one is raised over the terminal, so every
-//! screen whose features live behind letter keys - which is nearly all of them
-//! - is unreachable by touch alone. Every screen already publishes what its
+//! screen whose features live behind letter keys (nearly all of them)
+//! is unreachable by touch alone. Every screen already publishes what its
 //! keys do through [`Screen::keybindings`], written for a human to read:
 //! `"Ctrl+D/U"`, `"↑ / ↓ or j / k"`, `"Space/→"`. This module parses those
 //! labels back into the individual presses behind them, so the web host can
@@ -321,7 +321,7 @@ fn modifier_prefix(mods: u8) -> String {
 mod tests {
     use super::*;
 
-    fn parse(label: &str) -> Vec<(String, String, u8)> {
+    fn parse(label: &'static str) -> Vec<(String, String, u8)> {
         touch_actions(&[HelpEntry {
             key: label,
             action: "whatever",
@@ -331,7 +331,7 @@ mod tests {
         .collect()
     }
 
-    fn keys(label: &str) -> Vec<String> {
+    fn keys(label: &'static str) -> Vec<String> {
         parse(label).into_iter().map(|(_, key, _)| key).collect()
     }
 
@@ -366,7 +366,11 @@ mod tests {
         assert_eq!(
             parse("Ctrl+Shift+Up/Down"),
             vec![
-                ("Ctrl+Shift+↑".into(), "ArrowUp".into(), MOD_CTRL | MOD_SHIFT),
+                (
+                    "Ctrl+Shift+↑".into(),
+                    "ArrowUp".into(),
+                    MOD_CTRL | MOD_SHIFT
+                ),
                 (
                     "Ctrl+Shift+↓".into(),
                     "ArrowDown".into(),
@@ -421,12 +425,10 @@ mod tests {
     fn shift_tab_becomes_the_back_tab_key_however_it_is_spelled() {
         assert_eq!(keys("S-Tab"), ["BackTab"]);
         assert_eq!(keys("Tab / S-Tab"), ["Tab", "BackTab"]);
-        assert_eq!(keys("Ctrl+Left/Right, Tab/Shift+Tab"), [
-            "ArrowLeft",
-            "ArrowRight",
-            "Tab",
-            "BackTab"
-        ]);
+        assert_eq!(
+            keys("Ctrl+Left/Right, Tab/Shift+Tab"),
+            ["ArrowLeft", "ArrowRight", "Tab", "BackTab"]
+        );
     }
 
     #[test]
@@ -452,22 +454,23 @@ mod tests {
     #[test]
     fn movement_clusters_expand_to_the_keys_they_abbreviate() {
         assert_eq!(keys("WASD"), ["w", "a", "s", "d"]);
-        assert_eq!(keys("Arrows"), [
-            "ArrowUp",
-            "ArrowDown",
-            "ArrowLeft",
-            "ArrowRight"
-        ]);
-        assert_eq!(keys("↑↓←→/hjkl"), [
-            "ArrowUp",
-            "ArrowDown",
-            "ArrowLeft",
-            "ArrowRight",
-            "h",
-            "j",
-            "k",
-            "l"
-        ]);
+        assert_eq!(
+            keys("Arrows"),
+            ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]
+        );
+        assert_eq!(
+            keys("↑↓←→/hjkl"),
+            [
+                "ArrowUp",
+                "ArrowDown",
+                "ArrowLeft",
+                "ArrowRight",
+                "h",
+                "j",
+                "k",
+                "l"
+            ]
+        );
         assert_eq!(keys("W/A/S/D"), ["W", "A", "S", "D"]);
     }
 
