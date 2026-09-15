@@ -2587,14 +2587,19 @@ function commitEdgeSwipe(totalDx) {
   if (Math.abs(totalDx) < EDGE_SWIPE_COMMIT_PX) return false;
   // Left bezel dragged inward = back, right bezel dragged inward = forward.
   const back = edgeSwipeFrom < 0;
-  pushRunnerInput(JSON.stringify({
-    kind: "key",
-    phase: "down",
-    key: back ? "BackTab" : "Tab",
-    code: "Tab",
-    mods: back ? 1 : 0,
-    repeat: false,
-  }));
+  // Down *and* up, like emitSyntheticKeyPress: screen switching acts on the
+  // press, but a key this never releases is one the application still believes
+  // is held.
+  for (const phase of ["down", "up"]) {
+    pushRunnerInput(JSON.stringify({
+      kind: "key",
+      phase,
+      key: back ? "BackTab" : "Tab",
+      code: "Tab",
+      mods: back ? 1 : 0,
+      repeat: false,
+    }));
+  }
   clearTerminalSelection();
   jsonl({ event: "edge_swipe", direction: back ? "prev" : "next", dx: Math.round(totalDx), ts: Date.now() });
   return true;

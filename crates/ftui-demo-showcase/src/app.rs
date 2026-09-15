@@ -8100,6 +8100,41 @@ mod tests {
     }
 
     #[test]
+    fn every_screen_survives_an_absurd_terminal() {
+        // A browser tab can be dragged to any shape, and the demo has to hold
+        // up rather than take the page down with it. Ticks are included because
+        // several screens only touch their layout caches from tick().
+        let sizes = [
+            (1u16, 1u16),
+            (2, 40),
+            (40, 2),
+            (7, 7),
+            (20, 10),
+            (200, 3),
+            (3, 200),
+            (300, 100),
+        ];
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        for meta in crate::screens::screen_registry() {
+            for (w, h) in sizes {
+                let mut app = AppModel::new();
+                app.current_screen = meta.id;
+                app.update(AppMsg::Resize {
+                    width: w,
+                    height: h,
+                });
+                let mut frame = Frame::new(w, h, &mut pool);
+                app.view(&mut frame);
+                for _ in 0..3 {
+                    pump(&mut app, AppMsg::Tick);
+                }
+                let mut frame = Frame::new(w, h, &mut pool);
+                app.view(&mut frame);
+            }
+        }
+    }
+
+    #[test]
     fn no_screen_gives_up_at_phone_size() {
         // The browser demo reports a 40x48 terminal on a 390pt viewport, which
         // leaves a screen 38 columns of content. The code explorer used to
