@@ -1772,6 +1772,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn undo_groups_keyboard_clock_paste_and_focus() {
+        let key = |c| Event::Key(KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        let mut ta = TextArea::new();
+        for (tick, c) in "hello world".chars().enumerate() {
+            ta.handle_event_at(&key(c), tick as u64);
+        }
+        assert_eq!(ta.undo_group_count(), 2);
+        assert_eq!(ta.undo_op_count(), 11);
+        ta.handle_event_at(&Event::Key(KeyEvent {
+            code: KeyCode::Char('z'),
+            modifiers: Modifiers::CTRL,
+            kind: KeyEventKind::Press,
+        }), 11);
+        assert_eq!(ta.text(), "hello ");
+        ta.redo();
+        ta.handle_event_at(&key('x'), 600);
+        assert_eq!(ta.undo_group_count(), 3);
+        ta.handle_event_at(&Event::Paste(ftui_core::event::PasteEvent::bracketed("p")), 601);
+        ta.handle_event_at(&key('y'), 602);
+        assert_eq!(ta.undo_group_count(), 5);
+        ta.handle_event_at(&Event::Focus(false), 603);
+        ta.handle_event_at(&key('z'), 604);
+        assert_eq!(ta.undo_group_count(), 6);
+        ta.set_focused(false);
+        ta.handle_event_at(&key('q'), 605);
+        assert_eq!(ta.undo_group_count(), 7);
+        // Exercise the normal event entrypoint without a wall-clock deadline.
+        let mut live = TextArea::new();
+        live.set_undo_coalesce_idle(Duration::MAX);
+        live.handle_event(&key('a'));
+        live.handle_event(&key('b'));
+        assert_eq!(live.undo_group_count(), 1);
+        live.undo();
+        assert_eq!(live.text(), "");
+    }
+
+    #[test]
     fn selection_edit_keyboard_undo_redo_restores_cursor() {
         for edit in [KeyCode::Char('X'), KeyCode::Backspace, KeyCode::Delete] {
             let mut ta = TextArea::new().with_text("界e\u{301}\nsecond");

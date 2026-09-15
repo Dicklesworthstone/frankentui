@@ -350,11 +350,14 @@ impl Editor {
         if let Some((start_byte, deleted)) = self.extract_selection() {
             let char_idx = self.rope.byte_to_char(start_byte);
 
-            self.push_undo(EditOp::Replace {
-                byte_offset: start_byte,
-                deleted,
-                inserted: sanitized.clone(),
-            }, GroupKind::Other);
+            self.push_undo(
+                EditOp::Replace {
+                    byte_offset: start_byte,
+                    deleted,
+                    inserted: sanitized.clone(),
+                },
+                GroupKind::Other,
+            );
 
             self.rope.insert(char_idx, &sanitized);
 
@@ -366,10 +369,17 @@ impl Editor {
             let byte_idx = nav.to_byte_index(self.cursor);
             let char_idx = self.rope.byte_to_char(byte_idx);
 
-            self.push_undo(EditOp::Insert {
-                byte_offset: byte_idx,
-                text: sanitized.clone(),
-            }, if sanitized.contains('\n') { GroupKind::Other } else { kind });
+            self.push_undo(
+                EditOp::Insert {
+                    byte_offset: byte_idx,
+                    text: sanitized.clone(),
+                },
+                if sanitized.contains('\n') {
+                    GroupKind::Other
+                } else {
+                    kind
+                },
+            );
 
             self.rope.insert(char_idx, &sanitized);
 
@@ -411,10 +421,13 @@ impl Editor {
         let end_char = self.rope.byte_to_char(end_byte);
         let deleted = self.rope.slice(start_char..end_char).into_owned();
 
-        self.push_undo(EditOp::Delete {
-            byte_offset: start_byte,
-            text: deleted,
-        }, GroupKind::DeleteBackward);
+        self.push_undo(
+            EditOp::Delete {
+                byte_offset: start_byte,
+                text: deleted,
+            },
+            GroupKind::DeleteBackward,
+        );
 
         self.rope.remove(start_char..end_char);
 
@@ -445,10 +458,13 @@ impl Editor {
         let end_char = self.rope.byte_to_char(end_byte);
         let deleted = self.rope.slice(start_char..end_char).into_owned();
 
-        self.push_undo(EditOp::Delete {
-            byte_offset: start_byte,
-            text: deleted,
-        }, GroupKind::DeleteForward);
+        self.push_undo(
+            EditOp::Delete {
+                byte_offset: start_byte,
+                text: deleted,
+            },
+            GroupKind::DeleteForward,
+        );
 
         self.rope.remove(start_char..end_char);
 
@@ -481,10 +497,13 @@ impl Editor {
         let end_char = self.rope.byte_to_char(end_byte);
         let deleted = self.rope.slice(start_char..end_char).into_owned();
 
-        self.push_undo(EditOp::Delete {
-            byte_offset: start_byte,
-            text: deleted,
-        }, GroupKind::Other);
+        self.push_undo(
+            EditOp::Delete {
+                byte_offset: start_byte,
+                text: deleted,
+            },
+            GroupKind::Other,
+        );
 
         self.rope.remove(start_char..end_char);
 
@@ -516,10 +535,13 @@ impl Editor {
         let end_char = self.rope.byte_to_char(end_byte);
         let deleted = self.rope.slice(start_char..end_char).into_owned();
 
-        self.push_undo(EditOp::Delete {
-            byte_offset: start_byte,
-            text: deleted,
-        }, GroupKind::Other);
+        self.push_undo(
+            EditOp::Delete {
+                byte_offset: start_byte,
+                text: deleted,
+            },
+            GroupKind::Other,
+        );
 
         self.rope.remove(start_char..end_char);
 
@@ -555,10 +577,13 @@ impl Editor {
         let end_char = self.rope.byte_to_char(end_byte);
         let deleted = self.rope.slice(start_char..end_char).into_owned();
 
-        self.push_undo(EditOp::Delete {
-            byte_offset: start_byte,
-            text: deleted,
-        }, GroupKind::Other);
+        self.push_undo(
+            EditOp::Delete {
+                byte_offset: start_byte,
+                text: deleted,
+            },
+            GroupKind::Other,
+        );
 
         self.rope.remove(start_char..end_char);
 
@@ -712,10 +737,13 @@ impl Editor {
     /// Delete the current selection if active. Returns true if something was deleted.
     fn delete_selection_inner(&mut self) -> bool {
         if let Some((start_byte, deleted)) = self.extract_selection() {
-            self.push_undo(EditOp::Delete {
-                byte_offset: start_byte,
-                text: deleted,
-            }, GroupKind::Other);
+            self.push_undo(
+                EditOp::Delete {
+                    byte_offset: start_byte,
+                    text: deleted,
+                },
+                GroupKind::Other,
+            );
             let nav = CursorNavigator::new(&self.rope);
             self.cursor = nav.from_byte_index(start_byte);
             self.finish_edit();
@@ -1112,11 +1140,14 @@ mod tests {
             ops in proptest::collection::vec((0u8..8, 0u64..800), 0..100)
         ) {
             let mut ed = Editor::with_text("界e\u{301}\nseed");
-            let initial = ed.cursor();
+            let mut first_edit_cursor = None;
+            let mut last_edit_cursor = None;
             let mut tick = 0;
             for (op, elapsed) in ops {
                 tick += elapsed;
                 ed.tick(tick);
+                let before_cursor = ed.cursor();
+                let before_text = ed.text();
                 match op {
                     0 => ed.insert_char('x'),
                     1 => ed.insert_char(' '),
@@ -1127,6 +1158,10 @@ mod tests {
                     6 => ed.insert_text("paste"),
                     _ => ed.insert_newline(),
                 }
+                if ed.text() != before_text {
+                    first_edit_cursor.get_or_insert(before_cursor);
+                    last_edit_cursor = Some(ed.cursor());
+                }
                 let bytes: usize = ed.undo_stack.iter()
                     .flat_map(|g| &g.ops).map(EditOp::byte_len).sum();
                 proptest::prop_assert_eq!(ed.current_undo_size, bytes);
@@ -1136,11 +1171,15 @@ mod tests {
             let count = ed.undo_group_count();
             for _ in 0..count { proptest::prop_assert!(ed.undo()); }
             proptest::prop_assert_eq!(ed.text(), "界e\u{301}\nseed");
-            // Movement before the first edit can change its original cursor.
-            if count == 0 { proptest::prop_assert!(!ed.can_undo()); }
+            if let Some(cursor) = first_edit_cursor {
+                proptest::prop_assert_eq!(ed.cursor(), cursor);
+            }
+            proptest::prop_assert!(!ed.can_undo());
             for _ in 0..count { proptest::prop_assert!(ed.redo()); }
             proptest::prop_assert_eq!(ed.text(), final_text);
-            let _ = initial;
+            if let Some(cursor) = last_edit_cursor {
+                proptest::prop_assert_eq!(ed.cursor(), cursor);
+            }
         }
     }
 
