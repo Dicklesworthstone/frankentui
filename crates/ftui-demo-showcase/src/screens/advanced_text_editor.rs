@@ -1650,6 +1650,14 @@ impl Screen for AdvancedTextEditor {
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
+                key: "Ctrl+Up/Down",
+                action: "Move by paragraph",
+            },
+            HelpEntry {
+                key: "Ctrl+Shift+Up/Down",
+                action: "Select by paragraph",
+            },
+            HelpEntry {
                 key: "Ctrl+F",
                 action: "Search",
             },
@@ -1783,6 +1791,26 @@ mod tests {
         assert!(!screen.search_visible);
         assert_eq!(screen.title(), "Advanced Text Editor");
         assert_eq!(screen.tab_label(), "Editor");
+    }
+
+    #[test]
+    fn paragraph_keys_reach_editor_without_changing_focus_or_text() {
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("first\ncontinued\n\nsecond\n\nlast");
+        screen.editor.move_to_document_start();
+        screen.update(&ctrl_press(KeyCode::Down));
+        assert_eq!(screen.editor.cursor().line, 2);
+        screen.update(&Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: Modifiers::CTRL | Modifiers::SHIFT,
+            kind: KeyEventKind::Press,
+        }));
+        assert_eq!(screen.editor.selected_text().as_deref(), Some("\nsecond\n"));
+        screen.update(&ctrl_press(KeyCode::Up));
+        assert_eq!(screen.editor.cursor().line, 2);
+        assert!(screen.editor.selection().is_none());
+        assert_eq!(screen.focus, Focus::Editor);
+        assert_eq!(screen.editor.text(), "first\ncontinued\n\nsecond\n\nlast");
     }
 
     #[test]
