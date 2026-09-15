@@ -1,24 +1,24 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭────────────────────────────Explainability Cockpit────────────────────────────╮
-│Explainability Cockpit · source: (disabled)                                   │
-│Evidence source disabled                                                      │
-│╭───────────────────────────Explainability Cockpit───────────────────────────╮│
-││Evidence source disabled                                                    ││
-││Enable evidence logging to populate this cockpit.                           ││
-││Set FTUI_DEMO_EVIDENCE_JSONL to a writable path.                            ││
-││Example: FTUI_DEMO_EVIDENCE_JSONL=/tmp/ftui_evidence.jsonl cargo run -p     ││
-││ftui-demo-showcase                                                          ││
-││                                                                            ││
-││                                                                            ││
-│╰────────────────────────────────────────────────────────────────────────────╯│
+│Explainability Cockpit · source: (bundled sample capture)                     │
+│Loaded 81 entries (209 lines)                                                 │
+│╭──────Diff Strategy──────╮╭─Resize Regime (BOCPD)──╮╭───Budget Decisions────╮│
+││Decision: DirtyRows      ││No resize evidence yet. ││Decision: stay         ││
+││Why: guard: none ·       ││                        ││Frame: 0.18ms /        ││
+││fallback: none           ││                        ││200.00ms               ││
+││Posterior: μ=0.007       ││                        ││E-value: 0.000         ││
+││σ²=0.000 α=0.14 β=19.86  ││                        ││Phase: steady          ││
+││Dirty rows: 1/1 (100.0%) ││                        ││Conformal: α=0.05      ││
+││Coverage: tiles=0.0%     ││                        ││q=788.2 upper=0.9ms    ││
+│╰─────────────────────────╯╰────────────────────────╯╰───────────────────────╯│
 │╔═════════════════════════════Decision Timeline══════════════════════════════╗│
-│║No recent decisions.                                                        ║│
-│║                                                                            ║│
-│║                                                                            ║│
-│║                                                                            ║│
-│║                                                                            ║│
-│║                                                                            ║│
-│║                                                                            ║│
+│║diff   # 35 strategy DirtyRows · μ=0.01 σ²=0.00                             ║│
+│║budget # 37 stay budget · e=0.00                                            ║│
+│║diff   # 36 strategy DirtyRows · μ=0.01 σ²=0.00                             ║│
+│║budget # 38 stay budget · e=0.00                                            ║│
+│║diff   # 37 strategy DirtyRows · μ=0.01 σ²=0.00                             ║│
+│║budget # 39 stay budget · e=0.00                                            ║│
+│║diff   # 38 strategy DirtyRows · μ=0.01 σ²=0.00                             ║│
 │╚════════════════════════════════════════════════════════════════════════════╝│
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Explainability Cockpit [33/45]       Tab/Shift+Tab: next/prev        0x0 00:00 

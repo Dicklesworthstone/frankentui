@@ -34,6 +34,12 @@ use crate::theme;
 
 const MAX_EVIDENCE_LINES: usize = 400;
 const MAX_TIMELINE_ROWS: usize = 10;
+/// How many decisions the timeline keeps.
+///
+/// More than it can show at once, or the scroll keys have nowhere to go: this
+/// used to retain exactly one window's worth, which clamped every scroll back
+/// to zero and left n, p and the arrow keys doing nothing at all.
+const TIMELINE_HISTORY_ROWS: usize = MAX_TIMELINE_ROWS * 4;
 const REFRESH_EVERY_TICKS: u64 = 5;
 const MIN_PANEL_HEIGHT: u16 = 6;
 
@@ -1100,11 +1106,11 @@ fn parse_evidence_lines(lines: &[&str]) -> ParsedEvidence {
 
     let mut timeline_sorted = timeline;
     timeline_sorted.sort_by_key(|entry| entry.seq);
-    let timeline = if timeline_sorted.len() > MAX_TIMELINE_ROWS * 2 {
+    let timeline = if timeline_sorted.len() > TIMELINE_HISTORY_ROWS {
         timeline_sorted
             .into_iter()
             .rev()
-            .take(MAX_TIMELINE_ROWS)
+            .take(TIMELINE_HISTORY_ROWS)
             .collect::<Vec<_>>()
             .into_iter()
             .rev()

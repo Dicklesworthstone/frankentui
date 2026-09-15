@@ -749,13 +749,14 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
             ScreenId::MermaidShowcase,
             "layout",
             "The layout engine is tunable live: tiers, glyph modes, and render backends.",
-            "l toggles layout, t cycles tier, b cycles render mode, f refits the view.",
+            "l toggles layout, t cycles tier, b cycles render mode.",
             4600,
+            // No `f` here: it refits the view, and the view is already fitted,
+            // so the viewer would watch a keystroke do nothing.
             beats([
                 press(300, Char('l')),
-                press(1300, Char('t')),
-                press(2300, Char('b')),
-                press(3300, Char('f')),
+                press(1400, Char('t')),
+                press(2600, Char('b')),
             ]),
         );
         push_step(
@@ -874,14 +875,17 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::FormsInput,
         "forms",
         "Real form controls with validation, undo/redo and focus management.",
-        "Tab moves between fields; Space toggles checkboxes.",
-        5200,
+        "Tab moves between fields; Space ticks the checkbox at the end.",
+        5800,
+        // Tab all the way to the checkbox before pressing Space. Stopping on
+        // the select field, as this used to, pressed Space at something that
+        // does not toggle.
         beats([
             typed(300, 70, "frankentui"),
             press(1500, Tab),
             typed(1900, 70, "demo@example.com"),
-            press(3400, Tab),
-            press(3900, Char(' ')),
+            repeated(3400, 250, 4, Tab),
+            press(4600, Char(' ')),
         ]),
     );
     push_step(
@@ -891,9 +895,12 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         "A virtualized list with Fenwick-indexed variable heights: O(log n) scrolling.",
         "/ filters; j walks results without re-laying out the world.",
         5600,
+        // "cache" is in the data - CacheManager, and the cached action - so the
+        // list actually has rows to walk. The previous query matched nothing,
+        // and the step demonstrated scrolling through an empty result set.
         beats([
             press(300, Char('/')),
-            typed(800, 80, "render"),
+            typed(800, 80, "cache"),
             press(1900, Enter),
             repeated(2600, 650, 4, Char('j')),
         ]),
@@ -903,14 +910,15 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::LogSearch,
         "logs",
         "Live log stream with search, filters and match stepping.",
-        "/ searches, n steps matches, Space pauses the stream.",
+        "/ searches, Enter jumps to the first hit, n steps through the rest.",
         5400,
+        // No trailing Esc: it cleared the search, so the step ended on exactly
+        // the screen it started from and the viewer saw the result vanish.
         beats([
             press(300, Char('/')),
             typed(800, 80, "error"),
             press(1800, Enter),
             repeated(2500, 700, 3, Char('n')),
-            press(4700, Esc),
         ]),
     );
     push_step(
@@ -936,7 +944,7 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::KanbanBoard,
         "kanban",
         "Drag-and-drop board with undo: cards move by keyboard or mouse.",
-        "h and l change column; L moves the card.",
+        "j and k pick a card, h and l change column; L moves it, u puts it back.",
         4200,
         beats([
             repeated(300, 800, 2, Char('j')),
@@ -951,9 +959,15 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::ThemeStudio,
         "theme",
         "Themes are data: edit, preview, and export to JSON or a Ghostty config.",
-        "Enter applies a theme; e exports it.",
-        4400,
-        beats([repeated(300, 800, 3, Char('j')), press(2800, Enter)]),
+        "j and k walk the presets, Enter applies one, e exports it.",
+        5000,
+        // The blurb promises an export, so the step performs one rather than
+        // leaving the viewer to take it on faith.
+        beats([
+            repeated(300, 800, 3, Char('j')),
+            press(2800, Enter),
+            press(3900, Char('e')),
+        ]),
     );
     push_step(
         &mut steps,
@@ -1040,10 +1054,11 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         5600,
         // Up is older, and the timeline starts at the newest row - so Down
         // alone, which is where this step began, moves nothing at all.
+        // Focus starts on the timeline, so pressing 4 first showed nothing.
         beats([
-            press(400, Char('4')),
+            press(400, Char('1')),
             repeated(1300, 800, 4, Up),
-            press(4400, Char('1')),
+            press(4400, Char('4')),
         ]),
     );
     push_step(

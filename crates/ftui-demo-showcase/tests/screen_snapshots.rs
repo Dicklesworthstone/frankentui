@@ -2403,7 +2403,10 @@ fn hyperlink_playground_focus_120x40() {
 // ============================================================================
 
 #[test]
-fn explainability_cockpit_empty_80x24() {
+fn explainability_cockpit_bundled_80x24() {
+    // No live log configured, which is what `cargo run` gives you: the cockpit
+    // falls back to the evidence capture that ships with the demo rather than
+    // showing an empty panel and an environment variable to go and set.
     let screen =
         ftui_demo_showcase::screens::explainability_cockpit::ExplainabilityCockpit::with_evidence_path(
             None,
@@ -2412,7 +2415,7 @@ fn explainability_cockpit_empty_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("explainability_cockpit_empty_80x24", &frame.buffer);
+    assert_snapshot!("explainability_cockpit_bundled_80x24", &frame.buffer);
 }
 
 #[test]

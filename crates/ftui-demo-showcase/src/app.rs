@@ -7868,6 +7868,16 @@ mod tests {
         out
     }
 
+    /// Draw the app into a fresh frame and hand it back for inspection.
+    fn render_frame<'a>(
+        app: &mut AppModel,
+        pool: &'a mut ftui_render::grapheme_pool::GraphemePool,
+    ) -> Frame<'a> {
+        let mut frame = Frame::new(140, 44, pool);
+        app.view(&mut frame);
+        frame
+    }
+
     /// Everything the frame has to say, as text.
     fn frame_text(frame: &Frame) -> String {
         let mut out = String::new();
@@ -7895,13 +7905,16 @@ mod tests {
         // showing it - which is how the tour came to press `w` at a Quake
         // player who could not move. Replaying a step's own actions has to
         // change what is drawn.
+        use crate::tour::{TourInput, TourPhase};
+
         // Two identical apps, rendered the same number of times; only one is
         // given the step's input. Comparing them rather than comparing one app
         // against its own earlier frame keeps the check honest on screens that
         // redraw differently on their own - the mermaid showcase prints a cache
         // counter that moves every frame.
         let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
-        for step in crate::tour::build_steps() {
+        let steps = crate::tour::build_steps();
+        for (idx, step) in steps.iter().enumerate() {
             if step.actions.is_empty() {
                 continue;
             }
@@ -7922,12 +7935,89 @@ mod tests {
             render(&mut control, &mut pool);
             let content = driven.last_content_area.get();
 
-            for action in &step.actions {
-                let anchor = driven.tour_pointer_anchor(*action);
-                if let Some(event) = tour_action_event(*action, content, anchor) {
-                    driven.update(AppMsg::TourInput(event));
+            // Steps that share a screen run back to back, and later ones lean
+            // on where the earlier ones left it - the second Shakespeare step
+            // opens with Esc to close the search the first one opened. Replay
+            // them so each step is judged in the state the viewer sees it in.
+            for earlier in steps[..idx].iter().filter(|s| s.screen == step.screen) {
+                for action in &earlier.actions {
+                    for app in [&mut driven, &mut control] {
+                        let anchor = app.tour_pointer_anchor(*action);
+                        if let Some(event) = tour_action_event(*action, content, anchor) {
+                            app.update(AppMsg::TourInput(event));
+                        }
+                    }
                 }
             }
+
+            // Let time pass, as it has by the time a viewer reaches this step.
+            // Some keys only do something to a screen that has been running:
+            // `r` restarts the markdown stream, which is a no-op on a stream
+            // still sitting at position zero.
+            for _ in 0..12 {
+                pump(&mut driven, AppMsg::Tick);
+                pump(&mut control, AppMsg::Tick);
+            }
+
+            // Keys the step deliberately holds across ticks are latched by
+            // design - Quake's `w` sets a velocity that only moves the camera
+            // on the next tick, so pressing it changes nothing by itself. The
+            // tick loop is what demonstrates those, and the Quake step has its
+            // own tests for exactly that.
+            let mut latched: Vec<TourInput> = Vec::new();
+            let mut pressed_at: Vec<(TourInput, u64)> = Vec::new();
+            for action in &step.actions {
+                match action.phase {
+                    TourPhase::Press => pressed_at.push((action.input, action.at_ms)),
+                    TourPhase::Release => {
+                        if let Some(pos) = pressed_at.iter().position(|(i, _)| *i == action.input) {
+                            let (input, at) = pressed_at.remove(pos);
+                            if action.at_ms - at > 100 {
+                                latched.push(input);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Track each distinct key the step presses. A step that opens with
+            // Esc and then plays keys the screen ignores would pass a
+            // whole-step comparison on the Esc alone - which is how the
+            // cockpit step came to press Down at a timeline that only scrolls
+            // up.
+            let mut answered: Vec<(TourInput, bool)> = Vec::new();
+            for action in &step.actions {
+                let anchor = driven.tour_pointer_anchor(*action);
+                let Some(event) = tour_action_event(*action, content, anchor) else {
+                    continue;
+                };
+                let watch = action.phase == TourPhase::Press
+                    && !matches!(action.input, TourInput::Pointer { .. })
+                    && !latched.contains(&action.input)
+                    && !answered.iter().any(|(i, seen)| *i == action.input && *seen);
+                let before = watch.then(|| frame_cells(&render_frame(&mut driven, &mut pool)));
+
+                driven.update(AppMsg::TourInput(event));
+
+                if let Some(before) = before {
+                    let changed = frame_cells(&render_frame(&mut driven, &mut pool)) != before;
+                    match answered.iter_mut().find(|(i, _)| *i == action.input) {
+                        Some(entry) => entry.1 |= changed,
+                        None => answered.push((action.input, changed)),
+                    }
+                }
+            }
+
+            let ignored: Vec<TourInput> = answered
+                .iter()
+                .filter(|(_, seen)| !seen)
+                .map(|(input, _)| *input)
+                .collect();
+            assert!(
+                ignored.is_empty(),
+                "{} presses keys its screen ignores: {ignored:?}",
+                step.id
+            );
 
             let (driven_cells, driven_text) = render(&mut driven, &mut pool);
             let (control_cells, _) = render(&mut control, &mut pool);

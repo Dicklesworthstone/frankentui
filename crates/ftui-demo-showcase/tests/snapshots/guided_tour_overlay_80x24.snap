@@ -1,24 +1,24 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭──────────────────────────────────Dashboard───────────────────────────────────╮
-│FRANKENTUI DASHBOARD  ╭─────────────────────Guided Tour──────────────────────╮│
-│╭──────Plasma──────╮╭─│1/16 · Tour · LIVE                                    ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g│Speed 1.00x · Next 6.2s                               ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││C│Dashboard                                             ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││M│This is the home screen. Every tile is meant to be    ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││N│clicked.                                              ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││O│Click a tile (or press Enter) to jump in.             ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││E│Controls: Space pause · ←/→ step · Esc exit           ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │Steps:                                                ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │▶ Tour · Dashboard                                    ││
-││Click → Visual Eff││C│• Tour · Dashboard                                    ││
-│╰──────────────────╯╰─│• Visuals · Mermaid Showcase                          ││
-│╭Text FX · 2-Up (1│╭──│• Tour · Inline Mode                                  ││
-││Sample 1 of 3 · 2││SE╰──────────────────────────────────────────────────────╯│
+│FRANKENTUI DASHBOARD                                                          │
+│╭──────Plasma──────╮╭───────Charts · Pulse────────╮╭───Code · Rust (1/28)────╮│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g:cycle · sparklines + mini b││// runtime.rs            ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││CPU ▃ ▃▃▂▂▁▁▄▃▄▂▅▅▅▆▂▄▅▃▆ 46%││use std::{collections::Ha││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││MEM ▅▂ ▃▁▄▄▂▂▇▅▃▅▂▃▄▆▄▇█▂ 41%││                         ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││NET ▁▁▁▁▁  ▁   ▇▁▁    ▁ █▁ 14││use ftui_core::event::Eve││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││OUT ▁▁▁▃▁█  ▁▁ ▁  ▁▁▇    ▁149││Click → Code Explorer    ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││EPS   77% DSK   67% IO     7%│╰─────────────────────────╯│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                             │╭──────────Info───────────╮│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                             ││Status:NOMINAL FPS:0     ││
+││Click → Visual Eff││Click → Data Viz             ││Click → Performance      ││
+│╰──────────────────╯╰─────────────────────────────╯╰─────────────────────────╯│
+│╭Text FX · 2-Up (1│╭──────────Activity───────────│╭Markdown · Streaming… 0%─╮ │
+││Sample 1 of 3 · 2││SEV TIME  COMP  MESSAGE      ││▌                        │ │
 ││1 · None · S1    ││ INFO  00:02   CPU spike dete││                         │ │
 ││2 · FadeIn · S2  ⋮│                             ⋮│                         │ │
 ││                 ││                             ││                         │ │
 ││drag panes in das││Click → Action Timeline      ││Click → Markdown         │ │
 │╰─────────────────│╰─────────────────────────────│╰─────────────────────────╯ │
-│g:charts c:code e:fx m:md | drag bottom dividers: resize | 1-9:screens | t:the│
+│1/33 Dashboard · Every tile here is live and clickable. This whole UI is one R│
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Dashboard [1/45] [h] [cmd] [p] [d]    Tab/Shift+Tab: next/prev     80x24 00:00 

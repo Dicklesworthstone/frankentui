@@ -1,0 +1,24 @@
+Explainability Cockpit · source: (bundled sample capture)                       
+Loaded 81 entries (209 lines)                                                   
+╭──────Diff Strategy──────╮╭─Resize Regime (BOCPD)──╮╭────Budget Decisions────╮ 
+│Decision: DirtyRows      ││No resize evidence yet. ││Decision: stay          │ 
+│Why: guard: none ·       ││                        ││Frame: 0.18ms / 200.00ms│ 
+│fallback: none           ││                        ││E-value: 0.000          │ 
+│Posterior: μ=0.007       ││                        ││Phase: steady           │ 
+│σ²=0.000 α=0.14 β=19.86  ││                        ││Conformal: α=0.05       │ 
+│Dirty rows: 1/1 (100.0%) ││                        ││q=788.2 upper=0.9ms     │ 
+│Coverage: tiles=0.0%     ││                        ││(safe)                  │ 
+│cells=0.0%               ││                        ││Controller: stay        │ 
+│                         ││                        ││                        │ 
+╰─────────────────────────╯╰────────────────────────╯╰────────────────────────╯ 
+╔══════════════════════════════Decision Timeline═══════════════════════════════╗
+║diff   # 35 strategy DirtyRows · μ=0.01 σ²=0.00                               ║
+║budget # 37 stay budget · e=0.00                                              ║
+║diff   # 36 strategy DirtyRows · μ=0.01 σ²=0.00                               ║
+║budget # 38 stay budget · e=0.00                                              ║
+║diff   # 37 strategy DirtyRows · μ=0.01 σ²=0.00                               ║
+║budget # 39 stay budget · e=0.00                                              ║
+║diff   # 38 strategy DirtyRows · μ=0.01 σ²=0.00                               ║
+║budget # 40 stay budget · e=0.00                                              ║
+║diff   # 39 strategy DirtyRows · μ=0.01 σ²=0.00                               ║
+╚══════════════════════════════════════════════════════════════════════════════╝
