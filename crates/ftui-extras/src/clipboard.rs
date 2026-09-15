@@ -8,7 +8,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use ftui_core::osc52;
+pub use ftui_core::osc52::ClipboardSelection;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 
 const ENV_CLIPBOARD_BACKEND: &str = "FTUI_CLIPBOARD_BACKEND";
@@ -18,33 +19,6 @@ const EXTERNAL_CMD_TIMEOUT: Duration = Duration::from_secs(2);
 const EXTERNAL_IO_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 #[cfg(feature = "clipboard-fallback")]
 const EXTERNAL_IO_JOIN_POLL: Duration = Duration::from_millis(5);
-
-/// OSC 52 clipboard selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClipboardSelection {
-    /// System clipboard.
-    Clipboard,
-    /// Primary selection (X11).
-    Primary,
-    /// Secondary selection (X11).
-    Secondary,
-    /// Cut buffer 0..=7.
-    CutBuffer(u8),
-}
-
-impl ClipboardSelection {
-    fn osc52_code(self) -> Result<char, ClipboardError> {
-        match self {
-            Self::Clipboard => Ok('c'),
-            Self::Primary => Ok('p'),
-            Self::Secondary => Ok('s'),
-            Self::CutBuffer(index) if index <= 7 => Ok((b'0' + index) as char),
-            Self::CutBuffer(index) => Err(ClipboardError::InvalidInput(format!(
-                "cut buffer index must be 0..=7 (got {index})",
-            ))),
-        }
-    }
-}
 
 /// Clipboard backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +85,7 @@ pub struct Clipboard {
 
 impl Clipboard {
     /// Common OSC 52 size limit (base64 payload bytes).
-    pub const DEFAULT_MAX_OSC52_PAYLOAD: usize = 74_994;
+    pub const DEFAULT_MAX_OSC52_PAYLOAD: usize = osc52::MAX_OSC52_PAYLOAD;
     /// Default OSC 52 response timeout.
     pub const DEFAULT_OSC52_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -330,9 +304,9 @@ impl Clipboard {
         if !self.is_osc52_usable() {
             return Err(ClipboardError::NotAvailable);
         }
-        let code = selection.osc52_code()?;
-        let seq = format!("\x1b]52;{code};?\x07");
-        self.write_with_passthrough(writer, seq.as_bytes())
+        let seq = osc52::encode_query(selection)
+            .map_err(|e| ClipboardError::InvalidInput(e.to_string()))?;
+        self.write_with_passthrough(writer, &seq)
     }
 
     /// Set clipboard content.
@@ -383,9 +357,9 @@ impl Clipboard {
     ) -> Result<(), ClipboardError> {
         match self.backend {
             ClipboardBackend::Osc52 => {
-                let code = selection.osc52_code()?;
-                let seq = format!("\x1b]52;{code};\x07");
-                self.write_with_passthrough(writer, seq.as_bytes())
+                let seq = osc52::encode_set(selection, b"")
+                    .map_err(|e| ClipboardError::InvalidInput(e.to_string()))?;
+                self.write_with_passthrough(writer, &seq)
             }
             ClipboardBackend::External(backend) => set_external_backend(backend, "", selection),
             ClipboardBackend::Unavailable => Err(ClipboardError::NotAvailable),
@@ -428,17 +402,9 @@ impl Clipboard {
         if !self.is_osc52_usable() {
             return Err(ClipboardError::NotAvailable);
         }
-        let code = selection.osc52_code()?;
-        let encoded = STANDARD.encode(content.as_bytes());
-        if encoded.len() > self.max_payload {
-            return Err(ClipboardError::InvalidInput(format!(
-                "OSC 52 payload too large ({} > {})",
-                encoded.len(),
-                self.max_payload
-            )));
-        }
-        let seq = format!("\x1b]52;{code};{encoded}\x07");
-        self.write_with_passthrough(writer, seq.as_bytes())
+        let seq = osc52::encode_set_with_limit(selection, content.as_bytes(), self.max_payload)
+            .map_err(|e| ClipboardError::InvalidInput(e.to_string()))?;
+        self.write_with_passthrough(writer, &seq)
     }
 
     /// Write raw bytes, applying DCS passthrough wrapping if needed.
@@ -454,55 +420,18 @@ impl Clipboard {
                     .map_err(|e| ClipboardError::WriteError(e.to_string()))?;
             }
             PassthroughMode::Tmux => {
-                write_tmux_passthrough(writer, seq)?;
+                ftui_core::mux_passthrough::tmux_wrap(writer, seq)
+                    .map_err(|e| ClipboardError::WriteError(e.to_string()))?;
             }
             PassthroughMode::Screen => {
-                write_screen_passthrough(writer, seq)?;
+                ftui_core::mux_passthrough::screen_wrap(writer, seq)
+                    .map_err(|e| ClipboardError::WriteError(e.to_string()))?;
             }
         }
         writer
             .flush()
             .map_err(|e| ClipboardError::WriteError(e.to_string()))
     }
-}
-
-/// Write a sequence wrapped in tmux DCS passthrough.
-///
-/// Format: `ESC P tmux; <seq-with-ESC-doubled> ESC \`
-fn write_tmux_passthrough(writer: &mut impl Write, seq: &[u8]) -> Result<(), ClipboardError> {
-    writer
-        .write_all(b"\x1bPtmux;")
-        .map_err(|e| ClipboardError::WriteError(e.to_string()))?;
-    for &byte in seq {
-        if byte == 0x1b {
-            // Double ESC bytes inside the passthrough payload.
-            writer
-                .write_all(b"\x1b\x1b")
-                .map_err(|e| ClipboardError::WriteError(e.to_string()))?;
-        } else {
-            writer
-                .write_all(&[byte])
-                .map_err(|e| ClipboardError::WriteError(e.to_string()))?;
-        }
-    }
-    writer
-        .write_all(b"\x1b\\")
-        .map_err(|e| ClipboardError::WriteError(e.to_string()))
-}
-
-/// Write a sequence wrapped in GNU screen DCS passthrough.
-///
-/// Format: `ESC P <seq> ESC \`
-fn write_screen_passthrough(writer: &mut impl Write, seq: &[u8]) -> Result<(), ClipboardError> {
-    writer
-        .write_all(b"\x1bP")
-        .map_err(|e| ClipboardError::WriteError(e.to_string()))?;
-    writer
-        .write_all(seq)
-        .map_err(|e| ClipboardError::WriteError(e.to_string()))?;
-    writer
-        .write_all(b"\x1b\\")
-        .map_err(|e| ClipboardError::WriteError(e.to_string()))
 }
 
 fn apply_backend_override(
@@ -1586,10 +1515,8 @@ mod tests {
     #[test]
     fn cut_buffer_large_index_error() {
         let err = ClipboardSelection::CutBuffer(255).osc52_code();
-        assert!(matches!(err, Err(ClipboardError::InvalidInput(_))));
-        if let Err(ClipboardError::InvalidInput(msg)) = err {
-            assert!(msg.contains("255"));
-        }
+        assert_eq!(err, Err(osc52::Osc52Error::InvalidSelection(255)));
+        assert!(err.unwrap_err().to_string().contains("255"));
     }
 
     // --- set/clear with cut buffer selection via OSC 52 ---
