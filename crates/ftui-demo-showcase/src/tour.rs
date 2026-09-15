@@ -320,6 +320,8 @@ pub struct GuidedTourState {
     /// How many of the current step's actions have already been handed out.
     /// Actions are sorted by `at_ms`, so this doubles as the cursor into them.
     actions_fired: usize,
+    /// Keys handed out as pressed whose release has not come due yet.
+    held: Vec<TourInput>,
 }
 
 impl Default for GuidedTourState {
@@ -339,6 +341,7 @@ impl GuidedTourState {
             steps: build_steps(),
             resume_screen: ScreenId::Dashboard,
             actions_fired: 0,
+            held: Vec::new(),
         }
     }
 
@@ -378,6 +381,8 @@ impl GuidedTourState {
         self.step_index = start_step.min(self.steps.len().saturating_sub(1));
         self.step_elapsed = Duration::ZERO;
         self.actions_fired = 0;
+        // A fresh run never inherits a key from the last one.
+        self.held.clear();
         self.resume_screen = resume_screen;
     }
 
@@ -451,7 +456,32 @@ impl GuidedTourState {
             due.push(*action);
             self.actions_fired += 1;
         }
+        for action in &due {
+            match action.phase {
+                TourPhase::Press => self.held.push(action.input),
+                TourPhase::Release => {
+                    if let Some(pos) = self.held.iter().position(|i| *i == action.input) {
+                        self.held.remove(pos);
+                    }
+                }
+            }
+        }
         due
+    }
+
+    /// Let go of every key the storyboard is currently holding.
+    ///
+    /// A held key's release is scheduled, not immediate, so anything that cuts
+    /// a step short - pausing, stepping on, leaving the tour - strands it down.
+    /// Quake latches movement on key-down, so a stranded `w` walks the camera
+    /// into a wall for as long as the viewer leaves the tour "paused".
+    pub fn release_held(&mut self) -> Vec<TourInput> {
+        std::mem::take(&mut self.held)
+    }
+
+    /// Whether the storyboard is part-way through a held key.
+    pub fn is_holding(&self) -> bool {
+        !self.held.is_empty()
     }
 
     pub fn next_step(&mut self, reason: TourAdvanceReason) -> Option<TourEvent> {
