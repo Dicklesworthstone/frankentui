@@ -7973,6 +7973,79 @@ mod tests {
     }
 
     #[test]
+    fn the_quake_step_moves_at_every_tour_speed() {
+        // Speed scales tour time, not the tick, so a 1.3s hold is thirteen
+        // ticks at 1x and three at 4x. A viewer who speeds the tour up should
+        // still see the camera travel rather than twitch.
+        let quake_index = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::QuakeEasterEgg)
+            .expect("quake step");
+
+        for speed in [0.25, 1.0, 4.0] {
+            let mut app = AppModel::new();
+            let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+            app.start_tour(quake_index, speed);
+            let before = app.screens.quake_easter_egg.camera_pose();
+
+            // Run the step out, however many ticks that takes at this speed.
+            let ticks = ((7200.0 / speed) / 100.0).ceil() as usize;
+            for _ in 0..ticks {
+                pump(&mut app, AppMsg::Tick);
+            }
+
+            let after = app.screens.quake_easter_egg.camera_pose();
+            let moved = ((after.0 - before.0).powi(2) + (after.1 - before.1).powi(2)).sqrt();
+            assert!(
+                moved > 0.1,
+                "at {speed}x speed the camera covered only {moved:.3} units"
+            );
+        }
+    }
+
+    #[test]
+    fn skipping_past_a_held_key_releases_it() {
+        // Right is the viewer's "get on with it" key, and from the last step it
+        // finishes the tour rather than changing step - a different arm, and
+        // the one most likely to be hit while a key is down.
+        let quake_index = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::QuakeEasterEgg)
+            .expect("quake step");
+        let mut app = AppModel::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        app.start_tour(quake_index, 1.0);
+        for _ in 0..10 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        assert!(app.tour.is_holding(), "expected to interrupt a held key");
+
+        pump(
+            &mut app,
+            AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Right))),
+        );
+        assert!(!app.tour.is_holding(), "the skip left a key down");
+
+        for _ in 0..15 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let before = app.screens.quake_easter_egg.camera_pose();
+        for _ in 0..15 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let after = app.screens.quake_easter_egg.camera_pose();
+        let drift = ((after.0 - before.0).powi(2) + (after.1 - before.1).powi(2)).sqrt();
+        assert!(
+            drift < 0.002,
+            "the camera is still walking {drift:.3} units"
+        );
+    }
+
+    #[test]
     fn leaving_the_tour_mid_keypress_does_not_leave_the_screen_running() {
         // The screen the tour was driving stops ticking the moment the tour
         // moves on, so a stranded key is invisible until someone opens that
