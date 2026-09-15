@@ -314,7 +314,8 @@ impl Editor {
     // Insert operations
     // ====================================================================
 
-    /// Insert a single character at the cursor position.
+    /// Insert a typed character. Adjacent typing coalesces until a new word,
+    /// cursor/selection change, direction change, or idle timeout.
     pub fn insert_char(&mut self, ch: char) {
         let mut buf = [0u8; 4];
         let s = ch.encode_utf8(&mut buf);
@@ -324,7 +325,8 @@ impl Editor {
     /// Insert text at the cursor position. Deletes selection first if active.
     ///
     /// Control characters (except newline and tab) are stripped to prevent
-    /// terminal corruption.
+    /// terminal corruption. Each call is a separate paste undo group, even if
+    /// it contains only one character; use [`Self::insert_char`] for typing.
     pub fn insert_text(&mut self, text: &str) {
         // Explicit text insertion is a paste, even for a one-character payload.
         self.insert(text, GroupKind::Other);
@@ -593,6 +595,7 @@ impl Editor {
             group.last_tick = self.now_tick;
             group.last_was_space = space;
         } else {
+            self.break_undo_group();
             self.undo_stack.push(UndoGroup {
                 ops: vec![op],
                 before: self.cursor,
