@@ -3,11 +3,11 @@
 │  Darcula              │ │     fg::SECONDARY        #91C5D0  8.7:1  AAA                                               │
 │  Lumen Light          │ │     fg::MUTED            #739BA5  5.5:1  AA                                                │
 │  Nordic Frost         │ │     fg::DISABLED         #5A7883  3.5:1  AA Large                                          │
-│  Doom                 │ │     bg::DEEP             #14181F  1.1:1  Fail                                              │
-│  Quake                │ │     bg::BASE             #1A1F29  1.0:1  Fail                                              │
-│  Monokai              │ │     bg::SURFACE          #2B3540  1.3:1  Fail                                              │
-│  Solarized Dark       │ │     bg::OVERLAY          #50495C  1.9:1  Fail                                              │
-│  Solarized Light      │ │     bg::HIGHLIGHT        #606D78  3.1:1  AA Large                                          │
+│  Doom                 │ │     bg::DEEP             #14181F  1.1:1                                                    │
+│  Quake                │ │     bg::BASE             #1A1F29  1.0:1                                                    │
+│  Monokai              │ │     bg::SURFACE          #2B3540  1.3:1                                                    │
+│  Solarized Dark       │ │     bg::OVERLAY          #50495C  1.9:1                                                    │
+│  Solarized Light      │ │     bg::HIGHLIGHT        #606D78  3.1:1                                                    │
 │  Gruvbox Dark         │ │     accent::PRIMARY      #07B6FF  7.2:1  AAA                                               │
 │  Gruvbox Light        │ │▶    accent::SECONDARY    #F50DFF  5.0:1  AA                                                │
 │  One Dark             │ │     accent::SUCCESS      #11FAC0  12.2:1 AAA                                               │

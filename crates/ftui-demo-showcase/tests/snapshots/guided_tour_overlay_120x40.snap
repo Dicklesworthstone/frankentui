@@ -1,40 +1,40 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
-╭──────────────────────────────────────────────────────Dashboard───────────────────────────────────────────────────────╮
-│FRANKENTUI DASHBOARD                                                                                                  │
-│╭────Plasma─────╮╭─────Charts · Pulse─────╮╭───Code · Rust (1/28)───╮╭─────Info──────╮  ┌─────── Pane Studio ────────┐│
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g:cycle · sparklines + m││// runtime.rs           ││FrankenTUI Kern│  │mode:Focus sel:1 tl:0/0 ops:││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││CPU ▃ ▃▃▂▂▁▁▄▃▄▂▅▅▅▆ 46%││use std::{collections::H││ INLINE        │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││MEM ▅▂ ▃▁▄▄▂▂▇▅▃▅▂▃▄ 41%││                        ││Status: NOMINAL│  │┃ 14x13  @90 ││ 14x13  @10 │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││NET ▁▁▁▁▁  ▁   ▇▁▁    14││use ftui_core::event::Ev││FPS: 0 Size: 1 │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││OUT ▁▁▁▃▁█  ▁▁ ▁  ▁▁▇149││use ftui_render::cell::C││Events/Theme:  │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││EPS 77% DSK 67% IO  7%  ││use ftui_render::frame::││CPU:  4Alerts: │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││use ftui_runtime::{Cmd, ││NET:   Pipelin │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││                        ││Frame: Headroo │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││#[derive(Debug, Clone)] ││               │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││enum Msg {              ││               │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││    Tick(u64),          ││               │  │┃            ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││    Resize { w: u16, h: ││               │  │┃            ■│            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││    Log(String),        ││CPU ███░░░  46%│  │─────■■■───────────■■■──────││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││    Quit,               ││MEM ██░░░░  41%│  │╭──5 pane-3──■╭──7 pane-4──╮││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││}                       ││NET ░░░░░░   8%│  ││            ■│            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        ││                        ││FRM         n/a│  ││ 14x14  @90 ■│ 14x14  @10 │││
-││Click → Visual ││Click → Data Viz        ││Click → Code Explorer   ││Click → Perform│  ││            ││            │││
-│╰───────────────╯╰────────────────────────╯╰────────────────────────╯╰───────────────╯  ││            ││            │││
-│╭Text FX · 3-Up (1/2│╭────────────Activity────────────│╭─Markdown · Streaming… 0%──╮    ││            ││            │││
-││Sample 1 of 3 · 3-U││SEV TIME  COMP  MESSAGE         ││▌                          │    ││            ││            │││
-││1 · None · S1      ││ INFO  00:02   CPU spike detecte││      ╭─────────────────────Guided Tour──────────────────────╮│
-││# FX Lab · Determin││                                ││      │2/16 · Tour · LIVE                                    ││
-││> *"Render truth, n││                                ││      │Speed 1.00x · Next 5.2s                               ││
-││2 · FadeIn · S2    ││                                ││      │Dashboard                                             ││
-││## GFM Stress · Led││                                ││      │Navigation is instant: everything is searchable and   ││
-││1. **Bold** + _ital⋮│                                ⋮│      │tagged.                                               ││
-││3 · FadeOut · S3   ││                                ││      │Press Ctrl+K to open the Command Palette.             ││
-││### Runtime Ledger ││                                ││      │Controls: Space pause · ←/→ step · Esc exit           ││
-││- [x] Tasks        ││                                ││      │Steps:                                                ││
-││                   ││                                ││      │• Tour · Dashboard                                    ││
-││                   ││                                ││      │▶ Tour · Dashboard                                    ││
-││drag panes in dashb││Click → Action Timeline         ││Click │• Visuals · Mermaid Showcase                          ││
-│╰───────────────────│╰────────────────────────────────│╰──────│• Tour · Inline Mode                                  ││
-│g:charts c:code e:fx m:md | drag bottom dividers: resize | 1-9╰──────────────────────────────────────────────────────╯│
+╭─────────────────────────────────────────────────────Shakespeare──────────────────────────────────────────────────────╮
+│┏━━━━━━━━━━━━━━━━━━━Complete Works of William Shakespeare━━━━━━━━━━━━━━━━━━━━┓╭───────────Match Navigator────────────╮│
+│┃      1 The Project Gutenberg eBook of The Complete Works of William Shakes█┃│No matches yet                        ││
+│┃      2                                                                    │┃│                                      ││
+│┃      3 This ebook is for the use of anyone anywhere in the United States a│┃│                                      ││
+│┃      4 most other parts of the world at no cost and with almost no restric│┃│                                      ││
+│┃      5 whatsoever. You may copy it, give it away or re-use it under the te│┃│                                      ││
+│┃      6 of the Project Gutenberg License included with this ebook or online│┃│                                      ││
+│┃      7 at www.gutenberg.org. If you are not located in the United States, │┃│                                      ││
+│┃      8 you will have to check the laws of the country where you are locate│┃│                                      ││
+│┃      9 before using this eBook.                                           │┃│                                      ││
+│┃     10                                                                    │┃│                                      ││
+│┃     11 Title: The Complete Works of William Shakespeare                   │┃│                                      ││
+│┃     12                                                                    │┃│Type / to search instantly            ││
+│┃     13 Author: William Shakespeare                                        │┃╰──────────────────────────────────────╯│
+│┃     14                                                                    │┃╭──────────────Navigator───────────────╮│
+│┃     15 Release date: January 1, 1994 [eBook #100]                         │┃│▶ THE SONNETS                         ││
+│┃     16                 Most recently updated: August 24, 2025             │┃│  THE SONNETS                         ││
+│┃     17                                                                    │┃│  ALL’S WELL THAT ENDS WELL           ││
+│┃     18 Language: English                                                  │┃│  KING OF FRANCE.                     ││
+│┃     19                                                                    │┃│  COUNTESS.                           ││
+│┃     20                                                                    │┃│  COUNTESS.                           ││
+│┃     21                                                                    │┃│  COUNTESS.                           ││
+│┃     22 *** START OF THE PROJECT GUTENBERG EBOOK THE COMPLETE WORKS OF WILL│┃│  COUNTESS.                           ││
+│┃     23                                                                    │┃│  COUNTESS.                           ││
+│┃     24                                                                    │┃│  COUNTESS.                           ││
+│┃     25                                                                    │┃╰──────────────────────────────────────╯│
+│┃     26                                                                    │┃╭───────────Search Insights────────────╮│
+│┃     27 The Complete Works of William Shakespeare                ╭───────────────────Guided Tour────────────────────╮│
+│┃     28                                                          │2/33 · Text · LIVE                                ││
+│┃     29 by William Shakespeare                                   │Speed 1.00x · Next 7.2s                           ││
+│┃     30                                                          │Shakespeare                                       ││
+│┃     31                                                          │Searching the complete works of Shakespeare - 5.4 ││
+│┃     32                                                          │MB, no index, no lag.                             ││
+│┃     33                                                          │Press / to search, then Enter to walk the matches.││
+│┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━│Controls: Space pause · ←/→ step · Esc exit       ││
+│ Mode: Library · Line 1/196395 (0%) · Matches: 0 | Preamble       ╰──────────────────────────────────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Dashboard [1/45]  Cyberpunk Aurora [h] [cmd] [p] [d]  Mouse: AUTO (alt:ON)    Tab/Shift+Tab: next/prev    120x40 00:00 
+ Shakespeare [1/45]  Cyberpunk Aurora [h] [cmd] [p] [d]  Mouse: AUTO (alt:ON)   Tab/Shift+Tab: next/prev   120x40 00:00 

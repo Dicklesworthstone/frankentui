@@ -372,6 +372,15 @@ impl HyperlinkPlayground {
             .unwrap_or((0, 0));
 
         let mut detail_lines = Vec::new();
+        // What you just did goes first. It used to be appended after eight
+        // other lines - several of which wrap - so the panel clipped it and
+        // pressing Enter or `c` gave no feedback whatsoever.
+        if let Some(action) = self.last_action.as_ref() {
+            detail_lines.push(Line::from_spans([
+                Span::styled("Action: ", theme::muted()),
+                Span::styled(action.as_str(), theme::body()),
+            ]));
+        }
         if let Some(link) = active {
             detail_lines.push(Line::from_spans([
                 Span::styled("Selected: ", theme::muted()),
@@ -415,13 +424,6 @@ impl HyperlinkPlayground {
             Span::styled("Hover: ", theme::muted()),
             Span::styled(hover_label, theme::body()),
         ]));
-        if let Some(action) = self.last_action.as_ref() {
-            detail_lines.push(Line::from_spans([
-                Span::styled("Action: ", theme::muted()),
-                Span::styled(action.as_str(), theme::body()),
-            ]));
-        }
-
         Paragraph::new(Text::from_lines(detail_lines))
             .wrap(WrapMode::Word)
             .render(detail_area, frame);

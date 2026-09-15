@@ -320,6 +320,8 @@ pub struct GuidedTourState {
     /// How many of the current step's actions have already been handed out.
     /// Actions are sorted by `at_ms`, so this doubles as the cursor into them.
     actions_fired: usize,
+    /// Keys handed out as pressed whose release has not come due yet.
+    held: Vec<TourInput>,
 }
 
 impl Default for GuidedTourState {
@@ -339,6 +341,7 @@ impl GuidedTourState {
             steps: build_steps(),
             resume_screen: ScreenId::Dashboard,
             actions_fired: 0,
+            held: Vec::new(),
         }
     }
 
@@ -378,6 +381,8 @@ impl GuidedTourState {
         self.step_index = start_step.min(self.steps.len().saturating_sub(1));
         self.step_elapsed = Duration::ZERO;
         self.actions_fired = 0;
+        // A fresh run never inherits a key from the last one.
+        self.held.clear();
         self.resume_screen = resume_screen;
     }
 
@@ -451,7 +456,32 @@ impl GuidedTourState {
             due.push(*action);
             self.actions_fired += 1;
         }
+        for action in &due {
+            match action.phase {
+                TourPhase::Press => self.held.push(action.input),
+                TourPhase::Release => {
+                    if let Some(pos) = self.held.iter().position(|i| *i == action.input) {
+                        self.held.remove(pos);
+                    }
+                }
+            }
+        }
         due
+    }
+
+    /// Let go of every key the storyboard is currently holding.
+    ///
+    /// A held key's release is scheduled, not immediate, so anything that cuts
+    /// a step short - pausing, stepping on, leaving the tour - strands it down.
+    /// Quake latches movement on key-down, so a stranded `w` walks the camera
+    /// into a wall for as long as the viewer leaves the tour "paused".
+    pub fn release_held(&mut self) -> Vec<TourInput> {
+        std::mem::take(&mut self.held)
+    }
+
+    /// Whether the storyboard is part-way through a held key.
+    pub fn is_holding(&self) -> bool {
+        !self.held.is_empty()
     }
 
     pub fn next_step(&mut self, reason: TourAdvanceReason) -> Option<TourEvent> {
@@ -749,13 +779,14 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
             ScreenId::MermaidShowcase,
             "layout",
             "The layout engine is tunable live: tiers, glyph modes, and render backends.",
-            "l toggles layout, t cycles tier, b cycles render mode, f refits the view.",
+            "l toggles layout, t cycles tier, b cycles render mode.",
             4600,
+            // No `f` here: it refits the view, and the view is already fitted,
+            // so the viewer would watch a keystroke do nothing.
             beats([
                 press(300, Char('l')),
-                press(1300, Char('t')),
-                press(2300, Char('b')),
-                press(3300, Char('f')),
+                press(1400, Char('t')),
+                press(2600, Char('b')),
             ]),
         );
         push_step(
@@ -774,7 +805,10 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         &mut steps,
         ScreenId::VisualEffects,
         "effects",
-        "Braille-rasterized effects: reaction-diffusion, metaballs, attractors, fractals.",
+        // Name what the three arrow presses actually reach. The mathematical
+        // effects - reaction-diffusion, attractors, Mandelbrot - sit at index
+        // seven and beyond, which is further than this step walks.
+        "Braille-rasterized effects: metaballs, wireframe 3D, plasma, particles.",
         "Arrow keys switch effects; every one is deterministic math.",
         7400,
         // Three effects at ~2.3s each. Five at 1.3s flicked past before any of
@@ -874,26 +908,35 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::FormsInput,
         "forms",
         "Real form controls with validation, undo/redo and focus management.",
-        "Tab moves between fields; Space toggles checkboxes.",
-        5200,
+        "Tab moves between fields; Space ticks the checkbox at the end.",
+        5800,
+        // Tab all the way to the checkbox before pressing Space. Stopping on
+        // the select field, as this used to, pressed Space at something that
+        // does not toggle.
         beats([
             typed(300, 70, "frankentui"),
             press(1500, Tab),
             typed(1900, 70, "demo@example.com"),
-            press(3400, Tab),
-            press(3900, Char(' ')),
+            repeated(3400, 250, 4, Tab),
+            press(4600, Char(' ')),
         ]),
     );
     push_step(
         &mut steps,
         ScreenId::VirtualizedSearch,
         "virtualized",
-        "A virtualized list with Fenwick-indexed variable heights: O(log n) scrolling.",
+        // ftui-widgets does have a Fenwick tree for variable row heights, but
+        // this screen is not the one using it: it windows ten thousand uniform
+        // rows. Claim what is on screen.
+        "Ten thousand rows, fuzzy-filtered as you type, with only the window laid out.",
         "/ filters; j walks results without re-laying out the world.",
         5600,
+        // "cache" is in the data - CacheManager, and the cached action - so the
+        // list actually has rows to walk. The previous query matched nothing,
+        // and the step demonstrated scrolling through an empty result set.
         beats([
             press(300, Char('/')),
-            typed(800, 80, "render"),
+            typed(800, 80, "cache"),
             press(1900, Enter),
             repeated(2600, 650, 4, Char('j')),
         ]),
@@ -903,14 +946,15 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::LogSearch,
         "logs",
         "Live log stream with search, filters and match stepping.",
-        "/ searches, n steps matches, Space pauses the stream.",
+        "/ searches, Enter jumps to the first hit, n steps through the rest.",
         5400,
+        // No trailing Esc: it cleared the search, so the step ended on exactly
+        // the screen it started from and the viewer saw the result vanish.
         beats([
             press(300, Char('/')),
             typed(800, 80, "error"),
             press(1800, Enter),
             repeated(2500, 700, 3, Char('n')),
-            press(4700, Esc),
         ]),
     );
     push_step(
@@ -936,7 +980,7 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::KanbanBoard,
         "kanban",
         "Drag-and-drop board with undo: cards move by keyboard or mouse.",
-        "h and l change column; L moves the card.",
+        "j and k pick a card, h and l change column; L moves it, u puts it back.",
         4200,
         beats([
             repeated(300, 800, 2, Char('j')),
@@ -951,9 +995,15 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         ScreenId::ThemeStudio,
         "theme",
         "Themes are data: edit, preview, and export to JSON or a Ghostty config.",
-        "Enter applies a theme; e exports it.",
-        4400,
-        beats([repeated(300, 800, 3, Char('j')), press(2800, Enter)]),
+        "j and k walk the presets, Enter applies one, e exports it.",
+        5000,
+        // The blurb promises an export, so the step performs one rather than
+        // leaving the viewer to take it on faith.
+        beats([
+            repeated(300, 800, 3, Char('j')),
+            press(2800, Enter),
+            press(3900, Char('e')),
+        ]),
     );
     push_step(
         &mut steps,
@@ -1040,10 +1090,11 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         5600,
         // Up is older, and the timeline starts at the newest row - so Down
         // alone, which is where this step began, moves nothing at all.
+        // Focus starts on the timeline, so pressing 4 first showed nothing.
         beats([
-            press(400, Char('4')),
+            press(400, Char('1')),
             repeated(1300, 800, 4, Up),
-            press(4400, Char('1')),
+            press(4400, Char('4')),
         ]),
     );
     push_step(
@@ -1063,7 +1114,9 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         &mut steps,
         ScreenId::QuakeEasterEgg,
         "quake",
-        "And yes - a raycast Quake level, rendered in text cells. Press Tab to explore.",
+        // Its sibling Doom effect is a raycaster; this one rasterizes triangles
+        // against a depth buffer, which is the more interesting claim anyway.
+        "And yes - a Quake level, depth-buffered and rasterized into text cells.",
         "WASD moves, arrows look. Thanks for watching.",
         7200,
         // Movement is latched: forward velocity is set on key-down and cleared

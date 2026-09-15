@@ -3036,14 +3036,15 @@ impl AppModel {
         if let Some(override_ms) = self.deterministic_tick_ms {
             return override_ms.max(1);
         }
-        if self.tour.is_active() {
-            return 100;
-        }
+        // The effects screen animates at 60fps, tour or no tour. Checking the
+        // tour first pinned the most visual screen in the demo to a sixth of
+        // its frame rate for the whole of its two steps - with "10.0 FPS"
+        // printed across its own header. The storyboard advances by whatever
+        // the tick is, so a finer tick only makes its timing more precise.
         if matches!(self.display_screen(), ScreenId::VisualEffects) {
-            16
-        } else {
-            100
+            return 16;
         }
+        100
     }
 
     fn emit_tour_jsonl(&self, action: &str, outcome: &str, step: Option<&TourStep>) {
@@ -3371,6 +3372,20 @@ impl AppModel {
         }
     }
 
+    /// Let go of every key the tour is holding, on `screen`.
+    ///
+    /// Releases are scheduled, so anything that cuts a step short strands the
+    /// key down. The screens answer a key release with `Cmd::None`; there is
+    /// nothing to sequence here, only state to put back.
+    fn release_tour_keys(&mut self, screen: ScreenId) {
+        for input in self.tour.release_held() {
+            let action = crate::tour::TourAction::released(0, input);
+            if let Some(event) = tour_action_event(action, self.last_content_area.get(), None) {
+                let _ = self.screens.update(screen, &event);
+            }
+        }
+    }
+
     /// End any pointer gesture the tour left open.
     ///
     /// The storyboard always schedules its own mouse-up, but a viewer who skips
@@ -3383,6 +3398,7 @@ impl AppModel {
     }
 
     fn stop_tour(&mut self, keep_last: bool, reason: &str) {
+        self.release_tour_keys(self.tour.active_screen());
         self.release_tour_pointer();
         let screen = self.tour.stop(keep_last);
         self.current_screen = screen;
@@ -3400,7 +3416,9 @@ impl AppModel {
     fn handle_tour_event(&mut self, event: TourEvent) {
         match event {
             TourEvent::StepChanged { from, to, reason } => {
-                // A gesture belongs to the step that started it.
+                // A gesture, and any key still down, belong to the step that
+                // started them - and to the screen they were aimed at.
+                self.release_tour_keys(from);
                 self.release_tour_pointer();
                 let reason_label = match reason {
                     TourAdvanceReason::Auto => "auto",
@@ -3936,6 +3954,14 @@ impl AppModel {
                 }
                 if let Some(event) = self.tour.advance(Duration::from_millis(tick_ms)) {
                     self.handle_tour_event(event);
+                }
+                // A paused tour hands out no more actions, so a key it was
+                // holding would stay down while the screen underneath keeps
+                // ticking - Quake walks on through the pause. Checked here
+                // rather than where pause is toggled, so it holds however the
+                // tour came to be paused.
+                if self.tour.is_paused() && self.tour.is_holding() {
+                    self.release_tour_keys(self.tour.active_screen());
                 }
                 // Perform the current step's scheduled keystrokes. Taken after
                 // advance() so a step that just rolled over starts from its own
@@ -7868,6 +7894,16 @@ mod tests {
         out
     }
 
+    /// Draw the app into a fresh frame and hand it back for inspection.
+    fn render_frame<'a>(
+        app: &mut AppModel,
+        pool: &'a mut ftui_render::grapheme_pool::GraphemePool,
+    ) -> Frame<'a> {
+        let mut frame = Frame::new(140, 44, pool);
+        app.view(&mut frame);
+        frame
+    }
+
     /// Everything the frame has to say, as text.
     fn frame_text(frame: &Frame) -> String {
         let mut out = String::new();
@@ -7890,18 +7926,290 @@ mod tests {
     }
 
     #[test]
+    fn pausing_the_tour_stops_the_camera() {
+        // Pausing stops the storyboard from delivering further actions - but a
+        // key it was holding at that moment never gets its release, and the
+        // screen underneath goes on ticking. Quake would walk on for as long
+        // as the viewer left it "paused".
+        let quake_index = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::QuakeEasterEgg)
+            .expect("quake step");
+        let mut app = AppModel::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        app.start_tour(quake_index, 1.0);
+
+        // Ten ticks lands inside the opening hold, which runs 400..1700ms.
+        for _ in 0..10 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        app.tour.toggle_pause();
+        let at_pause = app.screens.quake_easter_egg.camera_pose();
+
+        // Momentum is real: releasing the key leaves the player coasting to a
+        // stop under friction. What matters is that they *do* stop.
+        for _ in 0..15 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let coasted = app.screens.quake_easter_egg.camera_pose();
+        for _ in 0..15 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let settled = app.screens.quake_easter_egg.camera_pose();
+
+        let coast = ((coasted.0 - at_pause.0).powi(2) + (coasted.1 - at_pause.1).powi(2)).sqrt();
+        let still_moving =
+            ((settled.0 - coasted.0).powi(2) + (settled.1 - coasted.1).powi(2)).sqrt();
+        assert!(
+            still_moving < 0.002,
+            "the camera is still travelling {still_moving:.3} units per 15 ticks \
+             a second and a half into the pause"
+        );
+        assert!(
+            coast < 0.3,
+            "the camera coasted {coast:.3} units after the pause, further than friction allows"
+        );
+    }
+
+    #[test]
+    fn every_screen_draws_something_worth_looking_at() {
+        // A screen that renders almost nothing is broken, and the snapshots
+        // would happily pin the emptiness. The sparsest is the tour landing at
+        // about a sixth, which is a list by design.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        for meta in crate::screens::screen_registry() {
+            let mut app = AppModel::new();
+            app.current_screen = meta.id;
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+            for _ in 0..6 {
+                pump(&mut app, AppMsg::Tick);
+            }
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+            let ink = frame_text(&frame)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .count();
+            let ratio = ink as f64 / (120.0 * 40.0);
+            assert!(
+                ratio > 0.10,
+                "{} draws only {:.1}% of its cells",
+                meta.slug,
+                ratio * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn the_effects_screen_keeps_its_frame_rate_during_the_tour() {
+        // This is an if-chain, and the tour arm used to come first: the most
+        // visual screen in the demo ran at 10fps for the whole of both its
+        // steps, and said so in its own header.
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::VisualEffects;
+        assert_eq!(app.tick_interval_ms(), 16, "outside the tour");
+
+        let vfx_step = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::VisualEffects)
+            .expect("the tour visits the effects screen");
+        app.start_tour(vfx_step, 1.0);
+        assert_eq!(app.display_screen(), ScreenId::VisualEffects);
+        assert_eq!(app.tick_interval_ms(), 16, "during the tour");
+
+        // Everything else stays on the slower tick.
+        app.stop_tour(false, "test");
+        app.current_screen = ScreenId::Dashboard;
+        assert_eq!(app.tick_interval_ms(), 100);
+    }
+
+    #[test]
+    fn the_quake_step_moves_at_every_tour_speed() {
+        // Speed scales tour time, not the tick, so a 1.3s hold is thirteen
+        // ticks at 1x and three at 4x. A viewer who speeds the tour up should
+        // still see the camera travel rather than twitch.
+        let quake_index = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::QuakeEasterEgg)
+            .expect("quake step");
+
+        for speed in [0.25, 1.0, 4.0] {
+            let mut app = AppModel::new();
+            let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+            app.start_tour(quake_index, speed);
+            let before = app.screens.quake_easter_egg.camera_pose();
+
+            // Run the step out, however many ticks that takes at this speed.
+            let ticks = ((7200.0 / speed) / 100.0).ceil() as usize;
+            for _ in 0..ticks {
+                pump(&mut app, AppMsg::Tick);
+            }
+
+            let after = app.screens.quake_easter_egg.camera_pose();
+            let moved = ((after.0 - before.0).powi(2) + (after.1 - before.1).powi(2)).sqrt();
+            assert!(
+                moved > 0.1,
+                "at {speed}x speed the camera covered only {moved:.3} units"
+            );
+        }
+    }
+
+    #[test]
+    fn skipping_past_a_held_key_releases_it() {
+        // Right is the viewer's "get on with it" key, and from the last step it
+        // finishes the tour rather than changing step - a different arm, and
+        // the one most likely to be hit while a key is down.
+        let quake_index = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::QuakeEasterEgg)
+            .expect("quake step");
+        let mut app = AppModel::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        app.start_tour(quake_index, 1.0);
+        for _ in 0..10 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        assert!(app.tour.is_holding(), "expected to interrupt a held key");
+
+        pump(
+            &mut app,
+            AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Right))),
+        );
+        assert!(!app.tour.is_holding(), "the skip left a key down");
+
+        for _ in 0..15 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let before = app.screens.quake_easter_egg.camera_pose();
+        for _ in 0..15 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let after = app.screens.quake_easter_egg.camera_pose();
+        let drift = ((after.0 - before.0).powi(2) + (after.1 - before.1).powi(2)).sqrt();
+        assert!(
+            drift < 0.002,
+            "the camera is still walking {drift:.3} units"
+        );
+    }
+
+    #[test]
+    fn leaving_the_tour_mid_keypress_does_not_leave_the_screen_running() {
+        // The screen the tour was driving stops ticking the moment the tour
+        // moves on, so a stranded key is invisible until someone opens that
+        // screen themselves - and finds the camera walking on its own.
+        let quake_index = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::QuakeEasterEgg)
+            .expect("quake step");
+        let mut app = AppModel::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        app.start_tour(quake_index, 1.0);
+        for _ in 0..10 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        assert!(app.tour.is_holding(), "expected to interrupt a held key");
+
+        app.stop_tour(false, "test");
+        app.current_screen = ScreenId::QuakeEasterEgg;
+        // Let any momentum bleed off, then watch.
+        for _ in 0..15 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let before = app.screens.quake_easter_egg.camera_pose();
+        for _ in 0..15 {
+            pump(&mut app, AppMsg::Tick);
+        }
+        let after = app.screens.quake_easter_egg.camera_pose();
+        let drift = ((after.0 - before.0).powi(2) + (after.1 - before.1).powi(2)).sqrt();
+        assert!(
+            drift < 0.002,
+            "the camera is still walking {drift:.3} units per 15 ticks after the tour left"
+        );
+    }
+
+    #[test]
+    fn every_scripted_tour_step_still_shows_something_at_80x24() {
+        // The browser demo is often narrow, and a phone is narrower still. A
+        // step that only reads at 140 columns is a step most viewers never see
+        // work. This is the whole-step check rather than the per-key one:
+        // screens legitimately drop panels when the terminal is small, so the
+        // bar is that the step as a whole still changes the screen.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let steps = crate::tour::build_steps();
+        let mut dead = Vec::new();
+
+        for (idx, step) in steps.iter().enumerate() {
+            if step.actions.is_empty() {
+                continue;
+            }
+            let render = |app: &mut AppModel, pool: &mut _| {
+                let mut frame = Frame::new(80, 24, pool);
+                app.view(&mut frame);
+                frame_cells(&frame)
+            };
+
+            let mut driven = AppModel::new();
+            driven.current_screen = step.screen;
+            let mut control = AppModel::new();
+            control.current_screen = step.screen;
+            render(&mut driven, &mut pool);
+            render(&mut control, &mut pool);
+            let content = driven.last_content_area.get();
+
+            for earlier in steps[..idx].iter().filter(|s| s.screen == step.screen) {
+                for action in &earlier.actions {
+                    for app in [&mut driven, &mut control] {
+                        let anchor = app.tour_pointer_anchor(*action);
+                        if let Some(event) = tour_action_event(*action, content, anchor) {
+                            app.update(AppMsg::TourInput(event));
+                        }
+                    }
+                }
+            }
+            for _ in 0..12 {
+                pump(&mut driven, AppMsg::Tick);
+                pump(&mut control, AppMsg::Tick);
+            }
+            for action in &step.actions {
+                let anchor = driven.tour_pointer_anchor(*action);
+                if let Some(event) = tour_action_event(*action, content, anchor) {
+                    driven.update(AppMsg::TourInput(event));
+                }
+            }
+
+            if render(&mut driven, &mut pool) == render(&mut control, &mut pool) {
+                dead.push(step.id.clone());
+            }
+        }
+
+        assert!(dead.is_empty(), "steps that do nothing at 80x24: {dead:?}");
+    }
+
+    #[test]
     fn every_scripted_tour_step_is_answered_by_its_screen() {
         // A step whose keys the screen ignores narrates a feature without
         // showing it - which is how the tour came to press `w` at a Quake
         // player who could not move. Replaying a step's own actions has to
         // change what is drawn.
+        use crate::tour::{TourInput, TourPhase};
+
         // Two identical apps, rendered the same number of times; only one is
         // given the step's input. Comparing them rather than comparing one app
         // against its own earlier frame keeps the check honest on screens that
         // redraw differently on their own - the mermaid showcase prints a cache
         // counter that moves every frame.
         let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
-        for step in crate::tour::build_steps() {
+        let steps = crate::tour::build_steps();
+        for (idx, step) in steps.iter().enumerate() {
             if step.actions.is_empty() {
                 continue;
             }
@@ -7922,12 +8230,89 @@ mod tests {
             render(&mut control, &mut pool);
             let content = driven.last_content_area.get();
 
-            for action in &step.actions {
-                let anchor = driven.tour_pointer_anchor(*action);
-                if let Some(event) = tour_action_event(*action, content, anchor) {
-                    driven.update(AppMsg::TourInput(event));
+            // Steps that share a screen run back to back, and later ones lean
+            // on where the earlier ones left it - the second Shakespeare step
+            // opens with Esc to close the search the first one opened. Replay
+            // them so each step is judged in the state the viewer sees it in.
+            for earlier in steps[..idx].iter().filter(|s| s.screen == step.screen) {
+                for action in &earlier.actions {
+                    for app in [&mut driven, &mut control] {
+                        let anchor = app.tour_pointer_anchor(*action);
+                        if let Some(event) = tour_action_event(*action, content, anchor) {
+                            app.update(AppMsg::TourInput(event));
+                        }
+                    }
                 }
             }
+
+            // Let time pass, as it has by the time a viewer reaches this step.
+            // Some keys only do something to a screen that has been running:
+            // `r` restarts the markdown stream, which is a no-op on a stream
+            // still sitting at position zero.
+            for _ in 0..12 {
+                pump(&mut driven, AppMsg::Tick);
+                pump(&mut control, AppMsg::Tick);
+            }
+
+            // Keys the step deliberately holds across ticks are latched by
+            // design - Quake's `w` sets a velocity that only moves the camera
+            // on the next tick, so pressing it changes nothing by itself. The
+            // tick loop is what demonstrates those, and the Quake step has its
+            // own tests for exactly that.
+            let mut latched: Vec<TourInput> = Vec::new();
+            let mut pressed_at: Vec<(TourInput, u64)> = Vec::new();
+            for action in &step.actions {
+                match action.phase {
+                    TourPhase::Press => pressed_at.push((action.input, action.at_ms)),
+                    TourPhase::Release => {
+                        if let Some(pos) = pressed_at.iter().position(|(i, _)| *i == action.input) {
+                            let (input, at) = pressed_at.remove(pos);
+                            if action.at_ms - at > 100 {
+                                latched.push(input);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Track each distinct key the step presses. A step that opens with
+            // Esc and then plays keys the screen ignores would pass a
+            // whole-step comparison on the Esc alone - which is how the
+            // cockpit step came to press Down at a timeline that only scrolls
+            // up.
+            let mut answered: Vec<(TourInput, bool)> = Vec::new();
+            for action in &step.actions {
+                let anchor = driven.tour_pointer_anchor(*action);
+                let Some(event) = tour_action_event(*action, content, anchor) else {
+                    continue;
+                };
+                let watch = action.phase == TourPhase::Press
+                    && !matches!(action.input, TourInput::Pointer { .. })
+                    && !latched.contains(&action.input)
+                    && !answered.iter().any(|(i, seen)| *i == action.input && *seen);
+                let before = watch.then(|| frame_cells(&render_frame(&mut driven, &mut pool)));
+
+                driven.update(AppMsg::TourInput(event));
+
+                if let Some(before) = before {
+                    let changed = frame_cells(&render_frame(&mut driven, &mut pool)) != before;
+                    match answered.iter_mut().find(|(i, _)| *i == action.input) {
+                        Some(entry) => entry.1 |= changed,
+                        None => answered.push((action.input, changed)),
+                    }
+                }
+            }
+
+            let ignored: Vec<TourInput> = answered
+                .iter()
+                .filter(|(_, seen)| !seen)
+                .map(|(input, _)| *input)
+                .collect();
+            assert!(
+                ignored.is_empty(),
+                "{} presses keys its screen ignores: {ignored:?}",
+                step.id
+            );
 
             let (driven_cells, driven_text) = render(&mut driven, &mut pool);
             let (control_cells, _) = render(&mut control, &mut pool);
