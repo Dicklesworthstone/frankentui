@@ -90,6 +90,7 @@ pub struct WasmRunner<M: Model> {
 
     /// Log messages emitted via `Cmd::Log`.
     logs: Vec<String>,
+    clipboard_requests: Vec<crate::program::ClipboardRequest>,
 }
 
 impl<M: Model> WasmRunner<M> {
@@ -113,6 +114,7 @@ impl<M: Model> WasmRunner<M> {
             last_tick_at: Duration::ZERO,
             event_queue: VecDeque::new(),
             logs: Vec::new(),
+            clipboard_requests: Vec::new(),
         }
     }
 
@@ -335,6 +337,12 @@ impl<M: Model> WasmRunner<M> {
         &self.logs
     }
 
+    /// Drain clipboard effects for the host to execute using its clipboard API.
+    /// Deliver successful reads back as `Event::Clipboard` events.
+    pub fn take_clipboard_requests(&mut self) -> Vec<crate::program::ClipboardRequest> {
+        std::mem::take(&mut self.clipboard_requests)
+    }
+
     /// Reference to the most recently rendered buffer.
     #[inline]
     #[must_use]
@@ -404,6 +412,12 @@ impl<M: Model> WasmRunner<M> {
             Cmd::SetMouseCapture(_) => {
                 // No-op: mouse capture is managed by the JS host.
             }
+            Cmd::SetClipboard(text) => self
+                .clipboard_requests
+                .push(crate::program::ClipboardRequest::Set(text)),
+            Cmd::GetClipboard => self
+                .clipboard_requests
+                .push(crate::program::ClipboardRequest::Get),
             Cmd::SaveState | Cmd::RestoreState => {
                 // No-op: state persistence is managed by the JS host
                 // (localStorage / IndexedDB).
@@ -422,6 +436,23 @@ mod tests {
     use ftui_render::cell::Cell;
 
     // -- Test model ---------------------------------------------------------
+
+    #[test]
+    fn clipboard_requests_are_drained_for_host_delivery() {
+        use crate::program::ClipboardRequest;
+        let mut runner = WasmRunner::new(Counter { value: 0 }, 10, 5);
+        let mut result = runner.init();
+        runner.execute_cmd(
+            Cmd::sequence(vec![Cmd::set_clipboard("界"), Cmd::get_clipboard()]),
+            &mut result,
+        );
+        assert_eq!(
+            runner.take_clipboard_requests(),
+            [ClipboardRequest::Set("界".into()), ClipboardRequest::Get]
+        );
+        assert!(runner.take_clipboard_requests().is_empty());
+        assert_eq!(runner.model.value, 0);
+    }
 
     struct Counter {
         value: i32,

@@ -117,6 +117,7 @@ pub struct StepProgram<M: Model> {
     dbl_buf: Option<DoubleBuffer>,
     /// Pending geometry transition that must force a baseline reset + full repaint marker.
     pending_geometry_transition: Option<GeometryTransition>,
+    clipboard_requests: Vec<ftui_runtime::program::ClipboardRequest>,
 }
 
 impl<M: Model> StepProgram<M> {
@@ -138,6 +139,7 @@ impl<M: Model> StepProgram<M> {
             height,
             dbl_buf: None,
             pending_geometry_transition: None,
+            clipboard_requests: Vec::new(),
         }
     }
 
@@ -161,6 +163,7 @@ impl<M: Model> StepProgram<M> {
             height,
             dbl_buf: None,
             pending_geometry_transition: None,
+            clipboard_requests: Vec::new(),
         }
     }
 
@@ -330,6 +333,12 @@ impl<M: Model> StepProgram<M> {
     /// Take the captured outputs (rendered buffer, logs), leaving empty defaults.
     pub fn take_outputs(&mut self) -> WebOutputs {
         self.backend.presenter_mut().take_outputs()
+    }
+
+    /// Drain clipboard effects for the host's clipboard API.
+    /// Successful reads should be returned through `push_event(Event::Clipboard(...))`.
+    pub fn take_clipboard_requests(&mut self) -> Vec<ftui_runtime::program::ClipboardRequest> {
+        std::mem::take(&mut self.clipboard_requests)
     }
 
     /// Read the captured outputs without consuming them.
@@ -538,6 +547,12 @@ impl<M: Model> StepProgram<M> {
                 features.mouse_capture = enabled;
                 let _ = self.backend.events_mut().set_features(features);
             }
+            Cmd::SetClipboard(text) => self
+                .clipboard_requests
+                .push(ftui_runtime::program::ClipboardRequest::Set(text)),
+            Cmd::GetClipboard => self
+                .clipboard_requests
+                .push(ftui_runtime::program::ClipboardRequest::Get),
             Cmd::SaveState | Cmd::RestoreState => {
                 // No persistence in WASM (yet).
             }
@@ -557,6 +572,23 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     // ---- Test model ----
+
+    #[test]
+    fn clipboard_requests_are_drained_for_host_delivery() {
+        use ftui_runtime::program::ClipboardRequest;
+        let mut program = StepProgram::new(new_counter(0), 10, 5);
+        program.init().unwrap();
+        program.execute_cmd(Cmd::sequence(vec![
+            Cmd::set_clipboard("界"),
+            Cmd::get_clipboard(),
+        ]));
+        assert_eq!(
+            program.take_clipboard_requests(),
+            [ClipboardRequest::Set("界".into()), ClipboardRequest::Get]
+        );
+        assert!(program.take_clipboard_requests().is_empty());
+        assert_eq!(program.model.value, 0);
+    }
 
     struct Counter {
         value: i32,

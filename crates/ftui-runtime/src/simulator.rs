@@ -19,7 +19,7 @@
 //! // Assert on buffer contents...
 //! ```
 
-use crate::program::{Cmd, Model};
+use crate::program::{ClipboardRequest, Cmd, Model};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubId;
 use ftui_core::event::Event;
@@ -73,6 +73,8 @@ pub enum CmdRecord {
     Task,
     /// Mouse capture toggle (no-op in simulator).
     MouseCapture(bool),
+    /// Clipboard effect captured without accessing an external clipboard.
+    Clipboard(ClipboardRequest),
     /// Error delivered to `Model::on_error`.
     Error(String),
     /// One-shot model/runtime shutdown.
@@ -110,6 +112,7 @@ pub struct ProgramSimulator<M: Model> {
     active_subscriptions: Vec<SubId>,
     /// Log messages emitted via Cmd::Log.
     logs: Vec<String>,
+    clipboard_requests: Vec<ClipboardRequest>,
     /// Errors delivered through `Model::on_error`.
     errors: Vec<String>,
     /// Optional state registry for persistence integration.
@@ -135,6 +138,7 @@ impl<M: Model> ProgramSimulator<M> {
             next_tick_at: None,
             active_subscriptions: Vec::new(),
             logs: Vec::new(),
+            clipboard_requests: Vec::new(),
             errors: Vec::new(),
             state_registry: None,
         }
@@ -405,6 +409,11 @@ impl<M: Model> ProgramSimulator<M> {
         &self.logs
     }
 
+    /// Clipboard commands in execution order. Replies must be injected explicitly.
+    pub fn clipboard_requests(&self) -> &[ClipboardRequest] {
+        &self.clipboard_requests
+    }
+
     /// Get the command execution log.
     #[inline]
     pub fn command_log(&self) -> &[CmdRecord] {
@@ -486,6 +495,16 @@ impl<M: Model> ProgramSimulator<M> {
             }
             Cmd::SetMouseCapture(enabled) => {
                 self.command_log.push(CmdRecord::MouseCapture(enabled));
+            }
+            Cmd::SetClipboard(text) => {
+                let request = ClipboardRequest::Set(text);
+                self.command_log.push(CmdRecord::Clipboard(request.clone()));
+                self.clipboard_requests.push(request);
+            }
+            Cmd::GetClipboard => {
+                self.command_log
+                    .push(CmdRecord::Clipboard(ClipboardRequest::Get));
+                self.clipboard_requests.push(ClipboardRequest::Get);
             }
             Cmd::Task(_, f) => {
                 self.command_log.push(CmdRecord::Task);
@@ -712,6 +731,28 @@ mod tests {
         assert!(!sim.model().initialized);
         assert_eq!(sim.frame_count(), 0);
         assert!(sim.logs().is_empty());
+    }
+
+    #[test]
+    fn clipboard_requests_preserve_order_without_fabricated_replies() {
+        let mut sim = ProgramSimulator::new(Counter {
+            value: 0,
+            initialized: false,
+        });
+        sim.init();
+        sim.execute_cmd(Cmd::sequence(vec![
+            Cmd::set_clipboard("界"),
+            Cmd::get_clipboard(),
+        ]));
+        assert_eq!(
+            sim.clipboard_requests(),
+            &[ClipboardRequest::Set("界".into()), ClipboardRequest::Get]
+        );
+        assert_eq!(sim.model().value, 0);
+        assert!(matches!(
+            sim.command_log().last(),
+            Some(CmdRecord::Clipboard(ClipboardRequest::Get))
+        ));
     }
 
     #[test]
