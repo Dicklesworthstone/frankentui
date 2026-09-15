@@ -47,6 +47,7 @@ OPTIONS:
     --vfx-run-id=ID      VFX harness run id override (optional)
     --vfx-perf           Emit per-frame timing JSONL for VFX harness
     --help, -h           Show this help message
+    --list-screens       Print enabled screen slugs as an ordered JSON array
     --version, -V        Show version
 
 SCREENS:
@@ -212,6 +213,7 @@ pub struct Opts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParseError {
     Help,
+    ListScreens,
     Version,
     InvalidValue { flag: &'static str, value: String },
     UnknownArg(String),
@@ -267,6 +269,14 @@ impl Opts {
             }
             Err(ParseError::Version) => {
                 println!("ftui-demo-showcase {VERSION}");
+                process::exit(0);
+            }
+            Err(ParseError::ListScreens) => {
+                let slugs: Vec<_> = crate::screens::screen_registry()
+                    .iter()
+                    .map(|meta| meta.slug)
+                    .collect();
+                println!("{}", serde_json::json!(slugs));
                 process::exit(0);
             }
             Err(ParseError::InvalidValue { flag, value }) => {
@@ -443,6 +453,7 @@ impl Opts {
                 "--version" | "-V" => {
                     return Err(ParseError::Version);
                 }
+                "--list-screens" => return Err(ParseError::ListScreens),
                 "--no-mouse" => {
                     opts.mouse_mode = "off".into();
                 }
