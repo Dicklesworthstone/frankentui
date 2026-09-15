@@ -3036,14 +3036,15 @@ impl AppModel {
         if let Some(override_ms) = self.deterministic_tick_ms {
             return override_ms.max(1);
         }
-        if self.tour.is_active() {
-            return 100;
-        }
+        // The effects screen animates at 60fps, tour or no tour. Checking the
+        // tour first pinned the most visual screen in the demo to a sixth of
+        // its frame rate for the whole of its two steps - with "10.0 FPS"
+        // printed across its own header. The storyboard advances by whatever
+        // the tick is, so a finer tick only makes its timing more precise.
         if matches!(self.display_screen(), ScreenId::VisualEffects) {
-            16
-        } else {
-            100
+            return 16;
         }
+        100
     }
 
     fn emit_tour_jsonl(&self, action: &str, outcome: &str, step: Option<&TourStep>) {
@@ -7970,6 +7971,29 @@ mod tests {
             coast < 0.3,
             "the camera coasted {coast:.3} units after the pause, further than friction allows"
         );
+    }
+
+    #[test]
+    fn the_effects_screen_keeps_its_frame_rate_during_the_tour() {
+        // This is an if-chain, and the tour arm used to come first: the most
+        // visual screen in the demo ran at 10fps for the whole of both its
+        // steps, and said so in its own header.
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::VisualEffects;
+        assert_eq!(app.tick_interval_ms(), 16, "outside the tour");
+
+        let vfx_step = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::VisualEffects)
+            .expect("the tour visits the effects screen");
+        app.start_tour(vfx_step, 1.0);
+        assert_eq!(app.display_screen(), ScreenId::VisualEffects);
+        assert_eq!(app.tick_interval_ms(), 16, "during the tour");
+
+        // Everything else stays on the slower tick.
+        app.stop_tour(false, "test");
+        app.current_screen = ScreenId::Dashboard;
+        assert_eq!(app.tick_interval_ms(), 100);
     }
 
     #[test]

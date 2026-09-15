@@ -805,7 +805,10 @@ pub(crate) fn build_steps() -> Vec<TourStep> {
         &mut steps,
         ScreenId::VisualEffects,
         "effects",
-        "Braille-rasterized effects: reaction-diffusion, metaballs, attractors, fractals.",
+        // Name what the three arrow presses actually reach. The mathematical
+        // effects - reaction-diffusion, attractors, Mandelbrot - sit at index
+        // seven and beyond, which is further than this step walks.
+        "Braille-rasterized effects: metaballs, wireframe 3D, plasma, particles.",
         "Arrow keys switch effects; every one is deterministic math.",
         7400,
         // Three effects at ~2.3s each. Five at 1.3s flicked past before any of
