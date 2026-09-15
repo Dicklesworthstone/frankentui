@@ -16697,12 +16697,25 @@ mod tests {
         }
         program.dirty = false;
         program.execute_cmd(Cmd::get_clipboard()).unwrap();
-        assert_eq!(capture.0.lock().unwrap().1, 2, "no frame: flush immediately");
+        assert_eq!(
+            capture.0.lock().unwrap().1,
+            2,
+            "no frame: flush immediately"
+        );
         program.dirty = true;
         program.execute_cmd(Cmd::set_clipboard("quit")).unwrap();
         program.execute_cmd(Cmd::quit()).unwrap();
-        assert!(capture.0.lock().unwrap().0.ends_with(b"\x1b]52;c;cXVpdA==\x07"));
-        program.execute_lifecycle_cmd(Cmd::set_clipboard("bye")).unwrap();
+        assert!(
+            capture
+                .0
+                .lock()
+                .unwrap()
+                .0
+                .ends_with(b"\x1b]52;c;cXVpdA==\x07")
+        );
+        program
+            .execute_lifecycle_cmd(Cmd::set_clipboard("bye"))
+            .unwrap();
         assert!(capture.0.lock().unwrap().0.ends_with(b"\x1b]52;c;Ynll\x07"));
         assert!(!program.running);
     }
