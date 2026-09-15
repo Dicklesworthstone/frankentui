@@ -242,7 +242,11 @@ impl TextArea {
                 true
             }
             KeyCode::Up => {
-                if shift {
+                if ctrl && shift {
+                    self.select_paragraph_up();
+                } else if ctrl {
+                    self.move_paragraph_up();
+                } else if shift {
                     self.select_up();
                 } else {
                     self.move_up();
@@ -250,7 +254,11 @@ impl TextArea {
                 true
             }
             KeyCode::Down => {
-                if shift {
+                if ctrl && shift {
+                    self.select_paragraph_down();
+                } else if ctrl {
+                    self.move_paragraph_down();
+                } else if shift {
                     self.select_down();
                 } else {
                     self.move_down();
@@ -623,6 +631,34 @@ impl TextArea {
     /// Extend selection right by word.
     pub fn select_word_right(&mut self) {
         self.editor.select_word_right();
+        self.ensure_cursor_visible();
+    }
+
+    /// Move to the preceding blank-line paragraph boundary (Ctrl+Up).
+    /// See [`CursorNavigator::move_paragraph_up`] for whitespace rules and examples.
+    pub fn move_paragraph_up(&mut self) {
+        self.editor.move_paragraph_up();
+        self.ensure_cursor_visible();
+    }
+
+    /// Move to the following blank-line paragraph boundary (Ctrl+Down).
+    /// See [`CursorNavigator::move_paragraph_down`] for whitespace rules and examples.
+    pub fn move_paragraph_down(&mut self) {
+        self.editor.move_paragraph_down();
+        self.ensure_cursor_visible();
+    }
+
+    /// Extend selection to the preceding paragraph boundary (Ctrl+Shift+Up).
+    /// See [`CursorNavigator::move_paragraph_up`] for whitespace rules and examples.
+    pub fn select_paragraph_up(&mut self) {
+        self.editor.select_paragraph_up();
+        self.ensure_cursor_visible();
+    }
+
+    /// Extend selection to the following paragraph boundary (Ctrl+Shift+Down).
+    /// See [`CursorNavigator::move_paragraph_down`] for whitespace rules and examples.
+    pub fn select_paragraph_down(&mut self) {
+        self.editor.select_paragraph_down();
         self.ensure_cursor_visible();
     }
 
@@ -1695,6 +1731,36 @@ impl StatefulWidget for TextArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paragraph_keys_move_select_and_preserve_line_navigation() {
+        for soft_wrap in [false, true] {
+            let mut ta = TextArea::new()
+                .with_text("first\ncontinued\n\nsecond\n\nlast")
+                .with_soft_wrap(soft_wrap);
+            ta.move_to_document_start();
+            let key = |code, modifiers, kind| Event::Key(KeyEvent { code, modifiers, kind });
+            assert!(ta.handle_event(&key(KeyCode::Down, Modifiers::CTRL, KeyEventKind::Press)));
+            assert_eq!(ta.cursor(), CursorPosition::new(2, 0, 0));
+            assert!(ta.handle_event(&key(KeyCode::Down, Modifiers::CTRL | Modifiers::SHIFT, KeyEventKind::Repeat)));
+            assert_eq!(ta.cursor(), CursorPosition::new(4, 0, 0));
+            assert_eq!(ta.selected_text().as_deref(), Some("\nsecond\n"));
+            let anchor = ta.selection().unwrap().anchor;
+            ta.handle_event(&key(KeyCode::Up, Modifiers::CTRL | Modifiers::SHIFT, KeyEventKind::Press));
+            assert_eq!(ta.selection().unwrap().anchor, anchor);
+            assert_eq!(ta.cursor(), anchor);
+            assert!(!ta.handle_event(&key(KeyCode::Up, Modifiers::CTRL, KeyEventKind::Release)));
+            assert_eq!(ta.cursor(), anchor);
+            ta.handle_event(&key(KeyCode::Up, Modifiers::CTRL, KeyEventKind::Press));
+            assert_eq!(ta.cursor(), CursorPosition::default());
+            assert!(ta.selection().is_none());
+            ta.handle_event(&key(KeyCode::Down, Modifiers::empty(), KeyEventKind::Press));
+            assert_eq!(ta.cursor().line, 1);
+            ta.handle_event(&key(KeyCode::Up, Modifiers::SHIFT, KeyEventKind::Press));
+            assert_eq!(ta.cursor().line, 0);
+            assert_eq!(ta.selected_text().as_deref(), Some("first\n"));
+        }
+    }
 
     fn raw_row_text(frame: &Frame, y: u16, width: u16) -> String {
         (0..width)
