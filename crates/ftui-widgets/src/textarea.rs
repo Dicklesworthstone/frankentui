@@ -14,6 +14,8 @@
 
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
+use web_time::Instant;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
@@ -79,6 +81,8 @@ pub struct TextArea {
     last_viewport_width: std::cell::Cell<usize>,
     /// Optional per-line syntax style provider (see [`LineHighlighter`]).
     highlighter: Option<LineHighlighter>,
+    /// Origin for event timestamps; explicit replay timestamps bypass this clock.
+    undo_clock: Instant,
 }
 
 impl std::fmt::Debug for TextArea {
@@ -160,6 +164,7 @@ impl TextArea {
             last_viewport_height: std::cell::Cell::new(0),
             last_viewport_width: std::cell::Cell::new(0),
             highlighter: None,
+            undo_clock: Instant::now(),
         }
     }
 
@@ -169,6 +174,15 @@ impl TextArea {
     ///
     /// Returns `true` if the state changed.
     pub fn handle_event(&mut self, event: &Event) -> bool {
+        let now_ms = u64::try_from(self.undo_clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.handle_event_at(event, now_ms)
+    }
+
+    /// Handle an event with a caller-supplied monotonic millisecond timestamp.
+    /// Use this instead of [`Self::handle_event`] for deterministic replay.
+    /// Switching to an earlier clock value starts a new undo group.
+    pub fn handle_event_at(&mut self, event: &Event, now_ms: u64) -> bool {
+        self.editor.tick(now_ms);
         match event {
             Event::Key(key)
                 if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
@@ -178,6 +192,10 @@ impl TextArea {
             Event::Paste(paste) => {
                 self.insert_text(&paste.text);
                 true
+            }
+            Event::Focus(false) => {
+                self.editor.break_undo_group();
+                false
             }
             _ => false,
         }
@@ -348,7 +366,7 @@ impl TextArea {
     /// Set focused state (builder).
     #[must_use]
     pub fn with_focus(mut self, focused: bool) -> Self {
-        self.focused = focused;
+        self.set_focused(focused);
         self
     }
 
@@ -500,7 +518,28 @@ impl TextArea {
 
     /// Set focus state.
     pub fn set_focused(&mut self, focused: bool) {
+        if !focused {
+            self.editor.break_undo_group();
+        }
         self.focused = focused;
+    }
+
+    /// Set the idle interval for typing/deletion undo groups (default 500 ms).
+    /// Zero disables coalescing.
+    pub fn set_undo_coalesce_idle(&mut self, idle: Duration) {
+        self.editor.set_coalesce_idle(idle);
+    }
+
+    /// Number of available undo steps.
+    #[must_use]
+    pub fn undo_group_count(&self) -> usize {
+        self.editor.undo_group_count()
+    }
+
+    /// Number of primitive edits retained in the undo history.
+    #[must_use]
+    pub fn undo_op_count(&self) -> usize {
+        self.editor.undo_op_count()
     }
 
     /// Access the underlying editor.
