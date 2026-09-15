@@ -943,7 +943,11 @@ impl Screen for CodeExplorer {
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
-        if area.height < 6 || area.width < 40 {
+        // A phone gives the demo about 38 columns of content, and this screen
+        // used to refuse anything under 40 - so the browser demo showed a bare
+        // "Terminal too small" on the one screen a viewer is most likely to
+        // swipe onto. Narrow now drops the sidebar instead of giving up.
+        if area.height < 6 || area.width < 24 {
             Paragraph::new("Terminal too small")
                 .style(theme::muted())
                 .render(area, frame);
@@ -984,9 +988,16 @@ impl Screen for CodeExplorer {
             (v_chunks[0], v_chunks[1])
         };
 
-        // Body: code (72%) + sidebar (28%)
+        // Body: code (72%) + sidebar (28%), until the split would leave the
+        // code too narrow to read - then the code takes the whole width and the
+        // sidebar waits for a wider terminal.
+        let sidebar_fits = body_area.width >= 56;
         let h_chunks = Flex::horizontal()
-            .constraints([Constraint::Percentage(72.0), Constraint::Percentage(28.0)])
+            .constraints(if sidebar_fits {
+                [Constraint::Percentage(72.0), Constraint::Percentage(28.0)]
+            } else {
+                [Constraint::Percentage(100.0), Constraint::Fixed(0)]
+            })
             .split(body_area);
 
         let (code_area, telemetry_area) = if h_chunks[0].height >= 12 {
@@ -1007,10 +1018,12 @@ impl Screen for CodeExplorer {
         } else {
             self.layout_telemetry.set(Rect::default());
         }
-        match self.mode {
-            ExplorerMode::Source => self.render_sidebar_source(frame, h_chunks[1]),
-            ExplorerMode::QueryLab => self.render_sidebar_query_lab(frame, h_chunks[1]),
-            ExplorerMode::ExecutionPlan => self.render_sidebar_exec_plan(frame, h_chunks[1]),
+        if sidebar_fits {
+            match self.mode {
+                ExplorerMode::Source => self.render_sidebar_source(frame, h_chunks[1]),
+                ExplorerMode::QueryLab => self.render_sidebar_query_lab(frame, h_chunks[1]),
+                ExplorerMode::ExecutionPlan => self.render_sidebar_exec_plan(frame, h_chunks[1]),
+            }
         }
         self.render_status_bar(frame, status_area);
 

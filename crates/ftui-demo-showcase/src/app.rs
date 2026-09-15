@@ -7974,6 +7974,40 @@ mod tests {
     }
 
     #[test]
+    fn no_screen_gives_up_at_phone_size() {
+        // The browser demo reports a 40x48 terminal on a 390pt viewport, which
+        // leaves a screen 38 columns of content. The code explorer used to
+        // refuse anything under 40 and show a bare "Terminal too small" - on
+        // the screen a viewer swiping in from the edge lands on first.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut broken = Vec::new();
+        for meta in crate::screens::screen_registry() {
+            let mut app = AppModel::new();
+            app.current_screen = meta.id;
+            let mut frame = Frame::new(40, 48, &mut pool);
+            app.view(&mut frame);
+            for _ in 0..6 {
+                pump(&mut app, AppMsg::Tick);
+            }
+            let mut frame = Frame::new(40, 48, &mut pool);
+            app.view(&mut frame);
+            let text = frame_text(&frame);
+            let ink = text.chars().filter(|c| !c.is_whitespace()).count();
+            let lower = text.to_lowercase();
+            let refused = lower.contains("too small") || lower.contains("more space");
+            if refused || ink < 40 * 48 / 10 {
+                broken.push(format!(
+                    "{} ({}, ink {:.2})",
+                    meta.slug,
+                    if refused { "refuses" } else { "near-empty" },
+                    ink as f64 / (40.0 * 48.0)
+                ));
+            }
+        }
+        assert!(broken.is_empty(), "unusable on a phone: {broken:?}");
+    }
+
+    #[test]
     fn every_screen_draws_something_worth_looking_at() {
         // A screen that renders almost nothing is broken, and the snapshots
         // would happily pin the emptiness. The sparsest is the tour landing at

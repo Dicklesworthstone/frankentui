@@ -1,10 +1,10 @@
-╔═════════sqlite3.c═════════╗╭File Info╮
-║      1 /*****************█║│{        │
-║      2 ** This file is an│║╰─────────╯
-║      3 ** version 3.48.0.│║╭─Context─╮
-║      4 ** single large fi│║│Line 1   │
-║      5 ** unit.  This all│║╰─────────╯
-║      6 ** possible if the│║╭Hotspots ╮
-║      7 ** of 5% or more a│║│         │
-╚═══════════════════════════╝╰─────────╯
+╔══════════════sqlite3.c═══════════════╗
+║      1 /****************************█║
+║      2 ** This file is an amalgamati│║
+║      3 ** version 3.48.0.  By combin│║
+║      4 ** single large file, the ent│║
+║      5 ** unit.  This allows many co│║
+║      6 ** possible if the files were│║
+║      7 ** of 5% or more are commonly│║
+╚══════════════════════════════════════╝
  Mode: Source · Line 1/261044 (0%) · Mat
