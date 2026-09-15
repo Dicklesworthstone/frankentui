@@ -27,6 +27,7 @@ pub mod pane_interaction;
 pub mod screens;
 pub mod test_logging;
 pub mod theme;
+pub mod touch_actions;
 pub mod tour;
 
 /// Debug logging macro for visual render diagnostics (bd-3vbf.31).
