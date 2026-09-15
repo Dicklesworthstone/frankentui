@@ -1739,14 +1739,28 @@ mod tests {
                 .with_text("first\ncontinued\n\nsecond\n\nlast")
                 .with_soft_wrap(soft_wrap);
             ta.move_to_document_start();
-            let key = |code, modifiers, kind| Event::Key(KeyEvent { code, modifiers, kind });
+            let key = |code, modifiers, kind| {
+                Event::Key(KeyEvent {
+                    code,
+                    modifiers,
+                    kind,
+                })
+            };
             assert!(ta.handle_event(&key(KeyCode::Down, Modifiers::CTRL, KeyEventKind::Press)));
             assert_eq!(ta.cursor(), CursorPosition::new(2, 0, 0));
-            assert!(ta.handle_event(&key(KeyCode::Down, Modifiers::CTRL | Modifiers::SHIFT, KeyEventKind::Repeat)));
+            assert!(ta.handle_event(&key(
+                KeyCode::Down,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                KeyEventKind::Repeat
+            )));
             assert_eq!(ta.cursor(), CursorPosition::new(4, 0, 0));
             assert_eq!(ta.selected_text().as_deref(), Some("\nsecond\n"));
             let anchor = ta.selection().unwrap().anchor;
-            ta.handle_event(&key(KeyCode::Up, Modifiers::CTRL | Modifiers::SHIFT, KeyEventKind::Press));
+            ta.handle_event(&key(
+                KeyCode::Up,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                KeyEventKind::Press,
+            ));
             assert_eq!(ta.selection().unwrap().anchor, anchor);
             assert_eq!(ta.cursor(), anchor);
             assert!(!ta.handle_event(&key(KeyCode::Up, Modifiers::CTRL, KeyEventKind::Release)));

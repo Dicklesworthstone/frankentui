@@ -448,8 +448,18 @@ mod tests {
     #[test]
     fn paragraph_moves_over_mixed_blank_lines() {
         for newline in ["\n", "\r\n"] {
-            let text = ["one", "continued", "", "two", "", "\t", "three", "\u{2003}", "last"]
-                .join(newline);
+            let text = [
+                "one",
+                "continued",
+                "",
+                "two",
+                "",
+                "\t",
+                "three",
+                "\u{2003}",
+                "last",
+            ]
+            .join(newline);
             let r = rope(&text);
             let nav = CursorNavigator::new(&r);
             let mut pos = nav.document_start();
@@ -464,13 +474,18 @@ mod tests {
                 pos = nav.move_paragraph_up(pos);
                 assert_eq!(pos, CursorPosition::new(line, 0, 0), "fixture={text:?}");
             }
-            assert_eq!(nav.move_paragraph_up(nav.from_line_grapheme(1, 3)), nav.document_start());
+            assert_eq!(
+                nav.move_paragraph_up(nav.from_line_grapheme(1, 3)),
+                nav.document_start()
+            );
         }
     }
 
     #[test]
     fn paragraph_moves_at_empty_single_and_trailing_boundaries() {
-        for text in ["", "one", "one\ntwo", "\n", " \n\t", "one\n", "one\r\n", "one\n  "] {
+        for text in [
+            "", "one", "one\ntwo", "\n", " \n\t", "one\n", "one\r\n", "one\n  ",
+        ] {
             let r = rope(text);
             let nav = CursorNavigator::new(&r);
             let start = nav.document_start();

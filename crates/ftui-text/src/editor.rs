@@ -855,7 +855,10 @@ mod tests {
             let sel = ed.selection().unwrap();
             assert_eq!(sel.anchor, anchor);
             assert_eq!(sel.head, CursorPosition::new(3, 0, 0));
-            assert_eq!(ed.selected_text(), Some(format!("界e\u{301}{newline}{newline}second{newline}")));
+            assert_eq!(
+                ed.selected_text(),
+                Some(format!("界e\u{301}{newline}{newline}second{newline}"))
+            );
             ed.select_paragraph_up();
             assert_eq!(ed.selection().unwrap().anchor, anchor);
             assert_eq!(ed.cursor(), CursorPosition::new(1, 0, 0));
