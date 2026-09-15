@@ -162,6 +162,32 @@ impl MacroRecorderScreen {
         }
     }
 
+    /// Record an event with an explicit delay instead of the wall clock.
+    ///
+    /// The snapshot tests render the recorder's duration readout, which is
+    /// measured between calls; at millisecond precision that is usually 0ms and
+    /// occasionally 1ms on a busy machine, so the snapshot failed at random.
+    pub fn record_event_with_delay(
+        &mut self,
+        event: &Event,
+        delay: std::time::Duration,
+        filter_controls: bool,
+    ) {
+        let Some(recorder) = &mut self.recorder else {
+            return;
+        };
+        if !recorder.is_recording() {
+            return;
+        }
+        if filter_controls && is_control_key(event) {
+            return;
+        }
+        if recorder.record_with_delay(event, delay) {
+            self.recorded_events = recorder.event_count();
+            self.filtered_events = recorder.filtered_count();
+        }
+    }
+
     pub fn set_terminal_size(&mut self, width: u16, height: u16) {
         self.terminal_size = (width, height);
     }

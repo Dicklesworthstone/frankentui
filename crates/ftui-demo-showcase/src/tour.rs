@@ -411,6 +411,11 @@ impl GuidedTourState {
         self.steps.get(self.step_index)
     }
 
+    /// The step at `index`, for the landing screen's start-step picker.
+    pub fn step(&self, index: usize) -> Option<&TourStep> {
+        self.steps.get(index)
+    }
+
     pub fn active_screen(&self) -> ScreenId {
         self.steps
             .get(self.step_index)

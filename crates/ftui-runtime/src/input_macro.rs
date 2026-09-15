@@ -969,6 +969,19 @@ impl FilteredEventRecorder {
         self.recorder.record(event)
     }
 
+    /// Record an event with an explicit delay, applying the same filter.
+    ///
+    /// The filtered counterpart of [`EventRecorder::record_with_delay`], for
+    /// callers that need timing they chose rather than timing the machine
+    /// happened to produce.
+    pub fn record_with_delay(&mut self, event: &Event, delay: Duration) -> bool {
+        if !self.filter.accepts(event) {
+            self.filtered_count += 1;
+            return false;
+        }
+        self.recorder.record_with_delay(event, delay)
+    }
+
     /// Get the number of events that were filtered out.
     pub fn filtered_count(&self) -> usize {
         self.filtered_count

@@ -1,15 +1,15 @@
 ╭────────────────────────────────────────────────────Macro Recorder────────────────────────────────────────────────────╮
-│State: ■ Stopped   Events: 3   Duration: 0ms                                                                          │
-│Speed: 1.00x   Loop: Off   Progress: 100%   Filtered: 0                                                               │
+│State: ■ Stopped   Events: 3   Duration: 30ms                                                                         │
+│Speed: 1.00x   Loop: Off   Progress:   0%   Filtered: 0                                                               │
 │Focus: [Controls]  [Timeline]  [Scenarios]   Ctrl/Alt+Arrows: ↑Controls  ←Timeline  →Scenarios                        │
 │Quick Start: Enter load scenario  Space record  ↑/↓ scrub timeline                                                    │
 │Space/r record/stop  Enter/p play/pause  Esc stop  L loop  +/- speed                                                  │
 │Recorded 3 events                                                                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭───────────────────────────────Timeline───────────────────────────────╮╭─────────────────Event Detail─────────────────╮
-│○ 001  +   0ms  @    0ms  a                                           ││Selected: #000                                │
-│○ 002  +   0ms  @    0ms  b                                           ││Delay:    0ms   At:     0ms                   │
-│○ 003  +   0ms  @    0ms  c                                           ││                                              │
+│○ 001  +  10ms  @   10ms  a                                           ││Selected: #000                                │
+│○ 002  +  10ms  @   20ms  b                                           ││Delay:   10ms   At:    10ms                   │
+│○ 003  +  10ms  @   30ms  c                                           ││                                              │
 │                                                                      ││Event: a                                      │
 │                                                                      ││Kind: Press                                   │
 │                                                                      ││Modifiers: Modifiers(0x0)                     │
