@@ -1376,6 +1376,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_oversubscribed_row_shrinks_rather_than_overlapping() {
+        // Min beside Fixed, asked for more than the row has. The solver gives
+        // the minimum to the first and the remainder to the second: the rects
+        // stay disjoint and inside the row, and it is the *caller* who has to
+        // decide whether a column that small is still worth drawing into.
+        for width in [120u16, 43, 42, 38, 20] {
+            let rects = Flex::horizontal()
+                .constraints([Constraint::Min(11), Constraint::Fixed(32)])
+                .split(Rect::new(0, 0, width, 3));
+            let total: u32 = rects.iter().map(|r| u32::from(r.width)).sum();
+            assert_eq!(total, u32::from(width), "row {width} not fully used");
+            assert!(
+                rects.windows(2).all(|w| w[0].x + w[0].width <= w[1].x),
+                "rects overlap at width {width}: {rects:?}"
+            );
+            assert!(
+                rects
+                    .iter()
+                    .all(|r| u32::from(r.x) + u32::from(r.width) <= u32::from(width)),
+                "rect past the end at width {width}: {rects:?}"
+            );
+        }
+    }
+
+    #[test]
     fn round_layout_stable_nan_targets_do_not_panic_the_sort() {
         // Regression: NaN remainders made the priority comparator
         // intransitive (NaN Equal to everything while real values still

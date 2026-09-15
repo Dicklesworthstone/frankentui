@@ -321,6 +321,18 @@ impl TableThemeGallery {
         "| Metric | Value | Trend |\n| --- | --- | --- |\n| Latency | 16.2ms | v |\n| Errors | 0.3% | v |\n| Throughput | 9.8k/s | ^ |\n| Cache Hit | 94% | ^ |\n"
     }
 
+    /// How many rows of cards fit at a readable height, given the gap between
+    /// them.
+    ///
+    /// Without this the grid divides the space into as many rows as there are
+    /// presets. On a phone that is one text row each, and a bordered card one
+    /// row tall draws nothing at all: the gallery rendered nineteen blank
+    /// lines with its preview panel underneath.
+    fn rows_that_fit(height: u16, gap: u16) -> usize {
+        let per_row = MIN_CARD_HEIGHT.saturating_add(gap).max(1);
+        usize::from(height.saturating_add(gap) / per_row).max(1)
+    }
+
     fn compute_grid(area: Rect, count: usize) -> (usize, usize) {
         if area.is_empty() || count == 0 {
             return (1, 1);
@@ -905,28 +917,40 @@ impl Screen for TableThemeGallery {
         let (cols, rows_count) = Self::compute_grid(grid_area, preset_count);
         self.grid_columns.set(cols);
 
-        let row_constraints = vec![Constraint::Ratio(1, rows_count as u32); rows_count];
+        // Show as many whole rows as fit and scroll them, rather than shrinking
+        // every card until none of them draw.
+        let gap = theme::spacing::XS;
+        let visible_rows = rows_count
+            .min(Self::rows_that_fit(grid_area.height, gap))
+            .max(1);
+        let first_row = (self.selected / cols)
+            .saturating_sub(visible_rows.saturating_sub(1))
+            .min(rows_count.saturating_sub(visible_rows));
+
+        let row_constraints = vec![Constraint::Ratio(1, visible_rows as u32); visible_rows];
         let col_constraints = vec![Constraint::Ratio(1, cols as u32); cols];
 
         let grid_rows = Flex::vertical()
-            .gap(theme::spacing::XS)
+            .gap(gap)
             .constraints(row_constraints)
             .split(grid_area);
 
-        let mut layout = Vec::with_capacity(preset_count);
-        let mut preset_idx = 0usize;
-        for row_area in grid_rows {
+        // Indexed by preset, so a click still maps straight to its card; the
+        // presets scrolled out of view keep an empty rect, which contains
+        // nothing.
+        let mut layout = vec![Rect::default(); preset_count];
+        for (row, row_area) in grid_rows.into_iter().enumerate() {
             let grid_cols = Flex::horizontal()
-                .gap(theme::spacing::XS)
+                .gap(gap)
                 .constraints(col_constraints.clone())
                 .split(row_area);
-            for col_area in grid_cols {
+            for (col, col_area) in grid_cols.into_iter().enumerate() {
+                let preset_idx = (first_row + row) * cols + col;
                 if preset_idx >= preset_count {
                     break;
                 }
-                layout.push(col_area);
+                layout[preset_idx] = col_area;
                 self.render_preset_card(frame, col_area, preset_idx, preset_idx == self.selected);
-                preset_idx += 1;
             }
         }
         self.log_gallery(area, &layout);
@@ -1025,6 +1049,32 @@ mod tests {
         let mut frame = Frame::new(width, height, &mut pool);
         screen.view(&mut frame, Rect::new(0, 0, width, height));
         buffer_to_text(&frame.buffer)
+    }
+
+    #[test]
+    fn the_gallery_shows_cards_at_ordinary_terminal_sizes() {
+        // Below 90 columns the grid fell back to one column and then divided
+        // the height by all ten presets, leaving each card a single row - and a
+        // bordered card one row tall draws nothing. The gallery was blank at
+        // 80x24 and on every phone, with only its preview panel to show for
+        // itself, and the snapshot pinned the blankness.
+        let gallery = TableThemeGallery::with_log_path(None);
+        for (w, h) in [(120, 40), (80, 24), (40, 30), (40, 24)] {
+            let text = render_text(&gallery, w, h);
+            assert!(
+                text.contains("Aurora"),
+                "no preset card at {w}x{h}:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_card_row_needs_room_to_draw() {
+        // Six rows a card, one of gap.
+        assert_eq!(TableThemeGallery::rows_that_fit(40, 1), 5);
+        assert_eq!(TableThemeGallery::rows_that_fit(13, 1), 2);
+        assert_eq!(TableThemeGallery::rows_that_fit(6, 1), 1);
+        assert_eq!(TableThemeGallery::rows_that_fit(0, 1), 1, "never zero");
     }
 
     #[test]

@@ -7974,6 +7974,32 @@ mod tests {
     }
 
     #[test]
+    fn diag_phone_rows() {
+        // Print the first rows of each screen at phone width so jammed text is
+        // visible: a truncated label with the next column's text against it.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        for meta in crate::screens::screen_registry() {
+            let mut app = AppModel::new();
+            app.current_screen = meta.id;
+            let mut frame = Frame::new(40, 30, &mut pool);
+            app.view(&mut frame);
+            for _ in 0..4 {
+                pump(&mut app, AppMsg::Tick);
+            }
+            let mut frame = Frame::new(40, 30, &mut pool);
+            app.view(&mut frame);
+            let text = frame_text(&frame);
+            if meta.slug != "table_theme_gallery" {
+                continue;
+            }
+            eprintln!("--- {}", meta.slug);
+            for line in text.lines() {
+                eprintln!("    |{}|", line.trim_end());
+            }
+        }
+    }
+
+    #[test]
     fn no_screen_gives_up_at_phone_size() {
         // The browser demo reports a 40x48 terminal on a 390pt viewport, which
         // leaves a screen 38 columns of content. The code explorer used to

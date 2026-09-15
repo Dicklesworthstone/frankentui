@@ -842,8 +842,13 @@ impl Shakespeare {
             .split(area);
 
         // Header row: animated title + controls
+        // The hint only gets its column when the row can seat it beside the
+        // title. In a 38-column phone terminal the solver honours Fixed(32) by
+        // starving the title to its Min, so the title is cut to "LIVE SEARC"
+        // and the hint starts in the next cell with nothing between them.
+        let header_hint_width = hint_width_beside(rows[0].width, 11, 32);
         let header_cols = Flex::horizontal()
-            .constraints([Constraint::Min(10), Constraint::Fixed(32)])
+            .constraints([Constraint::Min(10), Constraint::Fixed(header_hint_width)])
             .split(rows[0]);
 
         let title = StyledText::new("LIVE SEARCH")
@@ -859,19 +864,21 @@ impl Shakespeare {
             .time(self.time);
         title.render(header_cols[0], frame);
 
-        let hint = truncate_to_width(
-            "↑/↓ jump · Enter/Tab next · Esc close",
-            header_cols[1].width,
-        );
-        let hint_fx = StyledText::new(hint)
-            .effect(TextEffect::ColorWave {
-                color1: theme::accent::PRIMARY.into(),
-                color2: theme::accent::ACCENT_8.into(),
-                speed: 1.0,
-                wavelength: 10.0,
-            })
-            .time(self.time);
-        hint_fx.render(header_cols[1], frame);
+        if header_cols[1].width > 0 {
+            let hint = truncate_to_width(
+                "↑/↓ jump · Enter/Tab next · Esc close",
+                header_cols[1].width,
+            );
+            let hint_fx = StyledText::new(hint)
+                .effect(TextEffect::ColorWave {
+                    color1: theme::accent::PRIMARY.into(),
+                    color2: theme::accent::ACCENT_8.into(),
+                    speed: 1.0,
+                    wavelength: 10.0,
+                })
+                .time(self.time);
+            hint_fx.render(header_cols[1], frame);
+        }
 
         // Input row: label + input + match count
         let input_cols = Flex::horizontal()
@@ -919,8 +926,9 @@ impl Shakespeare {
         match_fx.render(input_cols[2], frame);
 
         // Status row: mode + current line info
+        let status_hint_width = hint_width_beside(rows[2].width, 24, 24);
         let status_cols = Flex::horizontal()
-            .constraints([Constraint::Min(10), Constraint::Fixed(24)])
+            .constraints([Constraint::Min(10), Constraint::Fixed(status_hint_width)])
             .split(rows[2]);
         let status = if self.search_input.value().len() >= 2 {
             format!("Mode: {} · Instant highlight active", self.mode.label())
@@ -931,14 +939,16 @@ impl Shakespeare {
             .style(theme::muted())
             .render(status_cols[0], frame);
 
-        let jump_hint = StyledText::new("M switches mode · n/N jumps")
-            .effect(TextEffect::Reveal {
-                mode: RevealMode::CenterOut,
-                progress: ((self.time * 0.6).sin() * 0.5 + 0.5).clamp(0.0, 1.0),
-                seed: 21,
-            })
-            .time(self.time);
-        jump_hint.render(status_cols[1], frame);
+        if status_cols[1].width > 0 {
+            let jump_hint = StyledText::new("M switches mode · n/N jumps")
+                .effect(TextEffect::Reveal {
+                    mode: RevealMode::CenterOut,
+                    progress: ((self.time * 0.6).sin() * 0.5 + 0.5).clamp(0.0, 1.0),
+                    seed: 21,
+                })
+                .time(self.time);
+            jump_hint.render(status_cols[1], frame);
+        }
     }
 
     fn render_text_panel(&self, frame: &mut Frame, area: Rect) {
@@ -1696,6 +1706,22 @@ impl Shakespeare {
     }
 }
 
+/// How wide a right-hand hint column may be, given the row it shares with a
+/// label that needs `label_width`.
+///
+/// Zero when the row cannot seat both. The layout solver handles the squeeze
+/// correctly - the rects stay disjoint and inside the row - but it does it by
+/// starving the label down to its minimum, and the hint then begins in the
+/// very next cell. On a phone that turns "LIVE SEARCH" plus its hint into
+/// "LIVE SEARC↑/↓ jump · Enter/Tab next", which reads as one mangled word.
+fn hint_width_beside(row_width: u16, label_width: u16, wanted: u16) -> u16 {
+    if row_width >= label_width.saturating_add(wanted) {
+        wanted
+    } else {
+        0
+    }
+}
+
 fn truncate_to_width(text: &str, max_width: u16) -> String {
     if max_width == 0 {
         return String::new();
@@ -1765,6 +1791,61 @@ mod tests {
             y,
             modifiers: Modifiers::NONE,
         })
+    }
+
+    /// Every non-blank cell of the frame, row by row.
+    fn frame_rows(frame: &Frame) -> Vec<String> {
+        (0..frame.buffer.height())
+            .map(|y| {
+                (0..frame.buffer.width())
+                    .map(|x| {
+                        frame
+                            .buffer
+                            .get(x, y)
+                            .and_then(|c| {
+                                c.content
+                                    .grapheme_id()
+                                    .and_then(|id| frame.pool.get(id))
+                                    .map_or_else(|| c.content.as_char(), |g| g.chars().next())
+                            })
+                            .unwrap_or(' ')
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hint_columns_yield_when_the_row_is_narrow() {
+        // Below the sum of the two, the solver starves the label to its Min and
+        // the hint opens in the next cell - legal, disjoint, and unreadable.
+        assert_eq!(hint_width_beside(120, 11, 32), 32);
+        assert_eq!(hint_width_beside(43, 11, 32), 32);
+        assert_eq!(hint_width_beside(42, 11, 32), 0, "one column short");
+        assert_eq!(hint_width_beside(38, 11, 32), 0, "a phone");
+    }
+
+    #[test]
+    fn the_search_header_does_not_overprint_itself_on_a_phone() {
+        let mut screen = Shakespeare::new();
+        screen.update(&Event::Key(ftui_core::event::KeyEvent::new(KeyCode::Char(
+            '/',
+        ))));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 30, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 40, 30));
+
+        let rows = frame_rows(&frame);
+        let header = rows
+            .iter()
+            .find(|r| r.contains("LIVE SEARCH"))
+            .unwrap_or_else(|| {
+                panic!("no intact title in:\n{}", rows.join("\n"));
+            });
+        assert!(
+            !header.contains("jump"),
+            "the hint is printing over the title: {header:?}"
+        );
     }
 
     #[test]
