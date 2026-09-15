@@ -666,6 +666,22 @@ impl Editor {
         self.cursor = nav.move_word_right(self.cursor);
     }
 
+    /// Clear selection and move to the preceding blank-line paragraph boundary.
+    /// See [`CursorNavigator::move_paragraph_up`] for whitespace rules and examples.
+    pub fn move_paragraph_up(&mut self) {
+        self.selection = None;
+        let nav = CursorNavigator::new(&self.rope);
+        self.cursor = nav.move_paragraph_up(self.cursor);
+    }
+
+    /// Clear selection and move to the following blank-line paragraph boundary.
+    /// See [`CursorNavigator::move_paragraph_down`] for whitespace rules and examples.
+    pub fn move_paragraph_down(&mut self) {
+        self.selection = None;
+        let nav = CursorNavigator::new(&self.rope);
+        self.cursor = nav.move_paragraph_down(self.cursor);
+    }
+
     /// Move cursor to start of line.
     pub fn move_to_line_start(&mut self) {
         self.selection = None;
@@ -726,6 +742,18 @@ impl Editor {
     /// Extend selection right by one word.
     pub fn select_word_right(&mut self) {
         self.extend_selection(|nav, pos| nav.move_word_right(pos));
+    }
+
+    /// Extend selection to the preceding blank-line paragraph boundary.
+    /// See [`CursorNavigator::move_paragraph_up`] for whitespace rules and examples.
+    pub fn select_paragraph_up(&mut self) {
+        self.extend_selection(|nav, pos| nav.move_paragraph_up(pos));
+    }
+
+    /// Extend selection to the following blank-line paragraph boundary.
+    /// See [`CursorNavigator::move_paragraph_down`] for whitespace rules and examples.
+    pub fn select_paragraph_down(&mut self) {
+        self.extend_selection(|nav, pos| nav.move_paragraph_down(pos));
     }
 
     /// Select all text.
@@ -812,6 +840,39 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paragraph_selection_preserves_anchor_and_exact_text() {
+        for newline in ["\n", "\r\n"] {
+            let text = ["界e\u{301}", "", "second", "", "last"].join(newline);
+            let mut ed = Editor::with_text(&text);
+            ed.move_to_document_start();
+            let anchor = ed.cursor();
+            ed.select_paragraph_down();
+            assert_eq!(ed.cursor(), CursorPosition::new(1, 0, 0));
+            assert_eq!(ed.selected_text(), Some(format!("界e\u{301}{newline}")));
+            ed.select_paragraph_down();
+            let sel = ed.selection().unwrap();
+            assert_eq!(sel.anchor, anchor);
+            assert_eq!(sel.head, CursorPosition::new(3, 0, 0));
+            assert_eq!(ed.selected_text(), Some(format!("界e\u{301}{newline}{newline}second{newline}")));
+            ed.select_paragraph_up();
+            assert_eq!(ed.selection().unwrap().anchor, anchor);
+            assert_eq!(ed.cursor(), CursorPosition::new(1, 0, 0));
+            ed.move_paragraph_down();
+            assert!(ed.selection().is_none());
+            assert_eq!(ed.cursor(), CursorPosition::new(3, 0, 0));
+            ed.move_to_document_end();
+            let end = ed.cursor();
+            ed.select_paragraph_up();
+            assert_eq!(ed.selection().unwrap().anchor, end);
+            assert_eq!(ed.selected_text(), Some(format!("{newline}last")));
+            ed.move_paragraph_up();
+            assert!(ed.selection().is_none());
+            assert_eq!(ed.cursor(), CursorPosition::new(1, 0, 0));
+            assert_eq!(ed.text(), text);
+        }
+    }
 
     #[test]
     fn new_editor_is_empty() {
