@@ -2684,12 +2684,12 @@ impl<W: Write> TerminalWriter<W> {
     ) -> io::Result<()> {
         let caps = self.capabilities;
         if !caps.osc52_clipboard {
-            tracing::debug!(target: "ftui.runtime", event = "osc52_write", ?selection, skipped_unsupported = true);
+            tracing::debug!(target: crate::telemetry_schema::TARGET_RUNTIME, event = "osc52_write", ?selection, skipped_unsupported = true);
             return Ok(());
         }
         let _output_guard = terminal_output_lock();
         ftui_core::mux_passthrough::mux_wrap(self.writer(), &caps, seq)?;
-        tracing::debug!(target: "ftui.runtime", event = "osc52_write", ?selection, payload_b64_len,
+        tracing::debug!(target: crate::telemetry_schema::TARGET_RUNTIME, event = "osc52_write", ?selection, payload_b64_len,
             wrapped = caps.in_tmux || caps.in_screen, skipped_unsupported = false);
         Ok(())
     }

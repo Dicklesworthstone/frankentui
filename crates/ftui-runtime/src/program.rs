@@ -6561,7 +6561,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let was_running = std::mem::replace(&mut self.running, true);
         let result = self.execute_cmd(cmd);
         self.running = was_running && self.running;
-        result
+        // Lifecycle hooks may run after the render loop has stopped.
+        let flush_result = self.writer.flush();
+        result.and(flush_result)
     }
 
     /// Process pending messages from subscriptions.
@@ -6638,7 +6640,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         self.executed_cmd_count = self.executed_cmd_count.saturating_add(1);
         match cmd {
             Cmd::None => {}
-            Cmd::Quit => self.running = false,
+            Cmd::Quit => {
+                self.running = false;
+                self.writer.flush()?;
+            }
             Cmd::Msg(m) => {
                 let start = Instant::now();
                 let cmd = self.model.update(m);
@@ -6691,12 +6696,16 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                     ftui_core::osc52::ClipboardSelection::Clipboard,
                     text.as_bytes(),
                 )?;
-                self.writer.flush()?;
+                if !self.dirty {
+                    self.writer.flush()?;
+                }
             }
             Cmd::GetClipboard => {
                 self.writer
                     .write_osc52_query(ftui_core::osc52::ClipboardSelection::Clipboard)?;
-                self.writer.flush()?;
+                if !self.dirty {
+                    self.writer.flush()?;
+                }
             }
             Cmd::SetTickStrategy(strategy) => {
                 let new_name = strategy.name().to_owned();
@@ -16642,6 +16651,60 @@ mod tests {
         assert!(
             !format!("{:?}", Cmd::<()>::set_clipboard("secret payload")).contains("secret payload")
         );
+    }
+
+    #[test]
+    fn clipboard_flushes_with_frame_or_without_a_future_frame() {
+        #[derive(Clone, Default)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<(Vec<u8>, usize)>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                let mut state = self.0.lock().unwrap();
+                state.0.extend_from_slice(bytes);
+                state.1 += 1;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let capture = Capture::default();
+        let mut caps = TerminalCapabilities::basic();
+        caps.osc52_clipboard = true;
+        let writer = TerminalWriter::new(
+            capture.clone(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            caps,
+        );
+        let mut program = Program::with_event_source(
+            TestModel { value: 0 },
+            HeadlessEventSource::new(10, 3, BackendFeatures::default()),
+            BackendFeatures::default(),
+            writer,
+            ProgramConfig::default(),
+        )
+        .unwrap();
+        program.dirty = true;
+        program.execute_cmd(Cmd::set_clipboard("hi")).unwrap();
+        program.execute_cmd(Cmd::get_clipboard()).unwrap();
+        assert_eq!(capture.0.lock().unwrap().1, 0);
+        program.render_frame().unwrap();
+        {
+            let state = capture.0.lock().unwrap();
+            assert_eq!(state.1, 1, "controls and frame share the buffered write");
+            assert!(state.0.starts_with(b"\x1b]52;c;aGk=\x07\x1b]52;c;?\x07"));
+        }
+        program.dirty = false;
+        program.execute_cmd(Cmd::get_clipboard()).unwrap();
+        assert_eq!(capture.0.lock().unwrap().1, 2, "no frame: flush immediately");
+        program.dirty = true;
+        program.execute_cmd(Cmd::set_clipboard("quit")).unwrap();
+        program.execute_cmd(Cmd::quit()).unwrap();
+        assert!(capture.0.lock().unwrap().0.ends_with(b"\x1b]52;c;cXVpdA==\x07"));
+        program.execute_lifecycle_cmd(Cmd::set_clipboard("bye")).unwrap();
+        assert!(capture.0.lock().unwrap().0.ends_with(b"\x1b]52;c;Ynll\x07"));
+        assert!(!program.running);
     }
 
     // =========================================================================
