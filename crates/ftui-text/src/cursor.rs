@@ -157,6 +157,50 @@ impl<'a> CursorNavigator<'a> {
         self.from_visual_col(pos.line + 1, pos.visual_col)
     }
 
+    /// Move to column zero of the blank line after the current paragraph.
+    ///
+    /// Empty and Unicode-whitespace-only lines are blank. Starting on a blank
+    /// line skips that blank run and the next paragraph. If no boundary remains,
+    /// move to the document end. For `one\n\ntwo\n\nthree`, repeated moves from
+    /// the start visit lines 1, 3, then the end of line 4.
+    #[must_use]
+    pub fn move_paragraph_down(&self, pos: CursorPosition) -> CursorPosition {
+        let mut line = self.clamp(pos).line;
+        let last = last_line_index(self.rope);
+        while line < last && is_blank_line(self.rope, line) {
+            line += 1;
+        }
+        if line == last {
+            return self.document_end();
+        }
+        while line < last && !is_blank_line(self.rope, line) {
+            line += 1;
+        }
+        if !is_blank_line(self.rope, line) {
+            self.document_end()
+        } else {
+            self.from_line_grapheme(line, 0)
+        }
+    }
+
+    /// Move to column zero of the blank line before the current paragraph.
+    ///
+    /// Empty and Unicode-whitespace-only lines are blank. Starting on a blank
+    /// line skips that blank run and the preceding paragraph. If no boundary
+    /// remains, move to the document start. For `one\n\ntwo\n\nthree`, repeated
+    /// moves from the end visit lines 3, 1, then the start of line 0.
+    #[must_use]
+    pub fn move_paragraph_up(&self, pos: CursorPosition) -> CursorPosition {
+        let mut line = self.clamp(pos).line;
+        while line > 0 && is_blank_line(self.rope, line) {
+            line -= 1;
+        }
+        while line > 0 && !is_blank_line(self.rope, line) {
+            line -= 1;
+        }
+        self.from_line_grapheme(line, 0)
+    }
+
     /// Move cursor to start of line.
     #[must_use]
     pub fn line_start(&self, pos: CursorPosition) -> CursorPosition {
@@ -247,6 +291,12 @@ fn line_text<'a>(rope: &'a Rope, line: usize) -> Cow<'a, str> {
 fn strip_trailing_newline(text: &str) -> &str {
     let stripped = text.strip_suffix('\n').unwrap_or(text);
     stripped.strip_suffix('\r').unwrap_or(stripped)
+}
+
+fn is_blank_line(rope: &Rope, line: usize) -> bool {
+    strip_trailing_newline(&line_text(rope, line))
+        .chars()
+        .all(char::is_whitespace)
 }
 
 fn grapheme_count(text: &str) -> usize {
@@ -389,9 +439,82 @@ fn move_word_right_in_line(text: &str, grapheme_idx: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn rope(text: &str) -> Rope {
         Rope::from_text(text)
+    }
+
+    #[test]
+    fn paragraph_moves_over_mixed_blank_lines() {
+        for newline in ["\n", "\r\n"] {
+            let text = ["one", "continued", "", "two", "", "\t", "three", "\u{2003}", "last"]
+                .join(newline);
+            let r = rope(&text);
+            let nav = CursorNavigator::new(&r);
+            let mut pos = nav.document_start();
+            for line in [2, 4, 7, 8, 8] {
+                pos = nav.move_paragraph_down(pos);
+                assert_eq!(pos.line, line, "fixture={text:?}");
+                assert_eq!(pos.grapheme, if line == 8 { 4 } else { 0 });
+            }
+            // Up lands on the last blank before a paragraph; down lands on
+            // the first blank after it. A multi-line separator is asymmetric.
+            for line in [7, 5, 2, 0, 0] {
+                pos = nav.move_paragraph_up(pos);
+                assert_eq!(pos, CursorPosition::new(line, 0, 0), "fixture={text:?}");
+            }
+            assert_eq!(nav.move_paragraph_up(nav.from_line_grapheme(1, 3)), nav.document_start());
+        }
+    }
+
+    #[test]
+    fn paragraph_moves_at_empty_single_and_trailing_boundaries() {
+        for text in ["", "one", "one\ntwo", "\n", " \n\t", "one\n", "one\r\n", "one\n  "] {
+            let r = rope(text);
+            let nav = CursorNavigator::new(&r);
+            let start = nav.document_start();
+            let end = nav.document_end();
+            assert_eq!(nav.move_paragraph_up(start), start, "fixture={text:?}");
+            assert_eq!(nav.move_paragraph_down(end), end, "fixture={text:?}");
+            assert_eq!(nav.move_paragraph_up(end), start, "fixture={text:?}");
+            let down = nav.move_paragraph_down(start);
+            assert_eq!(nav.move_paragraph_down(down), end, "fixture={text:?}");
+            if text == "one\n  " {
+                assert_eq!(down, CursorPosition::new(1, 0, 0));
+            } else {
+                assert_eq!(down, end, "fixture={text:?}");
+            }
+            let invalid = CursorPosition::new(usize::MAX, usize::MAX, usize::MAX);
+            assert_eq!(nav.move_paragraph_down(invalid), end);
+            assert_eq!(nav.move_paragraph_up(invalid), start);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn paragraph_moves_are_monotone_and_idempotent_at_ends(
+            lines in proptest::collection::vec(
+                prop::sample::select(vec!["", "  ", "\t", "\u{2003}", "word", "two words", "界e\u{301}"]),
+                0..=40,
+            ),
+            crlf in any::<bool>(),
+            line in 0usize..50,
+            column in 0usize..20,
+        ) {
+            let text = lines.join(if crlf { "\r\n" } else { "\n" });
+            let r = rope(&text);
+            let nav = CursorNavigator::new(&r);
+            let pos = nav.from_line_grapheme(line, column);
+            let up = nav.move_paragraph_up(pos);
+            let down = nav.move_paragraph_down(pos);
+            prop_assert!(nav.to_byte_index(up) <= nav.to_byte_index(pos), "fixture={:?}", text);
+            prop_assert!(nav.to_byte_index(down) >= nav.to_byte_index(pos), "fixture={:?}", text);
+            prop_assert_eq!(up, nav.clamp(up));
+            prop_assert_eq!(down, nav.clamp(down));
+            prop_assert_eq!(nav.move_paragraph_up(nav.document_start()), nav.document_start());
+            prop_assert_eq!(nav.move_paragraph_down(nav.document_end()), nav.document_end());
+        }
     }
 
     #[test]
