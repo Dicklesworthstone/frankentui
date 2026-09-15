@@ -249,13 +249,11 @@ impl ExplainabilityCockpit {
     /// ships with the demo.
     fn load_from_text(&mut self, text: &str, label: &str) {
         // Match the native file reader: keep only the newest rows.
-        let all: Vec<&str> = text.lines().collect();
-        let lines: &[&str] = if all.len() > MAX_EVIDENCE_LINES {
-            &all[all.len() - MAX_EVIDENCE_LINES..]
-        } else {
-            &all
-        };
-        let parsed = parse_evidence_lines(lines);
+        // Walk backwards so discarded history costs neither a line index nor
+        // a scan. Reverse the bounded tail to preserve evidence chronology.
+        let mut lines: Vec<&str> = text.lines().rev().take(MAX_EVIDENCE_LINES).collect();
+        lines.reverse();
+        let parsed = parse_evidence_lines(&lines);
 
         let status = if parsed.parsed_count == 0 {
             "No evidence entries parsed".to_string()
@@ -1238,6 +1236,58 @@ mod tests {
             r#"{"schema_version":"ftui-evidence-v1","event":"decision","run_id":"resize-1","event_idx":7,"screen_mode":"alt","cols":80,"rows":24,"idx":7,"elapsed_ms":10.0,"dt_ms":5.0,"event_rate":20.0,"regime":"burst","action":"coalesce","pending_w":80,"pending_h":24,"applied_w":80,"applied_h":24,"time_since_render_ms":3.0,"coalesce_ms":12.0,"forced":false}"#,
             r#"{"event":"budget_decision","frame_idx":42,"decision":"degrade","decision_controller":"degrade","degradation_before":"full","degradation_after":"lite","frame_time_us":20000.0,"budget_us":16000.0,"pid_output":0.2,"pid_p":0.1,"pid_i":0.05,"pid_d":0.02,"e_value":0.4,"frames_observed":10,"frames_since_change":2,"in_warmup":false,"bucket_key":null,"n_b":null,"alpha":null,"q_b":null,"y_hat":null,"upper_us":null,"risk":null,"fallback_level":null,"window_size":null,"reset_count":null}"#,
         ]
+    }
+
+    #[test]
+    fn in_memory_tail_preserves_newest_entries_and_line_boundaries() {
+        for separator in ["\n", "\r\n"] {
+            for trailing in [false, true] {
+                for count in [1, MAX_EVIDENCE_LINES, MAX_EVIDENCE_LINES + 1, 10_000] {
+                    let mut rows = Vec::with_capacity(count);
+                    for index in 0..count {
+                        rows.push(format!(
+                            r#"{{"event":"diff_decision","event_idx":{index},"strategy":"dirty"}}"#
+                        ));
+                    }
+                    let mut text = rows.join(separator);
+                    if trailing {
+                        text.push_str(separator);
+                    }
+                    let mut cockpit = ExplainabilityCockpit::with_evidence_path(None);
+                    cockpit.load_from_text(&text, "test");
+                    let retained = count.min(MAX_EVIDENCE_LINES);
+                    assert_eq!(
+                        cockpit.data.source.status,
+                        format!("Loaded {retained} entries ({retained} lines)")
+                    );
+                    assert_eq!(
+                        cockpit.data.diff.as_ref().unwrap().event_idx,
+                        (count - 1) as u64
+                    );
+                    let timeline = &cockpit.data.timeline;
+                    assert_eq!(timeline.last().unwrap().index, (count - 1) as u64);
+                    assert!(
+                        timeline
+                            .windows(2)
+                            .all(|pair| pair[0].index < pair[1].index)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn in_memory_tail_counts_blank_lines_and_discards_old_evidence() {
+        let mut cockpit = ExplainabilityCockpit::with_evidence_path(None);
+        let old = sample_lines()[0];
+        let text = format!("{old}\n{}", "\n".repeat(MAX_EVIDENCE_LINES));
+        cockpit.load_from_text(&text, "test");
+        assert!(cockpit.data.diff.is_none());
+        assert!(cockpit.data.timeline.is_empty());
+        for text in ["", "\n", "\r\n", "malformed JSON"] {
+            cockpit.load_from_text(text, "test");
+            assert!(cockpit.data.is_empty());
+        }
     }
 
     #[test]
