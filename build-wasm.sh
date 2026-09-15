@@ -41,7 +41,7 @@ output=$1
 output=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$output")
 case "$output/" in "$SCRIPT_DIR/"*) fail 'output must be outside the checkout' ;; esac
 [[ -z ${FRANKENTERM_WEB_CRATE_DIR:-} ]] || fail 'unverified renderer overrides are unsupported'
-for tool in cargo rustc wasm-bindgen python3 curl tar; do
+for tool in cargo rustc wasm-bindgen python3 curl tar node; do
   command -v "$tool" >/dev/null || fail "missing tool: $tool"
 done
 [[ -f Cargo.lock ]] || fail 'Cargo.lock is required; retain the DSR candidate lock'
@@ -104,6 +104,27 @@ build_package() {
 }
 build_package "$output/renderer-source" frankenterm-web FrankenTerm
 build_package "$SCRIPT_DIR" ftui-showcase-wasm ftui_showcase_wasm
+# Run the native binary with its own default feature graph, separately from
+# the WASM graph. Compare names AND order, not a hard-coded expected count.
+cargo -Zchecksum-freshness run --locked -p ftui-demo-showcase -- --list-screens \
+  > "$output/native-screen-slugs.json"
+node --input-type=module - "$output" <<'JS'
+import assert from 'node:assert/strict';
+import {readFile, writeFile} from 'node:fs/promises';
+import {pathToFileURL} from 'node:url';
+const root = process.argv[2];
+const pkg = `${root}/site/pkg`;
+const {initSync, ShowcaseRunner} = await import(pathToFileURL(`${pkg}/ftui_showcase_wasm.js`));
+initSync({module: await readFile(`${pkg}/ftui_showcase_wasm_bg.wasm`)});
+const runner = new ShowcaseRunner(80, 24);
+const actual = runner.screenSlugs();
+const expected = JSON.parse(await readFile(`${root}/native-screen-slugs.json`, 'utf8'));
+assert.ok(expected.length > 0, 'native screen registry must not be empty');
+assert.equal(new Set(expected).size, expected.length, 'native slugs must be unique');
+assert.deepEqual(actual, expected, 'native/WASM ordered screen registries differ');
+await writeFile(`${root}/wasm-screen-slugs.json`, JSON.stringify(actual) + '\n', {flag: 'wx'});
+console.log(`native/WASM registry parity: ${actual.length} ordered screen slugs match`);
+JS
 cp crates/ftui-showcase-wasm/frankentui_showcase_demo.html "$output/site/index.html"
 cp crates/ftui-demo-showcase/data/shakespeare.txt crates/ftui-demo-showcase/data/sqlite3.c \
   crates/ftui-demo-showcase/data/evidence.jsonl "$output/site/assets/"
