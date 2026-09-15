@@ -1736,7 +1736,6 @@ mod tests {
     fn selection_edit_keyboard_undo_redo_restores_cursor() {
         for edit in [KeyCode::Char('X'), KeyCode::Backspace, KeyCode::Delete] {
             let mut ta = TextArea::new().with_text("界e\u{301}\nsecond");
-            let original_cursor = ta.cursor();
             let key = |code, modifiers| {
                 Event::Key(KeyEvent {
                     code,
@@ -1745,6 +1744,8 @@ mod tests {
                 })
             };
             ta.handle_event(&key(KeyCode::Char('a'), Modifiers::CTRL));
+            let original_cursor = ta.cursor();
+            assert_eq!(original_cursor, CursorPosition::new(1, 6, 6));
             ta.handle_event(&key(edit, Modifiers::empty()));
             let expected = if edit == KeyCode::Char('X') { "X" } else { "" };
             assert_eq!(ta.text(), expected);
