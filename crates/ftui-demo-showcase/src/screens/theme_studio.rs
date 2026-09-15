@@ -805,6 +805,19 @@ impl ThemeStudioDemo {
         (hi + 0.05) / (lo + 0.05)
     }
 
+    /// The WCAG verdict for one token, or `None` where the criterion says
+    /// nothing.
+    ///
+    /// Contrast is a statement about text on a background, so rating the
+    /// background tokens by it is a category error: `bg::BASE` against itself
+    /// is 1.0:1 by construction, and every theme in the list was showing five
+    /// red "Fail" rows for surfaces with nothing wrong with them. The ratio
+    /// itself is still worth printing there - it says how far the surfaces
+    /// separate - but the pass/fail is not.
+    pub fn wcag_verdict(category: &str, ratio: f32) -> Option<(&'static str, PackedRgba)> {
+        (category != "Background").then(|| Self::wcag_rating(ratio))
+    }
+
     /// Get WCAG rating for a contrast ratio.
     pub fn wcag_rating(ratio: f32) -> (&'static str, PackedRgba) {
         if ratio >= 7.0 {
@@ -1005,7 +1018,8 @@ palette = 7={}
             let is_selected = i == self.swatch_index && is_focused;
             let color = (token.get_color)();
             let contrast = Self::contrast_ratio(color, bg_color);
-            let (rating, rating_color) = Self::wcag_rating(contrast);
+            let (rating, rating_color) = Self::wcag_verdict(token.category, contrast)
+                .unwrap_or(("", PackedRgba::TRANSPARENT));
 
             let prefix = if is_selected { "▶ " } else { "  " };
 
@@ -1578,6 +1592,33 @@ mod tests {
     // -----------------------------------------------------------------------
     // Contrast Ratio + WCAG Tests
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn background_tokens_get_no_wcag_verdict() {
+        // Every token was rated against bg::BASE, backgrounds included, so each
+        // theme displayed five red failures for its own surfaces - bg::BASE
+        // against itself scoring the 1.0:1 it cannot help but score.
+        assert_eq!(ThemeStudioDemo::wcag_verdict("Background", 1.0), None);
+        assert_eq!(ThemeStudioDemo::wcag_verdict("Background", 21.0), None);
+
+        for category in ["Foreground", "Accent", "Status", "Priority"] {
+            let (rating, _) = ThemeStudioDemo::wcag_verdict(category, 21.0)
+                .unwrap_or_else(|| panic!("{category} should still be rated"));
+            assert_eq!(rating, "AAA");
+            let (rating, _) = ThemeStudioDemo::wcag_verdict(category, 1.0).expect("rated");
+            assert_eq!(rating, "Fail");
+        }
+
+        // And the categories used above are the ones the inspector really has.
+        let demo = ThemeStudioDemo::new();
+        let mut categories: Vec<&str> = demo.tokens.iter().map(|t| t.category).collect();
+        categories.sort_unstable();
+        categories.dedup();
+        assert_eq!(
+            categories,
+            ["Accent", "Background", "Foreground", "Priority", "Status"]
+        );
+    }
 
     #[test]
     fn contrast_ratio_calculation() {
