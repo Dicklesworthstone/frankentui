@@ -796,6 +796,7 @@ mod tests {
         TerminalCapabilities,
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use ftui_core::osc52;
     #[cfg(feature = "clipboard-fallback")]
     use std::process::{Command, Stdio};
 
@@ -848,7 +849,7 @@ mod tests {
         assert!(ok.is_ok());
 
         let err = ClipboardSelection::CutBuffer(8).osc52_code();
-        assert!(matches!(err, Err(ClipboardError::InvalidInput(_))));
+        assert_eq!(err, Err(osc52::Osc52Error::InvalidSelection(8)));
     }
 
     // --- Basic OSC 52 write tests ---

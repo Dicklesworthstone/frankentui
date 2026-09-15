@@ -51,7 +51,9 @@ impl std::fmt::Display for Osc52Error {
             Self::PayloadTooLarge { len, max } => {
                 write!(f, "OSC 52 payload too large ({len} > {max})")
             }
-            Self::InvalidSelection(index) => write!(f, "cut buffer index must be 0..=7 (got {index})"),
+            Self::InvalidSelection(index) => {
+                write!(f, "cut buffer index must be 0..=7 (got {index})")
+            }
         }
     }
 }
@@ -92,7 +94,10 @@ mod tests {
 
     #[test]
     fn osc52_wire_format_and_selections() {
-        assert_eq!(encode_set(ClipboardSelection::Clipboard, b"hello").unwrap(), b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(
+            encode_set(ClipboardSelection::Clipboard, b"hello").unwrap(),
+            b"\x1b]52;c;aGVsbG8=\x07"
+        );
         for (selection, code) in [
             (ClipboardSelection::Clipboard, 'c'),
             (ClipboardSelection::Primary, 'p'),
@@ -100,12 +105,24 @@ mod tests {
             (ClipboardSelection::CutBuffer(0), '0'),
             (ClipboardSelection::CutBuffer(7), '7'),
         ] {
-            assert_eq!(encode_query(selection).unwrap(), format!("\x1b]52;{code};?\x07").as_bytes());
-            assert_eq!(encode_set(selection, b"").unwrap(), format!("\x1b]52;{code};\x07").as_bytes());
+            assert_eq!(
+                encode_query(selection).unwrap(),
+                format!("\x1b]52;{code};?\x07").as_bytes()
+            );
+            assert_eq!(
+                encode_set(selection, b"").unwrap(),
+                format!("\x1b]52;{code};\x07").as_bytes()
+            );
         }
         for index in [8, 255] {
-            assert_eq!(encode_query(ClipboardSelection::CutBuffer(index)), Err(Osc52Error::InvalidSelection(index)));
-            assert_eq!(encode_set(ClipboardSelection::CutBuffer(index), b"x"), Err(Osc52Error::InvalidSelection(index)));
+            assert_eq!(
+                encode_query(ClipboardSelection::CutBuffer(index)),
+                Err(Osc52Error::InvalidSelection(index))
+            );
+            assert_eq!(
+                encode_set(ClipboardSelection::CutBuffer(index), b"x"),
+                Err(Osc52Error::InvalidSelection(index))
+            );
         }
     }
 
@@ -113,9 +130,15 @@ mod tests {
     fn osc52_payload_cap_and_mux_wire_format() {
         let selection = ClipboardSelection::Clipboard;
         assert!(encode_set_with_limit(selection, b"abc", 4).is_ok());
-        assert_eq!(encode_set_with_limit(selection, b"abcd", 4), Err(Osc52Error::PayloadTooLarge { len: 8, max: 4 }));
+        assert_eq!(
+            encode_set_with_limit(selection, b"abcd", 4),
+            Err(Osc52Error::PayloadTooLarge { len: 8, max: 4 })
+        );
         assert!(encode_set(selection, &vec![0; 56_244]).is_ok());
-        assert!(matches!(encode_set(selection, &vec![0; 56_245]), Err(Osc52Error::PayloadTooLarge { .. })));
+        assert!(matches!(
+            encode_set(selection, &vec![0; 56_245]),
+            Err(Osc52Error::PayloadTooLarge { .. })
+        ));
         let seq = encode_set(selection, b"hello").unwrap();
         let mut tmux = Vec::new();
         crate::mux_passthrough::tmux_wrap(&mut tmux, &seq).unwrap();
