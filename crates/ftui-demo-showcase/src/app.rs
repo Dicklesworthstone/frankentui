@@ -1719,6 +1719,8 @@ where
         Cmd::SaveState => Cmd::SaveState,
         Cmd::RestoreState => Cmd::RestoreState,
         Cmd::SetMouseCapture(enabled) => Cmd::SetMouseCapture(enabled),
+        Cmd::SetClipboard(text) => Cmd::SetClipboard(text),
+        Cmd::GetClipboard => Cmd::GetClipboard,
         Cmd::SetTickStrategy(strategy) => Cmd::SetTickStrategy(strategy),
     }
 }
@@ -6191,6 +6193,8 @@ mod tests {
             Cmd::SaveState,
             Cmd::RestoreState,
             Cmd::SetMouseCapture(true),
+            Cmd::set_clipboard("clipboard test"),
+            Cmd::get_clipboard(),
             Cmd::SetTickStrategy(Box::new(Uniform::new(7))),
         ]);
         let Cmd::Sequence(commands) = lift_screen_cmd(ScreenId::DeterminismLab, command) else {
@@ -6218,6 +6222,10 @@ mod tests {
         assert!(matches!(commands.next(), Some(Cmd::SaveState)));
         assert!(matches!(commands.next(), Some(Cmd::RestoreState)));
         assert!(matches!(commands.next(), Some(Cmd::SetMouseCapture(true))));
+        assert!(
+            matches!(commands.next(), Some(Cmd::SetClipboard(text)) if text == "clipboard test")
+        );
+        assert!(matches!(commands.next(), Some(Cmd::GetClipboard)));
         let Some(Cmd::SetTickStrategy(mut strategy)) = commands.next() else {
             panic!("strategy must survive the lift");
         };
