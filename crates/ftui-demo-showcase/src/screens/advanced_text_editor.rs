@@ -21,7 +21,6 @@
 //! - `FTUI_TEXTEDITOR_DETERMINISTIC=true` - Enable deterministic mode
 
 use std::cell::Cell;
-use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use web_time::Instant;
@@ -46,8 +45,6 @@ use ftui_widgets::textarea::TextArea;
 use super::{HelpEntry, Screen};
 use crate::determinism;
 use crate::theme;
-
-const UNDO_HISTORY_LIMIT: usize = 64;
 
 // =============================================================================
 // Diagnostic Logging (bd-12o8.5)
@@ -644,10 +641,6 @@ pub struct AdvancedTextEditor {
     current_match: Option<usize>,
     /// Status message displayed at the bottom.
     status: String,
-    /// Undo history (most recent at the back).
-    undo_stack: VecDeque<String>,
-    /// Redo history (most recent at the back).
-    redo_stack: VecDeque<String>,
     /// Whether the undo history panel is visible.
     undo_panel_visible: bool,
     /// Undo/redo keybindings.
@@ -729,8 +722,6 @@ and proper Unicode handling throughout.
             search_results: Vec::new(),
             current_match: None,
             status: "Ready | Ctrl+F: Search | Ctrl+H: Replace | ?: Help".into(),
-            undo_stack: VecDeque::new(),
-            redo_stack: VecDeque::new(),
             undo_panel_visible: false,
             undo_keys: UndoKeybindings::default(),
             diagnostic_log,
@@ -1096,8 +1087,8 @@ and proper Unicode handling throughout.
 
         let undo_info = format!(
             "Undo:{} Redo:{}",
-            self.undo_stack.len(),
-            self.redo_stack.len()
+            self.editor.undo_group_count(),
+            self.editor.redo_group_count()
         );
         let history_hint = if self.undo_panel_visible {
             "Ctrl+U: Hide history"
@@ -1156,15 +1147,15 @@ and proper Unicode handling throughout.
         }
 
         let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("Undo ({})", self.undo_stack.len()));
-        for entry in self.undo_stack.iter().rev().take(6) {
-            lines.push(format!("  • {entry}"));
+        lines.push(format!("Undo ({})", self.editor.undo_group_count()));
+        for _ in 0..self.editor.undo_group_count().min(6) {
+            lines.push("  • Edit text".to_string());
         }
 
         lines.push(String::new());
-        lines.push(format!("Redo ({})", self.redo_stack.len()));
-        for entry in self.redo_stack.iter().rev().take(6) {
-            lines.push(format!("  • {entry}"));
+        lines.push(format!("Redo ({})", self.editor.redo_group_count()));
+        for _ in 0..self.editor.redo_group_count().min(6) {
+            lines.push("  • Redo edit".to_string());
         }
 
         Paragraph::new(lines.join("\n"))
@@ -1249,38 +1240,27 @@ and proper Unicode handling throughout.
         }
     }
 
-    fn record_undo(&mut self, description: &str) {
-        self.undo_stack.push_back(description.to_string());
-        self.redo_stack.clear();
-
-        while self.undo_stack.len() > UNDO_HISTORY_LIMIT {
-            self.undo_stack.pop_front();
-        }
-    }
-
     fn perform_undo(&mut self) {
-        if self.undo_stack.pop_back().is_some() {
+        if self.editor.undo_group_count() > 0 {
             self.editor.undo();
-            self.redo_stack.push_back("Redo edit".to_string());
 
             // Log undo
             let entry = DiagnosticEntry::new(DiagnosticEventKind::UndoPerformed)
-                .with_undo_depth(self.undo_stack.len())
-                .with_redo_depth(self.redo_stack.len());
+                .with_undo_depth(self.editor.undo_group_count())
+                .with_redo_depth(self.editor.redo_group_count());
             self.log_event(entry);
         }
         self.update_status();
     }
 
     fn perform_redo(&mut self) {
-        if self.redo_stack.pop_back().is_some() {
+        if self.editor.redo_group_count() > 0 {
             self.editor.redo();
-            self.undo_stack.push_back("Edit text".to_string());
 
             // Log redo
             let entry = DiagnosticEntry::new(DiagnosticEventKind::RedoPerformed)
-                .with_undo_depth(self.undo_stack.len())
-                .with_redo_depth(self.redo_stack.len());
+                .with_undo_depth(self.editor.undo_group_count())
+                .with_redo_depth(self.editor.redo_group_count());
             self.log_event(entry);
         }
         self.update_status();
@@ -1528,14 +1508,12 @@ impl Screen for AdvancedTextEditor {
                 self.editor.handle_event(event);
                 let after = self.editor.text();
                 if before != after {
-                    self.record_undo("Edit text");
-
                     // Log text edit
                     let cursor = self.editor.cursor();
                     let entry = DiagnosticEntry::new(DiagnosticEventKind::TextEdited)
                         .with_text_len(grapheme_count(&after))
                         .with_cursor(cursor.line, cursor.grapheme)
-                        .with_undo_depth(self.undo_stack.len());
+                        .with_undo_depth(self.editor.undo_group_count());
                     self.log_event(entry);
                 }
                 self.update_status();
@@ -1725,25 +1703,27 @@ impl Screen for AdvancedTextEditor {
     }
 
     fn can_undo(&self) -> bool {
-        !self.undo_stack.is_empty()
+        self.editor.undo_group_count() > 0
     }
 
     fn can_redo(&self) -> bool {
-        !self.redo_stack.is_empty()
+        self.editor.redo_group_count() > 0
     }
 
     fn next_undo_description(&self) -> Option<&str> {
-        self.undo_stack.back().map(String::as_str)
+        self.can_undo().then_some("Edit text")
     }
 
     fn undo(&mut self) -> bool {
+        let changed = self.can_undo();
         self.perform_undo();
-        true
+        changed
     }
 
     fn redo(&mut self) -> bool {
+        let changed = self.can_redo();
         self.perform_redo();
-        true
+        changed
     }
 
     fn consumes_text_input(&self) -> bool {
@@ -1916,20 +1896,49 @@ mod tests {
     #[test]
     fn undo_redo_updates_history() {
         let mut screen = AdvancedTextEditor::new();
-        assert_eq!(screen.undo_stack.len(), 0);
-        assert_eq!(screen.redo_stack.len(), 0);
+        assert_eq!(screen.editor.undo_group_count(), 0);
+        assert_eq!(screen.editor.redo_group_count(), 0);
 
         screen.update(&press(KeyCode::Char('a')));
-        assert_eq!(screen.undo_stack.len(), 1);
-        assert_eq!(screen.redo_stack.len(), 0);
+        assert_eq!(screen.editor.undo_group_count(), 1);
+        assert_eq!(screen.editor.redo_group_count(), 0);
 
         screen.update(&ctrl_press(KeyCode::Char('z')));
-        assert_eq!(screen.undo_stack.len(), 0);
-        assert_eq!(screen.redo_stack.len(), 1);
+        assert_eq!(screen.editor.undo_group_count(), 0);
+        assert_eq!(screen.editor.redo_group_count(), 1);
 
         screen.update(&ctrl_press(KeyCode::Char('y')));
-        assert_eq!(screen.undo_stack.len(), 1);
-        assert_eq!(screen.redo_stack.len(), 0);
+        assert_eq!(screen.editor.undo_group_count(), 1);
+        assert_eq!(screen.editor.redo_group_count(), 0);
+    }
+
+    #[test]
+    fn undo_groups_screen_history_tracks_words_not_keystrokes() {
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("");
+        // This test checks screen routing; virtual-clock widget tests check idle.
+        screen
+            .editor
+            .set_undo_coalesce_idle(std::time::Duration::MAX);
+        for c in "hello world".chars() {
+            screen.update(&press(KeyCode::Char(c)));
+        }
+        assert_eq!(screen.editor.undo_group_count(), 2);
+        assert!(screen.status.contains("Undo:2 Redo:0"));
+        screen.update(&ctrl_press(KeyCode::Char('z')));
+        assert_eq!(screen.editor.text(), "hello ");
+        assert!(screen.status.contains("Undo:1 Redo:1"));
+        screen.update(&ctrl_press(KeyCode::Char('z')));
+        assert_eq!(screen.editor.text(), "");
+        assert!(!screen.can_undo());
+        assert!(screen.next_undo_description().is_none());
+        assert!(!screen.undo());
+        screen.update(&ctrl_press(KeyCode::Char('y')));
+        screen.update(&ctrl_press(KeyCode::Char('y')));
+        assert_eq!(screen.editor.text(), "hello world");
+        assert!(screen.status.contains("Undo:2 Redo:0"));
+        assert!(!screen.can_redo());
+        assert!(!screen.redo());
     }
 
     #[test]

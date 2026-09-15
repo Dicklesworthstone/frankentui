@@ -239,6 +239,12 @@ impl Editor {
         self.undo_stack.len()
     }
 
+    /// Number of groups available to redo.
+    #[must_use]
+    pub fn redo_group_count(&self) -> usize {
+        self.redo_stack.len()
+    }
+
     /// Number of primitive edits retained across all undo groups.
     #[must_use]
     pub fn undo_op_count(&self) -> usize {
@@ -600,7 +606,8 @@ impl Editor {
     /// Push an edit operation onto the undo stack.
     fn push_undo(&mut self, op: EditOp, kind: GroupKind) {
         let bytes = op.byte_len();
-        let space = matches!(&op, EditOp::Insert { text, .. } if text.chars().all(char::is_whitespace));
+        let space =
+            matches!(&op, EditOp::Insert { text, .. } if text.chars().all(char::is_whitespace));
         let join = self.undo_stack.last().is_some_and(|group| {
             !group.closed
                 && kind != GroupKind::Other
@@ -1018,7 +1025,11 @@ mod tests {
             }
             let before = ed.cursor();
             for _ in 0..5 {
-                assert!(if backwards { ed.delete_backward() } else { ed.delete_forward() });
+                assert!(if backwards {
+                    ed.delete_backward()
+                } else {
+                    ed.delete_forward()
+                });
             }
             assert_eq!(ed.undo_group_count(), 1);
             assert_eq!(ed.undo_op_count(), 5);
@@ -1088,15 +1099,29 @@ mod tests {
     #[test]
     fn undo_groups_navigation_and_selection_close_typing() {
         let boundaries: &[fn(&mut Editor)] = &[
-            Editor::move_left, Editor::move_right, Editor::move_up, Editor::move_down,
-            Editor::move_word_left, Editor::move_word_right,
-            Editor::move_paragraph_up, Editor::move_paragraph_down,
-            Editor::move_to_line_start, Editor::move_to_line_end,
-            Editor::move_to_document_start, Editor::move_to_document_end,
-            Editor::select_left, Editor::select_right, Editor::select_up, Editor::select_down,
-            Editor::select_word_left, Editor::select_word_right,
-            Editor::select_paragraph_up, Editor::select_paragraph_down,
-            Editor::select_all, Editor::clear_selection, Editor::break_undo_group,
+            Editor::move_left,
+            Editor::move_right,
+            Editor::move_up,
+            Editor::move_down,
+            Editor::move_word_left,
+            Editor::move_word_right,
+            Editor::move_paragraph_up,
+            Editor::move_paragraph_down,
+            Editor::move_to_line_start,
+            Editor::move_to_line_end,
+            Editor::move_to_document_start,
+            Editor::move_to_document_end,
+            Editor::select_left,
+            Editor::select_right,
+            Editor::select_up,
+            Editor::select_down,
+            Editor::select_word_left,
+            Editor::select_word_right,
+            Editor::select_paragraph_up,
+            Editor::select_paragraph_down,
+            Editor::select_all,
+            Editor::clear_selection,
+            Editor::break_undo_group,
         ];
         for boundary in boundaries {
             let mut ed = Editor::new();
@@ -1169,13 +1194,23 @@ mod tests {
             }
             let final_text = ed.text();
             let count = ed.undo_group_count();
-            for _ in 0..count { proptest::prop_assert!(ed.undo()); }
+            for _ in 0..count {
+                proptest::prop_assert!(ed.undo());
+                let bytes: usize = ed.undo_stack.iter()
+                    .flat_map(|g| &g.ops).map(EditOp::byte_len).sum();
+                proptest::prop_assert_eq!(ed.current_undo_size, bytes);
+            }
             proptest::prop_assert_eq!(ed.text(), "界e\u{301}\nseed");
             if let Some(cursor) = first_edit_cursor {
                 proptest::prop_assert_eq!(ed.cursor(), cursor);
             }
             proptest::prop_assert!(!ed.can_undo());
-            for _ in 0..count { proptest::prop_assert!(ed.redo()); }
+            for _ in 0..count {
+                proptest::prop_assert!(ed.redo());
+                let bytes: usize = ed.undo_stack.iter()
+                    .flat_map(|g| &g.ops).map(EditOp::byte_len).sum();
+                proptest::prop_assert_eq!(ed.current_undo_size, bytes);
+            }
             proptest::prop_assert_eq!(ed.text(), final_text);
             if let Some(cursor) = last_edit_cursor {
                 proptest::prop_assert_eq!(ed.cursor(), cursor);

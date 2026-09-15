@@ -536,6 +536,12 @@ impl TextArea {
         self.editor.undo_group_count()
     }
 
+    /// Number of available redo steps.
+    #[must_use]
+    pub fn redo_group_count(&self) -> usize {
+        self.editor.redo_group_count()
+    }
+
     /// Number of primitive edits retained in the undo history.
     #[must_use]
     pub fn undo_op_count(&self) -> usize {
@@ -1773,27 +1779,35 @@ mod tests {
 
     #[test]
     fn undo_groups_keyboard_clock_paste_and_focus() {
-        let key = |c| Event::Key(KeyEvent {
-            code: KeyCode::Char(c),
-            modifiers: Modifiers::NONE,
-            kind: KeyEventKind::Press,
-        });
+        let key = |c| {
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: Modifiers::NONE,
+                kind: KeyEventKind::Press,
+            })
+        };
         let mut ta = TextArea::new();
         for (tick, c) in "hello world".chars().enumerate() {
             ta.handle_event_at(&key(c), tick as u64);
         }
         assert_eq!(ta.undo_group_count(), 2);
         assert_eq!(ta.undo_op_count(), 11);
-        ta.handle_event_at(&Event::Key(KeyEvent {
-            code: KeyCode::Char('z'),
-            modifiers: Modifiers::CTRL,
-            kind: KeyEventKind::Press,
-        }), 11);
+        ta.handle_event_at(
+            &Event::Key(KeyEvent {
+                code: KeyCode::Char('z'),
+                modifiers: Modifiers::CTRL,
+                kind: KeyEventKind::Press,
+            }),
+            11,
+        );
         assert_eq!(ta.text(), "hello ");
         ta.redo();
         ta.handle_event_at(&key('x'), 600);
         assert_eq!(ta.undo_group_count(), 3);
-        ta.handle_event_at(&Event::Paste(ftui_core::event::PasteEvent::bracketed("p")), 601);
+        ta.handle_event_at(
+            &Event::Paste(ftui_core::event::PasteEvent::bracketed("p")),
+            601,
+        );
         ta.handle_event_at(&key('y'), 602);
         assert_eq!(ta.undo_group_count(), 5);
         ta.handle_event_at(&Event::Focus(false), 603);
