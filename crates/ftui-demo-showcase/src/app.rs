@@ -7974,6 +7974,36 @@ mod tests {
     }
 
     #[test]
+    fn every_screen_draws_something_worth_looking_at() {
+        // A screen that renders almost nothing is broken, and the snapshots
+        // would happily pin the emptiness. The sparsest is the tour landing at
+        // about a sixth, which is a list by design.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        for meta in crate::screens::screen_registry() {
+            let mut app = AppModel::new();
+            app.current_screen = meta.id;
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+            for _ in 0..6 {
+                pump(&mut app, AppMsg::Tick);
+            }
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+            let ink = frame_text(&frame)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .count();
+            let ratio = ink as f64 / (120.0 * 40.0);
+            assert!(
+                ratio > 0.10,
+                "{} draws only {:.1}% of its cells",
+                meta.slug,
+                ratio * 100.0
+            );
+        }
+    }
+
+    #[test]
     fn the_effects_screen_keeps_its_frame_rate_during_the_tour() {
         // This is an if-chain, and the tour arm used to come first: the most
         // visual screen in the demo ran at 10fps for the whole of both its
