@@ -2652,6 +2652,48 @@ impl<W: Write> TerminalWriter<W> {
         self.writer().flush()
     }
 
+    /// Queue an OSC 52 clipboard write in the presenter's existing output buffer.
+    ///
+    /// Call [`flush`](Self::flush) when no frame follows. Unsupported capability
+    /// sets are skipped; invalid selections and oversized payloads are errors.
+    pub fn write_osc52_set(
+        &mut self,
+        selection: ftui_core::osc52::ClipboardSelection,
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        let seq = ftui_core::osc52::encode_set(selection, bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        self.write_osc52_control(selection, &seq, bytes.len().div_ceil(3) * 4)
+    }
+
+    /// Queue an asynchronous OSC 52 clipboard read request.
+    pub fn write_osc52_query(
+        &mut self,
+        selection: ftui_core::osc52::ClipboardSelection,
+    ) -> io::Result<()> {
+        let seq = ftui_core::osc52::encode_query(selection)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        self.write_osc52_control(selection, &seq, 0)
+    }
+
+    fn write_osc52_control(
+        &mut self,
+        selection: ftui_core::osc52::ClipboardSelection,
+        seq: &[u8],
+        payload_b64_len: usize,
+    ) -> io::Result<()> {
+        let caps = self.capabilities;
+        if !caps.osc52_clipboard {
+            tracing::debug!(target: "ftui.runtime", event = "osc52_write", ?selection, skipped_unsupported = true);
+            return Ok(());
+        }
+        let _output_guard = terminal_output_lock();
+        ftui_core::mux_passthrough::mux_wrap(self.writer(), &caps, seq)?;
+        tracing::debug!(target: "ftui.runtime", event = "osc52_write", ?selection, payload_b64_len,
+            wrapped = caps.in_tmux || caps.in_screen, skipped_unsupported = false);
+        Ok(())
+    }
+
     /// Flush any buffered output.
     pub fn flush(&mut self) -> io::Result<()> {
         let _output_guard = terminal_output_lock();
@@ -2861,6 +2903,54 @@ mod tests {
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn osc52_writer_buffers_wraps_and_rejects_invalid_requests() {
+        use ftui_core::osc52::ClipboardSelection;
+        for mode in 0..4 {
+            let mut caps = TerminalCapabilities::basic();
+            caps.osc52_clipboard = mode != 0;
+            caps.in_tmux = mode == 2;
+            caps.in_screen = mode == 3;
+            let mut writer =
+                TerminalWriter::new(Vec::new(), ScreenMode::AltScreen, UiAnchor::Bottom, caps);
+            writer
+                .write_osc52_set(ClipboardSelection::Clipboard, b"hi")
+                .unwrap();
+            writer
+                .write_osc52_query(ClipboardSelection::Clipboard)
+                .unwrap();
+            assert!(
+                writer.presenter.as_mut().unwrap().writer_mut().is_empty(),
+                "small controls remain buffered"
+            );
+            writer.flush().unwrap();
+            let bytes = writer.presenter.as_mut().unwrap().writer_mut().clone();
+            let expected: &[u8] = match mode {
+                0 => b"",
+                1 => b"\x1b]52;c;aGk=\x07\x1b]52;c;?\x07",
+                2 => b"\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\\x1bPtmux;\x1b\x1b]52;c;?\x07\x1b\\",
+                _ => b"\x1bP\x1b]52;c;aGk=\x07\x1b\\\x1bP\x1b]52;c;?\x07\x1b\\",
+            };
+            assert_eq!(bytes, expected);
+            assert_eq!(
+                writer
+                    .write_osc52_set(ClipboardSelection::Clipboard, &vec![0; 56_245])
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert_eq!(
+                writer
+                    .write_osc52_query(ClipboardSelection::CutBuffer(8))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+            writer.flush().unwrap();
+            assert_eq!(writer.presenter.as_mut().unwrap().writer_mut(), &bytes);
+        }
+    }
 
     fn max_cursor_row(output: &[u8]) -> u16 {
         let mut max_row = 0u16;

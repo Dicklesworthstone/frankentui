@@ -577,6 +577,15 @@ impl std::fmt::Debug for FrameTimingConfig {
     }
 }
 
+/// Clipboard requests captured by host-driven runners and test simulators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipboardRequest {
+    /// Copy text to the system clipboard.
+    Set(String),
+    /// Request clipboard text; the host delivers an `Event::Clipboard` reply.
+    Get,
+}
+
 /// Commands represent side effects to be executed by the runtime.
 ///
 /// Commands are returned from `init()` and `update()` to trigger
@@ -626,6 +635,11 @@ pub enum Cmd<M> {
     /// Instructs the terminal session to enable or disable mouse event capture.
     /// No-op in test simulators.
     SetMouseCapture(bool),
+    /// Copy text using OSC 52 on supported terminals.
+    SetClipboard(String),
+    /// Request clipboard text asynchronously as an `Event::Clipboard` reply.
+    /// Unsupported terminals may ignore the request; no reply is guaranteed.
+    GetClipboard,
     /// Replace the tick strategy at runtime.
     ///
     /// Takes ownership of a boxed strategy. Use when switching from one
@@ -648,6 +662,11 @@ impl<M: std::fmt::Debug> std::fmt::Debug for Cmd<M> {
             Self::SaveState => write!(f, "SaveState"),
             Self::RestoreState => write!(f, "RestoreState"),
             Self::SetMouseCapture(b) => write!(f, "SetMouseCapture({b})"),
+            Self::SetClipboard(text) => f
+                .debug_struct("SetClipboard")
+                .field("bytes", &text.len())
+                .finish(),
+            Self::GetClipboard => write!(f, "GetClipboard"),
             Self::SetTickStrategy(s) => write!(f, "SetTickStrategy({})", s.name()),
         }
     }
@@ -762,6 +781,8 @@ impl<M> Cmd<M> {
             Self::SaveState => "SaveState",
             Self::RestoreState => "RestoreState",
             Self::SetMouseCapture(_) => "SetMouseCapture",
+            Self::SetClipboard(_) => "SetClipboard",
+            Self::GetClipboard => "GetClipboard",
             Self::SetTickStrategy(_) => "SetTickStrategy",
         }
     }
@@ -841,6 +862,16 @@ impl<M> Cmd<M> {
     #[inline]
     pub fn set_mouse_capture(enabled: bool) -> Self {
         Self::SetMouseCapture(enabled)
+    }
+
+    /// Copy text to the system clipboard through the runtime's output owner.
+    pub fn set_clipboard(text: impl Into<String>) -> Self {
+        Self::SetClipboard(text.into())
+    }
+
+    /// Request clipboard text. Handle `Event::Clipboard` for the reply.
+    pub fn get_clipboard() -> Self {
+        Self::GetClipboard
     }
 
     /// Count the number of atomic commands in this command.
@@ -6654,6 +6685,18 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             Cmd::SetMouseCapture(enabled) => {
                 self.backend_features.mouse_capture = enabled;
                 self.events.set_features(self.backend_features)?;
+            }
+            Cmd::SetClipboard(text) => {
+                self.writer.write_osc52_set(
+                    ftui_core::osc52::ClipboardSelection::Clipboard,
+                    text.as_bytes(),
+                )?;
+                self.writer.flush()?;
+            }
+            Cmd::GetClipboard => {
+                self.writer
+                    .write_osc52_query(ftui_core::osc52::ClipboardSelection::Clipboard)?;
+                self.writer.flush()?;
             }
             Cmd::SetTickStrategy(strategy) => {
                 let new_name = strategy.name().to_owned();
@@ -16549,6 +16592,56 @@ mod tests {
             .execute_cmd(Cmd::set_mouse_capture(false))
             .expect("set mouse capture false");
         assert!(!program.backend_features.mouse_capture);
+    }
+
+    #[test]
+    fn clipboard_commands_reach_writer_and_reply_reaches_model_once() {
+        use ftui_core::event::{ClipboardEvent, ClipboardSource};
+
+        #[derive(Default)]
+        struct ClipboardModel(Vec<String>);
+        impl Model for ClipboardModel {
+            type Message = Event;
+            fn update(&mut self, event: Event) -> Cmd<Event> {
+                match event {
+                    Event::Tick => {
+                        Cmd::sequence(vec![Cmd::set_clipboard("hi"), Cmd::get_clipboard()])
+                    }
+                    Event::Clipboard(reply) => {
+                        self.0.push(reply.content);
+                        Cmd::none()
+                    }
+                    _ => Cmd::none(),
+                }
+            }
+            fn view(&self, _: &mut Frame) {}
+        }
+
+        let mut program =
+            headless_program_with_config(ClipboardModel::default(), ProgramConfig::default());
+        let mut caps = TerminalCapabilities::basic();
+        caps.osc52_clipboard = true;
+        program.writer =
+            TerminalWriter::new(Vec::new(), ScreenMode::AltScreen, UiAnchor::Bottom, caps);
+        program.handle_event(Event::Tick).unwrap();
+        assert!(
+            program.model.0.is_empty(),
+            "a query must not synthesize a reply"
+        );
+        program
+            .handle_event(Event::Clipboard(ClipboardEvent::new(
+                "hi",
+                ClipboardSource::Osc52,
+            )))
+            .unwrap();
+        assert_eq!(program.model.0, ["hi"]);
+        let bytes = program.writer.into_inner().unwrap();
+        assert!(bytes.starts_with(b"\x1b]52;c;aGk=\x07\x1b]52;c;?\x07"));
+        assert_eq!(Cmd::<()>::set_clipboard("hi").type_name(), "SetClipboard");
+        assert_eq!(Cmd::<()>::get_clipboard().type_name(), "GetClipboard");
+        assert!(
+            !format!("{:?}", Cmd::<()>::set_clipboard("secret payload")).contains("secret payload")
+        );
     }
 
     // =========================================================================
