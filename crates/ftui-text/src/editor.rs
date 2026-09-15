@@ -962,6 +962,189 @@ mod tests {
     use super::*;
 
     #[test]
+    fn undo_groups_typing_hello_world() {
+        let mut ed = Editor::new();
+        for c in "hello world".chars() {
+            ed.insert_char(c);
+        }
+        assert_eq!(ed.undo_group_count(), 2);
+        assert_eq!(ed.undo_op_count(), 11);
+        ed.undo();
+        assert_eq!(ed.text(), "hello ");
+        ed.undo();
+        assert_eq!(ed.text(), "");
+        assert_eq!(ed.cursor(), CursorPosition::default());
+        ed.redo();
+        assert_eq!(ed.text(), "hello ");
+        ed.redo();
+        assert_eq!(ed.text(), "hello world");
+        assert_eq!(ed.cursor().grapheme, 11);
+    }
+
+    #[test]
+    fn undo_groups_deletions_and_direction_changes() {
+        for backwards in [false, true] {
+            let mut ed = Editor::with_text("a界e\u{301}bc");
+            if !backwards {
+                ed.move_to_document_start();
+            }
+            let before = ed.cursor();
+            for _ in 0..5 {
+                assert!(if backwards { ed.delete_backward() } else { ed.delete_forward() });
+            }
+            assert_eq!(ed.undo_group_count(), 1);
+            assert_eq!(ed.undo_op_count(), 5);
+            assert_eq!(ed.text(), "");
+            assert!(ed.undo());
+            assert_eq!(ed.text(), "a界e\u{301}bc");
+            assert_eq!(ed.cursor(), before);
+            assert!(ed.redo());
+            assert_eq!(ed.text(), "");
+        }
+        let mut ed = Editor::with_text("abcd");
+        ed.set_cursor(CursorPosition::new(0, 2, 2));
+        ed.delete_backward();
+        ed.delete_forward();
+        ed.insert_char('x');
+        assert_eq!(ed.undo_group_count(), 3);
+        while ed.undo() {}
+        assert_eq!(ed.text(), "abcd");
+    }
+
+    #[test]
+    fn undo_groups_virtual_idle_boundary_and_clock_reset() {
+        for (elapsed, expected) in [(499, 1), (500, 1), (501, 2)] {
+            let mut ed = Editor::new();
+            ed.tick(0);
+            ed.insert_char('a');
+            ed.tick(elapsed);
+            ed.insert_char('b');
+            assert_eq!(ed.undo_group_count(), expected);
+        }
+        let mut ed = Editor::new();
+        ed.tick(100);
+        ed.insert_char('a');
+        ed.tick(0);
+        ed.insert_char('b');
+        assert_eq!(ed.undo_group_count(), 2);
+        ed.set_coalesce_idle(Duration::ZERO);
+        ed.insert_char('c');
+        ed.insert_char('d');
+        assert_eq!(ed.undo_group_count(), 4);
+    }
+
+    #[test]
+    fn undo_groups_paste_newline_and_cursor_endpoints() {
+        let mut ed = Editor::new();
+        ed.insert_char('a');
+        ed.insert_text("bc");
+        ed.insert_char('d');
+        ed.insert_newline();
+        ed.insert_char('e');
+        assert_eq!(ed.undo_group_count(), 5);
+        let after = ed.cursor();
+        ed.move_to_document_start();
+        ed.undo();
+        assert_eq!(ed.text(), "abcd\n");
+        ed.move_to_document_start();
+        ed.redo();
+        assert_eq!(ed.text(), "abcd\ne");
+        assert_eq!(ed.cursor(), after);
+        // Undo/new edit must not reopen a previously closed group.
+        ed.undo();
+        ed.insert_char('f');
+        assert_eq!(ed.undo_group_count(), 5);
+        assert!(!ed.can_redo());
+    }
+
+    #[test]
+    fn undo_groups_navigation_and_selection_close_typing() {
+        let boundaries: &[fn(&mut Editor)] = &[
+            Editor::move_left, Editor::move_right, Editor::move_up, Editor::move_down,
+            Editor::move_word_left, Editor::move_word_right,
+            Editor::move_paragraph_up, Editor::move_paragraph_down,
+            Editor::move_to_line_start, Editor::move_to_line_end,
+            Editor::move_to_document_start, Editor::move_to_document_end,
+            Editor::select_left, Editor::select_right, Editor::select_up, Editor::select_down,
+            Editor::select_word_left, Editor::select_word_right,
+            Editor::select_paragraph_up, Editor::select_paragraph_down,
+            Editor::select_all, Editor::clear_selection, Editor::break_undo_group,
+        ];
+        for boundary in boundaries {
+            let mut ed = Editor::new();
+            ed.insert_char('a');
+            boundary(&mut ed);
+            ed.insert_char('b');
+            assert_eq!(ed.undo_group_count(), 2);
+            while ed.undo() {}
+            assert_eq!(ed.text(), "");
+        }
+    }
+
+    #[test]
+    fn undo_groups_limits_prune_whole_groups_and_redo() {
+        let mut ed = Editor::new();
+        ed.set_max_history(2);
+        for text in ["one", "two", "three"] {
+            for c in text.chars() {
+                ed.insert_char(c);
+            }
+            ed.break_undo_group();
+        }
+        assert_eq!(ed.undo_group_count(), 2);
+        assert_eq!(ed.current_undo_size, 8);
+        ed.set_max_undo_size(5);
+        assert_eq!(ed.undo_group_count(), 1);
+        assert_eq!(ed.current_undo_size, 5);
+        ed.undo();
+        assert_eq!(ed.text(), "onetwo");
+        assert_eq!(ed.current_undo_size, 0);
+        ed.set_max_history(0);
+        ed.redo();
+        assert_eq!(ed.text(), "onetwothree");
+        assert_eq!(ed.current_undo_size, 0);
+        assert!(!ed.can_undo());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn undo_groups_roundtrip_and_accounting(
+            ops in proptest::collection::vec((0u8..8, 0u64..800), 0..100)
+        ) {
+            let mut ed = Editor::with_text("界e\u{301}\nseed");
+            let initial = ed.cursor();
+            let mut tick = 0;
+            for (op, elapsed) in ops {
+                tick += elapsed;
+                ed.tick(tick);
+                match op {
+                    0 => ed.insert_char('x'),
+                    1 => ed.insert_char(' '),
+                    2 => ed.insert_char('\u{301}'),
+                    3 => { ed.delete_backward(); }
+                    4 => { ed.delete_forward(); }
+                    5 => ed.move_left(),
+                    6 => ed.insert_text("paste"),
+                    _ => ed.insert_newline(),
+                }
+                let bytes: usize = ed.undo_stack.iter()
+                    .flat_map(|g| &g.ops).map(EditOp::byte_len).sum();
+                proptest::prop_assert_eq!(ed.current_undo_size, bytes);
+                proptest::prop_assert_eq!(ed.cursor(), CursorNavigator::new(ed.rope()).clamp(ed.cursor()));
+            }
+            let final_text = ed.text();
+            let count = ed.undo_group_count();
+            for _ in 0..count { proptest::prop_assert!(ed.undo()); }
+            proptest::prop_assert_eq!(ed.text(), "界e\u{301}\nseed");
+            // Movement before the first edit can change its original cursor.
+            if count == 0 { proptest::prop_assert!(!ed.can_undo()); }
+            for _ in 0..count { proptest::prop_assert!(ed.redo()); }
+            proptest::prop_assert_eq!(ed.text(), final_text);
+            let _ = initial;
+        }
+    }
+
+    #[test]
     fn selection_edit_undo_restores_original_cursor_head() {
         let original = "界e\u{301}\nbeta\ntail";
         for backwards in [false, true] {
