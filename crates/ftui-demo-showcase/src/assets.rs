@@ -6,8 +6,8 @@
 //! WASM builds must avoid embedding multi-megabyte strings in the module (they
 //! bloat download size and dramatically slow instantiation due to data segment
 //! memcpy). For WASM, the host is expected to provide these blobs once at
-//! startup via `set_*` functions (implemented as a one-time leak to obtain a
-//! `'static` string slice).
+//! startup via `set_*` functions. Each cell owns its accepted string for the
+//! life of the module; rejected replacements are dropped normally.
 
 #[cfg(target_arch = "wasm32")]
 use std::sync::OnceLock;
@@ -22,18 +22,16 @@ pub fn shakespeare_text() -> Option<&'static str> {
 }
 
 #[cfg(target_arch = "wasm32")]
-static SHAKESPEARE_TEXT: OnceLock<&'static str> = OnceLock::new();
+static SHAKESPEARE_TEXT: OnceLock<String> = OnceLock::new();
 
 #[cfg(target_arch = "wasm32")]
 pub fn shakespeare_text() -> Option<&'static str> {
-    SHAKESPEARE_TEXT.get().copied()
+    SHAKESPEARE_TEXT.get().map(String::as_str)
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn set_shakespeare_text(text: String) -> bool {
-    SHAKESPEARE_TEXT
-        .set(Box::leak(text.into_boxed_str()))
-        .is_ok()
+    SHAKESPEARE_TEXT.set(text).is_ok()
 }
 
 // -------------------------------------------------------------------------------------
@@ -46,16 +44,16 @@ pub fn sqlite_source() -> Option<&'static str> {
 }
 
 #[cfg(target_arch = "wasm32")]
-static SQLITE_SOURCE: OnceLock<&'static str> = OnceLock::new();
+static SQLITE_SOURCE: OnceLock<String> = OnceLock::new();
 
 #[cfg(target_arch = "wasm32")]
 pub fn sqlite_source() -> Option<&'static str> {
-    SQLITE_SOURCE.get().copied()
+    SQLITE_SOURCE.get().map(String::as_str)
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn set_sqlite_source(text: String) -> bool {
-    SQLITE_SOURCE.set(Box::leak(text.into_boxed_str())).is_ok()
+    SQLITE_SOURCE.set(text).is_ok()
 }
 
 // -------------------------------------------------------------------------------------
@@ -73,14 +71,14 @@ pub fn evidence_jsonl() -> Option<&'static str> {
 }
 
 #[cfg(target_arch = "wasm32")]
-static EVIDENCE_JSONL: OnceLock<&'static str> = OnceLock::new();
+static EVIDENCE_JSONL: OnceLock<String> = OnceLock::new();
 
 #[cfg(target_arch = "wasm32")]
 pub fn evidence_jsonl() -> Option<&'static str> {
-    EVIDENCE_JSONL.get().copied()
+    EVIDENCE_JSONL.get().map(String::as_str)
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn set_evidence_jsonl(text: String) -> bool {
-    EVIDENCE_JSONL.set(Box::leak(text.into_boxed_str())).is_ok()
+    EVIDENCE_JSONL.set(text).is_ok()
 }
