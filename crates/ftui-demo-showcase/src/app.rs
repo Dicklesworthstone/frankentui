@@ -7941,6 +7941,53 @@ mod tests {
     }
 
     #[test]
+    fn the_quake_step_never_leaves_the_camera_parked() {
+        // "The quake one doesn't seem to do anything" was first a physics bug
+        // and then a choreography one: the step could move, ran straight into a
+        // wall, and spent the rest of its time wedged there. A viewer cannot
+        // tell that from a crash, so the step has to keep the camera alive -
+        // walking or turning - rather than merely start out moving.
+        let quake_index = crate::tour::build_steps()
+            .iter()
+            .position(|step| step.screen == ScreenId::QuakeEasterEgg)
+            .expect("quake step");
+        let mut app = AppModel::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        app.start_tour(quake_index, 1.0);
+        // The step is 7.2s long and the tour pins the tick to 100ms.
+        const TICKS: usize = 72;
+        let mut last = app.screens.quake_easter_egg.camera_pose();
+        let mut frozen = 0;
+        let mut run = 0;
+        let mut longest = 0;
+        for _ in 0..TICKS {
+            pump(&mut app, AppMsg::Tick);
+            let now = app.screens.quake_easter_egg.camera_pose();
+            let moved = ((now.0 - last.0).powi(2) + (now.1 - last.1).powi(2)).sqrt();
+            let turned = (now.2 - last.2).abs();
+            if moved < 0.002 && turned < 0.01 {
+                frozen += 1;
+                run += 1;
+                longest = longest.max(run);
+            } else {
+                run = 0;
+            }
+            last = now;
+        }
+
+        assert!(
+            frozen * 2 < TICKS,
+            "the camera is still for {frozen} of {TICKS} ticks of the Quake step"
+        );
+        assert!(
+            longest <= 8,
+            "the camera sits motionless for {longest} ticks in a row, which reads as a hang"
+        );
+    }
+
+    #[test]
     fn tour_quake_step_walks_the_player_down_the_map() {
         // The end-to-end version of the check below: run the real tick loop on
         // the real step and confirm the camera travels. The two holds are worth
@@ -7956,12 +8003,12 @@ mod tests {
         app.view(&mut frame);
         app.start_tour(quake_index, 1.0);
 
-        let before = app.screens.quake_easter_egg.player_xy();
+        let before = app.screens.quake_easter_egg.camera_pose();
         // The step is 7.2s long and the tour pins the tick to 100ms.
         for _ in 0..72 {
             pump(&mut app, AppMsg::Tick);
         }
-        let after = app.screens.quake_easter_egg.player_xy();
+        let after = app.screens.quake_easter_egg.camera_pose();
         let moved = ((after.0 - before.0).powi(2) + (after.1 - before.1).powi(2)).sqrt();
         assert!(
             moved > 0.5,
