@@ -202,7 +202,7 @@ fn probe_live_terminal(
     } else {
         ProbeResult::default()
     };
-    // The operator switches (FTUI_SYNC_OUTPUT / FTUI_SCROLL_REGION) outrank
+    // The operator switches (sync output, scroll region, OSC 52) outrank
     // everything, including a terminal that answers the probe positively.
     // (`with_overrides()` applied them once already; re-applying after the
     // probe is what makes them win over a positive answer.)

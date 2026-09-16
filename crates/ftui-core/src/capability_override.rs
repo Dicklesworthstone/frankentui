@@ -528,13 +528,17 @@ pub struct PolicyOverrides {
     pub sync_output: Option<bool>,
     /// `FTUI_SCROLL_REGION`, same encoding.
     pub scroll_region: Option<bool>,
+    /// `FTUI_OSC52_CLIPBOARD`, same encoding; preserves multiplexer wrapping.
+    pub osc52_clipboard: Option<bool>,
 }
 
 impl PolicyOverrides {
     /// `true` when no switch was applied.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.sync_output.is_none() && self.scroll_region.is_none()
+        self.sync_output.is_none()
+            && self.scroll_region.is_none()
+            && self.osc52_clipboard.is_none()
     }
 }
 
@@ -546,6 +550,9 @@ impl PolicyOverrides {
 ///   multiplexer evidence (tmux/screen/zellij) is never overridden.
 /// - `FTUI_SCROLL_REGION=1|0` does the same for the inline scroll-region
 ///   (DECSTBM) strategy.
+/// - `FTUI_OSC52_CLIPBOARD=1|0` explicitly enables or disables clipboard
+///   requests. Enabling it preserves multiplexer identity and OSC 52 wrapping;
+///   the operator must configure the multiplexer to permit passthrough.
 ///
 /// These exist so a user on a terminal the allowlist does not know (or one
 /// where a probe cannot run) can opt in without rebuilding, and so a flaky
@@ -562,6 +569,7 @@ where
     let overrides = PolicyOverrides {
         sync_output: policy_switch(get_env("FTUI_SYNC_OUTPUT")),
         scroll_region: policy_switch(get_env("FTUI_SCROLL_REGION")),
+        osc52_clipboard: policy_switch(get_env("FTUI_OSC52_CLIPBOARD")),
     };
     if let Some(enabled) = overrides.sync_output {
         caps.sync_output = enabled;
@@ -574,6 +582,9 @@ where
         if enabled {
             caps.in_wezterm_mux = false;
         }
+    }
+    if let Some(enabled) = overrides.osc52_clipboard {
+        caps.osc52_clipboard = enabled;
     }
     overrides
 }
@@ -698,6 +709,31 @@ mod tests {
         let junk =
             apply_env_policy_overrides_with(&mut caps, env_from(&[("FTUI_SYNC_OUTPUT", "maybe")]));
         assert!(junk.is_empty(), "unparsable switch reports nothing applied");
+    }
+
+    #[test]
+    fn clipboard_policy_requires_explicit_opt_in_and_preserves_mux_identity() {
+        for value in [None, Some("banana"), Some("0"), Some("1")] {
+            let mut caps = TerminalCapabilities::tmux();
+            let applied = apply_env_policy_overrides_with(&mut caps, |key| {
+                (key == "FTUI_OSC52_CLIPBOARD")
+                    .then_some(value)
+                    .flatten()
+                    .map(str::to_owned)
+            });
+            assert_eq!(caps.osc52_clipboard, value == Some("1"));
+            assert!(caps.in_tmux);
+            assert!(!caps.use_sync_output());
+            assert_eq!(applied.is_empty(), value.is_none() || value == Some("banana"));
+        }
+        let mut caps = TerminalCapabilities::modern();
+        let applied = apply_env_policy_overrides_with(
+            &mut caps,
+            env_from(&[("FTUI_OSC52_CLIPBOARD", "off")]),
+        );
+        assert_eq!(applied.osc52_clipboard, Some(false));
+        assert!(!caps.osc52_clipboard);
+        assert!(caps.sync_output);
     }
 
     #[test]
