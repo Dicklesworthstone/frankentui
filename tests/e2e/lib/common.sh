@@ -284,7 +284,7 @@ e2e_cargo_test_env_guard_self_test() (
     else
         [[ "$?" == 23 ]] || status=fail
     fi
-    jsonl_assert "cargo_test_env_guard_self_test" "$status" "leaked=$leaked"
+    jsonl_assert "cargo_test_env_guard_self_test" "$status" "leaked=$leaked" || return 1
     printf 'cargo_test_env_guard_self_test %s\n' "$status"
     [[ "$status" == pass ]]
 )
