@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn jsonl_logger_emits_core_fields() {
+    fn jsonl_logger_explicit_seed_wins_over_env() {
         let logger = TestJsonlLogger::new_with("jsonl_logger", 99, true, 100);
         let line = logger.emit_line("case_start", &[("case", JsonValue::str("alpha"))]);
         assert!(line.contains("\"event\":\"case_start\""));
@@ -770,14 +770,7 @@ mod tests {
 
     #[test]
     fn fixture_seed_defaults_when_unset() {
-        // With no FTUI_TEST_SEED etc. set, fixture_seed returns default
-        // (This relies on __FTUI_NEVER env vars not being set.)
-        let default = 12345u64;
-        // fixture_seed reads real env vars, so we can't control them here,
-        // but we can verify the function doesn't panic and returns a u64
-        let result = fixture_seed(default);
-        // fixture_seed always returns a u64; just verify it doesn't panic
-        let _ = result;
+        assert_eq!(fixture_seed_with(99, &|_| None), 99);
     }
 
     #[test]
@@ -821,6 +814,13 @@ mod tests {
             }
         };
         assert_eq!(fixture_seed_with(7, &garbage_top), 9);
+
+        let harness_before_e2e = |key: &str| match key {
+            "FTUI_HARNESS_SEED" => Some("1".to_string()),
+            "E2E_SEED" => Some("2".to_string()),
+            _ => None,
+        };
+        assert_eq!(fixture_seed_with(99, &harness_before_e2e), 1);
     }
 
     #[test]
