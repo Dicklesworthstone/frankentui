@@ -132,6 +132,74 @@ mod tests {
     }
 
     #[test]
+    fn every_touch_action_encodes_to_the_key_it_names() {
+        // The touch bar's buttons are built in the demo crate and reach the
+        // runner as JSON the host writes; `ftui-web` is what turns that back
+        // into a key event. The two mappings live in different crates, so a
+        // key name only one of them knows makes a button that presses
+        // something else - or nothing. Check them against each other for every
+        // button on every screen.
+        use ftui_demo_showcase::touch_actions::TouchAction;
+
+        let mut core = RunnerCore::new(120, 40);
+        core.init();
+        let mut checked = 0usize;
+
+        for meta in ftui_demo_showcase::screens::screen_registry() {
+            if !core.goto_screen_selector(meta.slug) {
+                // Feature-gated out of this build; nothing to offer.
+                continue;
+            }
+            let json = core.touch_actions_json();
+            let listed: Vec<serde_json::Value> =
+                serde_json::from_str(&json).expect("touch actions are valid JSON");
+            assert!(!listed.is_empty(), "{} offers no touch actions", meta.slug);
+
+            for entry in listed {
+                let key = entry["key"].as_str().expect("every action names a key");
+                let mods = u8::try_from(entry["mods"].as_u64().expect("mods is a number"))
+                    .expect("mods fits in the modifier bits");
+                let action = TouchAction {
+                    label: entry["label"].as_str().unwrap_or_default().to_string(),
+                    action: entry["action"].as_str().unwrap_or_default().to_string(),
+                    key: key.to_string(),
+                    mods,
+                };
+
+                // Exactly the record the host sends when the button is tapped.
+                let record = serde_json::json!({
+                    "kind": "key",
+                    "phase": "down",
+                    "key": key,
+                    "code": key,
+                    "mods": mods,
+                    "repeat": false,
+                })
+                .to_string();
+                let parsed = ftui_web::input_parser::parse_encoded_input_to_event(&record)
+                    .unwrap_or_else(|error| {
+                        panic!("{}: {key:?} is not an input record: {error:?}", meta.slug)
+                    })
+                    .unwrap_or_else(|| panic!("{}: {key:?} parsed to no event", meta.slug));
+
+                let expected = ftui_core::event::Event::Key(
+                    action
+                        .key_event()
+                        .unwrap_or_else(|| panic!("{}: {key:?} names no key", meta.slug)),
+                );
+                assert_eq!(
+                    parsed, expected,
+                    "{}: the host and the demo disagree about {key:?}",
+                    meta.slug
+                );
+                checked += 1;
+            }
+        }
+
+        assert!(checked > 400, "only {checked} buttons were checked");
+    }
+
+    #[test]
     fn runner_core_creates_and_inits() {
         let mut core = RunnerCore::new(80, 24);
         core.init();

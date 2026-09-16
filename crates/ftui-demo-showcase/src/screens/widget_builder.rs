@@ -852,7 +852,7 @@ impl Screen for WidgetBuilder {
                 action: "Select widget",
             },
             HelpEntry {
-                key: "P / Shift+P",
+                key: "p / P",
                 action: "Cycle presets",
             },
             HelpEntry {

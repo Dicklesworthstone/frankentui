@@ -4894,6 +4894,42 @@ impl AppModel {
             .collect()
     }
 
+    /// The current screen's keys, as presses a touch host can render as buttons.
+    ///
+    /// A phone reaches the demo through the web build, where there is no
+    /// keyboard until one is raised over the terminal. Handing the host the
+    /// screen's own keybindings keeps the touch controls honest: a screen that
+    /// gains a key gains a button, with no second list to forget to update.
+    pub fn touch_actions(&self) -> Vec<crate::touch_actions::TouchAction> {
+        let mut entries = self.current_screen_keybindings();
+        // The screen's own keys come first - they are what someone opened this
+        // screen for - and the keys that work anywhere follow. Only the globals
+        // that do something from a plain screen: a button for a key that needs
+        // the command palette open first would sit there doing nothing, and a
+        // phone has no other way to find that out.
+        entries.extend(
+            crate::chrome::global_keybindings()
+                .into_iter()
+                .filter(|global| global.always_available)
+                .map(|global| global.entry),
+        );
+        crate::touch_actions::touch_actions(&entries)
+    }
+
+    /// True when `(x, y)` sits on something a pointer can drag.
+    ///
+    /// Touch drags scroll by default - that is what a finger on a wall of text
+    /// means - so a host has no way to know a finger landed on a divider
+    /// instead. This lets it start a real drag on the handles where dragging
+    /// is the whole point, and leave every other gesture scrolling.
+    pub fn drag_handle_at(&self, x: u16, y: u16) -> bool {
+        match self.display_screen() {
+            ScreenId::Dashboard => self.screens.dashboard.is_splitter_hit(x, y),
+            ScreenId::LayoutLab => self.screens.layout_lab.is_splitter_hit(x, y),
+            _ => false,
+        }
+    }
+
     fn current_screen_undo_status(&self) -> (bool, bool, Option<&str>) {
         use screens::Screen;
         match self.display_screen() {
@@ -8204,6 +8240,315 @@ mod tests {
                 ratio * 100.0
             );
         }
+    }
+
+    #[test]
+    fn a_touch_host_can_find_the_dividers_it_is_allowed_to_drag() {
+        // A finger that moves means scroll, so a drag on a divider only works
+        // if the host can ask whether the cell under it is a handle before the
+        // finger moves at all. The dashboard's own splitter centre is the
+        // ground truth: if it does not answer here, touch cannot resize.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        // Whatever the browser happens to be: a desktop window, the phone the
+        // touch bar is for, and the middling size in between.
+        for (cols, rows) in [(140u16, 44u16), (125, 44), (100, 30), (60, 20)] {
+            let mut app = AppModel::new();
+            app.current_screen = ScreenId::Dashboard;
+            let mut frame = Frame::new(cols, rows, &mut pool);
+            app.view(&mut frame);
+
+            let Some((x, y)) = app.screens.dashboard.primary_splitter_center() else {
+                // Small enough that the bottom row is gone; nothing to drag.
+                continue;
+            };
+            assert!(
+                app.drag_handle_at(x, y),
+                "at {cols}x{rows} the splitter at ({x}, {y}) is not offered to touch"
+            );
+            // A cell well away from any divider must stay a scroll.
+            assert!(
+                !app.drag_handle_at(2, 2),
+                "at {cols}x{rows} the top-left corner is offered as a handle"
+            );
+        }
+    }
+
+    #[test]
+    fn every_screen_offers_something_to_tap() {
+        // The web demo is the way most people meet FrankenTUI, and on a phone
+        // the touch bar is the only keyboard there is. A screen that offers no
+        // buttons of its own is a screen a phone can look at and never use -
+        // so this asks the screen's own keys, not the bar, which always
+        // carries the global ones on top.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut silent = Vec::new();
+        for meta in crate::screens::screen_registry() {
+            let mut app = AppModel::new();
+            app.current_screen = meta.id;
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+            let own = crate::touch_actions::touch_actions(&app.current_screen_keybindings());
+            if own.is_empty() {
+                silent.push(meta.slug);
+            }
+        }
+        assert!(
+            silent.is_empty(),
+            "screens with no touch actions: {silent:?}"
+        );
+    }
+
+    #[test]
+    fn every_touch_action_presses_a_key_the_host_can_send() {
+        // `key_event` is the native half of a contract whose other half lives
+        // in `ftui-web`'s parser. A label that resolves to a key name neither
+        // side understands is a button that does nothing at all.
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        for meta in crate::screens::screen_registry() {
+            let mut app = AppModel::new();
+            app.current_screen = meta.id;
+            let mut frame = Frame::new(120, 40, &mut pool);
+            app.view(&mut frame);
+            for action in app.touch_actions() {
+                let event = action.key_event();
+                assert!(
+                    event.is_some(),
+                    "{}: button {:?} sends the unparseable key {:?}",
+                    meta.slug,
+                    action.label,
+                    action.key
+                );
+                assert_ne!(
+                    event.expect("checked above").code,
+                    ftui_core::event::KeyCode::Null,
+                    "{}: button {:?} sends nothing",
+                    meta.slug,
+                    action.label
+                );
+            }
+        }
+    }
+
+    /// What one screen's touch buttons did when they were pressed.
+    #[derive(Default)]
+    struct TouchAudit {
+        /// `"screen: button"` for every button that changed nothing.
+        dead: Vec<String>,
+        /// Buttons pressed, including the ones every screen carries.
+        tested: usize,
+        /// Of those, the ones this screen publishes itself.
+        own_tested: usize,
+        /// How many of its own buttons the screen answered.
+        own_answered: usize,
+    }
+
+    impl TouchAudit {
+        fn absorb(&mut self, other: Self) {
+            self.dead.extend(other.dead);
+            self.tested += other.tested;
+            self.own_tested += other.own_tested;
+            self.own_answered += other.own_answered;
+        }
+    }
+
+    /// Audit one screen's touch buttons.
+    ///
+    /// Two apps are kept in lockstep on identical input. Only one is given the
+    /// press; if both still draw the same cells, that press did nothing from
+    /// the state it was pressed in. The control is then handed the same press
+    /// so the next button starts level again.
+    fn audit_touch_actions(meta: &crate::screens::ScreenMeta) -> TouchAudit {
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut audit = TouchAudit::default();
+
+        // Room enough that a screen which hides a panel when cramped is not
+        // mistaken for one that ignores the key. Whether a screen is usable at
+        // phone size is a separate question, with its own tests.
+        let render = |app: &mut AppModel, pool: &mut _| {
+            let mut frame = Frame::new(140, 44, pool);
+            app.view(&mut frame);
+            frame_cells(&frame)
+        };
+        // Several buttons open another screen, an overlay, or the tour. Put
+        // both apps back where they were, or the rest of this screen's buttons
+        // would be pressed at whatever the last one opened - and a screen
+        // covered by the help overlay answers nothing.
+        let recentre = |app: &mut AppModel| {
+            if app.tour.is_active() {
+                app.stop_tour(false, "touch audit");
+            }
+            app.help_visible = false;
+            app.debug_visible = false;
+            app.perf_hud_visible = false;
+            app.current_screen = meta.id;
+        };
+
+        let mut driven = AppModel::new();
+        let mut control = AppModel::new();
+        recentre(&mut driven);
+        recentre(&mut control);
+        // Draw once so anything laid out lazily on a first frame settles.
+        render(&mut driven, &mut pool);
+        render(&mut control, &mut pool);
+        let actions = driven.touch_actions();
+        // The bar also carries the keys that work on every screen. Those are
+        // not this screen's to answer, so they are counted separately: a
+        // screen whose own keys were all mistranslated must not pass on the
+        // strength of `?` and `Ctrl+T` still working.
+        let own: Vec<(String, u8)> =
+            crate::touch_actions::touch_actions(&driven.current_screen_keybindings())
+                .into_iter()
+                .map(|action| (action.key, action.mods))
+                .collect();
+        // Some keys only answer a screen that has been running: `r` restarts a
+        // stream that has not started at position zero.
+        for _ in 0..8 {
+            pump(&mut driven, AppMsg::Tick);
+            pump(&mut control, AppMsg::Tick);
+        }
+
+        // From here the clock stops. A tick after the press and before the
+        // comparison is a tick the control has to be given too, and it can
+        // only have it at a different point in its own history - which is
+        // enough to make an animating screen drift and every later button
+        // unjudgeable. With no ticks in the loop, the two apps run identical
+        // histories and every button gets a verdict.
+        for action in &actions {
+            let Some(event) = action.key_event() else {
+                continue;
+            };
+            // Never press a button that writes a file. These screens export
+            // their reports next to the crate, and the file browser screens
+            // render whatever is sitting there - which is how pressing `X`
+            // here makes a snapshot three screens away fail. Those keys are
+            // still checked for encoding by the tests either side of this one.
+            if action.action.contains("Export") || action.action.contains("Save") {
+                continue;
+            }
+            let is_own = own
+                .iter()
+                .any(|(key, mods)| *key == action.key && *mods == action.mods);
+            audit.tested += 1;
+            if is_own {
+                audit.own_tested += 1;
+            }
+
+            // Both apps draw the same number of times, in the same places, so
+            // a screen that counts its own frames - the mermaid showcase
+            // prints a cache counter - counts them identically.
+            let _ = render(&mut driven, &mut pool);
+            let _ = render(&mut control, &mut pool);
+            driven.update(AppMsg::from(ftui_core::event::Event::Key(event)));
+            let after_driven = render(&mut driven, &mut pool);
+            let after_control = render(&mut control, &mut pool);
+
+            if after_driven == after_control {
+                audit.dead.push(format!("{}: {}", meta.slug, action.label));
+            } else if is_own {
+                audit.own_answered += 1;
+            }
+
+            // Catch the control up so the next button is judged from a state
+            // both apps agree on. Each app has now had one press and one draw.
+            control.update(AppMsg::from(ftui_core::event::Event::Key(event)));
+            // Both apps get the same dismissal, so they stay level: a palette
+            // or a search this button opened would swallow every key after it.
+            let escape = || {
+                AppMsg::from(ftui_core::event::Event::Key(
+                    ftui_core::event::KeyEvent::new(ftui_core::event::KeyCode::Escape),
+                ))
+            };
+            driven.update(escape());
+            control.update(escape());
+            recentre(&mut driven);
+            recentre(&mut control);
+        }
+
+        audit
+    }
+
+    #[test]
+    fn most_touch_buttons_are_answered_by_their_screen() {
+        // The bar is generated from each screen's own help text, so a button
+        // pressing a key its screen ignores means the help is lying - and on a
+        // phone there is no other way to find that out.
+        //
+        // The bar is not judged button by button, because plenty of keys do
+        // nothing from a screen's opening state and are right not to: `↑` at
+        // the top of a list, undo with nothing to undo, a search key with no
+        // search open. What would not survive is a mistranslation - the wrong
+        // case, a modifier that should not be there, a cluster expanded into
+        // keys nobody handles - because that kills a screen's buttons
+        // wholesale. So the bar is: most of every screen answers, and nearly
+        // all of the demo does.
+        //
+        // Rendering 45 screens four times per button is minutes of work in one
+        // thread, and nextest kills a test at two minutes. The screens are
+        // independent, so audit them a few at a time.
+        let metas: Vec<&crate::screens::ScreenMeta> =
+            crate::screens::screen_registry().iter().collect();
+        let lanes = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, 4);
+        let per_lane = metas.len().div_ceil(lanes);
+        let mut total = TouchAudit::default();
+        // A screen whose buttons were mistranslated answers none of its own,
+        // so the per-screen bar is a floor, not a ratio: screens differ far
+        // too much in how many of their keys need a state set up first.
+        let mut mute: Vec<String> = Vec::new();
+
+        std::thread::scope(|scope| {
+            let lanes: Vec<_> = metas
+                .chunks(per_lane.max(1))
+                .map(|group| {
+                    scope.spawn(move || {
+                        let mut lane = TouchAudit::default();
+                        let mut lane_mute = Vec::new();
+                        for meta in group {
+                            let screen = audit_touch_actions(meta);
+                            if screen.own_answered < screen.own_tested.min(2) {
+                                lane_mute.push(format!(
+                                    "{} answered {} of its own {}",
+                                    meta.slug, screen.own_answered, screen.own_tested
+                                ));
+                            }
+                            lane.absorb(screen);
+                        }
+                        (lane, lane_mute)
+                    })
+                })
+                .collect();
+            for lane in lanes {
+                let (lane_audit, lane_mute) = lane.join().expect("audit lane panicked");
+                total.absorb(lane_audit);
+                mute.extend(lane_mute);
+            }
+        });
+
+        let TouchAudit {
+            dead,
+            tested,
+            own_tested,
+            ..
+        } = total;
+        assert!(tested > 400, "only {tested} buttons were exercised");
+        assert!(
+            own_tested > 200,
+            "only {own_tested} screen-published buttons were exercised"
+        );
+        assert!(
+            mute.is_empty(),
+            "screens whose own buttons do nothing: {mute:#?}"
+        );
+        // Around four in five answer; the rest are keys that are right to do
+        // nothing where the audit finds them - `↑` at the top of a list, undo
+        // with nothing to undo, Esc with nothing open. A mistranslation would
+        // put this far below the bar, not just under it.
+        let answered = tested - dead.len();
+        assert!(
+            answered * 10 >= tested * 7,
+            "only {answered} of {tested} touch buttons did anything:\n{dead:#?}"
+        );
     }
 
     #[test]

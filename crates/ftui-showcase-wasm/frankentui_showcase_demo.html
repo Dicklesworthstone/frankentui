@@ -15,8 +15,12 @@
 	  }
 	  * { margin: 0; padding: 0; box-sizing: border-box; }
 	  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; overscroll-behavior: none; }
+	  /* Height of the touch action bar, 0 where there is no touch. The terminal
+	     is fitted to #container, so taking the bar out of its height is what
+	     stops the bar covering the rows it is there to drive. */
+	  :root { --touch-bar-h: 0px; }
 	  #container {
-	    width: 100%; height: 100%;
+	    width: 100%; height: calc(100% - var(--touch-bar-h));
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
   }
@@ -191,7 +195,7 @@
 	    100% { transform: translateX(400%); }
 	  }
 	  @supports (height: 100dvh) {
-	    #container { height: 100dvh; }
+	    #container { height: calc(100dvh - var(--touch-bar-h)); }
 	  }
 	  /* Touch controls — only visible on coarse-pointer (touch) devices */
 	  #touch-zoom {
@@ -213,8 +217,68 @@
 	    background: rgba(28, 82, 58, 0.9);
 	    color: #dff7eb;
 	  }
+	  /* Touch action bar: one button per key the current screen publishes.
+	     Without it a phone can look at 45 screens and drive almost none of
+	     them, because nearly every feature in the demo is behind a letter. */
+	  #touch-actions {
+	    display: none;
+	    position: fixed; left: 0; right: 0; bottom: 0;
+	    height: var(--touch-bar-h);
+	    align-items: stretch;
+	    background: rgba(16,16,16,0.96);
+	    border-top: 1px solid #2a2a2a;
+	    z-index: 14;
+	  }
+	  #touch-actions-list {
+	    flex: 1 1 auto;
+	    display: flex; align-items: center; gap: 6px;
+	    padding: 6px 8px;
+	    overflow-x: auto; overflow-y: hidden;
+	    /* The canvas takes every gesture; this strip needs its own scroll. */
+	    touch-action: pan-x;
+	    scrollbar-width: none;
+	  }
+	  #touch-actions-list::-webkit-scrollbar { display: none; }
+	  #touch-actions-list button {
+	    flex: 0 0 auto;
+	    min-width: 38px; height: 38px;
+	    padding: 0 10px;
+	    border: 1px solid #3a3a3a; border-radius: 8px;
+	    background: rgba(38,38,38,0.95);
+	    color: #dcdcdc; font: 13px/1 "Pragmasevka NF", monospace;
+	    white-space: nowrap;
+	    -webkit-tap-highlight-color: transparent;
+	  }
+	  #touch-actions-list button:active {
+	    background: rgba(28, 82, 58, 0.95);
+	    border-color: #4a9; color: #dff7eb;
+	  }
+	  #touch-actions-toggle {
+	    flex: 0 0 auto;
+	    width: 32px;
+	    border: 0; border-left: 1px solid #2a2a2a;
+	    background: rgba(16,16,16,0.96);
+	    color: #888; font: 12px/1 "Pragmasevka NF", monospace;
+	    -webkit-tap-highlight-color: transparent;
+	  }
+	  /* Collapsed: the toggle stays reachable, the buttons fold away. */
+	  :root.touch-bar-collapsed #touch-actions-list { display: none; }
+	  #touch-drag-hint {
+	    position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
+	    padding: 4px 10px; border-radius: 999px;
+	    background: rgba(28, 82, 58, 0.92); border: 1px solid #4a9;
+	    color: #dff7eb; font: 12px/1.4 "Pragmasevka NF", monospace;
+	    pointer-events: none; z-index: 16;
+	    opacity: 0; transition: opacity 120ms ease-out;
+	  }
+	  #touch-drag-hint.visible { opacity: 1; }
 	  @media (pointer: coarse) {
 	    #touch-zoom { display: flex; }
+	    #touch-actions { display: flex; }
+	    :root { --touch-bar-h: 52px; }
+	    :root.touch-bar-collapsed { --touch-bar-h: 22px; }
+	    /* Keep the status line clear of the bar. */
+	    #status { bottom: calc(8px + var(--touch-bar-h)); }
 	  }
 </style>
 </head>
@@ -232,7 +296,7 @@
        aria-label="Terminal content (accessible proxy)"
        aria-live="polite"
        style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;">
-    <p>FrankenTUI demo application. Use Tab and Shift+Tab to navigate between screens, or swipe in from the left or right edge on a touch screen. Shift+drag selects text and Ctrl/Cmd+C copies it; Ctrl/Cmd+V pastes. Press ? for help.</p>
+    <p>FrankenTUI demo application. Use Tab and Shift+Tab to navigate between screens, or swipe in from the left or right edge on a touch screen. Shift+drag selects text and Ctrl/Cmd+C copies it; Ctrl/Cmd+V pastes. Press ? for help. On a touch screen the bar along the bottom has a button for every key the current screen uses, press and hold on the terminal to drag, and a divider can be dragged straight away.</p>
   </div>
 </div>
 <textarea
@@ -252,6 +316,11 @@
 <div id="edge-swipe-hint" aria-hidden="true"><span id="edge-swipe-glyph"></span></div>
 <div id="touch-zoom">
   <button id="mobile-kb-toggle" aria-pressed="false" title="Toggle keyboard mode">KB</button>
+</div>
+<div id="touch-drag-hint" aria-hidden="true">drag</div>
+<div id="touch-actions" role="toolbar" aria-label="Screen actions">
+  <div id="touch-actions-list"></div>
+  <button id="touch-actions-toggle" aria-expanded="true" title="Hide screen actions">⌄</button>
 </div>
 <div id="loading-overlay">
   <div id="loading-label">Loading WASM...</div>
@@ -288,6 +357,10 @@ const paneSelectionHalo = document.getElementById("pane-selection-halo");
 const paneGhostAlts  = [paneGhostAlt1, paneGhostAlt2];
 const paneDockHint   = document.getElementById("pane-dock-hint");
 const mobileKbToggle = document.getElementById("mobile-kb-toggle");
+const touchActionBar = document.getElementById("touch-actions");
+const touchActionList = document.getElementById("touch-actions-list");
+const touchActionToggle = document.getElementById("touch-actions-toggle");
+const touchDragHint = document.getElementById("touch-drag-hint");
 const PANE_WORKSPACE_KEY = "ftui-pane-workspace-v1";
 const PANE_WORKSPACE_SAVE_RETRY_MS = 2000;
 let paneWorkspaceNextSaveRetryAt = 0;
@@ -1578,67 +1651,111 @@ function useMobileKeyboardForPointer(pointerType) {
   return pointerType !== "mouse" && mobileInputMode === "keyboard" && shouldUseMobileKeyboardProxy();
 }
 
-const LONG_PRESS_KEYBOARD_MS = 420;
+// ── Press and hold: drag, or raise the keyboard ─────────────────────────
+// A finger that moves means scroll, which leaves nothing in the demo that a
+// pointer has to *drag* reachable by touch: the dashboard dividers, a kanban
+// card, the snapshot scrub bar, the drawing surface. Holding still arms a
+// drag, and moving after that sends real mouse down/drag/up. Releasing an
+// armed hold without moving raises the on-screen keyboard, which is what the
+// hold used to do the moment it fired.
+const LONG_PRESS_ARM_MS = 380;
 const LONG_PRESS_MOVE_PX = 14;
-let pendingKeyboardLongPress = null;
+// Once armed, the drag should start on the first real movement rather than
+// waiting for the tap threshold again.
+const ARMED_DRAG_START_PX = 3;
+let pendingLongPress = null;
 
-function cancelKeyboardLongPressTracker() {
-  if (!pendingKeyboardLongPress) return false;
-  const { timerId, triggered } = pendingKeyboardLongPress;
-  clearTimeout(timerId);
-  pendingKeyboardLongPress = null;
-  return triggered;
+function setTouchDragHint(visible) {
+  if (!touchDragHint) return;
+  touchDragHint.classList.toggle("visible", visible);
 }
 
-function startKeyboardLongPressTracker(pointerId, clientX, clientY) {
-  if (!shouldUseMobileKeyboardProxy() || mobileInputMode !== "touch") return;
-  cancelKeyboardLongPressTracker();
+function cancelLongPressTracker() {
+  if (!pendingLongPress) return null;
+  const tracker = pendingLongPress;
+  clearTimeout(tracker.timerId);
+  pendingLongPress = null;
+  if (!touchDragActive) setTouchDragHint(false);
+  return tracker;
+}
+
+function startLongPressTracker(pointerId, clientX, clientY) {
+  cancelLongPressTracker();
 
   const tracker = {
     pointerId,
     startX: clientX,
     startY: clientY,
-    triggered: false,
+    armed: false,
     timerId: 0,
   };
 
   tracker.timerId = window.setTimeout(() => {
-    if (!pendingKeyboardLongPress || pendingKeyboardLongPress !== tracker) return;
-    if (!shouldUseMobileKeyboardProxy() || mobileInputMode !== "touch") return;
+    if (pendingLongPress !== tracker) return;
+    tracker.armed = true;
+    setTouchDragHint(true);
+    try {
+      if (typeof navigator.vibrate === "function") navigator.vibrate(10);
+    } catch (_) {}
+  }, LONG_PRESS_ARM_MS);
 
-    tracker.triggered = true;
-    setMobileInputMode("keyboard", { focusTarget: true });
-
-    if (
-      Number.isFinite(tracker.pointerId) &&
-      typeof runner.panePointerCancel === "function"
-    ) {
-      try {
-        const dispatch = runner.panePointerCancel(tracker.pointerId);
-        applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
-      } catch (_) {}
-    }
-    paneActivePointers.delete(tracker.pointerId);
-    paneTouchPointers.delete(tracker.pointerId);
-    activeTouchPointerIds.delete(tracker.pointerId);
-    touchGestureSuppressedByPane = false;
-    touchState = TOUCH_IDLE;
-    touchScrollAccX = 0;
-    touchScrollAccY = 0;
-    pinchStartDist = 0;
-    syncPaneOverlayFromRunner();
-  }, LONG_PRESS_KEYBOARD_MS);
-
-  pendingKeyboardLongPress = tracker;
+  pendingLongPress = tracker;
 }
 
-function updateKeyboardLongPressTracker(clientX, clientY) {
-  if (!pendingKeyboardLongPress || pendingKeyboardLongPress.triggered) return;
-  const dx = clientX - pendingKeyboardLongPress.startX;
-  const dy = clientY - pendingKeyboardLongPress.startY;
-  if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_PX) {
-    cancelKeyboardLongPressTracker();
+function updateLongPressTracker(clientX, clientY) {
+  if (touchDragActive) {
+    moveTouchDrag(touchCellCoords(clientX, clientY));
+    return;
   }
+  if (!pendingLongPress) return;
+  const dx = clientX - pendingLongPress.startX;
+  const dy = clientY - pendingLongPress.startY;
+  const travel = Math.hypot(dx, dy);
+  if (!pendingLongPress.armed) {
+    // Moving before the hold completes is a scroll or a swipe, not a drag.
+    if (travel > LONG_PRESS_MOVE_PX) cancelLongPressTracker();
+    return;
+  }
+  if (travel >= ARMED_DRAG_START_PX) {
+    // Press where the finger landed, not where it has reached: a splitter
+    // takes the handle it was grabbed by.
+    beginTouchDrag(touchCellCoords(pendingLongPress.startX, pendingLongPress.startY));
+    moveTouchDrag(touchCellCoords(clientX, clientY));
+  }
+}
+
+function activateMobileKeyboardFromHold(pointerId) {
+  setMobileInputMode("keyboard", { focusTarget: true });
+  if (Number.isFinite(pointerId) && typeof runner.panePointerCancel === "function") {
+    try {
+      const dispatch = runner.panePointerCancel(pointerId);
+      applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
+    } catch (_) {}
+  }
+  paneActivePointers.delete(pointerId);
+  paneTouchPointers.delete(pointerId);
+  activeTouchPointerIds.delete(pointerId);
+  touchGestureSuppressedByPane = false;
+  touchState = TOUCH_IDLE;
+  touchScrollAccX = 0;
+  touchScrollAccY = 0;
+  pinchStartDist = 0;
+  syncPaneOverlayFromRunner();
+}
+
+/// Settle a hold on release. True when the gesture was the whole interaction,
+/// so the caller must not also treat it as a tap.
+///
+/// Both `pointerup` and `touchend` fire for one finger and either may arrive
+/// first, so this has to be safe to call twice.
+function finishLongPressTracker() {
+  const tracker = cancelLongPressTracker();
+  if (endTouchDrag()) return true;
+  if (tracker && tracker.armed && shouldUseMobileKeyboardProxy() && mobileInputMode === "touch") {
+    activateMobileKeyboardFromHold(tracker.pointerId);
+    return true;
+  }
+  return false;
 }
 
 function focusCanvasInput() {
@@ -1690,9 +1807,9 @@ function markKeyboardProxyBeforeInputHandled(expectedEcho = "", suppressNextInpu
   keyboardProxySuppressNextInput = suppressNextInput;
 }
 
-function emitSyntheticKeyPress(key, code) {
-  const down = { kind: "key", phase: "down", key, code, mods: 0, repeat: false };
-  const up = { kind: "key", phase: "up", key, code, mods: 0, repeat: false };
+function emitSyntheticKeyPress(key, code, mods = 0) {
+  const down = { kind: "key", phase: "down", key, code, mods, repeat: false };
+  const up = { kind: "key", phase: "up", key, code, mods, repeat: false };
   safeTermInput(down);
   safeTermInput(up);
 }
@@ -2123,7 +2240,8 @@ if ("PointerEvent" in window) {
 	      e.preventDefault();
 	    }
 	    if (yieldedToNativeTouch) {
-	      cancelKeyboardLongPressTracker();
+	      endTouchDrag();
+	      cancelLongPressTracker();
 	      paneActivePointers.clear();
 	      paneTouchPointers.clear();
 	      touchGestureSuppressedByPane = false;
@@ -2131,12 +2249,13 @@ if ("PointerEvent" in window) {
 	      touchScrollAccX = 0;
 	      touchScrollAccY = 0;
 	      pinchStartDist = 0;
-	    } else if (!paneAccepted && e.pointerType !== "mouse" && !preferKeyboard) {
-	      // Smart keyboard mode should never steal pane drags/resizes; only allow
-	      // long-press keyboard activation when the pane layer rejects the pointer.
-	      startKeyboardLongPressTracker(pointerId, e.clientX, e.clientY);
+	    } else if (!paneAccepted && e.pointerType !== "mouse") {
+	      // A hold arms a drag, and only where the pane layer did not already
+	      // claim the pointer - the pane workspace drives its own drags and
+	      // must never have a second one running underneath it.
+	      startLongPressTracker(pointerId, e.clientX, e.clientY);
 	    } else {
-	      cancelKeyboardLongPressTracker();
+	      cancelLongPressTracker();
 	    }
 	    if (paneAccepted) {
 	      paneActivePointers.add(pointerId);
@@ -2164,7 +2283,7 @@ if ("PointerEvent" in window) {
 	  });
 
 	  canvas.addEventListener("pointerup", (e) => {
-	    cancelKeyboardLongPressTracker();
+	    finishLongPressTracker();
 	    e.preventDefault();
 	    // End a Shift+drag selection without letting the app see a stray click.
 	    if (selectionActive) {
@@ -2216,7 +2335,11 @@ if ("PointerEvent" in window) {
       return;
 	    }
 
-	    updateKeyboardLongPressTracker(e.clientX, e.clientY);
+	    updateLongPressTracker(e.clientX, e.clientY);
+	    if (touchDragActive) {
+	      e.preventDefault();
+	      return;
+	    }
 	    if (paneActivePointers.has(pointerId)) {
 	      e.preventDefault();
 	      paneDispatchPointerMove(e);
@@ -2225,7 +2348,8 @@ if ("PointerEvent" in window) {
 	  }, { passive: false });
 
 	  canvas.addEventListener("pointercancel", (e) => {
-	    cancelKeyboardLongPressTracker();
+	    cancelLongPressTracker();
+	    endTouchDrag();
 	    const pointerId = panePointerIdFromEvent(e);
 	    const hadMouseButtonsDown = e.pointerType === "mouse" && mouseButtonsDown !== 0;
 	    paneActivePointers.delete(pointerId);
@@ -2242,7 +2366,10 @@ if ("PointerEvent" in window) {
   });
 
 	  canvas.addEventListener("pointerleave", (e) => {
-	    cancelKeyboardLongPressTracker();
+	    cancelLongPressTracker();
+	    // A drag that has left the canvas cannot be tracked any further, and
+	    // one left open latches whatever it grabbed.
+	    endTouchDrag();
 	    const pointerId = panePointerIdFromEvent(e);
 	    if (!paneActivePointers.has(pointerId)) return;
 	    paneDispatchPointerLeave(e);
@@ -2250,7 +2377,8 @@ if ("PointerEvent" in window) {
 	  });
 
 	  canvas.addEventListener("lostpointercapture", (e) => {
-	    cancelKeyboardLongPressTracker();
+	    cancelLongPressTracker();
+	    endTouchDrag();
 	    const pointerId = panePointerIdFromEvent(e);
 	    paneActivePointers.delete(pointerId);
 	    paneTouchPointers.delete(pointerId);
@@ -2262,7 +2390,7 @@ if ("PointerEvent" in window) {
   });
 
 	  window.addEventListener("pointerup", (e) => {
-	    cancelKeyboardLongPressTracker();
+	    finishLongPressTracker();
 	    const pointerId = panePointerIdFromEvent(e);
 	    const wasPaneActive = paneActivePointers.has(pointerId);
 	    const hadMouseButtonsDown = e.pointerType === "mouse" && mouseButtonsDown !== 0;
@@ -2524,17 +2652,70 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 
 // ── Touch state machine ─────────────────────────────────────────────────
 // Translates touch gestures to mouse/wheel events for the Rust showcase runner.
-// States: IDLE → TRACKING → SCROLLING or PINCHING
-const TOUCH_IDLE = 0, TOUCH_TRACKING = 1, TOUCH_SCROLLING = 2, TOUCH_PINCHING = 3;
+// States: IDLE → TRACKING → SCROLLING, PINCHING, or DRAGGING (a hold that then
+// moved, or a finger that landed on a divider).
+const TOUCH_IDLE = 0, TOUCH_TRACKING = 1, TOUCH_SCROLLING = 2, TOUCH_PINCHING = 3,
+      TOUCH_DRAGGING = 4;
 let touchState = TOUCH_IDLE;
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
 let touchLastX = 0, touchLastY = 0;
 let touchScrollAccX = 0, touchScrollAccY = 0;
 let pinchStartDist = 0, pinchStartZoom = 1.0;
 let touchGestureSuppressedByPane = false;
+// A touch drag in progress: the terminal is being sent mouse down/drag/up, so
+// the scroll, tap and edge-swipe paths must all keep out of the way.
+let touchDragActive = false;
+let touchDragCell = { x: 0, y: 0 };
+
 const TAP_MAX_DIST = 10;   // px
 const TAP_MAX_TIME = 300;  // ms
 const MAX_TOUCH_WHEEL_STEPS_PER_MOVE = 16;
+
+/// True when the cell under the finger is something a pointer can drag, which
+/// is the one case where a drag should start without waiting for a hold.
+function cellIsDragHandle(cell) {
+  if (typeof runner.dragHandleAt !== "function") return false;
+  try {
+    return runner.dragHandleAt(cell.x, cell.y) === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function beginTouchDrag(cell) {
+  if (touchDragActive) return;
+  touchDragActive = true;
+  touchDragCell = cell;
+  touchState = TOUCH_DRAGGING;
+  touchScrollAccX = 0;
+  touchScrollAccY = 0;
+  clearEdgeSwipe();
+  setTouchDragHint(true);
+  safeTermInput({ kind: "mouse", phase: "down", button: 0, x: cell.x, y: cell.y, mods: 0 });
+  jsonl({ event: "touch_drag", phase: "down", x: cell.x, y: cell.y, ts: Date.now() });
+}
+
+function moveTouchDrag(cell) {
+  if (!touchDragActive) return;
+  if (cell.x === touchDragCell.x && cell.y === touchDragCell.y) return;
+  touchDragCell = cell;
+  safeTermInput({ kind: "mouse", phase: "drag", button: 0, x: cell.x, y: cell.y, mods: 0 });
+}
+
+/// End a drag if one is running. Returns whether there was one, and is safe to
+/// call from every release path - a drag left open latches whatever it grabbed.
+function endTouchDrag() {
+  if (!touchDragActive) return false;
+  touchDragActive = false;
+  setTouchDragHint(false);
+  safeTermInput({
+    kind: "mouse", phase: "up", button: 0,
+    x: touchDragCell.x, y: touchDragCell.y, mods: 0,
+  });
+  jsonl({ event: "touch_drag", phase: "up", x: touchDragCell.x, y: touchDragCell.y, ts: Date.now() });
+  touchState = TOUCH_IDLE;
+  return true;
+}
 
 // ── Edge swipe: change screen without a Tab key ─────────────────────────
 // Touch devices have no Tab/Shift+Tab, which is how screens are cycled, so the
@@ -2606,7 +2787,8 @@ function commitEdgeSwipe(totalDx) {
 }
 
 function resetTransientPointerAndTouchState() {
-  cancelKeyboardLongPressTracker();
+  cancelLongPressTracker();
+  endTouchDrag();
   mouseButtonsDown = 0;
   dragButton = 0;
   paneActivePointers.clear();
@@ -2665,7 +2847,8 @@ canvas.addEventListener("touchstart", (e) => {
   e.preventDefault();
   focusTerminalInputTarget(useMobileKeyboardForPointer("touch"));
   if (e.touches.length > 1) {
-    cancelKeyboardLongPressTracker();
+    endTouchDrag();
+    cancelLongPressTracker();
     for (const pointerId of paneTouchPointers) {
       const dispatch = runner.panePointerCancel(pointerId);
       applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
@@ -2678,9 +2861,9 @@ canvas.addEventListener("touchstart", (e) => {
   if (!("PointerEvent" in window) && e.touches.length === 1) {
     const t0 = e.touches[0];
     const pointerId = clampPointerId(Number(t0.identifier ?? 0) + 1);
-    startKeyboardLongPressTracker(pointerId, t0.clientX, t0.clientY);
+    startLongPressTracker(pointerId, t0.clientX, t0.clientY);
   } else if (!("PointerEvent" in window)) {
-    cancelKeyboardLongPressTracker();
+    cancelLongPressTracker();
   }
   if ("PointerEvent" in window && paneTouchPointers.size > 0) {
     touchGestureSuppressedByPane = true;
@@ -2699,6 +2882,16 @@ canvas.addEventListener("touchstart", (e) => {
     touchStartTime = Date.now();
     touchScrollAccX = 0;
     touchScrollAccY = 0;
+    // A finger landing on a divider means to move it. Nobody expects to have
+    // to hold still first on the one control whose whole purpose is dragging,
+    // so ask the app whether this cell is a handle and start straight away.
+    const startCell = touchCellCoords(touches[0].clientX, touches[0].clientY);
+    if (cellIsDragHandle(startCell)) {
+      cancelLongPressTracker();
+      clearEdgeSwipe();
+      beginTouchDrag(startCell);
+      return;
+    }
     // Remember whether this drag began on a bezel; touchmove decides if it
     // becomes a screen change or an ordinary scroll.
     const bounds = canvas.getBoundingClientRect();
@@ -2723,8 +2916,13 @@ canvas.addEventListener("touchstart", (e) => {
 canvas.addEventListener("touchmove", (e) => {
   e.preventDefault();
   const touches = e.touches;
-  if (!("PointerEvent" in window) && touches.length === 1) {
-    updateKeyboardLongPressTracker(touches[0].clientX, touches[0].clientY);
+  if (touches.length === 1) {
+    // Touch events reach every browser; the pointer path only some. Updating
+    // from both is safe - an armed hold starts its drag once, and a drag only
+    // sends a sample when the finger has crossed into another cell.
+    updateLongPressTracker(touches[0].clientX, touches[0].clientY);
+    // A drag owns the gesture: no scrolling, no edge swipe, no tap.
+    if (touchDragActive) return;
   }
   if ("PointerEvent" in window && paneTouchPointers.size > 0) {
     touchGestureSuppressedByPane = true;
@@ -2842,8 +3040,10 @@ canvas.addEventListener("touchmove", (e) => {
 
 canvas.addEventListener("touchend", (e) => {
   e.preventDefault();
-  const keyboardLongPressTriggered = cancelKeyboardLongPressTracker();
-  if (keyboardLongPressTriggered) {
+  // A hold that dragged, or one released still enough to raise the keyboard,
+  // is the whole gesture: it must not also land as a tap on whatever is under
+  // the finger. `pointerup` may have settled it first; this is idempotent.
+  if (finishLongPressTracker()) {
     touchGestureSuppressedByPane = false;
     touchState = TOUCH_IDLE;
     touchScrollAccX = 0;
@@ -2925,7 +3125,8 @@ canvas.addEventListener("touchend", (e) => {
 
 canvas.addEventListener("touchcancel", (e) => {
   e.preventDefault();
-  cancelKeyboardLongPressTracker();
+  cancelLongPressTracker();
+  endTouchDrag();
   touchGestureSuppressedByPane = false;
   touchState = TOUCH_IDLE;
   touchScrollAccX = 0;
@@ -2971,6 +3172,126 @@ function frame(timestamp) {
     } catch (_) {}
   }
 }
+
+// ── Touch action bar ────────────────────────────────────────────────────
+// Every screen publishes what its keys do, and the runner hands that list over
+// as `[{label, action, key, mods}]`. Rendering it as buttons is what makes the
+// demo usable with a finger: without it a phone can reach the screens - edge
+// swipe does that - and then drive almost none of them, because nearly every
+// feature in the demo is behind a letter key.
+const TOUCH_BAR_COLLAPSED_KEY = "ftui-touch-bar-collapsed";
+const TOUCH_ACTIONS_POLL_MS = 250;
+let renderedTouchActionsJson = "";
+let touchActionsPollTimer = 0;
+
+function touchActionBarAvailable() {
+  return Boolean(touchActionBar && touchActionList) && isCoarsePointerDevice();
+}
+
+function applyTouchBarCollapsed(collapsed, { persist = true } = {}) {
+  document.documentElement.classList.toggle("touch-bar-collapsed", collapsed);
+  if (touchActionToggle) {
+    touchActionToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    touchActionToggle.textContent = collapsed ? "⌃" : "⌄";
+    touchActionToggle.title = collapsed ? "Show screen actions" : "Hide screen actions";
+  }
+  if (persist) storageSet(TOUCH_BAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  // The bar is subtracted from #container's height, so folding it changes how
+  // many rows the terminal gets.
+  queueGeometrySync("touch_bar_toggle");
+}
+
+function renderTouchActions(json) {
+  let actions;
+  try {
+    actions = JSON.parse(json);
+  } catch (_) {
+    return;
+  }
+  if (!Array.isArray(actions)) return;
+  const fragment = document.createDocumentFragment();
+  for (const action of actions) {
+    if (!action || typeof action.key !== "string" || action.key.length === 0) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = typeof action.label === "string" && action.label ? action.label : action.key;
+    const describes = typeof action.action === "string" ? action.action : "";
+    if (describes) {
+      button.title = describes;
+      button.setAttribute("aria-label", `${button.textContent}: ${describes}`);
+    }
+    button.dataset.key = action.key;
+    button.dataset.mods = String(Number.isFinite(action.mods) ? action.mods : 0);
+    fragment.append(button);
+  }
+  touchActionList.replaceChildren(fragment);
+}
+
+function stopTouchActionBar() {
+  if (!touchActionsPollTimer) return;
+  clearInterval(touchActionsPollTimer);
+  touchActionsPollTimer = 0;
+}
+
+function syncTouchActions(force = false) {
+  if (!touchActionBarAvailable()) return;
+  if (typeof runner.touchActionsJson !== "function") return;
+  let json;
+  try {
+    json = runner.touchActionsJson();
+  } catch (_) {
+    // The runner has been destroyed - the app quit, or the frame loop hit a
+    // fatal error. There is nothing left to ask, so stop asking.
+    stopTouchActionBar();
+    return;
+  }
+  if (!force && json === renderedTouchActionsJson) return;
+  renderedTouchActionsJson = json;
+  renderTouchActions(json);
+}
+
+if (touchActionList) {
+  // Tapping a button must not move focus off the canvas, or the next real key
+  // would go to the button instead of the terminal.
+  touchActionList.addEventListener("pointerdown", (e) => {
+    if (e.target instanceof HTMLButtonElement) e.preventDefault();
+  });
+  touchActionList.addEventListener("click", (e) => {
+    const button = e.target instanceof Element ? e.target.closest("button") : null;
+    if (!button || !button.dataset.key) return;
+    const mods = Number.parseInt(button.dataset.mods ?? "0", 10);
+    emitSyntheticKeyPress(button.dataset.key, button.dataset.key, Number.isFinite(mods) ? mods : 0);
+    // A button that changes screen or mode changes the list it came from.
+    syncTouchActions();
+    jsonl({ event: "touch_action", key: button.dataset.key, mods, ts: Date.now() });
+  });
+}
+
+if (touchActionToggle) {
+  touchActionToggle.addEventListener("pointerdown", (e) => e.preventDefault());
+  touchActionToggle.addEventListener("click", () => {
+    applyTouchBarCollapsed(!document.documentElement.classList.contains("touch-bar-collapsed"));
+    focusTerminalInputTarget(false);
+  });
+}
+
+function startTouchActionBar() {
+  if (!touchActionBarAvailable() || touchActionsPollTimer) return;
+  applyTouchBarCollapsed(storageGet(TOUCH_BAR_COLLAPSED_KEY) === "1", { persist: false });
+  syncTouchActions(true);
+  // A screen's keys change with its mode as well as with the screen, and there
+  // is no signal for either, so ask. Four times a second is imperceptible next
+  // to the 60fps frame loop.
+  touchActionsPollTimer = window.setInterval(syncTouchActions, TOUCH_ACTIONS_POLL_MS);
+}
+
+startTouchActionBar();
+// CSS shows the bar the moment the pointer turns coarse - a tablet unplugged
+// from its mouse, a device that reports late - so the buttons have to be built
+// then too, or it appears empty.
+addMediaQueryChangeListener("(pointer: coarse)", startTouchActionBar);
+
+window.addEventListener("pagehide", stopTouchActionBar);
 
 // Focus the canvas and start.
 focusTerminalInputTarget(false);

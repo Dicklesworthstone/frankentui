@@ -467,6 +467,20 @@ impl ShowcaseRunner {
     #[wasm_bindgen(js_name = pushEncodedInput)]
     pub fn push_encoded_input(&mut self, json: &str) -> bool;
 
+    /// The current screen's keys as JSON: `[{label, action, key, mods}]`,
+    /// built from the screen's own `keybindings()`. `key` and `mods` are what
+    /// `pushEncodedInput` expects back in a key record, so a touch host can
+    /// render each entry as a button. Changes with the screen and its mode,
+    /// so poll it rather than reading it once.
+    #[wasm_bindgen(js_name = touchActionsJson)]
+    pub fn touch_actions_json(&self) -> String;
+
+    /// Whether terminal cell (x, y) is on something a pointer can drag.
+    /// A touch host asks before deciding a finger means scroll: out-of-range
+    /// coordinates answer false rather than throwing.
+    #[wasm_bindgen(js_name = dragHandleAt)]
+    pub fn drag_handle_at(&self, x: i32, y: i32) -> bool;
+
     /// Queue a resize. False leaves dimensions unchanged on capacity rejection.
     pub fn resize(&mut self, cols: u16, rows: u16) -> bool;
 
