@@ -13,14 +13,20 @@
   <img src="docs/assets/frankentui_illustration.webp" alt="FrankenTUI - Minimal, high-performance terminal UI kernel">
 </div>
 
-High‑performance terminal UI kernel -- 850K+ lines of Rust across 20 crates, 80+ widget/stateful-widget implementations, 46 interactive demo screens, a Bayesian intelligence layer, resizable pane workspaces, and in-tree web/WASM backends -- focused on correctness, determinism, and clean architecture.
+High‑performance terminal UI kernel -- 850K+ lines of Rust across 20 crates, 80+ widget/stateful-widget implementations, 45 interactive demo screens, a Bayesian intelligence layer, resizable pane workspaces, and in-tree web/WASM backends -- focused on correctness, determinism, and clean architecture.
 
 ![status](https://img.shields.io/badge/status-WIP-yellow)
 ![rust](https://img.shields.io/badge/rust-nightly-blue)
 ![license](https://img.shields.io/badge/license-MIT%2BOpenAI%2FAnthropic%20Rider-green)
 ![crates](https://img.shields.io/badge/crates-20-blue)
 ![widgets](https://img.shields.io/badge/widgets-80%2B-blue)
-![screens](https://img.shields.io/badge/demo_screens-46-blue)
+![screens](https://img.shields.io/badge/demo_screens-45-blue)
+
+## Try It in Your Browser
+
+All 45 screens run as WASM at **[frankentui.com/web](https://frankentui.com/web)** — no install, no toolchain. It renders through WebGPU where that exists and falls back to canvas2d, so Chrome, Edge, Safari and Firefox all work.
+
+Phones too: swipe in from either edge to change screens, and the bar along the bottom carries a button for every key the current screen uses. Press and hold to drag; a divider drags straight away.
 
 ## Quick Run (from source)
 
@@ -66,7 +72,7 @@ cargo run -p ftui-demo-showcase
 | **Web/WASM backend** | Same Rust core renders in browser-oriented environments | In-tree `ftui-web` + `ftui-showcase-wasm` |
 | **Bayesian intelligence** | Statistical diff strategy, resize coalescing, capability detection | BOCPD, VOI, conformal prediction, e‑processes |
 | **Shadow‑run validation** | Prove rendering determinism across runtime migrations | `ShadowRun::compare()` in `ftui-harness` |
-| **46 demo screens** | Dashboard, visual effects, widget gallery, layout lab, and more | `cargo run -p ftui-demo-showcase` |
+| **45 demo screens** | Dashboard, visual effects, widget gallery, layout lab, and more | `cargo run -p ftui-demo-showcase` |
 
 ---
 
@@ -105,9 +111,9 @@ Press 1–9/0 to select screens 1–10, or Tab/Shift+Tab to cycle through screen
 
 ---
 
-## Demo Showcase Gallery (46 Screens)
+## Demo Showcase Gallery (45 Screens)
 
-The demo showcase (`cargo run -p ftui-demo-showcase`) ships 46 interactive screens, each demonstrating a different subsystem:
+The demo showcase (`cargo run -p ftui-demo-showcase`) ships 45 interactive screens, each demonstrating a different subsystem:
 
 | Category | Screens | What They Show |
 |----------|---------|----------------|
@@ -120,8 +126,9 @@ The demo showcase (`cargo run -p ftui-demo-showcase`) ships 46 interactive scree
 | **System** | `terminal_capabilities`, `performance`, `performance_hud`, `determinism_lab` | Capability probing, frame budgets, conformal risk gating |
 | **Diagnostics** | `explainability_cockpit`, `voi_overlay`, `snapshot_player`, `accessibility_panel` | Evidence ledgers, VOI sampling visualization, a11y tree |
 | **Workflow** | `file_browser`, `kanban_board`, `async_tasks`, `notifications`, `drag_drop` | File picker, task boards, notification toasts, drag handles |
-| **Advanced** | `inline_mode_story`, `hyperlink_playground`, `i18n_demo`, `macro_recorder`, `quake` | Inline scrollback, OSC 8 links, locale switching, event recording |
-| **3D / Code** | `3d_data`, `code_explorer`, `widget_builder`, `action_timeline` | 3D data views, AST browsing, widget composition, timeline aggregation |
+| **Advanced** | `inline_mode_story`, `hyperlink_playground`, `i18n_demo`, `macro_recorder`, `quake_easter_egg` | Inline scrollback, OSC 8 links, locale switching, event recording, a depth-buffered E1M1 |
+| **Code** | `code_explorer`, `widget_builder`, `action_timeline` | AST browsing, widget composition, timeline aggregation |
+| **Tour** | `guided_tour` | Cinematic auto-play tour across key screens |
 
 Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-showcase` updates baselines.
 
@@ -238,7 +245,7 @@ fn main() -> std::io::Result<()> {
 |------|---------|--------|
 | `ftui-harness` | Test harness, shadow‑run comparison, benchmark gate, rollout scorecard, determinism fixtures | Implemented |
 | `ftui-pty` | PTY‑based test utilities | Implemented |
-| `ftui-demo-showcase` | 46 interactive demo screens + snapshot tests | Implemented |
+| `ftui-demo-showcase` | 45 interactive demo screens + snapshot tests | Implemented |
 | `doctor_frankentui` | Integrated TUI capture, seeding, suite reporting, diagnostics, and coverage gating | Implemented |
 
 ### Supporting
@@ -265,7 +272,7 @@ fn main() -> std::io::Result<()> {
 | Shadow‑run validation harness | ✅ Built‑in | ❌ | ❌ | ❌ |
 | Snapshot/time‑travel harness | ✅ Built‑in | ❌ | ❌ | ❌ |
 | Widget count | 80+ direct impls | ~20 | ~12 | 0 |
-| Demo screens | 46 | ~5 | ~5 | 0 |
+| Demo screens | 45 | ~5 | ~5 | 0 |
 
 **When to use FrankenTUI:**
 - You want inline + scrollback without flicker.
@@ -669,7 +676,7 @@ FrankenTUI includes a full pane workspace system (9,000+ lines in `ftui-layout/s
 - **Scroll-wheel magnetic field tuning**: adjust snap strength without leaving the pane
 - **Terminal + Web parity**: same pane interactions work in both backends via `PaneTerminalAdapter` and `PanePointerCaptureAdapter`
 
-The pane system is integrated into three of the 46 demo screens (Dashboard, Widget Gallery, Layout Lab) and has dedicated E2E tests (`scripts/pane_e2e.sh`).
+The pane system is integrated into three of the 45 demo screens (Dashboard, Widget Gallery, Layout Lab) and has dedicated E2E tests (`scripts/pane_e2e.sh`).
 
 ### Pane Architecture
 
@@ -1375,7 +1382,7 @@ A modular kernel assembled from focused, composable parts. A deliberate, enginee
 
 ### Is this a full framework?
 
-It’s a kernel plus a large widget library plus a demo showcase with 46 screens plus a full pane workspace system. You can build a framework on top, but expect APIs to evolve.
+It’s a kernel plus a large widget library plus a demo showcase with 45 screens plus a full pane workspace system. You can build a framework on top, but expect APIs to evolve.
 
 ### Does it work on Windows?
 
@@ -1398,7 +1405,7 @@ BLESS=1 cargo test -p ftui-demo-showcase
 
 ### How many lines of code is it?
 
-850,000+ lines of Rust across 20 crates, with 80+ direct widget implementations, 46 demo screens, and a broad PTY/scripted E2E surface.
+850,000+ lines of Rust across 20 crates, with 80+ direct widget implementations, 45 demo screens, and a broad PTY/scripted E2E surface.
 
 ### What's the performance like?
 
