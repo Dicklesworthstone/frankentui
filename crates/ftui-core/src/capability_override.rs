@@ -536,9 +536,7 @@ impl PolicyOverrides {
     /// `true` when no switch was applied.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.sync_output.is_none()
-            && self.scroll_region.is_none()
-            && self.osc52_clipboard.is_none()
+        self.sync_output.is_none() && self.scroll_region.is_none() && self.osc52_clipboard.is_none()
     }
 }
 
