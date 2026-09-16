@@ -10,11 +10,15 @@ source "$SCRIPT_DIR/../lib/pty.sh"
 DEMO_BIN="${FTUI_DEMO_BIN:-${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}/debug/ftui-demo-showcase}"
 CANON_BIN="${PTY_CANONICALIZE_BIN:-${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}/debug/pty_canonicalize}"
 [[ -x "$DEMO_BIN" && -x "$CANON_BIN" ]] || { echo 'Build showcase and pty_canonicalize first' >&2; exit 2; }
-require_tools jq || exit 2
+require_tools jq "$E2E_PYTHON" || exit 2
 SCREEN="$("$DEMO_BIN" --list-screens | jq -er 'index("advanced_text_editor") | if . == null then error("editor screen missing") else . + 1 end')"
 JSONL="$E2E_LOG_DIR/clipboard_osc52_e2e.jsonl"
 [[ ! -e "$JSONL" ]] || { echo 'Use a fresh E2E_LOG_DIR to retain prior evidence' >&2; exit 2; }
-export PTY_COLS=120 PTY_ROWS=40 PTY_CANONICALIZE=0
+export PTY_COLS=80 PTY_ROWS=24 PTY_CANONICALIZE=0
+export E2E_JSONL_FILE="$JSONL" E2E_JSONL_DISABLE=0
+export E2E_RUN_ID="${E2E_RUN_ID:-$(e2e_run_id)}"
+suite_start="$(e2e_monotonic_ms)"
+jsonl_run_start "$SCRIPT_DIR/test_clipboard_osc52.sh"
 export FTUI_DEMO_EXIT_AFTER_MS=0 FTUI_TEXTEDITOR_DIAGNOSTICS=false
 export FTUI_TEXTEDITOR_DETERMINISTIC=true FTUI_CAPS_PROBE=0
 unset TMUX STY ZELLIJ ZELLIJ_SESSION_NAME FTUI_OSC52_CLIPBOARD
@@ -59,7 +63,7 @@ leave=wire.find(b'\x1b[?1049l')
 with pathlib.Path(str(p)+'.screen.pty').open('xb') as f:
     f.write(wire if leave < 0 else wire[:leave])
 PY
-    "$CANON_BIN" --input "$capture.screen.pty" --output "$capture.screen.txt" --cols 120 --rows 40 || return 1
+    "$CANON_BIN" --input "$capture.screen.pty" --output "$capture.screen.txt" --cols 80 --rows 24 || return 1
     "$E2E_PYTHON" - "$scenario" "$capture" "$JSONL" "$exit_code" "$duration_ms" <<'PY'
 import hashlib,json,os,pathlib,sys
 scenario,capture,jsonl,exit_code,duration=sys.argv[1:]
@@ -82,9 +86,10 @@ check(not timing['timed_out'] and timing['input_while_alive'] and
 check(alt_in>0 and alt_in==alt_out, 'unbalanced alternate screen')
 check(sync_in==sync_out, 'unbalanced synchronized output')
 check(wire.rfind(b'\x1b[?25h')>wire.rfind(b'\x1b[?25l'), 'cursor not restored')
+check(wire.count(b'\x1b]52;')==set_count+query_count+wrapped_count, 'unexpected OSC52 request')
 if scenario=='osc52_query_on_paste':
     check(query_count==1 and set_count==wrapped_count==0, 'expected exactly one query')
-    check('hello' in screen and 'Pasted 5 chars' in screen, 'reply not rendered')
+    check(screen.count('hello')==1 and 'Pasted 5 chars' in screen, 'reply must be rendered exactly once')
     check(wire.find(query)>=0 and wire.find(query)<wire.find(b'Pasted 5 chars'), 'query must precede paste rendering')
 elif scenario=='osc52_payload_cap':
     check(b'\x1b]52;' not in wire, 'oversized payload emitted OSC52')
@@ -100,7 +105,7 @@ position=wire.find(wrapped if wrapped_count else query if query_count else copy)
 inside_sync=None if position<0 else wire[:position].rfind(b'\x1b[?2026h')>wire[:position].rfind(b'\x1b[?2026l')
 record={'schema_version':'e2e-jsonl-v1','type':'case','timestamp':'T000001',
         'run_id':os.environ.get('E2E_RUN_ID','clipboard_osc52'), 'seed':0,
-        'scenario':scenario,'mode':'altscreen','cols':120,'rows':40,
+        'scenario':scenario,'mode':'altscreen','cols':80,'rows':24,
         'status':'failed' if errors else 'passed','hash':hashlib.sha256(screen.encode()).hexdigest(),
         'duration_ms':int(duration),'error':'; '.join(errors),'screen':capture+'.screen.txt',
         'extra':{'term':os.environ['TERM'],'term_program':os.environ['TERM_PROGRAM'],
@@ -119,13 +124,27 @@ PY
 failures=0
 for scenario in osc52_set_on_yank osc52_query_on_paste osc52_tmux_passthrough \
                 osc52_payload_cap osc52_tmux_default_off osc52_explicit_off; do
+    case_start="$(e2e_monotonic_ms)"
     if run_clipboard_case "$scenario"; then
         log_test_pass "$scenario"
+        record_result "$scenario" passed "$(( $(e2e_monotonic_ms) - case_start ))" "$LOG_FILE"
     else
         log_test_fail "$scenario" 'clipboard assertions failed'
+        record_result "$scenario" failed "$(( $(e2e_monotonic_ms) - case_start ))" "$LOG_FILE" 'clipboard assertions failed'
         failures=$((failures + 1))
     fi
 done
+if ! "$E2E_PYTHON" - "$JSONL" <<'PY'
+import json,pathlib,sys
+rows=[json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+assert len([row for row in rows if row['type']=='case'])==6, 'missing case evidence'
+PY
+then
+    failures=$((failures + 1))
+fi
+status=passed
+if [[ "$failures" -ne 0 ]]; then status=failed; fi
+jsonl_run_end "$status" "$(( $(e2e_monotonic_ms) - suite_start ))" "$failures"
 "$E2E_PYTHON" "$SCRIPT_DIR/../lib/validate_jsonl.py" --strict "$JSONL" || failures=$((failures + 1))
 echo "Clipboard OSC52: 6 cases, $failures failures"
 exit "$failures"
