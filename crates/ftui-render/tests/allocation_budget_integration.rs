@@ -20,6 +20,36 @@
 
 use ftui_render::alloc_budget::{AllocLeakDetector, LeakDetectorConfig};
 use ftui_render::buffer::AdaptiveDoubleBuffer;
+use ftui_render::frame_guardrails::{FrameGuardrails, GuardrailsConfig};
+
+#[test]
+fn pooled_capacity_growth_reaches_guardrail_evidence() {
+    let mut buffers = AdaptiveDoubleBuffer::new(80, 24);
+    let mut guardrails = FrameGuardrails::new(GuardrailsConfig::default());
+    let capacity_bytes = |buffers: &AdaptiveDoubleBuffer| {
+        usize::from(buffers.capacity_width()) * usize::from(buffers.capacity_height()) * 16 * 2
+    };
+    for _ in 0..200 {
+        assert!(
+            guardrails
+                .check_frame(capacity_bytes(&buffers), 0)
+                .is_clear()
+        );
+    }
+    let mut detected = false;
+    for height in 25..125 {
+        buffers.resize(80, height);
+        let verdict = guardrails.check_frame(capacity_bytes(&buffers), 0);
+        detected |= verdict.leak_alert.is_some();
+    }
+    assert!(detected);
+    assert!(
+        guardrails
+            .snapshot()
+            .to_jsonl()
+            .contains("\"leak_alert\":true")
+    );
+}
 
 // ============================================================================
 // Pooling Effectiveness: Reallocation Avoidance

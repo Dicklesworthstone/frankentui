@@ -38,6 +38,7 @@
 //! }
 //! ```
 
+use crate::alloc_budget::{AllocLeakDetector, LeakAlert, LeakDetectorConfig};
 use crate::budget::DegradationLevel;
 
 // =========================================================================
@@ -51,6 +52,8 @@ pub enum GuardrailKind {
     Memory,
     /// Queue depth exceeded a threshold.
     QueueDepth,
+    /// Retained rendering capacity shows sustained upward drift.
+    AllocationLeak,
 }
 
 /// Severity of a guardrail alert.
@@ -573,12 +576,24 @@ impl QueueAction {
 // =========================================================================
 
 /// Configuration for the unified frame guardrails.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GuardrailsConfig {
     /// Memory budget configuration.
     pub memory: MemoryBudgetConfig,
     /// Queue depth configuration.
     pub queue: QueueConfig,
+    /// Optional retained-capacity drift detector; enabled by default.
+    pub leak: Option<LeakDetectorConfig>,
+}
+
+impl Default for GuardrailsConfig {
+    fn default() -> Self {
+        Self {
+            memory: MemoryBudgetConfig::default(),
+            queue: QueueConfig::default(),
+            leak: Some(LeakDetectorConfig::default()),
+        }
+    }
 }
 
 /// Verdict from a guardrail check, combining all subsystem results.
@@ -590,6 +605,8 @@ pub struct GuardrailVerdict {
     pub queue_action: QueueAction,
     /// The most aggressive degradation level recommended across all alerts.
     pub recommended_level: DegradationLevel,
+    /// Upward drift evidence, present only when the detector fires.
+    pub leak_alert: Option<LeakAlert>,
 }
 
 impl GuardrailVerdict {
@@ -630,6 +647,8 @@ impl GuardrailVerdict {
 pub struct FrameGuardrails {
     memory: MemoryBudget,
     queue: QueueGuardrails,
+    leak: Option<AllocLeakDetector>,
+    leak_alert: bool,
     /// Total frames checked.
     frames_checked: u64,
     /// Total frames where at least one alert fired.
@@ -643,6 +662,8 @@ impl FrameGuardrails {
         Self {
             memory: MemoryBudget::new(config.memory),
             queue: QueueGuardrails::new(config.queue),
+            leak: config.leak.map(AllocLeakDetector::new),
+            leak_alert: false,
             frames_checked: 0,
             frames_with_alerts: 0,
         }
@@ -650,7 +671,8 @@ impl FrameGuardrails {
 
     /// Check all guardrails for the current frame.
     ///
-    /// `memory_bytes`: total rendering memory in use (buffer + pools).
+    /// `memory_bytes`: retained rendering capacity (buffer + pools + arena),
+    /// not live allocator usage. A downward shift alone is not a leak.
     /// `queue_depth`: number of pending frames waiting to be rendered.
     pub fn check_frame(&mut self, memory_bytes: usize, queue_depth: u32) -> GuardrailVerdict {
         self.frames_checked = self.frames_checked.saturating_add(1);
@@ -675,6 +697,25 @@ impl FrameGuardrails {
             alerts.push(alert);
         }
 
+        let leak_alert = self.leak.as_mut().and_then(|detector| {
+            let mut alert = detector.observe_unrecorded(memory_bytes as f64);
+            // The general detector is two-sided; releasing capacity is not
+            // an allocation leak. Keep only its upward CUSUM/e-process signal.
+            alert.cusum_triggered = alert.cusum_upper > detector.cusum_threshold();
+            alert.triggered = alert.cusum_triggered || alert.eprocess_triggered;
+            alert.triggered.then_some(alert)
+        });
+        self.leak_alert = leak_alert.is_some();
+        if self.leak_alert {
+            // Suspected growth is diagnostic, not proof of memory pressure.
+            // Only the independent absolute budget may degrade or drop frames.
+            alerts.push(GuardrailAlert {
+                kind: GuardrailKind::AllocationLeak,
+                severity: AlertSeverity::Warning,
+                recommended_level: DegradationLevel::Full,
+            });
+        }
+
         if !alerts.is_empty() {
             self.frames_with_alerts = self.frames_with_alerts.saturating_add(1);
         }
@@ -683,6 +724,7 @@ impl FrameGuardrails {
             alerts,
             queue_action,
             recommended_level: max_level,
+            leak_alert,
         }
     }
 
@@ -740,13 +782,29 @@ impl FrameGuardrails {
             queue_total_backpressure: self.queue.total_backpressure_events(),
             frames_checked: self.frames_checked,
             frames_with_alerts: self.frames_with_alerts,
+            leak_e_value: self.leak.as_ref().map_or(1.0, AllocLeakDetector::e_value),
+            leak_cusum_upper: self
+                .leak
+                .as_ref()
+                .map_or(0.0, AllocLeakDetector::cusum_upper),
+            leak_mean_bytes: self.leak.as_ref().map_or(0.0, AllocLeakDetector::mean),
+            leak_alert: self.leak_alert,
         }
+    }
+
+    /// Start a new capacity baseline after an intentional trim or emergency shed.
+    pub fn reset_leak_detector(&mut self) {
+        if let Some(detector) = self.leak.as_mut() {
+            detector.reset();
+        }
+        self.leak_alert = false;
     }
 
     /// Reset all tracking state (preserves configs).
     pub fn reset(&mut self) {
         self.memory.reset();
         self.queue.reset();
+        self.reset_leak_detector();
         self.frames_checked = 0;
         self.frames_with_alerts = 0;
     }
@@ -758,6 +816,14 @@ impl FrameGuardrails {
 /// or debug overlay.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GuardrailSnapshot {
+    /// Current e-process wealth (1 when disabled or reset).
+    pub leak_e_value: f64,
+    /// Upward CUSUM statistic (0 when disabled or reset).
+    pub leak_cusum_upper: f64,
+    /// Mean retained rendering capacity in bytes.
+    pub leak_mean_bytes: f64,
+    /// Whether the most recent frame indicated upward capacity drift.
+    pub leak_alert: bool,
     /// Current memory usage in bytes.
     pub memory_bytes: usize,
     /// Peak memory usage in bytes.
@@ -794,7 +860,8 @@ impl GuardrailSnapshot {
                 r#"{{"memory_bytes":{},"memory_peak":{},"memory_frac":{:.4},"#,
                 r#""mem_soft_violations":{},"mem_hard_violations":{},"mem_emergency_violations":{},"#,
                 r#""queue_depth":{},"queue_peak":{},"queue_drops":{},"#,
-                r#""queue_backpressure":{},"frames_checked":{},"frames_alerted":{}}}"#,
+                r#""queue_backpressure":{},"frames_checked":{},"frames_alerted":{},"#,
+                r#""leak_e_value":{},"leak_cusum_upper":{},"leak_mean_bytes":{},"leak_alert":{}}}"#,
             ),
             self.memory_bytes,
             self.memory_peak_bytes,
@@ -808,6 +875,10 @@ impl GuardrailSnapshot {
             self.queue_total_backpressure,
             self.frames_checked,
             self.frames_with_alerts,
+            self.leak_e_value,
+            self.leak_cusum_upper,
+            self.leak_mean_bytes,
+            self.leak_alert,
         )
     }
 }
@@ -835,6 +906,99 @@ pub fn buffer_memory_bytes(width: u16, height: u16) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guardrails_detect_allocation_drift() {
+        let mut g = FrameGuardrails::new(GuardrailsConfig::default());
+        for i in 0..200 {
+            let bytes = 1024 * 1024 + if i % 2 == 0 { 1024 } else { 0 };
+            assert!(g.check_frame(bytes, 0).leak_alert.is_none());
+        }
+        let mut detected = false;
+        for i in 1..=100 {
+            let verdict = g.check_frame(1024 * 1024 + i * 64 * 1024, 0);
+            if verdict.leak_alert.is_some() {
+                detected = true;
+                assert!(
+                    verdict
+                        .alerts
+                        .iter()
+                        .any(|a| a.kind == GuardrailKind::AllocationLeak)
+                );
+                assert!(!verdict.is_clear());
+                assert!(!verdict.should_degrade());
+                assert!(!verdict.should_drop_frame());
+                assert!(g.snapshot().leak_alert);
+            }
+        }
+        assert!(detected, "sustained capacity growth must produce evidence");
+        assert!(g.leak.as_ref().unwrap().ledger().is_empty());
+    }
+
+    #[test]
+    fn leak_detector_reset_after_trim_suppresses_false_alert() {
+        let mut g = FrameGuardrails::new(GuardrailsConfig::default());
+        for _ in 0..200 {
+            g.check_frame(1024 * 1024, 0);
+        }
+        assert!(g.check_frame(2 * 1024 * 1024, 0).leak_alert.is_some());
+        let checked = g.frames_checked();
+        g.reset_leak_detector();
+        assert_eq!(g.frames_checked(), checked);
+        assert!(!g.snapshot().leak_alert);
+        for _ in 0..200 {
+            assert!(g.check_frame(1024, 0).leak_alert.is_none());
+        }
+    }
+
+    #[test]
+    fn capacity_decrease_is_not_a_leak() {
+        let mut g = FrameGuardrails::new(GuardrailsConfig::default());
+        for _ in 0..200 {
+            g.check_frame(1024 * 1024, 0);
+        }
+        for _ in 0..100 {
+            assert!(g.check_frame(1024, 0).leak_alert.is_none());
+        }
+        assert!(g.leak.as_ref().unwrap().cusum_lower() > 8.0);
+    }
+
+    #[test]
+    fn disabled_leak_detector_preserves_memory_enforcement() {
+        let mut g = FrameGuardrails::new(GuardrailsConfig {
+            leak: None,
+            ..Default::default()
+        });
+        for i in 0..200 {
+            assert!(g.check_frame(i * 1024, 0).leak_alert.is_none());
+        }
+        assert!(g.check_frame(32 * 1024 * 1024, 0).should_drop_frame());
+        g.reset_leak_detector();
+        assert!(!g.snapshot().leak_alert);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(512))]
+
+        #[test]
+        fn proptest_no_alert_on_stationary_series(
+            baseline in 4096usize..4 * 1024 * 1024,
+            amplitude in 0usize..1024,
+            phase in proptest::bool::ANY,
+        ) {
+            let mut g = FrameGuardrails::new(GuardrailsConfig::default());
+            // A bounded, balanced stationary series at different scales and phases.
+            // This is not a universal zero-false-positive statistical claim.
+            for i in 0..400 {
+                let bytes = if (i % 2 == 0) == phase {
+                    baseline + amplitude
+                } else {
+                    baseline - amplitude
+                };
+                proptest::prop_assert!(g.check_frame(bytes, 0).leak_alert.is_none());
+            }
+        }
+    }
 
     #[test]
     fn zero_and_inverted_configs_are_normalized() {
@@ -1195,6 +1359,7 @@ mod tests {
                 emergency_depth: 3,
                 drop_policy: QueueDropPolicy::DropOldest,
             },
+            ..Default::default()
         };
         let mut g = FrameGuardrails::new(config);
         let v = g.check_frame(150, 2);
@@ -1212,6 +1377,7 @@ mod tests {
                 emergency_limit_bytes: 300,
             },
             queue: QueueConfig::default(),
+            ..Default::default()
         };
         let mut g = FrameGuardrails::new(config);
         let v = g.check_frame(300, 0);
@@ -1237,6 +1403,7 @@ mod tests {
                 emergency_limit_bytes: 300,
             },
             queue: QueueConfig::default(),
+            ..Default::default()
         };
         let mut g = FrameGuardrails::new(config);
         g.check_frame(50, 0); // clear
@@ -1262,6 +1429,10 @@ mod tests {
         assert!(line.ends_with('}'));
         assert!(line.contains("\"memory_bytes\":1024"));
         assert!(line.contains("\"queue_depth\":1"));
+        assert!(line.contains("\"leak_e_value\":1"));
+        assert!(line.contains("\"leak_cusum_upper\":0"));
+        assert!(line.contains("\"leak_mean_bytes\":1024"));
+        assert!(line.contains("\"leak_alert\":false"));
     }
 
     #[test]
@@ -1290,6 +1461,7 @@ mod tests {
             alerts: vec![],
             queue_action: QueueAction::None,
             recommended_level: DegradationLevel::Full,
+            leak_alert: None,
         };
         assert!(v.max_severity().is_none());
         assert!(v.is_clear());
@@ -1312,6 +1484,7 @@ mod tests {
             ],
             queue_action: QueueAction::None,
             recommended_level: DegradationLevel::EssentialOnly,
+            leak_alert: None,
         };
         assert_eq!(v.max_severity(), Some(AlertSeverity::Critical));
     }

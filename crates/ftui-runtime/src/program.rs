@@ -6825,13 +6825,15 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // program rather than from the process-global queue counters so a
         // second program in the same process (or a leaked counter) cannot
         // make this one shed frames.
+        // Retained capacity, not live usage: sustained growth across frames is
+        // the leak signal. Usage-level accounting requires an allocator hook.
         let memory_bytes = self.writer.estimate_memory_usage() + self.frame_arena.allocated_bytes();
         let queue_depth = u32::try_from(self.task_executor.in_flight()).unwrap_or(u32::MAX);
         let verdict = self.guardrails.check_frame(memory_bytes, queue_depth);
 
         // F2 observability: export a guardrail snapshot whenever any
-        // guardrail fires. Alerts are naturally rate-limited by the
-        // degradation logic, so this stays quiet in healthy runs
+        // guardrail fires (including suspected retained-capacity growth).
+        // This stays quiet in healthy runs
         // (bd-1za0z: GuardrailSnapshot::to_jsonl was production-dead).
         if !verdict.alerts.is_empty()
             && let Some(ref sink) = self.evidence_sink
@@ -6842,6 +6844,16 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 self.guardrails.snapshot().to_jsonl(),
             );
             let _ = sink.write_jsonl(&line);
+        }
+
+        if let Some(ref alert) = verdict.leak_alert {
+            tracing::warn!(
+                target: crate::telemetry_schema::TARGET_GUARDRAILS,
+                e_value = alert.e_value,
+                cusum = alert.cusum_upper,
+                mean_bytes = self.guardrails.snapshot().leak_mean_bytes,
+                "allocation leak suspected"
+            );
         }
 
         if verdict.should_drop_frame() {
@@ -6855,6 +6867,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             // next frame re-measures honestly.
             self.frame_arena = FrameArena::default();
             self.writer.gc(None);
+            self.guardrails.reset_leak_detector();
             tracing::warn!(
                 target: crate::telemetry_schema::TARGET_GUARDRAILS,
                 memory_bytes,
@@ -6887,6 +6900,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             if soft_alert && cooldown_elapsed {
                 self.frame_arena = FrameArena::default();
                 self.writer.gc(None);
+                self.guardrails.reset_leak_detector();
                 self.last_soft_trim_frame = Some(self.frame_idx);
                 tracing::debug!(
                     target: crate::telemetry_schema::TARGET_GUARDRAILS,
@@ -13553,6 +13567,7 @@ mod tests {
                     ..MemoryBudgetConfig::default()
                 },
                 queue: QueueConfig::default(),
+                ..Default::default()
             },
             evidence_sink: EvidenceSinkConfig::enabled_file(&evidence_path),
             ..Default::default()
@@ -13573,6 +13588,61 @@ mod tests {
             contents.contains(r#""mem_soft_violations":"#),
             "snapshot row must carry the violation counters"
         );
+    }
+
+    #[test]
+    fn headless_render_frame_emits_guardrail_snapshot_on_leak_alert() {
+        let evidence_path = temp_evidence_path("allocation_leak_retained");
+        let config = ProgramConfig {
+            evidence_sink: EvidenceSinkConfig::enabled_file(&evidence_path),
+            ..Default::default()
+        };
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+        for _ in 0..200 {
+            program.render_frame().expect("stationary render");
+            assert!(!program.guardrails.snapshot().leak_alert);
+        }
+
+        // Exercise the real retained-capacity sensor, not an injected verdict.
+        program.frame_arena.alloc_slice(&vec![0u8; 256 * 1024]);
+        program.render_frame().expect("render with capacity growth");
+        let contents = std::fs::read_to_string(&evidence_path).expect("retained leak evidence");
+        let snapshots: Vec<Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("valid evidence JSON"))
+            .filter(|row| row["event"] == "guardrail_snapshot")
+            .collect();
+        assert_eq!(snapshots.len(), 1, "only the capacity jump should alert");
+        let snapshot = &snapshots[0]["snapshot"];
+        assert_eq!(snapshot["leak_alert"], true);
+        assert!(snapshot["leak_cusum_upper"].as_f64().unwrap() > 8.0);
+        assert!(snapshot["leak_e_value"].as_f64().unwrap().is_finite());
+        assert!(snapshot["leak_mean_bytes"].as_f64().unwrap() > 0.0);
+        assert_eq!(snapshot["mem_soft_violations"], 0);
+        // Keep the evidence file for inspection (AGENTS.md Rule 1).
+    }
+
+    #[test]
+    fn headless_emergency_shed_resets_leak_baseline() {
+        let config = ProgramConfig {
+            guardrails: GuardrailsConfig {
+                memory: MemoryBudgetConfig {
+                    soft_limit_bytes: 1,
+                    hard_limit_bytes: 1,
+                    emergency_limit_bytes: 1,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut program = headless_program_with_config(TestModel { value: 0 }, config);
+        program.frame_arena.alloc_slice(&[0u8; 1024]);
+        program.render_frame().expect("emergency shed");
+        let snapshot = program.guardrails.snapshot();
+        assert_eq!(snapshot.memory_emergency_violations, 1);
+        assert_eq!(snapshot.frames_checked, 1);
+        assert_eq!(snapshot.leak_mean_bytes, 0.0);
+        assert!(!snapshot.leak_alert);
     }
 
     /// The inline-auto VOI sampler's decision is exported through the evidence
@@ -14532,6 +14602,7 @@ mod tests {
                     warn_depth: 1,
                     ..QueueConfig::default()
                 },
+                ..Default::default()
             },
             evidence_sink: EvidenceSinkConfig::enabled_file(&evidence_path),
             ..Default::default()
@@ -14623,6 +14694,7 @@ mod tests {
                     ..MemoryBudgetConfig::default()
                 },
                 queue: QueueConfig::default(),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -14656,6 +14728,8 @@ mod tests {
         // The trim released the injected chunk: the arena is back at the
         // control's size instead of carrying the extra 256 KiB.
         let after = program.frame_arena.allocated_bytes();
+        assert_eq!(program.guardrails.snapshot().leak_mean_bytes, 0.0);
+        assert!(!program.guardrails.snapshot().leak_alert);
         assert!(
             after <= control_bytes + 1024,
             "soft alert must trim retained capacity: after={after}, control={control_bytes}"

@@ -177,7 +177,7 @@ impl LeakAlert {
 ///
 /// An alert triggers when *either* detector fires. The evidence ledger
 /// records all intermediate state for post-mortem diagnostics.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AllocLeakDetector {
     config: LeakDetectorConfig,
     /// Running mean (Welford online).
@@ -219,6 +219,18 @@ impl AllocLeakDetector {
     ///
     /// Returns a [`LeakAlert`] indicating whether the detector triggered.
     pub fn observe(&mut self, value: f64) -> LeakAlert {
+        self.observe_inner(value, true)
+    }
+
+    /// Observe without retaining a per-frame ledger entry.
+    ///
+    /// Long-running runtimes export their own snapshots and must not accumulate
+    /// an unbounded diagnostic history inside the detector.
+    pub fn observe_unrecorded(&mut self, value: f64) -> LeakAlert {
+        self.observe_inner(value, false)
+    }
+
+    fn observe_inner(&mut self, value: f64, record: bool) -> LeakAlert {
         self.frames += 1;
         let n = self.frames;
 
@@ -258,7 +270,9 @@ impl AllocLeakDetector {
                 mean_estimate: self.mean,
                 sigma_estimate: sigma,
             };
-            self.ledger.push(entry);
+            if record {
+                self.ledger.push(entry);
+            }
             return LeakAlert::no_alert(n, 1.0, 0.0, 0.0);
         }
 
@@ -279,7 +293,7 @@ impl AllocLeakDetector {
         // Clamp to prevent overflow.
         let log_factor = if log_factor.is_nan() { 0.0 } else { log_factor };
         let factor = log_factor.clamp(-10.0, 10.0).exp();
-        self.e_value *= factor;
+        self.e_value = (self.e_value * factor).min(f64::MAX);
 
         let threshold = 1.0 / self.config.alpha;
         let eprocess_triggered = self.e_value >= threshold;
@@ -296,7 +310,9 @@ impl AllocLeakDetector {
             mean_estimate: self.mean,
             sigma_estimate: sigma,
         };
-        self.ledger.push(entry);
+        if record {
+            self.ledger.push(entry);
+        }
 
         LeakAlert {
             triggered,
@@ -357,6 +373,12 @@ impl AllocLeakDetector {
         1.0 / self.config.alpha
     }
 
+    /// CUSUM threshold for either directional statistic.
+    #[must_use]
+    pub fn cusum_threshold(&self) -> f64 {
+        self.config.cusum_threshold
+    }
+
     /// Reset detector state (preserves config).
     pub fn reset(&mut self) {
         self.mean = 0.0;
@@ -377,6 +399,25 @@ impl AllocLeakDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unrecorded_observations_match_recorded_without_growing_ledger() {
+        let mut recorded = default_detector();
+        let mut unrecorded = default_detector();
+        for i in 0..4000 {
+            let value = if i < 200 { 1024.0 } else { i as f64 * 1024.0 };
+            let expected = recorded.observe(value);
+            let actual = unrecorded.observe_unrecorded(value);
+            assert_eq!(actual.triggered, expected.triggered);
+            assert_eq!(actual.e_value, expected.e_value);
+            assert_eq!(actual.cusum_upper, expected.cusum_upper);
+            assert_eq!(actual.cusum_lower, expected.cusum_lower);
+            assert!(actual.e_value.is_finite());
+            assert!(unrecorded.ledger().is_empty());
+        }
+        assert_eq!(recorded.ledger().len(), 4000);
+        assert_eq!(unrecorded.frames(), 4000);
+    }
 
     fn default_detector() -> AllocLeakDetector {
         AllocLeakDetector::new(LeakDetectorConfig::default())
