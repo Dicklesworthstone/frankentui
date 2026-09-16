@@ -254,8 +254,40 @@ e2e_fixture_self_test() {
         echo "WARN: e2e_determinism_self_test not available (logging.sh not sourced)" >&2
     fi
     e2e_tools_self_test || return 1
+    e2e_cargo_test_env_guard_self_test || return 1
     e2e_clock_self_test
 }
+
+e2e_cargo_test_env_guard_self_test() (
+    # Independently enumerate the contract: deriving these canaries from the
+    # production strip list would hide an accidentally removed variable.
+    local names=(FTUI_SEED FTUI_HARNESS_SEED FTUI_DEMO_SEED FTUI_TEST_SEED
+        E2E_SEED E2E_CONTEXT_SEED FTUI_TEST_TIME_STEP_MS E2E_TIME_STEP_MS)
+    local var child_env leaked="" status
+    for var in "${names[@]}"; do
+        export "$var=314159"
+    done
+    export FTUI_ENV_GUARD_SENTINEL="keep this value"
+    child_env="$(e2e_cargo_test_env_guard env)" || return 1
+    for var in "${names[@]}"; do
+        if [[ "$child_env" == "$var="* || "$child_env" == *$'\n'"$var="* ]]; then
+            leaked+="${leaked:+,}$var"
+        fi
+        [[ "${!var}" == 314159 ]] || return 1
+    done
+    status=pass
+    [[ -z "$leaked" ]] || status=fail
+    [[ "$child_env" == *"FTUI_ENV_GUARD_SENTINEL=keep this value"* ]] || status=fail
+    # The guard must preserve arguments and the command's failure status too.
+    if e2e_cargo_test_env_guard bash -c '[[ "$1" == "two words" ]] && exit 23' _ 'two words'; then
+        status=fail
+    else
+        [[ "$?" == 23 ]] || status=fail
+    fi
+    jsonl_assert "cargo_test_env_guard_self_test" "$status" "leaked=$leaked"
+    printf 'cargo_test_env_guard_self_test %s\n' "$status"
+    [[ "$status" == pass ]]
+)
 
 e2e_tools_self_test() (
     # Use the actual resolver, interpreter and JSONL writer. Keep diagnostic
