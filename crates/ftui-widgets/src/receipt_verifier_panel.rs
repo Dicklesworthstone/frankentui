@@ -190,9 +190,15 @@ impl ReceiptVerdict {
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```
+/// use ftui_core::geometry::Rect;
+/// use ftui_render::{frame::Frame, grapheme_pool::GraphemePool};
+/// use ftui_widgets::Widget;
 /// use ftui_widgets::receipt_verifier_panel::{ReceiptVerifierPanel, ReceiptVerdict};
 ///
+/// let mut pool = GraphemePool::new();
+/// let mut frame = Frame::new(80, 24, &mut pool);
+/// let area = Rect::new(0, 0, 80, 24);
 /// let verdict = ReceiptVerdict::skeleton("rcpt-001", true);
 /// let panel = ReceiptVerifierPanel::new(&verdict)
 ///     .show_posterior_path(true)
