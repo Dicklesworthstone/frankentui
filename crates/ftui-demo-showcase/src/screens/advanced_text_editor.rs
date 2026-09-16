@@ -1622,8 +1622,7 @@ impl Screen for AdvancedTextEditor {
                             // a writer error that terminates the application.
                             let max_bytes = (ftui_core::osc52::MAX_OSC52_PAYLOAD / 4) * 3;
                             if text.len() > max_bytes {
-                                self.clipboard_message =
-                                    Some("Clipboard payload too large".into());
+                                self.clipboard_message = Some("Clipboard payload too large".into());
                                 self.update_status();
                                 return Cmd::None;
                             }
@@ -1998,7 +1997,10 @@ mod tests {
                 let cursor = screen.editor.cursor();
                 let selection = screen.editor.selected_text();
                 let undo_groups = screen.editor.undo_group_count();
-                assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::None));
+                assert!(matches!(
+                    screen.update(&press(KeyCode::Char('y'))),
+                    Cmd::None
+                ));
                 assert!(screen.status.contains("Clipboard payload too large"));
                 assert_eq!(screen.editor.text(), text);
                 assert_eq!(screen.editor.cursor(), cursor);
