@@ -1,5 +1,21 @@
 # Dependency Upgrade Log
 
+## 2026-09-16: investigate the `nix 0.28.0` future-incompatibility warning
+
+The pinned compiler reports `semicolon_in_expressions_from_macros` from
+`cfg_aliases!` in `nix 0.28.0/build.rs`. This copy is pulled in by
+`portable-pty 0.9.0`; updating FrankenTUI's direct `nix 0.31` dependency
+does not replace it. The crates.io APIs for
+[`portable-pty`](https://crates.io/api/v1/crates/portable-pty) and
+[`cfg_aliases`](https://crates.io/api/v1/crates/cfg_aliases), checked on this
+date, list 0.9.0 as the latest stable PTY release and 0.1.1 as the latest
+compatible 0.1 macro release. No compatible stable update was available.
+No dependency or warning policy was changed. G04.4's literal zero-warning-log
+criterion remains unmet, although its DSR rustdoc command and runnable example
+pass. The underlying compiler report is retained at
+`/data/retained/ftui-doc-verification-20260916a/native-target/.future-incompat-report.json`
+on the Linux DSR host; bead `.6.8` records the verification scope.
+
 ## 2026-09-13 dependency pass (post-0.7.0 demo/web work)
 
 Surveyed with `cargo outdated --workspace --root-deps-only` on the pinned

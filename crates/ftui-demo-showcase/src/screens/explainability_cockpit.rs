@@ -1534,7 +1534,10 @@ mod tests {
         assert_eq!(cockpit.data.diff.as_ref().unwrap().event_idx, 1);
         cockpit.data.timeline.clear();
         cockpit.load_host_evidence(first.clone(), false);
-        assert!(cockpit.data.timeline.is_empty(), "unchanged snapshot reparsed");
+        assert!(
+            cockpit.data.timeline.is_empty(),
+            "unchanged snapshot reparsed"
+        );
         cockpit.load_host_evidence(first, true);
         assert_eq!(cockpit.data.diff.as_ref().unwrap().event_idx, 1);
         cockpit.load_host_evidence(second, false);
