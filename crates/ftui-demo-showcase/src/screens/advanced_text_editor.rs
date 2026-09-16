@@ -117,6 +117,12 @@ pub enum DiagnosticEventKind {
     HistoryPanelToggled,
     /// Selection cleared.
     SelectionCleared,
+    /// Selection or current line copied to the terminal clipboard.
+    ClipboardCopied,
+    /// Terminal clipboard contents requested.
+    ClipboardPasteRequested,
+    /// Requested clipboard contents inserted.
+    ClipboardPasted,
 }
 
 impl DiagnosticEventKind {
@@ -135,6 +141,9 @@ impl DiagnosticEventKind {
             Self::FocusChanged => "focus_changed",
             Self::HistoryPanelToggled => "history_panel_toggled",
             Self::SelectionCleared => "selection_cleared",
+            Self::ClipboardCopied => "clipboard_copied",
+            Self::ClipboardPasteRequested => "clipboard_paste_requested",
+            Self::ClipboardPasted => "clipboard_pasted",
         }
     }
 }
@@ -176,6 +185,10 @@ pub struct DiagnosticEntry {
     pub selection_len: Option<usize>,
     /// Text length in chars.
     pub text_len: Option<usize>,
+    /// Clipboard payload length in graphemes (never the payload itself).
+    pub chars: Option<usize>,
+    /// Editor mode at the time of a clipboard operation.
+    pub mode: Option<&'static str>,
     /// Additional context.
     pub context: Option<String>,
     /// Checksum for determinism verification.
@@ -211,6 +224,8 @@ impl DiagnosticEntry {
             cursor_col: None,
             selection_len: None,
             text_len: None,
+            chars: None,
+            mode: None,
             context: None,
             checksum: 0,
         }
@@ -395,6 +410,12 @@ impl DiagnosticEntry {
         if let Some(l) = self.text_len {
             parts.push(format!("\"text_len\":{l}"));
         }
+        if let Some(chars) = self.chars {
+            parts.push(format!("\"chars\":{chars}"));
+        }
+        if let Some(mode) = self.mode {
+            parts.push(format!("\"mode\":\"{mode}\""));
+        }
         if let Some(ref ctx) = self.context {
             let escaped = ctx.replace('\\', "\\\\").replace('"', "\\\"");
             parts.push(format!("\"context\":\"{escaped}\""));
@@ -493,6 +514,11 @@ impl DiagnosticLog {
                     summary.history_panel_toggled_count += 1
                 }
                 DiagnosticEventKind::SelectionCleared => summary.selection_cleared_count += 1,
+                DiagnosticEventKind::ClipboardCopied => summary.clipboard_copied_count += 1,
+                DiagnosticEventKind::ClipboardPasteRequested => {
+                    summary.clipboard_requested_count += 1
+                }
+                DiagnosticEventKind::ClipboardPasted => summary.clipboard_pasted_count += 1,
             }
         }
         summary.total_entries = self.entries.len();
@@ -516,6 +542,9 @@ pub struct DiagnosticSummary {
     pub focus_changed_count: usize,
     pub history_panel_toggled_count: usize,
     pub selection_cleared_count: usize,
+    pub clipboard_copied_count: usize,
+    pub clipboard_requested_count: usize,
+    pub clipboard_pasted_count: usize,
 }
 
 impl DiagnosticSummary {
@@ -526,7 +555,8 @@ impl DiagnosticSummary {
              \"query_updated\":{},\"match_navigation\":{},\"replace_performed\":{},\
              \"replace_all_performed\":{},\"undo_performed\":{},\"redo_performed\":{},\
              \"text_edited\":{},\"focus_changed\":{},\"history_panel_toggled\":{},\
-             \"selection_cleared\":{}}}",
+             \"selection_cleared\":{},\"clipboard_copied\":{},\
+             \"clipboard_requested\":{},\"clipboard_pasted\":{}}}",
             self.total_entries,
             self.search_opened_count,
             self.search_closed_count,
@@ -539,7 +569,10 @@ impl DiagnosticSummary {
             self.text_edited_count,
             self.focus_changed_count,
             self.history_panel_toggled_count,
-            self.selection_cleared_count
+            self.selection_cleared_count,
+            self.clipboard_copied_count,
+            self.clipboard_requested_count,
+            self.clipboard_pasted_count
         )
     }
 }
@@ -623,6 +656,22 @@ impl Focus {
     }
 }
 
+/// Editing versus command input in the main editor pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditMode {
+    Insert,
+    Normal,
+}
+
+impl EditMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Insert => "INSERT",
+            Self::Normal => "NORMAL",
+        }
+    }
+}
+
 /// Advanced Text Editor demo screen.
 pub struct AdvancedTextEditor {
     /// Main text editor.
@@ -633,6 +682,9 @@ pub struct AdvancedTextEditor {
     replace_input: TextInput,
     /// Which panel has focus.
     focus: Focus,
+    edit_mode: EditMode,
+    clipboard_message: Option<String>,
+    clipboard_pending: bool,
     /// Whether the search/replace panel is visible.
     search_visible: bool,
     /// Cached search results.
@@ -718,10 +770,13 @@ and proper Unicode handling throughout.
             search_input,
             replace_input,
             focus: Focus::Editor,
+            edit_mode: EditMode::Insert,
+            clipboard_message: None,
+            clipboard_pending: false,
             search_visible: false,
             search_results: Vec::new(),
             current_match: None,
-            status: "Ready | Ctrl+F: Search | Ctrl+H: Replace | ?: Help".into(),
+            status: "INSERT | Esc: Normal (y: Copy, p: Paste) | Ctrl+F: Search".into(),
             undo_panel_visible: false,
             undo_keys: UndoKeybindings::default(),
             diagnostic_log,
@@ -1086,8 +1141,9 @@ and proper Unicode handling throughout.
         };
 
         let undo_info = format!(
-            "Undo:{} Redo:{}",
+            "Undo:{}/{} Redo:{}",
             self.editor.undo_group_count(),
+            self.editor.undo_op_count(),
             self.editor.redo_group_count()
         );
         let history_hint = if self.undo_panel_visible {
@@ -1097,7 +1153,11 @@ and proper Unicode handling throughout.
         };
 
         self.status = format!(
-            "Ln {}, Col {}{}{} | {} | {}",
+            "{}{} | Ln {}, Col {}{}{} | {} | {}",
+            self.edit_mode.as_str(),
+            self.clipboard_message
+                .as_ref()
+                .map_or_else(String::new, |message| format!(" | {message}")),
             cursor.line + 1,
             cursor.grapheme + 1,
             sel_info,
@@ -1241,6 +1301,7 @@ and proper Unicode handling throughout.
     }
 
     fn perform_undo(&mut self) {
+        self.clipboard_message = None;
         if self.editor.undo_group_count() > 0 {
             self.editor.undo();
 
@@ -1254,6 +1315,7 @@ and proper Unicode handling throughout.
     }
 
     fn perform_redo(&mut self) {
+        self.clipboard_message = None;
         if self.editor.redo_group_count() > 0 {
             self.editor.redo();
 
@@ -1271,6 +1333,28 @@ impl Screen for AdvancedTextEditor {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Key(key) = event
+            && key.kind != KeyEventKind::Release
+            && self.clipboard_message.take().is_some()
+        {
+            self.update_status();
+        }
+        // Only a requested reply may mutate the document; unsolicited terminal
+        // clipboard events must not turn into pasted text.
+        if let Event::Clipboard(reply) = event {
+            if self.clipboard_pending {
+                self.clipboard_pending = false;
+                let chars = grapheme_count(&reply.content);
+                self.editor.insert_text(&reply.content);
+                self.clipboard_message = Some(format!("Pasted {chars} chars"));
+                let mut entry = DiagnosticEntry::new(DiagnosticEventKind::ClipboardPasted);
+                entry.chars = Some(chars);
+                entry.mode = Some(self.edit_mode.as_str());
+                self.log_event(entry);
+                self.update_status();
+            }
+            return Cmd::None;
+        }
         if let Event::Mouse(mouse) = event
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && self.focus_from_point(mouse.x, mouse.y)
@@ -1435,8 +1519,9 @@ impl Screen for AdvancedTextEditor {
 
                     return Cmd::None;
                 }
-                // Escape: Close search panel if open, or switch to View mode
+                // Closing a prompt takes precedence over changing editor mode.
                 (KeyCode::Escape, false, false) => {
+                    self.clipboard_pending = false;
                     if self.search_visible {
                         self.search_visible = false;
                         self.focus = Focus::Editor;
@@ -1450,12 +1535,17 @@ impl Screen for AdvancedTextEditor {
                     } else {
                         self.focus = Focus::Editor;
                         self.update_focus_states();
-                        self.editor.clear_selection();
-
-                        // Log selection clear while preserving editor focus.
-                        let entry = DiagnosticEntry::new(DiagnosticEventKind::SelectionCleared)
-                            .with_focus("editor");
-                        self.log_event(entry);
+                        self.editor.editor_mut().break_undo_group();
+                        if self.edit_mode == EditMode::Insert {
+                            // Preserve the selection so Esc, y can copy it.
+                            self.edit_mode = EditMode::Normal;
+                        } else {
+                            self.editor.clear_selection();
+                            let entry =
+                                DiagnosticEntry::new(DiagnosticEventKind::SelectionCleared)
+                                    .with_focus("editor");
+                            self.log_event(entry);
+                        }
                     }
                     self.update_status();
                     return Cmd::None;
@@ -1498,6 +1588,69 @@ impl Screen for AdvancedTextEditor {
                     _ => {}
                 },
                 _ => {}
+            }
+        }
+
+        if self.focus == Focus::Editor && self.edit_mode == EditMode::Normal {
+            if let Event::Key(key) = event {
+                if key.kind == KeyEventKind::Release {
+                    return Cmd::None;
+                }
+                if key.modifiers.is_empty() {
+                    match key.code {
+                        KeyCode::Char('i') => {
+                            self.edit_mode = EditMode::Insert;
+                            self.editor.editor_mut().break_undo_group();
+                            self.update_status();
+                            return Cmd::None;
+                        }
+                        KeyCode::Char('y') => {
+                            let selected = self.editor.selected_text();
+                            let has_selection = selected.is_some();
+                            let text = selected.unwrap_or_else(|| {
+                                self.editor
+                                    .editor()
+                                    .line_text(self.editor.cursor().line)
+                                    .unwrap_or_default()
+                            });
+                            let chars = grapheme_count(&text);
+                            self.clipboard_message = Some(if has_selection {
+                                format!("Copied {chars} chars")
+                            } else {
+                                format!("Copied line {}", self.editor.cursor().line + 1)
+                            });
+                            self.editor.editor_mut().break_undo_group();
+                            let mut entry =
+                                DiagnosticEntry::new(DiagnosticEventKind::ClipboardCopied);
+                            entry.chars = Some(chars);
+                            entry.mode = Some(self.edit_mode.as_str());
+                            self.log_event(entry);
+                            self.update_status();
+                            return Cmd::set_clipboard(text);
+                        }
+                        KeyCode::Char('p') if !self.clipboard_pending => {
+                            self.clipboard_pending = true;
+                            self.editor.editor_mut().break_undo_group();
+                            self.clipboard_message = Some("Requesting clipboard…".into());
+                            let mut entry = DiagnosticEntry::new(
+                                DiagnosticEventKind::ClipboardPasteRequested,
+                            );
+                            entry.mode = Some(self.edit_mode.as_str());
+                            self.log_event(entry);
+                            self.update_status();
+                            return Cmd::get_clipboard();
+                        }
+                        _ => {}
+                    }
+                }
+                // Normal mode permits navigation/selection, never text editing.
+                if !matches!(
+                    key.code,
+                    KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+                        | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown
+                ) {
+                    return Cmd::None;
+                }
             }
         }
 
@@ -1628,6 +1781,18 @@ impl Screen for AdvancedTextEditor {
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
+                key: "i",
+                action: "Normal mode: insert text",
+            },
+            HelpEntry {
+                key: "y",
+                action: "Normal mode: copy selection or line",
+            },
+            HelpEntry {
+                key: "p",
+                action: "Normal: request paste; Esc cancels if terminal denies",
+            },
+            HelpEntry {
                 key: "Ctrl+Up/Down",
                 action: "Move by paragraph",
             },
@@ -1693,7 +1858,7 @@ impl Screen for AdvancedTextEditor {
             },
             HelpEntry {
                 key: "Esc",
-                action: "Close search / View mode",
+                action: "Close search / Normal mode / clear selection",
             },
             HelpEntry {
                 key: "↑/↓",
@@ -1727,7 +1892,8 @@ impl Screen for AdvancedTextEditor {
     }
 
     fn consumes_text_input(&self) -> bool {
-        self.focus != Focus::View
+        matches!(self.focus, Focus::Search | Focus::Replace)
+            || (self.focus == Focus::Editor && self.edit_mode == EditMode::Insert)
     }
 
     fn title(&self) -> &'static str {
@@ -1771,6 +1937,116 @@ mod tests {
         assert!(!screen.search_visible);
         assert_eq!(screen.title(), "Advanced Text Editor");
         assert_eq!(screen.tab_label(), "Editor");
+    }
+
+    fn clipboard_reply(text: &str) -> Event {
+        use ftui_core::event::{ClipboardEvent, ClipboardSource};
+        Event::Clipboard(ClipboardEvent::new(text, ClipboardSource::Osc52))
+    }
+
+    #[test]
+    fn yank_selection_returns_set_clipboard_cmd() {
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("hello");
+        screen.update(&ctrl_press(KeyCode::Char('a')));
+        screen.update(&press(KeyCode::Escape));
+        assert_eq!(screen.edit_mode, EditMode::Normal);
+        assert!(!screen.consumes_text_input());
+        assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "hello"));
+        assert!(screen.status.contains("Copied 5 chars"));
+        assert_eq!(screen.editor.text(), "hello");
+        assert_eq!(screen.editor.undo_group_count(), 0);
+        screen.update(&press(KeyCode::Right));
+        assert!(!screen.status.contains("Copied"));
+    }
+
+    #[test]
+    fn yank_line_and_unicode_selection_count_graphemes() {
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("e\u{301}👩‍💻\r\nsecond");
+        screen.update(&press(KeyCode::Escape));
+        assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "e\u{301}👩‍💻"));
+        assert!(screen.status.contains("Copied line 1"));
+        screen.editor.set_text("e\u{301}👩‍💻");
+        screen.editor.select_all();
+        assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "e\u{301}👩‍💻"));
+        assert!(screen.status.contains("Copied 2 chars"));
+        screen.editor.set_text("");
+        assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn paste_key_requests_clipboard_and_reply_inserts_once() {
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("");
+        screen.update(&press(KeyCode::Char('x')));
+        screen.update(&press(KeyCode::Escape));
+        assert!(matches!(screen.update(&press(KeyCode::Char('p'))), Cmd::GetClipboard));
+        assert!(screen.status.contains("Requesting clipboard"));
+        assert!(matches!(screen.update(&press(KeyCode::Char('p'))), Cmd::None));
+        screen.update(&clipboard_reply("e\u{301}👩‍💻"));
+        assert_eq!(screen.editor.text(), "xe\u{301}👩‍💻");
+        assert!(screen.status.contains("Pasted 2 chars"));
+        assert_eq!(screen.editor.undo_group_count(), 2);
+        screen.update(&clipboard_reply("duplicate"));
+        assert_eq!(screen.editor.text(), "xe\u{301}👩‍💻");
+        screen.update(&ctrl_press(KeyCode::Char('z')));
+        assert_eq!(screen.editor.text(), "x");
+        screen.update(&ctrl_press(KeyCode::Char('y')));
+        assert_eq!(screen.editor.text(), "xe\u{301}👩‍💻");
+    }
+
+    #[test]
+    fn clipboard_cancel_and_unsolicited_reply_do_not_edit() {
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("unchanged");
+        screen.update(&clipboard_reply("unsolicited"));
+        screen.update(&press(KeyCode::Escape));
+        assert!(matches!(screen.update(&press(KeyCode::Char('p'))), Cmd::GetClipboard));
+        screen.update(&press(KeyCode::Escape));
+        screen.update(&clipboard_reply("cancelled"));
+        assert_eq!(screen.editor.text(), "unchanged");
+        assert!(matches!(screen.update(&press(KeyCode::Char('p'))), Cmd::GetClipboard));
+        screen.update(&clipboard_reply(""));
+        assert_eq!(screen.editor.text(), "unchanged");
+        assert!(screen.status.contains("Pasted 0 chars"));
+        assert_eq!(screen.editor.undo_group_count(), 0);
+    }
+
+    #[test]
+    fn insert_mode_types_y_p_and_prompts_take_precedence() {
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("");
+        screen.update(&press(KeyCode::Char('y')));
+        screen.update(&press(KeyCode::Char('p')));
+        assert_eq!(screen.editor.text(), "yp");
+        screen.update(&press(KeyCode::Escape));
+        for key in [KeyCode::Char('a'), KeyCode::Backspace, KeyCode::Delete, KeyCode::Enter] {
+            screen.update(&press(key));
+        }
+        assert_eq!(screen.editor.text(), "yp");
+        screen.update(&ctrl_press(KeyCode::Char('f')));
+        screen.update(&press(KeyCode::Char('y')));
+        screen.update(&press(KeyCode::Char('p')));
+        assert_eq!(screen.search_input.value(), "yp");
+        screen.update(&press(KeyCode::Escape));
+        assert_eq!(screen.edit_mode, EditMode::Normal);
+        screen.update(&press(KeyCode::Char('i')));
+        assert_eq!(screen.edit_mode, EditMode::Insert);
+        screen.update(&press(KeyCode::Char('!')));
+        assert_eq!(screen.editor.text(), "yp!");
+    }
+
+    #[test]
+    fn clipboard_diagnostic_json_has_counts_not_content() {
+        let mut entry = DiagnosticEntry::new(DiagnosticEventKind::ClipboardPasted);
+        entry.chars = Some(2);
+        entry.mode = Some("NORMAL");
+        let value: serde_json::Value = serde_json::from_str(&entry.to_jsonl()).unwrap();
+        assert_eq!(value["kind"], "clipboard_pasted");
+        assert_eq!(value["chars"], 2);
+        assert_eq!(value["mode"], "NORMAL");
+        assert!(value.get("content").is_none());
     }
 
     #[test]
@@ -1924,10 +2200,10 @@ mod tests {
             screen.update(&press(KeyCode::Char(c)));
         }
         assert_eq!(screen.editor.undo_group_count(), 2);
-        assert!(screen.status.contains("Undo:2 Redo:0"));
+        assert!(screen.status.contains("Undo:2/11 Redo:0"));
         screen.update(&ctrl_press(KeyCode::Char('z')));
         assert_eq!(screen.editor.text(), "hello ");
-        assert!(screen.status.contains("Undo:1 Redo:1"));
+        assert!(screen.status.contains("Undo:1/6 Redo:1"));
         screen.update(&ctrl_press(KeyCode::Char('z')));
         assert_eq!(screen.editor.text(), "");
         assert!(!screen.can_undo());
@@ -1936,7 +2212,7 @@ mod tests {
         screen.update(&ctrl_press(KeyCode::Char('y')));
         screen.update(&ctrl_press(KeyCode::Char('y')));
         assert_eq!(screen.editor.text(), "hello world");
-        assert!(screen.status.contains("Undo:2 Redo:0"));
+        assert!(screen.status.contains("Undo:2/11 Redo:0"));
         assert!(!screen.can_redo());
         assert!(!screen.redo());
     }
@@ -2159,6 +2435,9 @@ mod tests {
             focus_changed_count: 0,
             history_panel_toggled_count: 0,
             selection_cleared_count: 0,
+            clipboard_copied_count: 0,
+            clipboard_requested_count: 0,
+            clipboard_pasted_count: 0,
         };
 
         let jsonl = summary.to_jsonl();
