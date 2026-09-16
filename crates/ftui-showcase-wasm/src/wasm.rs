@@ -610,8 +610,9 @@ impl ShowcaseRunner {
     /// Provide the evidence JSONL for the `ExplainabilityCockpit` screen.
     ///
     /// Native builds poll this log from a local path; a browser has no such
-    /// file, so the host supplies the same rows once during startup. Returns
-    /// false if the log was already set.
+    /// file, so the host supplies a complete snapshot and can replace it as new
+    /// rows arrive. Returns true when the stored text changes, false for an
+    /// identical snapshot. The cockpit observes replacements on refresh.
     #[wasm_bindgen(js_name = setEvidenceJsonl)]
     pub fn set_evidence_jsonl(&mut self, text: String) -> bool {
         ftui_demo_showcase::assets::set_evidence_jsonl(text)

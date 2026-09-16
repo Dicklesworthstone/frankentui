@@ -168,6 +168,8 @@ pub struct ExplainabilityCockpit {
     last_refresh_tick: u64,
     last_modified: Option<SystemTime>,
     last_size: Option<u64>,
+    #[cfg(any(target_arch = "wasm32", test))]
+    last_host_evidence: Option<std::sync::Arc<str>>,
     /// When true, auto-refresh is paused.
     paused: bool,
     /// Currently focused panel.
@@ -203,6 +205,8 @@ impl ExplainabilityCockpit {
             last_refresh_tick: 0,
             last_modified: None,
             last_size: None,
+            #[cfg(any(target_arch = "wasm32", test))]
+            last_host_evidence: None,
             paused: false,
             focused_panel: FocusPanel::Timeline,
             timeline_scroll: 0,
@@ -232,6 +236,7 @@ impl ExplainabilityCockpit {
     /// The tick loop asks for a refresh twice a second; re-parsing a blob that
     /// is fixed for the life of the process is pure waste, so the byte length
     /// stands in for the file metadata the polling path compares.
+    #[cfg(not(target_arch = "wasm32"))]
     fn load_immutable(&mut self, text: &str, label: &str, force: bool) {
         let size = Some(text.len() as u64);
         self.last_modified = None;
@@ -240,6 +245,20 @@ impl ExplainabilityCockpit {
         }
         self.last_size = size;
         self.load_from_text(text, label);
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn load_host_evidence(&mut self, text: std::sync::Arc<str>, force: bool) {
+        if !force
+            && self
+                .last_host_evidence
+                .as_ref()
+                .is_some_and(|previous| std::sync::Arc::ptr_eq(previous, &text))
+        {
+            return;
+        }
+        self.load_from_text(&text, "source: (host-supplied evidence log)");
+        self.last_host_evidence = Some(text);
     }
 
     /// Parse a whole evidence log held in memory and adopt it as the view.
@@ -289,9 +308,8 @@ impl ExplainabilityCockpit {
     fn refresh(&mut self, force: bool) {
         #[cfg(target_arch = "wasm32")]
         {
-            // A browser has no filesystem to poll, so the host injects the same
-            // JSONL once at startup. The blob is immutable for the life of the
-            // page, so a forced refresh re-parses but cannot observe new rows.
+            // The host can replace the log while this screen is active. Owned
+            // snapshots keep parsing safe and identify same-size replacements.
             let Some(text) = crate::assets::evidence_jsonl() else {
                 self.last_modified = None;
                 self.last_size = None;
@@ -307,7 +325,7 @@ impl ExplainabilityCockpit {
                 return;
             };
 
-            self.load_immutable(text, "source: (host-supplied evidence log)", force);
+            self.load_host_evidence(text, force);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1502,6 +1520,29 @@ mod tests {
         assert!(cockpit.paused);
         cockpit.update(&key_event(' '));
         assert!(!cockpit.paused);
+    }
+
+    #[test]
+    fn host_evidence_refresh_detects_same_size_replacement_and_empty_log() {
+        let mut cockpit = ExplainabilityCockpit::with_evidence_path(None);
+        let first: std::sync::Arc<str> =
+            r#"{"event":"diff_decision","event_idx":1,"strategy":"dirty"}"#.into();
+        let second: std::sync::Arc<str> =
+            r#"{"event":"diff_decision","event_idx":2,"strategy":"dirty"}"#.into();
+        assert_eq!(first.len(), second.len());
+        cockpit.load_host_evidence(first.clone(), false);
+        assert_eq!(cockpit.data.diff.as_ref().unwrap().event_idx, 1);
+        cockpit.data.timeline.clear();
+        cockpit.load_host_evidence(first.clone(), false);
+        assert!(cockpit.data.timeline.is_empty(), "unchanged snapshot reparsed");
+        cockpit.load_host_evidence(first, true);
+        assert_eq!(cockpit.data.diff.as_ref().unwrap().event_idx, 1);
+        cockpit.load_host_evidence(second, false);
+        assert_eq!(cockpit.data.timeline.len(), 1);
+        assert_eq!(cockpit.data.diff.as_ref().unwrap().event_idx, 2);
+        cockpit.load_host_evidence(std::sync::Arc::from(""), false);
+        assert!(cockpit.data.timeline.is_empty());
+        assert_eq!(cockpit.data.source.status, "Evidence log is empty");
     }
 
     #[test]
