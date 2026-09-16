@@ -1617,6 +1617,16 @@ impl Screen for AdvancedTextEditor {
                                     .line_text(self.editor.cursor().line)
                                     .unwrap_or_default()
                             });
+                            // OSC 52 limits encoded bytes, not displayed characters.
+                            // Reject here so an oversized user selection never becomes
+                            // a writer error that terminates the application.
+                            let max_bytes = (ftui_core::osc52::MAX_OSC52_PAYLOAD / 4) * 3;
+                            if text.len() > max_bytes {
+                                self.clipboard_message =
+                                    Some("Clipboard payload too large".into());
+                                self.update_status();
+                                return Cmd::None;
+                            }
                             let chars = grapheme_count(&text);
                             self.clipboard_message = Some(if has_selection {
                                 format!("Copied {chars} chars")
@@ -1970,6 +1980,56 @@ mod tests {
         assert_eq!(screen.editor.undo_group_count(), 0);
         screen.update(&press(KeyCode::Right));
         assert!(!screen.status.contains("Copied"));
+    }
+
+    #[test]
+    fn oversized_yank_preserves_editor_and_allows_next_copy() {
+        use ftui_core::osc52::{ClipboardSelection, encode_set};
+
+        for selected in [false, true] {
+            for text in ["a".repeat(56_245), "é".repeat(28_123), "a".repeat(60_000)] {
+                assert!(encode_set(ClipboardSelection::Clipboard, text.as_bytes()).is_err());
+                let mut screen = AdvancedTextEditor::new();
+                screen.editor.set_text(&text);
+                screen.update(&press(KeyCode::Escape));
+                if selected {
+                    screen.update(&ctrl_press(KeyCode::Char('a')));
+                }
+                let cursor = screen.editor.cursor();
+                let selection = screen.editor.selected_text();
+                let undo_groups = screen.editor.undo_group_count();
+                assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::None));
+                assert!(screen.status.contains("Clipboard payload too large"));
+                assert_eq!(screen.editor.text(), text);
+                assert_eq!(screen.editor.cursor(), cursor);
+                assert_eq!(screen.editor.selected_text(), selection);
+                assert_eq!(screen.editor.undo_group_count(), undo_groups);
+
+                screen.editor.set_text("hello");
+                assert!(matches!(
+                    screen.update(&press(KeyCode::Char('y'))),
+                    Cmd::SetClipboard(s) if s == "hello"
+                ));
+                assert!(!screen.status.contains("payload too large"));
+            }
+        }
+    }
+
+    #[test]
+    fn yank_accepts_largest_encodable_payload() {
+        use ftui_core::osc52::{ClipboardSelection, encode_set};
+
+        let text = "a".repeat(56_244);
+        assert!(encode_set(ClipboardSelection::Clipboard, text.as_bytes()).is_ok());
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text(&text);
+        screen.update(&ctrl_press(KeyCode::Char('a')));
+        screen.update(&press(KeyCode::Escape));
+        assert!(matches!(
+            screen.update(&press(KeyCode::Char('y'))),
+            Cmd::SetClipboard(s) if s == text
+        ));
+        assert!(screen.status.contains("Copied 56244 chars"));
     }
 
     #[test]
