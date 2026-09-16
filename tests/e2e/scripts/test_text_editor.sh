@@ -462,6 +462,56 @@ with pathlib.Path(sys.argv[2]).open('a') as log:
 PY
 }
 
+editor_clipboard_payload_cap() {
+    LOG_FILE="$E2E_LOG_DIR/editor_clipboard_payload_cap.log"
+    local output_file="$E2E_LOG_DIR/editor_clipboard_payload_cap.pty"
+    local sequence
+    log_test_start "editor_clipboard_payload_cap"
+
+    sequence="$("$E2E_PYTHON" - <<'PY'
+import json
+print(json.dumps([
+    {'delay_ms': 300, 'text': '\x01'},
+    {'delay_ms': 600, 'text': '\x1b[200~' + 'a' * 60000 + '\x1b[201~'},
+    {'delay_ms': 1400, 'text': '\x01'},
+    {'delay_ms': 1700, 'text': '\x1b'},
+    {'delay_ms': 2000, 'text': 'y'},
+    {'delay_ms': 2800, 'text': 'q'},
+]))
+PY
+)" || return 1
+
+    # There is no automatic successful exit: the normal-mode q must work
+    # after rejection. PTY timeout is a failure, not a substitute for q.
+    TERM=xterm-kitty TERM_PROGRAM=kitty \
+    FTUI_TEXTEDITOR_DIAGNOSTICS=true FTUI_TEXTEDITOR_DETERMINISTIC=true \
+    FTUI_DEMO_EXIT_AFTER_MS=0 PTY_TIMEOUT=8 \
+    PTY_SEND_AFTER_OUTPUT='Advanced Text Editor' PTY_SEND_SEQUENCE="$sequence" \
+        pty_run "$output_file" "$DEMO_BIN" --screen="$TEXT_EDITOR_SCREEN" || return 1
+
+    "$E2E_PYTHON" - "$output_file" "$LOG_FILE" <<'PY'
+import json
+import pathlib
+import sys
+
+wire = pathlib.Path(sys.argv[1]).read_bytes()
+assert b'Clipboard payload too large' in wire, 'rejection status must be rendered'
+assert b'\x1b]52;' not in wire, 'oversized copy must emit no OSC 52 request'
+assert b'"kind":"clipboard_copied"' not in wire, 'rejection must not log a successful copy'
+alt_enters, alt_leaves = wire.count(b'\x1b[?1049h'), wire.count(b'\x1b[?1049l')
+sync_begins, sync_ends = wire.count(b'\x1b[?2026h'), wire.count(b'\x1b[?2026l')
+assert alt_enters > 0 and alt_enters == alt_leaves, 'alternate screen must be restored'
+assert sync_begins == sync_ends, 'synchronized output must be balanced'
+assert wire.rfind(b'\x1b[?25h') > wire.rfind(b'\x1b[?25l'), 'cursor must be visible at exit'
+with pathlib.Path(sys.argv[2]).open('a') as log:
+    log.write(json.dumps({'test': 'editor_clipboard_payload_cap',
+                         'payload_bytes': 60000, 'payload_b64_len': 80000,
+                         'osc52_count': 0, 'alt_pairs': alt_enters,
+                         'sync_pairs': sync_begins, 'exit_code': 0,
+                         'result': 'passed'}) + '\n')
+PY
+}
+
 FAILURES=0
 run_case "editor_screen_loads" editor_screen_loads               || FAILURES=$((FAILURES + 1))
 run_case "editor_basic_input" editor_basic_input                 || FAILURES=$((FAILURES + 1))
@@ -475,13 +525,14 @@ run_case "editor_home_end" editor_home_end                       || FAILURES=$((
 run_case "editor_word_navigation" editor_word_navigation         || FAILURES=$((FAILURES + 1))
 run_case "editor_search_focus" editor_search_focus               || FAILURES=$((FAILURES + 1))
 run_case "editor_clipboard_roundtrip" editor_clipboard_roundtrip || FAILURES=$((FAILURES + 1))
+run_case "editor_clipboard_payload_cap" editor_clipboard_payload_cap || FAILURES=$((FAILURES + 1))
 
 # Summary
 echo ""
 echo "============================================"
 echo "Text Editor E2E Tests Complete"
 echo "============================================"
-echo "Total: 12 tests"
+echo "Total: 13 tests"
 echo "Failures: $FAILURES"
 if [[ "$FAILURES" -eq 0 ]]; then
     echo "Status: PASSED"
