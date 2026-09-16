@@ -13605,7 +13605,9 @@ mod tests {
 
         // Exercise the real retained-capacity sensor, not an injected verdict.
         let before = program.frame_arena.allocated_bytes();
-        program.frame_arena.alloc_slice(&vec![0u8; before + 64 * 1024]);
+        program
+            .frame_arena
+            .alloc_slice(&vec![0u8; before + 64 * 1024]);
         assert!(program.frame_arena.allocated_bytes() > before);
         program.render_frame().expect("render with capacity growth");
         let contents = std::fs::read_to_string(&evidence_path).expect("retained leak evidence");
