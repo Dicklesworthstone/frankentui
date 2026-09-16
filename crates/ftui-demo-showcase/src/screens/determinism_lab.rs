@@ -1368,6 +1368,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn with_seed_renders_that_seed() {
+        let lab = DeterminismLab::with_seed(11);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 80, 24));
+        let header: String = (0..80)
+            .filter_map(|x| frame.buffer.get(x, 0).and_then(|cell| cell.content.as_char()))
+            .collect();
+        assert!(header.contains("Seed: 11"), "rendered header: {header:?}");
+    }
+
+    #[test]
     fn determinism_lab_seed_is_explicit() {
         // `with_seed` pins the seed regardless of environment, whereas `new()`
         // consults FTUI_DEMO_SEED/E2E_SEED. Snapshot tests rely on this so they

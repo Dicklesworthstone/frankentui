@@ -247,6 +247,14 @@ mod tests {
     }
 
     #[test]
+    fn demo_seed_default_when_unset() {
+        assert_eq!(
+            seed_from_env_with(&["FTUI_DEMO_SEED", "FTUI_SEED", "E2E_SEED"], 7, &|_| None),
+            7
+        );
+    }
+
+    #[test]
     fn demo_seed_respects_env_priority() {
         let empty = BTreeMap::new();
         let get = map_getter(&empty);
