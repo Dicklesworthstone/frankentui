@@ -724,7 +724,10 @@ mod tests {
             assert_eq!(caps.osc52_clipboard, value == Some("1"));
             assert!(caps.in_tmux);
             assert!(!caps.use_sync_output());
-            assert_eq!(applied.is_empty(), value.is_none() || value == Some("banana"));
+            assert_eq!(
+                applied.is_empty(),
+                value.is_none() || value == Some("banana")
+            );
         }
         let mut caps = TerminalCapabilities::modern();
         let applied = apply_env_policy_overrides_with(
