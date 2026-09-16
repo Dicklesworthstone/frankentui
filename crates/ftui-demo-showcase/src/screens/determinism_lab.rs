@@ -1374,7 +1374,12 @@ mod tests {
         let mut frame = Frame::new(80, 24, &mut pool);
         lab.view(&mut frame, Rect::new(0, 0, 80, 24));
         let header: String = (0..80)
-            .filter_map(|x| frame.buffer.get(x, 0).and_then(|cell| cell.content.as_char()))
+            .filter_map(|x| {
+                frame
+                    .buffer
+                    .get(x, 0)
+                    .and_then(|cell| cell.content.as_char())
+            })
             .collect();
         assert!(header.contains("Seed: 11"), "rendered header: {header:?}");
     }
