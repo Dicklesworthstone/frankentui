@@ -1541,9 +1541,8 @@ impl Screen for AdvancedTextEditor {
                             self.edit_mode = EditMode::Normal;
                         } else {
                             self.editor.clear_selection();
-                            let entry =
-                                DiagnosticEntry::new(DiagnosticEventKind::SelectionCleared)
-                                    .with_focus("editor");
+                            let entry = DiagnosticEntry::new(DiagnosticEventKind::SelectionCleared)
+                                .with_focus("editor");
                             self.log_event(entry);
                         }
                     }
@@ -1632,9 +1631,8 @@ impl Screen for AdvancedTextEditor {
                             self.clipboard_pending = true;
                             self.editor.editor_mut().break_undo_group();
                             self.clipboard_message = Some("Requesting clipboard…".into());
-                            let mut entry = DiagnosticEntry::new(
-                                DiagnosticEventKind::ClipboardPasteRequested,
-                            );
+                            let mut entry =
+                                DiagnosticEntry::new(DiagnosticEventKind::ClipboardPasteRequested);
                             entry.mode = Some(self.edit_mode.as_str());
                             self.log_event(entry);
                             self.update_status();
@@ -1646,8 +1644,14 @@ impl Screen for AdvancedTextEditor {
                 // Normal mode permits navigation/selection, never text editing.
                 if !matches!(
                     key.code,
-                    KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
-                        | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown
+                    KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Home
+                        | KeyCode::End
+                        | KeyCode::PageUp
+                        | KeyCode::PageDown
                 ) {
                     return Cmd::None;
                 }
@@ -1952,7 +1956,9 @@ mod tests {
         screen.update(&press(KeyCode::Escape));
         assert_eq!(screen.edit_mode, EditMode::Normal);
         assert!(!screen.consumes_text_input());
-        assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "hello"));
+        assert!(
+            matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "hello")
+        );
         assert!(screen.status.contains("Copied 5 chars"));
         assert_eq!(screen.editor.text(), "hello");
         assert_eq!(screen.editor.undo_group_count(), 0);
@@ -1964,15 +1970,22 @@ mod tests {
     fn yank_line_and_unicode_selection_count_graphemes() {
         let mut screen = AdvancedTextEditor::new();
         screen.editor.set_text("e\u{301}👩‍💻\r\nsecond");
+        screen.editor.move_to_document_start();
         screen.update(&press(KeyCode::Escape));
-        assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "e\u{301}👩‍💻"));
+        assert!(
+            matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "e\u{301}👩‍💻")
+        );
         assert!(screen.status.contains("Copied line 1"));
         screen.editor.set_text("e\u{301}👩‍💻");
         screen.editor.select_all();
-        assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "e\u{301}👩‍💻"));
+        assert!(
+            matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "e\u{301}👩‍💻")
+        );
         assert!(screen.status.contains("Copied 2 chars"));
         screen.editor.set_text("");
-        assert!(matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s.is_empty()));
+        assert!(
+            matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s.is_empty())
+        );
     }
 
     #[test]
@@ -1981,9 +1994,15 @@ mod tests {
         screen.editor.set_text("");
         screen.update(&press(KeyCode::Char('x')));
         screen.update(&press(KeyCode::Escape));
-        assert!(matches!(screen.update(&press(KeyCode::Char('p'))), Cmd::GetClipboard));
+        assert!(matches!(
+            screen.update(&press(KeyCode::Char('p'))),
+            Cmd::GetClipboard
+        ));
         assert!(screen.status.contains("Requesting clipboard"));
-        assert!(matches!(screen.update(&press(KeyCode::Char('p'))), Cmd::None));
+        assert!(matches!(
+            screen.update(&press(KeyCode::Char('p'))),
+            Cmd::None
+        ));
         screen.update(&clipboard_reply("e\u{301}👩‍💻"));
         assert_eq!(screen.editor.text(), "xe\u{301}👩‍💻");
         assert!(screen.status.contains("Pasted 2 chars"));
@@ -2002,11 +2021,17 @@ mod tests {
         screen.editor.set_text("unchanged");
         screen.update(&clipboard_reply("unsolicited"));
         screen.update(&press(KeyCode::Escape));
-        assert!(matches!(screen.update(&press(KeyCode::Char('p'))), Cmd::GetClipboard));
+        assert!(matches!(
+            screen.update(&press(KeyCode::Char('p'))),
+            Cmd::GetClipboard
+        ));
         screen.update(&press(KeyCode::Escape));
         screen.update(&clipboard_reply("cancelled"));
         assert_eq!(screen.editor.text(), "unchanged");
-        assert!(matches!(screen.update(&press(KeyCode::Char('p'))), Cmd::GetClipboard));
+        assert!(matches!(
+            screen.update(&press(KeyCode::Char('p'))),
+            Cmd::GetClipboard
+        ));
         screen.update(&clipboard_reply(""));
         assert_eq!(screen.editor.text(), "unchanged");
         assert!(screen.status.contains("Pasted 0 chars"));
@@ -2021,7 +2046,12 @@ mod tests {
         screen.update(&press(KeyCode::Char('p')));
         assert_eq!(screen.editor.text(), "yp");
         screen.update(&press(KeyCode::Escape));
-        for key in [KeyCode::Char('a'), KeyCode::Backspace, KeyCode::Delete, KeyCode::Enter] {
+        for key in [
+            KeyCode::Char('a'),
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Enter,
+        ] {
             screen.update(&press(key));
         }
         assert_eq!(screen.editor.text(), "yp");
