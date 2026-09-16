@@ -3,15 +3,17 @@
 //! Frame guardrails: memory budget, queue depth limits, and unified enforcement.
 //!
 //! This module complements the time-based [`RenderBudget`](crate::budget::RenderBudget)
-//! and allocation-tracking [`AllocLeakDetector`](crate::alloc_budget::AllocLeakDetector)
-//! with two additional guardrails:
+//! with three resource guardrails:
 //!
 //! 1. **Memory budget** — enforces hard/soft limits on total rendering memory
 //!    (buffer cells, grapheme pool, arena).
 //! 2. **Queue depth** — prevents unbounded frame queuing under sustained load
 //!    with configurable drop policies.
+//! 3. **Capacity drift** — runs [`AllocLeakDetector`] over retained rendering
+//!    capacity without accumulating a per-frame ledger. Upward drift is advisory;
+//!    only absolute memory and queue limits recommend degradation or frame drops.
 //!
-//! A unified [`FrameGuardrails`] facade combines all four guardrails into a
+//! A unified [`FrameGuardrails`] facade combines these three guardrails into a
 //! single per-frame checkpoint that returns an actionable [`GuardrailVerdict`].
 //!
 //! # Usage
@@ -639,7 +641,7 @@ impl GuardrailVerdict {
     }
 }
 
-/// Unified frame guardrails combining memory budget and queue depth limits.
+/// Unified memory budget, queue depth limits, and retained-capacity drift detection.
 ///
 /// Call [`check_frame`](Self::check_frame) once per frame with current resource
 /// usage. The returned [`GuardrailVerdict`] tells you what (if anything) to do.
@@ -861,7 +863,7 @@ impl GuardrailSnapshot {
                 r#""mem_soft_violations":{},"mem_hard_violations":{},"mem_emergency_violations":{},"#,
                 r#""queue_depth":{},"queue_peak":{},"queue_drops":{},"#,
                 r#""queue_backpressure":{},"frames_checked":{},"frames_alerted":{},"#,
-                r#""leak_e_value":{},"leak_cusum_upper":{},"leak_mean_bytes":{},"leak_alert":{}}}"#,
+                r#""leak_e_value":{:e},"leak_cusum_upper":{},"leak_mean_bytes":{},"leak_alert":{}}}"#,
             ),
             self.memory_bytes,
             self.memory_peak_bytes,
@@ -975,6 +977,20 @@ mod tests {
         assert!(g.check_frame(32 * 1024 * 1024, 0).should_drop_frame());
         g.reset_leak_detector();
         assert!(!g.snapshot().leak_alert);
+    }
+
+    #[test]
+    fn sustained_growth_keeps_snapshot_json_finite() {
+        let mut g = FrameGuardrails::new(GuardrailsConfig::default());
+        for i in 0..4000 {
+            let bytes = if i < 200 { 1024 } else { i * 1024 };
+            g.check_frame(bytes, 0);
+        }
+        let snapshot = g.snapshot();
+        assert!(snapshot.leak_alert);
+        assert_eq!(snapshot.leak_e_value, f64::MAX);
+        let json: serde_json::Value = serde_json::from_str(&snapshot.to_jsonl()).unwrap();
+        assert!(json["leak_e_value"].as_f64().unwrap().is_finite());
     }
 
     proptest::proptest! {
