@@ -341,6 +341,11 @@ const URL_ZOOM        = parseFloat(params.get("zoom")) || 0;
 // Console JSONL is extremely expensive at 60fps; enable only when debugging.
 const LOG_JSONL       = params.get("jsonl") === "1";
 const LOG_PERF        = false;  // Per-frame timing in console
+// Independent of console logging; retain metadata, never typed/pasted content.
+const liveEvidence = [];
+let liveEvidenceIndex = 0;
+let liveEvidenceDirty = false;
+let lastEvidenceFlush = -Infinity;
 
 // ── DOM refs ───────────────────────────────────────────────────────────
 const canvas         = document.getElementById("terminal-canvas");
@@ -1362,7 +1367,9 @@ largeAssetsPromise.then((assets) => {
     try {
       const okA = runner.setShakespeareText(assets.shakespeare);
       const okB = runner.setSqliteSource(assets.sqlite);
-      const okC = assets.evidence ? runner.setEvidenceJsonl(assets.evidence) : false;
+      // A late asset download must never replace this session's live evidence.
+      const okC = assets.evidence && liveEvidence.length === 0
+        ? runner.setEvidenceJsonl(assets.evidence) : false;
       jsonl({
         event: "assets_loaded",
         shakespeare_bytes: assets.shakespeare.length,
@@ -1380,7 +1387,33 @@ largeAssetsPromise.then((assets) => {
 
 // ── JSONL logger ───────────────────────────────────────────────────────
 function jsonl(obj) {
+  recordLiveEvidence(obj);
   if (LOG_JSONL) console.log(JSON.stringify(obj));
+}
+
+function recordLiveEvidence(obj) {
+  let summary;
+  if (obj.event === "init") {
+    summary = `session started ${obj.cols}x${obj.rows}`;
+  } else if (obj.event === "input_admission") {
+    summary = `input ${obj.kind}: ${obj.outcome}`;
+  } else if (obj.event === "resize") {
+    summary = `geometry ${obj.cols}x${obj.rows}, zoom ${obj.zoom}, changed ${obj.changed}`;
+  } else {
+    return;
+  }
+  liveEvidence.push(JSON.stringify({
+    event: "browser_decision", event_idx: ++liveEvidenceIndex, summary,
+  }));
+  if (liveEvidence.length > 400) liveEvidence.shift();
+  liveEvidenceDirty = true;
+}
+
+function flushLiveEvidence(timestamp) {
+  if (!liveEvidenceDirty || timestamp - lastEvidenceFlush < 200) return;
+  runner.setEvidenceJsonl(liveEvidence.join("\n"));
+  liveEvidenceDirty = false;
+  lastEvidenceFlush = timestamp;
 }
 
 jsonl({ event: "init", cols: currentCols, rows: currentRows, dpr, zoom: userZoom,
@@ -3144,6 +3177,7 @@ function frame(timestamp) {
 
     // 1. Coalesce and apply pending geometry/fit signals before stepping.
     applyQueuedGeometrySync("frame_tick");
+    flushLiveEvidence(timestamp);
 
     // 2. Advance deterministic clock.
     runner.advanceTime(dt);
