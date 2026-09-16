@@ -16,6 +16,7 @@
 //! [`Screen::keybindings`]: crate::screens::Screen::keybindings
 
 use crate::chrome::HelpEntry;
+use ftui_core::event::{KeyCode, KeyEvent, Modifiers};
 
 /// Modifier bits, matching `ftui_core::event::Modifiers` - which is also the
 /// encoding `ftui-web`'s input parser expects from a host.
@@ -38,6 +39,52 @@ pub struct TouchAction {
     pub key: String,
     /// Modifier bits to send alongside the key.
     pub mods: u8,
+}
+
+impl TouchAction {
+    /// The key press this button stands for, in `ftui-core` terms.
+    ///
+    /// The web host sends [`key`](Self::key) and [`mods`](Self::mods) as text
+    /// for `ftui-web` to parse; this is the same mapping, so a native driver -
+    /// or a test asking whether a screen answers its own buttons - presses
+    /// exactly what a tap would.
+    pub fn key_event(&self) -> Option<KeyEvent> {
+        let code = match self.key.as_str() {
+            "Enter" => KeyCode::Enter,
+            "Escape" => KeyCode::Escape,
+            "Backspace" => KeyCode::Backspace,
+            "Tab" => KeyCode::Tab,
+            "BackTab" => KeyCode::BackTab,
+            "Delete" => KeyCode::Delete,
+            "Insert" => KeyCode::Insert,
+            "Home" => KeyCode::Home,
+            "End" => KeyCode::End,
+            "PageUp" => KeyCode::PageUp,
+            "PageDown" => KeyCode::PageDown,
+            "ArrowUp" => KeyCode::Up,
+            "ArrowDown" => KeyCode::Down,
+            "ArrowLeft" => KeyCode::Left,
+            "ArrowRight" => KeyCode::Right,
+            "Space" => KeyCode::Char(' '),
+            other => {
+                if let Some(n) = other
+                    .strip_prefix('F')
+                    .and_then(|tail| tail.parse::<u8>().ok())
+                    .filter(|n| (1..=24).contains(n))
+                {
+                    KeyCode::F(n)
+                } else {
+                    let mut chars = other.chars();
+                    let first = chars.next()?;
+                    if chars.next().is_some() {
+                        return None;
+                    }
+                    KeyCode::Char(first)
+                }
+            }
+        };
+        Some(KeyEvent::new(code).with_modifiers(Modifiers::from_bits_truncate(self.mods)))
+    }
 }
 
 /// Parse help entries into the distinct key presses a touch host can offer.

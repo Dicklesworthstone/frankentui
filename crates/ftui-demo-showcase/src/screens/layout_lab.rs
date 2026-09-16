@@ -389,6 +389,25 @@ impl LayoutLab {
         self.render_pane_preview_panel(frame, area);
     }
 
+    /// True when `(x, y)` sits on a splitter handle in the pane studio.
+    ///
+    /// A touch host has to know this the moment the finger lands, before it
+    /// moves: a drag that starts on a divider resizes the panes, and the same
+    /// drag anywhere else scrolls. Recomputed from the last laid-out viewport
+    /// rather than cached, so it can never describe a stale layout.
+    pub fn is_splitter_hit(&self, x: u16, y: u16) -> bool {
+        let viewport = self.pane_preview.get();
+        if viewport.width == 0 || viewport.height == 0 {
+            return false;
+        }
+        let Ok(layout) = self.pane_tree.solve_layout(viewport) else {
+            return false;
+        };
+        collect_splitter_primitives(&self.pane_tree, &layout, viewport, None, None)
+            .iter()
+            .any(|splitter| splitter.handle_rect.contains(x, y))
+    }
+
     /// True if the embedded pane workspace should consume this mouse sample.
     ///
     /// This stays true during active drags so capture remains robust even when

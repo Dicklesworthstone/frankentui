@@ -1230,6 +1230,93 @@ pub struct HelpEntry {
     pub action: &'static str,
 }
 
+/// A key that works outside any one screen, and where the help overlay files it.
+pub struct GlobalBinding {
+    /// The key and what it does.
+    pub entry: HelpEntry,
+    /// Section of the help overlay this belongs under.
+    pub category: HelpCategory,
+    /// Whether the key does anything from a plain screen with nothing open.
+    ///
+    /// The touch action bar offers only these. A button for a key that first
+    /// needs the command palette open is a button that does nothing, and a
+    /// phone has no other way to discover that.
+    pub always_available: bool,
+}
+
+/// The keys that work on every screen, in the order the help overlay lists them.
+///
+/// The overlay and the touch action bar are both built from this, so a global
+/// key cannot end up offered in one and missing from the other.
+pub fn global_keybindings() -> Vec<GlobalBinding> {
+    let binding = |key, action, category, always_available| GlobalBinding {
+        entry: HelpEntry { key, action },
+        category,
+        always_available,
+    };
+    vec![
+        binding(
+            "Ctrl+K",
+            "Open command palette",
+            HelpCategory::Navigation,
+            true,
+        ),
+        binding("?", "Toggle this help overlay", HelpCategory::View, true),
+        binding("Esc", "Dismiss top overlay", HelpCategory::View, true),
+        binding("m / F6", "Toggle mouse capture", HelpCategory::View, true),
+        binding("Ctrl+P", "Toggle performance HUD", HelpCategory::View, true),
+        binding(
+            "Ctrl+I",
+            "Toggle evidence inspector",
+            HelpCategory::View,
+            true,
+        ),
+        binding("Shift+A", "Toggle A11y panel", HelpCategory::View, true),
+        binding("F12", "Toggle debug overlay", HelpCategory::View, true),
+        binding("Ctrl+Z", "Undo", HelpCategory::Editing, false),
+        binding(
+            "Ctrl+Y / Ctrl+Shift+Z",
+            "Redo",
+            HelpCategory::Editing,
+            false,
+        ),
+        binding("Ctrl+T", "Cycle color theme", HelpCategory::Global, true),
+        binding(
+            "H/M/L",
+            "A11y: high contrast, reduced motion, large text",
+            HelpCategory::Global,
+            false,
+        ),
+        binding(
+            "Ctrl+1..6",
+            "Palette: filter by category",
+            HelpCategory::Global,
+            false,
+        ),
+        binding(
+            "Ctrl+0",
+            "Palette: clear category filter",
+            HelpCategory::Global,
+            false,
+        ),
+        binding(
+            "Ctrl+F",
+            "Palette: toggle favorite",
+            HelpCategory::Global,
+            false,
+        ),
+        binding(
+            "Ctrl+Shift+F",
+            "Palette: favorites only",
+            HelpCategory::Global,
+            false,
+        ),
+        // Deliberately not offered as a button: a stray tap would end the
+        // session, and on the web there is nothing to come back to.
+        binding("Ctrl+C", "Quit application", HelpCategory::Global, false),
+    ]
+}
+
 fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) -> KeybindingHints {
     // Key styling: bold with accent color
     let key_style = Style::new().bold().fg(theme::accent::PRIMARY);
@@ -1248,44 +1335,11 @@ fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) ->
         .with_key_format(KeyFormat::Bracketed)
         .with_key_style(key_style)
         .with_desc_style(desc_style)
-        .with_category_style(category_style)
-        // Navigation
-        .global_entry_categorized("Ctrl+K", "Open command palette", HelpCategory::Navigation)
-        // View
-        .global_entry_categorized("?", "Toggle this help overlay", HelpCategory::View)
-        .global_entry_categorized("Esc", "Dismiss top overlay", HelpCategory::View)
-        .global_entry_categorized("m / F6", "Toggle mouse capture", HelpCategory::View)
-        .global_entry_categorized("Ctrl+P", "Toggle performance HUD", HelpCategory::View)
-        .global_entry_categorized("Ctrl+I", "Toggle evidence inspector", HelpCategory::View)
-        .global_entry_categorized("Shift+A", "Toggle A11y panel", HelpCategory::View)
-        .global_entry_categorized("F12", "Toggle debug overlay", HelpCategory::View)
-        // Editing
-        .global_entry_categorized("Ctrl+Z", "Undo", HelpCategory::Editing)
-        .global_entry_categorized("Ctrl+Y / Ctrl+Shift+Z", "Redo", HelpCategory::Editing)
-        // Global
-        .global_entry_categorized("Ctrl+T", "Cycle color theme", HelpCategory::Global)
-        .global_entry_categorized(
-            "H/M/L",
-            "A11y: high contrast, reduced motion, large text",
-            HelpCategory::Global,
-        )
-        .global_entry_categorized(
-            "Ctrl+1..6",
-            "Palette: filter by category",
-            HelpCategory::Global,
-        )
-        .global_entry_categorized(
-            "Ctrl+0",
-            "Palette: clear category filter",
-            HelpCategory::Global,
-        )
-        .global_entry_categorized("Ctrl+F", "Palette: toggle favorite", HelpCategory::Global)
-        .global_entry_categorized(
-            "Ctrl+Shift+F",
-            "Palette: favorites only",
-            HelpCategory::Global,
-        )
-        .global_entry_categorized("Ctrl+C", "Quit application", HelpCategory::Global);
+        .with_category_style(category_style);
+    for global in global_keybindings() {
+        hints =
+            hints.global_entry_categorized(global.entry.key, global.entry.action, global.category);
+    }
 
     // Add screen-specific bindings as contextual entries under a custom category.
     let screen_category = HelpCategory::Custom(format!("{} Controls", current.title()));

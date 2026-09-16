@@ -648,6 +648,30 @@ impl ShowcaseRunner {
         self.inner.goto_screen_selector(selector)
     }
 
+    /// The current screen's keys as JSON: `[{label, action, key, mods}]`.
+    ///
+    /// `key` and `mods` are what `pushEncodedInput` expects back in a key
+    /// record, so a host can turn each entry straight into a button. The list
+    /// tracks the screen - and its mode, and whether the tour is running - so
+    /// poll it rather than reading it once.
+    #[wasm_bindgen(js_name = touchActionsJson)]
+    pub fn touch_actions_json(&self) -> String {
+        self.inner.touch_actions_json()
+    }
+
+    /// True when terminal cell `(x, y)` is on something a pointer can drag.
+    ///
+    /// Out-of-range coordinates are not drag handles rather than an error: a
+    /// host asks this on every touch, including ones off the edge of a stale
+    /// canvas rect.
+    #[wasm_bindgen(js_name = dragHandleAt)]
+    pub fn drag_handle_at(&self, x: i32, y: i32) -> bool {
+        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        self.inner.drag_handle_at(x, y)
+    }
+
     /// Advance deterministic clock by `dt_ms` milliseconds (real-time mode).
     #[wasm_bindgen(js_name = advanceTime)]
     pub fn advance_time(&mut self, dt_ms: f64) {

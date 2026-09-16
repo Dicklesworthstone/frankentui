@@ -268,6 +268,38 @@ impl RunnerCore {
         self.inner.model_mut().goto_screen_selector(selector)
     }
 
+    /// The current screen's keys, as JSON a touch host can render as buttons.
+    ///
+    /// `[{"label","action","key","mods"}]`, where `key` and `mods` are exactly
+    /// what `pushEncodedInput` wants back for a key record. A phone has no
+    /// keyboard until one is raised over the terminal, and this is how its
+    /// controls stay in step with a screen that adds or renames a key.
+    pub fn touch_actions_json(&self) -> String {
+        let actions: Vec<serde_json::Value> = self
+            .inner
+            .model()
+            .touch_actions()
+            .iter()
+            .map(|action| {
+                serde_json::json!({
+                    "label": action.label,
+                    "action": action.action,
+                    "key": action.key,
+                    "mods": action.mods,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(actions).to_string()
+    }
+
+    /// True when a pointer at terminal cell `(x, y)` is on a drag handle.
+    ///
+    /// A finger dragging across a screen means scroll, so a host cannot tell a
+    /// grab of a divider from a swipe over one until it asks.
+    pub fn drag_handle_at(&self, x: u16, y: u16) -> bool {
+        self.inner.model().drag_handle_at(x, y)
+    }
+
     /// Process pending events and render if dirty.
     pub fn step(&mut self) -> StepResult {
         if !self.inner.is_initialized() {
