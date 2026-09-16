@@ -2031,6 +2031,7 @@ mod tests {
         assert_eq!(screen.search_input.value(), "yp");
         screen.update(&press(KeyCode::Escape));
         assert_eq!(screen.edit_mode, EditMode::Normal);
+        screen.update(&press(KeyCode::End));
         screen.update(&press(KeyCode::Char('i')));
         assert_eq!(screen.edit_mode, EditMode::Insert);
         screen.update(&press(KeyCode::Char('!')));

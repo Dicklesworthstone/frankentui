@@ -2692,6 +2692,35 @@ fn advanced_text_editor_initial_80x24() {
 }
 
 #[test]
+fn advanced_text_editor_normal_mode_80x24() {
+    let mut screen = ftui_demo_showcase::screens::advanced_text_editor::AdvancedTextEditor::new();
+    screen.update(&press(KeyCode::Escape));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+    assert_snapshot!("advanced_text_editor_normal_mode_80x24", &frame.buffer);
+}
+
+#[test]
+fn advanced_text_editor_after_paste_80x24() {
+    use ftui_core::event::{ClipboardEvent, ClipboardSource};
+    let mut screen = ftui_demo_showcase::screens::advanced_text_editor::AdvancedTextEditor::new();
+    screen.update(&press(KeyCode::Escape));
+    assert!(matches!(
+        screen.update(&press(KeyCode::Char('p'))),
+        ftui_runtime::Cmd::GetClipboard
+    ));
+    screen.update(&Event::Clipboard(ClipboardEvent::new(
+        "Pasted text\n",
+        ClipboardSource::Osc52,
+    )));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+    assert_snapshot!("advanced_text_editor_after_paste_80x24", &frame.buffer);
+}
+
+#[test]
 fn advanced_text_editor_zero_area() {
     let screen = ftui_demo_showcase::screens::advanced_text_editor::AdvancedTextEditor::new();
     let mut pool = GraphemePool::new();
