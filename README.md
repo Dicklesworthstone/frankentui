@@ -1497,13 +1497,20 @@ Index by position:     O(log n) — walk tree using weights
 
 ### Text Editor Core
 
-The `Editor` module (1,800+ lines) provides:
+The `ftui_text::Editor` provides:
 
 - **Cursor model** with visual position (column) vs byte offset tracking
 - **Selection** with anchor/head semantics (Shift+Arrow, Shift+Click)
-- **Word/line/paragraph movement** with Unicode word-boundary detection
-- **Undo/redo** with operation coalescing (typing "hello" = one undo step, not five)
-- **Clipboard integration** via `Cmd::SetClipboard` / `Cmd::GetClipboard`
+- **Word movement** through `move_word_left()` / `move_word_right()`, with Unicode word-boundary detection; **paragraph movement** through `move_paragraph_up()` / `move_paragraph_down()`, landing on separating blank lines.
+- **Grouped undo/redo** joins adjacent typing runs. A new word after whitespace, a change in deletion direction, navigation, paste, or `break_undo_group()` starts a separate group. `set_coalesce_idle()` configures the idle interval (500 ms by default); callers supply monotonic milliseconds through `Editor::tick()`, so the editor does not read a wall clock itself.
+- **Native clipboard commands** through `Cmd::set_clipboard(text)` / `Cmd::get_clipboard()`: the runtime writes OSC 52 through `TerminalWriter`, and terminal replies arrive as `Event::Clipboard`. The encoded payload limit is 74,994 base64 bytes (at most 56,244 input bytes).
+
+Clipboard output follows terminal capability policy. Multiplexer sessions default
+to disabled; `FTUI_OSC52_CLIPBOARD=1` explicitly enables output while preserving
+tmux/screen wrapping, and `FTUI_OSC52_CLIPBOARD=0` disables it. The terminal and
+multiplexer must also permit clipboard access and passthrough. A query does not
+guarantee a reply. Browser clipboard access requires host JavaScript integration;
+native OSC 52 commands do not grant browser clipboard permissions.
 
 ### BiDi & Shaping
 
@@ -2149,6 +2156,12 @@ Cmd::quit()                          // Exit program
 Cmd::batch(vec![...])                // Multiple commands, order irrelevant
 Cmd::sequence(vec![...])             // Multiple commands, in order
 ```
+
+`Cmd::SetClipboard(String)` requests a clipboard write; construct it with
+`Cmd::set_clipboard(text)`. `Cmd::GetClipboard`, constructed with
+`Cmd::get_clipboard()`, requests a read whose reply is delivered as
+`Event::Clipboard`. Native execution uses the terminal capability policy and
+OSC 52 limits described above.
 
 ### Subscriptions
 

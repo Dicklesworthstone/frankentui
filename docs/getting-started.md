@@ -173,6 +173,14 @@ export function TerminalCanvas() {
   - Paste: read text from a DOM `paste` event (`event.clipboardData`) and call `term.pasteText(text)` (or `term.input({ kind: "paste", data: text })`).
   - Chrome/Safari/Firefox all gate clipboard APIs behind user gesture/permission rules, so keep clipboard read/write in host JS.
 
+This host integration is separate from native terminal clipboard commands.
+`Cmd::set_clipboard(text)` and `Cmd::get_clipboard()` use OSC 52 through the
+native runtime's `TerminalWriter`; replies arrive as `Event::Clipboard` when
+the terminal permits a read. Multiplexer sessions disable this output by
+default. `FTUI_OSC52_CLIPBOARD=1` opts in while retaining tmux/screen wrapping;
+the multiplexer must also allow passthrough. `FTUI_OSC52_CLIPBOARD=0` disables
+output. Neither command bypasses browser clipboard permissions.
+
 Minimal keyboard event forwarding example:
 
 ```ts
