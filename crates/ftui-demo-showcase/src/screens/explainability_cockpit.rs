@@ -48,6 +48,7 @@ enum EvidenceKind {
     Diff,
     Resize,
     Budget,
+    Browser,
 }
 
 #[derive(Debug, Clone)]
@@ -143,7 +144,10 @@ struct ExplainabilityData {
 
 impl ExplainabilityData {
     fn is_empty(&self) -> bool {
-        self.diff.is_none() && self.resize.is_none() && self.budget.is_none()
+        self.diff.is_none()
+            && self.resize.is_none()
+            && self.budget.is_none()
+            && self.timeline.is_empty()
     }
 }
 
@@ -627,11 +631,13 @@ impl ExplainabilityCockpit {
                     EvidenceKind::Diff => "diff",
                     EvidenceKind::Resize => "resize",
                     EvidenceKind::Budget => "budget",
+                    EvidenceKind::Browser => "web",
                 };
                 let accent = match entry.kind {
                     EvidenceKind::Diff => theme::accent::PRIMARY,
                     EvidenceKind::Resize => theme::accent::INFO,
                     EvidenceKind::Budget => theme::accent::WARNING,
+                    EvidenceKind::Browser => theme::accent::INFO,
                 };
                 let mut spans = vec![
                     Span::styled(format!("{label:<6}"), Style::new().fg(accent).bold()),
@@ -1049,6 +1055,21 @@ fn parse_evidence_lines(lines: &[&str]) -> ParsedEvidence {
             continue;
         };
         match event {
+            "browser_decision" => {
+                if let (Some(index), Some(summary)) = (
+                    value_u64(&value, "event_idx"),
+                    value_string(&value, "summary"),
+                ) {
+                    timeline.push(TimelineEntry {
+                        seq: seq as u64,
+                        kind: EvidenceKind::Browser,
+                        index,
+                        summary,
+                        posterior: None,
+                    });
+                    parsed_count += 1;
+                }
+            }
             "diff_decision" => {
                 if let Some(summary) = diff_from_value(&value) {
                     let posterior = summary
@@ -1520,6 +1541,30 @@ mod tests {
         assert!(cockpit.paused);
         cockpit.update(&key_event(' '));
         assert!(!cockpit.paused);
+    }
+
+    #[test]
+    fn browser_decisions_are_distinct_from_native_policy_evidence() {
+        let lines = [
+            r#"{"event":"browser_decision","event_idx":1,"summary":"session started 80x24"}"#,
+            r#"{"event":"browser_decision","event_idx":2,"summary":"input key: accepted"}"#,
+            r#"{"event":"browser_decision","summary":"missing index"}"#,
+            r#"{"event":"browser_decision","event_idx":3}"#,
+        ];
+        let parsed = parse_evidence_lines(&lines);
+        assert_eq!(parsed.parsed_count, 2);
+        assert_eq!(parsed.timeline.len(), 2);
+        assert_eq!(parsed.timeline[1].kind, EvidenceKind::Browser);
+        assert_eq!(parsed.timeline[1].index, 2);
+        assert_eq!(parsed.timeline[1].summary, "input key: accepted");
+        assert!(parsed.timeline[1].posterior.is_none());
+        assert!(parsed.diff.is_none());
+        assert!(parsed.resize.is_none());
+        assert!(parsed.budget.is_none());
+        let mut cockpit = ExplainabilityCockpit::with_evidence_path(None);
+        cockpit.load_host_evidence(lines.join("\n").into(), false);
+        assert_eq!(cockpit.data.timeline.len(), 2);
+        assert!(!cockpit.data.is_empty());
     }
 
     #[test]
