@@ -2721,6 +2721,38 @@ fn advanced_text_editor_after_paste_80x24() {
 }
 
 #[test]
+fn advanced_text_editor_app_clipboard_roundtrip() {
+    use ftui_core::event::{ClipboardEvent, ClipboardSource};
+    let mut app = AppModel::new();
+    app.current_screen = ScreenId::AdvancedTextEditor;
+    app.update(AppMsg::from(press(KeyCode::Escape)));
+    assert!(matches!(
+        app.update(AppMsg::from(press(KeyCode::Char('y')))),
+        ftui_runtime::Cmd::SetClipboard(s) if s == "Welcome to the Advanced Text Editor!"
+    ));
+    assert!(matches!(
+        app.update(AppMsg::from(press(KeyCode::Char('p')))),
+        ftui_runtime::Cmd::GetClipboard
+    ));
+    app.update(AppMsg::from(Event::Clipboard(ClipboardEvent::new(
+        "CLIPBOARD_ROUNDTRIP\n",
+        ClipboardSource::Osc52,
+    ))));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(100, 30, &mut pool);
+    app.view(&mut frame);
+    assert!(buffer_to_text(&frame.buffer).contains("CLIPBOARD_ROUNDTRIP"));
+    app.update(AppMsg::from(ctrl_press(KeyCode::Char('z'))));
+    let mut frame = Frame::new(100, 30, &mut pool);
+    app.view(&mut frame);
+    assert!(!buffer_to_text(&frame.buffer).contains("CLIPBOARD_ROUNDTRIP"));
+    app.update(AppMsg::from(ctrl_press(KeyCode::Char('y'))));
+    let mut frame = Frame::new(100, 30, &mut pool);
+    app.view(&mut frame);
+    assert!(buffer_to_text(&frame.buffer).contains("CLIPBOARD_ROUNDTRIP"));
+}
+
+#[test]
 fn advanced_text_editor_zero_area() {
     let screen = ftui_demo_showcase::screens::advanced_text_editor::AdvancedTextEditor::new();
     let mut pool = GraphemePool::new();
