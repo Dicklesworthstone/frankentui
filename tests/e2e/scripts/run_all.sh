@@ -148,6 +148,8 @@ run_suite "examples" "$SCRIPT_DIR/test_examples.sh"
 if $QUICK; then
     log_warn "Skipping extended tests (--quick)"
 else
+    cargo -Zchecksum-freshness build -p ftui-demo-showcase > "$E2E_LOG_DIR/04_showcase_build.log" 2>&1
+    export FTUI_DEMO_BIN="$TARGET_DIR/debug/ftui-demo-showcase"
     run_suite "altscreen"  "$SCRIPT_DIR/test_altscreen.sh"
     run_suite "input"      "$SCRIPT_DIR/test_input.sh"
     run_suite "keybinding" "$SCRIPT_DIR/test_keybinding.sh"
@@ -156,6 +158,7 @@ else
     run_suite "focus"      "$SCRIPT_DIR/test_focus_events.sh"
     run_suite "paste"      "$SCRIPT_DIR/test_paste.sh"
     run_suite "osc8"       "$SCRIPT_DIR/test_osc8.sh"
+    run_suite "clipboard_osc52" "$SCRIPT_DIR/test_clipboard_osc52.sh"
     run_suite "kitty"      "$SCRIPT_DIR/test_kitty_keyboard.sh"
     run_suite "mouse_sgr"  "$SCRIPT_DIR/test_mouse_sgr.sh"
     run_suite "resize"     "$SCRIPT_DIR/test_resize_scroll_region.sh"
