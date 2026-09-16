@@ -36,8 +36,8 @@ source "$LIB_DIR/logging.sh"
 # shellcheck source=/dev/null
 source "$LIB_DIR/pty.sh"
 
-# AdvancedTextEditor is screen 19 (1-based index)
-TEXT_EDITOR_SCREEN=19
+# Resolve the screen from the built binary; registry order changes over time.
+TEXT_EDITOR_SCREEN=""
 
 # Invariants (Alien Artifact):
 # 1. Cursor always within document bounds after any operation
@@ -99,8 +99,13 @@ if ! DEMO_BIN="$(resolve_demo_bin)"; then
         log_test_skip "$t" "ftui-demo-showcase binary missing"
         record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
     done
-    exit 0
+    exit 2
 fi
+
+require_tools jq || exit 2
+TEXT_EDITOR_SCREEN="$("$DEMO_BIN" --list-screens | jq -er '
+    index("advanced_text_editor") | if . == null then error("editor screen missing") else . + 1 end
+')" || exit 2
 
 # Compute checksum of output file for determinism verification
 compute_checksum() {
@@ -423,6 +428,40 @@ editor_search_focus() {
 # Run all tests
 # ============================================================================
 
+editor_clipboard_roundtrip() {
+    LOG_FILE="$E2E_LOG_DIR/editor_clipboard_roundtrip.log"
+    local output_file="$E2E_LOG_DIR/editor_clipboard_roundtrip.pty"
+    log_test_start "editor_clipboard_roundtrip"
+
+    # Separate Esc from the next key so it cannot become an Alt chord. The
+    # parent PTY supplies a terminal reply; no real system clipboard is touched.
+    TERM=xterm-kitty TERM_PROGRAM=kitty \
+    FTUI_TEXTEDITOR_DIAGNOSTICS=true FTUI_TEXTEDITOR_DETERMINISTIC=true \
+    FTUI_DEMO_EXIT_AFTER_MS=3000 PTY_TIMEOUT=6 \
+    PTY_SEND_AFTER_OUTPUT='Advanced Text Editor' \
+    PTY_SEND_SEQUENCE='[{"delay_ms":300,"text":"\u001b"},{"delay_ms":600,"text":"y"},{"delay_ms":900,"text":"p"},{"delay_ms":1200,"text":"\u001b]52;c;YWJj\u0007"},{"delay_ms":1800,"text":"q"}]' \
+        pty_run "$output_file" "$DEMO_BIN" --screen="$TEXT_EDITOR_SCREEN" || return 1
+
+    "$E2E_PYTHON" - "$output_file" "$LOG_FILE" <<'PY'
+import base64
+import json
+import pathlib
+import sys
+
+wire = pathlib.Path(sys.argv[1]).read_bytes()
+copy = b'\x1b]52;c;' + base64.b64encode(b'Welcome to the Advanced Text Editor!') + b'\x07'
+assert wire.count(copy) == 1, 'expected exactly one OSC 52 copy of the current line'
+assert wire.count(b'\x1b]52;c;?\x07') == 1, 'expected exactly one OSC 52 query'
+assert wire.count(b'"kind":"clipboard_pasted"') == 1, 'reply must reach editor exactly once'
+assert b'"chars":3,"mode":"NORMAL"' in wire, 'clipboard diagnostics must count the reply'
+assert b'Pasted 3 chars' in wire, 'paste status must be rendered'
+with pathlib.Path(sys.argv[2]).open('a') as log:
+    log.write(json.dumps({'test': 'editor_clipboard_roundtrip', 'copy': True,
+                         'query': True, 'reply_count': 1, 'chars': 3,
+                         'result': 'passed'}) + '\n')
+PY
+}
+
 FAILURES=0
 run_case "editor_screen_loads" editor_screen_loads               || FAILURES=$((FAILURES + 1))
 run_case "editor_basic_input" editor_basic_input                 || FAILURES=$((FAILURES + 1))
@@ -435,13 +474,14 @@ run_case "editor_rapid_input" editor_rapid_input                 || FAILURES=$((
 run_case "editor_home_end" editor_home_end                       || FAILURES=$((FAILURES + 1))
 run_case "editor_word_navigation" editor_word_navigation         || FAILURES=$((FAILURES + 1))
 run_case "editor_search_focus" editor_search_focus               || FAILURES=$((FAILURES + 1))
+run_case "editor_clipboard_roundtrip" editor_clipboard_roundtrip || FAILURES=$((FAILURES + 1))
 
 # Summary
 echo ""
 echo "============================================"
 echo "Text Editor E2E Tests Complete"
 echo "============================================"
-echo "Total: 11 tests"
+echo "Total: 12 tests"
 echo "Failures: $FAILURES"
 if [[ "$FAILURES" -eq 0 ]]; then
     echo "Status: PASSED"

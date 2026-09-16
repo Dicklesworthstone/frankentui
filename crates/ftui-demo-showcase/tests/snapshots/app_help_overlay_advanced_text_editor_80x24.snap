@@ -19,6 +19,6 @@
 ││16  - Emoji:  ║                                              ║              ││
 ││17  - CJK: ?? ╚═══════════Press ? or Esc to close════════════╝              ││
 │╰────────────────────────────────────────────────────────────────────────────╯│
-│Ready | Ctrl+F: Search | Ctrl+H: Replace | ?: Help                            │
+│INSERT | Esc: Normal (y: Copy, p: Paste) | Ctrl+F: Search                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Advanced Text Editor [25/45]       Tab/Shift+Tab: next/prev        80x24 00:00 

@@ -2726,13 +2726,21 @@ fn advanced_text_editor_app_clipboard_roundtrip() {
     let mut app = AppModel::new();
     app.current_screen = ScreenId::AdvancedTextEditor;
     app.update(AppMsg::from(press(KeyCode::Escape)));
+    let ftui_runtime::Cmd::Batch(copy) = app.update(AppMsg::from(press(KeyCode::Char('y')))) else {
+        panic!("app must retain its tick command alongside the clipboard effect");
+    };
     assert!(matches!(
-        app.update(AppMsg::from(press(KeyCode::Char('y')))),
-        ftui_runtime::Cmd::SetClipboard(s) if s == "Welcome to the Advanced Text Editor!"
+        copy.as_slice(),
+        [ftui_runtime::Cmd::Tick(_), ftui_runtime::Cmd::SetClipboard(s)]
+            if s == "Welcome to the Advanced Text Editor!"
     ));
+    let ftui_runtime::Cmd::Batch(paste) = app.update(AppMsg::from(press(KeyCode::Char('p'))))
+    else {
+        panic!("app must retain its tick command alongside the clipboard effect");
+    };
     assert!(matches!(
-        app.update(AppMsg::from(press(KeyCode::Char('p')))),
-        ftui_runtime::Cmd::GetClipboard
+        paste.as_slice(),
+        [ftui_runtime::Cmd::Tick(_), ftui_runtime::Cmd::GetClipboard]
     ));
     app.update(AppMsg::from(Event::Clipboard(ClipboardEvent::new(
         "CLIPBOARD_ROUNDTRIP\n",

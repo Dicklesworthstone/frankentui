@@ -1,0 +1,24 @@
+╭────────────────────────────────────Editor────────────────────────────────────╮
+│ 1  Pasted text                                                               │
+│ 2  Welcome to the Advanced Text Editor!                                      │
+│ 3                                                                            │
+│ 4  This is a demonstration of FrankenTUI's text editing capabilities.        │
+│ 5  You can edit text, select regions, search, and replace.                   │
+│ 6                                                                            │
+│ 7  Features:                                                                 │
+│ 8  - Multi-line editing with line numbers                                    │
+│ 9  - Selection with Shift+Arrow keys                                         │
+│10  - Undo (Ctrl+Z) and Redo (Ctrl+Y)                                         │
+│11  - Search (Ctrl+F) with next/prev match                                    │
+│12  - Replace (Ctrl+H) single or all matches                                  │
+│13                                                                            │
+│14  Try editing this text or loading your own content.                        │
+│15                                                                            │
+│16  Unicode support:                                                          │
+│17  - Emoji: ?? ?? ??                                                         │
+│18  - CJK: ????????                                                           │
+│19  - Accented: café résumé naïve                                             │
+│20                                                                            │
+│21  The editor uses a rope data structure internally for efficient            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+NORMAL | Pasted 12 chars | Ln 2, Col 1 | Undo:1/1 Redo:0 | Ctrl+U: Show history 

@@ -341,7 +341,7 @@ impl DiagnosticEntry {
     fn compute_checksum(&self) -> u64 {
         let mut hash: u64 = 0xcbf29ce484222325;
         let payload = format!(
-            "{:?}{}{}{}{}{}{}{}",
+            "{:?}{}{}{}{}{}{}{}{:?}{:?}",
             self.kind,
             self.query.as_deref().unwrap_or(""),
             self.match_count.unwrap_or(0),
@@ -349,7 +349,9 @@ impl DiagnosticEntry {
             self.undo_depth.unwrap_or(0),
             self.redo_depth.unwrap_or(0),
             self.focus.as_deref().unwrap_or(""),
-            self.context.as_deref().unwrap_or("")
+            self.context.as_deref().unwrap_or(""),
+            self.chars,
+            self.mode
         );
         for &b in payload.as_bytes() {
             hash ^= b as u64;
@@ -1591,6 +1593,9 @@ impl Screen for AdvancedTextEditor {
         }
 
         if self.focus == Focus::Editor && self.edit_mode == EditMode::Normal {
+            if matches!(event, Event::Ime(_)) {
+                return Cmd::None;
+            }
             if let Event::Key(key) = event {
                 if key.kind == KeyEventKind::Release {
                     return Cmd::None;
@@ -1652,7 +1657,8 @@ impl Screen for AdvancedTextEditor {
                         | KeyCode::End
                         | KeyCode::PageUp
                         | KeyCode::PageDown
-                ) {
+                ) && !(key.code == KeyCode::Char('a') && key.modifiers == Modifiers::CTRL)
+                {
                     return Cmd::None;
                 }
             }
@@ -1977,7 +1983,7 @@ mod tests {
         );
         assert!(screen.status.contains("Copied line 1"));
         screen.editor.set_text("e\u{301}👩‍💻");
-        screen.editor.select_all();
+        screen.update(&ctrl_press(KeyCode::Char('a')));
         assert!(
             matches!(screen.update(&press(KeyCode::Char('y'))), Cmd::SetClipboard(s) if s == "e\u{301}👩‍💻")
         );
@@ -2078,6 +2084,28 @@ mod tests {
         assert_eq!(value["chars"], 2);
         assert_eq!(value["mode"], "NORMAL");
         assert!(value.get("content").is_none());
+    }
+
+    #[test]
+    fn bracketed_paste_and_paragraph_selection_work_in_normal_mode() {
+        use ftui_core::event::PasteEvent;
+        let mut screen = AdvancedTextEditor::new();
+        screen.editor.set_text("first\n\nsecond");
+        screen.editor.move_to_document_start();
+        screen.update(&press(KeyCode::Escape));
+        screen.update(&Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: Modifiers::CTRL | Modifiers::SHIFT,
+            kind: KeyEventKind::Press,
+        }));
+        // Paragraph navigation stops at the first blank line, not beyond it.
+        assert_eq!(screen.editor.cursor().line, 1);
+        assert_eq!(screen.editor.selected_text().as_deref(), Some("first\n"));
+        screen.update(&Event::Paste(PasteEvent::bracketed("replacement\n")));
+        assert_eq!(screen.editor.text(), "replacement\n\nsecond");
+        assert_eq!(screen.editor.undo_group_count(), 1);
+        screen.update(&ctrl_press(KeyCode::Char('z')));
+        assert_eq!(screen.editor.text(), "first\n\nsecond");
     }
 
     #[test]

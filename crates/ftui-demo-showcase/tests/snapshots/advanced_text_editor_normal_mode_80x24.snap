@@ -21,4 +21,4 @@
 │20  The editor uses a rope data structure internally for efficient            │
 │21  operations on large buffers, with grapheme-aware cursor movement          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-INSERT | Esc: Normal (y: Copy, p: Paste) | Ctrl+F: Search                       
+NORMAL | Ln 1, Col 1 | Undo:0/0 Redo:0 | Ctrl+U: Show history                   
