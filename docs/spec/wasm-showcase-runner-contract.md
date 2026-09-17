@@ -540,6 +540,50 @@ impl ShowcaseRunner {
    - Builds and verification use the repository's DSR native-host path and
      pinned Rust toolchain.
 
+   - Build recipe (DSR native host; no Actions, no RCH transport, no manifest
+     patching): sync the retained checkout to a native DSR host with the
+     `rust-toolchain.toml` pin plus its `wasm32-unknown-unknown` target and a
+     `wasm-bindgen-cli` whose version matches BOTH `Cargo.lock` and
+     `crates/ftui-showcase-wasm/renderer.lock` (0.2.128 at the 2026-09-17
+     proof). Then, from the checkout root:
+     `CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
+     FTUI_WASM_MAX_BYTES=<advisory budget> bash build-wasm.sh
+     /absolute/NEW_OUTPUT_DIR`. The script enforces browser feature parity,
+     retains the pre-transform runner cdylib at
+     `<out>/raw/ftui_showcase_wasm.wasm`, validates format/exports/size with
+     `build-wasm.sh --check-artifact` (accepting the raw artifact's
+     wasm-bindgen hashed names `showcaserunner_<method>_<16-hex>` or the bare
+     transformed names), writes
+     `<out>/raw/ftui_showcase_wasm.observation.json`, and passes the
+     `wasm-bindgen --target web` output plus a Node ordered
+     native/WASM screen-registry parity check. A standalone artifact-only
+     check needs only Node.
+   - 2026-09-17 retained evidence (host root@178.18.254.243, source
+     /data/retained/ambercardinal-ftui-20260917/source, bundle
+     /data/retained/ambercardinal-ftui-20260917/browser-bundle-final-20260917):
+     raw cdylib 5,143,294 bytes, sha256
+     e4f8640f324d89bc9ba358e05c10eb92d326d6ee08cd83ac806bc9e8611dd257,
+     transformed artifact 4,481,506 bytes, sha256
+     c8fe2945e534a5cb00e3cd1f0f78ee1b40ea0afeae37bbe22e3d3dc5d8cef7b8,
+     advisory budget 6,429,118 (first measured size × 1.25), rustc
+     1.100.0-nightly (908501772 2026-08-30), wasm-bindgen 0.2.128, Node
+     22.22.1, 1,510 raw exports, native/WASM ordered registry parity over
+     45 screens, guard positive/negative controls all passing. G23 receives
+     exactly this raw/source/lock/toolchain identity; browser DOM/IME/GPU
+     execution remains G23, not claimed here.
+     The final bundle's `raw/ftui_showcase_wasm.provenance.jsonl` joins the
+     observation to compiler, bindgen, lock and source hashes; selected Cargo
+     fingerprints report `content` and `getrandom_backend="wasm_js"`.
+     Source-input SHA256:
+     52ac08ce6f2822d0e91817b74008060e6ba942372f98bd5e9cdc305fcec592b0.
+     Runner lock SHA256:
+     9a54424655eaa8787a3c2f2098f342362191afa10e991ad7ca68266ea145e85f.
+     DSR receipt: `frankentui-browser-ambercardinal/20260917T014816-451292/receipt.json`
+     under `~/.local/state/dsr/quality-logs/`. Its duration fields are invalid;
+     observed outer wall time was 7.14 seconds. Independent acceptance belongs
+     to `.6.26`; no browser pass is inferred from Node registry parity.
+
+
 3. **Host HTML: `crates/ftui-showcase-wasm/frankentui_showcase_demo.html`**
    - Creates FrankenTermWeb + ShowcaseRunner.
    - requestAnimationFrame host loop.

@@ -26,3 +26,11 @@ tools:
       - bash build-wasm.sh --check-features
       - RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web -p ftui-showcase-wasm
       - bash build-wasm.sh "${DSR_BROWSER_OUTPUT:?Set DSR_BROWSER_OUTPUT to a new absolute directory outside the checkout}"
+  frankentui-wasm-matrix:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - bash build-wasm.sh --check-features
+      - RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-core -p ftui-render -p ftui-style -p ftui-text -p ftui-layout -p ftui-runtime -p ftui-web
+      - RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-web --features input-parser,tracing
+      - RUSTUP_TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])') CARGO_BUILD_FINGERPRINT=content CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never cargo -Zchecksum-freshness check --locked --target wasm32-unknown-unknown -p ftui-showcase-wasm

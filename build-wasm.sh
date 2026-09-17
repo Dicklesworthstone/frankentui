@@ -5,13 +5,78 @@
 # No source manifest edits, wasm-pack cleanup, or reuse of stale pkg files.
 set -euo pipefail
 
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+check_artifact() {
+  command -v node >/dev/null || fail 'missing tool: node (required for artifact validation)'
+  node --input-type=module - "$1" "$2" <<'JS'
+import {readFileSync, realpathSync, statSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+
+const [artifact, limit] = process.argv.slice(2);
+try {
+  if (!/^[0-9]+$/.test(limit) || BigInt(limit) === 0n) {
+    throw new Error('MAX_BYTES must be a positive decimal integer');
+  }
+  const budget = BigInt(limit);
+  const path = realpathSync(artifact);
+  const stat = statSync(path);
+  if (!stat.isFile()) throw new Error(`artifact is not a regular file: ${path}`);
+  if (stat.size === 0) throw new Error(`artifact is empty: ${path}`);
+  if (BigInt(stat.size) > budget) {
+    throw new Error(`artifact exceeds budget: ${stat.size} bytes > ${budget} bytes (${path})`);
+  }
+  const data = readFileSync(path);
+  if (data.length === 0) throw new Error(`artifact is empty: ${path}`);
+  if (BigInt(data.length) > budget) {
+    throw new Error(`artifact exceeds budget: ${data.length} bytes > ${budget} bytes (${path})`);
+  }
+  // Compilation validates the entire binary without instantiating or running it.
+  const exports = WebAssembly.Module.exports(new WebAssembly.Module(data));
+  // wasm.rs: class names are lowercased; method js_name spelling is retained.
+  // The raw cdylib appends a per-module 16-hex suffix to every wasm-bindgen
+  // export (e.g. showcaserunner_new_c999be23f7b1c7cd); the transformed artifact
+  // keeps the bare name. Both spellings are accepted, anchored.
+  const required = [
+    'showcaserunner_new',
+    'showcaserunner_init',
+    'showcaserunner_step',
+    'showcaserunner_pushEncodedInput',
+    'showcaserunner_takeFlatPatches',
+  ];
+  const functions = new Set(exports.filter(entry => entry.kind === 'function').map(entry => entry.name));
+  const missing = required.filter(name =>
+    ![...functions].some(exported => new RegExp(`^${name}(_[0-9a-f]{16})?$`).test(exported)));
+  if (missing.length) throw new Error(`missing ShowcaseRunner function exports: ${missing.join(', ')}`);
+  console.log(JSON.stringify({
+    event: 'wasm_artifact_check',
+    crate: 'ftui-showcase-wasm',
+    artifact: path,
+    bytes: data.length,
+    budget: budget.toString(),
+    target: 'wasm32-unknown-unknown',
+    profile: 'release',
+    sha256: createHash('sha256').update(data).digest('hex'),
+    exports,
+  }));
+} catch (error) {
+  console.error(`ERROR: WASM artifact check (${artifact}): ${error.message}`);
+  process.exitCode = 1;
+}
+JS
+}
+
+if [[ ${1:-} == --check-artifact ]]; then
+  [[ $# == 3 ]] || fail 'usage: bash build-wasm.sh --check-artifact WASM MAX_BYTES'
+  check_artifact "$2" "$3"
+  exit 0
+fi
+if [[ $# != 1 || ( $1 != --check-features && $1 != /* ) ]]; then
+  fail 'usage: bash build-wasm.sh /absolute/NEW_OUTPUT_DIR | --check-features | --check-artifact WASM MAX_BYTES (run builds through DSR)'
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-
-fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-if [[ $# != 1 || ( $1 != --check-features && $1 != /* ) ]]; then
-  fail 'usage: bash build-wasm.sh /absolute/NEW_OUTPUT_DIR | --check-features (run builds through DSR)'
-fi
 
 # Keep browser-supported native defaults explicit. This catches the observed
 # 43/45-screen build when screen-mermaid was omitted from the WASM dependency.
@@ -60,7 +125,7 @@ renderer_revision=88b402b8be9c70a4405895d4172e449940cab2fe
 renderer_archive_sha256=46e23154a20e22672465e406f5f79f5b9e800198c8f655e073d0e79ad0d05306
 mkdir "$output"
 output=$(cd "$output" && pwd)
-mkdir "$output/renderer-source" "$output/site" "$output/site/pkg" "$output/site/assets" "$output/site/fonts"
+mkdir "$output/renderer-source" "$output/site" "$output/site/pkg" "$output/site/assets" "$output/site/fonts" "$output/raw"
 rustc -Vv > "$output/toolchain.txt"
 wasm-bindgen --version > "$output/wasm-bindgen.txt"
 
@@ -89,7 +154,7 @@ tar -xz --strip-components=1 -f "$output/renderer.tar.gz" -C "$output/renderer-s
 cp crates/ftui-showcase-wasm/renderer.lock "$output/renderer-source/Cargo.lock"
 
 build_package() {
-  local source=$1 package=$2 out_name=$3 target_dir
+  local source=$1 package=$2 out_name=$3 target_dir wasm
   # The packages have distinct output names; cache selection is owned by DSR.
   target_dir=${CARGO_TARGET_DIR:-$output/target}
   [[ "$target_dir" == /* ]] || fail 'CARGO_TARGET_DIR must be absolute'
@@ -99,8 +164,18 @@ build_package() {
       build --locked --release --lib --target wasm32-unknown-unknown \
       --target-dir "$target_dir" -p "$package"
   )
+  wasm="$target_dir/wasm32-unknown-unknown/release/${package//-/_}.wasm"
+  if [[ "$package" == ftui-showcase-wasm ]]; then
+    # Keep the exact cdylib checked by the budget gate, before bindgen rewrites it.
+    cp "$wasm" "$output/raw/ftui_showcase_wasm.wasm"
+    wasm="$output/raw/ftui_showcase_wasm.wasm"
+    if [[ ${FTUI_WASM_MAX_BYTES+x} ]]; then
+      check_artifact "$wasm" "$FTUI_WASM_MAX_BYTES" \
+        > "$output/raw/ftui_showcase_wasm.observation.json"
+    fi
+  fi
   wasm-bindgen --target web --out-name "$out_name" --out-dir "$output/site/pkg" \
-    "$target_dir/wasm32-unknown-unknown/release/${package//-/_}.wasm"
+    "$wasm"
 }
 build_package "$output/renderer-source" frankenterm-web FrankenTerm
 build_package "$SCRIPT_DIR" ftui-showcase-wasm ftui_showcase_wasm
