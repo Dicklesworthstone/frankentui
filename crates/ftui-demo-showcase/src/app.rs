@@ -33,6 +33,13 @@ use crate::tour::{GuidedTourState, TourAdvanceReason, TourEvent, TourStep};
 const TARGET_PERF_HUD: &str = "ftui.perf_hud";
 /// Tracing target for the explainability cockpit's telemetry. App-level.
 const TARGET_EXPLAINABILITY_COCKPIT: &str = "ftui.explainability_cockpit";
+/// Tracing target for the accessibility panel's telemetry. App-level.
+///
+/// Lives here rather than beside its one call site in
+/// `screens/accessibility_panel.rs` because `no_stray_target_literals` only
+/// accepts `"ftui.<name>"` definitions in this file and in
+/// `ftui-runtime`'s `telemetry_schema`.
+pub(crate) const TARGET_ACCESSIBILITY_PANEL: &str = "ftui.demo.a11y";
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
