@@ -968,9 +968,7 @@ mod tests {
 
     #[test]
     fn export_import_roundtrip() {
-        let dir = std::env::temp_dir().join("ftui_tt_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("tt-roundtrip");
         let path = dir.join("test.fttr");
 
         // Create recording
@@ -1018,22 +1016,16 @@ mod tests {
 
         let m1 = loaded.metadata(1).unwrap();
         assert_eq!(m1.model_hash, Some(0xCAFE));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn import_invalid_magic() {
-        let dir = std::env::temp_dir().join("ftui_tt_bad_magic");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("tt-bad-magic");
         let path = dir.join("bad.fttr");
 
         std::fs::write(&path, b"NOT-MAGIC").unwrap();
         let result = TimeTravel::import(&path);
         assert!(result.is_err());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1436,9 +1428,7 @@ mod tests {
 
     #[test]
     fn export_empty_recording() {
-        let dir = std::env::temp_dir().join("ftui_tt_empty_export");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("tt-empty-export");
         let path = dir.join("empty.fttr");
 
         let tt = TimeTravel::new(10);
@@ -1447,15 +1437,11 @@ mod tests {
         let loaded = TimeTravel::import(&path).unwrap();
         assert!(loaded.is_empty());
         assert_eq!(loaded.len(), 0);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn export_import_preserves_styles() {
-        let dir = std::env::temp_dir().join("ftui_tt_style_rt");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("tt-style-roundtrip");
         let path = dir.join("styled.fttr");
 
         let mut tt = TimeTravel::new(10);
@@ -1478,15 +1464,11 @@ mod tests {
         assert!(cell.attrs.has_flag(StyleFlags::BOLD));
         assert!(cell.attrs.has_flag(StyleFlags::UNDERLINE));
         assert_eq!(cell.attrs.link_id(), 7);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn export_import_no_model_hash() {
-        let dir = std::env::temp_dir().join("ftui_tt_no_hash");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("tt-no-hash");
         let path = dir.join("no_hash.fttr");
 
         let mut tt = TimeTravel::new(10);
@@ -1497,8 +1479,6 @@ mod tests {
         let loaded = TimeTravel::import(&path).unwrap();
 
         assert!(loaded.metadata(0).unwrap().model_hash.is_none());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1739,9 +1719,7 @@ mod tests {
 
     #[test]
     fn export_import_after_evictions() {
-        let dir = std::env::temp_dir().join("ftui_tt_eviction_export");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("tt-eviction-export");
         let path = dir.join("evicted.fttr");
 
         let mut tt = TimeTravel::new(3);
@@ -1771,15 +1749,11 @@ mod tests {
 
         // Verify metadata of oldest retained
         assert_eq!(loaded.metadata(0).unwrap().frame_number, 3);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn export_import_capacity_one() {
-        let dir = std::env::temp_dir().join("ftui_tt_cap1_export");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("tt-capacity-one");
         let path = dir.join("cap1.fttr");
 
         let mut tt = TimeTravel::new(1);
@@ -1798,8 +1772,6 @@ mod tests {
         let frame = loaded.get(0).unwrap();
         assert_eq!(frame.get(0, 0).unwrap().content.as_char(), Some('A'));
         assert_eq!(frame.get(1, 0).unwrap().content.as_char(), Some('B'));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1957,9 +1929,7 @@ mod tests {
 
     #[test]
     fn export_import_large_values_roundtrip() {
-        let dir = std::env::temp_dir().join("ftui_tt_large_vals");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("tt-large-values");
         let path = dir.join("large.fttr");
 
         let mut tt = TimeTravel::new(10);
@@ -1976,8 +1946,6 @@ mod tests {
         assert_eq!(m.frame_number, u64::MAX);
         assert_eq!(m.event_count, u32::MAX);
         assert_eq!(m.model_hash, Some(u64::MAX));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

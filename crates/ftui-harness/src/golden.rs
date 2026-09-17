@@ -828,13 +828,7 @@ mod tests {
 
     #[test]
     fn file_logger_writes_events() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_test_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-logger");
         let log_path = dir.join("test.jsonl");
         {
             let mut logger = GoldenLogger::new(&log_path).expect("create logger");
@@ -854,45 +848,30 @@ mod tests {
         assert!(lines[3].contains("\"event\":\"frame\""));
         assert!(lines[4].contains("\"event\":\"complete\""));
         assert!(lines[4].contains("\"outcome\":\"pass\""));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── Golden file I/O ───────────────────────────────────────────────
 
     #[test]
     fn save_and_load_golden_checksums() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_io_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-checksums");
         let path = dir.join("tests").join("golden").join("test.checksums");
         let checksums = vec!["blake3:abc".to_string(), "blake3:def".to_string()];
         save_golden_checksums(&path, &checksums).expect("save");
         let loaded = load_golden_checksums(&path).expect("load");
         assert_eq!(loaded, checksums);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn load_golden_checksums_nonexistent_returns_empty() {
-        let path = std::path::Path::new("/tmp/nonexistent_golden_12345.checksums");
-        let loaded = load_golden_checksums(path).expect("should return empty");
+        let path = crate::retained_test_dir("golden-missing").join("missing.checksums");
+        let loaded = load_golden_checksums(&path).expect("should return empty");
         assert!(loaded.is_empty());
     }
 
     #[test]
     fn load_golden_checksums_skips_comments_and_blanks() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_comments_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::retained_test_dir("golden-comments");
         let path = dir.join("test.checksums");
         std::fs::write(
             &path,
@@ -901,7 +880,6 @@ mod tests {
         .unwrap();
         let loaded = load_golden_checksums(&path).expect("load");
         assert_eq!(loaded, vec!["blake3:abc", "blake3:def"]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1047,31 +1025,18 @@ mod tests {
 
     #[test]
     fn save_creates_parent_directories() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_mkdir_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-mkdir");
         let deeply_nested = dir.join("a").join("b").join("c").join("test.checksums");
         let checksums = vec!["blake3:abc123".to_string()];
         save_golden_checksums(&deeply_nested, &checksums).expect("save should create dirs");
         assert!(deeply_nested.exists());
         let loaded = load_golden_checksums(&deeply_nested).expect("load");
         assert_eq!(loaded, checksums);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn save_golden_includes_header_comment() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_header_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-header");
         let path = dir.join("test.checksums");
         let checksums = vec!["blake3:aaa".to_string()];
         save_golden_checksums(&path, &checksums).expect("save");
@@ -1081,40 +1046,25 @@ mod tests {
             "file should start with header comment"
         );
         assert!(raw.contains("# Generated at:"), "should have timestamp");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn save_and_load_empty_checksums() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_empty_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-empty");
         let path = dir.join("test.checksums");
         save_golden_checksums(&path, &[]).expect("save empty");
         let loaded = load_golden_checksums(&path).expect("load");
         assert!(loaded.is_empty(), "empty save should load as empty");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn save_and_load_many_checksums() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_many_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-many");
         let path = dir.join("test.checksums");
         let checksums: Vec<String> = (0..100).map(|i| format!("blake3:{i:064x}")).collect();
         save_golden_checksums(&path, &checksums).expect("save");
         let loaded = load_golden_checksums(&path).expect("load");
         assert_eq!(loaded, checksums);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── Hash comparison logic ───────────────────────────────────────
@@ -1176,13 +1126,7 @@ mod tests {
     #[test]
     fn bless_mode_round_trip() {
         // Test that bless mode round-trip (save then load) produces identical checksums
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_bless_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-bless");
         let path = golden_checksum_path(&dir, "bless_test");
 
         // Simulate bless: compute checksums and save
@@ -1197,19 +1141,11 @@ mod tests {
         let (outcome, idx) = verify_checksums(&[checksum], &loaded);
         assert_eq!(outcome, GoldenOutcome::Pass);
         assert!(idx.is_none());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn bless_mode_overwrites_old_golden() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_overwrite_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-overwrite");
         let path = golden_checksum_path(&dir, "overwrite_test");
 
         // First bless
@@ -1221,8 +1157,6 @@ mod tests {
         save_golden_checksums(&path, &["blake3:new_hash".to_string()]).expect("save new");
         let loaded_new = load_golden_checksums(&path).expect("load new");
         assert_eq!(loaded_new, vec!["blake3:new_hash"]);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── Tracing span verification (golden.compare) ─────────────────
@@ -1476,13 +1410,7 @@ mod tests {
 
     #[test]
     fn logger_error_event_format() {
-        let dir = std::env::temp_dir().join(format!(
-            "ftui_golden_error_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = crate::retained_test_dir("golden-error");
         let log_path = dir.join("test.jsonl");
         {
             let mut logger = GoldenLogger::new(&log_path).expect("create logger");
@@ -1491,6 +1419,5 @@ mod tests {
         let content = std::fs::read_to_string(&log_path).expect("read log");
         assert!(content.contains("\"event\":\"error\""));
         assert!(content.contains("something went wrong"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

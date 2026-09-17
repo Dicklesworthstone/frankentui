@@ -1942,20 +1942,12 @@ mod tests {
         let mut logger = StormLogger::new("run-file");
         logger.log_error("disk test");
 
-        let path = std::env::temp_dir().join(format!(
-            "resize_storm_logger_{}_{}.jsonl",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let path = crate::retained_test_dir("resize-storm-logger").join("events.jsonl");
 
         logger
             .write_to_file(&path)
             .expect("write_to_file should succeed");
         let body = std::fs::read_to_string(&path).expect("file should be readable");
-        let _ = std::fs::remove_file(&path);
 
         assert!(body.contains(r#""event":"storm_error""#));
         assert!(body.ends_with('\n'));

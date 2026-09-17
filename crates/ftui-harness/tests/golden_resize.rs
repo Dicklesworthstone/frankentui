@@ -325,9 +325,18 @@ fn golden_all_standard_scenarios() {
 
 #[test]
 fn golden_logger_creates_valid_jsonl() {
-    let log_dir = std::env::temp_dir().join("ftui_golden_logger_test");
-    let _ = std::fs::remove_dir_all(&log_dir);
-    std::fs::create_dir_all(&log_dir).unwrap();
+    let mut attempt = 0_u64;
+    let log_dir = loop {
+        let dir = std::env::temp_dir().join(format!(
+            "ftui-golden-logger-{}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break dir,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => attempt += 1,
+            Err(error) => panic!("create retained fixture {}: {error}", dir.display()),
+        }
+    };
 
     let log_path = log_dir.join("test.jsonl");
     let mut logger = GoldenLogger::new(&log_path).unwrap();
@@ -368,8 +377,6 @@ fn golden_logger_creates_valid_jsonl() {
         content.contains("\"event\":\"complete\""),
         "Should have complete event"
     );
-
-    let _ = std::fs::remove_dir_all(&log_dir);
 }
 
 #[test]

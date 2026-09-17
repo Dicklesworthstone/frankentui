@@ -1389,7 +1389,7 @@ mod tests {
     #[test]
     fn resolve_payload_path_traversal_blocked() {
         // Create a real nested directory so canonicalize() succeeds and the guard fires.
-        let tmp = std::env::temp_dir().join("ftui_test_traversal");
+        let tmp = crate::retained_test_dir("trace-traversal");
         let child = tmp.join("child");
         std::fs::create_dir_all(&child).unwrap();
         // Place a file in the parent that the child should not escape to.
@@ -1398,9 +1398,6 @@ mod tests {
         // Traversal attempt: child + "../secret.bin" resolves outside child.
         let err = resolve_payload_path(&child, "../secret.bin").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
-        // Cleanup.
-        let _ = std::fs::remove_file(&secret);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // ── apply_diff_runs ───────────────────────────────────────────────
@@ -1578,16 +1575,7 @@ mod tests {
     // ── Failing-trace minimizer ──────────────────────────────────────
 
     fn unique_test_dir(name: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        dir.push(format!(
-            "ftui-trace-replay-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("create test dir");
-        dir
+        crate::retained_test_dir(&format!("trace-replay-{name}"))
     }
 
     fn frame_line(frame_idx: u64, cols: u16, rows: u16, checksum: u64) -> String {

@@ -757,10 +757,43 @@ where
 // Tests
 // ============================================================================
 
+/// Allocate an isolated fixture directory and retain it for inspection, even on panic.
+#[cfg(test)]
+pub(crate) fn retained_test_dir(name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("ftui-harness-{name}-{}-{id}", std::process::id()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("create retained fixture {}: {error}", path.display()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ftui_render::cell::{Cell, CellContent, GraphemeId};
+
+    #[test]
+    fn retained_fixture_directories_are_isolated() {
+        let first = retained_test_dir("isolation");
+        let evidence = first.join("evidence.txt");
+        std::fs::write(&evidence, "retain this fixture").unwrap();
+        let second = retained_test_dir("isolation");
+        assert_ne!(first, second);
+        assert!(second.is_dir());
+        assert!(!second.join("evidence.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(evidence).unwrap(),
+            "retain this fixture"
+        );
+    }
 
     #[test]
     fn buffer_to_text_empty() {
@@ -931,8 +964,7 @@ mod tests {
 
     #[test]
     fn bless_creates_snapshot() {
-        let dir = std::env::temp_dir().join("ftui_harness_test_bless");
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = retained_test_dir("bless");
 
         let mut buf = Buffer::new(3, 1);
         buf.set(0, 0, Cell::from_char('X'));
@@ -946,14 +978,11 @@ mod tests {
         // Verify file was created with correct content
         let stored = std::fs::read_to_string(&path).unwrap();
         assert_eq!(stored, "X  ");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn snapshot_match_succeeds() {
-        let dir = std::env::temp_dir().join("ftui_harness_test_match");
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = retained_test_dir("match");
 
         let mut buf = Buffer::new(5, 1);
         buf.set(0, 0, Cell::from_char('O'));
@@ -966,14 +995,11 @@ mod tests {
 
         // Assert should pass
         assert_buffer_snapshot("match_test", &buf, dir.to_str().unwrap(), MatchMode::Exact);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn snapshot_trim_trailing_mode() {
-        let dir = std::env::temp_dir().join("ftui_harness_test_trim");
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = retained_test_dir("trim");
 
         let mut buf = Buffer::new(5, 1);
         buf.set(0, 0, Cell::from_char('A'));
@@ -990,15 +1016,12 @@ mod tests {
             dir.to_str().unwrap(),
             MatchMode::TrimTrailing,
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     #[should_panic(expected = "Snapshot mismatch")]
     fn snapshot_mismatch_panics() {
-        let dir = std::env::temp_dir().join("ftui_harness_test_mismatch");
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = retained_test_dir("mismatch");
 
         let mut buf = Buffer::new(3, 1);
         buf.set(0, 0, Cell::from_char('X'));
@@ -1019,8 +1042,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "No snapshot found")]
     fn missing_snapshot_panics() {
-        let dir = std::env::temp_dir().join("ftui_harness_test_missing");
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = retained_test_dir("missing");
 
         let buf = Buffer::new(3, 1);
         assert_buffer_snapshot("nonexistent", &buf, dir.to_str().unwrap(), MatchMode::Exact);

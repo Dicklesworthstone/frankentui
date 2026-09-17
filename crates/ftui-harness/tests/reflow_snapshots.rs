@@ -644,9 +644,18 @@ fn reflow_performance_checksum_computation() {
 
 #[test]
 fn reflow_logger_integration() {
-    let log_dir = std::env::temp_dir().join("ftui_reflow_logger_test");
-    let _ = std::fs::remove_dir_all(&log_dir);
-    std::fs::create_dir_all(&log_dir).unwrap();
+    let mut attempt = 0_u64;
+    let log_dir = loop {
+        let dir = std::env::temp_dir().join(format!(
+            "ftui-reflow-logger-{}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break dir,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => attempt += 1,
+            Err(error) => panic!("create retained fixture {}: {error}", dir.display()),
+        }
+    };
 
     let log_path = log_dir.join("reflow_test.jsonl");
     let mut logger = GoldenLogger::new(&log_path).unwrap();
@@ -677,6 +686,4 @@ fn reflow_logger_integration() {
     assert!(content.contains("\"event\":\"start\""));
     assert!(content.contains("\"event\":\"frame\""));
     assert!(content.contains("\"event\":\"complete\""));
-
-    let _ = std::fs::remove_dir_all(&log_dir);
 }

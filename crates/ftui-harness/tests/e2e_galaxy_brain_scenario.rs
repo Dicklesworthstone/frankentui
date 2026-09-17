@@ -670,7 +670,19 @@ fn scenario_completes_within_slo() {
 fn scenario_jsonl_evidence_valid() {
     let run = run_scenario();
 
-    let jsonl_path = std::env::temp_dir().join("e2e_galaxy_brain_scenario.jsonl");
+    let mut attempt = 0_u64;
+    let output_dir = loop {
+        let dir = std::env::temp_dir().join(format!(
+            "ftui-galaxy-brain-{}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break dir,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => attempt += 1,
+            Err(error) => panic!("create retained fixture {}: {error}", dir.display()),
+        }
+    };
+    let jsonl_path = output_dir.join("e2e_galaxy_brain_scenario.jsonl");
     emit_jsonl(&run.events, &jsonl_path);
 
     let content = std::fs::read_to_string(&jsonl_path).expect("read JSONL");
@@ -692,8 +704,6 @@ fn scenario_jsonl_evidence_valid() {
     // Verify summary event.
     let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
     assert_eq!(last["event"], "scenario_summary");
-
-    std::fs::remove_file(&jsonl_path).ok();
 }
 
 /// Checkpoint count matches scenario definition.

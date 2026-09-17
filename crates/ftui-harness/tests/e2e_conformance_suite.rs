@@ -41,6 +41,20 @@ use ftui_widgets::sparkline::Sparkline;
 use ftui_widgets::table::{Row, Table, TableState};
 use ftui_widgets::{StatefulWidget, Widget};
 
+fn retained_output_path(name: &str) -> PathBuf {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("ftui-conformance-{}-{id}", std::process::id()));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return dir.join(name),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("create retained fixture {}: {error}", dir.display()),
+        }
+    }
+}
+
 // ============================================================================
 // Terminal Profiles (the "5 emulators")
 // ============================================================================
@@ -682,7 +696,7 @@ fn conformance_vt_fixtures_across_all_emulators() {
         }
     }
 
-    let jsonl_path = std::env::temp_dir().join("e2e_conformance_vt.jsonl");
+    let jsonl_path = retained_output_path("e2e_conformance_vt.jsonl");
     emit_jsonl(&runner.events, &jsonl_path);
 
     let pass_rate = runner.pass_rate();
@@ -736,7 +750,7 @@ fn conformance_golden_frame_rendering_across_all_emulators() {
         }
     }
 
-    let jsonl_path = std::env::temp_dir().join("e2e_conformance_render.jsonl");
+    let jsonl_path = retained_output_path("e2e_conformance_render.jsonl");
     emit_jsonl(&runner.events, &jsonl_path);
 
     assert!(
@@ -809,7 +823,7 @@ fn conformance_report_generated() {
 
     let summary_json = runner.summary_json(scenarios.len());
     let xterm_diff_summary = runner.xterm_shared_fixture_differential_summary_json();
-    let summary_path = std::env::temp_dir().join("e2e_conformance_summary.json");
+    let summary_path = retained_output_path("e2e_conformance_summary.json");
     std::fs::write(
         &summary_path,
         format!("{summary_json}\n{xterm_diff_summary}\n"),
@@ -998,7 +1012,7 @@ fn conformance_jsonl_schema_compliance() {
     let (cs, dur) = full_pipeline_checksum(&caps, 80, 24, render_paragraph);
     runner.record_render("xterm-256color", "paragraph_basic", &cs, dur, true);
 
-    let jsonl_path = std::env::temp_dir().join("e2e_conformance_schema_test.jsonl");
+    let jsonl_path = retained_output_path("e2e_conformance_schema_test.jsonl");
     emit_jsonl(&runner.events, &jsonl_path);
 
     let content = std::fs::read_to_string(&jsonl_path).expect("read JSONL");
@@ -1020,8 +1034,6 @@ fn conformance_jsonl_schema_compliance() {
         assert!(vt_line["status"].is_string());
         assert!(vt_line["duration_us"].is_u64());
     }
-
-    std::fs::remove_file(&jsonl_path).ok();
 }
 
 #[test]
@@ -1175,7 +1187,7 @@ fn conformance_full_suite_gate() {
     // Generate final report.
     let summary_json = runner.summary_json(scenarios.len());
     let xterm_diff_summary = runner.xterm_shared_fixture_differential_summary_json();
-    let jsonl_path = std::env::temp_dir().join("e2e_conformance_gate.jsonl");
+    let jsonl_path = retained_output_path("e2e_conformance_gate.jsonl");
     let mut events = runner.events.clone();
     events.push(summary_json.clone());
     events.push(xterm_diff_summary);
