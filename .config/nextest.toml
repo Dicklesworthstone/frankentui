@@ -36,6 +36,18 @@ fail-fast = false
 # itself is oversubscribed - this machine has been seen at a 1-min load average
 # of 75-128 against 14 cores, from other applications entirely - these budgets
 # will still miss, and no nextest setting can prevent that.
+#
+# The last four entries came from a full workspace run on 2026-09-17 that had
+# the resize-storm and async-tasks guardrail budgets exported, so its failures
+# were not drowned in known noise. They were the only budget tests still
+# failing that were absent from this list, and each one passes when run on its
+# own, which is the signature this list is for.
+#
+# `perf_full_navigation_sequence_100_nodes` above is the counter-example worth
+# remembering: it is already listed and still fails, because it fails alone
+# too - its minimum across twenty runs is 1.06x its budget. Serialising cannot
+# buy headroom a test never had. That one is bd-eoi5v, not a scheduling
+# problem, so do not reach for this list to silence it.
 [[profile.default.overrides]]
 filter = '''
     test(=e2e_focus_change_storm_performance)
@@ -62,6 +74,10 @@ filter = '''
     | test(=e2e_filter_performance_budget)
     | test(=e2e_render_with_highlights_budget)
     | test(=diff::tests::perf_block_scan_vs_scalar_baseline)
+    | test(=presenter::tests::perf_cost_model_overhead)
+    | test(=table::tests::render_100k_rows_stays_within_8ms_frame_budget)
+    | test(=virtualized::tests::test_render_scales_with_visible_not_total)
+    | test(=seed_demo_times_out_when_health_check_never_returns_result)
 '''
 threads-required = "num-test-threads"
 
