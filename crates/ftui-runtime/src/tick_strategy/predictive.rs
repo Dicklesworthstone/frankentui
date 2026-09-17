@@ -630,11 +630,19 @@ mod tests {
     mod persistence_tests {
         use super::*;
 
+        fn retained_fixture_dir() -> tempfile::TempDir {
+            tempfile::Builder::new()
+                .prefix("ftui-tick-predictive-")
+                .disable_cleanup(true)
+                .tempdir()
+                .expect("create retained predictive fixture")
+        }
+
         #[test]
         fn with_persistence_loads_from_file() {
             use crate::tick_strategy::persistence::save_transitions;
 
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("transitions.json");
 
             // Create and save historical data
@@ -657,7 +665,7 @@ mod tests {
         fn with_persistence_applies_load_decay() {
             use crate::tick_strategy::persistence::save_transitions;
 
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("transitions.json");
 
             let mut counter = TransitionCounter::new();
@@ -678,7 +686,7 @@ mod tests {
 
         #[test]
         fn with_persistence_missing_file_is_cold_start() {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("nonexistent.json");
 
             let s = Predictive::with_persistence(default_config(), &path, 0.9);
@@ -688,7 +696,7 @@ mod tests {
 
         #[test]
         fn with_persistence_corrupted_file_is_cold_start() {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("bad.json");
             std::fs::write(&path, "not valid json {{{").unwrap();
 
@@ -702,7 +710,7 @@ mod tests {
 
         #[test]
         fn auto_save_fires_at_interval() {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("auto.json");
 
             let config = PredictiveStrategyConfig {
@@ -732,7 +740,7 @@ mod tests {
         fn auto_save_writes_valid_json() {
             use crate::tick_strategy::persistence::load_transitions;
 
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("valid.json");
 
             let config = PredictiveStrategyConfig {
@@ -759,7 +767,7 @@ mod tests {
 
         #[test]
         fn auto_save_skips_when_not_dirty() {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("nodirty.json");
 
             let config = PredictiveStrategyConfig {
@@ -780,7 +788,7 @@ mod tests {
 
         #[test]
         fn shutdown_triggers_save() {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("shutdown.json");
 
             let config = PredictiveStrategyConfig {
@@ -832,7 +840,7 @@ mod tests {
                 decay_interval: 9999,
                 ..PredictiveStrategyConfig::default()
             };
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             // Point at a child of a directory that does not exist.
             let bad_path = dir.path().join("missing-parent").join("transitions.json");
             let mut s = Predictive::with_persistence(config, &bad_path, 1.0);
@@ -852,7 +860,7 @@ mod tests {
         fn maintenance_decay_marks_strategy_dirty_and_persists_on_shutdown() {
             use crate::tick_strategy::persistence::load_transitions;
 
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("decayed-on-shutdown.json");
 
             let config = PredictiveStrategyConfig {
@@ -892,7 +900,7 @@ mod tests {
         fn load_decay_marks_strategy_dirty_until_persisted() {
             use crate::tick_strategy::persistence::{load_transitions, save_transitions};
 
-            let dir = tempfile::tempdir().unwrap();
+            let dir = retained_fixture_dir();
             let path = dir.path().join("load-decay.json");
 
             let mut counter = TransitionCounter::new();

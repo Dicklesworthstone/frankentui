@@ -12688,12 +12688,13 @@ mod tests {
     }
 
     fn temp_evidence_path(label: &str) -> PathBuf {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        let mut path = std::env::temp_dir();
-        path.push(format!("ftui_evidence_{label}_{pid}_{seq}.jsonl"));
-        path
+        // Retain evidence even if the test panics, with a fresh directory per run.
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("ftui-program-{label}-"))
+            .disable_cleanup(true)
+            .tempdir()
+            .expect("create retained evidence directory");
+        dir.path().join("evidence.jsonl")
     }
 
     fn read_evidence_event(path: &PathBuf, event: &str) -> Value {
@@ -13579,7 +13580,6 @@ mod tests {
 
         let contents =
             std::fs::read_to_string(&evidence_path).expect("guardrail evidence file written");
-        let _ = std::fs::remove_file(&evidence_path);
         assert!(
             contents.contains(r#""event":"guardrail_snapshot""#),
             "alerting frame must export a guardrail_snapshot row; got: {contents}"
@@ -13691,7 +13691,6 @@ mod tests {
         }
 
         let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
-        let _ = std::fs::remove_file(&evidence_path);
         assert!(
             contents.contains(r#""event":"voi_decision""#),
             "inline-auto frames must export the VOI decision; got: {contents}"
@@ -13954,7 +13953,6 @@ mod tests {
         );
 
         let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
-        let _ = std::fs::remove_file(&evidence_path);
         assert!(
             contents.contains(r#""event":"a11y_tree""#),
             "tree changes must be exported; got: {contents}"
@@ -14339,7 +14337,6 @@ mod tests {
         }
 
         let contents = std::fs::read_to_string(&evidence_path).expect("evidence written");
-        let _ = std::fs::remove_file(&evidence_path);
         let rows: Vec<&str> = contents
             .lines()
             .filter(|l| l.contains(r#""event":"budget_decision""#))
@@ -14646,7 +14643,6 @@ mod tests {
 
         let contents =
             std::fs::read_to_string(&evidence_path).expect("guardrail evidence file written");
-        let _ = std::fs::remove_file(&evidence_path);
         assert!(
             contents.contains(r#""event":"guardrail_snapshot""#),
             "queue backlog above warn_depth must export a guardrail_snapshot row; got: {contents}"

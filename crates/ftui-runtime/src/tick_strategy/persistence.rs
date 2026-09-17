@@ -195,9 +195,17 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    fn retained_fixture_dir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("ftui-tick-persistence-")
+            .disable_cleanup(true)
+            .tempdir()
+            .expect("create retained persistence fixture")
+    }
+
     #[test]
     fn round_trip_preserves_data() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("transitions.json");
 
         let mut counter = TransitionCounter::new();
@@ -232,7 +240,7 @@ mod tests {
 
     #[test]
     fn missing_file_returns_empty_counter() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("nonexistent.json");
 
         let counter = load_transitions(&path).unwrap();
@@ -241,7 +249,7 @@ mod tests {
 
     #[test]
     fn corrupted_file_returns_error() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("bad.json");
         std::fs::write(&path, "not valid json {{{").unwrap();
 
@@ -253,7 +261,7 @@ mod tests {
 
     #[test]
     fn version_mismatch_returns_error() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("future.json");
         let bad_version = serde_json::json!({
             "version": 999,
@@ -274,7 +282,7 @@ mod tests {
 
     #[test]
     fn atomic_write_no_temp_file_on_success() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("transitions.json");
         let temp = path.with_extension("json.tmp");
 
@@ -287,7 +295,7 @@ mod tests {
 
     #[test]
     fn empty_counter_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("empty.json");
 
         let counter = TransitionCounter::<String>::new();
@@ -299,7 +307,7 @@ mod tests {
 
     #[test]
     fn file_is_human_readable_json() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("readable.json");
 
         let mut counter = TransitionCounter::new();
@@ -318,7 +326,7 @@ mod tests {
 
     #[test]
     fn deterministic_output_ordering() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path1 = dir.path().join("out1.json");
         let path2 = dir.path().join("out2.json");
 
@@ -346,7 +354,7 @@ mod tests {
 
     #[test]
     fn large_counts_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("large.json");
 
         let mut counter = TransitionCounter::new();
@@ -362,7 +370,7 @@ mod tests {
 
     #[test]
     fn fractional_counts_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("decayed.json");
 
         let mut counter = TransitionCounter::new();
@@ -386,7 +394,7 @@ mod tests {
 
     #[test]
     fn partial_file_write_detected() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("partial.json");
 
         // Write a truncated but somewhat valid JSON
@@ -407,7 +415,7 @@ mod tests {
 
     #[test]
     fn save_load_save_produces_identical_files() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path1 = dir.path().join("first.json");
         let path2 = dir.path().join("second.json");
 
@@ -440,7 +448,7 @@ mod tests {
 
     #[test]
     fn large_counter_many_entries_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("large_many.json");
 
         let mut counter = TransitionCounter::new();
@@ -481,7 +489,7 @@ mod tests {
 
     #[test]
     fn special_characters_in_screen_ids_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("special.json");
 
         let mut counter = TransitionCounter::new();
@@ -513,7 +521,7 @@ mod tests {
     fn read_only_file_save_returns_error() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = retained_fixture_dir();
         let path = dir.path().join("readonly.json");
 
         // Create the file first

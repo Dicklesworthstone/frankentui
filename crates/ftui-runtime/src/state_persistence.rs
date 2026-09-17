@@ -1346,11 +1346,14 @@ mod tests {
 mod file_storage_tests {
     use super::*;
     use std::io::Write;
-    use tempfile::TempDir;
 
     #[test]
     fn file_storage_round_trip() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-state-persistence-")
+            .disable_cleanup(true)
+            .tempdir()
+            .unwrap();
         let path = tmp.path().join("state.json");
         let storage = FileStorage::new(&path);
 
@@ -1378,7 +1381,11 @@ mod file_storage_tests {
 
     #[test]
     fn file_storage_load_nonexistent() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-state-persistence-")
+            .disable_cleanup(true)
+            .tempdir()
+            .unwrap();
         let path = tmp.path().join("does_not_exist.json");
         let storage = FileStorage::new(&path);
 
@@ -1388,7 +1395,11 @@ mod file_storage_tests {
 
     #[test]
     fn file_storage_clear() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-state-persistence-")
+            .disable_cleanup(true)
+            .tempdir()
+            .unwrap();
         let path = tmp.path().join("state.json");
 
         // Create file
@@ -1402,7 +1413,11 @@ mod file_storage_tests {
 
     #[test]
     fn file_storage_creates_parent_dirs() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-state-persistence-")
+            .disable_cleanup(true)
+            .tempdir()
+            .unwrap();
         let path = tmp.path().join("nested").join("dirs").join("state.json");
         let storage = FileStorage::new(&path);
 
@@ -1421,7 +1436,11 @@ mod file_storage_tests {
 
     #[test]
     fn file_storage_handles_corrupt_entry() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-state-persistence-")
+            .disable_cleanup(true)
+            .tempdir()
+            .unwrap();
         let path = tmp.path().join("state.json");
 
         // Write valid JSON but with invalid base64

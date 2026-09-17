@@ -316,7 +316,11 @@ mod tests {
 
     #[test]
     fn enabled_file_sink_writes_jsonl() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-evidence-sink-")
+            .disable_cleanup(true)
+            .tempfile()
+            .unwrap();
         let path = tmp.path().to_path_buf();
         let config = EvidenceSinkConfig::enabled_file(&path);
         let sink = EvidenceSink::from_config(&config).unwrap().unwrap();
@@ -334,7 +338,11 @@ mod tests {
 
     #[test]
     fn sink_is_clone_and_shared() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-evidence-sink-")
+            .disable_cleanup(true)
+            .tempfile()
+            .unwrap();
         let path = tmp.path().to_path_buf();
         let config = EvidenceSinkConfig::enabled_file(&path);
         let sink = EvidenceSink::from_config(&config).unwrap().unwrap();
@@ -351,7 +359,11 @@ mod tests {
 
     #[test]
     fn sink_debug_impl() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-evidence-sink-")
+            .disable_cleanup(true)
+            .tempfile()
+            .unwrap();
         let config = EvidenceSinkConfig::enabled_file(tmp.path());
         let sink = EvidenceSink::from_config(&config).unwrap().unwrap();
         let debug = format!("{:?}", sink);
@@ -360,7 +372,11 @@ mod tests {
 
     #[test]
     fn file_sink_caps_at_max_bytes() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-evidence-sink-")
+            .disable_cleanup(true)
+            .tempfile()
+            .unwrap();
         let path = tmp.path().to_path_buf();
         // Set a very small cap: 100 bytes.
         let config = EvidenceSinkConfig::enabled_file(&path).with_max_bytes(100);
@@ -386,7 +402,11 @@ mod tests {
 
     #[test]
     fn file_sink_caps_on_preexisting_large_file() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-evidence-sink-")
+            .disable_cleanup(true)
+            .tempfile()
+            .unwrap();
         let path = tmp.path().to_path_buf();
         // Pre-fill the file with 200 bytes.
         std::fs::write(&path, "x".repeat(200)).unwrap();
@@ -408,7 +428,11 @@ mod tests {
 
     #[test]
     fn file_sink_creates_parent_directories() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-evidence-sink-")
+            .disable_cleanup(true)
+            .tempdir()
+            .unwrap();
         let path = tmp.path().join("nested").join("evidence.jsonl");
         let config = EvidenceSinkConfig::enabled_file(&path);
         let sink = EvidenceSink::from_config(&config).unwrap().unwrap();
@@ -445,7 +469,11 @@ mod tests {
 
     #[test]
     fn unlimited_max_bytes_allows_unbounded_writes() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-evidence-sink-")
+            .disable_cleanup(true)
+            .tempfile()
+            .unwrap();
         let path = tmp.path().to_path_buf();
         let config = EvidenceSinkConfig::enabled_file(&path).with_max_bytes(0);
         let sink = EvidenceSink::from_config(&config).unwrap().unwrap();

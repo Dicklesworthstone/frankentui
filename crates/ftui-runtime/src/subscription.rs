@@ -1065,7 +1065,11 @@ mod tests {
     /// transitions in order, with nothing reported while the file is idle.
     #[test]
     fn file_watcher_reports_create_modify_remove() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = tempfile::Builder::new()
+            .prefix("ftui-file-watcher-")
+            .disable_cleanup(true)
+            .tempdir()
+            .expect("temp dir");
         let path = dir.path().join("watched.toml");
         let sub = FileWatcher::new(&path, TestMsg::File).with_interval(Duration::from_millis(5));
         assert_eq!(sub.path(), path.as_path());

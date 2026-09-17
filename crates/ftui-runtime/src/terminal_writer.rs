@@ -2902,7 +2902,6 @@ mod tests {
     use std::io;
     use std::path::PathBuf;
     use std::rc::Rc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn osc52_writer_buffers_wraps_and_rejects_invalid_requests() {
@@ -3014,16 +3013,13 @@ mod tests {
     }
 
     fn temp_evidence_path(label: &str) -> PathBuf {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "ftui_{}_{}_{}.jsonl",
-            label,
-            std::process::id(),
-            id
-        ));
-        path
+        // Retain evidence even if the test panics, with a fresh directory per run.
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("ftui-terminal-writer-{label}-"))
+            .disable_cleanup(true)
+            .tempdir()
+            .expect("create retained evidence directory");
+        dir.path().join("evidence.jsonl")
     }
 
     #[derive(Default)]
@@ -4292,7 +4288,6 @@ mod tests {
             "no DECSTBM after the fallback; got: {out:?}"
         );
         let contents = std::fs::read_to_string(&evidence_path).expect("evidence written");
-        let _ = std::fs::remove_file(&evidence_path);
         assert!(
             contents.contains(
                 r#"{"event":"inline_strategy_fallback","from":"hybrid","to":"overlay_redraw","reason":"cpr_mismatch","observed_row":24,"expected_row":21,"rows":24,"region_bottom":21}"#
@@ -4384,7 +4379,6 @@ mod tests {
         drop(w);
 
         let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
-        let _ = std::fs::remove_file(&evidence_path);
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(
             lines.len(),
