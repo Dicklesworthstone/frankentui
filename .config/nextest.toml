@@ -43,11 +43,17 @@ fail-fast = false
 # failing that were absent from this list, and each one passes when run on its
 # own, which is the signature this list is for.
 #
-# `perf_full_navigation_sequence_100_nodes` above is the counter-example worth
-# remembering: it is already listed and still fails, because it fails alone
-# too - its minimum across twenty runs is 1.06x its budget. Serialising cannot
-# buy headroom a test never had. That one is bd-eoi5v, not a scheduling
-# problem, so do not reach for this list to silence it.
+# `perf_full_navigation_sequence_100_nodes` above is the one to watch, and it
+# shows how easily this list gets misread. It is already here and still fails
+# in loaded runs, which first looked like a test with no headroom at all. It is
+# not. Measured across load: 15 of 15 pass at a 1-min average of 17-22, 37 of
+# 40 at 21-25, and 5 of 15 at 94-111. It is the most load-sensitive budget in
+# the workspace - the only one that also failed running entirely alone at 39 -
+# but it is not a test that fails on an unloaded machine.
+#
+# Its real margin is still unmeasured, because unlike resize_storm_e2e and
+# async_tasks_stress it neither logs its elapsed time on success nor accepts a
+# budget override, so only its failures are ever visible. Tracked as bd-eoi5v.
 [[profile.default.overrides]]
 filter = '''
     test(=e2e_focus_change_storm_performance)
