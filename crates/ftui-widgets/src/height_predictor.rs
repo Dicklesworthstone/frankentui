@@ -132,6 +132,20 @@ pub struct HeightPrediction {
     pub observations: u64,
 }
 
+/// Observations and interval violations accumulated by a height predictor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PredictorStats {
+    /// Total measured heights, across all categories.
+    pub measurements: u64,
+    /// Measurements outside their pre-observation interval, excluding each
+    /// category's first observation.
+    pub violations: u64,
+    /// Violations divided by measurements, or zero before any observation.
+    pub violation_rate: f64,
+    /// Number of registered categories, including the default category zero.
+    pub categories: usize,
+}
+
 /// Bayesian height predictor with conformal bounds.
 #[derive(Debug, Clone)]
 pub struct HeightPredictor {
@@ -304,6 +318,17 @@ impl HeightPredictor {
     /// Total measurements observed.
     pub fn total_measurements(&self) -> u64 {
         self.total_measurements
+    }
+
+    /// Snapshot the predictor's observed statistics.
+    #[must_use]
+    pub fn stats(&self) -> PredictorStats {
+        PredictorStats {
+            measurements: self.total_measurements,
+            violations: self.total_violations,
+            violation_rate: self.violation_rate(),
+            categories: self.categories.len(),
+        }
     }
 
     /// Total bound violations.
@@ -666,6 +691,15 @@ mod tests {
         assert_eq!(pred.total_measurements(), 0);
         assert_eq!(pred.total_violations(), 0);
         assert!((pred.violation_rate() - 0.0).abs() < f64::EPSILON);
+        assert_eq!(
+            pred.stats(),
+            PredictorStats {
+                measurements: 0,
+                violations: 0,
+                violation_rate: 0.0,
+                categories: 1,
+            }
+        );
     }
 
     // ── Predict unknown category ─────────────────────────────────

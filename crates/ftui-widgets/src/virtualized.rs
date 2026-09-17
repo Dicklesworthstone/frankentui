@@ -189,10 +189,36 @@ impl<T> Virtualized<T> {
     /// also trains the height model, so unmeasured items follow what has been
     /// measured instead of a constant guess.
     pub fn observe_height(&mut self, idx: usize, height: u16) {
+        self.observe_height_in_category(idx, height, 0);
+    }
+
+    /// Record a measured height and its category, including externally stored
+    /// items whose category cannot be obtained through [`Self::get`].
+    pub fn observe_height_in_category(&mut self, idx: usize, height: u16, category: usize) {
         match &mut self.item_height {
             ItemHeight::Fixed(_) => {}
             ItemHeight::Variable(cache) => cache.set(idx, height),
-            ItemHeight::VariableFenwick(tracker) => tracker.set(idx, height),
+            ItemHeight::VariableFenwick(tracker) => tracker.set_in_category(idx, height, category),
+        }
+    }
+
+    /// Point prediction for a category, or the configured height without a model.
+    #[must_use]
+    pub fn predicted_height(&self, category: usize) -> u16 {
+        if let ItemHeight::VariableFenwick(tracker) = &self.item_height
+            && let Some(predictor) = tracker.predictor()
+        {
+            return predictor.predict(category).predicted.max(1);
+        }
+        self.unmeasured_item_height()
+    }
+
+    /// Statistics from actual height observations, when prediction is enabled.
+    #[must_use]
+    pub fn predictor_stats(&self) -> Option<PredictorStats> {
+        match &self.item_height {
+            ItemHeight::VariableFenwick(tracker) => tracker.predictor().map(HeightPredictor::stats),
+            _ => None,
         }
     }
 
@@ -689,7 +715,7 @@ impl HeightCache {
 // VariableHeightsFenwick - O(log n) scroll-to-index mapping
 // ============================================================================
 
-use crate::height_predictor::{HeightPredictor, PredictorConfig};
+use crate::height_predictor::{HeightPredictor, PredictorConfig, PredictorStats};
 
 /// Variable height tracker using Fenwick tree for O(log n) prefix sum queries.
 ///
@@ -720,8 +746,8 @@ pub struct VariableHeightsFenwick {
     /// Number of items tracked.
     len: usize,
     /// Which slots hold a measured height (`set`) rather than the fill value.
-    measured: Vec<bool>,
-    /// Number of `false` entries in `measured`.
+    measured: Vec<u64>,
+    /// Number of tracked slots without a measured bit.
     unmeasured: usize,
     /// Optional Bayesian model for the heights of unmeasured slots.
     predictor: Option<HeightPredictor>,
@@ -745,7 +771,7 @@ impl VariableHeightsFenwick {
             tree,
             default_height,
             len: capacity,
-            measured: vec![false; capacity],
+            measured: vec![0; capacity.div_ceil(64)],
             unmeasured: capacity,
             predictor: None,
             fill_height: default_height,
@@ -759,7 +785,7 @@ impl VariableHeightsFenwick {
             tree: Self::build_height_tree(heights.iter().copied()),
             default_height,
             len: heights.len(),
-            measured: vec![true; heights.len()],
+            measured: Self::all_measured_bits(heights.len()),
             unmeasured: 0,
             predictor: None,
             fill_height: default_height,
@@ -785,6 +811,21 @@ impl VariableHeightsFenwick {
             }
         }
         tree
+    }
+
+    fn all_measured_bits(len: usize) -> Vec<u64> {
+        let mut bits = vec![u64::MAX; len.div_ceil(64)];
+        if !len.is_multiple_of(64) {
+            *bits.last_mut().expect("partial word exists") = (1_u64 << (len % 64)) - 1;
+        }
+        bits
+    }
+
+    fn mark_measured(&mut self, idx: usize) {
+        if !self.is_measured(idx) {
+            self.measured[idx / 64] |= 1_u64 << (idx % 64);
+            self.unmeasured -= 1;
+        }
     }
 
     fn set_tracked_height(&mut self, idx: usize, height: u16) {
@@ -876,7 +917,7 @@ impl VariableHeightsFenwick {
     /// Whether slot `idx` holds a measured height.
     #[must_use]
     pub fn is_measured(&self, idx: usize) -> bool {
-        self.measured.get(idx).copied().unwrap_or(false)
+        idx < self.len && self.measured[idx / 64] & (1_u64 << (idx % 64)) != 0
     }
 
     /// Rewrite every unmeasured slot with the current fill height.
@@ -884,7 +925,7 @@ impl VariableHeightsFenwick {
     fn refill_unmeasured(&mut self) -> usize {
         let mut rewritten = 0;
         for idx in 0..self.len {
-            if !self.measured[idx] {
+            if !self.is_measured(idx) {
                 self.set_tracked_height(idx, self.fill_height);
                 rewritten += 1;
             }
@@ -926,17 +967,20 @@ impl VariableHeightsFenwick {
     /// of the unmeasured slots when an attached predictor's rounded
     /// prediction changes.
     pub fn set(&mut self, idx: usize, height: u16) {
+        self.set_in_category(idx, height, 0);
+    }
+
+    /// Measure an item and train its category's predictor. Unclassified,
+    /// unmeasured slots retain the default category's prediction.
+    pub fn set_in_category(&mut self, idx: usize, height: u16, category: usize) {
         if idx >= self.len {
             // Need to resize
             self.resize(idx.checked_add(1).expect("height index exceeds usize"));
         }
         self.set_tracked_height(idx, height);
-        if !self.measured[idx] {
-            self.measured[idx] = true;
-            self.unmeasured -= 1;
-        }
+        self.mark_measured(idx);
         if let Some(predictor) = self.predictor.as_mut() {
-            predictor.observe(0, height);
+            predictor.observe(category, height);
             let next = predictor.predict(0).predicted.max(1);
             if next != self.fill_height {
                 self.fill_height = next;
@@ -1028,11 +1072,17 @@ impl VariableHeightsFenwick {
         self.tree = Self::build_height_tree((0..new_len).map(|idx| self.get(idx)));
         if new_len > self.len {
             self.unmeasured += new_len - self.len;
-            self.measured.resize(new_len, false);
+            self.measured.resize(new_len.div_ceil(64), 0);
         } else {
-            let dropped_unmeasured = self.measured[new_len..].iter().filter(|m| !**m).count();
+            let dropped_unmeasured = (new_len..self.len)
+                .filter(|&idx| !self.is_measured(idx))
+                .count();
             self.unmeasured -= dropped_unmeasured;
-            self.measured.truncate(new_len);
+            self.measured.truncate(new_len.div_ceil(64));
+            if !new_len.is_multiple_of(64) {
+                *self.measured.last_mut().expect("partial word exists") &=
+                    (1_u64 << (new_len % 64)) - 1;
+            }
         }
         self.len = new_len;
     }
@@ -1051,11 +1101,13 @@ impl VariableHeightsFenwick {
         let kept: Vec<(u16, bool)> = (n..self.len)
             .map(|idx| (self.get(idx), self.is_measured(idx)))
             .collect();
-        self.clear();
-        self.resize(kept.len());
-        for (idx, (height, measured)) in kept.into_iter().enumerate() {
+        self.tree = Self::build_height_tree(kept.iter().map(|&(height, _)| height));
+        self.len = kept.len();
+        self.measured = vec![0; self.len.div_ceil(64)];
+        self.unmeasured = self.len;
+        for (idx, (_, measured)) in kept.into_iter().enumerate() {
             if measured {
-                self.set(idx, height);
+                self.mark_measured(idx);
             }
         }
     }
@@ -1073,7 +1125,7 @@ impl VariableHeightsFenwick {
     pub fn rebuild(&mut self, heights: &[u16]) {
         self.tree = Self::build_height_tree(heights.iter().copied());
         self.len = heights.len();
-        self.measured = vec![true; heights.len()];
+        self.measured = Self::all_measured_bits(heights.len());
         self.unmeasured = 0;
         if let Some(predictor) = self.predictor.as_mut() {
             for &height in heights {
@@ -1106,6 +1158,22 @@ pub trait RenderItem {
     /// Height of this item in terminal rows.
     fn height(&self) -> u16 {
         1
+    }
+
+    /// Height-prediction category. Use a small stable category ID for each
+    /// item shape; zero is the default for unclassified rows.
+    fn category(&self) -> usize {
+        0
+    }
+}
+
+impl<T: RenderItem> Virtualized<T> {
+    /// Measure an owned item using its [`RenderItem::category`]. External
+    /// storage has no item to inspect and uses category zero; use
+    /// [`Self::observe_height_in_category`] to supply an external category.
+    pub fn measure(&mut self, idx: usize, height: u16) {
+        let category = self.get(idx).map_or(0, RenderItem::category);
+        self.observe_height_in_category(idx, height, category);
     }
 }
 
@@ -1168,15 +1236,63 @@ impl VirtualizedListState {
         }
     }
 
+    /// Create variable-height state before its first render.
+    #[must_use]
+    pub fn variable(default_height: u16) -> Self {
+        Self {
+            heights: Some(VariableHeightsFenwick::new(default_height.max(1), 0)),
+            ..Self::new()
+        }
+    }
+
+    /// Enable category-aware prediction of unmeasured row heights.
+    /// Measured heights remain exact; unclassified rows use category zero.
+    #[must_use]
+    pub fn with_predictor(mut self, config: PredictorConfig) -> Self {
+        self.heights = Some(
+            self.heights
+                .take()
+                .unwrap_or_default()
+                .with_predictor(config),
+        );
+        self
+    }
+
+    /// Point prediction for a category, or the configured default height.
+    #[must_use]
+    pub fn predicted_height(&self, category: usize) -> u16 {
+        self.heights.as_ref().map_or(1, |heights| {
+            heights
+                .predictor()
+                .map_or(heights.default_height(), |predictor| {
+                    predictor.predict(category).predicted.max(1)
+                })
+        })
+    }
+
+    /// Statistics from measured rows, when prediction is enabled.
+    #[must_use]
+    pub fn predictor_stats(&self) -> Option<PredictorStats> {
+        self.heights
+            .as_ref()
+            .and_then(VariableHeightsFenwick::predictor)
+            .map(HeightPredictor::stats)
+    }
+
     /// Record the measured height of item `idx` for a variable-height
     /// list. Rendering measures the visible rows itself; call this when an
     /// item's height changed while off-screen so offsets stay exact. Ignored
     /// until the first variable-height render creates the tracker.
     pub fn measure(&mut self, idx: usize, height: u16) {
+        self.measure_in_category(idx, height, 0);
+    }
+
+    /// Record an off-screen measurement together with its item category.
+    pub fn measure_in_category(&mut self, idx: usize, height: u16, category: usize) {
         if let Some(heights) = self.heights.as_mut()
             && idx < heights.len()
         {
-            heights.set(idx, height.max(1));
+            heights.set_in_category(idx, height.max(1), category);
         }
     }
 
@@ -1481,10 +1597,12 @@ impl crate::stateful::Stateful for VirtualizedListState {
 /// that are currently visible in the viewport, with optional overscan
 /// for smooth scrolling.
 ///
-/// # Limitations
+/// # Variable heights
 ///
-/// Currently, `VirtualizedList` only supports **fixed height** items.
-/// For variable height virtualization, use the [`Virtualized`] primitive directly.
+/// Use [`Self::variable_heights`] to measure visible items through
+/// [`RenderItem::height`]. Enable [`VirtualizedListState::with_predictor`] to
+/// learn from those measurements; unmeasured items use the category-zero
+/// prediction. Scrolling remains item-aligned.
 #[derive(Debug)]
 pub struct VirtualizedList<'a, T> {
     /// Items to render.
@@ -1577,7 +1695,8 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
             y = area.y,
             w = area.width,
             h = area.height,
-            items = self.items.len()
+            items = self.items.len(),
+            height_mode = ?self.height_mode
         )
         .entered();
 
@@ -1591,6 +1710,11 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
 
         let total_items = self.items.len();
         if total_items == 0 {
+            state.visible_count = 0;
+            state.scroll_offset = 0;
+            if let Some(heights) = state.heights.as_mut() {
+                heights.clear();
+            }
             return;
         }
 
@@ -1806,7 +1930,7 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
         let measure = |heights: &mut VariableHeightsFenwick, idx: usize| {
             let height = self.items[idx].height().max(1);
             if !heights.is_measured(idx) || heights.get(idx) != height {
-                heights.set(idx, height);
+                heights.set_in_category(idx, height, self.items[idx].category());
             }
         };
         // Measure rows from `start` until they fill the viewport; returns how
@@ -3110,6 +3234,46 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(96))]
 
         #[test]
+        fn property_measured_heights_survive_mutations(
+            operations in proptest::collection::vec((0u8..3, 0usize..150, 1u16..32), 1..80)
+        ) {
+            let mut tracker = VariableHeightsFenwick::new(2, 0);
+            let mut expected: Vec<Option<u16>> = Vec::new();
+            for (operation, index, height) in operations {
+                match operation {
+                    0 => {
+                        if index >= expected.len() {
+                            expected.resize(index + 1, None);
+                        }
+                        expected[index] = Some(height);
+                        tracker.set(index, height);
+                    }
+                    1 => {
+                        expected.resize(index, None);
+                        tracker.resize(index);
+                    }
+                    _ => {
+                        expected.drain(..index.min(expected.len()));
+                        tracker.drop_front(index);
+                    }
+                }
+                prop_assert_eq!(tracker.len(), expected.len());
+                prop_assert_eq!(
+                    tracker.unmeasured_count(),
+                    expected.iter().filter(|height| height.is_none()).count()
+                );
+                let mut prefix = 0;
+                for (index, height) in expected.iter().enumerate() {
+                    prop_assert_eq!(tracker.offset_of_item(index), prefix);
+                    prop_assert_eq!(tracker.is_measured(index), height.is_some());
+                    prop_assert_eq!(tracker.get(index), height.unwrap_or(2));
+                    prefix += u32::from(height.unwrap_or(2));
+                }
+                prop_assert_eq!(tracker.total_height(), prefix);
+            }
+        }
+
+        #[test]
         fn property_variable_heights_fenwick_prefix_sums_match_naive(
             heights in proptest::collection::vec(1u16..=32u16, 1..160)
         ) {
@@ -4276,6 +4440,188 @@ mod tests {
         };
         assert_eq!(tracker.len(), 0);
         assert_eq!(tracker.total_height(), 0);
+    }
+
+    #[test]
+    fn measure_updates_fenwick_and_predictor() {
+        let mut list: Virtualized<String> = Virtualized::external(10, 0)
+            .with_variable_heights(3)
+            .with_height_prediction(PredictorConfig {
+                default_height: 3,
+                prior_mean: 3.0,
+                prior_strength: 100.0,
+                ..PredictorConfig::default()
+            });
+        let ItemHeight::VariableFenwick(before) = list.item_height() else {
+            panic!("expected Fenwick heights");
+        };
+        let offset = before.offset_of_item(6);
+        list.measure(5, 7);
+        let ItemHeight::VariableFenwick(after) = list.item_height() else {
+            panic!("expected Fenwick heights");
+        };
+        assert_eq!(after.offset_of_item(6), offset + 4);
+        assert_eq!(list.predictor_stats().unwrap().measurements, 1);
+        assert_eq!(list.predicted_height(0), 3);
+    }
+
+    #[test]
+    fn unmeasured_rows_use_predicted_mean() {
+        let mut list: Virtualized<String> = Virtualized::external(100, 0)
+            .with_variable_heights(1)
+            .with_height_prediction(PredictorConfig::default());
+        for idx in 0..20 {
+            list.measure(idx, 4);
+        }
+        assert_eq!(list.predicted_height(0), 4);
+        assert_eq!(list.predictor_stats().unwrap().measurements, 20);
+        let ItemHeight::VariableFenwick(heights) = list.item_height() else {
+            panic!("expected Fenwick heights");
+        };
+        assert!(!heights.is_measured(99));
+        assert_eq!(heights.get(99), 4);
+        assert_eq!(heights.total_height(), 400);
+        assert_eq!(String::from("uncategorized").category(), 0);
+    }
+
+    #[test]
+    fn measured_bitset_tracks_word_boundaries_resize_and_rebuild() {
+        let mut heights = VariableHeightsFenwick::new(2, 130);
+        for idx in [0, 63, 64, 65, 127, 128, 129] {
+            heights.set(idx, 3);
+        }
+        assert_eq!(heights.unmeasured_count(), 123);
+        assert_eq!(heights.measured.len(), 3);
+        heights.resize(65);
+        assert_eq!(heights.unmeasured_count(), 62);
+        heights.resize(130);
+        for idx in 65..130 {
+            assert!(!heights.is_measured(idx), "stale bit at {idx}");
+            assert_eq!(heights.get(idx), 2);
+        }
+        heights.rebuild(&[4; 65]);
+        assert_eq!(heights.unmeasured_count(), 0);
+        assert!(heights.is_measured(64));
+        assert!(!heights.is_measured(65));
+        heights.resize(66);
+        assert!(!heights.is_measured(65));
+        heights.drop_front(64);
+        assert!(heights.is_measured(0));
+        assert!(!heights.is_measured(1));
+        assert_eq!(heights.get(0), 4);
+        assert_eq!(heights.get(1), 2);
+        heights.clear();
+        assert!(!heights.is_measured(0));
+        assert_eq!(heights.unmeasured_count(), 0);
+        assert!(heights.measured.is_empty());
+    }
+
+    #[test]
+    fn trimming_measured_rows_does_not_retrain_predictor() {
+        let mut heights =
+            VariableHeightsFenwick::new(1, 80).with_predictor(PredictorConfig::default());
+        for idx in 0..70 {
+            heights.set_in_category(idx, 5, 1);
+        }
+        let before = heights.predictor().unwrap().stats();
+        heights.drop_front(65);
+        assert_eq!(heights.predictor().unwrap().stats(), before);
+        assert_eq!(heights.unmeasured_count(), 10);
+        for idx in 0..5 {
+            assert!(heights.is_measured(idx));
+            assert_eq!(heights.get(idx), 5);
+        }
+    }
+
+    #[test]
+    fn variable_list_trains_categories_once_per_measurement() {
+        struct Row {
+            height: u16,
+            category: usize,
+        }
+        impl RenderItem for Row {
+            fn render(&self, area: Rect, frame: &mut Frame, _: bool, _: u16) {
+                for y in area.y..area.bottom() {
+                    frame.buffer.set(area.x, y, Cell::from_char('x'));
+                }
+            }
+
+            fn height(&self) -> u16 {
+                self.height
+            }
+
+            fn category(&self) -> usize {
+                self.category
+            }
+        }
+        let mut items = [
+            Row {
+                height: 3,
+                category: 1,
+            },
+            Row {
+                height: 1,
+                category: 0,
+            },
+        ];
+        let mut state =
+            VirtualizedListState::variable(2).with_predictor(PredictorConfig::default());
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        let area = Rect::new(0, 0, 10, 5);
+        VirtualizedList::new(&items)
+            .variable_heights()
+            .render(area, &mut frame, &mut state);
+        assert_eq!(state.predictor_stats().unwrap().measurements, 2);
+        assert_eq!(state.predictor_stats().unwrap().categories, 2);
+        let predictor = state.heights().unwrap().predictor().unwrap();
+        assert_eq!(predictor.category_observations(1), 1);
+        assert_eq!(predictor.category_observations(0), 1);
+        assert_eq!(state.heights().unwrap().offset_of_item(1), 3);
+        assert_eq!(frame.buffer.get(0, 3).unwrap().content.as_char(), Some('x'));
+        assert_eq!(frame.buffer.get(0, 4).unwrap().content.as_char(), Some(' '));
+        VirtualizedList::new(&items)
+            .variable_heights()
+            .render(area, &mut frame, &mut state);
+        assert_eq!(state.predictor_stats().unwrap().measurements, 2);
+        items[0].height = 4;
+        VirtualizedList::new(&items)
+            .variable_heights()
+            .render(area, &mut frame, &mut state);
+        assert_eq!(state.predictor_stats().unwrap().measurements, 3);
+        assert_eq!(
+            state
+                .heights()
+                .unwrap()
+                .predictor()
+                .unwrap()
+                .category_observations(1),
+            2
+        );
+
+        VirtualizedList::new(&items[..0])
+            .variable_heights()
+            .render(area, &mut frame, &mut state);
+        assert_eq!(state.visible_count(), 0);
+        assert_eq!(state.scroll_offset(), 0);
+        assert!(state.heights().unwrap().is_empty());
+        assert_eq!(state.predictor_stats().unwrap().measurements, 3);
+        VirtualizedList::new(&items)
+            .variable_heights()
+            .render(area, &mut frame, &mut state);
+        assert_eq!(state.predictor_stats().unwrap().measurements, 5);
+
+        let mut owned = Virtualized::new(2)
+            .with_variable_heights(2)
+            .with_height_prediction(PredictorConfig::default());
+        owned.push(Row {
+            height: 4,
+            category: 1,
+        });
+        owned.measure(0, 4);
+        assert_eq!(owned.predictor_stats().unwrap().categories, 2);
+        assert_eq!(owned.predictor_stats().unwrap().measurements, 1);
+        assert!(owned.predicted_height(1) > owned.predicted_height(0));
     }
 
     /// A variable-height `VirtualizedList` lays rows out by
