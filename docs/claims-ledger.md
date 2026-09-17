@@ -10,7 +10,7 @@ observations from `ab07291f` are not evidence that a claim is true today.
 A README/AGENTS change that adds or changes a tracked claim must add or
 update its row in the same commit. Enforcement belongs to the DSR claims
 gate in `bd-g00-root-epic-ewths.5.3`; GitHub Actions is not authorized.
-The checker is not present at ledger creation. Pending rows are not passes.
+The schema validator checks structure only. Pending rows are not passes.
 Neither a referenced path nor an identifier alone proves runtime behavior.
 `last_verified` is `-` until the stated claim has actually been verified.
 
@@ -47,11 +47,14 @@ columns, text anchors and existing owner IDs. All rows remain pending:
 49 pending-code and 98 pending-doc; zero are represented as currently proven.
 Historical WORKING labels below are not current test results.
 
-The existing `frankentui-env-docs` DSR gate passed two checks, but it checks
-environment documentation, not this ledger. The missing `.5.3` checker must
-still extract N rows, establish coverage and reconcile this grammar with its
-help text. The proposed 60% proven threshold is not met. `.5.1` must still
-approve the decision table. This seed does not complete `.5.2`.
+Run `python3 -B scripts/check_readme_claims.py --schema-check` to validate
+the nine-column table, IDs, enums, anchors, proof syntax and dates. Run
+`python3 -B scripts/check_readme_claims.py --self-test` for in-memory malformed
+fixtures. Neither command executes proofs or establishes extracted coverage.
+The full `.5.3` checker must still extract N rows, establish coverage and
+reconcile this grammar with its help text. The proposed 60% proven threshold
+is not met. `.5.1` must still approve the decision table. This seed does not
+complete `.5.2`.
 
 ## Claims
 
