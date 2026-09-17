@@ -169,10 +169,9 @@ build_package() {
     # Keep the exact cdylib checked by the budget gate, before bindgen rewrites it.
     cp "$wasm" "$output/raw/ftui_showcase_wasm.wasm"
     wasm="$output/raw/ftui_showcase_wasm.wasm"
-    if [[ ${FTUI_WASM_MAX_BYTES+x} ]]; then
-      check_artifact "$wasm" "$FTUI_WASM_MAX_BYTES" \
-        > "$output/raw/ftui_showcase_wasm.observation.json"
-    fi
+    # Advisory baseline: 5,143,294 bytes measured with this recipe; ceil(1.25x).
+    check_artifact "$wasm" "${FTUI_WASM_MAX_BYTES-6429118}" \
+      > "$output/raw/ftui_showcase_wasm.observation.json"
   fi
   wasm-bindgen --target web --out-name "$out_name" --out-dir "$output/site/pkg" \
     "$wasm"
@@ -236,6 +235,15 @@ manifest = {
 with (root / 'site/pkg/manifest.json').open('x') as out:
     json.dump(manifest, out, indent=2)
     out.write('\n')
+observation = json.loads((root / 'raw/ftui_showcase_wasm.observation.json').read_text())
+observation.update(
+    source_inputs_sha256=manifest['source_inputs_sha256'],
+    runner_lock_sha256=manifest['runner_lock_sha256'],
+    compiler=(root / 'toolchain.txt').read_text(),
+    wasm_bindgen=(root / 'wasm-bindgen.txt').read_text().strip(),
+)
+with (root / 'raw/ftui_showcase_wasm.provenance.jsonl').open('x') as out:
+    out.write(json.dumps(observation) + '\n')
 for name, sha in files.items():
     print(f'{sha}  pkg/{name}')
 PY
