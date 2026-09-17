@@ -488,7 +488,13 @@ mod tests {
         };
         let is_definition = |line: &str| -> bool {
             let trimmed = line.trim_start();
-            (trimmed.starts_with("pub const ") || trimmed.starts_with("const "))
+            // `pub(crate)` counts too: a target shared with one of the
+            // showcase's screen modules has to be visible to it, and scoping
+            // it to the crate is the narrower choice than making it `pub`
+            // purely to match this check.
+            (trimmed.starts_with("pub const ")
+                || trimmed.starts_with("pub(crate) const ")
+                || trimmed.starts_with("const "))
                 && trimmed.contains(": &str = \"ftui.")
         };
 

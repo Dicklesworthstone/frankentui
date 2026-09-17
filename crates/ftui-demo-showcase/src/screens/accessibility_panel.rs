@@ -115,7 +115,7 @@ impl AccessibilityPanel {
             .collect();
         self.clamp_tree_scroll();
         tracing::debug!(
-            target: "ftui.demo.a11y",
+            target: crate::app::TARGET_ACCESSIBILITY_PANEL,
             nodes = self.tree_nodes,
             focused = ?self.tree_focused,
             frame = self.tree_frame,
@@ -783,7 +783,9 @@ mod tests {
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(80, 8, &mut pool);
         AccessibilityPanel::new().render_tree(&mut frame, Rect::new(0, 0, 80, 8));
-        assert!(ftui_harness::buffer_to_text(&frame.buffer).contains("accessibility tree disabled"));
+        assert!(
+            ftui_harness::buffer_to_text(&frame.buffer).contains("accessibility tree disabled")
+        );
         let mut empty_frame = Frame::new(80, 8, &mut pool);
         panel_with_tree(0, None).render_tree(&mut empty_frame, Rect::new(0, 0, 80, 8));
         assert!(ftui_harness::buffer_to_text(&empty_frame.buffer).contains("nodes=0 focused=-"));
@@ -797,7 +799,11 @@ mod tests {
         panel.view(&mut frame, Rect::new(0, 0, 80, 24));
         let toggles = panel.layout_toggles.get();
         assert_eq!(
-            panel.handle_mouse(MouseEventKind::Down(MouseButton::Left), toggles.x, toggles.y),
+            panel.handle_mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                toggles.x,
+                toggles.y
+            ),
             Some(A11yToggleAction::HighContrast)
         );
         assert_eq!(
