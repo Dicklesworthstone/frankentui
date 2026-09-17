@@ -14,6 +14,8 @@ tools:
     required_checks:
       - python3 -B scripts/check_env_docs.py --self-test
       - python3 -B scripts/check_env_docs.py
+      - python3 -B scripts/check_readme_claims.py --self-test
+      - python3 -B scripts/check_readme_claims.py --schema-check
   frankentui-examples:
     repo: Dicklesworthstone/frankentui
     language: rust
