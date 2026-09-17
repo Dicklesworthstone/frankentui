@@ -264,7 +264,14 @@ fn restore_raw_mode_snapshot() {
     let Ok(tty) = std::fs::File::open("/dev/tty") else {
         return;
     };
-    let _ = nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSAFLUSH, &original);
+    // TCSANOW, not TCSAFLUSH: this runs from a signal handler, and TCSAFLUSH
+    // waits for the output queue to drain before it applies. A terminal that
+    // has stopped reading - flow control, a suspended emulator, a pipe nobody
+    // is draining - would hang the handler here and leave the tty raw, which
+    // is the exact failure this function exists to prevent. Restoring does not
+    // need to drain: queued output is still transmitted, we simply do not
+    // block on it, and discarding unread input would eat the user's typeahead.
+    let _ = nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSANOW, &original);
 }
 
 #[inline]
@@ -402,9 +409,16 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         // Best-effort restore — ignore errors during cleanup.
+        //
+        // TCSANOW, not TCSAFLUSH: TCSAFLUSH blocks until the output queue has
+        // drained, so dropping the guard while anything is still unread on the
+        // other side of the tty deadlocks — the drain needs a reader, and the
+        // reader is usually downstream of this drop returning. Entering raw
+        // mode above keeps TCSAFLUSH, where discarding stale typeahead is the
+        // point; on the way out there is nothing to wait for.
         let _ = nix::sys::termios::tcsetattr(
             &self.tty,
-            nix::sys::termios::SetArg::TCSAFLUSH,
+            nix::sys::termios::SetArg::TCSANOW,
             &self.original_termios,
         );
         clear_raw_mode_snapshot();
