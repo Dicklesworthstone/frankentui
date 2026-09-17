@@ -22,6 +22,20 @@ fail-fast = false
 # not consume the budget. Isolation results remain separate from loaded runs.
 # Every case and its original threshold still runs; functional concurrency
 # tests keep the normal scheduler. This does not isolate other host processes.
+#
+# The entries from the resize-storm binary down were added later, on 2026-09-17,
+# after that suite failed a rotating set of ~12 tests in every workspace run.
+# They assert per-frame budgets and were spending the whole run measuring each
+# other: the file completes in 2.2s because roughly fourteen of them render at
+# once. Running it both ways, interleaved so the host load barely moved (1-min
+# average 31.3 on either side), concurrent failed 4 of 30 and then 12 of 30
+# while serial failed 0 and then 1. Serialising them costs about six seconds.
+#
+# Note the last line of the paragraph above, which is the limit of what this
+# can do: it holds off other *nextest* tests and nothing else. When the host
+# itself is oversubscribed - this machine has been seen at a 1-min load average
+# of 75-128 against 14 cores, from other applications entirely - these budgets
+# will still miss, and no nextest setting can prevent that.
 [[profile.default.overrides]]
 filter = '''
     test(=e2e_focus_change_storm_performance)
@@ -39,6 +53,15 @@ filter = '''
     | test(=inspector::tests::inspector_perf_budget_overlay)
     | test(=perf_full_navigation_sequence_100_nodes)
     | test(=virtualized::tests::test_variable_heights_fenwick_scales_logarithmically)
+    | (binary_id(ftui-harness::resize_storm_e2e) and test(/^e2e_/))
+    | test(=stress_overlay_render_full_mode_200x50)
+    | test(=stress_render_matrix_sizes_and_modes)
+    | test(=stress_view_render_with_many_tasks)
+    | test(=regression_gate_render_latency)
+    | test(=e2e_search_performance_budget)
+    | test(=e2e_filter_performance_budget)
+    | test(=e2e_render_with_highlights_budget)
+    | test(=diff::tests::perf_block_scan_vs_scalar_baseline)
 '''
 threads-required = "num-test-threads"
 
