@@ -557,10 +557,12 @@ impl ShowcaseRunner {
      `<out>/raw/ftui_showcase_wasm.observation.json`, and passes the
      `wasm-bindgen --target web` output plus a Node ordered
      native/WASM screen-registry parity check. A standalone artifact-only
-     check needs only Node.
+     check needs only Node. Without an override, the recipe uses the measured
+     advisory budget of 6,429,118 bytes and always emits the observation plus
+     source/tool-bound `raw/ftui_showcase_wasm.provenance.jsonl`.
    - 2026-09-17 retained evidence (host root@178.18.254.243, source
      /data/retained/ambercardinal-ftui-20260917/source, bundle
-     /data/retained/ambercardinal-ftui-20260917/browser-bundle-final-20260917):
+     /data/retained/ambercardinal-ftui-20260917/browser-bundle-accepted-20260917):
      raw cdylib 5,143,294 bytes, sha256
      e4f8640f324d89bc9ba358e05c10eb92d326d6ee08cd83ac806bc9e8611dd257,
      transformed artifact 4,481,506 bytes, sha256
@@ -575,13 +577,14 @@ impl ShowcaseRunner {
      observation to compiler, bindgen, lock and source hashes; selected Cargo
      fingerprints report `content` and `getrandom_backend="wasm_js"`.
      Source-input SHA256:
-     52ac08ce6f2822d0e91817b74008060e6ba942372f98bd5e9cdc305fcec592b0.
+     8ee9fef89948c3c97e2ac380855f85b564c9e085e9a1c5263f3a1859eebe0481.
      Runner lock SHA256:
      9a54424655eaa8787a3c2f2098f342362191afa10e991ad7ca68266ea145e85f.
-     DSR receipt: `frankentui-browser-ambercardinal/20260917T014816-451292/receipt.json`
-     under `~/.local/state/dsr/quality-logs/`. Its duration fields are invalid;
-     observed outer wall time was 7.14 seconds. Independent acceptance belongs
-     to `.6.26`; no browser pass is inferred from Node registry parity.
+     DSR receipt: `frankentui-wasm-acceptance/20260917T015610-496766/receipt.json`
+     under `~/.local/state/dsr/quality-logs/`: four checks passed with stable
+     source identity (portable crates, web features, showcase dependency shape,
+     corrected packaging). Duration fields are invalid; observed outer wall
+     time was 11.97 seconds. No browser pass is inferred from Node registry parity.
 
 
 3. **Host HTML: `crates/ftui-showcase-wasm/frankentui_showcase_demo.html`**
