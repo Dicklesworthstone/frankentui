@@ -37,11 +37,13 @@ fail-fast = false
 # of 75-128 against 14 cores, from other applications entirely - these budgets
 # will still miss, and no nextest setting can prevent that.
 #
-# The last four entries came from a full workspace run on 2026-09-17 that had
-# the resize-storm and async-tasks guardrail budgets exported, so its failures
-# were not drowned in known noise. They were the only budget tests still
-# failing that were absent from this list, and each one passes when run on its
-# own, which is the signature this list is for.
+# The entries below the diff baseline came from workspace and per-crate runs on
+# 2026-09-17 with the resize-storm and async-tasks guardrail budgets exported,
+# so their failures were not drowned in known noise. Each one passes when run
+# on its own - the signature this list is for. The three editor_perf cases
+# surfaced later than the rest simply because they need more host load to miss:
+# they passed in a default-settings run at a 1-min average of 21 and failed at
+# 46 and again at 52-70.
 #
 # `perf_full_navigation_sequence_100_nodes` above is the one to watch, and it
 # shows how easily this list gets misread. It is already here and still fails
@@ -84,6 +86,9 @@ filter = '''
     | test(=table::tests::render_100k_rows_stays_within_8ms_frame_budget)
     | test(=virtualized::tests::test_render_scales_with_visible_not_total)
     | test(=seed_demo_times_out_when_health_check_never_returns_result)
+    | test(=regression_word_movement_large)
+    | test(=stress_many_insertions)
+    | test(=stress_cursor_movements)
 '''
 threads-required = "num-test-threads"
 
