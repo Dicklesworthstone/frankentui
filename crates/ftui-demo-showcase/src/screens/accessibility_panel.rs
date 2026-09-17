@@ -8,14 +8,14 @@ use std::collections::VecDeque;
 
 use std::cell::Cell;
 
-use ftui_core::event::{Event, MouseButton, MouseEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::{AccessibilityFrame, Cmd};
 use ftui_style::{Style, StyleFlags};
-use ftui_text::{Line, Span, Text};
+use ftui_text::{Line, Span, Text, WrapMode};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -38,8 +38,6 @@ struct A11yEventEntry {
 
 /// Most recent screen-reader announcements kept for display.
 const MAX_ANNOUNCEMENTS: usize = 4;
-/// Leading tree-dump lines kept for display.
-const MAX_TREE_LINES: usize = 12;
 
 #[derive(Clone)]
 struct AnnouncementEntry {
@@ -58,8 +56,12 @@ pub struct AccessibilityPanel {
     tree_nodes: usize,
     /// Frame index the tree summary refers to.
     tree_frame: u64,
-    /// Leading lines of the tree dump (reading order, indented by depth).
-    tree_lines: Vec<String>,
+    /// Reading-order dump, paired with node IDs for focus highlighting.
+    tree_lines: Vec<(u64, String)>,
+    tree_received: bool,
+    tree_focused: Option<u64>,
+    tree_scroll: Cell<usize>,
+    layout_tree: Cell<Rect>,
     /// Latest screen-reader announcements delivered by the runtime.
     announcements: VecDeque<AnnouncementEntry>,
     layout_toggles: Cell<Rect>,
@@ -82,6 +84,10 @@ impl AccessibilityPanel {
             tree_nodes: 0,
             tree_frame: 0,
             tree_lines: Vec::new(),
+            tree_received: false,
+            tree_focused: None,
+            tree_scroll: Cell::new(0),
+            layout_tree: Cell::new(Rect::default()),
             announcements: VecDeque::with_capacity(MAX_ANNOUNCEMENTS),
             layout_toggles: Cell::new(Rect::default()),
             layout_wcag: Cell::new(Rect::default()),
@@ -94,12 +100,27 @@ impl AccessibilityPanel {
     pub fn record_accessibility(&mut self, a11y: &AccessibilityFrame<'_>) {
         self.tree_nodes = a11y.tree.node_count();
         self.tree_frame = a11y.frame_idx;
+        self.tree_received = true;
+        self.tree_focused = a11y.tree.focused_id();
         self.tree_lines = a11y
-            .dump()
-            .lines()
-            .take(MAX_TREE_LINES)
-            .map(str::to_owned)
+            .order
+            .iter()
+            .flat_map(|&id| {
+                a11y.tree
+                    .dump_text(&[id])
+                    .lines()
+                    .map(|line| (id, line.to_owned()))
+                    .collect::<Vec<_>>()
+            })
             .collect();
+        self.clamp_tree_scroll();
+        tracing::debug!(
+            target: "ftui.demo.a11y",
+            nodes = self.tree_nodes,
+            focused = ?self.tree_focused,
+            frame = self.tree_frame,
+            "accessibility tree received"
+        );
         for announcement in a11y.announcements {
             if self.announcements.len() == MAX_ANNOUNCEMENTS {
                 self.announcements.pop_front();
@@ -252,6 +273,7 @@ impl AccessibilityPanel {
             .title_alignment(Alignment::Center)
             .style(Style::new().fg(theme::screen_accent::ADVANCED));
         let inner = block.inner(area);
+        self.layout_toggles.set(inner);
         block.render(area, frame);
 
         if inner.is_empty() {
@@ -419,21 +441,6 @@ impl AccessibilityPanel {
         }
 
         let mut lines = Vec::new();
-        if self.tree_nodes > 0 {
-            lines.push(Line::from_spans([
-                Span::styled("Tree ", theme::muted()),
-                Span::styled(
-                    format!("{} nodes @ frame {}", self.tree_nodes, self.tree_frame),
-                    theme::body(),
-                ),
-            ]));
-            for line in &self.tree_lines {
-                lines.push(Line::from_spans([Span::styled(
-                    format!("  {line}"),
-                    theme::code(),
-                )]));
-            }
-        }
         for entry in self.announcements.iter().rev() {
             lines.push(Line::from_spans([
                 Span::styled(format!("[{:>4}] ", entry.frame), theme::muted()),
@@ -471,6 +478,79 @@ impl AccessibilityPanel {
 
         Paragraph::new(Text::from_lines(lines)).render(inner, frame);
     }
+
+    fn clamp_tree_scroll(&self) {
+        let limit = self
+            .tree_lines
+            .len()
+            .saturating_sub(usize::from(self.layout_tree.get().height));
+        self.tree_scroll.set(self.tree_scroll.get().min(limit));
+    }
+
+    fn render_tree(&self, frame: &mut Frame, area: Rect) {
+        self.layout_tree.set(Rect::default());
+        if area.is_empty() {
+            return;
+        }
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Tree · previous frame ")
+            .style(Style::new().fg(theme::screen_accent::ADVANCED));
+        let inner = block.inner(area);
+        block.render(area, frame);
+        if inner.is_empty() {
+            return;
+        }
+        if !self.tree_received {
+            Paragraph::new("accessibility tree disabled (ProgramConfig::with_accessibility)")
+                .style(theme::muted())
+                .wrap(WrapMode::Word)
+                .render(inner, frame);
+            return;
+        }
+        let focused = self
+            .tree_focused
+            .map_or_else(|| "-".to_owned(), |id| id.to_string());
+        Paragraph::new(format!("nodes={} focused={focused}", self.tree_nodes))
+            .style(theme::muted())
+            .render(Rect::new(inner.x, inner.y, inner.width, 1), frame);
+        let body = Rect::new(
+            inner.x,
+            inner.y.saturating_add(1),
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+        self.layout_tree.set(body);
+        self.clamp_tree_scroll();
+        let lines = self
+            .tree_lines
+            .iter()
+            .skip(self.tree_scroll.get())
+            .take(usize::from(body.height))
+            .map(|(id, text)| {
+                let style = if Some(*id) == self.tree_focused {
+                    theme::body().attrs(StyleFlags::BOLD | StyleFlags::REVERSE)
+                } else {
+                    theme::code()
+                };
+                Line::from_spans([Span::styled(text.clone(), style)])
+            })
+            .collect::<Vec<_>>();
+        let paragraph = Paragraph::new(Text::from_lines(lines));
+        paragraph.render(body, frame);
+        if let Some(builder) = frame.a11y.as_deref_mut()
+            && let Some(metadata) =
+                ftui_a11y::Accessible::accessibility_nodes(&paragraph, body).first()
+            && let Some(node) = builder.node_mut(metadata.id)
+        {
+            // Keep the displayed text available to screen readers as a
+            // description, without recursively quoting this inspector's own
+            // previous dump in the next frame's node name.
+            node.description = node.name.take();
+            node.name = Some("Accessibility tree nodes".to_owned());
+        }
+    }
 }
 
 /// Toggle action that the app dispatches (accessibility events are app-level).
@@ -505,7 +585,32 @@ impl Screen for AccessibilityPanel {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Key(key) = event
+            && key.kind != KeyEventKind::Release
+        {
+            let page = usize::from(self.layout_tree.get().height).max(1);
+            let offset = self.tree_scroll.get();
+            self.tree_scroll.set(match key.code {
+                KeyCode::Up => offset.saturating_sub(1),
+                KeyCode::Down => offset.saturating_add(1),
+                KeyCode::PageUp => offset.saturating_sub(page),
+                KeyCode::PageDown => offset.saturating_add(page),
+                KeyCode::Home => 0,
+                KeyCode::End => self.tree_lines.len(),
+                _ => offset,
+            });
+            self.clamp_tree_scroll();
+        }
         if let Event::Mouse(me) = event {
+            if self.layout_tree.get().contains(me.x, me.y) {
+                let offset = self.tree_scroll.get();
+                self.tree_scroll.set(match me.kind {
+                    MouseEventKind::ScrollUp => offset.saturating_sub(3),
+                    MouseEventKind::ScrollDown => offset.saturating_add(3),
+                    _ => offset,
+                });
+                self.clamp_tree_scroll();
+            }
             // Mouse events are checked via handle_mouse() at the app level
             let _ = self.handle_mouse(me.kind, me.x, me.y);
         }
@@ -513,45 +618,68 @@ impl Screen for AccessibilityPanel {
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
+        self.layout_toggles.set(Rect::default());
+        self.layout_wcag.set(Rect::default());
+        self.layout_tree.set(Rect::default());
         if area.is_empty() {
             return;
         }
 
+        let overview_height = if area.height >= 24 { 7 } else { 3 };
         let rows = Flex::vertical()
-            .constraints([Constraint::Fixed(7), Constraint::Min(1)])
+            .constraints([Constraint::Fixed(overview_height), Constraint::Min(1)])
             .split(area);
 
         self.render_overview(frame, rows[0]);
 
-        let (left_area, right_area) = if rows[1].width >= 90 {
+        if rows[1].width >= 78 && rows[1].height >= 8 {
             let cols = Flex::horizontal()
-                .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+                .constraints([
+                    Constraint::Percentage(30.0),
+                    Constraint::Percentage(40.0),
+                    Constraint::Percentage(30.0),
+                ])
                 .split(rows[1]);
-            (cols[0], cols[1])
+            let left_rows = Flex::vertical()
+                .constraints([Constraint::Fixed(6), Constraint::Min(1)])
+                .split(cols[0]);
+            self.layout_toggles.set(left_rows[0]);
+            self.render_toggles(frame, left_rows[0]);
+            self.render_preview(frame, left_rows[1]);
+            self.render_tree(frame, cols[1]);
+
+            let right_rows = Flex::vertical()
+                .constraints([Constraint::Percentage(55.0), Constraint::Percentage(45.0)])
+                .split(cols[2]);
+            self.layout_wcag.set(right_rows[0]);
+            self.render_wcag(frame, right_rows[0]);
+            self.render_telemetry(frame, right_rows[1]);
         } else {
+            let telemetry_height = if rows[1].height >= 16 { 5 } else { 0 };
             let stack = Flex::vertical()
-                .constraints([Constraint::Percentage(52.0), Constraint::Percentage(48.0)])
+                .constraints([
+                    Constraint::Fixed(5),
+                    Constraint::Min(1),
+                    Constraint::Fixed(telemetry_height),
+                ])
                 .split(rows[1]);
-            (stack[0], stack[1])
-        };
-
-        let left_rows = Flex::vertical()
-            .constraints([Constraint::Fixed(8), Constraint::Min(1)])
-            .split(left_area);
-        self.layout_toggles.set(left_rows[0]);
-        self.render_toggles(frame, left_rows[0]);
-        self.render_preview(frame, left_rows[1]);
-
-        let right_rows = Flex::vertical()
-            .constraints([Constraint::Fixed(10), Constraint::Min(1)])
-            .split(right_area);
-        self.layout_wcag.set(right_rows[0]);
-        self.render_wcag(frame, right_rows[0]);
-        self.render_telemetry(frame, right_rows[1]);
+            self.layout_toggles.set(stack[0]);
+            self.render_toggles(frame, stack[0]);
+            self.render_tree(frame, stack[1]);
+            self.render_telemetry(frame, stack[2]);
+        }
     }
 
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
+            HelpEntry {
+                key: "↑/↓ PgUp/PgDn",
+                action: "Scroll accessibility tree",
+            },
+            HelpEntry {
+                key: "Home/End",
+                action: "First/last tree node",
+            },
             HelpEntry {
                 key: "h",
                 action: "Toggle high contrast",
@@ -591,7 +719,130 @@ impl Screen for AccessibilityPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_core::event::{MouseButton, MouseEventKind};
+    use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+    use ftui_a11y::tree::A11yTreeBuilder;
+    use ftui_core::event::{KeyEvent, MouseButton, MouseEventKind};
+    use ftui_render::grapheme_pool::GraphemePool;
+
+    fn panel_with_tree(count: u64, focused: Option<u64>) -> AccessibilityPanel {
+        let mut builder = A11yTreeBuilder::new();
+        for id in 0..count {
+            let mut node = A11yNodeInfo::new(id, A11yRole::Button, Rect::new(0, 0, 4, 1));
+            node.name = Some(format!("Node {id}"));
+            builder.add_node(node);
+        }
+        builder.set_focused(focused);
+        let tree = builder.build();
+        let order: Vec<_> = (0..count).collect();
+        let mut panel = AccessibilityPanel::new();
+        panel.record_accessibility(&AccessibilityFrame {
+            frame_idx: 7,
+            tree: &tree,
+            order: &order,
+            announcements: &[],
+            dropped: 0,
+        });
+        panel
+    }
+
+    #[test]
+    fn tree_column_scrolls_and_clamps() {
+        let mut panel = panel_with_tree(30, Some(25));
+        assert_eq!(panel.tree_lines.len(), 30, "do not truncate the live tree");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 13, &mut pool);
+        panel.render_tree(&mut frame, Rect::new(0, 0, 60, 13));
+        assert_eq!(panel.layout_tree.get().height, 10);
+        for _ in 0..3 {
+            panel.update(&Event::Key(KeyEvent::new(KeyCode::PageDown)));
+        }
+        assert_eq!(panel.tree_scroll.get(), 20);
+        panel.render_tree(&mut frame, Rect::new(0, 0, 60, 13));
+        let text = ftui_harness::buffer_to_text(&frame.buffer);
+        assert!(text.contains("nodes=30 focused=25"));
+        assert!(text.contains("Node 29"));
+        assert!(!text.contains("Node 0\""));
+        assert!(
+            frame
+                .buffer
+                .get(1, 7)
+                .unwrap()
+                .attrs
+                .has_flag(ftui_render::cell::StyleFlags::REVERSE)
+        );
+        panel.update(&Event::Key(KeyEvent::new(KeyCode::Home)));
+        assert_eq!(panel.tree_scroll.get(), 0);
+        panel.update(&Event::Key(
+            KeyEvent::new(KeyCode::PageDown).with_kind(KeyEventKind::Release),
+        ));
+        assert_eq!(panel.tree_scroll.get(), 0);
+    }
+
+    #[test]
+    fn disabled_tree_shows_hint_and_empty_tree_is_distinct() {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 8, &mut pool);
+        AccessibilityPanel::new().render_tree(&mut frame, Rect::new(0, 0, 80, 8));
+        assert!(ftui_harness::buffer_to_text(&frame.buffer).contains("accessibility tree disabled"));
+        let mut empty_frame = Frame::new(80, 8, &mut pool);
+        panel_with_tree(0, None).render_tree(&mut empty_frame, Rect::new(0, 0, 80, 8));
+        assert!(ftui_harness::buffer_to_text(&empty_frame.buffer).contains("nodes=0 focused=-"));
+    }
+
+    #[test]
+    fn tree_resize_clamps_scroll_and_keeps_toggles_clickable() {
+        let mut panel = panel_with_tree(30, None);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        panel.view(&mut frame, Rect::new(0, 0, 80, 24));
+        let toggles = panel.layout_toggles.get();
+        assert_eq!(
+            panel.handle_mouse(MouseEventKind::Down(MouseButton::Left), toggles.x, toggles.y),
+            Some(A11yToggleAction::HighContrast)
+        );
+        assert_eq!(
+            panel.handle_mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                toggles.x,
+                toggles.y - 1,
+            ),
+            None,
+            "the border must not activate a toggle"
+        );
+        panel.update(&Event::Key(KeyEvent::new(KeyCode::End)));
+        assert!(panel.tree_scroll.get() > 0);
+        let mut taller = Frame::new(80, 50, &mut pool);
+        panel.view(&mut taller, Rect::new(0, 0, 80, 50));
+        assert_eq!(panel.tree_scroll.get(), 0, "all nodes now fit");
+        for (width, height) in [(40, 10), (1, 1), (0, 0)] {
+            let mut small = Frame::new(width, height, &mut pool);
+            panel.view(&mut small, Rect::new(0, 0, width, height));
+        }
+        assert!(panel.layout_toggles.get().is_empty());
+        assert!(panel.layout_tree.get().is_empty());
+    }
+
+    #[test]
+    fn tree_inspector_keeps_readable_details_out_of_its_own_node_name() {
+        let panel = panel_with_tree(3, Some(1));
+        let mut builder = A11yTreeBuilder::new();
+        let mut pool = GraphemePool::new();
+        let order = {
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            panel.view(&mut frame, Rect::new(0, 0, 80, 24));
+            frame.finish_a11y();
+            frame.take_a11y_order()
+        };
+        let tree = builder.build();
+        let node = order
+            .iter()
+            .filter_map(|id| tree.node(*id))
+            .find(|node| node.name.as_deref() == Some("Accessibility tree nodes"))
+            .expect("the tree inspector must itself be accessible");
+        assert!(node.description.as_deref().unwrap().contains("Node 0"));
+        assert!(!tree.dump_text(&order).contains("Button \"Node 0\""));
+    }
 
     #[test]
     fn click_toggles_high_contrast() {

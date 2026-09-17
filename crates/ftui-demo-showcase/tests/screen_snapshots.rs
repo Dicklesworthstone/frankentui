@@ -2428,7 +2428,15 @@ fn explainability_cockpit_bundled_80x24() {
 
 #[test]
 fn explainability_cockpit_populated_120x40() {
-    let path = "/tmp/ftui_explainability_cockpit.jsonl";
+    use std::io::Write;
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("fixture clock is after the Unix epoch")
+        .as_nanos();
+    // Keep the displayed path short enough to fit on the header row, even when
+    // the runner's TMPDIR is a deeply nested retained-artifact directory.
+    let path = format!("/tmp/ftui_cockpit_{}_{unique}.jsonl", std::process::id());
     let sample = [
         r#"{"schema_version":"ftui-evidence-v1","event":"diff_decision","run_id":"diff-1","event_idx":4,"screen_mode":"alt","cols":80,"rows":24,"strategy":"dirty","posterior_mean":0.33,"posterior_variance":0.12,"alpha":1.2,"beta":2.3,"guard_reason":"","fallback_reason":"","hysteresis_applied":true,"hysteresis_ratio":1.1,"dirty_rows":5,"total_rows":24,"dirty_tile_ratio":0.07,"dirty_cell_ratio":0.08}"#,
         r#"{"schema_version":"ftui-evidence-v1","event":"decision_evidence","run_id":"resize-1","event_idx":7,"screen_mode":"alt","cols":80,"rows":24,"log_bayes_factor":1.23,"regime_contribution":0.5,"timing_contribution":0.3,"rate_contribution":0.2,"explanation":"burst regime"}"#,
@@ -2437,16 +2445,43 @@ fn explainability_cockpit_populated_120x40() {
     ]
     .join("\n");
 
-    fs::write(path, sample).expect("write explainability evidence fixture");
+    let mut fixture = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .expect("create unique retained explainability evidence fixture");
+    fixture
+        .write_all(sample.as_bytes())
+        .expect("write explainability evidence fixture");
+    drop(fixture);
 
     let screen =
         ftui_demo_showcase::screens::explainability_cockpit::ExplainabilityCockpit::with_evidence_path(
-            Some(path.into()),
+            Some(path.clone().into()),
         );
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);
     let area = Rect::new(0, 0, 120, 40);
     screen.view(&mut frame, area);
+    let rendered = buffer_to_text(&frame.buffer);
+    assert_eq!(
+        rendered.lines().next().unwrap().trim_end(),
+        format!("Explainability Cockpit · source: {path}"),
+        "the rendered header must identify the actual retained evidence file"
+    );
+    // Normalize only the already-asserted volatile pathname. Every populated
+    // evidence panel and the loaded-entry count still use the original golden.
+    let canonical_header =
+        "Explainability Cockpit · source: /tmp/ftui_explainability_cockpit.jsonl";
+    for (x, ch) in canonical_header
+        .chars()
+        .chain(std::iter::repeat(' '))
+        .take(120)
+        .enumerate()
+    {
+        frame.buffer.get_mut(x as u16, 0).unwrap().content =
+            ftui_render::cell::CellContent::from_char(ch);
+    }
     assert_snapshot!("explainability_cockpit_populated_120x40", &frame.buffer);
 }
 

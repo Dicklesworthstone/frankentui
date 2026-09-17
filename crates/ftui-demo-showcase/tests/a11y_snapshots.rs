@@ -635,9 +635,8 @@ fn a11y_high_contrast_large_text_forms_input_120x40() {
 // ============================================================================
 // Accessibility tree dump (G09): the dashboard's tree, built the way the
 // runtime builds it (widgets push nodes into the frame, `finish_a11y` links
-// scopes and derives focus), dumped in reading order. Asserted structurally
-// rather than against a golden file so the proof does not depend on the
-// dashboard's exact widget inventory.
+// scopes and derives focus), dumped in reading order. Structural assertions
+// reject empty trees; the golden also detects lost widget metadata.
 
 #[test]
 fn a11y_tree_dump_dashboard_80x24() {
@@ -690,6 +689,57 @@ fn a11y_tree_dump_dashboard_80x24() {
             .any(|title| dump.contains(title)),
         "dashboard block titles must appear in the dump:\n{dump}"
     );
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots/dashboard_a11y_tree_80x24.snap");
+    if std::env::var("BLESS").is_ok_and(|value| value == "1") {
+        std::fs::write(&path, &dump).expect("write dashboard accessibility tree snapshot");
+    } else {
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read dashboard accessibility tree snapshot"),
+            dump,
+            "dashboard accessibility tree changed"
+        );
+    }
+}
+
+#[test]
+fn accessibility_panel_tree_80x24() {
+    use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+    use ftui_a11y::tree::A11yTreeBuilder;
+    use ftui_runtime::AccessibilityFrame;
+
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
+    let mut builder = A11yTreeBuilder::new();
+    builder.add_node(
+        A11yNodeInfo::new(1, A11yRole::Group, Rect::new(0, 0, 80, 24))
+            .with_name("Dashboard")
+            .with_children(vec![2]),
+    );
+    builder.add_node(
+        A11yNodeInfo::new(2, A11yRole::Button, Rect::new(1, 1, 10, 1))
+            .with_name("Refresh")
+            .with_parent(1),
+    );
+    builder.set_root(1);
+    builder.set_focused(Some(2));
+    let tree = builder.build();
+    let mut screen = ftui_demo_showcase::screens::accessibility_panel::AccessibilityPanel::new();
+    screen.record_accessibility(&AccessibilityFrame {
+        frame_idx: 7,
+        tree: &tree,
+        order: &[1, 2],
+        announcements: &[],
+        dropped: 0,
+    });
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(text.contains("nodes=2 focused=2"));
+    assert!(text.contains("  Button \"Refresh\""));
+    assert!(text.contains("High Contrast"));
+    assert!(text.contains("A11y Telemetry"));
+    assert_snapshot!("accessibility_panel_tree_80x24", &frame.buffer);
 }
 
 // Per-Screen Individual A11y Tests (Dashboard screen variants)

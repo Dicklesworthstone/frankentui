@@ -174,9 +174,6 @@ fn main() -> ExitCode {
         screen_mode,
         mouse_capture_policy: mouse_policy,
         budget,
-        // The accessibility panel mirrors the runtime's per-frame tree and
-        // screen-reader announcements.
-        accessibility: Some(ScreenReaderPolicy::default()),
         ..ProgramConfig::default()
     };
     let config = apply_evidence_config(config);
@@ -197,6 +194,9 @@ fn run_program<M: ftui_runtime::Model>(model: M, config: ProgramConfig) -> std::
 where
     M::Message: Send + 'static,
 {
+    // Every showcase entry point collects the same accessibility tree. The
+    // main model delivers it and its announcements to the accessibility panel.
+    let config = config.with_accessibility(ScreenReaderPolicy::default());
     // Unix: prefer the native ftui-tty backend when available.
     #[cfg(all(unix, feature = "native-backend"))]
     {
