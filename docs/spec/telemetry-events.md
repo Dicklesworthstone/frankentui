@@ -344,6 +344,7 @@ Required fields:
 - `tile_scan_cells_estimate`, `sat_build_cost_est`
 - `skipped_tile_rows` (tile rows retired wholesale by the SAT row prefilter), `sat_queries` (SAT row-sum queries made, one per tile row)
 - `bayesian_enabled`, `dirty_rows_enabled`
+- `regime` (`sparse` | `dense` | `redraw`)
 
 Runtime defaults (`RuntimeDiffConfig`):
 - `bayesian_enabled = true`
@@ -354,13 +355,35 @@ Runtime defaults (`RuntimeDiffConfig`):
 Example:
 
 ```json
-{"event":"diff_decision","run_id":"diff-4242","event_idx":12,"strategy":"DirtyRows","cost_full":4800.000000,"cost_dirty":1200.000000,"cost_redraw":0.000000,"posterior_mean":0.036000,"posterior_variance":0.000340,"alpha":3.500000,"beta":92.500000,"dirty_rows":10,"total_rows":40,"total_cells":4800,"span_count":6,"span_coverage_pct":12.500000,"max_span_len":18,"fallback_reason":"none","scan_cost_estimate":600,"tile_used":true,"tile_fallback":"none","tile_w":16,"tile_h":16,"tile_size":256,"tiles_x":5,"tiles_y":3,"dirty_tiles":2,"dirty_tile_count":2,"dirty_cells":40,"dirty_tile_ratio":0.133333,"dirty_cell_ratio":0.008333,"scanned_tiles":2,"skipped_tiles":13,"skipped_tile_count":13,"tile_scan_cells_estimate":512,"sat_build_cost_est":4800,"bayesian_enabled":true,"dirty_rows_enabled":true}
+{"event":"diff_decision","run_id":"diff-4242","event_idx":12,"strategy":"DirtyRows","cost_full":4800.000000,"cost_dirty":1200.000000,"cost_redraw":0.000000,"posterior_mean":0.036000,"posterior_variance":0.000340,"alpha":3.500000,"beta":92.500000,"dirty_rows":10,"total_rows":40,"total_cells":4800,"span_count":6,"span_coverage_pct":12.500000,"max_span_len":18,"fallback_reason":"none","scan_cost_estimate":600,"tile_used":true,"tile_fallback":"none","tile_w":16,"tile_h":16,"tile_size":256,"tiles_x":5,"tiles_y":3,"dirty_tiles":2,"dirty_tile_count":2,"dirty_cells":40,"dirty_tile_ratio":0.133333,"dirty_cell_ratio":0.008333,"scanned_tiles":2,"skipped_tiles":13,"skipped_tile_count":13,"tile_scan_cells_estimate":512,"sat_build_cost_est":4800,"bayesian_enabled":true,"dirty_rows_enabled":true,"regime":"sparse"}
 ```
 
 Notes:
 - `span_coverage_pct` is a 0–100 percentage of total cells covered by spans (including full rows).
 - `fallback_reason` values: `none`, `no_spans`, `no_dirty_rows`, `span_overflow`, `full_strategy`, `full_redraw`.
 - `scan_cost_estimate` reflects the cells scanned for posterior updates.
+
+#### Event: `diff_regime_transition`
+
+Required fields:
+- `schema_version` (string)
+- `run_id` (string)
+- `event_idx` (u64)
+- `from` (`sparse` | `dense` | `redraw`)
+- `to` (`sparse` | `dense` | `redraw`)
+- `frames_in_previous` (u64)
+- `strategy` (`Full` | `DirtyRows` | `FullRedraw`)
+- `dirty_cell_ratio` (f64)
+
+Example:
+
+```json
+{"schema_version":"ftui-evidence-v1","event":"diff_regime_transition","run_id":"diff-4242","event_idx":13,"from":"sparse","to":"redraw","frames_in_previous":12,"strategy":"FullRedraw","dirty_cell_ratio":0.850000}
+```
+
+Notes:
+- Emitted when `DiffRegime` transitions between sparse, dense, and redraw.
+- `frames_in_previous` records how many consecutive frames were spent in the previous regime before this transition.
 
 #### Event: `config` (resize coalescer)
 

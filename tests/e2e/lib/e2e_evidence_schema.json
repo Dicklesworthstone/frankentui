@@ -279,7 +279,7 @@
         "tile_scan_cells_estimate", "sat_build_cost_est", "skipped_tile_rows",
         "sat_queries", "bayesian_enabled", "dirty_rows_enabled"
       ],
-      "optional": [],
+      "optional": ["regime"],
       "types": {
         "strategy": "string",
         "cost_full": "number",
@@ -320,7 +320,22 @@
         "skipped_tile_rows": "integer",
         "sat_queries": "integer",
         "bayesian_enabled": "boolean",
-        "dirty_rows_enabled": "boolean"
+        "dirty_rows_enabled": "boolean",
+        "regime": "string"
+      }
+    },
+    "diff_regime_transition": {
+      "required": [
+        "schema_version", "run_id", "event_idx", "from", "to",
+        "frames_in_previous", "strategy", "dirty_cell_ratio"
+      ],
+      "optional": [],
+      "types": {
+        "from": "string",
+        "to": "string",
+        "frames_in_previous": "integer",
+        "strategy": "string",
+        "dirty_cell_ratio": "number"
       }
     },
     "certificate_decision": {

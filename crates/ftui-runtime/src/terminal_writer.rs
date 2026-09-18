@@ -117,7 +117,9 @@ use ftui_core::terminal_session::terminal_output_lock;
 use ftui_render::buffer::{Buffer, DirtySpanConfig, DirtySpanStats};
 use ftui_render::counting_writer::CountingWriter;
 use ftui_render::diff::{BufferDiff, TileDiffConfig, TileDiffFallback, TileDiffStats};
-use ftui_render::diff_strategy::{DiffStrategy, DiffStrategyConfig, DiffStrategySelector};
+use ftui_render::diff_strategy::{
+    DiffRegime, DiffStrategy, DiffStrategyConfig, DiffStrategySelector,
+};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
 use ftui_render::presenter::Presenter;
@@ -657,6 +659,10 @@ pub struct TerminalWriter<W: Write> {
     timing_enabled: bool,
     /// Last present timings (diff compute duration).
     last_present_timings: Option<PresentTimings>,
+    /// Current diff regime classification.
+    diff_regime: DiffRegime,
+    /// Number of consecutive frames spent in the current diff regime.
+    diff_regime_frames: u64,
 }
 
 impl<W: Write> TerminalWriter<W> {
@@ -800,6 +806,8 @@ impl<W: Write> TerminalWriter<W> {
             render_trace: None,
             timing_enabled: false,
             last_present_timings: None,
+            diff_regime: DiffRegime::Sparse,
+            diff_regime_frames: 0,
         }
     }
 
@@ -943,6 +951,18 @@ impl<W: Write> TerminalWriter<W> {
     /// Get the last diff strategy selected during present, if any.
     pub fn last_diff_strategy(&self) -> Option<DiffStrategy> {
         self.last_diff_strategy
+    }
+
+    /// Current diff regime classification.
+    #[must_use]
+    pub fn diff_regime(&self) -> DiffRegime {
+        self.diff_regime
+    }
+
+    /// Number of consecutive frames spent in the current diff regime.
+    #[must_use]
+    pub fn diff_regime_frames(&self) -> u64 {
+        self.diff_regime_frames
     }
 
     /// The explicit render certificate behind the most recent diff decision
@@ -1813,7 +1833,12 @@ impl<W: Write> TerminalWriter<W> {
                     stats.sat_queries,
                 )
             } else {
-                (0, 0, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0, 0)
+                let cell_ratio = if evidence.total_cells > 0 {
+                    self.diff_scratch.len() as f64 / evidence.total_cells as f64
+                } else {
+                    0.0
+                };
+                (0, 0, 0, 0, 0, 0, 0.0, cell_ratio, 0, 0, 0, 0, 0, 0)
             };
             let tile_size = tile_w as usize * tile_h as usize;
             let dirty_tile_count = dirty_tiles;
@@ -1836,6 +1861,8 @@ impl<W: Write> TerminalWriter<W> {
                 strategy_used: strategy,
             }));
 
+            let current_regime = DiffRegime::classify(strategy, dirty_cell_ratio);
+
             trace!(
                 strategy = %strategy,
                 selected = %evidence.strategy,
@@ -1847,11 +1874,12 @@ impl<W: Write> TerminalWriter<W> {
                 total_cells = evidence.total_cells,
                 bayesian_enabled = self.diff_config.bayesian_enabled,
                 dirty_rows_enabled = self.diff_config.dirty_rows_enabled,
+                regime = %current_regime.as_str(),
                 "diff strategy selected"
             );
             if let Some(ref sink) = self.evidence_sink {
                 let line = format!(
-                    r#"{{"schema_version":"{}","event":"diff_decision","run_id":"{}","event_idx":{},"screen_mode":"{}","cols":{},"rows":{},"strategy":"{}","cost_full":{:.6},"cost_dirty":{:.6},"cost_redraw":{:.6},"posterior_mean":{:.6},"posterior_variance":{:.6},"alpha":{:.6},"beta":{:.6},"guard_reason":"{}","hysteresis_applied":{},"hysteresis_ratio":{:.6},"dirty_rows":{},"total_rows":{},"total_cells":{},"span_count":{},"span_coverage_pct":{:.6},"max_span_len":{},"fallback_reason":"{}","scan_cost_estimate":{},"tile_used":{},"tile_fallback":"{}","tile_w":{},"tile_h":{},"tile_size":{},"tiles_x":{},"tiles_y":{},"dirty_tiles":{},"dirty_tile_count":{},"dirty_cells":{},"dirty_tile_ratio":{:.6},"dirty_cell_ratio":{:.6},"scanned_tiles":{},"skipped_tiles":{},"skipped_tile_count":{},"tile_scan_cells_estimate":{},"sat_build_cost_est":{},"skipped_tile_rows":{},"sat_queries":{},"bayesian_enabled":{},"dirty_rows_enabled":{}}}"#,
+                    r#"{{"schema_version":"{}","event":"diff_decision","run_id":"{}","event_idx":{},"screen_mode":"{}","cols":{},"rows":{},"strategy":"{}","cost_full":{:.6},"cost_dirty":{:.6},"cost_redraw":{:.6},"posterior_mean":{:.6},"posterior_variance":{:.6},"alpha":{:.6},"beta":{:.6},"guard_reason":"{}","hysteresis_applied":{},"hysteresis_ratio":{:.6},"dirty_rows":{},"total_rows":{},"total_cells":{},"span_count":{},"span_coverage_pct":{:.6},"max_span_len":{},"fallback_reason":"{}","scan_cost_estimate":{},"tile_used":{},"tile_fallback":"{}","tile_w":{},"tile_h":{},"tile_size":{},"tiles_x":{},"tiles_y":{},"dirty_tiles":{},"dirty_tile_count":{},"dirty_cells":{},"dirty_tile_ratio":{:.6},"dirty_cell_ratio":{:.6},"scanned_tiles":{},"skipped_tiles":{},"skipped_tile_count":{},"tile_scan_cells_estimate":{},"sat_build_cost_est":{},"skipped_tile_rows":{},"sat_queries":{},"bayesian_enabled":{},"dirty_rows_enabled":{},"regime":"{}"}}"#,
                     schema_version,
                     run_id,
                     event_idx,
@@ -1898,8 +1926,32 @@ impl<W: Write> TerminalWriter<W> {
                     sat_queries,
                     self.diff_config.bayesian_enabled,
                     self.diff_config.dirty_rows_enabled,
+                    current_regime.as_str(),
                 );
                 let _ = sink.write_jsonl(&line);
+            }
+
+            if current_regime != self.diff_regime {
+                let transition_event_idx = self.diff_evidence_idx;
+                self.diff_evidence_idx = self.diff_evidence_idx.saturating_add(1);
+                if let Some(ref sink) = self.evidence_sink {
+                    let transition_line = format!(
+                        r#"{{"schema_version":"{}","event":"diff_regime_transition","run_id":"{}","event_idx":{},"from":"{}","to":"{}","frames_in_previous":{},"strategy":"{}","dirty_cell_ratio":{:.6}}}"#,
+                        schema_version,
+                        run_id,
+                        transition_event_idx,
+                        self.diff_regime.as_str(),
+                        current_regime.as_str(),
+                        self.diff_regime_frames,
+                        strategy_json,
+                        dirty_cell_ratio,
+                    );
+                    let _ = sink.write_jsonl(&transition_line);
+                }
+                self.diff_regime = current_regime;
+                self.diff_regime_frames = 1;
+            } else {
+                self.diff_regime_frames = self.diff_regime_frames.saturating_add(1);
             }
         }
 
@@ -5499,6 +5551,125 @@ mod tests {
             value["scan_cost_estimate"].is_number(),
             "scan_cost_estimate should be numeric"
         );
+    }
+
+    #[test]
+    fn diff_decision_has_regime_field() {
+        let evidence_path = temp_evidence_path("diff_decision_has_regime");
+        let sink = EvidenceSink::from_config(
+            &crate::evidence_sink::EvidenceSinkConfig::enabled_file(&evidence_path),
+        )
+        .expect("evidence sink config")
+        .expect("evidence sink enabled");
+
+        let mut writer = TerminalWriter::with_diff_config(
+            Vec::<u8>::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+            RuntimeDiffConfig::default(),
+        )
+        .with_evidence_sink(sink);
+        writer.set_size(10, 3);
+
+        let mut buffer = Buffer::new(10, 3);
+        buffer.set_raw(0, 0, Cell::from_char('X'));
+        writer.present_ui(&buffer, None, false).unwrap();
+
+        buffer.set_raw(1, 1, Cell::from_char('Y'));
+        writer.present_ui(&buffer, None, false).unwrap();
+
+        let jsonl = std::fs::read_to_string(&evidence_path).expect("read evidence jsonl");
+        let line = jsonl
+            .lines()
+            .find(|line| line.contains("\"event\":\"diff_decision\""))
+            .expect("diff_decision line");
+        let value: serde_json::Value = serde_json::from_str(line).expect("valid json");
+
+        assert_eq!(value["event"], "diff_decision");
+        assert!(
+            value.get("regime").is_some(),
+            "diff_decision should contain 'regime'"
+        );
+        assert_eq!(value["regime"], "sparse");
+        assert_eq!(writer.diff_regime(), DiffRegime::Sparse);
+    }
+
+    #[test]
+    fn diff_regime_transition_emitted_once_per_change() {
+        let evidence_path = temp_evidence_path("diff_regime_transition_emitted");
+        let sink = EvidenceSink::from_config(
+            &crate::evidence_sink::EvidenceSinkConfig::enabled_file(&evidence_path),
+        )
+        .expect("evidence sink config")
+        .expect("evidence sink enabled");
+
+        let mut writer = TerminalWriter::with_diff_config(
+            Vec::<u8>::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+            RuntimeDiffConfig::default(),
+        )
+        .with_evidence_sink(sink);
+        writer.set_size(10, 10);
+
+        let mut buffer = Buffer::new(10, 10);
+        // Baseline frame (initial redraw, populates prev_buffer)
+        writer.present_ui(&buffer, None, false).unwrap();
+
+        // Three sparse presents
+        buffer.set_raw(0, 0, Cell::from_char('1'));
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.diff_regime(), DiffRegime::Sparse);
+
+        buffer.set_raw(0, 1, Cell::from_char('2'));
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.diff_regime(), DiffRegime::Sparse);
+
+        buffer.set_raw(0, 2, Cell::from_char('3'));
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.diff_regime(), DiffRegime::Sparse);
+
+        // One full redraw (all cells modified -> ratio >= 0.60 -> DiffRegime::Redraw)
+        for y in 0..10 {
+            for x in 0..10 {
+                buffer.set_raw(x, y, Cell::from_char('X'));
+            }
+        }
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.diff_regime(), DiffRegime::Redraw);
+
+        // Sparse present again
+        buffer.set_raw(0, 0, Cell::from_char('Z'));
+        writer.present_ui(&buffer, None, false).unwrap();
+        assert_eq!(writer.diff_regime(), DiffRegime::Sparse);
+
+        let jsonl = std::fs::read_to_string(&evidence_path).expect("read evidence jsonl");
+        let transition_lines: Vec<&str> = jsonl
+            .lines()
+            .filter(|line| line.contains("\"event\":\"diff_regime_transition\""))
+            .collect();
+
+        assert_eq!(
+            transition_lines.len(),
+            2,
+            "expected exactly two transition lines, got: {transition_lines:?}"
+        );
+
+        let first: serde_json::Value =
+            serde_json::from_str(transition_lines[0]).expect("valid json first transition");
+        assert_eq!(first["event"], "diff_regime_transition");
+        assert_eq!(first["from"], "sparse");
+        assert_eq!(first["to"], "redraw");
+        assert_eq!(first["frames_in_previous"], 3);
+
+        let second: serde_json::Value =
+            serde_json::from_str(transition_lines[1]).expect("valid json second transition");
+        assert_eq!(second["event"], "diff_regime_transition");
+        assert_eq!(second["from"], "redraw");
+        assert_eq!(second["to"], "sparse");
+        assert_eq!(second["frames_in_previous"], 1);
     }
 
     #[test]

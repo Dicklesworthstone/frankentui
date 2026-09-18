@@ -388,6 +388,71 @@ impl fmt::Display for DiffStrategy {
 }
 
 // =============================================================================
+// Regime Classification
+// =============================================================================
+
+/// Sparse dirty ratio threshold: dirty rows/tiles with ratio below this are Sparse.
+pub const SPARSE_DIRTY_RATIO_THRESHOLD: f64 = 0.25;
+
+/// Dense dirty ratio threshold: diff operations with ratio below this are Dense.
+pub const DENSE_DIRTY_RATIO_THRESHOLD: f64 = 0.60;
+
+/// Regime classification for diff strategy decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DiffRegime {
+    /// Low change rate, sparse updates (dirty-rows/tiles with ratio < 0.25).
+    #[default]
+    Sparse,
+    /// Moderate change rate, dense compare (full compare with ratio < 0.6).
+    Dense,
+    /// High change rate or forced full redraw.
+    Redraw,
+}
+
+impl DiffRegime {
+    /// Regime name as a static string for JSONL output.
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sparse => "sparse",
+            Self::Dense => "dense",
+            Self::Redraw => "redraw",
+        }
+    }
+
+    /// Classify the diff regime based on strategy and dirty cell ratio.
+    #[must_use]
+    pub fn classify(strategy: DiffStrategy, dirty_cell_ratio: f64) -> Self {
+        match strategy {
+            DiffStrategy::FullRedraw => Self::Redraw,
+            DiffStrategy::DirtyRows => {
+                if dirty_cell_ratio < SPARSE_DIRTY_RATIO_THRESHOLD {
+                    Self::Sparse
+                } else if dirty_cell_ratio < DENSE_DIRTY_RATIO_THRESHOLD {
+                    Self::Dense
+                } else {
+                    Self::Redraw
+                }
+            }
+            DiffStrategy::Full => {
+                if dirty_cell_ratio < DENSE_DIRTY_RATIO_THRESHOLD {
+                    Self::Dense
+                } else {
+                    Self::Redraw
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Display for DiffRegime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// =============================================================================
 // Decision Evidence (Explainability)
 // =============================================================================
 
@@ -802,6 +867,108 @@ mod tests {
         assert!((config.hysteresis_ratio - 0.05).abs() < 1e-9);
         assert!((config.uncertainty_guard_variance - 0.002).abs() < 1e-9);
         assert_eq!(config.min_observation_cells, 1);
+    }
+
+    #[test]
+    fn diff_regime_classify_thresholds() {
+        // FullRedraw is always Redraw regardless of ratio
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::FullRedraw, 0.0),
+            DiffRegime::Redraw
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::FullRedraw, 0.1),
+            DiffRegime::Redraw
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::FullRedraw, 0.5),
+            DiffRegime::Redraw
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::FullRedraw, 0.9),
+            DiffRegime::Redraw
+        );
+
+        // DirtyRows:
+        // ratio < 0.25 -> Sparse
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 0.0),
+            DiffRegime::Sparse
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 0.1),
+            DiffRegime::Sparse
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 0.249),
+            DiffRegime::Sparse
+        );
+        // 0.25 <= ratio < 0.6 -> Dense
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 0.25),
+            DiffRegime::Dense
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 0.4),
+            DiffRegime::Dense
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 0.599),
+            DiffRegime::Dense
+        );
+        // ratio >= 0.6 -> Redraw
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 0.6),
+            DiffRegime::Redraw
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 0.8),
+            DiffRegime::Redraw
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::DirtyRows, 1.0),
+            DiffRegime::Redraw
+        );
+
+        // Full:
+        // ratio < 0.6 -> Dense
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::Full, 0.0),
+            DiffRegime::Dense
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::Full, 0.1),
+            DiffRegime::Dense
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::Full, 0.25),
+            DiffRegime::Dense
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::Full, 0.599),
+            DiffRegime::Dense
+        );
+        // ratio >= 0.6 -> Redraw
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::Full, 0.6),
+            DiffRegime::Redraw
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::Full, 0.8),
+            DiffRegime::Redraw
+        );
+        assert_eq!(
+            DiffRegime::classify(DiffStrategy::Full, 1.0),
+            DiffRegime::Redraw
+        );
+
+        // String representations and Display
+        assert_eq!(DiffRegime::Sparse.as_str(), "sparse");
+        assert_eq!(DiffRegime::Dense.as_str(), "dense");
+        assert_eq!(DiffRegime::Redraw.as_str(), "redraw");
+        assert_eq!(format!("{}", DiffRegime::Sparse), "sparse");
+        assert_eq!(format!("{}", DiffRegime::Dense), "dense");
+        assert_eq!(format!("{}", DiffRegime::Redraw), "redraw");
     }
 
     #[test]
