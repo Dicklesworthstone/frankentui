@@ -25,13 +25,19 @@ use std::collections::VecDeque;
 use std::io::{self, BufWriter, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use ftui_backend::{Backend, BackendClock, BackendEventSource, BackendFeatures, BackendPresenter};
 use ftui_core::event::{Event, MouseEventKind};
 use ftui_core::input_parser::InputParser;
+use ftui_core::session_teardown::seq::{
+    ALT_SCREEN_ENTER, BRACKETED_PASTE_DISABLE, BRACKETED_PASTE_ENABLE, FOCUS_DISABLE, FOCUS_ENABLE,
+    KITTY_KEYBOARD_DISABLE, KITTY_KEYBOARD_ENABLE, MOUSE_DISABLE, MOUSE_DISABLE_MUX_SAFE,
+    MOUSE_ENABLE, MOUSE_ENABLE_MUX_SAFE,
+};
+use ftui_core::session_teardown::{KittyPopLatch, TeardownPlan, install_chained_panic_hook};
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
@@ -42,44 +48,8 @@ use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGWINCH};
 #[cfg(unix)]
 use signal_hook::iterator::Signals;
 
-// ── Escape Sequences ─────────────────────────────────────────────────────
-
-const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
-const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
-
-// Mouse mode hygiene:
-// 1) Reset legacy/alternate encodings that can linger across sessions.
-// 2) Enable canonical SGR mouse (1000 + 1002 + 1006) using both combined and
-//    split forms for emulator/mux compatibility.
-// 3) Clear 1016 before enabling SGR to avoid terminals that interpret 1016l
-//    after 1006h as a fallback to X10 mode.
-// 4) Avoid DECSET 1003 (any-event mouse) because high-rate move streams can
-//    destabilize some mux pipelines.
-// NOTE: Set SGR format (1006) before enabling mouse event modes for better
-// compatibility with terminals that key off "last mode set" ordering.
-const MOUSE_ENABLE: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1006;1000;1002h\x1b[?1006h\x1b[?1000h\x1b[?1002h";
-const MOUSE_ENABLE_MUX_SAFE: &[u8] =
-    b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1006h\x1b[?1000h\x1b[?1002h";
-const MOUSE_DISABLE: &[u8] = b"\x1b[?1000;1002;1006l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l";
-const MOUSE_DISABLE_MUX_SAFE: &[u8] =
-    b"\x1b[?1016l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1001l\x1b[?1005l\x1b[?1015l";
-
-const BRACKETED_PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
-const BRACKETED_PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
-
-const FOCUS_ENABLE: &[u8] = b"\x1b[?1004h";
-const FOCUS_DISABLE: &[u8] = b"\x1b[?1004l";
-
-const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
-const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
-
-const CURSOR_SHOW: &[u8] = b"\x1b[?25h";
-#[allow(dead_code)]
-const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
-
-const SYNC_END: &[u8] = b"\x1b[?2026l";
-const RESET_SCROLL_REGION: &[u8] = b"\x1b[r";
-const SGR_RESET: &[u8] = b"\x1b[0m";
+#[cfg(unix)]
+static TTY_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 // ── Debug Input Tracing ──────────────────────────────────────────────────
 
@@ -274,57 +244,25 @@ fn restore_raw_mode_snapshot() {
     let _ = nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSANOW, &original);
 }
 
-#[inline]
-const fn cleanup_features_for_capabilities(capabilities: TerminalCapabilities) -> BackendFeatures {
-    BackendFeatures {
-        mouse_capture: capabilities.mouse_sgr,
-        bracketed_paste: capabilities.bracketed_paste,
-        focus_events: capabilities.focus_events && !capabilities.in_any_mux(),
-        kitty_keyboard: capabilities.kitty_keyboard && !capabilities.in_any_mux(),
-    }
-}
-
-#[cfg(unix)]
-fn write_terminal_state_resets(writer: &mut impl Write) -> io::Result<()> {
-    writer.write_all(RESET_SCROLL_REGION)?;
-    writer.write_all(SGR_RESET)?;
-    Ok(())
-}
-
 #[cfg(unix)]
 fn best_effort_termination_cleanup() {
+    if !TTY_SESSION_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
     let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
-    let _ = write_terminal_state_resets(&mut stdout);
-    // This path cannot prove ownership of an active sync block; avoid emitting
-    // standalone DEC ?2026l during panic/signal cleanup.
-    let emit_sync_end = false;
-    let features = cleanup_features_for_capabilities(caps);
-    let mouse_disable = mouse_disable_sequence_for_capabilities(caps);
-    let _ = write_cleanup_sequence_policy_with_mouse(
-        &features,
-        true,
-        emit_sync_end,
-        mouse_disable,
-        &mut stdout,
-    );
+    let mut plan = TeardownPlan::from_capabilities(&caps, true, false);
+    if !KittyPopLatch::try_claim() {
+        plan.pop_kitty_keyboard = false;
+    }
+    let _ = plan.write_for_backend(&mut stdout, "tty");
     let _ = stdout.flush();
     restore_raw_mode_snapshot();
 }
 
 #[cfg(unix)]
 fn install_abort_panic_hook() {
-    if !cfg!(panic = "abort") {
-        return;
-    }
-    static HOOK: OnceLock<()> = OnceLock::new();
-    HOOK.get_or_init(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            best_effort_termination_cleanup();
-            previous(info);
-        }));
-    });
+    install_chained_panic_hook("ftui-tty", best_effort_termination_cleanup);
 }
 
 #[cfg(unix)]
@@ -1198,6 +1136,7 @@ impl TtyEventSource {
     }
 
     /// Disable all active features, writing escape sequences to `writer`.
+    #[allow(dead_code)]
     fn disable_all(&mut self, writer: &mut impl Write) -> io::Result<()> {
         let off = BackendFeatures::default();
         Self::write_feature_delta(&self.features, &off, self.capabilities, writer)?;
@@ -1515,7 +1454,6 @@ impl TtyBackend {
             // No synchronized-output block has been opened during setup, so avoid
             // emitting a standalone DEC ?2026l on this path.
             let mouse_disable_seq = mouse_disable_sequence_for_capabilities(capabilities);
-            let _ = write_terminal_state_resets(&mut stdout);
             let _ = write_cleanup_sequence_policy_with_mouse(
                 &effective_features,
                 options.alternate_screen,
@@ -1528,6 +1466,9 @@ impl TtyBackend {
         }
 
         events.apply_feature_state(effective_features);
+
+        #[cfg(unix)]
+        TTY_SESSION_ACTIVE.store(true, Ordering::SeqCst);
 
         Ok(Self {
             clock: TtyClock::new(),
@@ -1558,20 +1499,19 @@ impl Drop for TtyBackend {
         // Only run cleanup if we have an active session.
         #[cfg(unix)]
         if self.raw_mode.is_some() {
+            TTY_SESSION_ACTIVE.store(false, Ordering::SeqCst);
             let mut stdout = io::stdout();
-            let _ = write_terminal_state_resets(&mut stdout);
-
-            // Disable features in reverse order of typical enable.
-            let _ = self.events.disable_all(&mut stdout);
-
-            // Always show cursor.
-            let _ = stdout.write_all(CURSOR_SHOW);
-
-            // Leave alt screen.
-            if self.alt_screen_active {
-                let _ = stdout.write_all(ALT_SCREEN_LEAVE);
-                self.alt_screen_active = false;
-            }
+            let mouse_disable_seq =
+                mouse_disable_sequence_for_capabilities(self.events.capabilities);
+            let _ = write_cleanup_sequence_policy_with_mouse(
+                &self.events.features(),
+                self.alt_screen_active,
+                false,
+                mouse_disable_seq,
+                &mut stdout,
+            );
+            self.alt_screen_active = false;
+            self.events.apply_feature_state(BackendFeatures::default());
 
             // Flush everything before RawModeGuard restores termios.
             let _ = stdout.flush();
@@ -1674,30 +1614,23 @@ fn write_cleanup_sequence_policy_with_mouse(
     features: &BackendFeatures,
     alt_screen: bool,
     emit_sync_end: bool,
-    mouse_disable_seq: &[u8],
+    mouse_disable_seq: &'static [u8],
     writer: &mut impl Write,
 ) -> io::Result<()> {
-    if emit_sync_end {
-        writer.write_all(SYNC_END)?;
-    }
-    // Disable features in reverse order.
-    if features.kitty_keyboard {
-        writer.write_all(KITTY_KEYBOARD_DISABLE)?;
-    }
-    if features.focus_events {
-        writer.write_all(FOCUS_DISABLE)?;
-    }
-    if features.bracketed_paste {
-        writer.write_all(BRACKETED_PASTE_DISABLE)?;
-    }
-    if features.mouse_capture {
-        writer.write_all(mouse_disable_seq)?;
-    }
-    writer.write_all(CURSOR_SHOW)?;
-    if alt_screen {
-        writer.write_all(ALT_SCREEN_LEAVE)?;
-    }
-    Ok(())
+    let plan = TeardownPlan {
+        emit_sync_end,
+        reset_scroll_region: true,
+        reset_style: true,
+        pop_kitty_keyboard: features.kitty_keyboard,
+        disable_focus: features.focus_events,
+        disable_paste: features.bracketed_paste,
+        disable_mouse: features.mouse_capture,
+        mouse_mux_safe: false,
+        mouse_disable_override: Some(mouse_disable_seq),
+        show_cursor: true,
+        leave_alt_screen: alt_screen,
+    };
+    plan.write_for_backend(writer, "tty")
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -1705,6 +1638,7 @@ fn write_cleanup_sequence_policy_with_mouse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_core::session_teardown::seq::*;
 
     #[test]
     fn clock_is_monotonic() {
@@ -3071,6 +3005,45 @@ mod tests {
             "other cleanup bytes must still be emitted"
         );
         assert!(buf.windows(CURSOR_SHOW.len()).any(|w| w == CURSOR_SHOW));
+    }
+
+    #[test]
+    fn core_cleanup_and_tty_cleanup_produce_identical_bytes() {
+        use ftui_core::session_teardown::KittyPopLatch;
+        use ftui_core::terminal_capabilities::TerminalCapabilities;
+        use ftui_core::terminal_session::best_effort_cleanup_to;
+
+        for (mouse, paste, focus, kitty) in [
+            (true, true, true, true),
+            (true, false, true, false),
+            (false, true, false, true),
+            (false, false, false, false),
+        ] {
+            let mut caps = TerminalCapabilities::modern();
+            caps.mouse_sgr = mouse;
+            caps.bracketed_paste = paste;
+            caps.focus_events = focus;
+            caps.kitty_keyboard = kitty;
+
+            let features = BackendFeatures {
+                mouse_capture: mouse,
+                bracketed_paste: paste,
+                focus_events: focus,
+                kitty_keyboard: kitty,
+            };
+
+            let mut core_buf = Vec::new();
+            KittyPopLatch::reset_for_tests();
+            best_effort_cleanup_to(&mut core_buf, &caps);
+
+            let mut tty_buf = Vec::new();
+            write_cleanup_sequence_with_sync_end(&features, true, &mut tty_buf).unwrap();
+
+            assert_eq!(
+                core_buf, tty_buf,
+                "core and tty cleanup must produce identical bytes for features={features:?}"
+            );
+        }
     }
 
     #[test]

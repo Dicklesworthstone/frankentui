@@ -78,11 +78,12 @@
 use std::cell::Cell;
 use std::env;
 use std::io::{self, Write};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::event::Event;
+use crate::session_teardown::seq;
+use crate::session_teardown::{KittyPopLatch, TeardownPlan, install_chained_panic_hook};
 use crate::terminal_capabilities::TerminalCapabilities;
 
 // Import tracing macros (no-op when tracing feature is disabled).
@@ -233,11 +234,9 @@ fn cx_deadline_remaining_us(cx: &crate::cx::Cx) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
-const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
-const RESET_SCROLL_REGION: &[u8] = b"\x1b[r";
-const RESET_STYLE: &[u8] = b"\x1b[0m";
-const SYNC_END: &[u8] = b"\x1b[?2026l";
+const KITTY_KEYBOARD_ENABLE: &[u8] = seq::KITTY_KEYBOARD_ENABLE;
+#[cfg(test)]
+const KITTY_KEYBOARD_DISABLE: &[u8] = seq::KITTY_KEYBOARD_DISABLE;
 // Mouse mode hygiene:
 // 1) Reset legacy and alternate encodings.
 // 2) Enable canonical SGR mouse modes (1000 + 1002 + 1006).
@@ -247,31 +246,19 @@ const SYNC_END: &[u8] = b"\x1b[?2026l";
 //    destabilize mux pipelines.
 // NOTE: Set SGR format (1006) before enabling mouse event modes for better
 // compatibility with terminals that key off "last mode set" ordering.
-const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1006;1000;1002h\x1b[?1006h\x1b[?1000h\x1b[?1002h";
+const MOUSE_ENABLE_SEQ: &[u8] = seq::MOUSE_ENABLE;
 // Conservative mouse enable sequence for mux sessions and runtime toggles.
 // Keep to split DECSET/DECRST forms (better passthrough behavior), but still
 // reset alternate encodings so the inner terminal doesn't get "stuck" in a
 // format our parser won't decode.
-const MOUSE_ENABLE_MUX_SAFE_SEQ: &[u8] =
-    b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1006h\x1b[?1000h\x1b[?1002h";
-const MOUSE_DISABLE_SEQ: &[u8] = b"\x1b[?1000;1002;1006l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l";
+const MOUSE_ENABLE_MUX_SAFE_SEQ: &[u8] = seq::MOUSE_ENABLE_MUX_SAFE;
+const MOUSE_DISABLE_SEQ: &[u8] = seq::MOUSE_DISABLE;
 // Conservative mouse disable sequence for mux/panic cleanup paths. Keeps
 // parser surface minimal while still restoring canonical capture modes and
 // clearing any leaked SGR-pixel mode.
-const MOUSE_DISABLE_MUX_SAFE_SEQ: &[u8] =
-    b"\x1b[?1016l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1001l\x1b[?1005l\x1b[?1015l";
+const MOUSE_DISABLE_MUX_SAFE_SEQ: &[u8] = seq::MOUSE_DISABLE_MUX_SAFE;
 
 static TERMINAL_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Set once any best-effort (panic/signal/exit) teardown has emitted the
-/// stack-based kitty-keyboard pop (`CSI < u`).
-///
-/// The pop consumes one entry from the terminal's kitty-protocol stack, so it
-/// must happen at most once per process push: a second emission (Drop cleanup
-/// after the panic hook, or a repeated best-effort call) would discard an
-/// *enclosing* tty context's entry (bd-kdn7n). Non-stack resets are safe to
-/// repeat and stay ungated.
-static BEST_EFFORT_KITTY_POP_EMITTED: AtomicBool = AtomicBool::new(false);
 
 /// Process-wide serialization for terminal byte emission.
 ///
@@ -1124,61 +1111,33 @@ impl TerminalSession {
         let mut stdout = io::stdout();
         let caps = TerminalCapabilities::with_overrides();
 
-        // Reset scroll region (critical for inline mode recovery). DECSTBM —
-        // including the parameterless reset — homes the cursor to (1,1) on
-        // real terminals, which would discard the writer's deliberate final
-        // cursor placement in inline mode (shell prompt at top-left over
-        // scrollback). Bracket with DECSC/DECRC to preserve the cursor.
-        let _ = stdout.write_all(b"\x1b7");
-        let _ = stdout.write_all(RESET_SCROLL_REGION);
-        let _ = stdout.write_all(b"\x1b8");
-        // Reset style so shell prompt does not inherit UI SGR state.
-        let _ = stdout.write_all(RESET_STYLE);
-        // Ensure synchronized output is disabled (prevent frozen terminal on panic)
-        let _ = stdout.write_all(SYNC_END);
-
-        // Disable features in reverse order of enabling
-        if self.kitty_keyboard_enabled {
-            // A panic/signal best-effort teardown may already have emitted
-            // the stack-based pop; repeating it would consume an enclosing
-            // tty context's kitty entry (bd-kdn7n).
-            if !BEST_EFFORT_KITTY_POP_EMITTED.load(Ordering::SeqCst) {
-                let _ = Self::disable_kitty_keyboard(&mut stdout);
-                #[cfg(feature = "tracing")]
-                tracing::info!("kitty keyboard disabled");
-            }
+        let pop_kitty = if self.kitty_keyboard_enabled {
             self.kitty_keyboard_enabled = false;
-        }
-        if self.focus_events_enabled {
-            let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
-            self.focus_events_enabled = false;
-            #[cfg(feature = "tracing")]
-            tracing::info!("focus events disabled");
-        }
+            !KittyPopLatch::is_claimed()
+        } else {
+            false
+        };
 
-        if self.bracketed_paste_enabled {
-            let _ = crossterm::execute!(stdout, crossterm::event::DisableBracketedPaste);
-            self.bracketed_paste_enabled = false;
-            #[cfg(feature = "tracing")]
-            tracing::info!("bracketed paste disabled");
-        }
+        let plan = TeardownPlan {
+            emit_sync_end: true,
+            reset_scroll_region: true,
+            reset_style: true,
+            pop_kitty_keyboard: pop_kitty,
+            disable_focus: self.focus_events_enabled,
+            disable_paste: self.bracketed_paste_enabled,
+            disable_mouse: self.mouse_enabled,
+            mouse_mux_safe: caps.in_any_mux(),
+            mouse_disable_override: None,
+            show_cursor: true,
+            leave_alt_screen: self.alternate_screen_enabled,
+        };
 
-        if self.mouse_enabled {
-            let _ = stdout.write_all(Self::mouse_disable_sequence_for_caps(&caps));
-            self.mouse_enabled = false;
-            #[cfg(feature = "tracing")]
-            tracing::info!("mouse capture disabled");
-        }
+        self.focus_events_enabled = false;
+        self.bracketed_paste_enabled = false;
+        self.mouse_enabled = false;
+        self.alternate_screen_enabled = false;
 
-        // Always show cursor before leaving
-        let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
-
-        if self.alternate_screen_enabled {
-            let _ = crossterm::execute!(stdout, crossterm::terminal::LeaveAlternateScreen);
-            self.alternate_screen_enabled = false;
-            #[cfg(feature = "tracing")]
-            tracing::info!("alternate screen disabled");
-        }
+        let _ = plan.write_for_backend(&mut stdout, "crossterm");
 
         // Exit raw mode last
         let _ = crossterm::terminal::disable_raw_mode();
@@ -1197,8 +1156,9 @@ impl TerminalSession {
         writer.flush()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn disable_kitty_keyboard(writer: &mut impl Write) -> io::Result<()> {
-        writer.write_all(KITTY_KEYBOARD_DISABLE)?;
+        writer.write_all(seq::KITTY_KEYBOARD_DISABLE)?;
         writer.flush()
     }
 }
@@ -1220,20 +1180,7 @@ fn size_from_env() -> Option<(u16, u16)> {
 }
 
 fn install_panic_hook() {
-    static HOOK: OnceLock<()> = OnceLock::new();
-    HOOK.get_or_init(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            // Only touch the terminal while a session is actually live:
-            // after the last session dropped cleanly, a later panic (e.g.
-            // while emitting machine-readable output to a redirected
-            // stdout) must not spray teardown escapes into the stream.
-            if !panic_cleanup_suppressed() && TERMINAL_SESSION_ACTIVE.load(Ordering::SeqCst) {
-                best_effort_cleanup();
-            }
-            previous(info);
-        }));
-    });
+    install_chained_panic_hook("ftui-core", best_effort_cleanup);
 }
 
 /// Best-effort cleanup for termination paths that skip `Drop`.
@@ -1245,6 +1192,9 @@ pub fn best_effort_cleanup_for_exit() {
 }
 
 fn best_effort_cleanup() {
+    if panic_cleanup_suppressed() || !TERMINAL_SESSION_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
     let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
     best_effort_cleanup_to(&mut stdout, &caps);
@@ -1253,35 +1203,18 @@ fn best_effort_cleanup() {
 /// Emission body of [`best_effort_cleanup`], parameterized over the output
 /// for testability. Consumes the process-global stack-pop budget: only the
 /// first invocation emits the kitty-keyboard pop.
-fn best_effort_cleanup_to(stdout: &mut impl Write, caps: &TerminalCapabilities) {
+pub fn best_effort_cleanup_to(stdout: &mut impl Write, caps: &TerminalCapabilities) {
     // Serialize against the render path so teardown bytes cannot interleave
     // with an in-flight frame flush (bd-kdn7n item 2). Reentrant: the panic
     // hook may fire while the panicking render thread already holds the lock.
     let _output_guard = terminal_output_lock();
-    // DECSC/DECRC bracket: DECSTBM reset homes the cursor on real
-    // terminals; preserve whatever position the writer left it at.
-    let _ = stdout.write_all(b"\x1b7");
-    let _ = stdout.write_all(RESET_SCROLL_REGION);
-    let _ = stdout.write_all(b"\x1b8");
-    let _ = stdout.write_all(RESET_STYLE);
-    let _ = stdout.write_all(SYNC_END);
 
-    // Keep panic/signal cleanup conservative: only emit mux-sensitive mode
-    // disables when policy says they could have been enabled. The kitty pop
-    // is stack-based, so only the FIRST best-effort invocation emits it —
-    // later invocations (hook → Drop → for_exit) must not pop an enclosing
-    // tty context's entry (bd-kdn7n).
-    let emit_stack_pops = !BEST_EFFORT_KITTY_POP_EMITTED.swap(true, Ordering::SeqCst);
-    if emit_stack_pops && caps.kitty_keyboard && !caps.in_any_mux() {
-        let _ = TerminalSession::disable_kitty_keyboard(stdout);
+    let mut plan = TeardownPlan::from_capabilities(caps, true, true);
+    if !KittyPopLatch::try_claim() {
+        plan.pop_kitty_keyboard = false;
     }
-    if caps.focus_events && !caps.in_any_mux() {
-        let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
-    }
-    let _ = crossterm::execute!(stdout, crossterm::event::DisableBracketedPaste);
-    let _ = stdout.write_all(TerminalSession::mouse_disable_sequence_for_caps(caps));
-    let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
-    let _ = crossterm::execute!(stdout, crossterm::terminal::LeaveAlternateScreen);
+
+    let _ = plan.write_for_backend(stdout, "crossterm");
     let _ = crossterm::terminal::disable_raw_mode();
     let _ = stdout.flush();
 }
@@ -1472,6 +1405,7 @@ mod tests {
     /// because no other test asserts on emitted `CSI < u` bytes.
     #[test]
     fn best_effort_cleanup_emits_kitty_pop_once() {
+        KittyPopLatch::reset_for_tests();
         let caps = TerminalCapabilities::modern();
         assert!(caps.kitty_keyboard);
 

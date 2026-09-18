@@ -43,6 +43,7 @@ pub mod osc52;
 pub mod read_optimized;
 pub mod s3_fifo;
 pub mod semantic_event;
+pub mod session_teardown;
 pub mod terminal_capabilities;
 #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 pub mod terminal_session;
