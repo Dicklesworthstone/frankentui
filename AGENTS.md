@@ -165,7 +165,21 @@ cargo fmt --check
 # Run this documentation gate through DSR; a single bad link fails it
 # and hides every other rustdoc regression across the workspace.
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+# Fail when a `pub mod` is reachable from nothing in production code.
+# Pure stdlib Python, about two seconds, no cargo needed.
+make reachability        # or: python3 scripts/check_module_reachability.py
 ```
+
+**Module reachability.** `scripts/check_module_reachability.py` exists because
+"reachable from production" was never part of the definition of done here, and
+30 of ftui-runtime's 64 modules accumulated unnoticed. A module passes when
+something outside its own file references it, when the crate re-exports it, or
+when it is behind a `#[cfg(feature = ...)]`. Known-dead modules live in
+`docs/module-reachability-allowlist.txt`, **which may only shrink**: each entry
+needs the bead that will wire or quarantine it, and an entry whose module has
+become reachable fails the gate. Do not add a line to silence the gate — that
+is what the bead id is there to prevent.
 
 If you see errors, **carefully understand and resolve each issue**. Read sufficient context to fix them the RIGHT way.
 

@@ -1,0 +1,95 @@
+# Modules that are declared `pub mod` but reached by nothing in production.
+#
+# THIS LIST MAY ONLY SHRINK. Add a line only with a bead id, and only for a
+# module that bead is going to wire up or quarantine. If a module on this list
+# becomes reachable, scripts/check_module_reachability.py fails with
+# STALE_ALLOWLIST, so an entry cannot quietly outlive its reason.
+#
+# Seeded 2026-09-18 for bd-g00-root-epic-ewths.11.2 from the tree at 087ff3d9.
+# Every entry below was cross-checked with ripgrep: the only apparent
+# counter-example, doctor_frankentui::lowering, is referenced solely from a
+# `#[cfg(test)] mod tests` block in ir_normalize.rs, which is not production
+# reachability.
+#
+# Bead ids here are the beads that own the *decision*, not always the eventual
+# wiring. Re-point an entry at a more specific bead as soon as one exists.
+#
+# Format: <crate>::<module>  # <bead id>
+
+# ── doctor_frankentui ────────────────────────────────────────────────────
+# .28.1 asks the owner to split or feature-gate doctor_frankentui's three
+# products. Until that is answered, every unreached module here is part of the
+# same question rather than an independent orphan. The *_tests modules are
+# `pub mod`s holding test code, which is its own smell and belongs to the same
+# decision.
+doctor_frankentui::alien_kernel_unit_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::archetype_scoreboard  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::artifact_coding_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::backend_capability  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::cli_explain_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::codegen_optimize  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::corpus_integrity_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::governance_validator_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::graveyard_control_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::ir_explainer  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::ir_versioning  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::lowering  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::migration_config  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::module_graph  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::optimization_control_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::optimization_model_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::portfolio_governance_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::sandbox  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::tier_escalator_tests  # bd-g00-root-epic-ewths.28.1
+
+# ── ftui-web ─────────────────────────────────────────────────────────────
+# .29.1 asks the owner to decide the web host's scope. These are the modules
+# that scope would either wire into a host or drop.
+ftui-web::keyboard  # bd-g00-root-epic-ewths.29.1
+ftui-web::pane_keyboard  # bd-g00-root-epic-ewths.29.1
+ftui-web::pointer  # bd-g00-root-epic-ewths.29.1
+ftui-web::release_readiness  # bd-g00-root-epic-ewths.29.1
+ftui-web::runtime_options  # bd-g00-root-epic-ewths.29.1
+ftui-web::sdk_adapter  # bd-g00-root-epic-ewths.29.1
+
+# ── ftui-widgets ─────────────────────────────────────────────────────────
+# Widgets with no gallery entry: .11.3 adds the entries that would reach them.
+ftui-widgets::choreography  # bd-g00-root-epic-ewths.11.3
+ftui-widgets::popover  # bd-g00-root-epic-ewths.11.3
+ftui-widgets::pretty  # bd-g00-root-epic-ewths.11.3
+ftui-widgets::receipt_verifier_panel  # bd-g00-root-epic-ewths.11.3
+# Succinct data structures with no consumer. These are orphan-module
+# candidates rather than unwired widgets, so they sit with the G07 set.
+ftui-widgets::elias_fano  # bd-g00-root-epic-ewths.11.5
+ftui-widgets::fenwick  # bd-g00-root-epic-ewths.11.5
+ftui-widgets::louds  # bd-g00-root-epic-ewths.11.5
+
+# ── orphan-module candidates (G07) ───────────────────────────────────────
+# .11.5 is where the owner decides delete-or-wire for unreferenced modules.
+# The owner granted deletion permission for its enumerated set on 2026-09-18;
+# these are the ones this gate found, which is not the same list, so they need
+# their own pass before anything is removed.
+ftui::advanced  # bd-g00-root-epic-ewths.11.5
+ftui-core::event_coalescer  # bd-g00-root-epic-ewths.11.5
+ftui-core::generic_diff  # bd-g00-root-epic-ewths.11.5
+ftui-core::key_sequence  # bd-g00-root-epic-ewths.11.5
+ftui-core::mode_typestate  # bd-g00-root-epic-ewths.11.5
+ftui-layout::egraph  # bd-g00-root-epic-ewths.11.5
+ftui-layout::incremental  # bd-g00-root-epic-ewths.11.5
+ftui-layout::veb_tree  # bd-g00-root-epic-ewths.11.5
+ftui-render::headless  # bd-g00-root-epic-ewths.11.5
+ftui-render::quotient_filter  # bd-g00-root-epic-ewths.11.5
+ftui-render::spatial_hit_index  # bd-g00-root-epic-ewths.11.5
+
+# ── ftui-harness ─────────────────────────────────────────────────────────
+# Reached by neither production code nor any test, which for a test-support
+# crate means nothing uses them at all.
+ftui-harness::cost_surface  # bd-g00-root-epic-ewths.11.5
+ftui-harness::doctor_topology  # bd-g00-root-epic-ewths.11.5
+ftui-harness::frame_comparison  # bd-g00-root-epic-ewths.11.5
+ftui-harness::hotspot_extraction  # bd-g00-root-epic-ewths.11.5
+ftui-harness::layout_reuse  # bd-g00-root-epic-ewths.11.5
+ftui-harness::optimization_policy  # bd-g00-root-epic-ewths.11.5
+ftui-harness::presenter_equivalence  # bd-g00-root-epic-ewths.11.5
+ftui-harness::proof_oracle  # bd-g00-root-epic-ewths.11.5
+ftui-harness::rollout_runbook  # bd-g00-root-epic-ewths.11.5
