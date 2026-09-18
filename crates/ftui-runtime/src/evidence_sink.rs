@@ -193,6 +193,21 @@ impl EvidenceSink {
         }))
     }
 
+    /// Build an evidence sink that writes to an arbitrary `Write + Send` writer.
+    #[must_use]
+    pub fn from_writer(writer: impl Write + Send + 'static) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(EvidenceSinkInner {
+                writer: BufWriter::new(Box::new(writer)),
+                flush_on_write: true,
+                max_bytes: 0,
+                cap_enabled: false,
+                bytes_written: 0,
+                capped: false,
+            })),
+        }
+    }
+
     /// Write a single JSONL line with newline and optional flush.
     ///
     /// If the file size cap has been reached, the write is silently dropped

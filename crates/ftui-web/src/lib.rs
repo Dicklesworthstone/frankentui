@@ -55,12 +55,16 @@ pub mod pane {
 use core::time::Duration;
 use std::collections::VecDeque;
 
-use ftui_backend::{Backend, BackendClock, BackendEventSource, BackendFeatures, BackendPresenter};
+use ftui_backend::{
+    Backend, BackendClock, BackendEventSource, BackendFeatures, BackendPresenter, ScreenMode,
+};
 use ftui_core::event::Event;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, CellAttrs, CellContent};
 use ftui_render::diff::BufferDiff;
+use ftui_render::grapheme_pool::GraphemePool;
+use ftui_render::link_registry::LinkRegistry;
 
 const GRAPHEME_FALLBACK_CODEPOINT: u32 = '□' as u32;
 const ATTR_STYLE_MASK: u32 = 0xFF;
@@ -377,6 +381,11 @@ pub struct WebPatchStats {
 pub struct WebPresenter {
     caps: TerminalCapabilities,
     outputs: WebOutputs,
+    pool: GraphemePool,
+    links: LinkRegistry,
+    screen_mode: ScreenMode,
+    width: u16,
+    height: u16,
 }
 
 impl WebPresenter {
@@ -386,6 +395,25 @@ impl WebPresenter {
         Self {
             caps: TerminalCapabilities::modern(),
             outputs: WebOutputs::default(),
+            pool: GraphemePool::new(),
+            links: LinkRegistry::new(),
+            screen_mode: ScreenMode::default(),
+            width: 80,
+            height: 24,
+        }
+    }
+
+    /// Create a new presenter with explicit initial dimensions.
+    #[must_use]
+    pub fn with_size(width: u16, height: u16) -> Self {
+        Self {
+            caps: TerminalCapabilities::modern(),
+            outputs: WebOutputs::default(),
+            pool: GraphemePool::new(),
+            links: LinkRegistry::new(),
+            screen_mode: ScreenMode::default(),
+            width,
+            height,
         }
     }
 
@@ -403,6 +431,40 @@ impl WebPresenter {
     /// Take captured outputs, leaving empty defaults.
     pub fn take_outputs(&mut self) -> WebOutputs {
         std::mem::take(&mut self.outputs)
+    }
+
+    /// Reference to the grapheme pool.
+    #[must_use]
+    pub const fn pool(&self) -> &GraphemePool {
+        &self.pool
+    }
+
+    /// Mutably access the grapheme pool.
+    pub fn pool_mut(&mut self) -> &mut GraphemePool {
+        &mut self.pool
+    }
+
+    /// Reference to the link registry.
+    #[must_use]
+    pub const fn links(&self) -> &LinkRegistry {
+        &self.links
+    }
+
+    /// Mutably access the link registry.
+    pub fn links_mut(&mut self) -> &mut LinkRegistry {
+        &mut self.links
+    }
+
+    /// Current width of the presenter.
+    #[must_use]
+    pub const fn width(&self) -> u16 {
+        self.width
+    }
+
+    /// Current height of the presenter.
+    #[must_use]
+    pub const fn height(&self) -> u16 {
+        self.height
     }
 
     /// Flatten patch runs into caller-provided reusable buffers.
@@ -476,6 +538,27 @@ impl BackendPresenter for WebPresenter {
         Ok(())
     }
 
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.width = cols;
+        self.height = rows;
+    }
+
+    fn screen_mode(&self) -> ScreenMode {
+        self.screen_mode
+    }
+
+    fn set_screen_mode(&mut self, mode: ScreenMode) {
+        self.screen_mode = mode;
+    }
+
+    fn pool_and_links_mut(&mut self) -> (&mut GraphemePool, &mut LinkRegistry) {
+        (&mut self.pool, &mut self.links)
+    }
+
+    fn pool_mut(&mut self) -> &mut GraphemePool {
+        &mut self.pool
+    }
+
     fn present_ui(
         &mut self,
         buf: &Buffer,
@@ -490,6 +573,17 @@ impl BackendPresenter for WebPresenter {
         self.outputs.last_patch_hash = None;
         self.outputs.hash_computed = false;
         self.outputs.last_full_repaint_hint = full_repaint_hint;
+        Ok(())
+    }
+
+    fn present_ui_owned(
+        &mut self,
+        buf: Buffer,
+        cursor: Option<(u16, u16)>,
+        cursor_visible: bool,
+    ) -> Result<(), Self::Error> {
+        let _ = (cursor, cursor_visible);
+        self.present_ui_owned(buf, None, false);
         Ok(())
     }
 }
@@ -663,7 +757,7 @@ impl WebBackend {
         Self {
             clock: DeterministicClock::new(),
             events: WebEventSource::new(width, height),
-            presenter: WebPresenter::new(),
+            presenter: WebPresenter::with_size(width, height),
         }
     }
 
@@ -677,6 +771,12 @@ impl WebBackend {
         &mut self.events
     }
 
+    /// Access the presenter.
+    #[must_use]
+    pub const fn presenter(&self) -> &WebPresenter {
+        &self.presenter
+    }
+
     /// Mutably access the presenter.
     pub fn presenter_mut(&mut self) -> &mut WebPresenter {
         &mut self.presenter
@@ -688,7 +788,6 @@ impl Backend for WebBackend {
 
     type Clock = DeterministicClock;
     type Events = WebEventSource;
-    type Presenter = WebPresenter;
 
     fn clock(&self) -> &Self::Clock {
         &self.clock
@@ -696,10 +795,6 @@ impl Backend for WebBackend {
 
     fn events(&mut self) -> &mut Self::Events {
         &mut self.events
-    }
-
-    fn presenter(&mut self) -> &mut Self::Presenter {
-        &mut self.presenter
     }
 }
 
@@ -1202,6 +1297,27 @@ mod tests {
         assert_eq!(out.last_patches.len(), 1);
         assert!(out.last_patch_stats.is_some());
         assert!(out.compute_patch_hash().is_some());
+    }
+
+    #[test]
+    fn presenter_resize_and_screen_mode() {
+        let mut p = WebPresenter::new();
+        assert_eq!(p.screen_mode(), ScreenMode::default());
+        p.set_screen_mode(ScreenMode::AltScreen);
+        assert_eq!(p.screen_mode(), ScreenMode::AltScreen);
+
+        p.resize(100, 50);
+        assert_eq!(p.width(), 100);
+        assert_eq!(p.height(), 50);
+    }
+
+    #[test]
+    fn presenter_pool_and_links() {
+        let mut p = WebPresenter::new();
+        let (pool, links) = p.pool_and_links_mut();
+        let id = pool.intern("hello", 1);
+        let _link = links.register("https://example.com");
+        assert_eq!(p.pool_mut().get(id), Some("hello"));
     }
 
     // --- WebBackend ---

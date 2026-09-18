@@ -64,7 +64,8 @@ fn exercise_widget_accessibility(enabled: bool, include_text: bool, focus_textar
     use ftui_runtime::evidence_sink::EvidenceSinkConfig;
     use ftui_runtime::program::{AccessibilityFrame, HeadlessEventSource, Program, ProgramConfig};
     use ftui_runtime::{
-        BackendFeatures, Cmd, Model, ScreenMode, ScreenReaderPolicy, TerminalWriter, UiAnchor,
+        BackendFeatures, Cmd, Model, ScreenMode, ScreenReaderPolicy, TerminalPresenter,
+        TerminalWriter, UiAnchor,
     };
     use ftui_widgets::Widget;
     use ftui_widgets::input::TextInput;
@@ -160,7 +161,7 @@ fn exercise_widget_accessibility(enabled: bool, include_text: bool, focus_textar
         model,
         HeadlessEventSource::new(80, 20, features),
         features,
-        writer,
+        TerminalPresenter::new(writer),
         config,
     )
     .expect("construct actual runtime");

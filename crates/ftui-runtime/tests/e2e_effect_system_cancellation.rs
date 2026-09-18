@@ -179,6 +179,7 @@ fn multiple_subscriptions_all_start() {
     use ftui_core::terminal_capabilities::TerminalCapabilities;
     use ftui_render::frame::Frame;
     use ftui_runtime::BackendFeatures;
+    use ftui_runtime::TerminalPresenter;
     use ftui_runtime::program::{Cmd, HeadlessEventSource, Model, Program, ProgramConfig};
     use ftui_runtime::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
     use ftui_runtime::terminal_writer::TerminalWriter;
@@ -296,7 +297,7 @@ fn multiple_subscriptions_all_start() {
         },
         HeadlessEventSource::new(20, 4, features),
         features,
-        writer,
+        TerminalPresenter::new(writer),
         config,
     )
     .expect("construct subscription lifecycle program");

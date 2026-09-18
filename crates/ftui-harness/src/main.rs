@@ -1968,7 +1968,7 @@ fn default_minimize_ledger_path(trace_path: &Path) -> PathBuf {
 fn run_log_injection(mode: &str) -> io::Result<()> {
     use ftui_core::terminal_capabilities::TerminalCapabilities;
     use ftui_render::buffer::Buffer;
-    use ftui_runtime::{TerminalWriter, UiAnchor};
+    use ftui_runtime::{TerminalPresenter, TerminalWriter, UiAnchor};
 
     let command_mode = mode.starts_with("cmd-");
     let mode = mode.strip_prefix("cmd-").unwrap_or(mode);
@@ -2078,7 +2078,7 @@ fn run_log_injection(mode: &str) -> io::Result<()> {
                 },
                 events,
                 features,
-                writer,
+                TerminalPresenter::new(writer),
                 config,
             )?
             .run()?;

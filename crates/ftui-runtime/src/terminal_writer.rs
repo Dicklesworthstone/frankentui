@@ -51,6 +51,7 @@
 //! ```
 
 use std::io::{self, BufWriter, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use web_time::Instant;
 
@@ -66,6 +67,23 @@ pub fn inline_active_widgets() -> u32 {
 }
 
 use crate::evidence_sink::EvidenceSink;
+
+struct CallbackEvidenceWriter(Arc<dyn Fn(&str) + Send + Sync>);
+
+impl Write for CallbackEvidenceWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        let trimmed = text.trim_end_matches(['\r', '\n']);
+        if !trimmed.is_empty() {
+            (self.0)(trimmed);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 /// A strategy downgrade forced by the DECSTBM self-test
 /// (`TerminalWriter::set_scroll_region_verified`).
@@ -284,37 +302,7 @@ fn sanitize_auto_bounds(min_height: u16, max_height: u16) -> (u16, u16) {
     (min, max)
 }
 
-/// Screen mode determines whether we use alternate screen or inline mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ScreenMode {
-    /// Inline mode preserves scrollback. UI is anchored at bottom/top.
-    Inline {
-        /// Height of the UI region in rows.
-        ui_height: u16,
-    },
-    /// Inline mode with automatic UI height based on rendered content.
-    ///
-    /// The measured height is clamped between `min_height` and `max_height`.
-    InlineAuto {
-        /// Minimum UI height in rows.
-        min_height: u16,
-        /// Maximum UI height in rows.
-        max_height: u16,
-    },
-    /// Alternate screen mode for full-screen applications.
-    #[default]
-    AltScreen,
-}
-
-/// Where the UI region is anchored in inline mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UiAnchor {
-    /// UI at bottom of terminal (default for agent harness).
-    #[default]
-    Bottom,
-    /// UI at top of terminal.
-    Top,
-}
+pub use ftui_backend::{PresentTimings, ScreenMode, UiAnchor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InlineRegion {
@@ -342,12 +330,6 @@ struct FrameEmitStats {
     diff_cells: usize,
     diff_runs: usize,
     ui_height: u16,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct PresentTimings {
-    pub diff_us: u64,
 }
 
 // =============================================================================
@@ -868,8 +850,14 @@ impl<W: Write> TerminalWriter<W> {
     }
 
     /// Take the last present timings (if available).
-    pub(crate) fn take_last_present_timings(&mut self) -> Option<PresentTimings> {
+    pub fn take_last_present_timings(&mut self) -> Option<PresentTimings> {
         self.last_present_timings.take()
+    }
+
+    /// Access the last present timings (if available).
+    #[must_use]
+    pub fn last_present_timings(&self) -> Option<&PresentTimings> {
+        self.last_present_timings.as_ref()
     }
 
     /// Attach an evidence sink for diff decision logging.
@@ -884,6 +872,15 @@ impl<W: Write> TerminalWriter<W> {
     pub fn set_evidence_sink(&mut self, sink: Option<EvidenceSink>) {
         self.evidence_sink = sink;
         self.export_capability_decisions();
+    }
+
+    /// Set a callback that receives every formatted JSONL evidence line.
+    pub fn set_evidence_callback(&mut self, callback: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
+        if let Some(cb) = callback {
+            self.set_evidence_sink(Some(EvidenceSink::from_writer(CallbackEvidenceWriter(cb))));
+        } else {
+            self.set_evidence_sink(None);
+        }
     }
 
     /// Attach the capability decision ledger produced by the live terminal
@@ -1034,6 +1031,12 @@ impl<W: Write> TerminalWriter<W> {
     #[inline]
     pub fn screen_mode(&self) -> ScreenMode {
         self.screen_mode
+    }
+
+    /// Set the screen mode.
+    #[inline]
+    pub fn set_screen_mode(&mut self, mode: ScreenMode) {
+        self.screen_mode = mode;
     }
 
     /// Height to use for rendering a frame.

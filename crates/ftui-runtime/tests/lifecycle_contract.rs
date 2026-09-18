@@ -12,6 +12,7 @@ use ftui_backend::{BackendEventSource, BackendFeatures};
 use ftui_core::event::Event;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::frame::Frame;
+use ftui_runtime::TerminalPresenter;
 use ftui_runtime::program::{Cmd, Model, Program, ProgramConfig};
 use ftui_runtime::simulator::{ProgramSimulator, SimulatorError};
 use ftui_runtime::subscription::{StopSignal, SubId, Subscription, SubscriptionSender};
@@ -377,7 +378,7 @@ fn contract_runtime_error_calls_error_then_shutdown_once() {
         HookModel { trace: Vec::new() },
         PollFailureSource,
         BackendFeatures::default(),
-        writer,
+        TerminalPresenter::new(writer),
         config,
     )
     .expect("program construction");
@@ -467,7 +468,7 @@ fn contract_command_error_calls_error_and_shutdown_hooks() {
         },
         PollFailureSource,
         BackendFeatures::default(),
-        writer,
+        TerminalPresenter::new(writer),
         config,
     )
     .expect("program construction");
@@ -571,7 +572,7 @@ fn contract_subscription_failure_calls_error_and_shutdown_hooks() {
         },
         BoundedIdleSource { polls: 0 },
         BackendFeatures::default(),
-        writer,
+        TerminalPresenter::new(writer),
         config,
     )
     .expect("program construction");

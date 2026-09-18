@@ -106,6 +106,7 @@ pub mod stdio_capture;
 pub mod string_model;
 pub mod subscription;
 pub mod telemetry_schema;
+pub mod terminal_presenter;
 pub mod terminal_writer;
 pub mod tick_strategy;
 #[cfg(feature = "experimental")]
@@ -181,7 +182,10 @@ pub use subscription::{
     Every, FileEvent, FileWatcher, StopSignal, SubId, Subscription, SubscriptionSender,
     file_watcher, tick_every,
 };
-pub use terminal_writer::{ScreenMode, TerminalWriter, UiAnchor, inline_active_widgets};
+pub use terminal_presenter::TerminalPresenter;
+pub use terminal_writer::{
+    PresentTimings, ScreenMode, TerminalWriter, UiAnchor, inline_active_widgets,
+};
 pub use tick_strategy::{
     ActiveOnly, ActivePlusAdjacent, AllocationCurve, Custom, DecayConfig, MarkovPredictor,
     Predictive, PredictiveConfig, PredictiveStrategyConfig, ScreenPrediction, ScreenTickDispatch,
