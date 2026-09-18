@@ -1738,6 +1738,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "unicode-bidi",
  "unicode-segmentation",
  "unicode-width",
  "web-time",
