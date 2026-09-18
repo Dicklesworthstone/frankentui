@@ -66,6 +66,9 @@ pub const TARGET_A11Y: &str = "ftui.a11y";
 /// Grapheme width cache operations and misses.
 pub const TARGET_WIDTH_CACHE: &str = "ftui.text.width_cache";
 
+/// Runtime locale and text direction changes.
+pub const TARGET_LOCALE: &str = "ftui.runtime.locale";
+
 // ============================================================================
 // Span names
 // ============================================================================
@@ -322,6 +325,7 @@ pub const ALL_TARGETS: &[&str] = &[
     TARGET_GUARDRAILS,
     TARGET_A11Y,
     TARGET_WIDTH_CACHE,
+    TARGET_LOCALE,
 ];
 
 /// Complete list of registered span names.

@@ -66,7 +66,9 @@ use crate::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
 use crate::terminal_presenter::TerminalPresenter;
-use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, TerminalWriter, UiAnchor};
+#[cfg(any(feature = "crossterm-compat", test))]
+use crate::terminal_writer::TerminalWriter;
+use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, UiAnchor};
 use crate::voi_sampling::{VoiConfig, VoiSampler};
 use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor, ConformalStatus};
 #[cfg(feature = "asupersync-executor")]
@@ -7383,6 +7385,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         frame.set_links(links);
         frame.set_widget_budget(self.widget_refresh_plan.as_budget());
         frame.set_arena(&self.frame_arena);
+        frame.text_direction = self.locale_context.direction().into();
         if let Some(builder) = a11y_builder.as_mut() {
             frame.set_a11y(builder);
         }
@@ -7607,6 +7610,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         let mut frame = Frame::new(self.width, frame_height, pool);
         frame.set_degradation(self.budget.degradation());
         frame.set_arena(&self.frame_arena);
+        frame.text_direction = self.locale_context.direction().into();
 
         let view_start = Instant::now();
         let _view_span = debug_span!(

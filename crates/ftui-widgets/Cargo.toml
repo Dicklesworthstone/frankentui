@@ -19,6 +19,7 @@ debug-overlay = []
 regex-search = ["dep:regex"]
 state-persistence = ["dep:serde"]
 tracing = ["dep:tracing", "ftui-render/tracing"]
+bidi = ["ftui-text/bidi"]
 
 [lints]
 workspace = true
@@ -47,6 +48,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["registry"] }
+unicode-bidi = "0.3.18"
 
 [[bench]]
 name = "widget_bench"

@@ -258,6 +258,16 @@ pub struct Subscription {
     _guard: Box<dyn std::any::Any>,
 }
 
+impl Subscription {
+    /// Combine multiple subscriptions into a single composite subscription.
+    #[must_use]
+    pub fn composite(subscriptions: Vec<Subscription>) -> Self {
+        Self {
+            _guard: Box::new(subscriptions),
+        }
+    }
+}
+
 impl std::fmt::Debug for Subscription {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Subscription").finish_non_exhaustive()

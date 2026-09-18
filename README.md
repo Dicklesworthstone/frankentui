@@ -378,11 +378,13 @@ See `docs/telemetry.md` for integration patterns and trace‑parent attachment.
 
 | Crate | Feature | What It Enables |
 |------|---------|------------------|
+| `ftui` | `bidi` | Bidirectional text reordering via `unicode-bidi` (default) |
 | `ftui-core` | `tracing` | Structured spans for terminal lifecycle |
 | `ftui-core` | `tracing-json` | JSON output via tracing-subscriber |
 | `ftui-render` | `tracing` | Performance spans for diff/presenter |
 | `ftui-runtime` | `tracing` | Runtime loop instrumentation |
 | `ftui-runtime` | `telemetry` | OpenTelemetry export (OTLP) |
+| `ftui-widgets` | `bidi` | BiDi reordering and RTL cursor support for widgets |
 
 Enable features per-crate in your `Cargo.toml` as needed.
 

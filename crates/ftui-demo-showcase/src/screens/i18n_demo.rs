@@ -13,6 +13,7 @@ use ftui_i18n::plural::PluralForms;
 use ftui_layout::{Constraint, Flex, FlowDirection};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
+use ftui_runtime::locale::{LocaleContext, TextDirection};
 use ftui_style::Style;
 use ftui_text::{
     WrapMode, display_width, grapheme_count, grapheme_width, graphemes,
@@ -34,37 +35,36 @@ const LOCALES: &[LocaleInfo] = &[
         tag: "en",
         name: "English",
         native: "English",
-        rtl: false,
     },
     LocaleInfo {
         tag: "es",
         name: "Spanish",
         native: "Espa\u{f1}ol",
-        rtl: false,
     },
     LocaleInfo {
         tag: "fr",
         name: "French",
         native: "Fran\u{e7}ais",
-        rtl: false,
     },
     LocaleInfo {
         tag: "ru",
         name: "Russian",
         native: "\u{420}\u{443}\u{441}\u{441}\u{43a}\u{438}\u{439}",
-        rtl: false,
     },
     LocaleInfo {
         tag: "ar",
         name: "Arabic",
         native: "\u{627}\u{644}\u{639}\u{631}\u{628}\u{64a}\u{629}",
-        rtl: true,
+    },
+    LocaleInfo {
+        tag: "de",
+        name: "German",
+        native: "Deutsch",
     },
     LocaleInfo {
         tag: "ja",
         name: "Japanese",
         native: "\u{65e5}\u{672c}\u{8a9e}",
-        rtl: false,
     },
 ];
 
@@ -72,7 +72,6 @@ struct LocaleInfo {
     tag: &'static str,
     name: &'static str,
     native: &'static str,
-    rtl: bool,
 }
 
 const PANEL_COUNT: usize = 4;
@@ -226,6 +225,7 @@ const TRICKY_CASES: &[TrickyCase] = &[
 
 pub struct I18nDemo {
     locale_idx: usize,
+    pub locale_ctx: LocaleContext,
     catalog: StringCatalog,
     plural_count: i64,
     interp_name: &'static str,
@@ -248,6 +248,7 @@ impl I18nDemo {
     pub fn new() -> Self {
         Self {
             locale_idx: 0,
+            locale_ctx: LocaleContext::new("en"),
             catalog: build_catalog(),
             plural_count: 1,
             interp_name: "Alice",
@@ -268,17 +269,28 @@ impl I18nDemo {
         &LOCALES[self.locale_idx]
     }
     fn flow(&self) -> FlowDirection {
-        if self.current_info().rtl {
+        if self.locale_ctx.direction().is_rtl() {
             FlowDirection::Rtl
         } else {
             FlowDirection::Ltr
         }
     }
+    pub fn select_locale(&mut self, idx: usize) {
+        if idx < LOCALES.len() {
+            self.locale_idx = idx;
+            self.locale_ctx.set_locale(self.current_locale());
+            self.locale_ctx.set_direction(None);
+        }
+    }
     fn next_locale(&mut self) {
         self.locale_idx = (self.locale_idx + 1) % LOCALES.len();
+        self.locale_ctx.set_locale(self.current_locale());
+        self.locale_ctx.set_direction(None);
     }
     fn prev_locale(&mut self) {
         self.locale_idx = (self.locale_idx + LOCALES.len() - 1) % LOCALES.len();
+        self.locale_ctx.set_locale(self.current_locale());
+        self.locale_ctx.set_direction(None);
     }
 
     fn current_sample_set(&self) -> &'static SampleSet {
@@ -348,10 +360,16 @@ impl I18nDemo {
     }
 
     fn toggle_rtl(&mut self) {
-        let current_rtl = self.current_info().rtl;
-        let target_rtl = !current_rtl;
-        if let Some(idx) = LOCALES.iter().position(|loc| loc.rtl == target_rtl) {
-            self.locale_idx = idx;
+        let current_dir = self.locale_ctx.direction();
+        let target_dir = match current_dir {
+            TextDirection::Ltr => TextDirection::Rtl,
+            TextDirection::Rtl => TextDirection::Ltr,
+        };
+        let base_dir = TextDirection::for_locale(self.current_locale());
+        if target_dir == base_dir {
+            self.locale_ctx.set_direction(None);
+        } else {
+            self.locale_ctx.set_direction(Some(target_dir));
         }
     }
 
@@ -507,10 +525,13 @@ impl I18nDemo {
                 .catalog
                 .format(locale, "welcome", &[("name", self.interp_name)])
                 .unwrap_or_else(|| format!("Welcome, {}!", self.interp_name));
-            let dir = self
-                .catalog
-                .get(locale, "direction")
-                .unwrap_or(if info.rtl { "RTL" } else { "LTR" });
+            let dir = self.catalog.get(locale, "direction").unwrap_or(
+                if self.locale_ctx.direction().is_rtl() {
+                    "RTL"
+                } else {
+                    "LTR"
+                },
+            );
             let text = format!(
                 "--- {} ---\n\n  {}\n  {}\n\n  Locale: {} ({})\n  Direction: {}\n  Flow: {:?}",
                 title, greeting, welcome, info.name, info.native, dir, flow
@@ -912,7 +933,14 @@ impl I18nDemo {
                 graphemes.max(1)
             )
         } else {
-            format!("Dir: {}", if info.rtl { "RTL" } else { "LTR" })
+            format!(
+                "Dir: {}",
+                if self.locale_ctx.direction().is_rtl() {
+                    "RTL"
+                } else {
+                    "LTR"
+                }
+            )
         };
         Paragraph::new(format!(
             " 1-4: panels ({})  L/R: locale  {}  Current: {} ({}) ",
@@ -987,6 +1015,7 @@ impl Screen for I18nDemo {
         if area.is_empty() {
             return;
         }
+        frame.text_direction = self.locale_ctx.direction().into();
         let rows = Flex::vertical()
             .constraints([Constraint::Fixed(3), Constraint::Fill, Constraint::Fixed(1)])
             .split(area);
@@ -1200,6 +1229,29 @@ fn build_catalog() -> StringCatalog {
     );
     catalog.add_locale("ar", ar);
 
+    let mut de = LocaleStrings::new();
+    de.insert("demo.title", "Internationalisierung");
+    de.insert("greeting", "Hallo!");
+    de.insert("welcome", "Willkommen, {name}!");
+    de.insert("direction", "Links nach rechts");
+    de.insert_plural(
+        "items",
+        PluralForms {
+            one: "{count} Element".into(),
+            other: "{count} Elemente".into(),
+            ..Default::default()
+        },
+    );
+    de.insert_plural(
+        "files",
+        PluralForms {
+            one: "{count} Datei".into(),
+            other: "{count} Dateien".into(),
+            ..Default::default()
+        },
+    );
+    catalog.add_locale("de", de);
+
     let mut ja = LocaleStrings::new();
     ja.insert("demo.title", "\u{56fd}\u{969b}\u{5316}");
     ja.insert(
@@ -1287,7 +1339,7 @@ mod tests {
     #[test]
     fn cycle_locales() {
         let mut d = I18nDemo::new();
-        for e in ["es", "fr", "ru", "ar", "ja", "en"] {
+        for e in ["es", "fr", "ru", "ar", "de", "ja", "en"] {
             d.next_locale();
             assert_eq!(d.current_locale(), e);
         }
@@ -1304,8 +1356,17 @@ mod tests {
         while d.current_locale() != "ar" {
             d.next_locale();
         }
-        assert!(d.current_info().rtl);
+        assert!(d.locale_ctx.direction().is_rtl());
         assert_eq!(d.flow(), FlowDirection::Rtl);
+    }
+    #[test]
+    fn german_is_ltr() {
+        let mut d = I18nDemo::new();
+        while d.current_locale() != "de" {
+            d.next_locale();
+        }
+        assert!(!d.locale_ctx.direction().is_rtl());
+        assert_eq!(d.flow(), FlowDirection::Ltr);
     }
     #[test]
     fn catalog_has_all_locales() {
@@ -1456,15 +1517,13 @@ mod tests {
     }
 
     #[test]
-    fn toggle_rtl_switches_locale() {
+    fn toggle_rtl_switches_direction() {
         let mut d = I18nDemo::new();
-        assert!(!d.current_info().rtl);
+        assert!(!d.locale_ctx.direction().is_rtl());
         d.toggle_rtl();
-        assert!(d.current_info().rtl);
-        assert_eq!(d.current_locale(), "ar");
+        assert!(d.locale_ctx.direction().is_rtl());
         d.toggle_rtl();
-        assert!(!d.current_info().rtl);
-        assert_eq!(d.current_locale(), "en");
+        assert!(!d.locale_ctx.direction().is_rtl());
     }
 
     #[test]
@@ -1483,9 +1542,25 @@ mod tests {
     fn d_key_toggles_rtl() {
         let mut d = I18nDemo::new();
         d.update(&press(KeyCode::Char('d')));
-        assert!(d.current_info().rtl);
+        assert!(d.locale_ctx.direction().is_rtl());
         d.update(&press(KeyCode::Char('D')));
-        assert!(!d.current_info().rtl);
+        assert!(!d.locale_ctx.direction().is_rtl());
+    }
+
+    #[test]
+    fn german_catalog_coverage_is_complete() {
+        let c = build_catalog();
+        let report = c.coverage_report();
+        for loc in ["en", "es", "fr", "ru", "ar", "de", "ja"] {
+            let entry = report.locales.iter().find(|l| l.locale == loc);
+            assert!(entry.is_some(), "locale {} missing from coverage", loc);
+            let entry = entry.unwrap();
+            assert_eq!(
+                entry.coverage_percent, 100.0,
+                "locale {} has incomplete coverage: {}/{} keys ({:.1}%)",
+                loc, entry.present, report.total_keys, entry.coverage_percent
+            );
+        }
     }
 
     #[test]
