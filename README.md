@@ -1102,8 +1102,8 @@ This holds at ANY stopping time, with no peeking penalty.
 
 **Applications in FrankenTUI:**
 - Budget degradation decisions
-- Flake detection in tests
-- Allocation budget alerts
+- Flake detection in tests (experimental)
+- Allocation budget alerts (experimental)
 - Conformal prediction thresholds
 
 ### Conformal Alerting
@@ -1583,6 +1583,8 @@ Evidence Emission
 
 ## Formal Cost Models
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 The `cost_model` module (1,800 lines) provides closed-form cost models for three subsystems:
 
 ### Cache Cost Model
@@ -1626,6 +1628,8 @@ Applies to: ANSI emission, change run coalescing, event drain bursts
 
 ### Anytime-Valid Flake Detector
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 E2E timing tests use an **e-process** to detect flaky regressions without inflating false positives across the hundreds of frames tested:
 
 ```
@@ -1641,6 +1645,8 @@ Reject H₀ when E_t ≥ 1/α, valid at ANY stopping time.
 **Why this matters:** traditional significance tests become unreliable when you check p-values after every frame (the "peeking problem"). E-processes eliminate this entirely.
 
 ### Alpha-Investing (Sequential FDR Control)
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 When many monitors fire simultaneously (budget alerts, degradation triggers, capability decisions), testing each at a fixed alpha inflates false discoveries. Alpha-Investing treats significance as a **spendable resource**:
 
@@ -1663,6 +1669,8 @@ FDR guarantee:
 ---
 
 ## Rough-Path Signatures
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 The `rough_path` module implements **rough-path signatures** for sequential trace feature extraction, a technique from stochastic analysis:
 
@@ -2055,6 +2063,46 @@ VOI = 1/12 - 1/18 = 1/36
 
 Both possible observations contribute to the expectation. The sampler compares
 the scaled gain with cost, subject to its minimum and maximum sampling intervals.
+
+---
+
+## Experimental modules
+
+These modules compile only with `--features experimental` on the crate that owns them. They are research code with unit tests and no production consumer; APIs may change or be removed without notice.
+
+```toml
+ftui-runtime = { version = "0.8", features = ["experimental"] }
+```
+
+| Crate | Module | What it is | Status |
+|-------|--------|------------|--------|
+| `ftui-render` | `roaring_bitmap` | Minimal Roaring Bitmap for cell-level dirty region tracking | `experimental` |
+| `ftui-runtime` | `allocation_budget` | Sequential allocation leak detection using CUSUM and e-processes | `merge pending (G13)` |
+| `ftui-runtime` | `alpha_investing` | Sequential FDR control for multiple simultaneous statistical monitors | `experimental` |
+| `ftui-runtime` | `conformal_alert` | Conformal alert threshold calibration with anytime-valid e-process control | `experimental` |
+| `ftui-runtime` | `conformal_frame_guard` | Conformal frame guard for frame timing with explicit unavailable bounds | `experimental` |
+| `ftui-runtime` | `conformal_stages` | Multi-stage Mondrian conformal prediction for render pipeline timing | `experimental` |
+| `ftui-runtime` | `cost_model` | Formal mathematical cost models for caches, scheduling, and batching | `experimental` |
+| `ftui-runtime` | `countmin_sketch` | Count-Min Sketch with PAC-Bayes error budgeting for timeline aggregation | `experimental` |
+| `ftui-runtime` | `degradation_cascade` | Cascade from conformal frame guard risk detection through budget controller to widget priority | `merge pending (G13)` |
+| `ftui-runtime` | `diff_evidence` | Bayesian diff strategy evidence ledger in a fixed-capacity ring buffer | `merge pending (G13)` |
+| `ftui-runtime` | `eprocess_throttle` | Anytime-valid adaptive recompute throttle using GRAPA test martingales | `merge pending (G13)` |
+| `ftui-runtime` | `evidence_bridges` | Convert domain-specific decision types into unified evidence ledger records | `experimental` |
+| `ftui-runtime` | `flake_detector` | Anytime-valid test martingale detector for flaky timing regressions in E2E tests | `experimental` |
+| `ftui-runtime` | `flat_combine` | Caller-driven flat combining for batched operation dispatch | `experimental` |
+| `ftui-runtime` | `ivm` | Incremental View Maintenance (IVM) delta-propagation DAG for derived render state | `experimental` |
+| `ftui-runtime` | `lens` | Bidirectional algebraic lenses for state-widget binding | `experimental` |
+| `ftui-runtime` | `policy_config` | Policy-as-data configuration capturing tunable parameters across the decision stack | `experimental` |
+| `ftui-runtime` | `policy_registry` | Thread-safe registry of named policy configurations with lock-free reads and atomic hot-swap | `experimental` |
+| `ftui-runtime` | `resize_sla` | Resize SLA monitoring with conformal alerting | `experimental` |
+| `ftui-runtime` | `reversible` | Reversible computing primitives where mutations know their own inverses for undo | `experimental` |
+| `ftui-runtime` | `rough_path` | Rough-path signatures for sequential trace feature extraction | `experimental` |
+| `ftui-runtime` | `schedule_trace` | Deterministic golden trace infrastructure for async task manager testing | `experimental` |
+| `ftui-runtime` | `slo` | Machine-readable SLO definitions, breach detection, and safe-mode enforcement | `experimental` |
+| `ftui-runtime` | `sos_barrier` | Sum-of-squares (SOS) polynomial barrier certificate evaluator for frame-budget admissibility | `experimental` |
+| `ftui-runtime` | `timeline_aggregator` | Bounded-memory action timeline event aggregation and change-point alerting | `experimental` |
+| `ftui-runtime` | `validation_pipeline` | Expected-cost validation ordering with Bayesian online learning | `experimental` |
+| `ftui-runtime` | `wasm_runner` | Step-based synchronous program runner driving a Model without background threads | `experimental` |
 
 ---
 
@@ -2649,6 +2697,8 @@ Scroll-region without synchronized output: the fast path is the same DECSTBM reg
 
 ## Incremental View Maintenance (IVM)
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 Rather than recomputing layouts, styled text, and visibility flags from scratch every frame, FrankenTUI can propagate *deltas* through a DAG of view operators:
 
 ```
@@ -2673,6 +2723,8 @@ This is the same technique used by materialized-view databases (e.g., Materializ
 ---
 
 ## SOS Barrier Certificates
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 Frame-budget admissibility is checked using a **sum-of-squares (SOS) polynomial barrier certificate**, precomputed offline via semidefinite programming:
 
@@ -2724,6 +2776,8 @@ The key insight: S3-FIFO is scan-resistant without the overhead of an LRU doubly
 
 ## Flat Combining
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 When multiple event sources (timers, background tasks, input) post operations concurrently, **flat combining** batches them into a single pass. One thread becomes the "combiner" and executes ALL pending operations while holding the state lock:
 
 ```
@@ -2745,6 +2799,8 @@ Benefits over a bare `Mutex`:
 ---
 
 ## Bidirectional Lenses
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 The `lens` module provides algebraic lenses for binding widgets to model subfields:
 
@@ -2836,6 +2892,8 @@ Widgets opt in by implementing the `Stateful` trait. On program start, the regis
 
 ## SLO Schema & Breach Detection
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 FrankenTUI supports machine-readable **Service Level Objectives** for runtime behavior:
 
 ```yaml
@@ -2872,6 +2930,8 @@ When an SLO is breached, the runtime can enter safe mode (reduced rendering, agg
 ---
 
 ## Multi-Stage Conformal Monitoring
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 Individual render pipeline stages have independent conformal monitors:
 
