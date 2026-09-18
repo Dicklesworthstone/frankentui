@@ -1450,6 +1450,69 @@ mod tests {
             (0..width).map(|x| cell_at(&frame, x, 0).bg == bg).collect()
         }
 
+        /// Render a 40x1 indeterminate bar at `phase` and describe the row as
+        /// `#` for gauge-filled columns and `.` for the rest.
+        ///
+        /// The fill is a space carrying a background colour, not a glyph, so
+        /// there is nothing to pin as text: the row's identity is which
+        /// columns are filled, and that is what these render as.
+        fn marquee_row(phase: u64) -> String {
+            let bg = PackedRgba::BLUE;
+            let pb = ProgressBar::new()
+                .indeterminate(phase)
+                .gauge_style(Style::new().bg(bg));
+            gauge_cols(&pb, 40, bg)
+                .into_iter()
+                .map(|filled| if filled { '#' } else { '.' })
+                .collect()
+        }
+
+        // The three phase snapshots required by bd-g00-root-epic-ewths.23.1.
+        // Width 40 gives seg = 8 and period = 48, so the segment enters from
+        // the left over phases 0..8 before it starts to travel; these three
+        // pin the entry, which is where an off-by-one in the span maths shows
+        // up first and where a clamp bug would let the segment start wider
+        // than it should.
+
+        #[test]
+        fn progress_indeterminate_phase0_40x1() {
+            // Phase 0 is the boundary: the segment has not entered, so no
+            // column is filled. A regression that fails to clamp would paint
+            // the whole row here.
+            assert_eq!(marquee_row(0), ".".repeat(40));
+        }
+
+        #[test]
+        fn progress_indeterminate_phase3_40x1() {
+            assert_eq!(
+                marquee_row(3),
+                format!("{}{}", "#".repeat(3), ".".repeat(37))
+            );
+        }
+
+        #[test]
+        fn progress_indeterminate_phase7_40x1() {
+            assert_eq!(
+                marquee_row(7),
+                format!("{}{}", "#".repeat(7), ".".repeat(33))
+            );
+        }
+
+        #[test]
+        fn progress_indeterminate_phases_are_distinct_positions() {
+            // The three snapshots above all sit at the left edge because the
+            // segment is still entering. This pins a phase from each later
+            // part of the sweep, so "the segment moves" is actually asserted
+            // rather than implied.
+            assert_eq!(
+                marquee_row(20),
+                format!("{}{}{}", ".".repeat(12), "#".repeat(8), ".".repeat(20))
+            );
+            assert_eq!(marquee_row(47), format!("{}#", ".".repeat(39)));
+            // One period later the row repeats exactly.
+            assert_eq!(marquee_row(48 + 20), marquee_row(20));
+        }
+
         #[test]
         fn indeterminate_marquee_wraps() {
             // width 40, seg = 40/5 = 8, period = 48.
