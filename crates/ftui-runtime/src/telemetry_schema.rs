@@ -162,6 +162,74 @@ pub mod event {
 }
 
 // ============================================================================
+// Canonical evidence event names
+// ============================================================================
+
+/// Structured evidence events emitted through the evidence sink.
+pub mod evidence {
+    /// Screen reader announcement.
+    pub const A11Y_ANNOUNCEMENT: &str = "a11y_announcement";
+    /// Accessibility tree snapshot/diff.
+    pub const A11Y_TREE: &str = "a11y_tree";
+    /// Memory allocation budget configuration.
+    pub const ALLOCATION_BUDGET_CONFIG: &str = "allocation_budget_config";
+    /// Allocation budget observation/evidence.
+    pub const ALLOCATION_BUDGET_EVIDENCE: &str = "allocation_budget_evidence";
+    /// Bayesian online changepoint detection.
+    pub const BOCPD: &str = "bocpd";
+    /// Frame budget PID controller decision.
+    pub const BUDGET_DECISION: &str = "budget_decision";
+    /// Terminal capability query decision.
+    pub const CAPABILITY_DECISION: &str = "capability_decision";
+    /// Degradation certificate decision.
+    pub const CERTIFICATE_DECISION: &str = "certificate_decision";
+    /// Resize coalescer configuration.
+    pub const CONFIG: &str = "config";
+    /// Event loop cycle time percentiles.
+    pub const CYCLE_TIME_PERCENTILES: &str = "cycle_time_percentiles";
+    /// Resize coalescer decision.
+    pub const DECISION: &str = "decision";
+    /// Detailed Bayesian decision evidence.
+    pub const DECISION_EVIDENCE: &str = "decision_evidence";
+    /// Diff strategy selection decision.
+    pub const DIFF_DECISION: &str = "diff_decision";
+    /// Diff regime change transition.
+    pub const DIFF_REGIME_TRANSITION: &str = "diff_regime_transition";
+    /// Scheduler effect queue selection.
+    pub const EFFECT_QUEUE_SELECT: &str = "effect_queue_select";
+    /// Scheduler fairness configuration.
+    pub const FAIRNESS_CONFIG: &str = "fairness_config";
+    /// Scheduler fairness dispatch decision.
+    pub const FAIRNESS_DECISION: &str = "fairness_decision";
+    /// Frame guardrails state snapshot.
+    pub const GUARDRAIL_SNAPSHOT: &str = "guardrail_snapshot";
+    /// Inline render strategy selection.
+    pub const INLINE_STRATEGY: &str = "inline_strategy";
+    /// Inline strategy fallback event.
+    pub const INLINE_STRATEGY_FALLBACK: &str = "inline_strategy_fallback";
+    /// Regime transition in coalescer.
+    pub const REGIME_TRANSITION: &str = "regime_transition";
+    /// Session lifecycle summary.
+    pub const SUMMARY: &str = "summary";
+    /// Task executor backend configuration.
+    pub const TASK_EXECUTOR_BACKEND: &str = "task_executor_backend";
+    /// Task executor backpressure event.
+    pub const TASK_EXECUTOR_BACKPRESSURE: &str = "task_executor_backpressure";
+    /// Task executor task completion.
+    pub const TASK_EXECUTOR_COMPLETE: &str = "task_executor_complete";
+    /// Task executor panic report.
+    pub const TASK_EXECUTOR_PANIC: &str = "task_executor_panic";
+    /// Value of information sampling decision.
+    pub const VOI_DECISION: &str = "voi_decision";
+    /// Value of information observation.
+    pub const VOI_OBSERVE: &str = "voi_observe";
+    /// Widget tree refresh notification.
+    pub const WIDGET_REFRESH: &str = "widget_refresh";
+    /// Grapheme width cache statistics.
+    pub const WIDTH_CACHE_STATS: &str = "width_cache_stats";
+}
+
+// ============================================================================
 // Metric names
 // ============================================================================
 
@@ -307,6 +375,40 @@ pub const ALL_METRICS: &[&str] = &[
     metric::EFFECTS_QUEUE_DROPPED,
     metric::EFFECTS_QUEUE_HIGH_WATER,
     metric::EFFECTS_QUEUE_IN_FLIGHT,
+];
+
+/// Complete list of registered evidence event names.
+pub const ALL_EVIDENCE_EVENTS: &[&str] = &[
+    evidence::A11Y_ANNOUNCEMENT,
+    evidence::A11Y_TREE,
+    evidence::ALLOCATION_BUDGET_CONFIG,
+    evidence::ALLOCATION_BUDGET_EVIDENCE,
+    evidence::BOCPD,
+    evidence::BUDGET_DECISION,
+    evidence::CAPABILITY_DECISION,
+    evidence::CERTIFICATE_DECISION,
+    evidence::CONFIG,
+    evidence::CYCLE_TIME_PERCENTILES,
+    evidence::DECISION,
+    evidence::DECISION_EVIDENCE,
+    evidence::DIFF_DECISION,
+    evidence::DIFF_REGIME_TRANSITION,
+    evidence::EFFECT_QUEUE_SELECT,
+    evidence::FAIRNESS_CONFIG,
+    evidence::FAIRNESS_DECISION,
+    evidence::GUARDRAIL_SNAPSHOT,
+    evidence::INLINE_STRATEGY,
+    evidence::INLINE_STRATEGY_FALLBACK,
+    evidence::REGIME_TRANSITION,
+    evidence::SUMMARY,
+    evidence::TASK_EXECUTOR_BACKEND,
+    evidence::TASK_EXECUTOR_BACKPRESSURE,
+    evidence::TASK_EXECUTOR_COMPLETE,
+    evidence::TASK_EXECUTOR_PANIC,
+    evidence::VOI_DECISION,
+    evidence::VOI_OBSERVE,
+    evidence::WIDGET_REFRESH,
+    evidence::WIDTH_CACHE_STATS,
 ];
 
 #[cfg(test)]
@@ -538,6 +640,61 @@ mod tests {
         assert_eq!(
             TARGET_WIDTH_CACHE,
             ftui_core::text_width::TARGET_WIDTH_CACHE
+        );
+    }
+
+    #[test]
+    fn all_targets_include_guardrails_and_a11y() {
+        assert!(ALL_TARGETS.contains(&TARGET_GUARDRAILS));
+        assert!(ALL_TARGETS.contains(&TARGET_A11Y));
+    }
+
+    #[test]
+    fn all_targets_unique_and_prefixed() {
+        let mut seen = std::collections::HashSet::new();
+        for target in ALL_TARGETS {
+            assert!(
+                target.starts_with("ftui."),
+                "target must start with ftui.: {target}"
+            );
+            assert!(seen.insert(target), "duplicate target: {target}");
+        }
+    }
+
+    #[test]
+    fn all_evidence_events_unique_and_snake_case() {
+        let mut seen = std::collections::HashSet::new();
+        for event in ALL_EVIDENCE_EVENTS {
+            assert!(
+                event
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "evidence event must be snake_case: {event}"
+            );
+            assert!(seen.insert(event), "duplicate evidence event: {event}");
+        }
+    }
+
+    #[test]
+    fn schema_events_match_constants() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        let schema_path = root.join("tests/e2e/lib/e2e_evidence_schema.json");
+        let text = std::fs::read_to_string(&schema_path).expect("e2e_evidence_schema.json");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        let events_obj = json
+            .get("events")
+            .and_then(|v| v.as_object())
+            .expect("events object");
+        let schema_keys: std::collections::BTreeSet<&str> =
+            events_obj.keys().map(String::as_str).collect();
+        let const_keys: std::collections::BTreeSet<&str> =
+            ALL_EVIDENCE_EVENTS.iter().copied().collect();
+        assert_eq!(
+            schema_keys, const_keys,
+            "evidence schema events must match ALL_EVIDENCE_EVENTS"
         );
     }
 }
