@@ -57,6 +57,19 @@
     "threshold_pct": 10
   },
 
+  "diff_200x60_sparse": {
+    "description": "Diff computation on 200x60 buffer with tile prefilter (5% change)",
+    "criterion_name": "diff/sparse_5pct/200x60",
+    "bench_file": "diff_bench",
+    "crate": "ftui-render",
+    "slo_metric": "diff_sparse_200x60_p99_ns",
+    "p50_ns":   21000,
+    "p95_ns":   42000,
+    "p99_ns":   84000,
+    "p999_ns": 200000,
+    "threshold_pct": 10
+  },
+
   "widget_render_block": {
     "description": "Block widget render time (borders + title, 80x24)",
     "criterion_name": "widget/block/bordered/80x24",
