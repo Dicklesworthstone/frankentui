@@ -1,24 +1,24 @@
 ╭──────────────────────── Accessibility Control Panel ─────────────────────────╮
 │Active Theme: Cyberpunk Aurora                                                │
 │Base Theme: Cyberpunk Aurora  Mode: Standard                                  │
-│Motion: Full (1.0x)  Large Text: ON                                           │
+│Motion: Full (1.0x)  Large Text: OFF                                          │
 │Shortcuts: h = contrast, m = motion, l = large text                           │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭────────────────────────────────── Toggles ───────────────────────────────────╮
 │ [h] High Contrast: OFF                                                       │
 │ [m] Reduced Motion: OFF                                                      │
-│ [l] Large Text: ON                                                           │
-│Shift+A opens the compact overlay                                             │
+│ [l] Large Text: OFF                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-╭─────────────────────────────── WCAG Contrast ────────────────────────────────╮
-│Primary on Base    13.6:1 AAA                                                 │
-│Secondary on Base   8.7:1 AAA                                                 │
-│Accent Primary      7.2:1 AAA                                                 │
-│Accent Warning     13.7:1 AAA                                                 │
-│Accent Error        4.7:1 AA                                                  │
+╭ Tree · previous frame ───────────────────────────────────────────────────────╮
+│nodes=2 focused=2                                                             │
+│Group "Dashboard" [] @0,0 80x24                                               │
+│  Button "Refresh" [] @1,1 10x1                                               │
 │                                                                              │
-│Minimum ratio: 4.7:1 AA                                                       │
-│AA >= 4.5, AAA >= 7.0, Large Text >= 3.0                                      │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────── A11y Telemetry ───────────────────────────────╮
+│No a11y events yet. Toggle a mode to emit telemetry.                          │
+│                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯

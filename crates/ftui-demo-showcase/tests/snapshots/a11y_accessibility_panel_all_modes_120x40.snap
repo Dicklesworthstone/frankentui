@@ -5,36 +5,36 @@
 │Shortcuts: h = contrast, m = motion, l = large text                                                                   │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭──────────────────────── Toggles ─────────────────────────╮╭───────────────────── WCAG Contrast ──────────────────────╮
-│ [h] High Contrast: ON                                    ││Primary on Base    21.0:1 AAA                             │
-│ [m] Reduced Motion: ON                                   ││Secondary on Base  16.8:1 AAA                             │
-│ [l] Large Text: ON                                       ││Accent Primary     16.7:1 AAA                             │
-│Shift+A opens the compact overlay                         ││Accent Warning     19.6:1 AAA                             │
-│                                                          ││Accent Error        7.3:1 AAA                             │
-│                                                          ││                                                          │
-╰──────────────────────────────────────────────────────────╯│Minimum ratio: 7.3:1 AAA                                  │
-╭────────────────────── Live Preview ──────────────────────╮│AA >= 4.5, AAA >= 7.0, Large Text >= 3.0                  │
-│Preview text                                              │╰──────────────────────────────────────────────────────────╯
-│The quick brown fox jumps over the lazy dog.              │╭───────────────────── A11y Telemetry ─────────────────────╮
-│Links look like this and code looks like fn main()        ││No a11y events yet. Toggle a mode to emit telemetry.      │
-│Status: OK  Error                                         ││                                                          │
-│Animations paused                                         ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-│                                                          ││                                                          │
-╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯
+╭──────────────────── Toggles ─────────────────────╮╭───────────────────────── WCAG Contrast ──────────────────────────╮
+│ [h] High Contrast: ON                            ││Primary on Base    21.0:1 AAA                                     │
+│ [m] Reduced Motion: ON                           ││Secondary on Base  16.8:1 AAA                                     │
+│ [l] Large Text: ON                               ││Accent Primary     16.7:1 AAA                                     │
+│Shift+A opens the compact overlay                 ││Accent Warning     19.6:1 AAA                                     │
+╰──────────────────────────────────────────────────╯│Accent Error        7.3:1 AAA                                     │
+╭────────────────── Live Preview ──────────────────╮│                                                                  │
+│Preview text                                      ││Minimum ratio: 7.3:1 AAA                                          │
+│The quick brown fox jumps over the lazy dog.      ││AA >= 4.5, AAA >= 7.0, Large Text >= 3.0                          │
+│Links look like this and code looks like fn main()│╰──────────────────────────────────────────────────────────────────╯
+│Status: OK  Error                                 │╭───────────────────────── A11y Telemetry ─────────────────────────╮
+│Animations paused                                 ││No a11y events yet. Toggle a mode to emit telemetry.              │
+╰──────────────────────────────────────────────────╯│                                                                  │
+╭ Tree · previous frame ───────────────────────────╮│                                                                  │
+│accessibility tree disabled                       ││                                                                  │
+│(ProgramConfig::with_accessibility)               ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+│                                                  ││                                                                  │
+╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────╯

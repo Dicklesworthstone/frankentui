@@ -62,6 +62,14 @@ const PREVIEW_HEIGHT: u16 = 7;
 /// Rows the WCAG block needs: eight lines plus its border.
 const WCAG_HEIGHT: u16 = 10;
 
+/// Rows below which a tree block shows too little of the dump to be worth it:
+/// its `nodes=/focused=` header, two dump lines, and the border.
+const TREE_MIN_HEIGHT: u16 = 5;
+
+/// Rows below which a telemetry block cannot show even one entry: one line
+/// plus the border.
+const TELEMETRY_MIN_HEIGHT: u16 = 3;
+
 #[derive(Clone, Copy)]
 struct A11yEventEntry {
     kind: A11yEventKind,
@@ -717,18 +725,68 @@ impl Screen for AccessibilityPanel {
             self.render_wcag(frame, right_rows[0]);
             self.render_telemetry(frame, right_rows[1]);
         } else {
-            let telemetry_height = if rows[1].height >= 16 { 5 } else { 0 };
-            let stack = Flex::vertical()
-                .constraints([
-                    Constraint::Fixed(5),
-                    Constraint::Min(1),
-                    Constraint::Fixed(telemetry_height),
-                ])
-                .split(rows[1]);
-            self.layout_toggles.set(stack[0]);
-            self.render_toggles(frame, stack[0]);
-            self.render_tree(frame, stack[1]);
-            self.render_telemetry(frame, stack[2]);
+            // Stacked at full width, so no line has to be cut and height is
+            // what decides the contents. Blocks join in priority order while
+            // they still fit whole, rather than every block being squeezed
+            // until several of them show nothing; the last one in takes the
+            // leftover rows.
+            #[derive(Clone, Copy)]
+            enum Panel {
+                Toggles,
+                Wcag,
+                Preview,
+                Tree,
+                Telemetry,
+            }
+
+            const STACK_ORDER: [(Panel, u16); 5] = [
+                (Panel::Toggles, TOGGLES_HEIGHT),
+                (Panel::Wcag, WCAG_HEIGHT),
+                (Panel::Preview, PREVIEW_HEIGHT),
+                (Panel::Tree, TREE_MIN_HEIGHT),
+                (Panel::Telemetry, TELEMETRY_MIN_HEIGHT),
+            ];
+
+            let mut panels = Vec::with_capacity(STACK_ORDER.len());
+            let mut constraints = Vec::with_capacity(STACK_ORDER.len());
+            let mut used = 0_u16;
+            for (panel, height) in STACK_ORDER {
+                if used.saturating_add(height) > rows[1].height {
+                    break;
+                }
+                used = used.saturating_add(height);
+                panels.push(panel);
+                constraints.push(Constraint::Fixed(height));
+            }
+
+            // Let whichever block came last grow into the rows nothing else
+            // claimed, instead of leaving a gap under the stack.
+            if let Some(last) = constraints.last_mut() {
+                *last = Constraint::Min(match panels[panels.len() - 1] {
+                    Panel::Toggles => TOGGLES_HEIGHT,
+                    Panel::Wcag => WCAG_HEIGHT,
+                    Panel::Preview => PREVIEW_HEIGHT,
+                    Panel::Tree => TREE_MIN_HEIGHT,
+                    Panel::Telemetry => TELEMETRY_MIN_HEIGHT,
+                });
+            }
+
+            let stack = Flex::vertical().constraints(constraints).split(rows[1]);
+            for (panel, area) in panels.iter().zip(stack.iter()) {
+                match panel {
+                    Panel::Toggles => {
+                        self.layout_toggles.set(*area);
+                        self.render_toggles(frame, *area);
+                    }
+                    Panel::Wcag => {
+                        self.layout_wcag.set(*area);
+                        self.render_wcag(frame, *area);
+                    }
+                    Panel::Preview => self.render_preview(frame, *area),
+                    Panel::Tree => self.render_tree(frame, *area),
+                    Panel::Telemetry => self.render_telemetry(frame, *area),
+                }
+            }
         }
     }
 

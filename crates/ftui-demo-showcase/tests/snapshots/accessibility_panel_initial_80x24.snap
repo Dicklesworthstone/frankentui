@@ -9,16 +9,16 @@
 │ [h] High Contrast: OFF                                                       │
 │ [m] Reduced Motion: OFF                                                      │
 │ [l] Large Text: OFF                                                          │
-│Shift+A opens the compact overlay                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ Tree · previous frame ───────────────────────────────────────────────────────╮
+│accessibility tree disabled (ProgramConfig::with_accessibility)               │
+│                                                                              │
+│                                                                              │
 │                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-╰──────────────────────────────── Live Preview ────────────────────────────────╯
-╭─────────────────────────────── WCAG Contrast ────────────────────────────────╮
-│Primary on Base    13.6:1 AAA                                                 │
-│Secondary on Base   8.7:1 AAA                                                 │
-│Accent Primary      7.2:1 AAA                                                 │
-│Accent Warning     13.7:1 AAA                                                 │
-│Accent Error        4.7:1 AA                                                  │
+╭─────────────────────────────── A11y Telemetry ───────────────────────────────╮
+│No a11y events yet. Toggle a mode to emit telemetry.                          │
+│                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
