@@ -162,6 +162,18 @@ impl CachedWidgetState {
             .map(|cache| cache.buffer.len() * size_of::<Cell>())
             .unwrap_or(0)
     }
+
+    /// Check whether a buffer is currently cached and clean.
+    #[must_use]
+    pub fn is_cached(&self) -> bool {
+        self.cache.is_some() && !self.dirty
+    }
+
+    /// The cache key from the last render, if any.
+    #[must_use]
+    pub fn last_key(&self) -> Option<u64> {
+        self.last_key
+    }
 }
 
 impl<W: Widget, K: CacheKey<W>> StatefulWidget for CachedWidget<W, K> {
