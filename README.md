@@ -1489,7 +1489,9 @@ Rewrite Rules (equality saturation):
 
 **How it works:** rather than applying rewrites greedily (which can miss global optima), the e-graph compactly represents *all* equivalent forms simultaneously. After saturation, the cheapest expression is extracted using a cost model that penalizes deep nesting and prefers constant propagation.
 
-**Result:** complex constraint layouts (nested flex + grid + min/max) are optimized to simpler equivalent forms before the solver runs, reducing both computation and allocation.
+**Where it runs: nowhere on the layout path, by measurement.** `ftui_layout::egraph::solve_layout` is a complete, tested alternative solver, but `Flex`/`Grid` do not call it and should not: benchmarked against `Flex::split` over the same constraint sets it is **4x to 19x slower** — 233 ns vs 1.99 µs for a typical three-way split, and 5.2 µs vs 99.8 µs for a pathological 200-constraint layout (`cargo bench -p ftui-layout --bench layout_bench -- layout/egraph`, numbers in [docs/perf/egraph_vs_flex_2026-09-18.md](docs/perf/egraph_vs_flex_2026-09-18.md)).
+
+Equality saturation buys a globally optimal expression, and for this problem that optimum is not worth its price: the constraint counts a terminal layout produces are small enough that the direct solver wins outright. The module stays because the saturation engine is a sound piece of work and the comparison is worth keeping honest, not because it is on a path to being switched on.
 
 ---
 
