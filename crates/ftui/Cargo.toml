@@ -26,6 +26,10 @@ native-backend = ["runtime", "ftui-runtime/native-backend"]
 crossterm = ["runtime", "ftui-core/crossterm", "ftui-runtime/crossterm-compat"]
 # Load/save keymaps (`ftui::prelude::KeyMap`) as TOML/JSON files.
 serde = ["ftui-core/serde"]
+# Portable-SIMD kernels for the printable-ASCII width fast path. Not default:
+# it needs a nightly with `portable_simd`, and the scalar path is correct and
+# already fast enough for short runs.
+simd = ["ftui-core/simd"]
 
 [lints]
 workspace = true

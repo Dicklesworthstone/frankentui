@@ -364,7 +364,7 @@ frankentui/
 │   ├── ftui-render/                   # Buffer, diff, ANSI presenter
 │   ├── ftui-runtime/                  # Elm/Bubbletea runtime
 │   ├── ftui-showcase-wasm/            # WASM showcase build
-│   ├── ftui-simd/                     # SIMD acceleration
+│   ├── ftui-simd/                     # Portable-SIMD ASCII + row-compare kernels (opt-in)
 │   ├── ftui-style/                    # Style + theme system
 │   ├── ftui-text/                     # Spans, segments, rope editor
 │   ├── ftui-tty/                      # TTY backend

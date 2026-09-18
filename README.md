@@ -254,7 +254,7 @@ fn main() -> std::io::Result<()> {
 |------|---------|--------|
 | `ftui-a11y` | Accessibility tree and node structures | Implemented |
 | `ftui-i18n` | Internationalization support | Implemented |
-| `ftui-simd` | SIMD acceleration | Reserved |
+| `ftui-simd` | Portable-SIMD ASCII detection and row compare (opt-in `simd` feature) | Implemented |
 
 ---
 
@@ -1951,6 +1951,14 @@ Every terminal cell is exactly **16 bytes**, fitting 4 cells per 64-byte cache l
 - **Cache efficiency:** 4 cells per cache line means sequential row scans hit L1 cache optimally
 - **SIMD comparison:** Single 128-bit comparison via `bits_eq()` for cell equality
 - **No heap allocation:** 99% of cells store their character inline; only complex graphemes (emoji, ZWJ sequences) use the grapheme pool
+
+That 128-bit comparison is the compiler's, not a hand-written kernel's, and
+measurement says to leave it that way: explicit `std::simd` row compares in
+`ftui-simd` run 3–4× *slower*, because safe code cannot view `&[Cell]` as lanes
+and has to build each vector with shifts and masks, while `bits_eq()` already
+lowers to one 128-bit compare. The `simd` feature therefore accelerates only the
+printable-ASCII width fast path, where the same kernels win by 5–44×. Numbers in
+[docs/perf/simd_kernels_2026-09-18.md](docs/perf/simd_kernels_2026-09-18.md).
 
 ### Block-Based Diff Algorithm
 
