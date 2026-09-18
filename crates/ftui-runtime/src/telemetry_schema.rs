@@ -63,6 +63,9 @@ pub const TARGET_GUARDRAILS: &str = "ftui.guardrails";
 /// (emitted only when `ProgramConfig::accessibility` is set).
 pub const TARGET_A11Y: &str = "ftui.a11y";
 
+/// Grapheme width cache operations and misses.
+pub const TARGET_WIDTH_CACHE: &str = "ftui.text.width_cache";
+
 // ============================================================================
 // Span names
 // ============================================================================
@@ -250,6 +253,7 @@ pub const ALL_TARGETS: &[&str] = &[
     TARGET_EPROCESS,
     TARGET_GUARDRAILS,
     TARGET_A11Y,
+    TARGET_WIDTH_CACHE,
 ];
 
 /// Complete list of registered span names.
@@ -428,6 +432,7 @@ mod tests {
             .unwrap_or_default();
         let this_file = root.join("crates/ftui-runtime/src/telemetry_schema.rs");
         let showcase_app = root.join("crates/ftui-demo-showcase/src/app.rs");
+        let core_lib = root.join("crates/ftui-core/src/lib.rs");
 
         fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else {
@@ -510,7 +515,7 @@ mod tests {
                 if !is_literal(line) {
                     continue;
                 }
-                if file == showcase_app && is_definition(line) {
+                if (file == showcase_app || file == core_lib) && is_definition(line) {
                     continue;
                 }
                 offenders.push(format!(
@@ -525,6 +530,14 @@ mod tests {
             offenders.is_empty(),
             "tracing targets and span names must use telemetry_schema constants:\n{}",
             offenders.join("\n")
+        );
+    }
+
+    #[test]
+    fn core_width_cache_target_matches_schema() {
+        assert_eq!(
+            TARGET_WIDTH_CACHE,
+            ftui_core::text_width::TARGET_WIDTH_CACHE
         );
     }
 }

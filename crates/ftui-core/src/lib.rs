@@ -370,6 +370,9 @@ pub mod text_width {
         width: usize,
     }
 
+    /// Tracing target for width cache operations and misses.
+    pub const TARGET_WIDTH_CACHE: &str = "ftui.text.width_cache";
+
     struct GraphemeWidthCache {
         entries: crate::s3_fifo::S3Fifo<u64, CachedGraphemeWidth>,
         hits: u64,
@@ -395,7 +398,7 @@ pub mod text_width {
 
             self.misses += 1;
             #[cfg(feature = "tracing")]
-            tracing::trace!(target: "ftui.text.width_cache", grapheme, key, "width cache miss");
+            tracing::trace!(target: TARGET_WIDTH_CACHE, grapheme, key, "width cache miss");
             let width = grapheme_width_uncached(grapheme);
             self.entries.insert(
                 key,
