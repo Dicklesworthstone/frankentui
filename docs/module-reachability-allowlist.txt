@@ -75,6 +75,11 @@ ftui-widgets::louds  # bd-g00-root-epic-ewths.11.5
 # their own pass before anything is removed.
 ftui-core::event_coalescer  # bd-g00-root-epic-ewths.11.5
 ftui-core::generic_diff  # bd-g00-root-epic-ewths.11.5
+# Superseded, not merely unused: this is a second Esc-Esc interpreter (708
+# lines, bd-2vne.2). The one that actually runs is keybinding::SequenceDetector,
+# which KeyDispatcher owns (keybinding.rs:775), constructs (:782) and feeds Esc
+# through (:835) - so the README's "Esc Esc goes through the SequenceDetector
+# window" is true, just not via this module. Merge or remove rather than wire.
 ftui-core::key_sequence  # bd-g00-root-epic-ewths.11.5
 ftui-core::mode_typestate  # bd-g00-root-epic-ewths.11.5
 # Unreachable by decision, not neglect: benchmarked 2026-09-18 at 4-19x slower
