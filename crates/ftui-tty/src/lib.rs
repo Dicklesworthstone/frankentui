@@ -250,7 +250,13 @@ fn best_effort_termination_cleanup() {
     }
     let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
-    let mut plan = TeardownPlan::from_capabilities(&caps, true, true);
+    // This path cannot prove ownership of an active sync block; avoid emitting
+    // standalone DEC ?2026l during panic/signal cleanup. Extracting the shared
+    // TeardownPlan in bd-g00-root-epic-ewths.17.6 flipped this to true, which
+    // fails vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences: under a
+    // multiplexer identity the policy forbids the sequence outright, and there
+    // is no open block here for it to close even when it does not.
+    let mut plan = TeardownPlan::from_capabilities(&caps, true, false);
     if !KittyPopLatch::try_claim() {
         plan.pop_kitty_keyboard = false;
     }
@@ -1429,10 +1435,17 @@ impl Drop for TtyBackend {
             let mut stdout = io::stdout();
             let mouse_disable_seq =
                 mouse_disable_sequence_for_capabilities(self.events.capabilities);
+            // Only close a synchronized-output block when the policy actually
+            // let one be opened. Under a multiplexer identity `use_sync_output`
+            // is false, no `?2026h` is ever written, and a standalone `?2026l`
+            // at teardown is both unpaired and forbidden by that policy - which
+            // is what vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences
+            // asserts. The pre-refactor Drop emitted no sync end at all.
+            let emit_sync_end = self.events.capabilities.use_sync_output();
             let _ = write_cleanup_sequence_policy_with_mouse(
                 &self.events.features(),
                 self.alt_screen_active,
-                true,
+                emit_sync_end,
                 mouse_disable_seq,
                 &mut stdout,
             );
