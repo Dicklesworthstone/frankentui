@@ -341,3 +341,29 @@ pub use telemetry::{
     SpanId, TelemetryConfig, TelemetryError, TelemetryGuard, TraceContextSource, TraceId,
     is_safe_env_var, redact,
 };
+
+#[cfg(all(test, feature = "experimental"))]
+mod experimental_smoke {
+    use crate::countmin_sketch::CountMinSketch;
+    use crate::timeline_aggregator::{AggregatorConfig, TimelineAggregator};
+
+    #[test]
+    fn timeline_aggregator_and_cms_compile() {
+        let mut agg = TimelineAggregator::new(AggregatorConfig::default());
+        for _ in 0..60 {
+            agg.observe(&"a", 1);
+        }
+        for _ in 0..40 {
+            agg.observe(&"b", 1);
+        }
+        assert!(agg.estimate(&"a") >= 60);
+
+        let mut cms = CountMinSketch::with_dimensions(64, 4);
+        for i in 0..100 {
+            cms.add(&i, 1);
+        }
+        for i in 0..100 {
+            assert!(cms.estimate(&i) >= 1);
+        }
+    }
+}

@@ -552,6 +552,18 @@ fn widget_gallery_error_boundary_80x24() {
     assert_snapshot!("widget_gallery_error_boundary_80x24", &frame.buffer);
 }
 
+#[test]
+fn widget_gallery_diagnostics_120x40() {
+    let _caps = stable_caps();
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Left));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_diagnostics_120x40", &frame.buffer);
+}
+
 // ============================================================================
 // Widget Builder
 // ============================================================================

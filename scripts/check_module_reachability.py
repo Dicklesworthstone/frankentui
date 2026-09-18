@@ -27,9 +27,11 @@ when any module is unreachable or any allowlist entry has gone stale.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -504,8 +506,23 @@ def main() -> int:
     print(f"\n{len(findings)} modules: {summary}")
 
     if args.json:
+        git_commit = "unknown"
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0:
+                git_commit = res.stdout.strip()
+        except Exception:
+            pass
+
         report = {
             "schema": SCHEMA,
+            "git_commit": git_commit,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "crates": sorted({f.crate for f in findings}),
             "modules": [
                 {
@@ -520,6 +537,15 @@ def main() -> int:
             "stale_allowlist": [
                 f.qualified for f in findings if f.verdict == "STALE_ALLOWLIST"
             ],
+            "summary": {
+                "ok": counts.get("OK", 0),
+                "experimental": counts.get("EXPERIMENTAL", 0),
+                "feature_gated": counts.get("FEATURE_GATED", 0),
+                "allowlisted": counts.get("ALLOWLISTED", 0),
+                "unreachable": counts.get("UNREACHABLE", 0),
+                "stale_allowlist": counts.get("STALE_ALLOWLIST", 0),
+                "stale": counts.get("STALE_ALLOWLIST", 0),
+            },
         }
         json_path = args.json if args.json.is_absolute() else root / args.json
         json_path.parent.mkdir(parents=True, exist_ok=True)

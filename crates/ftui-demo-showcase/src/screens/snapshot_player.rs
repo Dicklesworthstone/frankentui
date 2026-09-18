@@ -2452,14 +2452,25 @@ mod tests {
 
     #[test]
     fn scrub_to_index_renders_that_frame() {
-        let mut player = SnapshotPlayer::new();
-        assert!(player.frame_count() >= 10);
+        let config = SnapshotPlayerConfig {
+            auto_generate_demo: false,
+            max_frames: 100,
+            ..Default::default()
+        };
+        let mut player = SnapshotPlayer::with_config(config);
+        for i in 0..10 {
+            let mut buf = Buffer::new(10, 5);
+            buf.set_fast(0, 0, Cell::from_char((b'0' + i as u8) as char));
+            player.record_frame(&buf);
+        }
+        assert_eq!(player.frame_count(), 10);
         player.set_current_frame(5);
         assert_eq!(player.current_frame(), 5);
         assert_eq!(player.inspector.index(), 5);
-        let expected = player.time_travel.get(5);
-        assert!(expected.is_some());
-        assert_eq!(player.current_buffer(), expected);
+        let rendered = player.current_buffer().expect("frame 5");
+        assert_eq!(rendered.get(0, 0).unwrap().content.as_char(), Some('5'));
+        let expected = player.time_travel.get(5).expect("frame 5");
+        assert_eq!(rendered, expected);
     }
 
     #[test]
@@ -2495,6 +2506,17 @@ mod tests {
         assert_eq!(player.current_frame(), end_idx);
         player.step_forward();
         assert_eq!(player.current_frame(), end_idx);
+    }
+
+    #[test]
+    fn step_back_at_zero_stays() {
+        let mut player = SnapshotPlayer::new();
+        player.go_to_start();
+        assert_eq!(player.current_frame(), 0);
+        player.step_backward();
+        assert_eq!(player.current_frame(), 0);
+        player.step_backward();
+        assert_eq!(player.current_frame(), 0);
     }
 
     // ========================================================================

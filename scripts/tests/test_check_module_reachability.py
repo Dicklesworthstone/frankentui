@@ -17,6 +17,7 @@ it.
 
 from __future__ import annotations
 
+import json
 import sys
 import textwrap
 import unittest
@@ -248,6 +249,152 @@ class DeclaredModules(unittest.TestCase):
             modules = {m.name: m for m in gate.declared_modules("demo", root / "crates" / "demo")}
             self.assertTrue(modules["gated"].experimental)
             self.assertFalse(modules["plain"].experimental)
+
+
+class ModuleReachabilityGateContract(unittest.TestCase):
+    """Exact named tests specified in bd-g00-root-epic-ewths.11.4."""
+
+    def test_declares_file_and_inline_modules(self):
+        with TemporaryDirectory() as tmp:
+            root = _workspace(Path(tmp), "pub mod a;\npub mod b {\n    pub fn f() {}\n}\n")
+            modules = {m.name: m for m in gate.declared_modules("demo", root / "crates" / "demo")}
+            self.assertIn("a", modules)
+            self.assertFalse(modules["a"].inline)
+            self.assertIn("b", modules)
+            self.assertTrue(modules["b"].inline)
+
+    def test_experimental_cfg_is_skipped(self):
+        with TemporaryDirectory() as tmp:
+            root = _workspace(
+                Path(tmp),
+                '#[cfg(feature = "experimental")]\npub mod x;\n',
+            )
+            verdicts = {f.name: f.verdict for f in gate.evaluate(root, {}, None)}
+            self.assertEqual(verdicts["x"], "EXPERIMENTAL")
+
+    def test_reference_in_cfg_test_block_does_not_count(self):
+        with TemporaryDirectory() as tmp:
+            root = _workspace(
+                Path(tmp),
+                "pub mod thing;\npub mod consumer;\n",
+                consumer=(
+                    "pub fn f() {}\n"
+                    "#[cfg(test)]\nmod tests {\n"
+                    "    use crate::thing::Thing;\n}\n"
+                ),
+            )
+            verdicts = {f.qualified: f.verdict for f in gate.evaluate(root, {}, None)}
+            self.assertEqual(verdicts["demo::thing"], "UNREACHABLE")
+
+    def test_reference_from_own_dir_does_not_count(self):
+        with TemporaryDirectory() as tmp:
+            root = _workspace(Path(tmp), "pub mod x;\n")
+            x_dir = root / "crates" / "demo" / "src" / "x"
+            x_dir.mkdir(parents=True)
+            (x_dir / "inner.rs").write_text("use crate::x;\n", encoding="utf-8")
+            verdicts = {f.name: f.verdict for f in gate.evaluate(root, {}, None)}
+            self.assertEqual(verdicts["x"], "UNREACHABLE")
+
+    def test_cross_crate_use_counts(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/ftui-a", "crates/ftui-b"]\n', encoding="utf-8"
+            )
+            src_a = root / "crates" / "ftui-a" / "src"
+            src_a.mkdir(parents=True)
+            (src_a / "lib.rs").write_text("pub mod x;\n", encoding="utf-8")
+            (src_a / "x.rs").write_text("pub struct Thing;\n", encoding="utf-8")
+
+            src_b = root / "crates" / "ftui-b" / "src"
+            src_b.mkdir(parents=True)
+            (src_b / "lib.rs").write_text("use ftui_a::x::Thing;\n", encoding="utf-8")
+
+            findings = {f.qualified: f for f in gate.evaluate(root, {}, None)}
+            self.assertEqual(findings["ftui-a::x"].verdict, "OK")
+            self.assertIn("crates/ftui-b/src/lib.rs", findings["ftui-a::x"].detail)
+
+    def test_showcase_reference_counts_for_widgets(self):
+        root = Path(__file__).resolve().parent.parent.parent
+        findings = {f.qualified: f for f in gate.evaluate(root, {}, "ftui-widgets")}
+        self.assertIn("ftui-widgets::decision_card", findings)
+        self.assertEqual(findings["ftui-widgets::decision_card"].verdict, "OK")
+        self.assertIn(
+            "crates/ftui-demo-showcase/src/screens/widget_gallery.rs",
+            findings["ftui-widgets::decision_card"].detail,
+        )
+
+    def test_allowlist_only_shrinks(self):
+        with TemporaryDirectory() as tmp:
+            root = _workspace(
+                Path(tmp),
+                "pub mod thing;\npub mod consumer;\n",
+                consumer="pub fn f() { crate::thing::Thing; }\n",
+            )
+            findings = gate.evaluate(root, {"demo::thing": "bd-123"}, None)
+            verdicts = {f.qualified: f.verdict for f in findings}
+            self.assertEqual(verdicts["demo::thing"], "STALE_ALLOWLIST")
+
+    def test_json_output_schema(self):
+        with TemporaryDirectory() as tmp:
+            root = _workspace(Path(tmp), "pub mod thing;\n")
+            json_file = Path(tmp) / "report.json"
+            empty_allowlist = Path(tmp) / "empty.txt"
+            empty_allowlist.write_text("", encoding="utf-8")
+            old_argv = sys.argv
+            sys.argv = [
+                "check_module_reachability.py",
+                "--root",
+                str(root),
+                "--allowlist",
+                str(empty_allowlist),
+                "--json",
+                str(json_file),
+            ]
+            try:
+                gate.main()
+            finally:
+                sys.argv = old_argv
+
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+            for key in [
+                "schema",
+                "git_commit",
+                "generated_at",
+                "crates",
+                "unreachable",
+                "stale_allowlist",
+                "summary",
+            ]:
+                self.assertIn(key, data)
+
+    def test_exit_code_zero_on_clean_tree(self):
+        root = Path(__file__).resolve().parent.parent.parent
+        allowlist = root / "docs" / "module-reachability-allowlist.txt"
+        old_argv = sys.argv
+        sys.argv = [
+            "check_module_reachability.py",
+            "--root",
+            str(root),
+            "--allowlist",
+            str(allowlist),
+            "--quiet",
+        ]
+        try:
+            code = gate.main()
+            self.assertEqual(code, 0)
+        finally:
+            sys.argv = old_argv
+
+    declares_file_and_inline_modules = test_declares_file_and_inline_modules
+    experimental_cfg_is_skipped = test_experimental_cfg_is_skipped
+    reference_in_cfg_test_block_does_not_count = test_reference_in_cfg_test_block_does_not_count
+    reference_from_own_dir_does_not_count = test_reference_from_own_dir_does_not_count
+    cross_crate_use_counts = test_cross_crate_use_counts
+    showcase_reference_counts_for_widgets = test_showcase_reference_counts_for_widgets
+    allowlist_only_shrinks = test_allowlist_only_shrinks
+    json_output_schema = test_json_output_schema
+    exit_code_zero_on_clean_tree = test_exit_code_zero_on_clean_tree
 
 
 if __name__ == "__main__":

@@ -122,6 +122,10 @@ required-features = ["event-trace"]
 name = "e2e_recipe_d_deterministic_replay"
 required-features = ["event-trace"]
 
+[[test]]
+name = "experimental_feature_matrix"
+required-features = ["experimental"]
+
 [[bench]]
 name = "telemetry_bench"
 harness = false
