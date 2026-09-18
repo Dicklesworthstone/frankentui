@@ -147,6 +147,14 @@ impl Default for MyModel {
     }
 }
 
+impl MyModel {
+    /// The README's harness fences build models through `MyModel::new`, which
+    /// is the shape a consumer's own model would have.
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl Model for MyModel {
     type Message = Msg;
 
@@ -539,4 +547,105 @@ fn readme_queue_telemetry_snippet() {
     // The counters are monotonic, so processed can never outrun enqueued.
     assert!(snap.processed <= snap.enqueued);
     assert_in_readme(&["queue_telemetry"]);
+}
+
+// ── Harness claims from the comparison table ────────────────────────────
+//
+// "Shadow-run validation harness" and "Snapshot/time-travel harness" are rows
+// in the README's How FrankenTUI Compares table, i.e. competitive claims. They
+// are compiled here so the table cannot outlive the API it advertises.
+// ftui-harness is a dev-dependency for exactly this reason.
+
+#[test]
+fn readme_shadow_run_snippet() {
+    // README-SNIPPET: shadow_run
+    use ftui_harness::{ShadowRun, ShadowRunConfig, ShadowVerdict};
+
+    let config = ShadowRunConfig::new("migration_test", "tick_counter", 42).viewport(80, 24);
+    let result = ShadowRun::compare(config, MyModel::new, |session| {
+        session.init();
+        session.tick();
+        session.capture_frame();
+    });
+    assert_eq!(result.verdict, ShadowVerdict::Match);
+    // README-SNIPPET-END: shadow_run
+
+    assert_in_readme(&["shadow_run"]);
+}
+
+#[test]
+fn readme_rollout_scorecard_snippet() {
+    use ftui_harness::{ShadowRun, ShadowRunConfig};
+
+    // The snippet's `min_shadow_scenarios(3)` means three matching scenarios
+    // are what a Go verdict costs. Supplying exactly that makes the README's
+    // `assert_eq!(.., RolloutVerdict::Go)` a claim this test actually proves,
+    // rather than a line that merely type-checks.
+    let shadow_results: Vec<_> = ["tick_counter", "resize", "quit"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, scenario)| {
+            ShadowRun::compare(
+                ShadowRunConfig::new("rollout_doc", scenario, 7 + i as u64).viewport(80, 24),
+                MyModel::new,
+                |session| {
+                    session.init();
+                    session.tick();
+                    session.capture_frame();
+                },
+            )
+        })
+        .collect();
+
+    // README-SNIPPET: rollout_scorecard
+    use ftui_harness::{
+        RolloutEvidenceBundle, RolloutScorecard, RolloutScorecardConfig, RolloutVerdict,
+    };
+
+    let mut scorecard =
+        RolloutScorecard::new(RolloutScorecardConfig::default().min_shadow_scenarios(3));
+    for shadow_result in shadow_results {
+        scorecard.add_shadow_result(shadow_result);
+    }
+    assert_eq!(scorecard.evaluate(), RolloutVerdict::Go);
+
+    // Machine-readable JSON evidence for CI gates
+    let bundle = RolloutEvidenceBundle {
+        scorecard: scorecard.summary(),
+        queue_telemetry: Some(ftui_runtime::effect_system::queue_telemetry()),
+        requested_lane: "structured".to_string(),
+        resolved_lane: "structured".to_string(),
+        rollout_policy: "shadow".to_string(),
+    };
+    println!("{}", bundle.to_json()); // Self-contained release decision artifact
+    // README-SNIPPET-END: rollout_scorecard
+
+    assert!(bundle.to_json().contains("\"requested_lane\""));
+    assert_in_readme(&["rollout_scorecard"]);
+}
+
+#[test]
+fn readme_time_travel_snippet() {
+    use ftui::render::frame::Frame;
+    use ftui::render::grapheme_pool::GraphemePool;
+    use ftui_harness::time_travel::{FrameMetadata, TimeTravel};
+
+    let mut pool = GraphemePool::new();
+    let frame = Frame::new(20, 3, &mut pool);
+    let (frame_number, render_time, frame_index) = (0_u64, std::time::Duration::ZERO, 0_usize);
+
+    // README-SNIPPET: time_travel
+    // Record frames for debugging (ftui-harness; delta-compressed ring of 256 frames)
+    let mut history = TimeTravel::new(256);
+    history.record(&frame.buffer, FrameMetadata::new(frame_number, render_time));
+
+    // Replay
+    let historical_frame = history.get(frame_index);
+    // README-SNIPPET-END: time_travel
+
+    assert!(
+        historical_frame.is_some(),
+        "the frame just recorded is there"
+    );
+    assert_in_readme(&["time_travel"]);
 }

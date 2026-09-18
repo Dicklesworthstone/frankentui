@@ -48,3 +48,9 @@ ftui-extras = { path = "../ftui-extras", version = "0.8.0", optional = true }
 [[example]]
 name = "agent_shell"
 required-features = []
+
+# Only so the README's harness fences (ShadowRun, RolloutScorecard, TimeTravel)
+# can be compiled and checked against README.md in tests/readme_snippets.rs.
+# ftui does not depend on the harness at build time.
+[dev-dependencies]
+ftui-harness = { path = "../ftui-harness", version = "0.8.0" }

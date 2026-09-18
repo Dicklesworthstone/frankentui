@@ -730,7 +730,7 @@ Prove rendering determinism across runtime migrations by running the same model 
 use ftui_harness::{ShadowRun, ShadowRunConfig, ShadowVerdict};
 
 let config = ShadowRunConfig::new("migration_test", "tick_counter", 42).viewport(80, 24);
-let result = ShadowRun::compare(config, || MyModel::new(), |session| {
+let result = ShadowRun::compare(config, MyModel::new, |session| {
     session.init();
     session.tick();
     session.capture_frame();
@@ -743,15 +743,18 @@ assert_eq!(result.verdict, ShadowVerdict::Match);
 Combine shadow evidence + benchmark results into a single go/no‑go release decision:
 
 ```rust
-use ftui_harness::{RolloutScorecard, RolloutScorecardConfig, RolloutVerdict, RolloutEvidenceBundle};
+use ftui_harness::{
+    RolloutEvidenceBundle, RolloutScorecard, RolloutScorecardConfig, RolloutVerdict,
+};
 
-let mut scorecard = RolloutScorecard::new(
-    RolloutScorecardConfig::default().min_shadow_scenarios(3)
-);
-scorecard.add_shadow_result(shadow_result);
+let mut scorecard =
+    RolloutScorecard::new(RolloutScorecardConfig::default().min_shadow_scenarios(3));
+for shadow_result in shadow_results {
+    scorecard.add_shadow_result(shadow_result);
+}
 assert_eq!(scorecard.evaluate(), RolloutVerdict::Go);
 
-// Machine‑readable JSON evidence for CI gates
+// Machine-readable JSON evidence for CI gates
 let bundle = RolloutEvidenceBundle {
     scorecard: scorecard.summary(),
     queue_telemetry: Some(ftui_runtime::effect_system::queue_telemetry()),
@@ -759,7 +762,7 @@ let bundle = RolloutEvidenceBundle {
     resolved_lane: "structured".to_string(),
     rollout_policy: "shadow".to_string(),
 };
-println!("{}", bundle.to_json());  // Self‑contained release decision artifact
+println!("{}", bundle.to_json()); // Self-contained release decision artifact
 ```
 
 ### Effect Queue Telemetry & Backpressure
