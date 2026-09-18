@@ -40,6 +40,8 @@ use std::time::Duration;
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::charts::heatmap_gradient;
+use ftui_harness::time_travel::{FrameMetadata, TimeTravel};
+use ftui_harness::time_travel_inspector::TimeTravelInspector;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
@@ -410,8 +412,10 @@ impl DiagnosticLog {
 /// Time-Travel Studio screen state.
 #[derive(Debug)]
 pub struct SnapshotPlayer {
-    /// Recorded frames (buffers stored directly for demo simplicity).
-    frames: Vec<Buffer>,
+    /// Recorded frames stored in TimeTravel ring buffer.
+    pub time_travel: TimeTravel,
+    /// Time travel inspector for stepping and rendering.
+    pub inspector: TimeTravelInspector,
     /// Frame metadata.
     pub frame_info: Vec<FrameInfo>,
     /// Current frame index.
@@ -475,7 +479,8 @@ impl SnapshotPlayer {
         let export_path = std::env::var("FTUI_TIME_TRAVEL_STUDIO_REPORT")
             .unwrap_or_else(|_| "time_travel_studio_report.jsonl".to_string());
         let mut player = Self {
-            frames: Vec::with_capacity(config.max_frames),
+            time_travel: TimeTravel::new(config.max_frames.max(1)),
+            inspector: TimeTravelInspector::new(),
             frame_info: Vec::with_capacity(config.max_frames),
             current_frame: 0,
             playback_state: PlaybackState::Paused,
@@ -516,7 +521,8 @@ impl SnapshotPlayer {
         let export_path = std::env::var("FTUI_TIME_TRAVEL_STUDIO_REPORT")
             .unwrap_or_else(|_| "time_travel_studio_report.jsonl".to_string());
         let mut player = Self {
-            frames: Vec::with_capacity(config.max_frames),
+            time_travel: TimeTravel::new(config.max_frames.max(1)),
+            inspector: TimeTravelInspector::new(),
             frame_info: Vec::with_capacity(config.max_frames),
             current_frame: 0,
             playback_state: PlaybackState::Paused,
@@ -557,7 +563,7 @@ impl SnapshotPlayer {
     }
 
     fn reset_compare_indices(&mut self) {
-        let count = self.frames.len();
+        let count = self.time_travel.len();
         if count <= 1 {
             self.compare_a = 0;
             self.compare_b = 0;
@@ -569,7 +575,7 @@ impl SnapshotPlayer {
     }
 
     fn clamp_compare_indices(&mut self) {
-        let count = self.frames.len();
+        let count = self.time_travel.len();
         if count == 0 {
             self.compare_a = 0;
             self.compare_b = 0;
@@ -607,7 +613,7 @@ impl SnapshotPlayer {
     }
 
     fn compare_pair(&self) -> Option<(usize, usize)> {
-        if self.frames.is_empty() {
+        if self.time_travel.is_empty() {
             None
         } else {
             Some((self.compare_a, self.compare_b))
@@ -637,8 +643,23 @@ impl SnapshotPlayer {
     }
 
     fn compute_diff_cache(&mut self, a_idx: usize, b_idx: usize) -> DiffCache {
-        let buffer_a = &self.frames[a_idx];
-        let buffer_b = &self.frames[b_idx];
+        let buffer_a = self.time_travel.get(a_idx);
+        let buffer_b = self.time_travel.get(b_idx);
+        let (Some(buffer_a), Some(buffer_b)) = (buffer_a, buffer_b) else {
+            return DiffCache {
+                a_index: a_idx,
+                b_index: b_idx,
+                frames_version: self.frames_version,
+                width: 0,
+                height: 0,
+                diff_cells: Vec::new(),
+                diff_count: 0,
+                content_diff_count: 0,
+                style_diff_count: 0,
+                checksum_a: 0,
+                checksum_b: 0,
+            };
+        };
         let width = buffer_a.width().min(buffer_b.width());
         let height = buffer_a.height().min(buffer_b.height());
 
@@ -713,6 +734,7 @@ impl SnapshotPlayer {
             let checksum = self.calculate_checksum(&buf);
             self.checksum_chain = self.checksum_chain.wrapping_add(checksum);
 
+            let render_duration = Duration::from_micros((100 + (i * 10) % 500) as u64);
             let info = FrameInfo {
                 index: i,
                 change_count,
@@ -720,14 +742,17 @@ impl SnapshotPlayer {
                 height: self.demo_height,
                 memory_size: buf.len() * std::mem::size_of::<Cell>(),
                 checksum,
-                render_time: Some(Duration::from_micros((100 + (i * 10) % 500) as u64)),
+                render_time: Some(render_duration),
             };
 
             prev_buf = Some(buf.clone());
-            self.frames.push(buf);
+            let meta = FrameMetadata::new(i as u64, render_duration);
+            self.time_travel.record(&buf, meta);
             self.frame_info.push(info);
         }
 
+        self.inspector.seek(0, &self.time_travel);
+        self.current_frame = self.inspector.index();
         self.bump_frames_version();
     }
 
@@ -821,27 +846,32 @@ impl SnapshotPlayer {
 
     /// Record a new frame (when in recording mode).
     pub fn record_frame(&mut self, buf: &Buffer) {
-        if self.frames.len() >= self.config.max_frames {
-            // Remove oldest frame
-            self.frames.remove(0);
+        if self.time_travel.len() >= self.config.max_frames && !self.frame_info.is_empty() {
+            // Oldest frame will be evicted by TimeTravel
             self.frame_info.remove(0);
-            // Reindex remaining frames
             for (i, info) in self.frame_info.iter_mut().enumerate() {
                 info.index = i;
             }
         }
 
-        let prev = self.frames.last();
+        let prev = self
+            .time_travel
+            .get(self.time_travel.len().saturating_sub(1));
         let change_count = match prev {
-            Some(p) => self.count_changes(p, buf),
+            Some(ref p) => self.count_changes(p, buf),
             None => buf.len(),
         };
 
         let checksum = self.calculate_checksum(buf);
         self.checksum_chain = self.checksum_chain.wrapping_add(checksum);
 
+        let frame_num = self.time_travel.frame_counter();
+        let meta = FrameMetadata::new(frame_num, Duration::from_micros(100));
+        self.time_travel.record(buf, meta);
+
+        let frame_index = self.time_travel.len().saturating_sub(1);
         let info = FrameInfo {
-            index: self.frames.len(),
+            index: frame_index,
             change_count,
             width: buf.width(),
             height: buf.height(),
@@ -850,12 +880,11 @@ impl SnapshotPlayer {
             render_time: None,
         };
 
-        let frame_index = self.frames.len();
         let width = buf.width();
         let height = buf.height();
-        self.frames.push(buf.clone());
         self.frame_info.push(info);
-        self.current_frame = self.frames.len().saturating_sub(1);
+        self.inspector.seek(frame_index, &self.time_travel);
+        self.current_frame = self.inspector.index();
         self.bump_frames_version();
         self.clamp_compare_indices();
         self.log_frame_recorded(frame_index, change_count, checksum, width, height);
@@ -864,7 +893,8 @@ impl SnapshotPlayer {
     /// Clear all recorded frames.
     pub fn clear(&mut self) {
         self.log_cleared();
-        self.frames.clear();
+        self.time_travel.clear();
+        self.inspector.seek(0, &self.time_travel);
         self.frame_info.clear();
         self.markers.clear();
         self.current_frame = 0;
@@ -877,21 +907,18 @@ impl SnapshotPlayer {
 
     /// Total number of frames.
     pub fn frame_count(&self) -> usize {
-        self.frames.len()
+        self.time_travel.len()
     }
 
     /// Current frame index.
     pub fn current_frame(&self) -> usize {
-        self.current_frame
+        self.inspector.index()
     }
 
     /// Set current frame index with bounds checking.
     pub fn set_current_frame(&mut self, frame: usize) {
-        if self.frames.is_empty() {
-            self.current_frame = 0;
-        } else {
-            self.current_frame = frame.min(self.frames.len() - 1);
-        }
+        self.inspector.seek(frame, &self.time_travel);
+        self.current_frame = self.inspector.index();
     }
 
     /// Current checksum chain value.
@@ -920,8 +947,8 @@ impl SnapshotPlayer {
     }
 
     /// Get current frame buffer.
-    pub fn current_buffer(&self) -> Option<&Buffer> {
-        self.frames.get(self.current_frame)
+    pub fn current_buffer(&self) -> Option<Buffer> {
+        self.time_travel.get(self.inspector.index())
     }
 
     /// Get current frame info.
@@ -932,32 +959,33 @@ impl SnapshotPlayer {
     /// Step to next frame.
     pub fn step_forward(&mut self) {
         let from = self.current_frame;
-        if !self.frames.is_empty() {
-            self.current_frame = (self.current_frame + 1).min(self.frames.len() - 1);
-        }
+        self.inspector.step_forward(&self.time_travel);
+        self.current_frame = self.inspector.index();
         self.log_navigation("step_forward", from);
     }
 
     /// Step to previous frame.
     pub fn step_backward(&mut self) {
         let from = self.current_frame;
-        self.current_frame = self.current_frame.saturating_sub(1);
+        self.inspector.step_back();
+        self.current_frame = self.inspector.index();
         self.log_navigation("step_backward", from);
     }
 
     /// Jump to first frame.
     pub fn go_to_start(&mut self) {
         let from = self.current_frame;
-        self.current_frame = 0;
+        self.inspector.seek(0, &self.time_travel);
+        self.current_frame = self.inspector.index();
         self.log_navigation("go_start", from);
     }
 
     /// Jump to last frame.
     pub fn go_to_end(&mut self) {
         let from = self.current_frame;
-        if !self.frames.is_empty() {
-            self.current_frame = self.frames.len() - 1;
-        }
+        self.inspector
+            .seek(self.time_travel.len().saturating_sub(1), &self.time_travel);
+        self.current_frame = self.inspector.index();
         self.log_navigation("go_end", from);
     }
 
@@ -1008,7 +1036,7 @@ impl SnapshotPlayer {
             action,
             from_frame,
             to_frame: self.current_frame,
-            frame_count: self.frames.len(),
+            frame_count: self.time_travel.len(),
         });
     }
 
@@ -1072,7 +1100,7 @@ impl SnapshotPlayer {
         let seq = self.diagnostic_log.next_seq();
         self.diagnostic_log.push(DiagnosticEntry::Cleared {
             seq,
-            frame_count: self.frames.len(),
+            frame_count: self.time_travel.len(),
             marker_count: self.markers.len(),
         });
     }
@@ -1171,10 +1199,10 @@ impl SnapshotPlayer {
     // ========================================================================
 
     fn frame_from_timeline_x(&self, timeline: Rect, x: u16) -> Option<usize> {
-        if self.frames.is_empty() || timeline.is_empty() {
+        if self.time_travel.is_empty() || timeline.is_empty() {
             return None;
         }
-        if self.frames.len() == 1 {
+        if self.time_travel.len() == 1 {
             return Some(0);
         }
 
@@ -1182,8 +1210,8 @@ impl SnapshotPlayer {
         let clamped_x = x.clamp(timeline.x, right_edge);
         let rel_x = clamped_x.saturating_sub(timeline.x) as f64;
         let width = timeline.width.saturating_sub(1).max(1) as f64;
-        let target = (rel_x / width * (self.frames.len() - 1) as f64).round() as usize;
-        Some(target.min(self.frames.len() - 1))
+        let target = (rel_x / width * (self.time_travel.len() - 1) as f64).round() as usize;
+        Some(target.min(self.time_travel.len() - 1))
     }
 
     fn scrub_timeline_to_x(&mut self, timeline: Rect, x: u16, action: &'static str) {
@@ -1191,9 +1219,10 @@ impl SnapshotPlayer {
             return;
         };
         self.playback_state = PlaybackState::Paused;
-        if target != self.current_frame {
-            let from = self.current_frame;
-            self.current_frame = target;
+        let from = self.current_frame;
+        self.inspector.seek(target, &self.time_travel);
+        self.current_frame = self.inspector.index();
+        if self.current_frame != from {
             self.log_navigation(action, from);
         }
     }
@@ -1205,7 +1234,7 @@ impl SnapshotPlayer {
 
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if timeline.contains(x, y) && !self.frames.is_empty() {
+                if timeline.contains(x, y) && !self.time_travel.is_empty() {
                     self.timeline_scrubbing = true;
                     self.scrub_timeline_to_x(timeline, x, "click_timeline");
                 } else if preview.contains(x, y) {
@@ -1333,13 +1362,13 @@ impl SnapshotPlayer {
         let inner = block.inner(area);
         block.render(area, frame);
 
-        if inner.is_empty() || self.frames.is_empty() {
+        if inner.is_empty() || self.time_travel.is_empty() {
             return;
         }
 
         // Draw timeline bar
         let progress =
-            self.current_frame as f64 / (self.frames.len().saturating_sub(1).max(1)) as f64;
+            self.current_frame as f64 / (self.time_travel.len().saturating_sub(1).max(1)) as f64;
         let bar_width = ((inner.width as f64) * progress) as u16;
 
         // Draw progress bar
@@ -1356,8 +1385,9 @@ impl SnapshotPlayer {
 
         // Draw markers
         for &marker_idx in &self.markers {
-            let marker_x = if self.frames.len() > 1 {
-                (marker_idx as f64 / (self.frames.len() - 1) as f64 * inner.width as f64) as u16
+            let marker_x = if self.time_travel.len() > 1 {
+                (marker_idx as f64 / (self.time_travel.len() - 1) as f64 * inner.width as f64)
+                    as u16
             } else {
                 0
             };
@@ -1368,7 +1398,7 @@ impl SnapshotPlayer {
         }
 
         if self.compare_view == StudioView::Compare {
-            let count = self.frames.len();
+            let count = self.time_travel.len();
             let frame_to_x = |idx: usize| -> u16 {
                 if count <= 1 {
                     0
@@ -1394,7 +1424,8 @@ impl SnapshotPlayer {
     }
 
     fn render_preview(&self, frame: &mut Frame, area: Rect) {
-        self.render_frame_block(frame, area, "Frame Preview", self.current_buffer());
+        let rendered = self.inspector.render(&self.time_travel);
+        self.render_frame_block(frame, area, "Frame Preview", rendered.as_ref());
     }
 
     fn render_compare_preview(&self, frame: &mut Frame, area: Rect) {
@@ -1406,11 +1437,11 @@ impl SnapshotPlayer {
         }
 
         let (a_idx, b_idx) = self.compare_pair().unwrap_or((0, 0));
-        let buffer_a = self.frames.get(a_idx);
-        let buffer_b = self.frames.get(b_idx);
+        let buffer_a = self.time_travel.get(a_idx);
+        let buffer_b = self.time_travel.get(b_idx);
 
-        let _a_inner = self.render_frame_block(frame, cols[0], "Frame A", buffer_a);
-        let b_inner = self.render_frame_block(frame, cols[1], "Frame B", buffer_b);
+        let _a_inner = self.render_frame_block(frame, cols[0], "Frame A", buffer_a.as_ref());
+        let b_inner = self.render_frame_block(frame, cols[1], "Frame B", buffer_b.as_ref());
 
         if self.heatmap_mode == HeatmapMode::Overlay
             && let Some(cache) = &self.diff_cache
@@ -1673,11 +1704,14 @@ impl Screen for SnapshotPlayer {
             // Advance frame during playback (every N ticks based on speed)
             if tick_count.is_multiple_of(2) {
                 // Advance every 2 ticks (~5 fps)
-                if self.current_frame + 1 < self.frames.len() {
-                    self.current_frame += 1;
-                } else {
-                    // Loop back to start
-                    self.current_frame = 0;
+                if !self.time_travel.is_empty() {
+                    if self.current_frame + 1 < self.time_travel.len() {
+                        self.inspector.step_forward(&self.time_travel);
+                    } else {
+                        // Loop back to start
+                        self.inspector.seek(0, &self.time_travel);
+                    }
+                    self.current_frame = self.inspector.index();
                 }
             }
         }
@@ -2388,12 +2422,17 @@ mod tests {
         let player = SnapshotPlayer::new();
         let idx = 10;
 
-        let buf1 = &player.frames[idx];
-        let buf2 = &player.frames[idx];
+        let buf1 = player.time_travel.get(idx).expect("frame 10");
+        let buf2 = player.time_travel.get(idx).expect("frame 10");
 
         // Same buffer should have identical content
         assert_eq!(buf1.width(), buf2.width());
         assert_eq!(buf1.height(), buf2.height());
+        for y in 0..buf1.height() {
+            for x in 0..buf1.width() {
+                assert_eq!(buf1.get(x, y), buf2.get(x, y));
+            }
+        }
 
         let checksum1 = player.frame_info[idx].checksum;
         let checksum2 = player.frame_info[idx].checksum;
@@ -2406,9 +2445,56 @@ mod tests {
         let player = SnapshotPlayer::new();
 
         // Recalculate checksum for first frame
-        let buf = &player.frames[0];
-        let recalc = player.calculate_checksum(buf);
+        let buf = player.time_travel.get(0).expect("frame 0");
+        let recalc = player.calculate_checksum(&buf);
         assert_eq!(recalc, player.frame_info[0].checksum);
+    }
+
+    #[test]
+    fn scrub_to_index_renders_that_frame() {
+        let mut player = SnapshotPlayer::new();
+        assert!(player.frame_count() >= 10);
+        player.set_current_frame(5);
+        assert_eq!(player.current_frame(), 5);
+        assert_eq!(player.inspector.index(), 5);
+        let expected = player.time_travel.get(5);
+        assert!(expected.is_some());
+        assert_eq!(player.current_buffer(), expected);
+    }
+
+    #[test]
+    fn capacity_evicts_oldest_frame() {
+        let config = SnapshotPlayerConfig {
+            auto_generate_demo: false,
+            max_frames: 100,
+            ..Default::default()
+        };
+        let mut player = SnapshotPlayer::with_config(config);
+        for i in 0..105 {
+            let mut buf = Buffer::new(10, 5);
+            buf.set_fast(0, 0, Cell::from_char((b'A' + (i % 26) as u8) as char));
+            player.record_frame(&buf);
+        }
+        assert_eq!(player.frame_count(), 100);
+        assert_eq!(player.time_travel.len(), 100);
+        assert_eq!(player.time_travel.frame_counter(), 105);
+        // In TimeTravel ring buffer, 0 is the oldest retained frame (frame 5)
+        assert!(player.time_travel.get(0).is_some());
+        // Index >= capacity returns None
+        assert!(player.time_travel.get(100).is_none());
+        assert_eq!(player.time_travel.metadata(0).unwrap().frame_number, 5);
+    }
+
+    #[test]
+    fn step_forward_past_end_saturates() {
+        let mut player = SnapshotPlayer::new();
+        let end_idx = player.frame_count() - 1;
+        player.go_to_end();
+        assert_eq!(player.current_frame(), end_idx);
+        player.step_forward();
+        assert_eq!(player.current_frame(), end_idx);
+        player.step_forward();
+        assert_eq!(player.current_frame(), end_idx);
     }
 
     // ========================================================================

@@ -2,8 +2,8 @@
 │██████████████████████████████████████████████████████████████████████││Status: ⏸ Paused                              │
 ╰──────────────────────────────────────────────────────────────────────╯│                                              │
 ╭────────────────────────────Frame Preview─────────────────────────────╮│Frame: 50/50                                  │
-│Frame 50/50                                                           ││Size: 40x15                                   │
-│                                                                      ││Changes: 21 cells                             │
+│Frame 50/50 | 590us | events=0                                        ││Size: 40x15                                   │
+│Frame 50/50                                                           ││Changes: 21 cells                             │
 │                                                                      ││Memory: 9600 bytes                            │
 │                                                                      ││Checksum: aedfb1fe521d8c5a                    │
 │                                                                      ││Render: 590µs                                 │
@@ -14,10 +14,10 @@
 │                                                                      ││                                              │
 │                                                                      ││── Compare ──                                 │
 │                                                                      ││View: Single                                  │
-│         FrankenTUI Demo                                              ││Heatmap: Off                                  │
-│                  █                                                   ││A: #1  18f5a12b74525a16                       │
-│━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━                               ││B: #2  c5b5eeab873924ca                       │
-│                                                                      ││Diff: n/a                                     │
+│                                                                      ││Heatmap: Off                                  │
+│         FrankenTUI Demo                                              ││A: #1  18f5a12b74525a16                       │
+│                  █                                                   ││B: #2  c5b5eeab873924ca                       │
+│━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━                               ││Diff: n/a                                     │
 │                                                                      ││                                              │
 │                                                                      ││── Controls ──                                │
 │                                                                      ││Space: Play/Pause                             │

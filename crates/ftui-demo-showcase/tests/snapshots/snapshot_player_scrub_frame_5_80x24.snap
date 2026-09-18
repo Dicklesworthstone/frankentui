@@ -1,24 +1,24 @@
-╭───────────────Timeline (1/50)────────────────╮╭──────────Frame Info──────────╮
-│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░││Status: ⏸ Paused              │
+╭───────────────Timeline (6/10)────────────────╮╭──────────Frame Info──────────╮
+│█████████████████████████░░░░░░░░░░░░░░░░░░░░░││Status: ⏸ Paused              │
 ╰──────────────────────────────────────────────╯│                              │
-╭────────────────Frame Preview─────────────────╮│Frame: 1/50                   │
-│Frame 1/50 | 100us | events=0                 ││Size: 40x15                   │
-│Frame 1/50                                    ││Changes: 600 cells            │
+╭────────────────Frame Preview─────────────────╮│Frame: 6/10                   │
+│Frame 6/10 | 100us | events=0                 ││Size: 40x15                   │
+│5                                             ││Changes: 1 cells              │
 │                                              ││Memory: 9600 bytes            │
-│                                              ││Checksum: 18f5a12b74525a16    │
-│Hello, World!                                 ││Render: 100µs                 │
+│                                              ││Checksum: 95ceef82bc066968    │
 │                                              ││                              │
-│                                              ││Chain hash: 48a61a424c087d5d  │
+│                                              ││Chain hash: a5e56065918cc2e5  │
 │                                              ││Markers: 0                    │
 │                                              ││Marked: No                    │
 │                                              ││                              │
 │                                              ││── Compare ──                 │
 │                                              ││View: Single                  │
 │                                              ││Heatmap: Off                  │
-│                                              ││A: #1  18f5a12b74525a16       │
-│█                                             ││B: #2  c5b5eeab873924ca       │
+│                                              ││A: #1  0ae114688777e80d       │
+│                                              ││B: #1  0ae114688777e80d       │
 │                                              ││Diff: n/a                     │
 │                                              ││                              │
 │                                              ││── Controls ──                │
 │                                              ││Space: Play/Pause             │
+│                                              ││←/→ or h/l: Step              │
 ╰──────────────────────────────────────────────╯╰──────────────────────────────╯

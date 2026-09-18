@@ -40,6 +40,9 @@ const TARGET_EXPLAINABILITY_COCKPIT: &str = "ftui.explainability_cockpit";
 /// accepts `"ftui.<name>"` definitions in this file and in
 /// `ftui-runtime`'s `telemetry_schema`.
 pub(crate) const TARGET_ACCESSIBILITY_PANEL: &str = "ftui.demo.a11y";
+
+/// Tracing target for the widget gallery's diagnostics section.
+pub(crate) const TARGET_WIDGET_GALLERY: &str = "ftui.demo.gallery";
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };

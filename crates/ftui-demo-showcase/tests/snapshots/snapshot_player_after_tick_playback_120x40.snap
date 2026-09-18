@@ -2,22 +2,22 @@
 │██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░││Status: ▶ Playing                             │
 ╰──────────────────────────────────────────────────────────────────────╯│                                              │
 ╭────────────────────────────Frame Preview─────────────────────────────╮│Frame: 11/50                                  │
-│Frame 11/50                                                           ││Size: 40x15                                   │
-│                                                                      ││Changes: 35 cells                             │
+│Frame 11/50 | 200us | events=0                                        ││Size: 40x15                                   │
+│Frame 11/50                                                           ││Changes: 35 cells                             │
 │                                                                      ││Memory: 9600 bytes                            │
 │                                                                      ││Checksum: 91943e49c9acb002                    │
 │                                                                      ││Render: 200µs                                 │
-│          Time Travel Mode                                            ││                                              │
-│                                                                      ││Chain hash: 48a61a424c087d5d                  │
+│                                                                      ││                                              │
+│          Time Travel Mode                                            ││Chain hash: 48a61a424c087d5d                  │
 │                                                                      ││Markers: 0                                    │
 │                                                                      ││Marked: No                                    │
 │                                                                      ││                                              │
 │                                                                      ││── Compare ──                                 │
 │                                                                      ││View: Single                                  │
 │                                                                      ││Heatmap: Off                                  │
-│                    █                                                 ││A: #1  18f5a12b74525a16                       │
-│━━━━━━━━                                                              ││B: #2  c5b5eeab873924ca                       │
-│                                                                      ││Diff: n/a                                     │
+│                                                                      ││A: #1  18f5a12b74525a16                       │
+│                    █                                                 ││B: #2  c5b5eeab873924ca                       │
+│━━━━━━━━                                                              ││Diff: n/a                                     │
 │                                                                      ││                                              │
 │                                                                      ││── Controls ──                                │
 │                                                                      ││Space: Play/Pause                             │
