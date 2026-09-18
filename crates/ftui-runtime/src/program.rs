@@ -12744,6 +12744,59 @@ mod tests {
     }
 
     #[test]
+    fn startup_emits_capability_decision_per_capability() {
+        use ftui_core::caps_probe::{CapabilityDecision, ProbeOutcome, ProbeableCapability};
+
+        let evidence_path = temp_evidence_path("startup_emits_capability_decision");
+        let sink = EvidenceSink::from_config(
+            &crate::evidence_sink::EvidenceSinkConfig::enabled_file(&evidence_path),
+        )
+        .expect("sink config")
+        .expect("sink enabled");
+
+        let decisions: Vec<CapabilityDecision> = ProbeableCapability::ALL
+            .iter()
+            .map(|&cap| {
+                CapabilityDecision::build(cap, false, ProbeOutcome::Confirmed, None, false, true)
+            })
+            .collect();
+
+        assert_eq!(decisions.len(), ProbeableCapability::ALL.len());
+
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            TerminalCapabilities::basic(),
+        )
+        .with_evidence_sink(sink)
+        .with_capability_decisions(decisions);
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let cap_lines: Vec<&str> = contents
+            .lines()
+            .filter(|l| l.contains(r#""event":"capability_decision""#))
+            .collect();
+        assert_eq!(
+            cap_lines.len(),
+            ProbeableCapability::ALL.len(),
+            "expected {} capability_decision lines, got {}",
+            ProbeableCapability::ALL.len(),
+            cap_lines.len()
+        );
+        for cap in ProbeableCapability::ALL {
+            let cap_str = cap.as_str();
+            assert!(
+                cap_lines
+                    .iter()
+                    .any(|l| l.contains(&format!(r#""capability":"{cap_str}""#))),
+                "missing capability_decision line for {cap_str}"
+            );
+        }
+    }
+
+    #[test]
     fn headless_apply_resize_updates_model_and_dimensions() {
         struct ResizeModel {
             last_size: Option<(u16, u16)>,

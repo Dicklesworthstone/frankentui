@@ -1718,7 +1718,9 @@ pub struct CapabilityDecision {
 }
 
 impl CapabilityDecision {
-    fn build(
+    /// Construct a capability decision and its backing evidence ledger.
+    #[must_use]
+    pub fn build(
         capability: ProbeableCapability,
         env_detected: bool,
         probe: ProbeOutcome,
@@ -2624,6 +2626,141 @@ mod tests {
         assert_eq!(evidence[0]["source"], "environment");
         assert_eq!(evidence[1]["source"], "decrpm_response");
         assert!(parsed["probability"].as_f64().unwrap() > 0.95);
+    }
+
+    #[test]
+    fn env_positive_but_decrpm_denied_is_unsupported() {
+        let mut ledger = CapabilityLedger::new(ProbeableCapability::SynchronizedOutput);
+        ledger.record(EvidenceSource::Environment, evidence_weights::ENV_POSITIVE);
+        ledger.record(
+            EvidenceSource::DecrpmResponse,
+            evidence_weights::DECRPM_DENIED,
+        );
+        assert!(!ledger.is_supported());
+        assert!(!ledger.confident_at(0.8));
+    }
+
+    #[test]
+    fn env_absent_but_decrpm_confirmed_is_supported() {
+        let mut ledger = CapabilityLedger::new(ProbeableCapability::SynchronizedOutput);
+        ledger.record(EvidenceSource::Environment, evidence_weights::ENV_ABSENT);
+        ledger.record(
+            EvidenceSource::DecrpmResponse,
+            evidence_weights::DECRPM_CONFIRMED,
+        );
+        assert!(ledger.is_supported());
+        assert!(ledger.confident_at(0.8));
+    }
+
+    #[test]
+    fn timeout_only_keeps_prior() {
+        let mut ledger = CapabilityLedger::with_prior(ProbeableCapability::SynchronizedOutput, 0.0);
+        ledger.record(EvidenceSource::Environment, evidence_weights::ENV_ABSENT);
+        ledger.record(EvidenceSource::Timeout, evidence_weights::TIMEOUT);
+        assert!(!ledger.is_supported());
+        assert_eq!(ledger.evidence_count(), 2);
+    }
+
+    #[test]
+    fn mux_penalty_shifts_borderline_case() {
+        let mut ledger = CapabilityLedger::new(ProbeableCapability::SynchronizedOutput);
+        ledger.record(EvidenceSource::Prior, 1.5);
+        assert!(ledger.confident_at(0.8));
+        ledger.record(EvidenceSource::Environment, evidence_weights::MUX_PENALTY);
+        assert!(!ledger.confident_at(0.8));
+    }
+
+    #[test]
+    fn refine_from_ledgers_is_upgrade_only() {
+        let mut modern = TerminalCapabilities::modern();
+        assert!(modern.sync_output && modern.supports_true_color());
+        modern.refine_from_probe(&ProbeResult {
+            true_color: Some(false),
+            sync_output: Some(false),
+            ..ProbeResult::default()
+        });
+        assert!(modern.sync_output && modern.supports_true_color());
+    }
+
+    #[test]
+    fn build_ledgers_from_records_timeout_only_when_probe_ran() {
+        let prober = CapabilityProber::new(Duration::from_millis(50));
+        let mut ledger = CapabilityLedger::new(ProbeableCapability::SynchronizedOutput);
+        prober.record_timeout_evidence(&mut ledger);
+        assert_eq!(ledger.evidence_count(), 1);
+        assert_eq!(ledger.entries()[0].source, EvidenceSource::Timeout);
+    }
+
+    #[test]
+    fn capability_decision_jsonl_shape() {
+        let before = TerminalCapabilities::xterm_256color();
+        let config = sync_only_config();
+        let result = ProbeResult {
+            sync_output: Some(true),
+            ..ProbeResult::default()
+        };
+        let mut after = before;
+        after.refine_from_probe(&result);
+        let rows = decisions_from_probe(
+            &before,
+            &config,
+            &result,
+            PolicyOverrides::default(),
+            &after,
+        );
+        let line = decision_for(&rows, ProbeableCapability::SynchronizedOutput).to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(parsed["event"], "capability_decision");
+        assert!(parsed["capability"].is_string());
+        assert!(parsed["probability"].is_number());
+        assert!(parsed["log_odds"].is_number());
+        assert!(parsed["evidence"].is_array());
+        assert!(parsed["final"].is_boolean());
+    }
+
+    #[test]
+    fn weights_are_unchanged() {
+        assert_eq!(evidence_weights::ENV_POSITIVE, 3.0);
+        assert_eq!(evidence_weights::ENV_ABSENT, -0.4);
+        assert_eq!(evidence_weights::DA2_KNOWN_TERMINAL, 1.8);
+        assert_eq!(evidence_weights::DA1_CONFIRMED, 3.5);
+        assert_eq!(evidence_weights::DECRPM_CONFIRMED, 4.6);
+        assert_eq!(evidence_weights::DECRPM_DENIED, -4.6);
+        assert_eq!(evidence_weights::TIMEOUT, -0.7);
+        assert_eq!(evidence_weights::MUX_PENALTY, -0.5);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_probability_is_monotone_in_log_odds(lo1 in -20.0f64..20.0f64, lo2 in -20.0f64..20.0f64) {
+            let p1 = logistic(lo1);
+            let p2 = logistic(lo2);
+            if lo1 <= lo2 {
+                proptest::prop_assert!(p1 <= p2);
+            } else {
+                proptest::prop_assert!(p1 >= p2);
+            }
+        }
+
+        #[test]
+        fn proptest_ledger_order_independent(
+            w1 in -10.0f64..10.0f64,
+            w2 in -10.0f64..10.0f64,
+            w3 in -10.0f64..10.0f64,
+        ) {
+            let mut l1 = CapabilityLedger::new(ProbeableCapability::SynchronizedOutput);
+            l1.record(EvidenceSource::Environment, w1);
+            l1.record(EvidenceSource::Da1Response, w2);
+            l1.record(EvidenceSource::Timeout, w3);
+
+            let mut l2 = CapabilityLedger::new(ProbeableCapability::SynchronizedOutput);
+            l2.record(EvidenceSource::Timeout, w3);
+            l2.record(EvidenceSource::Environment, w1);
+            l2.record(EvidenceSource::Da1Response, w2);
+
+            proptest::prop_assert!((l1.log_odds() - l2.log_odds()).abs() < 1e-9);
+            proptest::prop_assert!((l1.probability() - l2.probability()).abs() < 1e-9);
+        }
     }
 
     // --- DECRPM parser tests ---

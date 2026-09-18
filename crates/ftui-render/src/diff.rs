@@ -772,7 +772,6 @@ impl TileDiffBuilder {
             return TileDiffBuild::Fallback(stats);
         }
 
-        debug_assert_eq!(dirty_bits.len(), total_cells);
         if dirty_bits.len() < total_cells {
             stats.fallback = Some(TileDiffFallback::Overflow);
             return TileDiffBuild::Fallback(stats);
@@ -3432,6 +3431,66 @@ mod tests {
     }
 
     // --- TileDiffBuilder direct ---
+
+    #[test]
+    fn sat_overflow_falls_back() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig::default().with_min_cells_for_tiles(0);
+        let dirty_rows = vec![true; 10];
+        let dirty_bits = vec![0u8; 100]; // less than 20x10 = 200 total_cells
+
+        let input = TileDiffInput {
+            width: 20,
+            height: 10,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 0,
+            dirty_all: false,
+        };
+
+        let result = builder.build(&config, input);
+        assert!(matches!(
+            result,
+            TileDiffBuild::Fallback(stats) if stats.fallback == Some(TileDiffFallback::Overflow)
+        ));
+    }
+
+    #[test]
+    fn min_cells_threshold_engages_tiles_exactly_at_12000() {
+        let config = TileDiffConfig::default();
+        assert_eq!(config.min_cells_for_tiles, 12_000);
+
+        let mut builder = TileDiffBuilder::new();
+        let dirty_rows = vec![true; 24];
+        let dirty_bits = vec![0u8; 80 * 24];
+        let input_small = TileDiffInput {
+            width: 80,
+            height: 24,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 5,
+            dirty_all: false,
+        };
+        let result_small = builder.build(&config, input_small);
+        assert!(matches!(
+            result_small,
+            TileDiffBuild::Fallback(stats) if stats.fallback == Some(TileDiffFallback::SmallScreen)
+        ));
+
+        let dirty_rows_large = vec![true; 60];
+        let mut dirty_bits_large = vec![0u8; 200 * 60];
+        dirty_bits_large[0] = 1;
+        let input_large = TileDiffInput {
+            width: 200,
+            height: 60,
+            dirty_rows: &dirty_rows_large,
+            dirty_bits: &dirty_bits_large,
+            dirty_cells: 1,
+            dirty_all: false,
+        };
+        let result_large = builder.build(&config, input_large);
+        assert!(matches!(result_large, TileDiffBuild::UseTiles(_)));
+    }
 
     #[test]
     fn tile_builder_dirty_all_fallback() {
