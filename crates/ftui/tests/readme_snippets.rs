@@ -649,3 +649,35 @@ fn readme_time_travel_snippet() {
     );
     assert_in_readme(&["time_travel"]);
 }
+
+#[test]
+fn readme_frame_arena_snippet() {
+    use ftui::render::arena::FrameArena;
+
+    let (done, total, value) = (3_u32, 10_u32, 42_u32);
+
+    // Two regions rather than one: the borrows below end where the assertions
+    // do, which is what lets `reset` take `&mut` straight afterwards. The
+    // checker rejoins them with the blank line the README already has between
+    // the allocation block and the frame boundary.
+    // README-SNIPPET: frame_arena_alloc
+    let mut arena = FrameArena::new(256 * 1024); // 256 KB initial
+
+    // During frame rendering: bump-allocate transient strings
+    let label: &str = arena.alloc_str(&format!("{done}/{total}"));
+    let cell_text: &str = arena.alloc_fmt(format_args!("{value:>8}"));
+    // README-SNIPPET-END: frame_arena_alloc
+
+    assert_eq!(label, "3/10");
+    assert_eq!(cell_text, "      42");
+
+    // README-SNIPPET: frame_arena_reset
+    // At frame boundary:
+    arena.reset(); // O(1), no individual deallocations
+    // README-SNIPPET-END: frame_arena_reset
+
+    // The arena is still usable after the reset, which is the other half of
+    // the claim: reset recycles the bump, it does not retire the allocator.
+    assert_eq!(arena.alloc_str("reused"), "reused");
+    assert_in_readme(&["frame_arena_alloc", "frame_arena_reset"]);
+}
