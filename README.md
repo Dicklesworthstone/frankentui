@@ -941,6 +941,19 @@ log-odds = Σ log BF_i
 P = 1 / (1 + exp(−log-odds))   →   upgrade when P ≥ 0.8
 ```
 
+In code: `ftui_core::caps_probe::CapabilityLedger` with weights, threshold $P \ge 0.8$, upgrade-only refinement (`refine_from_ledgers`), evidence event `capability_decision` per capability at startup, feature `caps-probe` (enabled by the showcase; consumers enable it on `ftui-core`), and the probe preconditions (currently: native backend, stdin is a TTY, color depth Ansi256 for the truecolor probe; G05 extends to DECRPM 2026 on all non-mux terminals).
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `ENV_POSITIVE` | `+3.0` | Environment variable explicitly indicates support (e.g. `COLORTERM=truecolor`) |
+| `ENV_ABSENT` | `-0.4` | Environment variable absent but not definitive |
+| `DA2_KNOWN_TERMINAL` | `+1.8` | DA2 terminal type matches known-good terminal |
+| `DA1_CONFIRMED` | `+3.5` | DA1 attribute code confirms feature (e.g. Sixel) |
+| `DECRPM_CONFIRMED` | `+4.6` | DECRPM confirms mode is recognized (status 1–4) |
+| `DECRPM_DENIED` | `-4.6` | DECRPM denies mode (status 0) |
+| `TIMEOUT` | `-0.7` | Probe timed out — weak negative evidence |
+| `MUX_PENALTY` | `-0.5` | Multiplexer detected — slight negative for passthrough features |
+
 The ledger is **upgrade-only**: a capability the environment or the allowlist already granted is never removed by a negative or absent reply (terminfo under-reports truecolor over `ssh`; the allowlist knows terminals that ignore DECRPM). The startup probe sends only the two bounded queries above (300 ms, fail-open, `FTUI_CAPS_PROBE=0` disables it); DA1/DA2 weights exist for the asynchronous `CapabilityProber` used by the showcase's capability screen. Every session writes one `capability_decision` evidence row per capability (truecolor, synchronized output, scroll region) carrying exactly the rows that decided.
 
 ### Dirty-Span Interval Union (Sparse Diff Scans)
@@ -966,7 +979,7 @@ SAT(x,y) = A(x,y)
          + SAT(x-1,y) + SAT(x,y-1) - SAT(x-1,y-1)
 ```
 
-Tile sum queries over any rectangle become constant time, so empty tiles are skipped deterministically.
+The SAT is queried per tile row (one subtraction) to skip whole rows of clean tiles before per-tile checks; tiles engage at $\ge 12,000$ cells (200×60 by default); measured: `diff/sparse_5pct_rows/200x60` p50 28 µs → 21 µs (~25% speedup retiring 5 of 8 tile rows, [`docs/perf/sat_tile_skip_2026-09.md`](docs/perf/sat_tile_skip_2026-09.md)).
 
 ### Fenwick Tree (Prefix Sums for Virtualized Lists)
 
@@ -1913,7 +1926,7 @@ The visual effects screen is deterministic math, not “random shader noise.” 
 | **Conformal Rank Confidence** | Command palette stability | $p_i=\frac{1}{n}\sum_j \mathbf{1}[g_j\le g_i]$ (gap‑based p‑value) | Deterministic tie‑breaks + stable top‑k |
 | **Beta-Binomial** | Diff strategy selection | $p\sim\mathrm{Beta}(\alpha,\beta)$ with binomial updates | Avoids slow strategies as workload shifts |
 | **Interval Union** | Dirty-span diff scan | $S_y=\bigcup_k [x_{0k},x_{1k})$ | Scan proportional to changed segments |
-| **Summed-Area Table** | Tile-skip diff | $SAT(x,y)=A(x,y)+SAT(x-1,y)+SAT(x,y-1)-SAT(x-1,y-1)$ | Skip empty tiles on large screens |
+| **Summed-Area Table** | Tile-skip diff | $SAT(x,y)=A(x,y)+SAT(x-1,y)+SAT(x,y-1)-SAT(x-1,y-1)$ | Row-level clean-tile skip on large screens (200x60: 28→21 µs) |
 | **Fenwick Tree** | Virtualized lists | Prefix sums with $i\pm (i\&-i)$ | O(log n) scroll + height queries |
 | **Bayesian Height Predictor** | Virtualized list preallocation | $\mu_n=\frac{\kappa_0\mu_0+n\bar{x}}{\kappa_0+n}$ + conformal $q_{1-\alpha}$ | Fewer scroll jumps |
 | **BOCPD** | Resize coalescing | Run‑length posterior + hazard $H(r)$ | Fewer redundant renders during drags |

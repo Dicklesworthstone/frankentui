@@ -6,6 +6,20 @@
 //! using device attribute queries and OSC sequences. It refines the
 //! environment-based detection from [`TerminalCapabilities::detect`].
 //!
+//! # Production Path and Bayesian Evidence Ledger
+//!
+//! Runtime capability upgrades are decided by a Bayesian log-Bayes-factor ledger
+//! ([`CapabilityLedger`]). Signals from environment detection, device queries
+//! (DA1, DA2, DECRPM, XTGETTCAP), probe timeouts, and multiplexer penalties each
+//! contribute fixed log-odds weights ([`evidence_weights`]). An upgrade is applied
+//! only when the posterior probability clears 0.8 ([`DECISION_THRESHOLD`]).
+//!
+//! The production path is strictly **upgrade-only** ([`TerminalCapabilities::refine_from_probe`]):
+//! capabilities already confirmed by environment or allowlists are never downgraded.
+//! At program startup, [`decisions_from_probe`] emits one structured
+//! `capability_decision` evidence event per capability to explain the exact
+//! reasoning behind active and inactive terminal features.
+//!
 //! # Safety Contract
 //!
 //! - **Bounded timeouts**: Every probe has a hard timeout (default 500ms).

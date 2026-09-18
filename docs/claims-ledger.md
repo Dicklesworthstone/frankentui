@@ -160,7 +160,7 @@ complete `.5.2`.
 | V61 | Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | README.md :: Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | status | DOC | bd-g00-root-epic-ewths.27 | bead:bd-g00-root-epic-ewths.27 | pending-doc | - |
 | V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | bead:bd-g00-root-epic-ewths.20 | pending-code | - |
 | V63 | Animation system | README.md :: Animation system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V64 | Bayesian capability detection | README.md :: Bayesian capability detection | status | CODE | bd-g00-root-epic-ewths.19 | bead:bd-g00-root-epic-ewths.19 | pending-code | - |
+| V64 | Bayesian capability detection | README.md :: Bayesian capability detection | status | CODE | bd-g00-root-epic-ewths.19 | bead:bd-g00-root-epic-ewths.19 | verified | caps_probe.rs, demo_showcase_e2e.sh |
 | V65 | 46 demo screens, gallery table | README.md :: 46 demo screens, gallery table | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V66 | crates.io: all 17 libraries | README.md :: crates.io: all 17 libraries | status | DOC | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-doc | - |
 | V67 | Windows support | README.md :: Windows support | status | CODE | bd-g00-root-epic-ewths.36 | bead:bd-g00-root-epic-ewths.36 | pending-code | - |
@@ -319,7 +319,7 @@ These are September 1 observations, not current verification results.
 - V61: WORKING (APC/SOS/PM as Alt introducers; no 1016 pixel mouse). Historical evidence: input_parser.rs.
 - V62: NOT_STARTED as described. Historical evidence: keybinding.rs.
 - V63: WORKING. Historical evidence: animation/.
-- V64: DEAD in production (demo builds ledger). Historical evidence: caps_probe.rs.
+- V64: VERIFIED in production with CapabilityLedger and capability_decision evidence (ewths.19). Historical evidence: caps_probe.rs.
 - V65: WRONG (45; names). Historical evidence: app.rs.
 - V66: WORKING (getting-started contradicts). Historical evidence: crates.io.
 - V67: PARTIAL. Historical evidence: docs/WINDOWS.md; Section 5.

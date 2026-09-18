@@ -432,6 +432,11 @@ fn accumulate_tile_counts_range(
 }
 
 /// Configuration for tile-based diff skipping.
+///
+/// Uses a summed-area table (SAT) to perform constant-time tile row and
+/// rectangle dirty-density queries, skipping clean tile rows wholesale.
+/// Performance measurements and ablation results are recorded in
+/// `docs/perf/sat_tile_skip_2026-09.md`.
 #[derive(Debug, Clone)]
 pub struct TileDiffConfig {
     /// Whether tile-based skipping is enabled.
@@ -445,7 +450,11 @@ pub struct TileDiffConfig {
     /// When true, the tile build only scans rows marked dirty, reducing
     /// build cost for sparse updates. Disable to force full-row scans.
     pub skip_clean_rows: bool,
-    /// Minimum total cells required before enabling tiles.
+    /// Minimum total cells required before enabling tiles (default: 12,000, i.e. 200x60).
+    ///
+    /// Smaller viewports (e.g. 80x24 = 1,920 cells) fall back to direct row diffs
+    /// because SAT construction overhead exceeds tile skip savings below this threshold
+    /// (see `docs/perf/sat_tile_skip_2026-09.md`).
     pub min_cells_for_tiles: usize,
     /// Dense cell ratio threshold for falling back to non-tile diff.
     pub dense_cell_ratio: f64,
