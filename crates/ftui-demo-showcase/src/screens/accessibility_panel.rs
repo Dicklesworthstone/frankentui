@@ -66,9 +66,12 @@ const WCAG_HEIGHT: u16 = 10;
 /// its `nodes=/focused=` header, two dump lines, and the border.
 const TREE_MIN_HEIGHT: u16 = 5;
 
-/// Rows below which a telemetry block cannot show even one entry: one line
-/// plus the border.
-const TELEMETRY_MIN_HEIGHT: u16 = 3;
+/// Rows the telemetry block takes in the stacked layout: two entries plus its
+/// border.
+///
+/// One row less than it used to take, which is the row the toggles block needs
+/// to stop cutting its last line; the tree keeps the rest either way.
+const STACKED_TELEMETRY_HEIGHT: u16 = 4;
 
 #[derive(Clone, Copy)]
 struct A11yEventEntry {
@@ -725,68 +728,27 @@ impl Screen for AccessibilityPanel {
             self.render_wcag(frame, right_rows[0]);
             self.render_telemetry(frame, right_rows[1]);
         } else {
-            // Stacked at full width, so no line has to be cut and height is
-            // what decides the contents. Blocks join in priority order while
-            // they still fit whole, rather than every block being squeezed
-            // until several of them show nothing; the last one in takes the
-            // leftover rows.
-            #[derive(Clone, Copy)]
-            enum Panel {
-                Toggles,
-                Wcag,
-                Preview,
-                Tree,
-                Telemetry,
-            }
-
-            const STACK_ORDER: [(Panel, u16); 5] = [
-                (Panel::Toggles, TOGGLES_HEIGHT),
-                (Panel::Wcag, WCAG_HEIGHT),
-                (Panel::Preview, PREVIEW_HEIGHT),
-                (Panel::Tree, TREE_MIN_HEIGHT),
-                (Panel::Telemetry, TELEMETRY_MIN_HEIGHT),
-            ];
-
-            let mut panels = Vec::with_capacity(STACK_ORDER.len());
-            let mut constraints = Vec::with_capacity(STACK_ORDER.len());
-            let mut used = 0_u16;
-            for (panel, height) in STACK_ORDER {
-                if used.saturating_add(height) > rows[1].height {
-                    break;
-                }
-                used = used.saturating_add(height);
-                panels.push(panel);
-                constraints.push(Constraint::Fixed(height));
-            }
-
-            // Let whichever block came last grow into the rows nothing else
-            // claimed, instead of leaving a gap under the stack.
-            if let Some(last) = constraints.last_mut() {
-                *last = Constraint::Min(match panels[panels.len() - 1] {
-                    Panel::Toggles => TOGGLES_HEIGHT,
-                    Panel::Wcag => WCAG_HEIGHT,
-                    Panel::Preview => PREVIEW_HEIGHT,
-                    Panel::Tree => TREE_MIN_HEIGHT,
-                    Panel::Telemetry => TELEMETRY_MIN_HEIGHT,
-                });
-            }
-
-            let stack = Flex::vertical().constraints(constraints).split(rows[1]);
-            for (panel, area) in panels.iter().zip(stack.iter()) {
-                match panel {
-                    Panel::Toggles => {
-                        self.layout_toggles.set(*area);
-                        self.render_toggles(frame, *area);
-                    }
-                    Panel::Wcag => {
-                        self.layout_wcag.set(*area);
-                        self.render_wcag(frame, *area);
-                    }
-                    Panel::Preview => self.render_preview(frame, *area),
-                    Panel::Tree => self.render_tree(frame, *area),
-                    Panel::Telemetry => self.render_telemetry(frame, *area),
-                }
-            }
+            // Stacked at full width, so no line has to be cut and the tree
+            // gets every row the other two do not need. The toggles block
+            // takes TOGGLES_HEIGHT rather than the 5 rows it used to get,
+            // which cut the "Shift+A opens the compact overlay" hint off the
+            // bottom at exactly the sizes most terminals open at.
+            let telemetry_height = if rows[1].height >= 16 {
+                STACKED_TELEMETRY_HEIGHT
+            } else {
+                0
+            };
+            let stack = Flex::vertical()
+                .constraints([
+                    Constraint::Fixed(TOGGLES_HEIGHT),
+                    Constraint::Min(1),
+                    Constraint::Fixed(telemetry_height),
+                ])
+                .split(rows[1]);
+            self.layout_toggles.set(stack[0]);
+            self.render_toggles(frame, stack[0]);
+            self.render_tree(frame, stack[1]);
+            self.render_telemetry(frame, stack[2]);
         }
     }
 
