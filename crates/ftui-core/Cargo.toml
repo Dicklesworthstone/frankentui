@@ -90,3 +90,7 @@ harness = false
 [[bench]]
 name = "text_width_bench"
 harness = false
+
+[[bench]]
+name = "input_parser_bench"
+harness = false
