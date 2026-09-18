@@ -6,9 +6,9 @@ All notable changes to [FrankenTUI](https://github.com/Dicklesworthstone/franken
 **Crate:** `ftui` (facade) plus 19 workspace crates
 **License:** MIT + OpenAI/Anthropic Rider
 
-Scope window: initial development on 2026-01-31 through the 0.8.0 release
-published on 2026-09-13. The latest published GitHub Release is
-[v0.8.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.8.0).
+Scope window: initial development on 2026-01-31 through the 0.9.0 release
+published on 2026-09-18. The latest published GitHub Release is
+[v0.9.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.9.0).
 `Release` below means a published GitHub Release; `Tag` means a git tag with
 no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 
@@ -16,6 +16,7 @@ no published GitHub Release. **v0.2.0 and v0.4.0 are tag-only milestones.**
 
 | Version | Kind | Date | Summary |
 |---------|------|------|---------|
+| [v0.9.0] | Release | 2026-09-18 | SIMD width kernels, OSC 52 clipboard, paragraph editing, unified teardown, first crates.io publish since 0.7.0 |
 | [v0.8.0] | Release | 2026-09-13 | Browser showcase parity, driven guided tour, touch navigation, clipboard |
 | [v0.7.0] | Release | 2026-09-08 | Default backends, keymaps, runtime accessibility, widgets, terminal fixes |
 | [v0.6.0](https://github.com/Dicklesworthstone/frankentui/releases/tag/v0.6.0) | Release | 2026-08-24 | Runtime guardrails, resize SLA, asupersync 0.4.9, color depth |
@@ -33,6 +34,90 @@ Release dates use GitHub's publication timestamp. Tag-only dates use the
 tag's recorded timezone; the internal milestone uses its commit date.
 
 ---
+
+## [v0.9.0] -- 2026-09-18 (GitHub Release)
+
+231 commits since v0.8.0.
+
+**crates.io catch-up.** The 17 library crates are published again at 0.9.0. The
+registry had been stuck at **0.7.0**: the v0.8.0 tag and GitHub Release shipped,
+but the crates.io step never ran, so 0.8.0 never existed as a package. If you
+depend on `ftui` from crates.io you are moving 0.7.0 -> 0.9.0 in one step and
+pick up everything in the v0.8.0 section below as well as this one. There is no
+0.8.0 package and there will not be one.
+
+### Added
+
+- **`ftui-simd` now carries real kernels.** The ASCII width fast path is wired to
+  the SIMD kernel, and the crate keeps only the kernels that measurably earn
+  their place. Non-ASCII grapheme width lookups are cached, with proptests and a
+  recorded bench baseline covering both the cached and uncached paths.
+- **OSC 52 clipboard support.** A shared OSC 52 encoder with a payload limit
+  backs `SetClipboard`/`GetClipboard`, dispatched through `TerminalWriter` and
+  lifted into the demo `Cmd` map. `FTUI_OSC52_CLIPBOARD` is honored without
+  rewriting mux identity, clipboard writes flush with the next frame or
+  immediately, and an oversized yank is refused before it can crash the app.
+- **Paragraph-aware text editing.** `Ctrl+Up`/`Ctrl+Down` move by paragraph and
+  `Shift` extends the selection, with paragraph boundaries taken from blank
+  lines. Undo coalesces consecutive inserts and deletes into groups driven by a
+  monotonic event clock, `insert_text` is treated as a paste group, and undoing a
+  selection edit restores the pre-edit cursor head.
+- **Touch navigation across the web build.** Every screen and pane is drivable by
+  touch, and a screen's keybinding help is parsed into tappable touch actions.
+- **Deep-linkable showcase.** `?screen=` accepts a slug or a one-based index,
+  `ShowcaseRunner::gotoScreen` and `screenSlugs()` expose the ordered registry,
+  and the WASM host can replace the evidence JSONL in place.
+- **Runtime guardrails.** `Program` is generic over `BackendPresenter`; the
+  degradation cascade is merged into `BudgetController`; `DiffRegime`
+  classification and its transition event are folded into diff evidence; an
+  upward `AllocLeakDetector` feeds `FrameGuardrails`; and guardrails queue depth,
+  VOI schema version, and telemetry all have validation tests.
+- **Widget introspection.** `CachedWidget` exposes cache-hit and last-key
+  inspectors, and virtualized row heights are trained per category with exposed
+  statistics.
+
+### Changed
+
+- **Terminal teardown is one shared implementation.** `session_teardown` is
+  extracted and shared by `ftui-core` and `ftui-tty`, so the native and Crossterm
+  backends restore the terminal byte-identically instead of drifting apart.
+
+### Fixed
+
+- Teardown no longer emits an unpaired DEC `?2026l` under mux policy, and termios
+  is restored with `TCSANOW` so cleanup cannot block forever.
+- The accessibility panel no longer cuts off its own lines, sizes its columns
+  from content rather than percentages, and stacks its blocks by remaining
+  height; its tracing target is now defined.
+- Narrow terminals degrade instead of giving up: the table gallery draws cards
+  below 90 columns, and the code explorer drops its sidebar rather than refusing
+  to render.
+- Theme Studio no longer fails a theme for the colour of its own background.
+- The guided tour shows real work: every scripted keystroke does something, held
+  keys are released when a step is cut short, the effects screen is no longer
+  throttled to 10fps, and the landing step picker is visible.
+- The explainability cockpit takes the newest 400 evidence lines without indexing
+  the whole log, and renders `browser_decision` rows as distinct web evidence.
+- WASM hosts own their browser asset strings, so a rejected init drops them
+  cleanly instead of clobbering late-arriving assets.
+- An edge swipe now releases the key it pressed.
+
+### Internal
+
+Three test defects that were failing the workspace gate on `main` are fixed.
+None of them changed shipping behaviour:
+
+- The benchmark gate's synthetic fixtures supplied 14 measurements against the 17
+  thresholds in `tests/baseline.json` — the `diff_200x60_sparse`,
+  `text_width_non_ascii` and `text_width_non_ascii_uncached` thresholds had been
+  added without updating the fixtures, so the gate reported validation errors and
+  returned a `fail` verdict with zero actual metric failures. Both fixture copies
+  now cover every configured metric.
+- Three `ftui-tty` tests depended on the process-global one-shot `KittyPopLatch`
+  without resetting it, so whichever test claimed the latch first made the others
+  observe a cleanup sequence with no kitty keyboard pop. They now share a test
+  lock and reset the latch before each measured emission, mirroring the
+  `gpu_test_lock` pattern in `ftui-extras`.
 
 ## [v0.8.0] -- 2026-09-13 (GitHub Release)
 
