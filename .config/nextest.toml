@@ -53,9 +53,12 @@ fail-fast = false
 # the workspace - the only one that also failed running entirely alone at 39 -
 # but it is not a test that fails on an unloaded machine.
 #
-# Its real margin is still unmeasured, because unlike resize_storm_e2e and
-# async_tasks_stress it neither logs its elapsed time on success nor accepts a
-# budget override, so only its failures are ever visible. Tracked as bd-eoi5v.
+# Its margin is 62.8ms against a 100ms budget - the floor of 150 samples of the
+# same workload taken at a load average of 265, so the uncontended cost is at
+# most that. Roughly 1.6x headroom, against about 10x for resize_storm_e2e:
+# the tightest budget here, but not a marginal one. Measured outside the repo,
+# because the test neither logs on success nor takes a budget override, so only
+# its failures are otherwise visible. Tracked as bd-eoi5v.
 [[profile.default.overrides]]
 filter = '''
     test(=e2e_focus_change_storm_performance)
