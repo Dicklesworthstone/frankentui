@@ -73,7 +73,6 @@ ftui-widgets::louds  # bd-g00-root-epic-ewths.11.5
 # The owner granted deletion permission for its enumerated set on 2026-09-18;
 # these are the ones this gate found, which is not the same list, so they need
 # their own pass before anything is removed.
-ftui::advanced  # bd-g00-root-epic-ewths.11.5
 ftui-core::event_coalescer  # bd-g00-root-epic-ewths.11.5
 ftui-core::generic_diff  # bd-g00-root-epic-ewths.11.5
 ftui-core::key_sequence  # bd-g00-root-epic-ewths.11.5

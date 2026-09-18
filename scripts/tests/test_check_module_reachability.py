@@ -190,6 +190,39 @@ class Evaluate(unittest.TestCase):
             verdicts = {f.qualified: f.verdict for f in gate.evaluate(root, {}, None)}
             self.assertEqual(verdicts["demo::thing"], "FEATURE_GATED")
 
+    def test_reexport_only_module_is_exempt(self):
+        # The facade's `pub mod advanced { pub use ftui_layout::..::*; }` IS
+        # the public API - consumers reach it as `ftui::..::advanced::*` and no
+        # workspace file names it. Reporting that as dead teaches people to
+        # ignore the gate.
+        with TemporaryDirectory() as tmp:
+            root = _workspace(
+                Path(tmp),
+                "pub mod thing;\n"
+                "pub mod facade {\n"
+                "    // Re-exports only.\n"
+                "    pub use crate::thing::Thing;\n"
+                "}\n",
+            )
+            verdicts = {f.qualified: f.verdict for f in gate.evaluate(root, {}, None)}
+            self.assertEqual(verdicts["demo::facade"], "REEXPORT_ONLY")
+
+    def test_inline_module_with_real_items_is_not_exempt(self):
+        # The exemption must not swallow inline modules that carry code;
+        # ftui-core::text_width is inline and very much alive.
+        with TemporaryDirectory() as tmp:
+            root = _workspace(
+                Path(tmp),
+                "pub mod inline_code {\n"
+                "    pub use crate::thing::Thing;\n"
+                "    pub fn helper() -> u8 {\n"
+                "        1\n"
+                "    }\n"
+                "}\n",
+            )
+            verdicts = {f.qualified: f.verdict for f in gate.evaluate(root, {}, None)}
+            self.assertEqual(verdicts["demo::inline_code"], "UNREACHABLE")
+
     def test_allowlisted_module_passes(self):
         with TemporaryDirectory() as tmp:
             root = _workspace(Path(tmp), "pub mod thing;\n")

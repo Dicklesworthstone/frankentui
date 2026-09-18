@@ -62,6 +62,7 @@ class Module:
     experimental: bool
     feature_gated: bool
     inline: bool
+    reexport_only: bool = False
     own_paths: list[Path] = field(default_factory=list)
 
 
@@ -195,10 +196,38 @@ def strip_test_regions(text: str) -> str:
         search_from = marker + removed.count("\n")
 
 
+def is_reexport_only(body: str) -> bool:
+    """Whether an inline module's body is nothing but re-exports.
+
+    A module like the facade's
+
+        pub mod advanced {
+            pub use ftui_layout::pane_execution::*;
+            ...
+        }
+
+    *is* the public API: consumers reach it as `ftui::..::advanced::*` and no
+    workspace file needs to name it. Reporting those as dead code is the kind
+    of false positive that teaches people to ignore the gate, so they are
+    exempt. A module with any real item in it is not covered by this.
+    """
+    meaningful = [
+        line.strip()
+        for line in body.splitlines()
+        if line.strip() and not line.strip().startswith("//")
+    ]
+    if not meaningful:
+        return False
+    return all(
+        line.startswith("pub use ") or line in {"{", "}"} for line in meaningful
+    )
+
+
 def declared_modules(crate: str, crate_dir: Path) -> list[Module]:
     """Parse `pub mod` declarations, carrying any `#[cfg(...)]` above them."""
     lib_rs = crate_dir / "src" / "lib.rs"
-    lines = lib_rs.read_text(encoding="utf-8").splitlines()
+    source = lib_rs.read_text(encoding="utf-8")
+    lines = source.splitlines()
 
     modules: list[Module] = []
     pending_attrs: list[str] = []
@@ -223,6 +252,16 @@ def declared_modules(crate: str, crate_dir: Path) -> list[Module]:
         # are exempt for the same reason rather than reported as dead.
         gated = any("feature = " in a for a in pending_attrs)
         inline = line.rstrip().endswith("{")
+        reexport_only = False
+        if inline:
+            decl = source.find(line)
+            if decl != -1:
+                # Scan from the opening brace, then keep only what is between
+                # the braces: the declaration line itself is not part of the
+                # body and would never look like a re-export.
+                brace = decl + len(line) - 1
+                end = _skip_to_item_end(source, brace)
+                reexport_only = is_reexport_only(source[brace + 1 : end - 1])
         own = [crate_dir / "src" / f"{name}.rs", crate_dir / "src" / name]
         modules.append(
             Module(
@@ -231,6 +270,7 @@ def declared_modules(crate: str, crate_dir: Path) -> list[Module]:
                 experimental=experimental,
                 feature_gated=gated and not experimental,
                 inline=inline,
+                reexport_only=reexport_only,
                 own_paths=own,
             )
         )
@@ -424,6 +464,9 @@ def evaluate(root: Path, allowlist: dict[str, str], only: str | None) -> list[Fi
                 continue
             if module.feature_gated:
                 findings.append(Finding(crate, module.name, "FEATURE_GATED"))
+                continue
+            if module.reexport_only:
+                findings.append(Finding(crate, module.name, "REEXPORT_ONLY"))
                 continue
 
             hit = find_reference(module, paths, index, root)
