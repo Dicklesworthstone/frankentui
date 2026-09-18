@@ -529,6 +529,18 @@
         "e_value": "number",
         "alert": "boolean"
       }
+    },
+    "width_cache_stats": {
+      "required": ["hits", "misses", "len", "capacity", "enabled", "thread"],
+      "optional": [],
+      "types": {
+        "hits": "integer",
+        "misses": "integer",
+        "len": "integer",
+        "capacity": "integer",
+        "enabled": "boolean",
+        "thread": "string"
+      }
     }
   }
 }

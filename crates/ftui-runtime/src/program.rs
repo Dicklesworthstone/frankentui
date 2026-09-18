@@ -6226,6 +6226,31 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             shutdown_error.get_or_insert(error);
         }
 
+        if let Some(ref sink) = self.evidence_sink {
+            let (hits, misses, len, capacity, enabled) =
+                if let Some(stats) = ftui_core::text_width::width_cache_stats() {
+                    (
+                        stats.hits,
+                        stats.misses,
+                        stats.small_size + stats.main_size,
+                        stats.capacity,
+                        true,
+                    )
+                } else {
+                    (0, 0, 0, 0, false)
+                };
+            let line = format!(
+                r#"{{"schema_version":"{}","event":"width_cache_stats","hits":{},"misses":{},"len":{},"capacity":{},"enabled":{},"thread":"main"}}"#,
+                crate::evidence_sink::EVIDENCE_SCHEMA_VERSION,
+                hits,
+                misses,
+                len,
+                capacity,
+                enabled,
+            );
+            let _ = sink.write_jsonl(&line);
+        }
+
         match shutdown_error {
             Some(error) => Err(error),
             None => Ok(()),

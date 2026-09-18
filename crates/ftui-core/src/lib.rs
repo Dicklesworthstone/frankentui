@@ -394,6 +394,8 @@ pub mod text_width {
             }
 
             self.misses += 1;
+            #[cfg(feature = "tracing")]
+            tracing::trace!(target: "ftui.text.width_cache", grapheme, key, "width cache miss");
             let width = grapheme_width_uncached(grapheme);
             self.entries.insert(
                 key,

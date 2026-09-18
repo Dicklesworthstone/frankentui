@@ -2599,6 +2599,64 @@ PY
             fi
         fi
 
+        # Width cache stats validation
+        width_cache_ok=false
+        if $explain_report_ok; then
+            echo ""
+            echo "--- width cache telemetry validation ---"
+            width_stats_res=$(python3 - "$EXPLAIN_REPORT" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    events = [json.loads(line) for line in f if line.strip()]
+wc_events = [e for e in events if e.get("event") == "width_cache_stats"]
+if len(wc_events) != 1:
+    print(f"FAIL expected exactly 1 width_cache_stats event, found {len(wc_events)}")
+    sys.exit(1)
+ev = wc_events[0]
+hits = ev.get("hits", 0)
+misses = ev.get("misses", 0)
+enabled = ev.get("enabled", False)
+length = ev.get("len", 0)
+cap = ev.get("capacity", 0)
+thread = ev.get("thread", "")
+total = hits + misses
+hit_rate = (hits / total) if total > 0 else 0.0
+
+if not enabled:
+    print(f"FAIL enabled={enabled}")
+    sys.exit(1)
+if hits < 0:
+    print(f"FAIL hits={hits}")
+    sys.exit(1)
+if misses < 1:
+    print(f"FAIL misses={misses}")
+    sys.exit(1)
+if length > 4096:
+    print(f"FAIL len={length}")
+    sys.exit(1)
+if thread != "main":
+    print(f"FAIL thread={thread}")
+    sys.exit(1)
+if hit_rate <= 0.5:
+    print(f"FAIL hit_rate={hit_rate:.4f} <= 0.5")
+    sys.exit(1)
+
+print(f"OK hits={hits} misses={misses} len={length} capacity={cap} enabled={enabled} thread={thread} hit_rate={hit_rate:.4f}")
+PY
+)
+            if [ $? -eq 0 ]; then
+                width_cache_ok=true
+                echo "width cache stats: $width_stats_res"
+                hit_rate=$(echo "$width_stats_res" | grep -o 'hit_rate=[0-9.]*' | cut -d= -f2)
+                jsonl_assert "width_cache_stats_present" "pass" "$width_stats_res"
+                jsonl_assert "width_cache_hit_rate" "pass" "hit_rate=$hit_rate"
+            else
+                echo "width cache stats: FAILED ($width_stats_res)"
+                jsonl_assert "width_cache_stats_present" "fail" "$width_stats_res"
+                jsonl_assert "width_cache_hit_rate" "fail" "$width_stats_res"
+            fi
+        fi
+
         explain_exit_ok=true
         if [ "$explain_exit" -ne 0 ]; then
             explain_exit_ok=false
@@ -2609,6 +2667,7 @@ PY
         if ! $explain_report_ok; then explain_success=false; fi
         if ! $explain_parse_ok; then explain_success=false; fi
         if ! $explain_schema_ok; then explain_success=false; fi
+        if ! $width_cache_ok; then explain_success=false; fi
 
         echo "Outcome: $explain_outcome"
         echo "Summary JSONL: $EXPLAIN_JSONL"
