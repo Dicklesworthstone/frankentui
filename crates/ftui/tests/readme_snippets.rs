@@ -444,3 +444,99 @@ fn readme_simulator_snippet() {
     // README-SNIPPET-END: simulator
     assert_in_readme(&["simulator"]);
 }
+
+// ── Advanced Features ───────────────────────────────────────────────────
+//
+// The blocks below were fences the README carried but nothing compiled. Each
+// one now either proves the API is real or fails the build; there is no third
+// outcome where the README quietly describes something that does not exist.
+
+#[test]
+fn readme_hyperlink_snippet() {
+    use ftui::render::cell::Cell;
+    use ftui::render::frame::Frame;
+    use ftui::render::grapheme_pool::GraphemePool;
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(20, 3, &mut pool);
+
+    // README-SNIPPET: hyperlinks
+    let link_id = frame.register_link("https://example.com");
+    let mut cell = Cell::from_char('x');
+    cell.attrs = cell.attrs.with_link(link_id);
+    // Emits OSC 8 hyperlink sequences for supporting terminals
+    // README-SNIPPET-END: hyperlinks
+
+    assert_eq!(cell.attrs.link_id(), link_id);
+    assert_in_readme(&["hyperlinks"]);
+}
+
+#[test]
+fn readme_focus_graph_snippet() {
+    use ftui::widgets::focus::{FocusManager, FocusNode, NavDirection};
+
+    let input1_area = Rect::new(0, 0, 10, 1);
+    let input2_area = Rect::new(0, 2, 10, 1);
+    let mut focus = FocusManager::new();
+
+    // README-SNIPPET: focus_graph
+    // Declarative focus graph: FocusManager owns a FocusGraph of nodes and nav edges
+    let graph = focus.graph_mut();
+    let input1 = graph.insert(FocusNode::new(1, input1_area));
+    let input2 = graph.insert(FocusNode::new(2, input2_area));
+    graph.connect(input1, NavDirection::Next, input2); // Tab order
+
+    // Navigation
+    focus.focus_next(); // Tab
+    focus.focus_prev(); // Shift+Tab
+    // README-SNIPPET-END: focus_graph
+
+    assert_ne!(input1, input2);
+    assert_in_readme(&["focus_graph"]);
+}
+
+#[test]
+fn readme_accessibility_program_config_snippet() {
+    // README-SNIPPET: accessibility_program_config
+    use ftui::{ProgramConfig, ScreenReaderPolicy};
+
+    let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+    // README-SNIPPET-END: accessibility_program_config
+
+    let _ = config;
+    assert_in_readme(&["accessibility_program_config"]);
+}
+
+#[test]
+fn readme_contrast_ratio_snippet() {
+    use ftui::style::color::{Rgb, contrast_ratio};
+
+    // README-SNIPPET: contrast_ratio
+    let ratio = contrast_ratio(Rgb::new(220, 220, 220), Rgb::new(30, 30, 30));
+    // WCAG AA: ratio ≥ 4.5 for normal text, ≥ 3.0 for large text
+    // WCAG AAA: ratio ≥ 7.0 for normal text, ≥ 4.5 for large text
+    // README-SNIPPET-END: contrast_ratio
+
+    // Light-on-dark at these values clears AAA, which is what makes the
+    // thresholds in the comment worth quoting next to the call.
+    assert!(ratio > 7.0, "expected AAA contrast, got {ratio}");
+    assert_in_readme(&["contrast_ratio"]);
+}
+
+#[test]
+fn readme_queue_telemetry_snippet() {
+    // README-SNIPPET: queue_telemetry
+    let snap = ftui_runtime::effect_system::queue_telemetry();
+    // QueueTelemetry {
+    //   enqueued: 1042,          -- total tasks submitted
+    //   processed: 1038,         -- total tasks completed
+    //   dropped: 2,              -- tasks dropped (backpressure/shutdown)
+    //   high_water: 12,          -- peak queue depth observed
+    //   in_flight: 2,            -- currently executing
+    // }
+    // README-SNIPPET-END: queue_telemetry
+
+    // The counters are monotonic, so processed can never outrun enqueued.
+    assert!(snap.processed <= snap.enqueued);
+    assert_in_readme(&["queue_telemetry"]);
+}

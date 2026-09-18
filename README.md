@@ -2515,7 +2515,8 @@ fn view(&self, frame: &mut Frame) {
 
 ```rust
 let link_id = frame.register_link("https://example.com");
-let cell = Cell::from_char('x').with_link(link_id);
+let mut cell = Cell::from_char('x');
+cell.attrs = cell.attrs.with_link(link_id);
 // Emits OSC 8 hyperlink sequences for supporting terminals
 ```
 
@@ -2523,9 +2524,10 @@ let cell = Cell::from_char('x').with_link(link_id);
 
 ```rust
 // Declarative focus graph: FocusManager owns a FocusGraph of nodes and nav edges
-let input1 = focus.graph_mut().insert(FocusNode::new(1, input1_area));
-let input2 = focus.graph_mut().insert(FocusNode::new(2, input2_area));
-focus.graph_mut().connect(input1, NavDirection::Next, input2); // Tab order
+let graph = focus.graph_mut();
+let input1 = graph.insert(FocusNode::new(1, input1_area));
+let input2 = graph.insert(FocusNode::new(2, input2_area));
+graph.connect(input1, NavDirection::Next, input2); // Tab order
 
 // Navigation
 focus.focus_next(); // Tab
