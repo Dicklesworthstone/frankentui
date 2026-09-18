@@ -142,7 +142,8 @@ log_info "Running tests..."
 
 # Core suites (always run)
 run_suite "inline"  "$SCRIPT_DIR/test_inline.sh"
-run_suite "cleanup" "$SCRIPT_DIR/test_cleanup.sh"
+FTUI_DEMO_BACKEND=native run_suite "cleanup_native" "$SCRIPT_DIR/test_cleanup.sh"
+FTUI_DEMO_BACKEND=crossterm run_suite "cleanup_crossterm" "$SCRIPT_DIR/test_cleanup.sh"
 run_suite "examples" "$SCRIPT_DIR/test_examples.sh"
 
 if $QUICK; then
@@ -164,6 +165,7 @@ else
     run_suite "resize"     "$SCRIPT_DIR/test_resize_scroll_region.sh"
     run_suite "mux"        "$SCRIPT_DIR/test_mux.sh"
     run_suite "schedule_trace" "$SCRIPT_DIR/test_schedule_trace.sh"
+    run_suite "teardown_identity" "$SCRIPT_DIR/test_teardown_identity.sh"
 
     # Demo screen E2E tests (bd-11ck.4)
     if [[ -x "$SCRIPT_DIR/test_action_timeline.sh" ]]; then

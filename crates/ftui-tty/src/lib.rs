@@ -245,12 +245,12 @@ fn restore_raw_mode_snapshot() {
 
 #[cfg(unix)]
 fn best_effort_termination_cleanup() {
-    if !TTY_SESSION_ACTIVE.load(Ordering::SeqCst) {
+    if !TTY_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
         return;
     }
     let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
-    let mut plan = TeardownPlan::from_capabilities(&caps, true, false);
+    let mut plan = TeardownPlan::from_capabilities(&caps, true, true);
     if !KittyPopLatch::try_claim() {
         plan.pop_kitty_keyboard = false;
     }
@@ -1423,14 +1423,16 @@ impl Drop for TtyBackend {
         // Only run cleanup if we have an active session.
         #[cfg(unix)]
         if self.raw_mode.is_some() {
-            TTY_SESSION_ACTIVE.store(false, Ordering::SeqCst);
+            if !TTY_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
+                return;
+            }
             let mut stdout = io::stdout();
             let mouse_disable_seq =
                 mouse_disable_sequence_for_capabilities(self.events.capabilities);
             let _ = write_cleanup_sequence_policy_with_mouse(
                 &self.events.features(),
                 self.alt_screen_active,
-                false,
+                true,
                 mouse_disable_seq,
                 &mut stdout,
             );
@@ -1536,11 +1538,16 @@ fn write_cleanup_sequence_policy_with_mouse(
     mouse_disable_seq: &'static [u8],
     writer: &mut impl Write,
 ) -> io::Result<()> {
+    let pop_kitty = if features.kitty_keyboard {
+        !KittyPopLatch::is_claimed()
+    } else {
+        false
+    };
     let plan = TeardownPlan {
         emit_sync_end,
         reset_scroll_region: true,
         reset_style: true,
-        pop_kitty_keyboard: features.kitty_keyboard,
+        pop_kitty_keyboard: pop_kitty,
         disable_focus: features.focus_events,
         disable_paste: features.bracketed_paste,
         disable_mouse: features.mouse_capture,

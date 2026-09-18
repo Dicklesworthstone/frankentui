@@ -12,11 +12,12 @@ keywords = ["tui", "terminal", "ui", "ftui", "frankentui"]
 categories = ["command-line-interface", "gui"]
 
 [features]
-default = []
+default = ["native-backend"]
 # Compiles internal research modules not reachable from the public API. Not supported. See README.
 experimental = []
 pty-capture = ["dep:portable-pty", "ftui-extras/pty-capture"]
 telemetry = ["ftui-runtime/telemetry"]
+native-backend = ["ftui-runtime/native-backend"]
 
 [lints]
 workspace = true

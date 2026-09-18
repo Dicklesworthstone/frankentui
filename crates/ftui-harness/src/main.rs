@@ -2567,8 +2567,26 @@ fn main() -> std::io::Result<()> {
     let clock = TraceFixtureClock::from_config(view_mode, &config.render_trace)?;
     let mut model = AgentHarness::new(view_mode, log_keys);
     model.trace_fixture_clock = clock.clone();
-    let mut program = Program::with_config(model, config)?;
-    program.run()?;
+    let backend = std::env::var("FTUI_DEMO_BACKEND").ok();
+    let backend = backend.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    #[cfg(all(unix, feature = "native-backend"))]
+    match backend {
+        Some("crossterm") => {
+            let mut program = Program::with_config(model, config)?;
+            program.run()?;
+        }
+        _ => {
+            let mut program = Program::with_native_backend(model, config)?;
+            program.run()?;
+        }
+    }
+
+    #[cfg(not(all(unix, feature = "native-backend")))]
+    {
+        let mut program = Program::with_config(model, config)?;
+        program.run()?;
+    }
     if let Some(clock) = clock {
         clock.check()?;
     }

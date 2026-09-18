@@ -546,7 +546,10 @@ impl std::fmt::Display for SignalTerminationError {
 
 impl std::error::Error for SignalTerminationError {}
 
-fn signal_termination_from_error(err: &io::Error) -> Option<i32> {
+/// If this error represents an interrupted runtime terminated by a signal,
+/// return the signal number (e.g. 15 for SIGTERM, 2 for SIGINT).
+#[must_use]
+pub fn signal_termination_from_error(err: &io::Error) -> Option<i32> {
     err.get_ref()
         .and_then(|inner| inner.downcast_ref::<SignalTerminationError>())
         .map(|inner| inner.signal)
