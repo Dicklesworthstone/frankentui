@@ -4557,6 +4557,9 @@ struct BudgetDecisionEvidence {
     frames_observed: u32,
     frames_since_change: u32,
     in_warmup: bool,
+    recovery_streak: u32,
+    total_degrades: u64,
+    total_recoveries: u64,
     controller_reason: BudgetDecisionReason,
     load_governor: LoadGovernorSnapshot,
     /// Detector that made the resize coalescer's latest regime decision.
@@ -4593,7 +4596,7 @@ impl BudgetDecisionEvidence {
         let queue_max_depth = Self::opt_usize(self.load_governor.queue_max_depth);
 
         format!(
-            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
+            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"recovery_streak":{},"total_degrades":{},"total_recoveries":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
             self.frame_idx,
             self.decision.as_str(),
             self.controller_decision.as_str(),
@@ -4610,6 +4613,9 @@ impl BudgetDecisionEvidence {
             self.frames_observed,
             self.frames_since_change,
             self.in_warmup,
+            self.recovery_streak,
+            self.total_degrades,
+            self.total_recoveries,
             self.load_governor.mode.as_str(),
             self.load_governor.mode_before.as_str(),
             self.load_governor.pressure_class.as_str(),
@@ -7252,6 +7258,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             frames_observed: telemetry.frames_observed,
             frames_since_change: telemetry.frames_since_change,
             in_warmup: telemetry.in_warmup,
+            recovery_streak: telemetry.recovery_streak,
+            total_degrades: telemetry.total_degrades,
+            total_recoveries: telemetry.total_recoveries,
             controller_reason: telemetry.decision_reason,
             load_governor: *load_snapshot,
             resize_detector: self.resize_coalescer.last_detector().as_str(),
@@ -11265,6 +11274,9 @@ mod tests {
             frames_observed: 42,
             frames_since_change: 3,
             in_warmup: false,
+            recovery_streak: 5,
+            total_degrades: 2,
+            total_recoveries: 1,
             controller_reason: BudgetDecisionReason::OverloadEvidencePassed,
             resize_detector: "bocpd",
             load_governor: LoadGovernorSnapshot {
@@ -11312,6 +11324,9 @@ mod tests {
         assert!(jsonl.contains("\"budget_us\":16000.000000"));
         assert!(jsonl.contains("\"pid_output\":1.250000"));
         assert!(jsonl.contains("\"e_value\":2.000000"));
+        assert!(jsonl.contains("\"recovery_streak\":5"));
+        assert!(jsonl.contains("\"total_degrades\":2"));
+        assert!(jsonl.contains("\"total_recoveries\":1"));
         assert!(jsonl.contains("\"runtime_mode\":\"degraded\""));
         assert!(jsonl.contains("\"runtime_mode_before\":\"stressed\""));
         assert!(jsonl.contains("\"pressure_class\":\"hard_overload\""));

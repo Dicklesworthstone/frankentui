@@ -627,10 +627,16 @@ impl<'a> Frame<'a> {
         self.widget_budget = budget;
     }
 
-    /// Check whether a widget should be rendered under the current budget.
+    /// Check whether a widget should be rendered by widget ID, considering both degradation and widget budget.
     #[inline]
-    pub fn should_render_widget(&self, widget_id: u64, essential: bool) -> bool {
-        self.widget_budget.allows(widget_id, essential)
+    pub fn should_render_widget_by_id(&self, widget_id: u64, essential: bool) -> bool {
+        self.should_render_widget(essential) && self.widget_budget.allows(widget_id, essential)
+    }
+
+    /// Check whether a budgeted widget should be rendered under the current widget budget and degradation.
+    #[inline]
+    pub fn should_render_budgeted_widget(&self, widget_id: u64, essential: bool) -> bool {
+        self.should_render_widget_by_id(widget_id, essential)
     }
 
     /// Register a widget scheduling signal for this frame.
@@ -721,6 +727,18 @@ impl<'a> Frame<'a> {
     pub fn set_degradation(&mut self, level: DegradationLevel) {
         self.degradation = level;
         self.buffer.degradation = level;
+    }
+
+    /// Whether a widget should be rendered under the current degradation level.
+    ///
+    /// Essential widgets render up through [`DegradationLevel::Skeleton`] (only
+    /// skipped at [`DegradationLevel::SkipFrame`]). Non-essential (decorative)
+    /// widgets are skipped at [`DegradationLevel::EssentialOnly`] and above.
+    #[inline]
+    pub fn should_render_widget(&self, essential: bool) -> bool {
+        self.degradation
+            .max(self.buffer.degradation)
+            .allows_widget(essential)
     }
 
     /// Get the bounding rectangle of the frame.
@@ -2043,13 +2061,13 @@ mod tests {
         let mut frame = Frame::new(10, 10, &mut pool);
 
         // Default allows all
-        assert!(frame.should_render_widget(42, false));
+        assert!(frame.should_render_widget_by_id(42, false));
 
         // Set restricted budget
         frame.set_widget_budget(WidgetBudget::allow_only(vec![1, 2]));
-        assert!(frame.should_render_widget(1, false));
-        assert!(!frame.should_render_widget(42, false));
-        assert!(frame.should_render_widget(42, true)); // essential
+        assert!(frame.should_render_widget_by_id(1, false));
+        assert!(!frame.should_render_widget_by_id(42, false));
+        assert!(frame.should_render_widget_by_id(42, true)); // essential
     }
 
     // --- Frame widget signals ---
@@ -2101,6 +2119,40 @@ mod tests {
         frame.set_degradation(DegradationLevel::EssentialOnly);
         assert_eq!(frame.degradation, DegradationLevel::EssentialOnly);
         assert_eq!(frame.buffer.degradation, DegradationLevel::EssentialOnly);
+    }
+
+    #[test]
+    fn frame_should_render_widget() {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
+
+        // Full: all widgets allowed
+        assert!(frame.should_render_widget(true));
+        assert!(frame.should_render_widget(false));
+
+        // SimpleBorders & NoStyling: all widgets allowed
+        frame.set_degradation(DegradationLevel::SimpleBorders);
+        assert!(frame.should_render_widget(true));
+        assert!(frame.should_render_widget(false));
+
+        frame.set_degradation(DegradationLevel::NoStyling);
+        assert!(frame.should_render_widget(true));
+        assert!(frame.should_render_widget(false));
+
+        // EssentialOnly: only essential
+        frame.set_degradation(DegradationLevel::EssentialOnly);
+        assert!(frame.should_render_widget(true));
+        assert!(!frame.should_render_widget(false));
+
+        // Skeleton: only essential
+        frame.set_degradation(DegradationLevel::Skeleton);
+        assert!(frame.should_render_widget(true));
+        assert!(!frame.should_render_widget(false));
+
+        // SkipFrame: none
+        frame.set_degradation(DegradationLevel::SkipFrame);
+        assert!(!frame.should_render_widget(true));
+        assert!(!frame.should_render_widget(false));
     }
 
     // --- Frame hit grid with zero-size screen ---

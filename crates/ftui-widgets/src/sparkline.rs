@@ -360,6 +360,11 @@ impl Widget for Sparkline<'_> {
             return;
         }
 
+        // Sparkline is decorative — skip under EssentialOnly and above.
+        if !frame.should_render_widget(false) {
+            return;
+        }
+
         let deg = frame.buffer.degradation;
 
         // Skeleton+: skip entirely
@@ -925,6 +930,35 @@ mod tests {
                     Some('H'),
                     "the max column is outside the window"
                 );
+            }
+        }
+
+        #[test]
+        fn sparkline_skips_render_under_essential_only() {
+            use ftui_render::budget::DegradationLevel;
+
+            let data = [1.0, 5.0, 3.0];
+            let sparkline = Sparkline::new(&data);
+            let area = Rect::new(0, 0, 3, 1);
+
+            // Full: renders characters (not blank)
+            let mut pool_full = GraphemePool::new();
+            let mut frame_full = Frame::new(3, 1, &mut pool_full);
+            frame_full.set_degradation(DegradationLevel::Full);
+            Widget::render(&sparkline, area, &mut frame_full);
+            assert_eq!(
+                frame_full.buffer.get(1, 0).unwrap().content.as_char(),
+                Some('█')
+            );
+
+            // EssentialOnly: leaves area blank
+            let mut pool_ess = GraphemePool::new();
+            let mut frame_ess = Frame::new(3, 1, &mut pool_ess);
+            frame_ess.set_degradation(DegradationLevel::EssentialOnly);
+            Widget::render(&sparkline, area, &mut frame_ess);
+            for x in 0..3 {
+                let cell = frame_ess.buffer.get(x, 0).unwrap();
+                assert!(cell.content.is_empty());
             }
         }
 

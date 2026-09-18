@@ -366,7 +366,7 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
         .entered();
 
         // Scrollbar is decorative — skip at EssentialOnly+
-        if !frame.buffer.degradation.render_decorative() {
+        if !frame.should_render_widget(false) {
             state.track_layout = None;
             clear_text_area(frame, area, Style::default());
             return;

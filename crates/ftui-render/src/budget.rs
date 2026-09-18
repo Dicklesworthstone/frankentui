@@ -433,6 +433,9 @@ pub struct BudgetController {
     last_pid_gate_margin: f64,
     last_evidence_threshold: f64,
     last_evidence_margin: f64,
+    recovery_streak: u32,
+    total_degrades: u64,
+    total_recoveries: u64,
 }
 
 /// Decision output from the budget controller.
@@ -521,6 +524,9 @@ impl BudgetController {
             last_pid_gate_margin: 0.0,
             last_evidence_threshold: 0.0,
             last_evidence_margin: 0.0,
+            recovery_streak: 0,
+            total_degrades: 0,
+            total_recoveries: 0,
         }
     }
 
@@ -542,6 +548,13 @@ impl BudgetController {
         // Update e-process
         self.eprocess
             .update(frame_ms, target_ms, &self.config.eprocess);
+
+        // Track recovery streak: consecutive upgrade-eligible frames
+        if u < -self.config.upgrade_threshold {
+            self.recovery_streak = self.recovery_streak.saturating_add(1);
+        } else {
+            self.recovery_streak = 0;
+        }
 
         // Increment cooldown counter
         self.frames_since_change = self.frames_since_change.saturating_add(1);
@@ -610,6 +623,8 @@ impl BudgetController {
                     next
                 };
                 self.frames_since_change = 0;
+                self.recovery_streak = 0;
+                self.total_degrades = self.total_degrades.saturating_add(1);
 
                 #[cfg(feature = "tracing")]
                 warn!(
@@ -625,6 +640,7 @@ impl BudgetController {
                     (self.transition_seq << 32) ^ u64::from(self.eprocess.frames_observed);
                 self.current_level = self.current_level.prev();
                 self.frames_since_change = 0;
+                self.total_recoveries = self.total_recoveries.saturating_add(1);
 
                 #[cfg(feature = "tracing")]
                 trace!(
@@ -658,9 +674,30 @@ impl BudgetController {
     /// happened.
     pub fn sync_level(&mut self, level: DegradationLevel) {
         if self.current_level != level {
+            if level > self.current_level {
+                self.recovery_streak = 0;
+            }
             self.current_level = level;
             self.frames_since_change = 0;
         }
+    }
+
+    /// Get the current recovery streak (consecutive upgrade-eligible frames).
+    #[inline]
+    pub fn recovery_streak(&self) -> u32 {
+        self.recovery_streak
+    }
+
+    /// Total degrade events enacted by the controller.
+    #[inline]
+    pub fn total_degrades(&self) -> u64 {
+        self.total_degrades
+    }
+
+    /// Total recovery (upgrade) events enacted by the controller.
+    #[inline]
+    pub fn total_recoveries(&self) -> u64 {
+        self.total_recoveries
     }
 
     /// Get the current e-process value (for diagnostics/logging).
@@ -716,6 +753,9 @@ impl BudgetController {
             evidence_threshold: self.last_evidence_threshold,
             evidence_margin: self.last_evidence_margin,
             in_warmup: self.eprocess.frames_observed < self.config.eprocess.warmup_frames,
+            recovery_streak: self.recovery_streak,
+            total_degrades: self.total_degrades,
+            total_recoveries: self.total_recoveries,
         }
     }
 
@@ -735,6 +775,9 @@ impl BudgetController {
         self.last_pid_gate_margin = 0.0;
         self.last_evidence_threshold = 0.0;
         self.last_evidence_margin = 0.0;
+        self.recovery_streak = 0;
+        self.total_degrades = 0;
+        self.total_recoveries = 0;
     }
 
     /// Get a reference to the controller configuration.
@@ -791,6 +834,12 @@ pub struct BudgetTelemetry {
     pub evidence_margin: f64,
     /// Whether the controller is in warmup (e-process not yet active).
     pub in_warmup: bool,
+    /// Current recovery streak (consecutive upgrade-eligible frames).
+    pub recovery_streak: u32,
+    /// Total degrade events enacted by the controller.
+    pub total_degrades: u64,
+    /// Total recovery (upgrade) events enacted by the controller.
+    pub total_recoveries: u64,
 }
 
 /// Progressive degradation levels for render quality.
@@ -910,6 +959,21 @@ impl DegradationLevel {
     #[inline]
     pub fn render_content(self) -> bool {
         self < Self::Skeleton
+    }
+
+    /// Whether a widget is allowed to render at this degradation level.
+    ///
+    /// - `Full`, `SimpleBorders`, `NoStyling`: all widgets allowed.
+    /// - `EssentialOnly`, `Skeleton`: only essential widgets allowed.
+    /// - `SkipFrame`: no widgets allowed.
+    #[inline]
+    #[must_use]
+    pub fn allows_widget(self, essential: bool) -> bool {
+        match self {
+            Self::Full | Self::SimpleBorders | Self::NoStyling => true,
+            Self::EssentialOnly | Self::Skeleton => essential,
+            Self::SkipFrame => false,
+        }
     }
 }
 
@@ -1463,6 +1527,29 @@ mod tests {
         assert_eq!(DegradationLevel::EssentialOnly.level(), 3);
         assert_eq!(DegradationLevel::Skeleton.level(), 4);
         assert_eq!(DegradationLevel::SkipFrame.level(), 5);
+    }
+
+    #[test]
+    fn degradation_level_allows_widget_matrix() {
+        // Levels 0..=2: both essential and decorative widgets are allowed
+        assert!(DegradationLevel::Full.allows_widget(true));
+        assert!(DegradationLevel::Full.allows_widget(false));
+        assert!(DegradationLevel::SimpleBorders.allows_widget(true));
+        assert!(DegradationLevel::SimpleBorders.allows_widget(false));
+        assert!(DegradationLevel::NoStyling.allows_widget(true));
+        assert!(DegradationLevel::NoStyling.allows_widget(false));
+
+        // EssentialOnly (level 3): only essential widgets allowed
+        assert!(DegradationLevel::EssentialOnly.allows_widget(true));
+        assert!(!DegradationLevel::EssentialOnly.allows_widget(false));
+
+        // Skeleton (level 4): only essential widgets allowed
+        assert!(DegradationLevel::Skeleton.allows_widget(true));
+        assert!(!DegradationLevel::Skeleton.allows_widget(false));
+
+        // SkipFrame (level 5): no widgets allowed
+        assert!(!DegradationLevel::SkipFrame.allows_widget(true));
+        assert!(!DegradationLevel::SkipFrame.allows_widget(false));
     }
 
     #[test]
@@ -4135,6 +4222,9 @@ mod tests {
                 evidence_threshold: 0.0,
                 evidence_margin: 0.0,
                 in_warmup: true,
+                recovery_streak: 0,
+                total_degrades: 0,
+                total_recoveries: 0,
             };
             let s = format!("{:?}", telem);
             assert!(s.contains("BudgetTelemetry"), "Debug output: {}", s);
@@ -4163,6 +4253,9 @@ mod tests {
                 evidence_threshold: 0.0,
                 evidence_margin: 0.0,
                 in_warmup: false,
+                recovery_streak: 0,
+                total_degrades: 0,
+                total_recoveries: 0,
             };
             let b = a;
             assert_eq!(a, b);
@@ -4460,6 +4553,66 @@ mod tests {
         fn controller_e_value_accessor() {
             let ctrl = BudgetController::new(BudgetControllerConfig::default());
             assert!((ctrl.e_value() - 1.0).abs() < f64::EPSILON);
+        }
+
+        #[test]
+        fn budget_controller_counts_degrades_and_recoveries() {
+            let mut ctrl = BudgetController::new(BudgetControllerConfig {
+                target: Duration::from_millis(16),
+                cooldown_frames: 0,
+                upgrade_threshold: 0.1,
+                degrade_threshold: 0.1,
+                ..Default::default()
+            });
+
+            assert_eq!(ctrl.recovery_streak(), 0);
+            assert_eq!(ctrl.total_degrades(), 0);
+            assert_eq!(ctrl.total_recoveries(), 0);
+
+            // Feed fast frames to build up recovery streak
+            for _ in 0..5 {
+                ctrl.update(Duration::from_millis(4));
+            }
+            assert!(ctrl.recovery_streak() > 0);
+
+            // Step up (degrade): overload frames until exactly 1 degrade
+            for _ in 0..50 {
+                ctrl.update(Duration::from_millis(50));
+                if ctrl.total_degrades() == 1 {
+                    break;
+                }
+            }
+            assert_eq!(ctrl.total_degrades(), 1);
+            assert_eq!(
+                ctrl.recovery_streak(),
+                0,
+                "recovery_streak resets on degrade"
+            );
+
+            // Recover (upgrade): fast frames until 1 recovery
+            for _ in 0..200 {
+                ctrl.update(Duration::from_millis(4));
+                if ctrl.total_recoveries() == 1 {
+                    break;
+                }
+            }
+            assert_eq!(ctrl.total_recoveries(), 1);
+            assert!(ctrl.recovery_streak() > 0);
+
+            // Test reset clears counters
+            ctrl.reset();
+            assert_eq!(ctrl.recovery_streak(), 0);
+            assert_eq!(ctrl.total_degrades(), 0);
+            assert_eq!(ctrl.total_recoveries(), 0);
+        }
+
+        #[test]
+        fn controller_telemetry_includes_counters() {
+            let ctrl = BudgetController::new(BudgetControllerConfig::default());
+            let t = ctrl.telemetry();
+            assert_eq!(t.recovery_streak, 0);
+            assert_eq!(t.total_degrades, 0);
+            assert_eq!(t.total_recoveries, 0);
         }
     }
 }

@@ -521,7 +521,7 @@ impl<W: Widget> Widget for Budgeted<W> {
         signal.area_cells = area.width as u32 * area.height as u32;
         frame.register_widget_signal(signal);
 
-        if frame.should_render_widget(self.widget_id, self.inner.is_essential()) {
+        if frame.should_render_budgeted_widget(self.widget_id, self.inner.is_essential()) {
             self.inner.render(area, frame);
         }
     }
@@ -541,7 +541,7 @@ impl<W: StatefulWidget + Widget> StatefulWidget for Budgeted<W> {
         signal.area_cells = area.width as u32 * area.height as u32;
         frame.register_widget_signal(signal);
 
-        if frame.should_render_widget(self.widget_id, self.inner.is_essential()) {
+        if frame.should_render_budgeted_widget(self.widget_id, self.inner.is_essential()) {
             StatefulWidget::render(&self.inner, area, frame, state);
         }
     }
