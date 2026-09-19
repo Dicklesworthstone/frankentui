@@ -342,7 +342,7 @@ impl A11yTree {
             }
 
             let indent = "  ".repeat(depth.min(16));
-            let summary = node_summary(node, self.focused == Some(id), true);
+            let summary = node_summary(node, self.focused == Some(id), true, &[]);
             let mut line = String::with_capacity(indent.len() + summary.len());
             line.push_str(&indent);
             line.push_str(&summary);
@@ -465,9 +465,33 @@ impl A11yTreeDiff {
 
     /// Convert this diff into bounded screen-reader announcements.
     ///
-    /// Focus changes are announced first. Live-region content changes then
-    /// follow in deterministic node-ID order, with assertive announcements
-    /// ahead of polite announcements within the same reason class.
+    /// Focus changes are announced first, followed by retained-focus control
+    /// state changes, live-region policy changes, and live content. Within a
+    /// reason class, assertive announcements precede polite ones, then node ID
+    /// determines the order.
+    ///
+    /// When the tree's focused ID stays on an existing non-presentational
+    /// node, changes to `disabled`, `readonly`, and `required` produce one
+    /// polite announcement of only the changed flags. Both directions are
+    /// explicit: disabled/enabled, read only/not read only, required/not
+    /// required. These independent states do not move focus or change widget
+    /// behavior. A node's `state.focused` flag alone does not establish focus.
+    ///
+    /// Changes to just these flags off focus remain silent, even on live regions; the
+    /// complete changes remain available in the raw diff. Entering a control
+    /// uses its normal focus summary, not an additional state announcement.
+    /// Same-node live updates are coalesced before applying the batch cap:
+    /// focus/state reasons take precedence, but live content and urgency are
+    /// retained. Cleared flags are included explicitly in a coalesced summary;
+    /// default false flags are not added to ordinary focus or mirror output.
+    ///
+    /// This is a text-bridge policy, not a requirement to add ARIA live
+    /// regions. WAI-ARIA defines the [state semantics], while [Core-AAM]
+    /// describes native accessibility events. A bridge using native events
+    /// should not also replay this text for the same transition (bd-inkss).
+    ///
+    /// [state semantics]: https://www.w3.org/TR/wai-aria-1.2/#aria-disabled
+    /// [Core-AAM]: https://www.w3.org/TR/core-aam-1.2/#mapping_events_state-change
     pub fn screen_reader_announcements(
         &self,
         current: &A11yTree,
@@ -478,7 +502,8 @@ impl A11yTreeDiff {
         if let Some((_, Some(new_focus))) = self.focus_changed
             && let Some(node) = current.node(new_focus)
             && node.role != A11yRole::Presentation
-            && let Some(text) = announcement_text(node, current.focused == Some(new_focus), false)
+            && let Some(text) =
+                announcement_text(node, current.focused == Some(new_focus), false, &[])
         {
             candidates.push(ScreenReaderAnnouncement {
                 node_id: Some(new_focus),
@@ -491,28 +516,65 @@ impl A11yTreeDiff {
         for id in &self.added {
             if let Some(node) = current.node(*id)
                 && let Some(urgency) = node.live_region
-                && let Some(text) = announcement_text(node, current.focused == Some(*id), true)
+                && let Some(text) = announcement_text(node, current.focused == Some(*id), true, &[])
             {
-                candidates.push(ScreenReaderAnnouncement {
-                    node_id: Some(*id),
-                    urgency,
-                    reason: AnnouncementReason::LiveRegionAdded,
-                    text,
-                });
+                push_announcement(
+                    &mut candidates,
+                    ScreenReaderAnnouncement {
+                        node_id: Some(*id),
+                        urgency,
+                        reason: AnnouncementReason::LiveRegionAdded,
+                        text,
+                    },
+                );
             }
         }
 
         for (id, changes) in &self.changed {
-            if let Some(node) = current.node(*id)
-                && let Some(urgency) = node.live_region
+            let Some(node) = current.node(*id) else {
+                continue;
+            };
+            if node.role == A11yRole::Presentation {
+                continue;
+            }
+
+            let control_changes = if self.focus_changed.is_none() && current.focused == Some(*id) {
+                changed_control_states(node, changes)
+            } else {
+                Vec::new()
+            };
+            // Positive flags are already in the full live summary. Only add
+            // cleared flags there, so neither direction is lost or repeated.
+            let cleared_states: Vec<_> = control_changes
+                .iter()
+                .filter_map(|(set, text)| (!*set).then_some(*text))
+                .collect();
+
+            if let Some(urgency) = node.live_region
                 && let Some(reason) = announcement_reason(changes)
-                && let Some(text) = announcement_text(node, current.focused == Some(*id), true)
+                && let Some(text) =
+                    announcement_text(node, current.focused == Some(*id), true, &cleared_states)
             {
+                push_announcement(
+                    &mut candidates,
+                    ScreenReaderAnnouncement {
+                        node_id: Some(*id),
+                        urgency,
+                        reason: if control_changes.is_empty() {
+                            reason
+                        } else {
+                            AnnouncementReason::FocusedStateChanged
+                        },
+                        text,
+                    },
+                );
+            } else if !control_changes.is_empty() {
+                let states: Vec<_> = control_changes.iter().map(|(_, text)| *text).collect();
                 candidates.push(ScreenReaderAnnouncement {
                     node_id: Some(*id),
-                    urgency,
-                    reason,
-                    text,
+                    urgency: LiveRegion::Polite,
+                    reason: AnnouncementReason::FocusedStateChanged,
+                    text: format!("{}. {}", node_heading(node), states.join(", ")),
                 });
             }
         }
@@ -585,7 +647,7 @@ pub struct ScreenReaderAnnouncements {
     pub dropped_count: usize,
 }
 
-/// One screen-reader announcement derived from focus or live-region changes.
+/// One screen-reader announcement derived from focus, control state, or live-region changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenReaderAnnouncement {
     /// Node that caused the announcement, when known.
@@ -603,6 +665,9 @@ pub struct ScreenReaderAnnouncement {
 pub enum AnnouncementReason {
     /// Keyboard focus moved to this node.
     FocusChanged,
+    /// Disabled, read-only, or required state changed while this node kept focus.
+    /// May include a simultaneous live update, retaining its urgency.
+    FocusedStateChanged,
     /// A live region appeared in the current tree.
     LiveRegionAdded,
     /// Live-region text or user-facing state changed.
@@ -783,11 +848,52 @@ fn announcement_reason(changes: &[A11yChange]) -> Option<AnnouncementReason> {
         .then_some(AnnouncementReason::LiveContentChanged)
 }
 
+/// Changed control flags in stable order, with their current polarity and
+/// spoken text. Read typed state rather than parsing diff debug descriptions.
+fn changed_control_states(node: &A11yNodeInfo, changes: &[A11yChange]) -> Vec<(bool, &'static str)> {
+    [
+        ("disabled", node.state.disabled, "disabled", "enabled"),
+        ("readonly", node.state.readonly, "read only", "not read only"),
+        ("required", node.state.required, "required", "not required"),
+    ]
+    .into_iter()
+    .filter(|(field, _, _, _)| {
+        changes.iter().any(|change| {
+            matches!(
+                change,
+                A11yChange::StateChanged { field: changed, .. } if changed.as_str() == *field
+            )
+        })
+    })
+    .map(|(_, set, on, off)| (set, if set { on } else { off }))
+    .collect()
+}
+
+/// The optional focus candidate is inserted first, before either node loop.
+/// Added and changed IDs are disjoint in a tree diff, so only that candidate
+/// can overlap a live announcement. Coalesce by node, never by text, in O(1).
+fn push_announcement(
+    candidates: &mut Vec<ScreenReaderAnnouncement>,
+    announcement: ScreenReaderAnnouncement,
+) {
+    if let Some(focus) = candidates.first_mut()
+        && focus.reason == AnnouncementReason::FocusChanged
+        && focus.node_id == announcement.node_id
+    {
+        if announcement.urgency == LiveRegion::Assertive {
+            focus.urgency = LiveRegion::Assertive;
+        }
+    } else {
+        candidates.push(announcement);
+    }
+}
+
 fn announcement_sort_key(announcement: &ScreenReaderAnnouncement) -> (u8, u8, Option<u64>, &str) {
     let reason_rank = match announcement.reason {
         AnnouncementReason::FocusChanged => 0,
-        AnnouncementReason::LiveRegionChanged => 1,
-        AnnouncementReason::LiveRegionAdded | AnnouncementReason::LiveContentChanged => 2,
+        AnnouncementReason::FocusedStateChanged => 1,
+        AnnouncementReason::LiveRegionChanged => 2,
+        AnnouncementReason::LiveRegionAdded | AnnouncementReason::LiveContentChanged => 3,
     };
     let urgency_rank = match announcement.urgency {
         LiveRegion::Assertive => 0,
@@ -801,15 +907,20 @@ fn announcement_sort_key(announcement: &ScreenReaderAnnouncement) -> (u8, u8, Op
     )
 }
 
-fn announcement_text(node: &A11yNodeInfo, focused: bool, require_content: bool) -> Option<String> {
+fn announcement_text(
+    node: &A11yNodeInfo,
+    focused: bool,
+    require_content: bool,
+    cleared_states: &[&str],
+) -> Option<String> {
     if node.role == A11yRole::Presentation {
         return None;
     }
-    if require_content && !has_announcement_content(node) {
+    if require_content && !has_announcement_content(node) && cleared_states.is_empty() {
         return None;
     }
 
-    let text = node_summary(node, focused, false);
+    let text = node_summary(node, focused, false, cleared_states);
     normalized_text(&text)
 }
 
@@ -819,15 +930,22 @@ fn has_announcement_content(node: &A11yNodeInfo) -> bool {
         || !state_summaries(&node.state).is_empty()
 }
 
-fn node_summary(node: &A11yNodeInfo, focused: bool, include_live_region: bool) -> String {
-    let mut parts = Vec::new();
+fn node_heading(node: &A11yNodeInfo) -> String {
     let mut heading = node.role.to_string();
-
     if let Some(name) = normalized_option(node.name.as_deref()) {
         heading.push_str(": ");
         heading.push_str(&name);
     }
-    parts.push(heading);
+    heading
+}
+
+fn node_summary(
+    node: &A11yNodeInfo,
+    focused: bool,
+    include_live_region: bool,
+    cleared_states: &[&str],
+) -> String {
+    let mut parts = vec![node_heading(node)];
 
     if let Some(description) = normalized_option(node.description.as_deref())
         && normalized_option(node.name.as_deref()) != Some(description.clone())
@@ -836,6 +954,7 @@ fn node_summary(node: &A11yNodeInfo, focused: bool, include_live_region: bool) -
     }
 
     let mut states = state_summaries(&node.state);
+    states.extend(cleared_states.iter().map(|text| (*text).to_owned()));
     if focused || node.state.focused {
         states.insert(0, "focused".to_owned());
     }
@@ -908,4 +1027,397 @@ fn limit_text(text: String, max_chars: usize) -> String {
         return text;
     }
     text.chars().take(max_chars).collect()
+}
+
+#[cfg(test)]
+mod focused_state_tests {
+    use super::{A11yChange, A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy};
+    use crate::node::{A11yNodeInfo, A11yRole, A11yState, LiveRegion};
+    use crate::preferences::AccessibilityPreferences;
+    use ftui_core::geometry::Rect;
+
+    fn control(bits: u8) -> A11yNodeInfo {
+        let mut node = A11yNodeInfo::new(1, A11yRole::TextInput, Rect::new(0, 0, 20, 1))
+            .with_name(" Email \n address ")
+            .with_description("Help")
+            .with_shortcut("Alt+E");
+        node.state = A11yState {
+            disabled: bits & 1 != 0,
+            readonly: bits & 2 != 0,
+            required: bits & 4 != 0,
+            ..A11yState::default()
+        };
+        node
+    }
+
+    fn snapshot(nodes: Vec<A11yNodeInfo>, focus: Option<u64>) -> A11yTree {
+        let mut builder = A11yTreeBuilder::new();
+        for node in nodes {
+            builder.add_node(node);
+        }
+        builder.set_focused(focus);
+        builder.build()
+    }
+
+    #[test]
+    fn focused_control_flags_announce_both_directions_without_requiring_live_regions() {
+        for region in [None, Some(LiveRegion::Polite), Some(LiveRegion::Assertive)] {
+            for (from, to, field, text) in [
+                (0, 1, "disabled", "disabled"),
+                (1, 0, "disabled", "enabled"),
+                (0, 2, "readonly", "read only"),
+                (2, 0, "readonly", "not read only"),
+                (0, 4, "required", "required"),
+                (4, 0, "required", "not required"),
+            ] {
+                let mut old = control(from);
+                let mut new = control(to);
+                old.live_region = region;
+                new.live_region = region;
+                // The tree ID is authoritative, even with state.focused false.
+                assert!(!old.state.focused && !new.state.focused);
+                let before = snapshot(vec![old], Some(1));
+                let after = snapshot(vec![new], Some(1));
+                let diff = after.diff(&before);
+                assert!(diff.focus_changed.is_none());
+                let expected_value = (to != 0).to_string();
+                assert!(diff.changed[0].1.iter().any(|change| {
+                    matches!(
+                        change,
+                        A11yChange::StateChanged { field: actual, description }
+                            if actual == field && description == &expected_value
+                    )
+                }));
+
+                let batch = diff.screen_reader_announcements(&after, ScreenReaderPolicy::default());
+                assert_eq!(batch.announcements.len(), 1, "{field}: {from} -> {to}");
+                assert_eq!(batch.dropped_count, 0);
+                let announcement = &batch.announcements[0];
+                assert_eq!(announcement.node_id, Some(1));
+                assert_eq!(announcement.reason, AnnouncementReason::FocusedStateChanged);
+                // A state-only change is not an assertive live-content update.
+                assert_eq!(announcement.urgency, LiveRegion::Polite);
+                assert_eq!(announcement.text, format!("textInput: Email address. {text}"));
+            }
+        }
+    }
+
+    #[test]
+    fn focused_control_flags_coalesce_and_do_not_repeat_on_unchanged_frames() {
+        let before = snapshot(vec![control(0)], Some(1));
+        let after = snapshot(vec![control(7)], Some(1));
+        for (old, new, expected) in [
+            (&before, &after, "disabled, read only, required"),
+            (&after, &before, "enabled, not read only, not required"),
+        ] {
+            let batch = new.screen_reader_announcements_since(old, ScreenReaderPolicy::default());
+            assert_eq!(batch.announcements.len(), 1);
+            assert_eq!(
+                batch.announcements[0].text,
+                format!("textInput: Email address. {expected}")
+            );
+            let unchanged =
+                new.screen_reader_announcements_since(new, ScreenReaderPolicy::default());
+            assert!(unchanged.announcements.is_empty());
+            assert_eq!(unchanged.dropped_count, 0);
+        }
+        // Clearing states must not make default false states verbose in snapshots.
+        assert_eq!(
+            before
+                .screen_reader_mirror(ScreenReaderPolicy::default())
+                .text(),
+            "textInput: Email address. Help. focused. shortcut Alt+E"
+        );
+    }
+
+    #[test]
+    fn focused_control_delta_does_not_repeat_unchanged_flags_or_imply_editability() {
+        let before = snapshot(vec![control(7)], Some(1));
+        let after = snapshot(vec![control(5)], Some(1));
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        // Still disabled and required: removing readonly does not mean operable.
+        assert_eq!(
+            batch.announcements[0].text,
+            "textInput: Email address. not read only"
+        );
+    }
+
+    #[test]
+    fn off_focus_and_presentational_control_flags_are_diffed_but_not_spoken() {
+        for region in [None, Some(LiveRegion::Polite), Some(LiveRegion::Assertive)] {
+            for (role, focus) in [
+                (A11yRole::TextInput, None),
+                (A11yRole::TextInput, Some(2)),
+                (A11yRole::TextInput, Some(999)),
+                (A11yRole::Presentation, Some(1)),
+            ] {
+                for (from, to) in [(0, 7), (7, 0)] {
+                    let mut old = control(from);
+                    let mut new = control(to);
+                    old.role = role;
+                    new.role = role;
+                    old.live_region = region;
+                    new.live_region = region;
+                    // A stale per-node focus flag must not opt into state speech.
+                    old.state.focused = true;
+                    new.state.focused = true;
+                    let other = A11yNodeInfo::new(2, A11yRole::Button, Rect::new(0, 1, 5, 1));
+                    let before = snapshot(vec![old, other.clone()], focus);
+                    let after = snapshot(vec![new, other], focus);
+                    let diff = after.diff(&before);
+                    assert_eq!(diff.changed.len(), 1);
+                    assert_eq!(diff.changed[0].1.len(), 3);
+                    let batch =
+                        diff.screen_reader_announcements(&after, ScreenReaderPolicy::default());
+                    assert!(
+                        batch.announcements.is_empty(),
+                        "{role:?}, {focus:?}, {region:?}"
+                    );
+                    assert_eq!(batch.dropped_count, 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn focus_handoff_uses_destination_summary_and_silences_outgoing_state_changes() {
+        let mut other_before = control(0);
+        other_before.id = 2;
+        let mut other_after = control(7);
+        other_after.id = 2;
+        let before = snapshot(vec![control(0), other_before], Some(2));
+        let after = snapshot(vec![control(7), other_after], Some(1));
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::FocusChanged
+        );
+        assert_eq!(batch.announcements[0].node_id, Some(1));
+        assert_eq!(
+            batch.announcements[0].text,
+            "textInput: Email address. Help. focused, disabled, read only, required. shortcut Alt+E"
+        );
+
+        let lost = snapshot(vec![control(0)], None);
+        let removed = snapshot(Vec::new(), Some(1));
+        for next in [lost, removed] {
+            let batch =
+                next.screen_reader_announcements_since(&after, ScreenReaderPolicy::default());
+            assert!(batch.announcements.is_empty());
+            assert_eq!(batch.dropped_count, 0);
+        }
+    }
+
+    #[test]
+    fn new_focus_and_live_region_addition_coalesce_before_counting_drops() {
+        let focused = control(7).with_live_region(LiveRegion::Assertive);
+        let other = A11yNodeInfo::new(2, A11yRole::Label, Rect::new(0, 1, 20, 1))
+            .with_name("Other update")
+            .with_live_region(LiveRegion::Polite);
+        let after = snapshot(vec![focused, other], Some(1));
+        for cap in [0, 1, 2] {
+            let batch = after.screen_reader_announcements_since(
+                &A11yTree::empty(),
+                ScreenReaderPolicy {
+                    max_announcements: cap,
+                    ..ScreenReaderPolicy::default()
+                },
+            );
+            assert_eq!(batch.announcements.len(), cap);
+            assert_eq!(batch.dropped_count, 2 - cap);
+            if cap > 0 {
+                assert_eq!(batch.announcements[0].node_id, Some(1));
+                assert_eq!(
+                    batch.announcements[0].reason,
+                    AnnouncementReason::FocusChanged
+                );
+                assert_eq!(batch.announcements[0].urgency, LiveRegion::Assertive);
+            }
+        }
+
+        // Equal text from different nodes is not a duplicate focus/live event.
+        let first = control(0).with_live_region(LiveRegion::Polite);
+        let mut second = first.clone();
+        second.id = 2;
+        let equal_text = snapshot(vec![second, first], None)
+            .screen_reader_announcements_since(&A11yTree::empty(), ScreenReaderPolicy::default());
+        assert_eq!(equal_text.announcements.len(), 2);
+        assert_eq!(
+            equal_text.announcements[0].text,
+            equal_text.announcements[1].text
+        );
+        assert_eq!(equal_text.announcements[0].node_id, Some(1));
+        assert_eq!(equal_text.announcements[1].node_id, Some(2));
+    }
+
+    #[test]
+    fn new_focus_and_existing_live_content_or_policy_changes_are_announced_once() {
+        for change_policy in [false, true] {
+            let old = control(0).with_live_region(LiveRegion::Polite);
+            let mut new = control(7).with_live_region(if change_policy {
+                LiveRegion::Assertive
+            } else {
+                LiveRegion::Polite
+            });
+            new.description = Some("Updated help".to_owned());
+            let before = snapshot(vec![old], None);
+            let after = snapshot(vec![new], Some(1));
+            let batch =
+                after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+            assert_eq!(batch.announcements.len(), 1);
+            assert_eq!(batch.dropped_count, 0);
+            assert_eq!(
+                batch.announcements[0].reason,
+                AnnouncementReason::FocusChanged
+            );
+            assert_eq!(
+                batch.announcements[0].urgency,
+                if change_policy {
+                    LiveRegion::Assertive
+                } else {
+                    LiveRegion::Polite
+                }
+            );
+            assert_eq!(
+                batch.announcements[0].text,
+                "textInput: Email address. Updated help. focused, disabled, read only, required. shortcut Alt+E"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_focus_and_live_content_keep_both_directions_content_and_urgency_once() {
+        for region in [LiveRegion::Polite, LiveRegion::Assertive] {
+            for (from, to, states) in [
+                (0, 7, "disabled, read only, required, value new"),
+                (7, 0, "value new, enabled, not read only, not required"),
+            ] {
+                let old = control(from).with_live_region(region);
+                let mut new = control(to)
+                    .with_live_region(region)
+                    .with_name(" Updated \n email ")
+                    .with_description("New help");
+                new.state.value_text = Some("new".to_owned());
+                let before = snapshot(vec![old], Some(1));
+                let after = snapshot(vec![new], Some(1));
+                let batch =
+                    after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+                assert_eq!(batch.announcements.len(), 1);
+                assert_eq!(batch.dropped_count, 0);
+                assert_eq!(
+                    batch.announcements[0].reason,
+                    AnnouncementReason::FocusedStateChanged
+                );
+                assert_eq!(batch.announcements[0].urgency, region);
+                assert_eq!(
+                    batch.announcements[0].text,
+                    format!("textInput: Updated email. New help. focused, {states}. shortcut Alt+E")
+                );
+                // Actionable focused-state changes are not motion-like churn.
+                let filtered = AccessibilityPreferences::all()
+                    .motion_profile()
+                    .filter_announcements(&batch);
+                assert_eq!(filtered.announcements, batch.announcements);
+                assert_eq!(filtered.coalesced_count, 0);
+                assert_eq!(filtered.downgraded_count, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn clearing_unnamed_focused_states_survives_live_policy_changes() {
+        for (old_region, new_region) in [
+            (None, Some(LiveRegion::Assertive)),
+            (Some(LiveRegion::Polite), Some(LiveRegion::Assertive)),
+            (Some(LiveRegion::Assertive), None),
+        ] {
+            let mut old = control(7);
+            let mut new = control(0);
+            for node in [&mut old, &mut new] {
+                node.name = None;
+                node.description = None;
+                node.shortcut = None;
+            }
+            old.live_region = old_region;
+            new.live_region = new_region;
+            let before = snapshot(vec![old], Some(1));
+            let after = snapshot(vec![new], Some(1));
+            let batch =
+                after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+            assert_eq!(batch.announcements.len(), 1);
+            assert_eq!(
+                batch.announcements[0].reason,
+                AnnouncementReason::FocusedStateChanged
+            );
+            assert_eq!(
+                batch.announcements[0].urgency,
+                new_region.unwrap_or(LiveRegion::Polite)
+            );
+            assert_eq!(
+                batch.announcements[0].text,
+                if new_region.is_some() {
+                    "textInput. focused, enabled, not read only, not required"
+                } else {
+                    "textInput. enabled, not read only, not required"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn focused_state_order_and_caps_are_deterministic_and_unicode_safe() {
+        let before = snapshot(vec![control(0)], Some(1));
+        let focused = control(7).with_name("\u{00c9}mail \u{754c} \u{1f980}");
+        let live = A11yNodeInfo::new(2, A11yRole::Label, Rect::new(0, 1, 20, 1))
+            .with_name("Background update")
+            .with_live_region(LiveRegion::Assertive);
+        let after = snapshot(vec![live, focused], Some(1));
+        let full = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(full.announcements.len(), 2);
+        assert_eq!(
+            full.announcements[0].reason,
+            AnnouncementReason::FocusedStateChanged
+        );
+        assert_eq!(full.announcements[0].node_id, Some(1));
+        assert_eq!(full.announcements[1].node_id, Some(2));
+        for cap in [0, 1, 2] {
+            for chars in [0, 1, 20, 240] {
+                let policy = ScreenReaderPolicy {
+                    max_announcements: cap,
+                    max_text_chars: chars,
+                    ..ScreenReaderPolicy::default()
+                };
+                let batch = after.screen_reader_announcements_since(&before, policy);
+                assert_eq!(
+                    batch,
+                    after.screen_reader_announcements_since(&before, policy)
+                );
+                assert_eq!(batch.announcements.len(), cap);
+                assert_eq!(batch.dropped_count, 2 - cap);
+                for (actual, expected) in batch.announcements.iter().zip(&full.announcements) {
+                    assert_eq!(actual.node_id, expected.node_id);
+                    assert_eq!(
+                        actual.text,
+                        expected.text.chars().take(chars).collect::<String>()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unrelated_focused_layout_and_hint_changes_stay_quiet() {
+        let before = snapshot(vec![control(0)], Some(1));
+        let mut new = control(0);
+        new.state.focused = true;
+        new.bounds = Rect::new(4, 5, 30, 2);
+        new.shortcut = Some("Ctrl+E".to_owned());
+        let after = snapshot(vec![new], Some(1));
+        assert!(!after.diff(&before).is_empty());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert!(batch.announcements.is_empty());
+        assert_eq!(batch.dropped_count, 0);
+    }
 }
