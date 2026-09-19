@@ -146,6 +146,19 @@ verified on 2026-09-19 and the fourth qualified rather than claimed:
   multi-agent load is not a gate, so the row does not go proven on "it passed
   when I re-ran it".
 
+  **Fixed 2026-09-19 (`bd-lbugy`).** The three wall-clock budgets in
+  `i18n_e2e.rs` no longer assert on elapsed time. `perf_catalog_lookup_latency`
+  now compares lookup cost on catalogs that differ only in key count (0 vs
+  5,000 filler keys per locale), alternating rounds and taking the fastest of
+  each, and fails only if the ratio exceeds 8x — a machine-independent test of
+  the property the budget was standing in for, namely that a lookup is a hash
+  probe and not a scan. Measured on an rch worker under load: 973ns/op small
+  vs 958ns/op large, a ratio of 0.98 against a bound of 8.0, where the old 2us
+  budget had only 2x headroom over the same 973ns. The plural-categorization
+  and coverage-report budgets were dropped to measurement-only: both are still
+  logged to JSONL, but neither has a scale-invariant property to assert.
+  V70 still needs one clean `cargo test --workspace` run to go proven.
+
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
 hand-chosen).
