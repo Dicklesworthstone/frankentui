@@ -374,7 +374,7 @@ frankentui/
 │   ├── ftui-a11y/                     # Accessibility tree infrastructure
 │   ├── ftui-backend/                  # Backend abstraction
 │   ├── ftui-core/                     # Terminal lifecycle, events, capabilities
-│   ├── ftui-demo-showcase/            # Reference app + snapshots (46 screens)
+│   ├── ftui-demo-showcase/            # Reference app + snapshots (45 screens)
 │   ├── ftui-extras/                   # Feature-gated add-ons (VFX, opt-level=3)
 │   ├── ftui-harness/                  # Test utilities + snapshot framework
 │   ├── ftui-i18n/                     # Internationalization support
