@@ -556,7 +556,7 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
 
 ## bv — Graph-Aware Triage Engine
 
-bv is a graph-aware triage engine for Beads projects (`.beads/beads.jsonl`). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
+bv is a graph-aware triage engine for Beads projects. It reads the tracker database (`.beads/beads.db`, `source_kind: sqlite`); the git-tracked JSONL export is `.beads/issues.jsonl`. There is no `.beads/beads.jsonl`. It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
 
 **Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use MCP Agent Mail.
 
@@ -623,7 +623,7 @@ bv --robot-triage --robot-triage-by-label    # Group by domain
 ### Understanding Robot Output
 
 **All robot JSON includes:**
-- `data_hash` — Fingerprint of source beads.jsonl
+- `data_hash` — Fingerprint of the loaded source (the beads database; see `source_path`/`source_kind`)
 - `status` — Per-metric state: `computed|approx|timeout|skipped` + elapsed ms
 - `as_of` / `as_of_commit` — Present when using `--as-of`
 
