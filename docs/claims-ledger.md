@@ -181,14 +181,14 @@ complete `.5.2`.
 | V07 | Pane workspaces with drag/dock/snap/throw/undo | README.md :: Pane workspaces with drag/dock/snap/throw/undo | status | DOC | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-doc | - |
 | V08 | Web/WASM backend, runs in browser | README.md :: Web/WASM backend, runs in browser | status | CODE | bd-g00-root-epic-ewths.29 | bead:bd-g00-root-epic-ewths.29 | pending-code | - |
 | V09 | Bayesian diff strategy | README.md :: Bayesian diff strategy | status | DOC | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-doc | - |
-| V10 | BOCPD resize coalescing | README.md :: BOCPD resize coalescing | status | CODE | bd-g00-root-epic-ewths.16 | bead:bd-g00-root-epic-ewths.16 | pending-code | - |
+| V10 | BOCPD resize coalescing | README.md :: BOCPD resize coalescing | status | CODE | bd-g00-root-epic-ewths.16 | test:ftui-runtime::resize_coalescer::config_default_enables_bocpd_with_heuristic_fallback | proven | 2026-09-19 |
 | V11 | VOI sampling for expensive ops | README.md :: VOI sampling for expensive ops | status | CODE | bd-g00-root-epic-ewths.14 | bead:bd-g00-root-epic-ewths.14 | pending-code | - |
 | V12 | E-process / GRAPA anytime-valid monitors | README.md :: E-process / GRAPA anytime-valid monitors | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
-| V13 | Conformal frame-time gating (Mondrian) | README.md :: Conformal frame-time gating (Mondrian) | status | CODE | bd-g00-root-epic-ewths.15 | bead:bd-g00-root-epic-ewths.15 | pending-code | - |
+| V13 | Conformal frame-time gating (Mondrian) | README.md :: Conformal frame-time gating (Mondrian) | status | CODE | bd-g00-root-epic-ewths.15 | test:ftui-runtime::conformal_predictor::default_config_matches_the_documented_values | proven | 2026-09-19 |
 | V14 | Multi-stage conformal monitors | README.md :: Multi-stage conformal monitors | status | DOC | bd-g00-root-epic-ewths.15 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| V15 | CUSUM allocation + hover | README.md :: CUSUM allocation + hover | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
-| V16 | Alpha-investing FDR across monitors | README.md :: Alpha-investing FDR across monitors | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V17 | Flake detector for E2E timing | README.md :: Flake detector for E2E timing | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
+| V15 | CUSUM allocation + hover | README.md :: CUSUM allocation + hover | status | CODE | bd-g00-root-epic-ewths.17 | test:ftui-render::frame_guardrails::guardrails_detect_allocation_drift; test:ftui-core::hover_stabilizer::default_config_values | proven | 2026-09-19 |
+| V16 | Alpha-investing FDR across monitors | README.md :: Alpha-investing FDR across monitors | status | CODE | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
+| V17 | Flake detector for E2E timing | README.md :: Flake detector for E2E timing | status | CODE | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | V18 | Rough-path signatures | README.md :: Rough-path signatures | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V19 | SOS barrier certificates (SDP-solved) | README.md :: SOS barrier certificates (SDP-solved) | status | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | V20 | S3-FIFO cache for caps + width | README.md :: S3-FIFO cache for caps + width | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
@@ -226,12 +226,12 @@ complete `.5.2`.
 | V52 | Runtime lanes + rollout + shadow-run | README.md :: Runtime lanes + rollout + shadow-run | status | CODE | bd-g00-root-epic-ewths.30 | bead:bd-g00-root-epic-ewths.30 | pending-code | - |
 | V53 | Effect queue telemetry + backpressure | README.md :: Effect queue telemetry + backpressure | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V54 | Telemetry schema targets | README.md :: Telemetry schema targets | status | CODE | bd-g00-root-epic-ewths.26 | bead:bd-g00-root-epic-ewths.26 | pending-code | - |
-| V55 | E-graph layout optimizer before solver | README.md :: E-graph layout optimizer before solver | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
+| V55 | E-graph layout optimizer before solver | README.md :: E-graph layout optimizer before solver | status | CODE | bd-g00-root-epic-ewths.11 | path:docs/perf/egraph_vs_flex_2026-09-18.md | retracted | 2026-09-19 |
 | V56 | Rope text engine | README.md :: Rope text engine | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V57 | Editor core features | README.md :: Editor core features | status | CODE | bd-g00-root-epic-ewths.21 | bead:bd-g00-root-epic-ewths.21 | pending-code | - |
-| V58 | Degradation cascade module | README.md :: Degradation cascade module | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
+| V58 | Degradation cascade module | README.md :: Degradation cascade module | status | CODE | bd-g00-root-epic-ewths.17 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | V59 | Cost models (cache / M-G-1 / batching) | README.md :: Cost models (cache / M-G-1 / batching) | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| V60 | Gesture recognizer | README.md :: Gesture recognizer | status | CODE | bd-g00-root-epic-ewths.24 | bead:bd-g00-root-epic-ewths.24 | pending-code | - |
+| V60 | Gesture recognizer | README.md :: Gesture recognizer | status | CODE | bd-g00-root-epic-ewths.24 | test:ftui-core::gesture::default_config_values | proven | 2026-09-19 |
 | V61 | Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | README.md :: Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | status | DOC | bd-g00-root-epic-ewths.27 | bead:bd-g00-root-epic-ewths.27 | pending-doc | - |
 | V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | bead:bd-g00-root-epic-ewths.20 | pending-code | - |
 | V63 | Animation system | README.md :: Animation system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
