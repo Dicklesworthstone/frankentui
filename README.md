@@ -1620,7 +1620,7 @@ Evidence Emission
 
 The `cost_model` module (1,800 lines) provides closed-form cost models for three subsystems:
 
-**Where it runs: nowhere.** No crate imports `ftui_runtime::cost_model`; the formulas below are a library you can call, not a model the runtime consults when sizing caches or scheduling. (`ftui-render/src/presenter.rs` has a private `mod cost_model` for ANSI cursor-move costs — same name, unrelated code.)
+**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::cost_model`; the formulas below are a library you can call, not a model the runtime consults when sizing caches or scheduling. (`ftui-render/src/presenter.rs` has a private `mod cost_model` for ANSI cursor-move costs — same name, unrelated code.)
 
 ### Cache Cost Model
 
@@ -1679,7 +1679,7 @@ Reject H₀ when E_t ≥ 1/α, valid at ANY stopping time.
 
 **Why this matters:** traditional significance tests become unreliable when you check p-values after every frame (the "peeking problem"). E-processes eliminate this entirely.
 
-**Where it runs: nowhere.** No E2E test uses `flake_detector` — no crate imports it, and its only exercisers are a proptest over the module itself and the quarantine compile check. The detector is implemented and tested; nothing feeds it E2E timings.
+**Where it runs: nowhere.** No E2E test uses `flake_detector`. Nothing in any crate's `src/` imports it, and its only exercisers are a proptest over the module itself and the quarantine compile check. The detector is implemented and tested; nothing feeds it E2E timings.
 
 ### Alpha-Investing (Sequential FDR Control)
 
@@ -1703,7 +1703,7 @@ FDR guarantee:
 
 **Result:** the wealth process lets dozens of simultaneous statistical monitors run without false-alarm inflation.
 
-**Where it runs: nowhere.** No crate imports `ftui_runtime::alpha_investing`, so the monitors that *are* on by default — BOCPD and the Mondrian conformal frame-time gate — do not spend from a shared alpha budget. They are two monitors, not dozens, which is why this has not bitten; the accounting exists for a future where it would.
+**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::alpha_investing`, so the monitors that *are* on by default — BOCPD and the Mondrian conformal frame-time gate — do not spend from a shared alpha budget. They are two monitors, not dozens, which is why this has not bitten; the accounting exists for a future where it would.
 
 ---
 
@@ -2757,7 +2757,7 @@ The idea is to stop recomputing layouts, styled text, and visibility flags from 
 
 What does exist, and is tested: the signed-tuple delta algebra (`(key, weight, logical_time)` with cancellation), a DAG with topological ordering and cycle detection, a fallback-policy predicate, and two `IncrementalView` implementations (`StyleResolutionView`, `FilteredListView`). Useful groundwork; not something you can turn on.
 
-Before anyone builds the engine, note that the render cost surface measured on 2026-09-19 found `buffer_diff` to be the **cheapest** pipeline stage at 9–18% of the frame, while `cell_mutation` and `presenter_emit` dominate ([docs/perf/cost_surface_stage_dominance_2026-09-19.md](docs/perf/cost_surface_stage_dominance_2026-09-19.md)). An incremental layer that avoids recomputation has to beat simply doing the work — which is the measurement that stopped the e-graph. Tracked in `bd-lksq7`.
+Before anyone builds the engine, note that the render cost surface measured on 2026-09-19 found `buffer_diff` to be the **cheapest** pipeline stage at 4.5–9.1% of the frame, while `cell_mutation` and `presenter_emit` dominate ([docs/perf/cost_surface_stage_dominance_2026-09-19.md](docs/perf/cost_surface_stage_dominance_2026-09-19.md)). An incremental layer that avoids recomputation has to beat simply doing the work — which is the measurement that stopped the e-graph. Tracked in `bd-lksq7`.
 
 ---
 
@@ -2784,7 +2784,7 @@ Safety:
 
 So what the evaluator gives you is a *polynomial admissibility test whose shape was chosen by hand*, not a certificate carrying an SOS proof of the Lyapunov-like decrease condition.
 
-**Where it runs: nowhere.** No crate imports `ftui_runtime::sos_barrier`, so no frame's budget is actually checked against the barrier. An earlier correction of this section said the evaluator "runs in constant time per frame with no allocations" — true of the function's complexity, misleading about its use, since nothing calls it per frame or at all. `sos_barrier.rs` is 257 lines, allocation-free and constant-time *when called*, which is the part worth relying on if you call it yourself.
+**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::sos_barrier`, so no frame's budget is actually checked against the barrier. An earlier correction of this section said the evaluator "runs in constant time per frame with no allocations" — true of the function's complexity, misleading about its use, since nothing calls it per frame or at all. `sos_barrier.rs` is 257 lines, allocation-free and constant-time *when called*, which is the part worth relying on if you call it yourself.
 
 Why SOS instead of a simple threshold? A polynomial barrier can encode nonlinear safe/unsafe boundaries that accurately reflect the interaction between budget remaining and workload estimate. A flat threshold either triggers too early (wasting visual quality) or too late (missing the deadline).
 
@@ -2835,7 +2835,7 @@ Benefits over a bare `Mutex`:
 - Lock acquisition happens once per batch, not once per operation
 - Natural coalescing: redundant operations (multiple redraws) collapse
 
-**Where it runs: nowhere.** No crate imports `ftui_runtime::flat_combine`, and the runtime's event sources do not post through a combiner. The diagram above describes what the module implements, not how FrankenTUI dispatches operations today.
+**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::flat_combine`, and the runtime's event sources do not post through a combiner. The diagram above describes what the module implements, not how FrankenTUI dispatches operations today.
 
 ---
 
@@ -2870,7 +2870,7 @@ assert_eq!(config.brightness, 50); // other fields untouched
 
 Lenses compose, so `compose(config_lens, volume_lens)` creates a lens from `AppState` directly to `volume` through an intermediate `Config` struct.
 
-**Where it runs: nowhere.** The module is titled "state-widget binding", but no widget binds through a lens — no crate imports `ftui_runtime::lens`. The laws hold and the example above is compiled by `readme_snippets`; what is missing is anything on the widget side that consumes one.
+**Where it runs: nowhere.** The module is titled "state-widget binding", but no widget binds through a lens: nothing in any crate's `src/` imports `ftui_runtime::lens`. The laws hold and the example above is compiled by `readme_snippets`; what is missing is anything on the widget side that consumes one.
 
 ---
 
@@ -2970,7 +2970,7 @@ slo.yaml  ──parse──▶  SloSchema
 
 When an SLO is breached, safe mode (reduced rendering, aggressive coalescing) is meant to hold until the error budget recovers.
 
-**Where it runs: nowhere.** No crate imports `ftui_runtime::slo`, so nothing feeds it observations and nothing acts on a `BreachResult` — the runtime does not enter safe mode from this path, because no code path reaches it. The parser, the breach check and the error-budget accounting are implemented and covered by tests in `ftui-harness`.
+**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::slo`, so nothing feeds it observations and nothing acts on a `BreachResult` — the runtime does not enter safe mode from this path, because no code path reaches it. The parser, the breach check and the error-budget accounting are implemented and covered by tests in `ftui-harness`.
 
 ---
 
@@ -2989,7 +2989,7 @@ view() → [Layout] → Buffer → [Diff] → Changes → [Present] → ANSI
 
 Each stage would maintain its own Mondrian-bucketed residual set, so a regression in layout computation is detected independently from diff or presenter regressions. Buckets are keyed by (screen mode, diff strategy, terminal size) and fall back to coarser groupings when data is sparse. The point of the granularity is to identify *which* pipeline stage is responsible for a slowdown rather than just flagging "frame was slow."
 
-**Where it runs: nowhere.** `StagedConformalPredictor` is never constructed outside its own unit tests — no crate imports `ftui_runtime::conformal_stages`, and no stage timing is fed to it, so the runtime cannot currently attribute a slowdown to a stage. The bucketing, calibration and alerting logic are implemented and tested.
+**Where it runs: nowhere.** `StagedConformalPredictor` is never constructed outside its own unit tests — nothing in any crate's `src/` imports `ftui_runtime::conformal_stages`, and no stage timing is fed to it, so the runtime cannot currently attribute a slowdown to a stage. The bucketing, calibration and alerting logic are implemented and tested.
 
 Not to be confused with `conformal_predictor`, which **is** on by default in the runtime and monitors whole-frame timing. That one is real; this one is the per-stage version that was never connected.
 

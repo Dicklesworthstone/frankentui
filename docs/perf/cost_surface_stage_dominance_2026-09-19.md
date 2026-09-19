@@ -22,10 +22,24 @@ baselines or used in a promotion decision.
 
 ## "Which stage is the bottleneck?" — not the one the name suggests
 
-`buffer_diff` is the **cheapest** stage in all four fixtures, at 9–18% of the
-frame. The diff is the part of this pipeline with the most optimization machinery
+`buffer_diff` is the **cheapest** stage in all four fixtures, at **4.5–9.1%** of
+the frame:
+
+| Fixture | cell_mutation | buffer_diff | presenter_emit |
+|---|---|---|---|
+| `render_diff_sparse_80x24` | 70.6% | **9.1%** | 20.0% |
+| `render_diff_dense_80x24` | 34.0% | **4.5%** | 61.4% |
+| `render_presenter_emit_120x40` | 46.1% | **6.8%** | 47.0% |
+| `render_pipeline_full_200x60` | 45.8% | **6.7%** | 47.5% |
+
+The diff is the part of this pipeline with the most optimization machinery
 pointed at it (dirty rows, tile grids, skip certificates, the quotient filter that
 was written for it), and it is not where the time goes.
+
+(Corrected 2026-09-19: the first version of this document, and the README and
+`bd-lksq7` text derived from it, said 9–18%. That was an arithmetic slip, not a
+re-measurement — the shares above come from the same run as the table further
+up, and the conclusion is if anything stronger.)
 
 ## "Does the bottleneck shift between sparse and dense?" — yes, decisively
 
