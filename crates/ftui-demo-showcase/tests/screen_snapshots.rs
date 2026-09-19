@@ -454,6 +454,7 @@ fn widget_gallery_initial_80x24() {
 #[test]
 fn widget_gallery_section2_120x40() {
     let _caps = stable_caps();
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
     screen.update(&press(KeyCode::Right));
     let mut pool = GraphemePool::new();
@@ -461,6 +462,32 @@ fn widget_gallery_section2_120x40() {
     let area = Rect::new(0, 0, 120, 40);
     screen.view(&mut frame, area);
     assert_snapshot!("widget_gallery_section2_120x40", &frame.buffer);
+}
+
+#[test]
+fn widget_gallery_stylesheet_80x24() {
+    let _caps = stable_caps();
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Right));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_stylesheet_80x24", &frame.buffer);
+}
+
+#[test]
+fn widget_gallery_stylesheet_alt_theme_80x24() {
+    let _caps = stable_caps();
+    let _guard = ScopedThemeLock::new(ThemeId::NordicFrost);
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Right));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_stylesheet_alt_theme_80x24", &frame.buffer);
 }
 
 #[test]

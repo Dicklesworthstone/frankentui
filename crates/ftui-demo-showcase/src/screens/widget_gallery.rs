@@ -14,7 +14,7 @@ use ftui_runtime::transparency::{
     TrafficLight,
 };
 use ftui_runtime::unified_evidence::DecisionDomain;
-use ftui_style::{Style, StyleFlags};
+use ftui_style::{Style, StyleFlags, StyleSheet};
 use ftui_text::WrapMode;
 use ftui_widgets::Badge;
 use ftui_widgets::StatefulWidget;
@@ -619,6 +619,11 @@ impl WidgetGallery {
     // Section B: Text Styles
     // -----------------------------------------------------------------------
     fn render_text_styles(&self, frame: &mut Frame, area: Rect) {
+        let sheet: StyleSheet = theme::stylesheet(&theme::current_theme());
+        let rows = Flex::vertical()
+            .constraints([Constraint::Percentage(60.0), Constraint::Percentage(40.0)])
+            .split(area);
+
         let styles: Vec<(&str, Style)> = vec![
             ("Bold", theme::bold()),
             ("Dim", theme::dim()),
@@ -664,34 +669,68 @@ impl WidgetGallery {
             .border_type(BorderType::Rounded)
             .title("Text Style Flags")
             .style(theme::content_border());
-        let inner = block.inner(area);
-        block.render(area, frame);
+        let inner = block.inner(rows[0]);
+        block.render(rows[0], frame);
 
-        if inner.height == 0 || inner.width == 0 {
-            return;
+        if inner.height > 0 && inner.width > 0 {
+            // Grid: fill rows, ~3 columns
+            let col_width = 16u16;
+            let cols_per_row = (inner.width / col_width).max(1) as usize;
+
+            for (i, (label, style)) in styles.iter().enumerate() {
+                let row = (i / cols_per_row) as u16;
+                let col = (i % cols_per_row) as u16;
+                let x = inner.x + col * col_width;
+                let y = inner.y + row;
+                if y >= inner.y + inner.height {
+                    break;
+                }
+                let cell_area = Rect {
+                    x,
+                    y,
+                    width: col_width.min(inner.x + inner.width - x),
+                    height: 1,
+                };
+                Paragraph::new(*label)
+                    .style(*style)
+                    .render(cell_area, frame);
+            }
         }
 
-        // Grid: fill rows, ~3 columns
-        let col_width = 16u16;
-        let cols_per_row = (inner.width / col_width).max(1) as usize;
+        // Stylesheet sample block
+        let sheet_block = Block::styled(&sheet, "heading")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Stylesheet");
+        let sheet_inner = sheet_block.inner(rows[1]);
+        sheet_block.render(rows[1], frame);
 
-        for (i, (label, style)) in styles.iter().enumerate() {
-            let row = (i / cols_per_row) as u16;
-            let col = (i % cols_per_row) as u16;
-            let x = inner.x + col * col_width;
-            let y = inner.y + row;
-            if y >= inner.y + inner.height {
-                break;
+        if sheet_inner.height > 0 && sheet_inner.width > 0 {
+            let samples = [
+                ("heading", sheet.get_or_default("heading")),
+                ("muted", sheet.get_or_default("muted")),
+                ("error", sheet.get_or_default("error")),
+            ];
+            let col_w = 16u16;
+            let cols = (sheet_inner.width / col_w).max(1) as usize;
+            for (i, (label, style)) in samples.iter().enumerate() {
+                let row = (i / cols) as u16;
+                let col = (i % cols) as u16;
+                let x = sheet_inner.x + col * col_w;
+                let y = sheet_inner.y + row;
+                if y >= sheet_inner.y + sheet_inner.height {
+                    break;
+                }
+                let cell_area = Rect {
+                    x,
+                    y,
+                    width: col_w.min(sheet_inner.x + sheet_inner.width - x),
+                    height: 1,
+                };
+                Paragraph::new(*label)
+                    .style(*style)
+                    .render(cell_area, frame);
             }
-            let cell_area = Rect {
-                x,
-                y,
-                width: col_width.min(inner.x + inner.width - x),
-                height: 1,
-            };
-            Paragraph::new(*label)
-                .style(*style)
-                .render(cell_area, frame);
         }
     }
 
@@ -757,11 +796,11 @@ impl WidgetGallery {
             frame,
         );
 
-        let block = Block::new()
+        let sheet: StyleSheet = theme::stylesheet(&theme::current_theme());
+        let block = Block::styled(&sheet, "heading")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title("Table")
-            .style(theme::content_border());
+            .title("Table");
         let inner = block.inner(rows[1]);
         block.render(rows[1], frame);
 
@@ -781,7 +820,8 @@ impl WidgetGallery {
                 .header(header)
                 .style(Style::new().fg(theme::fg::SECONDARY))
                 .theme(theme::table_theme_demo())
-                .theme_phase(theme::table_theme_phase(self.tick_count)),
+                .theme_phase(theme::table_theme_phase(self.tick_count))
+                .with_stylesheet(&sheet),
             inner,
             frame,
         );

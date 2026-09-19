@@ -24,7 +24,9 @@
 use ftui_core::glyph_policy::GlyphPolicy;
 use ftui_extras::theme as core_theme;
 use ftui_render::cell::PackedRgba;
-use ftui_style::{Style, StyleFlags, TableEffect, TableEffectRule, TableEffectTarget, TableTheme};
+use ftui_style::{
+    Style, StyleFlags, StyleSheet, TableEffect, TableEffectRule, TableEffectTarget, TableTheme,
+};
 
 pub use core_theme::{
     AlphaColor, BadgeSpec, ColorToken, IntentStyles, IssueTypeStyles, PriorityBadge,
@@ -35,6 +37,53 @@ pub use core_theme::{
     with_opacity,
 };
 pub use core_theme::{ScopedThemeLock, palette, set_theme};
+
+/// Theme type alias for theme identifier.
+pub type Theme = ThemeId;
+
+/// Construct a [`StyleSheet`] populated with semantic roles from the given theme.
+pub fn stylesheet(theme: &Theme) -> StyleSheet {
+    let sheet = StyleSheet::new();
+    let pal = palette(*theme);
+
+    // Core typography and UI roles
+    sheet.define("heading", Style::new().bold().fg(pal.fg_primary));
+    sheet.define("heading.border", Style::new().fg(pal.accent_primary));
+    sheet.define("muted", Style::new().fg(pal.fg_muted));
+    sheet.define("error", Style::new().fg(pal.accent_error));
+
+    // Table roles
+    sheet.define("table.border", Style::new().fg(pal.fg_muted));
+    sheet.define(
+        "table.header",
+        Style::new()
+            .bold()
+            .fg(pal.fg_primary)
+            .bg(pal.bg_surface),
+    );
+    sheet.define(
+        "table.row",
+        Style::new().fg(pal.fg_primary).bg(pal.bg_base),
+    );
+    sheet.define(
+        "table.row_alt",
+        Style::new().fg(pal.fg_primary).bg(pal.bg_surface),
+    );
+    sheet.define(
+        "table.row_selected",
+        Style::new()
+            .bold()
+            .fg(pal.accent_primary)
+            .bg(pal.bg_highlight),
+    );
+    sheet.define(
+        "table.row_hover",
+        Style::new().fg(pal.fg_primary).bg(pal.bg_overlay),
+    );
+    sheet.define("table.divider", Style::new().fg(pal.bg_overlay));
+
+    sheet
+}
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

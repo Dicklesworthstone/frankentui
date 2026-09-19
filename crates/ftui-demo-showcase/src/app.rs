@@ -58,7 +58,7 @@ use ftui_runtime::undo::HistoryManager;
 use ftui_runtime::{
     AccessibilityFrame, Cmd, FrameTiming, FrameTimingSink, Model, MouseCapturePolicy, Subscription,
 };
-use ftui_style::Style;
+use ftui_style::{Style, StyleSheet};
 use ftui_text::{Line, Span, Text, WrapMode};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
@@ -2805,6 +2805,8 @@ pub struct AppModel {
     pub a11y_panel_visible: bool,
     /// Base theme before accessibility overrides.
     pub base_theme: theme::ThemeId,
+    /// Active stylesheet derived from the current theme.
+    pub stylesheet: StyleSheet,
     /// Command palette for instant action search (Ctrl+K).
     pub command_palette: CommandPalette,
     /// Screen favorites for palette filtering.
@@ -2871,6 +2873,7 @@ impl AppModel {
     /// Create a new application model with default state.
     pub fn new() -> Self {
         let base_theme = theme::ThemeId::CyberpunkAurora;
+        let stylesheet = theme::stylesheet(&base_theme);
         // Only set theme in non-test builds to avoid race conditions with
         // tests that use ScopedThemeLock for deterministic rendering.
         #[cfg(not(test))]
@@ -2901,6 +2904,7 @@ impl AppModel {
             a11y: theme::A11ySettings::default(),
             a11y_panel_visible: false,
             base_theme,
+            stylesheet,
             command_palette: palette,
             screen_favorites: HashSet::new(),
             palette_category_filter: None,
@@ -3938,6 +3942,7 @@ impl AppModel {
 
             AppMsg::CycleTheme => {
                 self.base_theme = self.next_base_theme();
+                self.stylesheet = theme::stylesheet(&self.base_theme);
                 self.apply_a11y_settings();
                 self.screens.action_timeline.record_command_event(
                     self.tick_count,
@@ -5780,6 +5785,7 @@ impl AppModel {
         } else {
             self.base_theme
         };
+        self.stylesheet = theme::stylesheet(&theme_id);
         theme::set_theme(theme_id);
         let motion_scale = if self.a11y.reduced_motion { 0.0 } else { 1.0 };
         theme::set_motion_scale(motion_scale);
