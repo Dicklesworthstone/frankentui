@@ -85,8 +85,9 @@ ftui-widgets::choreography  # bd-gqit2
 # ── orphan-module candidates (G07) ───────────────────────────────────────
 # .11.5 granted deletion for an enumerated set on 2026-09-18 and then closed.
 # None of the modules below are on that list, so its permission does not reach
-# them and its closure left them ownerless. bd-gqit2 is their owner and carries
-# the per-module analysis.
+# them and its closure left them ownerless. bd-gqit2 picked up the four that
+# were pointing at it and carries the per-module analysis; event_coalescer
+# already had its own owner in bd-tu3l9 and kept it.
 # 1401 lines of input coalescing (mouse-move/scroll floods) with zero
 # consumers - not production, not tests. Not a sweep-deletion candidate: it is
 # real working code that nobody connected. bd-tu3l9 carries the analysis,

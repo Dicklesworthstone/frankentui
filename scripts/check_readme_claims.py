@@ -205,6 +205,17 @@ def read_sources(modules, crates_dir):
 
     A module's own file never counts as its consumer, and neither does a
     `lib.rs`, whose `pub mod` declaration is not use.
+
+    **Known gap.** `ftui-runtime/src/lib.rs` re-exports many of these modules'
+    types (`pub use flat_combine::{CombinerStats, FlatCombiner};` and friends),
+    every one behind `#[cfg(feature = "experimental")]`. A future consumer
+    writing `use ftui_runtime::FlatCombiner;` reaches the module without ever
+    naming its path, and this check would miss it. Matching the re-exported type
+    names instead was rejected: `lens` alone exports `Identity`, `Fst` and
+    `Snd`, which collide with ordinary names and would make the check noisy
+    enough to ignore. The likely wiring path -- `use crate::<module>::` from
+    inside the owning crate -- is covered, and `make reachability` would also
+    stop reporting the module as unreached.
     """
     quarantined_files = {f'{module}.rs' for module in modules}
     prefilter = re.compile('|'.join(re.escape(m) for m in sorted(modules))) \

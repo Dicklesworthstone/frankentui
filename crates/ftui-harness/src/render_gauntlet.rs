@@ -857,16 +857,23 @@ impl GauntletSuite {
                 .map(|profile| profile.mean_us)
                 .sum();
             if let Some(total) = surface.stage_profile(RenderStage::FramePipeline) {
-                // One microsecond of slack per component stage covers the
-                // per-sample truncation; a real miscount is far larger.
-                if component_us > total.mean_us + 3.0 {
+                // One microsecond of slack per component stage. Each stage
+                // sample is floored to whole microseconds while the total is
+                // floored once, so the parts can read up to 1us light per
+                // stage and never heavy. A real miscount is far larger.
+                let slack = 1.0 * RenderStage::COMPONENT_STAGES.len() as f64;
+                if component_us > total.mean_us + slack {
+                    let named = RenderStage::COMPONENT_STAGES
+                        .iter()
+                        .map(|stage| stage.label())
+                        .collect::<Vec<_>>()
+                        .join(" + ");
                     failures.push(GateFailure {
                         fixture_id: spec.id.clone(),
                         reason: format!(
-                            "stage costs exceed the whole frame: cell_mutation + buffer_diff + \
-                             presenter_emit mean {component_us:.3}us against a \
-                             frame_pipeline_total mean of {:.3}us (a stage is timed outside \
-                             the pipeline timer)",
+                            "stage costs exceed the whole frame: {named} mean \
+                             {component_us:.3}us against a frame_pipeline_total mean of \
+                             {:.3}us (a stage is timed outside the pipeline timer)",
                             total.mean_us
                         ),
                         category: FailureCategory::ObservabilityGap,

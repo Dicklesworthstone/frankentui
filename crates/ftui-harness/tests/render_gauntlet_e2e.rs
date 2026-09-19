@@ -151,9 +151,11 @@ fn cost_surface_stage_costs_stay_within_the_frame_total() {
     );
     assert!(
         comparison.diff_dominated_fixtures().is_empty(),
-        "buffer_diff has become the dominant stage in {:?}, which it was not in \
-         any canonical fixture as of 2026-09-19 (it was the cheapest stage \
-         everywhere, at 9-18% of the frame)",
+        "buffer_diff has become the dominant stage in {:?}. It was the cheapest \
+         stage in every canonical fixture on 2026-09-19, at 4.5-9.1% of the frame. \
+         If the other stages got faster this is good news: re-measure and update \
+         docs/perf/cost_surface_stage_dominance_2026-09-19.md and this assertion \
+         together, because that document's conclusion no longer holds",
         comparison.diff_dominated_fixtures()
     );
 }

@@ -233,7 +233,9 @@ fn evidence_ledger_joins_the_vocabularies_end_to_end() {
     // does not list, so a partial spec must not become a way to smuggle a
     // free-form reason code past the ledger.
     let mut partial = LedgerSpec::canonical();
-    partial.kinds.retain(|k| k.kind != EvidenceKind::GauntletRun);
+    partial
+        .kinds
+        .retain(|k| k.kind != EvidenceKind::GauntletRun);
     let mut invented = entry.clone();
     invented.reason_codes = vec!["NOT_A_REAL_CODE".to_string()];
     let mut ledger = PerfEvidenceLedger::default();
