@@ -3,6 +3,8 @@
 //! This module provides a grid-based terminal state that can be updated
 //! by parsing ANSI escape sequences via the [`AnsiHandler`] trait.
 //!
+//! [`AnsiHandler`]: super::parser::AnsiHandler
+//!
 //! # Invariants
 //!
 //! 1. **Cursor bounds**: Cursor position is always within grid bounds (0..width, 0..height).

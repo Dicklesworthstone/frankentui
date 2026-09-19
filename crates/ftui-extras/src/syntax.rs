@@ -210,9 +210,24 @@ pub trait Tokenizer: Send + Sync {
 
     /// Tokenize a full text buffer.
     ///
-    /// The default implementation splits on lines, calls `tokenize_line` for
-    /// each, and adjusts token ranges to be offsets into the full source.
-    /// Handles LF, CRLF, and bare CR line endings.
+    /// The default implementation splits with [`str::lines`], calls
+    /// `tokenize_line` for each, and adjusts token ranges to be offsets into
+    /// the full source.
+    ///
+    /// # Line endings
+    ///
+    /// LF and CRLF end a line. A lone CR does **not** - [`str::lines`] leaves
+    /// it inside the line as ordinary content, and so does this. That is a
+    /// choice, not an omission: [`SyntaxHighlighter::highlight`],
+    /// [`SyntaxHighlighter::highlight_numbered`] and
+    /// [`TokenizedText::from_text`] all split with [`str::lines`] too, so the
+    /// four agree on where a line begins. Splitting on a lone CR here and
+    /// nowhere else would put token offsets and rendered lines out of step.
+    ///
+    /// This is narrower than `ftui-text`, whose rope splits on the full
+    /// Unicode set (CR, VT, FF, NEL, LS and PS). A caller holding rope lines
+    /// should hand them to [`TokenizedText::from_lines`] rather than join them
+    /// and call this.
     fn tokenize(&self, text: &str) -> Vec<Token> {
         let mut tokens = Vec::new();
         let mut state = LineState::Normal;
@@ -229,13 +244,19 @@ pub trait Tokenizer: Send + Sync {
 
             offset += line.len();
 
-            // Advance past line ending.
+            // Advance past the terminator `lines()` consumed. It splits on LF
+            // and strips a CR only when an LF follows, so `offset` points at
+            // `\n`, at the `\r` of a `\r\n`, or past the end on a final line
+            // with no terminator. A lone CR never reaches here - it stayed in
+            // the line - which is why there is no arm for one: an arm that
+            // advanced past it would shift every later range by a byte on the
+            // day `lines()`' contract changed under us.
             if offset < bytes.len() {
                 if bytes[offset] == b'\r' && offset + 1 < bytes.len() && bytes[offset + 1] == b'\n'
                 {
                     offset += 2; // CRLF
-                } else if bytes[offset] == b'\n' || bytes[offset] == b'\r' {
-                    offset += 1; // LF or bare CR
+                } else if bytes[offset] == b'\n' {
+                    offset += 1; // LF
                 }
             }
 
@@ -3755,6 +3776,33 @@ mod tests {
     }
 
     #[test]
+    fn full_tokenize_lone_cr_stays_inside_the_line() {
+        // `str::lines` splits on LF and strips a CR only when an LF follows,
+        // so a lone CR is line content. Three entry points (`highlight`,
+        // `highlight_numbered`, `TokenizedText::from_text`) split the same
+        // way; pin it here so `tokenize` cannot drift away from them and
+        // desynchronise token offsets from rendered lines.
+        let t = PlainTokenizer;
+        let source = "a\rb\nc";
+        let tokens = t.tokenize(source);
+        assert!(validate_tokens(source, &tokens));
+
+        // Two lines, not three: "a\rb" and "c".
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].range, 0..3);
+        assert_eq!(tokens[0].text(source), "a\rb");
+        assert_eq!(tokens[1].range, 4..5);
+        assert_eq!(tokens[1].text(source), "c");
+
+        // A trailing lone CR is content too, and leaves no dangling offset.
+        let trailing = "a\r";
+        let tokens = t.tokenize(trailing);
+        assert!(validate_tokens(trailing, &tokens));
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text(trailing), "a\r");
+    }
+
+    #[test]
     fn full_tokenize_empty_lines() {
         let t = PlainTokenizer;
         let tokens = t.tokenize("a\n\nb");
@@ -5249,15 +5297,35 @@ fn main() {
 
     #[test]
     fn full_tokenize_bare_cr() {
+        // A lone CR is line *content* here, not a terminator - see the "Line
+        // endings" section on `Tokenizer::tokenize`.
+        //
+        // Counting non-whitespace tokens cannot see which of those two it is.
+        // `let` and `x` come back as two tokens under either model, and at the
+        // same offsets under either model, because a one-byte terminator and a
+        // one-byte whitespace token cover the same byte. What separates them
+        // is whether the CR is tokenized at all: content is emitted, a
+        // terminator is stepped over.
         let t = rust_tokenizer();
         let source = "let\rx";
         let tokens = t.tokenize(source);
         assert!(validate_tokens(source, &tokens));
+
         let non_ws: Vec<_> = tokens
             .iter()
             .filter(|t| t.kind != TokenKind::Whitespace)
             .collect();
         assert_eq!(non_ws.len(), 2);
+        assert_eq!(non_ws[0].text(source), "let");
+        assert_eq!(non_ws[1].text(source), "x");
+
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.kind == TokenKind::Whitespace && t.text(source) == "\r"),
+            "the lone CR should be emitted as line content, not skipped as a \
+             terminator: {tokens:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
