@@ -1,15 +1,15 @@
-        [English]  Español  Français  Русский  العربية  Deutsch  ??????         
+        English  Español  Français  Русский  العربية  [Deutsch]  ??????         
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
 ╭String Lookup─────────────────────────╮ ╭Coverage Report──────────────────────╮
-│--- Internationalization ---          │ │--- Coverage Report ---              │
+│--- Internationalisierung ---         │ │--- Coverage Report ---              │
 │                                      │ │                                     │
-│  Hello!                              │ │  Total keys: 6                      │
-│  Welcome, Alice!                     │ │  Locales: 7                         │
+│  Hallo!                              │ │  Total keys: 6                      │
+│  Willkommen, Alice!                  │ │  Locales: 7                         │
 │                                      │ │                                     │
-│  Locale: English (English)           │ │  ar 100% (6/6)                      │
-│  Direction: Left-to-Right            │ │  de 100% (6/6)                      │
-│  Flow: Ltr                           │ │  en 100% (6/6) <--                  │
+│  Locale: German (Deutsch)            │ │  ar 100% (6/6)                      │
+│  Direction: Links nach rechts        │ │  de 100% (6/6) <--                  │
+│  Flow: Ltr                           │ │  en 100% (6/6)                      │
 │                                      │ │  es 100% (6/6)                      │
 │                                      │ │  fr 100% (6/6)                      │
 │                                      │ │  ja 100% (6/6)                      │
@@ -21,4 +21,4 @@
 │                                      │ │                                     │
 │                                      │ │                                     │
 ╰──────────────────────────────────────╯ ╰─────────────────────────────────────╯
- 1-4: panels (Overview)  L/R: locale  Dir: LTR  Current: English (en)           
+ 1-4: panels (Overview)  L/R: locale  Dir: LTR  Current: German (de)            

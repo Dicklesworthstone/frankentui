@@ -593,6 +593,26 @@ These additions may be emitted via OTEL events, the local evidence sink, or both
 Once the runtime-performance lane adopts them, missing mode/recovery evidence is
 a contract failure rather than optional telemetry.
 
+#### Event: `width_cache_stats`
+
+Written once at lifecycle completion when the evidence sink is configured. Records
+the calling thread's grapheme width cache statistics (S3-FIFO) and whether caching
+was enabled for non-ASCII cluster measurement.
+
+Required fields:
+- `hits` (integer): number of cache hits
+- `misses` (integer): number of cache misses
+- `len` (integer): current count of cached graphemes (small + main queues)
+- `capacity` (integer): total cache capacity (default 4096)
+- `enabled` (bool): whether width caching was active (`FTUI_WIDTH_CACHE != 0`)
+- `thread` (string): thread identifier (`"main"`)
+
+Example:
+
+```json
+{"schema_version":"ftui-evidence-v1","event":"width_cache_stats","hits":120,"misses":15,"len":15,"capacity":4096,"enabled":true,"thread":"main"}
+```
+
 ---
 
 ## 10) Implementation Notes

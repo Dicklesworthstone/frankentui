@@ -413,6 +413,32 @@ impl WidgetBudget {
     }
 }
 
+/// Text flow direction for a frame or widget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TextDirection {
+    /// Left-to-right text flow.
+    #[default]
+    Ltr,
+    /// Right-to-left text flow.
+    Rtl,
+}
+
+impl TextDirection {
+    /// Whether this direction is left-to-right.
+    #[inline]
+    #[must_use]
+    pub const fn is_ltr(self) -> bool {
+        matches!(self, Self::Ltr)
+    }
+
+    /// Whether this direction is right-to-left.
+    #[inline]
+    #[must_use]
+    pub const fn is_rtl(self) -> bool {
+        matches!(self, Self::Rtl)
+    }
+}
+
 /// Frame = Buffer + metadata for a render pass.
 ///
 /// The Frame is passed to `Model::view()` and contains everything needed
@@ -427,6 +453,9 @@ impl WidgetBudget {
 pub struct Frame<'a> {
     /// The cell grid for this render pass.
     pub buffer: Buffer,
+
+    /// Text flow direction for this frame (LTR or RTL).
+    pub text_direction: TextDirection,
 
     /// Reference to the grapheme pool for interning strings.
     pub pool: &'a mut GraphemePool,
@@ -492,6 +521,7 @@ impl<'a> Frame<'a> {
     pub fn new(width: u16, height: u16, pool: &'a mut GraphemePool) -> Self {
         Self {
             buffer: Buffer::new(width, height),
+            text_direction: TextDirection::default(),
             pool,
             links: None,
             hit_grid: None,
@@ -515,6 +545,7 @@ impl<'a> Frame<'a> {
     pub fn from_buffer(buffer: Buffer, pool: &'a mut GraphemePool) -> Self {
         Self {
             buffer,
+            text_direction: TextDirection::default(),
             pool,
             links: None,
             hit_grid: None,
@@ -544,6 +575,7 @@ impl<'a> Frame<'a> {
     ) -> Self {
         Self {
             buffer: Buffer::new(width, height),
+            text_direction: TextDirection::default(),
             pool,
             links: Some(links),
             hit_grid: None,
@@ -559,6 +591,12 @@ impl<'a> Frame<'a> {
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
         }
+    }
+
+    /// Set the text direction for this frame.
+    #[inline]
+    pub fn set_text_direction(&mut self, text_direction: TextDirection) {
+        self.text_direction = text_direction;
     }
 
     /// Create a frame with hit testing enabled.
@@ -587,6 +625,7 @@ impl<'a> Frame<'a> {
             a11y_scope_stack: Vec::new(),
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
+            text_direction: TextDirection::default(),
         }
     }
 

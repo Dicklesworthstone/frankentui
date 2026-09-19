@@ -1382,6 +1382,7 @@ dependencies = [
  "ftui-a11y",
  "ftui-core",
  "ftui-extras",
+ "ftui-harness",
  "ftui-layout",
  "ftui-render",
  "ftui-runtime",
@@ -1416,6 +1417,7 @@ dependencies = [
  "bitflags 2.13.2",
  "criterion",
  "crossterm",
+ "ftui-simd",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "libc",
@@ -1641,6 +1643,9 @@ dependencies = [
 [[package]]
 name = "ftui-simd"
 version = "0.8.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "ftui-style"

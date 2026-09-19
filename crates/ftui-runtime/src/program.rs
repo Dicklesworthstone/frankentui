@@ -66,7 +66,9 @@ use crate::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
 use crate::terminal_presenter::TerminalPresenter;
-use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, TerminalWriter, UiAnchor};
+#[cfg(any(feature = "crossterm-compat", test))]
+use crate::terminal_writer::TerminalWriter;
+use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, UiAnchor};
 use crate::voi_sampling::{VoiConfig, VoiSampler};
 use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor, ConformalStatus};
 #[cfg(feature = "asupersync-executor")]
@@ -4207,7 +4209,7 @@ fn emit_task_executor_backend_evidence(sink: Option<&EvidenceSink>, backend: &st
         return;
     };
     let _ = sink.write_jsonl(&format!(
-        r#"{{"event":"task_executor_backend","backend":"{backend}"}}"#
+        r#"{{"schema_version":"ftui-evidence-v1","event":"task_executor_backend","backend":"{backend}"}}"#
     ));
 }
 
@@ -4220,7 +4222,7 @@ fn emit_task_executor_completion_evidence(
         return;
     };
     let _ = sink.write_jsonl(&format!(
-        r#"{{"event":"task_executor_complete","backend":"{backend}","duration_us":{duration_us}}}"#
+        r#"{{"schema_version":"ftui-evidence-v1","event":"task_executor_complete","backend":"{backend}","duration_us":{duration_us}}}"#
     ));
 }
 
@@ -4235,7 +4237,7 @@ fn emit_task_executor_panic_evidence(sink: Option<&EvidenceSink>, backend: &str,
         .replace('\r', "\\r")
         .replace('\t', "\\t");
     let _ = sink.write_jsonl(&format!(
-        r#"{{"event":"task_executor_panic","backend":"{backend}","panic_msg":"{escaped}"}}"#
+        r#"{{"schema_version":"ftui-evidence-v1","event":"task_executor_panic","backend":"{backend}","panic_msg":"{escaped}"}}"#
     ));
 }
 
@@ -4251,7 +4253,7 @@ fn emit_task_executor_backpressure_evidence(
         return;
     };
     let _ = sink.write_jsonl(&format!(
-        r#"{{"event":"task_executor_backpressure","backend":"{backend}","action":"{action}","queue_length":{queue_length},"max_queue_size":{max_queue_size},"total_rejected":{total_rejected}}}"#
+        r#"{{"schema_version":"ftui-evidence-v1","event":"task_executor_backpressure","backend":"{backend}","action":"{action}","queue_length":{queue_length},"max_queue_size":{max_queue_size},"total_rejected":{total_rejected}}}"#
     ));
 }
 
@@ -4600,7 +4602,7 @@ impl BudgetDecisionEvidence {
         let queue_max_depth = Self::opt_usize(self.load_governor.queue_max_depth);
 
         format!(
-            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"recovery_streak":{},"total_degrades":{},"total_recoveries":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
+            r#"{{"schema_version":"ftui-evidence-v1","event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"recovery_streak":{},"total_degrades":{},"total_recoveries":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
             self.frame_idx,
             self.decision.as_str(),
             self.controller_decision.as_str(),
@@ -5016,7 +5018,7 @@ impl WidgetRefreshPlan {
     #[must_use]
     fn to_jsonl(&self) -> String {
         let mut out = String::with_capacity(256 + self.selected.len() * 96);
-        out.push_str(r#"{"event":"widget_refresh""#);
+        out.push_str(r#"{"schema_version":"ftui-evidence-v1","event":"widget_refresh""#);
         out.push_str(&format!(
             r#","frame_idx":{},"budget_us":{:.3},"degradation":"{}","essentials_cost_us":{:.3},"selected_cost_us":{:.3},"selected_value":{:.3},"selected_count":{},"skipped_count":{},"starved_selected":{},"starved_skipped":{},"over_budget":{}"#,
             self.frame_idx,
@@ -6226,6 +6228,31 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             shutdown_error.get_or_insert(error);
         }
 
+        if let Some(ref sink) = self.evidence_sink {
+            let (hits, misses, len, capacity, enabled) =
+                if let Some(stats) = ftui_core::text_width::width_cache_stats() {
+                    (
+                        stats.hits,
+                        stats.misses,
+                        stats.small_size + stats.main_size,
+                        stats.capacity,
+                        true,
+                    )
+                } else {
+                    (0, 0, 0, 0, false)
+                };
+            let line = format!(
+                r#"{{"schema_version":"{}","event":"width_cache_stats","hits":{},"misses":{},"len":{},"capacity":{},"enabled":{},"thread":"main"}}"#,
+                crate::evidence_sink::EVIDENCE_SCHEMA_VERSION,
+                hits,
+                misses,
+                len,
+                capacity,
+                enabled,
+            );
+            let _ = sink.write_jsonl(&line);
+        }
+
         match shutdown_error {
             Some(error) => Err(error),
             None => Ok(()),
@@ -7358,6 +7385,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         frame.set_links(links);
         frame.set_widget_budget(self.widget_refresh_plan.as_budget());
         frame.set_arena(&self.frame_arena);
+        frame.text_direction = self.locale_context.direction().into();
         if let Some(builder) = a11y_builder.as_mut() {
             frame.set_a11y(builder);
         }
@@ -7582,6 +7610,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         let mut frame = Frame::new(self.width, frame_height, pool);
         frame.set_degradation(self.budget.degradation());
         frame.set_arena(&self.frame_arena);
+        frame.text_direction = self.locale_context.direction().into();
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
@@ -13789,6 +13818,105 @@ mod tests {
         );
     }
 
+    #[test]
+    fn voi_sample_written_for_inline_auto() {
+        headless_inline_auto_exports_voi_decision_evidence();
+    }
+
+    #[test]
+    fn voi_sample_not_written_without_auto_bounds() {
+        struct NoAutoModel;
+
+        #[derive(Debug)]
+        enum NoAutoMsg {}
+
+        impl From<Event> for NoAutoMsg {
+            fn from(_: Event) -> Self {
+                unreachable!()
+            }
+        }
+
+        impl Model for NoAutoModel {
+            type Message = NoAutoMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('N'));
+            }
+        }
+
+        let evidence_path = temp_evidence_path("voi_no_auto");
+        let config = ProgramConfig::default()
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        assert!(config.inline_auto_remeasure.is_none());
+
+        let mut program = headless_program_with_config(NoAutoModel, config);
+        for _ in 0..3 {
+            program.dirty = true;
+            program.render_frame().expect("render frame");
+        }
+
+        let contents = std::fs::read_to_string(&evidence_path).unwrap_or_default();
+        assert!(
+            !contents.contains(r#""event":"voi_decision""#)
+                && !contents.contains(r#""event":"voi_sample""#),
+            "programs without auto bounds must not emit VOI events; got: {contents}"
+        );
+    }
+
+    #[test]
+    fn evidence_lines_all_carry_schema_version() {
+        use crate::telemetry_schema::ALL_EVIDENCE_EVENTS;
+
+        let evidence_path = temp_evidence_path("all_evidence_schema_version");
+        let config = ProgramConfig::inline_auto(1, 6)
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+
+        struct EvidenceModel;
+        #[derive(Debug)]
+        enum EvMsg {}
+        impl From<Event> for EvMsg {
+            fn from(_: Event) -> Self {
+                unreachable!()
+            }
+        }
+        impl Model for EvidenceModel {
+            type Message = EvMsg;
+            fn update(&mut self, _: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('E'));
+            }
+        }
+
+        let mut program = headless_program_with_config(EvidenceModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render frame");
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let val: serde_json::Value = serde_json::from_str(line).expect("valid jsonl line");
+            assert_eq!(
+                val["schema_version"].as_str(),
+                Some("ftui-evidence-v1"),
+                "each evidence line must carry schema_version ftui-evidence-v1: {line}"
+            );
+            let event = val["event"].as_str().expect("event string");
+            assert!(
+                ALL_EVIDENCE_EVENTS.contains(&event),
+                "event {event} must be in ALL_EVIDENCE_EVENTS"
+            );
+        }
+    }
+
     /// Bytes the startup probes swallowed (a click and a key sent while the
     /// terminal was being probed) are parsed and delivered to the model in
     /// order before the main loop; draining twice delivers nothing more.
@@ -14745,6 +14873,57 @@ mod tests {
             depth >= IN_FLIGHT as u64,
             "guardrail must observe the live backlog (>= {IN_FLIGHT}), saw {depth}: {contents}"
         );
+    }
+
+    #[test]
+    fn guardrails_receive_live_queue_depth() {
+        headless_render_frame_feeds_live_effect_backlog_to_queue_guardrail();
+    }
+
+    #[test]
+    fn guardrails_queue_depth_zero_without_queue() {
+        struct ZeroQueueModel;
+
+        #[derive(Debug)]
+        enum ZeroMsg {}
+
+        impl From<Event> for ZeroMsg {
+            fn from(_: Event) -> Self {
+                unreachable!()
+            }
+        }
+
+        impl Model for ZeroQueueModel {
+            type Message = ZeroMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('Z'));
+            }
+        }
+
+        let config = ProgramConfig {
+            guardrails: GuardrailsConfig {
+                memory: MemoryBudgetConfig::default(),
+                queue: QueueConfig {
+                    warn_depth: 1,
+                    ..QueueConfig::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut program = headless_program_with_config(ZeroQueueModel, config);
+        assert_eq!(program.task_executor.in_flight(), 0);
+        program.dirty = true;
+        program.render_frame().expect("render frame with no tasks");
+        let snapshot = program.guardrails.snapshot();
+        assert_eq!(snapshot.queue_depth, 0);
+        assert_eq!(snapshot.frames_with_alerts, 0);
     }
 
     /// CONTRACT (bd-1za0z): a soft memory alert must trigger a capacity trim

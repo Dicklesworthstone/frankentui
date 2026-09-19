@@ -1724,6 +1724,7 @@ impl AgentHarness {
             .locale_override
             .as_ref()
             .map(|override_locale| ctx.push_override(override_locale.clone()));
+        frame.text_direction = ctx.direction().into();
         let current_locale = ctx.current_locale();
 
         let info_text = format!(
@@ -2485,6 +2486,17 @@ fn main() -> std::io::Result<()> {
         }
     });
 
+    let locale_override = std::env::var("FTUI_HARNESS_LOCALE_OVERRIDE")
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
     let mut config = ProgramConfig {
         screen_mode,
         mouse_capture_policy: if enable_mouse {
@@ -2498,6 +2510,11 @@ fn main() -> std::io::Result<()> {
     };
     if let Some(locale) = locale_base {
         config = config.with_locale(locale);
+    }
+    if let Some(ref override_locale) = locale_override {
+        let dir = ftui_runtime::locale::TextDirection::for_locale(override_locale);
+        config.locale_context.set_direction(Some(dir));
+        ftui_runtime::locale::set_direction(Some(dir));
     }
     if let Some(enabled) = env_flag("FTUI_HARNESS_DIFF_BAYESIAN") {
         config.diff_config = config.diff_config.with_bayesian_enabled(enabled);

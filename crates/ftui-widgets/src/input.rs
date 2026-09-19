@@ -639,7 +639,17 @@ impl TextInput {
                 } else {
                     self.selection_anchor = None;
                 }
-                self.cursor = 0;
+                #[cfg(feature = "bidi")]
+                if ftui_text::bidi::has_rtl(&self.value) {
+                    let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
+                    self.cursor = seg.logical_cursor_pos(0);
+                } else {
+                    self.cursor = 0;
+                }
+                #[cfg(not(feature = "bidi"))]
+                {
+                    self.cursor = 0;
+                }
                 self.scroll_cells.set(0);
                 true
             }
@@ -649,7 +659,17 @@ impl TextInput {
                 } else {
                     self.selection_anchor = None;
                 }
-                self.cursor = self.grapheme_count();
+                #[cfg(feature = "bidi")]
+                if ftui_text::bidi::has_rtl(&self.value) {
+                    let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
+                    self.cursor = seg.logical_cursor_pos(seg.len());
+                } else {
+                    self.cursor = self.grapheme_count();
+                }
+                #[cfg(not(feature = "bidi"))]
+                {
+                    self.cursor = self.grapheme_count();
+                }
                 true
             }
             _ => false,
@@ -958,21 +978,43 @@ impl TextInput {
     fn move_cursor_left(&mut self) {
         if let Some(anchor) = self.selection_anchor.take() {
             self.cursor = self.cursor.min(anchor);
-        } else if self.cursor > 0 {
-            self.cursor -= 1;
+        } else {
+            #[cfg(feature = "bidi")]
+            if ftui_text::bidi::has_rtl(&self.value) {
+                let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
+                self.cursor = seg.move_left(self.cursor);
+                return;
+            }
+            if self.cursor > 0 {
+                self.cursor -= 1;
+            }
         }
     }
 
     fn move_cursor_right(&mut self) {
         if let Some(anchor) = self.selection_anchor.take() {
             self.cursor = self.cursor.max(anchor);
-        } else if self.cursor < self.grapheme_count() {
-            self.cursor += 1;
+        } else {
+            #[cfg(feature = "bidi")]
+            if ftui_text::bidi::has_rtl(&self.value) {
+                let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
+                self.cursor = seg.move_right(self.cursor);
+                return;
+            }
+            if self.cursor < self.grapheme_count() {
+                self.cursor += 1;
+            }
         }
     }
 
     fn move_cursor_left_select(&mut self) {
         self.ensure_selection_anchor();
+        #[cfg(feature = "bidi")]
+        if ftui_text::bidi::has_rtl(&self.value) {
+            let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
+            self.cursor = seg.move_left(self.cursor);
+            return;
+        }
         if self.cursor > 0 {
             self.cursor -= 1;
         }
@@ -980,6 +1022,12 @@ impl TextInput {
 
     fn move_cursor_right_select(&mut self) {
         self.ensure_selection_anchor();
+        #[cfg(feature = "bidi")]
+        if ftui_text::bidi::has_rtl(&self.value) {
+            let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
+            self.cursor = seg.move_right(self.cursor);
+            return;
+        }
         if self.cursor < self.grapheme_count() {
             self.cursor += 1;
         }
@@ -1110,12 +1158,33 @@ impl TextInput {
     fn cursor_visual_pos(&self) -> usize {
         let mut pos = 0;
         if !self.value.is_empty() {
-            pos += self
-                .value
-                .graphemes(true)
-                .take(self.cursor)
-                .map(|g| self.grapheme_width(g))
-                .sum::<usize>();
+            #[cfg(feature = "bidi")]
+            if ftui_text::bidi::has_rtl(&self.value) {
+                let seg = ftui_text::bidi::BidiSegment::new(&self.value, None);
+                let visual_idx = seg.visual_cursor_pos(self.cursor);
+                for v in 0..visual_idx {
+                    if let Some(ch) = seg.char_at_visual(v) {
+                        let mut buf = [0u8; 4];
+                        pos += self.grapheme_width(ch.encode_utf8(&mut buf));
+                    }
+                }
+            } else {
+                pos += self
+                    .value
+                    .graphemes(true)
+                    .take(self.cursor)
+                    .map(|g| self.grapheme_width(g))
+                    .sum::<usize>();
+            }
+            #[cfg(not(feature = "bidi"))]
+            {
+                pos += self
+                    .value
+                    .graphemes(true)
+                    .take(self.cursor)
+                    .map(|g| self.grapheme_width(g))
+                    .sum::<usize>();
+            }
         }
         if let Some(ime) = &self.ime_composition {
             pos += ime
@@ -2893,6 +2962,30 @@ mod scroll_edge_tests {
                 }
                 prop_assert_eq!(input.value(), draft.as_str());
             }
+        }
+
+        #[cfg(feature = "bidi")]
+        #[test]
+        fn input_rtl_left_key_moves_visually_left() {
+            // Arabic text: "مرحبا" (5 characters, pure RTL)
+            let mut input = TextInput::new().with_value("\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}");
+            input.cursor = 0; // cursor at logical 0 (visual right end)
+
+            // Right at logical 0 is a no-op at the visual right edge
+            input.handle_event(&key(KeyCode::Right));
+            assert_eq!(input.cursor, 0);
+
+            // Left moves visual cursor left (logical +1)
+            input.handle_event(&key(KeyCode::Left));
+            assert_eq!(input.cursor, 1);
+
+            // Home goes to visual left (logical 5)
+            input.handle_event(&key(KeyCode::Home));
+            assert_eq!(input.cursor, 5);
+
+            // End goes to visual right (logical 0)
+            input.handle_event(&key(KeyCode::End));
+            assert_eq!(input.cursor, 0);
         }
     }
 }

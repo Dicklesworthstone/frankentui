@@ -147,6 +147,14 @@ impl Default for MyModel {
     }
 }
 
+impl MyModel {
+    /// The README's harness fences build models through `MyModel::new`, which
+    /// is the shape a consumer's own model would have.
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl Model for MyModel {
     type Message = Msg;
 
@@ -443,4 +451,233 @@ fn readme_simulator_snippet() {
     assert!(sim.is_running());
     // README-SNIPPET-END: simulator
     assert_in_readme(&["simulator"]);
+}
+
+// ── Advanced Features ───────────────────────────────────────────────────
+//
+// The blocks below were fences the README carried but nothing compiled. Each
+// one now either proves the API is real or fails the build; there is no third
+// outcome where the README quietly describes something that does not exist.
+
+#[test]
+fn readme_hyperlink_snippet() {
+    use ftui::render::cell::Cell;
+    use ftui::render::frame::Frame;
+    use ftui::render::grapheme_pool::GraphemePool;
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(20, 3, &mut pool);
+
+    // README-SNIPPET: hyperlinks
+    let link_id = frame.register_link("https://example.com");
+    let mut cell = Cell::from_char('x');
+    cell.attrs = cell.attrs.with_link(link_id);
+    // Emits OSC 8 hyperlink sequences for supporting terminals
+    // README-SNIPPET-END: hyperlinks
+
+    assert_eq!(cell.attrs.link_id(), link_id);
+    assert_in_readme(&["hyperlinks"]);
+}
+
+#[test]
+fn readme_focus_graph_snippet() {
+    use ftui::widgets::focus::{FocusManager, FocusNode, NavDirection};
+
+    let input1_area = Rect::new(0, 0, 10, 1);
+    let input2_area = Rect::new(0, 2, 10, 1);
+    let mut focus = FocusManager::new();
+
+    // README-SNIPPET: focus_graph
+    // Declarative focus graph: FocusManager owns a FocusGraph of nodes and nav edges
+    let graph = focus.graph_mut();
+    let input1 = graph.insert(FocusNode::new(1, input1_area));
+    let input2 = graph.insert(FocusNode::new(2, input2_area));
+    graph.connect(input1, NavDirection::Next, input2); // Tab order
+
+    // Navigation
+    focus.focus_next(); // Tab
+    focus.focus_prev(); // Shift+Tab
+    // README-SNIPPET-END: focus_graph
+
+    assert_ne!(input1, input2);
+    assert_in_readme(&["focus_graph"]);
+}
+
+#[test]
+fn readme_accessibility_program_config_snippet() {
+    // README-SNIPPET: accessibility_program_config
+    use ftui::{ProgramConfig, ScreenReaderPolicy};
+
+    let config = ProgramConfig::default().with_accessibility(ScreenReaderPolicy::default());
+    // README-SNIPPET-END: accessibility_program_config
+
+    let _ = config;
+    assert_in_readme(&["accessibility_program_config"]);
+}
+
+#[test]
+fn readme_contrast_ratio_snippet() {
+    use ftui::style::color::{Rgb, contrast_ratio};
+
+    // README-SNIPPET: contrast_ratio
+    let ratio = contrast_ratio(Rgb::new(220, 220, 220), Rgb::new(30, 30, 30));
+    // WCAG AA: ratio ≥ 4.5 for normal text, ≥ 3.0 for large text
+    // WCAG AAA: ratio ≥ 7.0 for normal text, ≥ 4.5 for large text
+    // README-SNIPPET-END: contrast_ratio
+
+    // Light-on-dark at these values clears AAA, which is what makes the
+    // thresholds in the comment worth quoting next to the call.
+    assert!(ratio > 7.0, "expected AAA contrast, got {ratio}");
+    assert_in_readme(&["contrast_ratio"]);
+}
+
+#[test]
+fn readme_queue_telemetry_snippet() {
+    // README-SNIPPET: queue_telemetry
+    let snap = ftui_runtime::effect_system::queue_telemetry();
+    // QueueTelemetry {
+    //   enqueued: 1042,          -- total tasks submitted
+    //   processed: 1038,         -- total tasks completed
+    //   dropped: 2,              -- tasks dropped (backpressure/shutdown)
+    //   high_water: 12,          -- peak queue depth observed
+    //   in_flight: 2,            -- currently executing
+    // }
+    // README-SNIPPET-END: queue_telemetry
+
+    // The counters are monotonic, so processed can never outrun enqueued.
+    assert!(snap.processed <= snap.enqueued);
+    assert_in_readme(&["queue_telemetry"]);
+}
+
+// ── Harness claims from the comparison table ────────────────────────────
+//
+// "Shadow-run validation harness" and "Snapshot/time-travel harness" are rows
+// in the README's How FrankenTUI Compares table, i.e. competitive claims. They
+// are compiled here so the table cannot outlive the API it advertises.
+// ftui-harness is a dev-dependency for exactly this reason.
+
+#[test]
+fn readme_shadow_run_snippet() {
+    // README-SNIPPET: shadow_run
+    use ftui_harness::{ShadowRun, ShadowRunConfig, ShadowVerdict};
+
+    let config = ShadowRunConfig::new("migration_test", "tick_counter", 42).viewport(80, 24);
+    let result = ShadowRun::compare(config, MyModel::new, |session| {
+        session.init();
+        session.tick();
+        session.capture_frame();
+    });
+    assert_eq!(result.verdict, ShadowVerdict::Match);
+    // README-SNIPPET-END: shadow_run
+
+    assert_in_readme(&["shadow_run"]);
+}
+
+#[test]
+fn readme_rollout_scorecard_snippet() {
+    use ftui_harness::{ShadowRun, ShadowRunConfig};
+
+    // The snippet's `min_shadow_scenarios(3)` means three matching scenarios
+    // are what a Go verdict costs. Supplying exactly that makes the README's
+    // `assert_eq!(.., RolloutVerdict::Go)` a claim this test actually proves,
+    // rather than a line that merely type-checks.
+    let shadow_results: Vec<_> = ["tick_counter", "resize", "quit"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, scenario)| {
+            ShadowRun::compare(
+                ShadowRunConfig::new("rollout_doc", scenario, 7 + i as u64).viewport(80, 24),
+                MyModel::new,
+                |session| {
+                    session.init();
+                    session.tick();
+                    session.capture_frame();
+                },
+            )
+        })
+        .collect();
+
+    // README-SNIPPET: rollout_scorecard
+    use ftui_harness::{
+        RolloutEvidenceBundle, RolloutScorecard, RolloutScorecardConfig, RolloutVerdict,
+    };
+
+    let mut scorecard =
+        RolloutScorecard::new(RolloutScorecardConfig::default().min_shadow_scenarios(3));
+    for shadow_result in shadow_results {
+        scorecard.add_shadow_result(shadow_result);
+    }
+    assert_eq!(scorecard.evaluate(), RolloutVerdict::Go);
+
+    // Machine-readable JSON evidence for CI gates
+    let bundle = RolloutEvidenceBundle {
+        scorecard: scorecard.summary(),
+        queue_telemetry: Some(ftui_runtime::effect_system::queue_telemetry()),
+        requested_lane: "structured".to_string(),
+        resolved_lane: "structured".to_string(),
+        rollout_policy: "shadow".to_string(),
+    };
+    println!("{}", bundle.to_json()); // Self-contained release decision artifact
+    // README-SNIPPET-END: rollout_scorecard
+
+    assert!(bundle.to_json().contains("\"requested_lane\""));
+    assert_in_readme(&["rollout_scorecard"]);
+}
+
+#[test]
+fn readme_time_travel_snippet() {
+    use ftui::render::frame::Frame;
+    use ftui::render::grapheme_pool::GraphemePool;
+    use ftui_harness::time_travel::{FrameMetadata, TimeTravel};
+
+    let mut pool = GraphemePool::new();
+    let frame = Frame::new(20, 3, &mut pool);
+    let (frame_number, render_time, frame_index) = (0_u64, std::time::Duration::ZERO, 0_usize);
+
+    // README-SNIPPET: time_travel
+    // Record frames for debugging (ftui-harness; delta-compressed ring of 256 frames)
+    let mut history = TimeTravel::new(256);
+    history.record(&frame.buffer, FrameMetadata::new(frame_number, render_time));
+
+    // Replay
+    let historical_frame = history.get(frame_index);
+    // README-SNIPPET-END: time_travel
+
+    assert!(
+        historical_frame.is_some(),
+        "the frame just recorded is there"
+    );
+    assert_in_readme(&["time_travel"]);
+}
+
+#[test]
+fn readme_frame_arena_snippet() {
+    use ftui::render::arena::FrameArena;
+
+    let (done, total, value) = (3_u32, 10_u32, 42_u32);
+
+    // Two regions rather than one: the borrows below end where the assertions
+    // do, which is what lets `reset` take `&mut` straight afterwards. The
+    // checker rejoins them with the blank line the README already has between
+    // the allocation block and the frame boundary.
+    // README-SNIPPET: frame_arena_alloc
+    let mut arena = FrameArena::new(256 * 1024); // 256 KB initial
+
+    // During frame rendering: bump-allocate transient strings
+    let label: &str = arena.alloc_str(&format!("{done}/{total}"));
+    let cell_text: &str = arena.alloc_fmt(format_args!("{value:>8}"));
+    // README-SNIPPET-END: frame_arena_alloc
+
+    assert_eq!(label, "3/10");
+    assert_eq!(cell_text, "      42");
+
+    // README-SNIPPET: frame_arena_reset
+    // At frame boundary:
+    arena.reset(); // O(1), no individual deallocations
+    // README-SNIPPET-END: frame_arena_reset
+
+    // The arena is still usable after the reset, which is the other half of
+    // the claim: reset recycles the bump, it does not retire the allocator.
+    assert_eq!(arena.alloc_str("reused"), "reused");
+    assert_in_readme(&["frame_arena_alloc", "frame_arena_reset"]);
 }

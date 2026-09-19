@@ -810,6 +810,85 @@ def run_self_tests(schema_path: str) -> int:
                 failures = validate_hash_registry(registry, [json.dumps(example)])
                 self.assertTrue(any("hash mismatch" in err for _, err in failures))
 
+        def test_evidence_positive_cases(self) -> None:
+            ev_path = Path(schema_path).with_name("e2e_evidence_schema.json")
+            ex_path = Path(schema_path).with_name("e2e_evidence_examples.jsonl")
+            if not ev_path.exists() or not ex_path.exists():
+                return
+            ev_schema = load_schema(str(ev_path))
+            with open(ex_path, "r", encoding="utf-8") as f:
+                lines = [l.strip() for l in f if l.strip()]
+            target_events = {"diff_decision", "budget_decision", "voi_decision", "guardrail_snapshot"}
+            selected = [l for l in lines if json.loads(l).get("event") in target_events]
+            failures = validate_jsonl(ev_schema, selected)
+            self.assertEqual(failures, [])
+
+        def test_evidence_unknown_event(self) -> None:
+            ev_path = Path(schema_path).with_name("e2e_evidence_schema.json")
+            if not ev_path.exists():
+                return
+            ev_schema = load_schema(str(ev_path))
+            bad = {"schema_version": "ftui-evidence-v1", "event": "unknown_event_xyz"}
+            failures = validate_jsonl(ev_schema, [json.dumps(bad)])
+            self.assertTrue(any("unknown event" in err for _, err in failures))
+
+        def test_evidence_missing_field(self) -> None:
+            ev_path = Path(schema_path).with_name("e2e_evidence_schema.json")
+            ex_path = Path(schema_path).with_name("e2e_evidence_examples.jsonl")
+            if not ev_path.exists() or not ex_path.exists():
+                return
+            ev_schema = load_schema(str(ev_path))
+            with open(ex_path, "r", encoding="utf-8") as f:
+                lines = [l.strip() for l in f if l.strip()]
+            for line in lines:
+                obj = json.loads(line)
+                if obj.get("event") == "diff_decision":
+                    obj.pop("alpha", None)
+                    failures = validate_jsonl(ev_schema, [json.dumps(obj)])
+                    self.assertTrue(any("missing required field" in err for _, err in failures))
+                    break
+
+        def test_evidence_wrong_type(self) -> None:
+            ev_path = Path(schema_path).with_name("e2e_evidence_schema.json")
+            ex_path = Path(schema_path).with_name("e2e_evidence_examples.jsonl")
+            if not ev_path.exists() or not ex_path.exists():
+                return
+            ev_schema = load_schema(str(ev_path))
+            with open(ex_path, "r", encoding="utf-8") as f:
+                lines = [l.strip() for l in f if l.strip()]
+            for line in lines:
+                obj = json.loads(line)
+                if obj.get("event") == "diff_decision":
+                    obj["alpha"] = "not_a_number"
+                    failures = validate_jsonl(ev_schema, [json.dumps(obj)])
+                    self.assertTrue(any("wrong type" in err for _, err in failures))
+                    break
+
+        def test_evidence_bad_schema_version(self) -> None:
+            ev_path = Path(schema_path).with_name("e2e_evidence_schema.json")
+            ex_path = Path(schema_path).with_name("e2e_evidence_examples.jsonl")
+            if not ev_path.exists() or not ex_path.exists():
+                return
+            ev_schema = load_schema(str(ev_path))
+            with open(ex_path, "r", encoding="utf-8") as f:
+                lines = [l.strip() for l in f if l.strip()]
+            for line in lines:
+                obj = json.loads(line)
+                if obj.get("event") == "diff_decision":
+                    obj["schema_version"] = "ftui-evidence-v0"
+                    failures = validate_jsonl(ev_schema, [json.dumps(obj)])
+                    self.assertTrue(any("schema_version mismatch" in err for _, err in failures))
+                    break
+
+        def test_evidence_type_keyed_line(self) -> None:
+            ev_path = Path(schema_path).with_name("e2e_evidence_schema.json")
+            if not ev_path.exists():
+                return
+            ev_schema = load_schema(str(ev_path))
+            bad = {"schema_version": "ftui-evidence-v1", "type": "env"}
+            failures = validate_jsonl(ev_schema, [json.dumps(bad)])
+            self.assertTrue(any("event must be a string" in err for _, err in failures))
+
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(ValidatorTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1

@@ -16,11 +16,87 @@ thread_local! {
     static GLOBAL_CONTEXT: LocaleContext = LocaleContext::system();
 }
 
+/// Text flow direction for the runtime locale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TextDirection {
+    /// Left-to-right text flow.
+    #[default]
+    Ltr,
+    /// Right-to-left text flow.
+    Rtl,
+}
+
+impl TextDirection {
+    /// Whether this direction is left-to-right.
+    #[inline]
+    #[must_use]
+    pub const fn is_ltr(self) -> bool {
+        matches!(self, Self::Ltr)
+    }
+
+    /// Whether this direction is right-to-left.
+    #[inline]
+    #[must_use]
+    pub const fn is_rtl(self) -> bool {
+        matches!(self, Self::Rtl)
+    }
+
+    /// Infer text direction from a locale tag.
+    ///
+    /// Checks base language (before '-' or '_', lowercase):
+    /// `["ar", "he", "fa", "ur", "yi", "ps", "sd", "ug", "dv", "ckb"]` -> `Rtl`.
+    /// Also checks for script subtags `Arab` or `Hebr` (e.g. `ku-Arab`) -> `Rtl`.
+    #[must_use]
+    pub fn for_locale(locale: &str) -> Self {
+        let tag = locale.trim();
+        if tag.is_empty() {
+            return Self::Ltr;
+        }
+
+        let parts: Vec<&str> = tag.split(['-', '_']).collect();
+        if let Some(base) = parts.first() {
+            let base_lower = base.to_ascii_lowercase();
+            const RTL_LANGS: &[&str] =
+                &["ar", "he", "fa", "ur", "yi", "ps", "sd", "ug", "dv", "ckb"];
+            if RTL_LANGS.contains(&base_lower.as_str()) {
+                return Self::Rtl;
+            }
+        }
+
+        for part in &parts[1..] {
+            if part.eq_ignore_ascii_case("arab") || part.eq_ignore_ascii_case("hebr") {
+                return Self::Rtl;
+            }
+        }
+
+        Self::Ltr
+    }
+}
+
+impl From<TextDirection> for ftui_render::TextDirection {
+    fn from(dir: TextDirection) -> Self {
+        match dir {
+            TextDirection::Ltr => ftui_render::TextDirection::Ltr,
+            TextDirection::Rtl => ftui_render::TextDirection::Rtl,
+        }
+    }
+}
+
+impl From<ftui_render::TextDirection> for TextDirection {
+    fn from(dir: ftui_render::TextDirection) -> Self {
+        match dir {
+            ftui_render::TextDirection::Ltr => TextDirection::Ltr,
+            ftui_render::TextDirection::Rtl => TextDirection::Rtl,
+        }
+    }
+}
+
 /// Runtime locale context with scoped overrides.
 #[derive(Clone, Debug)]
 pub struct LocaleContext {
     current: Observable<Locale>,
     overrides: Rc<RefCell<Vec<Locale>>>,
+    direction_override: Observable<Option<TextDirection>>,
 }
 
 impl LocaleContext {
@@ -31,6 +107,7 @@ impl LocaleContext {
         Self {
             current: Observable::new(locale),
             overrides: Rc::new(RefCell::new(Vec::new())),
+            direction_override: Observable::new(None),
         }
     }
 
@@ -64,13 +141,59 @@ impl LocaleContext {
 
     /// Set the base locale.
     pub fn set_locale(&self, locale: impl Into<Locale>) {
+        let old_dir = self.direction();
         let locale = normalize_locale(locale.into());
         self.current.set(locale);
+        let new_dir = self.direction();
+        if new_dir != old_dir {
+            tracing::info!(
+                target: crate::telemetry_schema::TARGET_LOCALE,
+                locale = %self.current_locale(),
+                direction = ?new_dir,
+                source = "locale",
+                "text direction changed"
+            );
+        }
     }
 
-    /// Subscribe to base locale changes.
+    /// Get the active text direction (from current locale unless overridden).
+    #[must_use]
+    pub fn direction(&self) -> TextDirection {
+        if let Some(dir) = self.direction_override.get() {
+            dir
+        } else {
+            TextDirection::for_locale(&self.current_locale())
+        }
+    }
+
+    /// Set an explicit text direction override (or None to infer from locale).
+    pub fn set_direction(&self, direction: Option<TextDirection>) {
+        let old_dir = self.direction();
+        self.direction_override.set(direction);
+        let new_dir = self.direction();
+        if new_dir != old_dir {
+            tracing::info!(
+                target: crate::telemetry_schema::TARGET_LOCALE,
+                locale = %self.current_locale(),
+                direction = ?new_dir,
+                source = "override",
+                "text direction changed"
+            );
+        }
+    }
+
+    /// Subscribe to base locale and direction changes.
     pub fn subscribe(&self, callback: impl Fn(&Locale) + 'static) -> Subscription {
-        self.current.subscribe(callback)
+        let rc_cb = Rc::new(callback);
+        let cb1 = Rc::clone(&rc_cb);
+        let sub1 = self.current.subscribe(move |loc| cb1(loc));
+        let current = self.current.clone();
+        let cb2 = Rc::clone(&rc_cb);
+        let sub2 = self.direction_override.subscribe(move |_| {
+            let loc = current.get();
+            cb2(&loc);
+        });
+        Subscription::composite(vec![sub1, sub2])
     }
 
     /// Push a scoped locale override. Dropping the guard restores the prior locale.
@@ -84,10 +207,12 @@ impl LocaleContext {
         }
     }
 
-    /// Current version counter for the base locale.
+    /// Current version counter for the base locale and direction.
     #[must_use]
     pub fn version(&self) -> u64 {
-        self.current.version()
+        self.current
+            .version()
+            .saturating_add(self.direction_override.version())
     }
 }
 
@@ -128,6 +253,17 @@ pub fn current_locale() -> Locale {
     LocaleContext::global().current_locale()
 }
 
+/// Convenience: get the global text direction.
+#[must_use]
+pub fn direction() -> TextDirection {
+    LocaleContext::global().direction()
+}
+
+/// Convenience: set the global text direction override.
+pub fn set_direction(direction: Option<TextDirection>) {
+    LocaleContext::global().set_direction(direction);
+}
+
 fn normalize_locale(mut locale: Locale) -> Locale {
     normalize_locale_raw(&locale).unwrap_or_else(|| {
         locale.clear();
@@ -166,6 +302,7 @@ fn normalize_locale_raw(raw: &str) -> Option<Locale> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::cell::Cell;
 
     // ---------------------------------------------------------------------
     // Invariants (Alien Artifact)
@@ -319,5 +456,68 @@ mod tests {
             // but the override stack expects last-pushed-first-dropped).
             while guards.pop().is_some() {}
         }
+    }
+
+    #[test]
+    fn text_direction_for_locale_inferences() {
+        assert_eq!(TextDirection::for_locale("ar-EG"), TextDirection::Rtl);
+        assert_eq!(TextDirection::for_locale("en-US"), TextDirection::Ltr);
+        assert_eq!(TextDirection::for_locale("ku-Arab"), TextDirection::Rtl);
+        assert_eq!(TextDirection::for_locale("he"), TextDirection::Rtl);
+        assert_eq!(TextDirection::for_locale("fa_IR"), TextDirection::Rtl);
+        assert_eq!(TextDirection::for_locale("ur"), TextDirection::Rtl);
+        assert_eq!(TextDirection::for_locale("de-DE"), TextDirection::Ltr);
+        assert_eq!(TextDirection::for_locale(""), TextDirection::Ltr);
+    }
+
+    #[test]
+    fn locale_context_direction_override_and_version() {
+        let ctx = LocaleContext::new("en");
+        assert_eq!(ctx.direction(), TextDirection::Ltr);
+        let v0 = ctx.version();
+
+        ctx.set_direction(Some(TextDirection::Rtl));
+        assert_eq!(ctx.direction(), TextDirection::Rtl);
+        assert!(ctx.version() > v0);
+        let v1 = ctx.version();
+
+        ctx.set_direction(None);
+        assert_eq!(ctx.direction(), TextDirection::Ltr);
+        assert!(ctx.version() > v1);
+
+        ctx.set_locale("ar");
+        assert_eq!(ctx.direction(), TextDirection::Rtl);
+    }
+
+    #[test]
+    fn subscribe_fires_on_direction_change() {
+        let ctx = LocaleContext::new("en");
+        let fired = Rc::new(Cell::new(false));
+        let fired_clone = Rc::clone(&fired);
+        let _sub = ctx.subscribe(move |_| {
+            fired_clone.set(true);
+        });
+        ctx.set_direction(Some(TextDirection::Rtl));
+        assert!(fired.get());
+    }
+
+    #[test]
+    fn render_text_direction_conversion() {
+        assert_eq!(
+            ftui_render::TextDirection::from(TextDirection::Ltr),
+            ftui_render::TextDirection::Ltr
+        );
+        assert_eq!(
+            ftui_render::TextDirection::from(TextDirection::Rtl),
+            ftui_render::TextDirection::Rtl
+        );
+        assert_eq!(
+            TextDirection::from(ftui_render::TextDirection::Ltr),
+            TextDirection::Ltr
+        );
+        assert_eq!(
+            TextDirection::from(ftui_render::TextDirection::Rtl),
+            TextDirection::Rtl
+        );
     }
 }

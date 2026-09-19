@@ -378,11 +378,13 @@ See `docs/telemetry.md` for integration patterns and trace‑parent attachment.
 
 | Crate | Feature | What It Enables |
 |------|---------|------------------|
+| `ftui` | `bidi` | Bidirectional text reordering via `unicode-bidi` (default) |
 | `ftui-core` | `tracing` | Structured spans for terminal lifecycle |
 | `ftui-core` | `tracing-json` | JSON output via tracing-subscriber |
 | `ftui-render` | `tracing` | Performance spans for diff/presenter |
 | `ftui-runtime` | `tracing` | Runtime loop instrumentation |
 | `ftui-runtime` | `telemetry` | OpenTelemetry export (OTLP) |
+| `ftui-widgets` | `bidi` | BiDi reordering and RTL cursor support for widgets |
 
 Enable features per-crate in your `Cargo.toml` as needed.
 
@@ -730,7 +732,7 @@ Prove rendering determinism across runtime migrations by running the same model 
 use ftui_harness::{ShadowRun, ShadowRunConfig, ShadowVerdict};
 
 let config = ShadowRunConfig::new("migration_test", "tick_counter", 42).viewport(80, 24);
-let result = ShadowRun::compare(config, || MyModel::new(), |session| {
+let result = ShadowRun::compare(config, MyModel::new, |session| {
     session.init();
     session.tick();
     session.capture_frame();
@@ -743,15 +745,18 @@ assert_eq!(result.verdict, ShadowVerdict::Match);
 Combine shadow evidence + benchmark results into a single go/no‑go release decision:
 
 ```rust
-use ftui_harness::{RolloutScorecard, RolloutScorecardConfig, RolloutVerdict, RolloutEvidenceBundle};
+use ftui_harness::{
+    RolloutEvidenceBundle, RolloutScorecard, RolloutScorecardConfig, RolloutVerdict,
+};
 
-let mut scorecard = RolloutScorecard::new(
-    RolloutScorecardConfig::default().min_shadow_scenarios(3)
-);
-scorecard.add_shadow_result(shadow_result);
+let mut scorecard =
+    RolloutScorecard::new(RolloutScorecardConfig::default().min_shadow_scenarios(3));
+for shadow_result in shadow_results {
+    scorecard.add_shadow_result(shadow_result);
+}
 assert_eq!(scorecard.evaluate(), RolloutVerdict::Go);
 
-// Machine‑readable JSON evidence for CI gates
+// Machine-readable JSON evidence for CI gates
 let bundle = RolloutEvidenceBundle {
     scorecard: scorecard.summary(),
     queue_telemetry: Some(ftui_runtime::effect_system::queue_telemetry()),
@@ -759,7 +764,7 @@ let bundle = RolloutEvidenceBundle {
     resolved_lane: "structured".to_string(),
     rollout_policy: "shadow".to_string(),
 };
-println!("{}", bundle.to_json());  // Self‑contained release decision artifact
+println!("{}", bundle.to_json()); // Self-contained release decision artifact
 ```
 
 ### Effect Queue Telemetry & Backpressure
@@ -1486,7 +1491,9 @@ Rewrite Rules (equality saturation):
 
 **How it works:** rather than applying rewrites greedily (which can miss global optima), the e-graph compactly represents *all* equivalent forms simultaneously. After saturation, the cheapest expression is extracted using a cost model that penalizes deep nesting and prefers constant propagation.
 
-**Result:** complex constraint layouts (nested flex + grid + min/max) are optimized to simpler equivalent forms before the solver runs, reducing both computation and allocation.
+**Where it runs: nowhere on the layout path, by measurement.** `ftui_layout::egraph::solve_layout` is a complete, tested alternative solver, but `Flex`/`Grid` do not call it and should not: benchmarked against `Flex::split` over the same constraint sets it is **4x to 19x slower** — 233 ns vs 1.99 µs for a typical three-way split, and 5.2 µs vs 99.8 µs for a pathological 200-constraint layout (`cargo bench -p ftui-layout --bench layout_bench -- layout/egraph`, numbers in [docs/perf/egraph_vs_flex_2026-09-18.md](docs/perf/egraph_vs_flex_2026-09-18.md)).
+
+Equality saturation buys a globally optimal expression, and for this problem that optimum is not worth its price: the constraint counts a terminal layout produces are small enough that the direct solver wins outright. The module stays because the saturation engine is a sound piece of work and the comparison is worth keeping honest, not because it is on a path to being switched on.
 
 ---
 
@@ -2515,7 +2522,8 @@ fn view(&self, frame: &mut Frame) {
 
 ```rust
 let link_id = frame.register_link("https://example.com");
-let cell = Cell::from_char('x').with_link(link_id);
+let mut cell = Cell::from_char('x');
+cell.attrs = cell.attrs.with_link(link_id);
 // Emits OSC 8 hyperlink sequences for supporting terminals
 ```
 
@@ -2523,9 +2531,10 @@ let cell = Cell::from_char('x').with_link(link_id);
 
 ```rust
 // Declarative focus graph: FocusManager owns a FocusGraph of nodes and nav edges
-let input1 = focus.graph_mut().insert(FocusNode::new(1, input1_area));
-let input2 = focus.graph_mut().insert(FocusNode::new(2, input2_area));
-focus.graph_mut().connect(input1, NavDirection::Next, input2); // Tab order
+let graph = focus.graph_mut();
+let input1 = graph.insert(FocusNode::new(1, input1_area));
+let input2 = graph.insert(FocusNode::new(2, input2_area));
+graph.connect(input1, NavDirection::Next, input2); // Tab order
 
 // Navigation
 focus.focus_next(); // Tab

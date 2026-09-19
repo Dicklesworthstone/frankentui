@@ -79,8 +79,85 @@ fn uncached_sum(text: &str) -> usize {
     text.graphemes(true).map(grapheme_width_uncached).sum()
 }
 
+fn complex_grapheme_strategy() -> impl Strategy<Value = String> {
+    let scalar_strategy = any::<char>()
+        .prop_filter("assigned unicode scalars", |&c| {
+            let cp = c as u32;
+            !(0xFDD0..=0xFDEF).contains(&cp) && (cp & 0xFFFE) != 0xFFFE
+        })
+        .prop_map(|c| c.to_string());
+
+    let emoji_curated = prop_oneof![
+        Just("👋🏽".to_string()),
+        Just("👨‍👩‍👧‍👦".to_string()),
+        Just("🇯🇵".to_string()),
+        Just("🏳️‍🌈".to_string()),
+        Just("☂\u{FE0F}".to_string()),
+        Just("❤️".to_string()),
+        Just("🏃🏿‍♂️".to_string()),
+        Just("👩🏻‍💻".to_string()),
+        Just("✅".to_string()),
+        Just("⚠️".to_string()),
+    ];
+
+    let cjk_strategy =
+        (0x4e00u32..=0x9fffu32).prop_map(|cp| char::from_u32(cp).unwrap().to_string());
+
+    let combining_strategy =
+        (0x0300u32..=0x036fu32).prop_map(|cp| format!("e{}", char::from_u32(cp).unwrap()));
+
+    let thai_strategy =
+        (0x0e00u32..=0x0e7fu32).prop_map(|cp| char::from_u32(cp).unwrap().to_string());
+
+    let devanagari_strategy =
+        (0x0900u32..=0x097fu32).prop_map(|cp| char::from_u32(cp).unwrap().to_string());
+
+    let chunk = prop_oneof![
+        3 => scalar_strategy,
+        2 => emoji_curated,
+        2 => cjk_strategy,
+        2 => combining_strategy,
+        1 => thai_strategy,
+        1 => devanagari_strategy,
+    ];
+
+    prop::collection::vec(chunk, 1..=8).prop_map(|chunks| chunks.concat())
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(512))]
+    #![proptest_config(ProptestConfig::with_cases(2048))]
+
+    #[test]
+    fn proptest_width_cache_transparency(text in complex_grapheme_strategy()) {
+        for grapheme in text.graphemes(true) {
+            let expected = grapheme_width_uncached(grapheme);
+            prop_assert_eq!(grapheme_width(grapheme), expected, "first lookup of {:?}", grapheme);
+            prop_assert_eq!(grapheme_width(grapheme), expected, "repeat lookup of {:?}", grapheme);
+        }
+    }
+
+    #[test]
+    fn proptest_display_width_matches_grapheme_sum_with_cache(text in complex_grapheme_strategy()) {
+        let expected: usize = text.graphemes(true).map(grapheme_width_uncached).sum();
+        prop_assert_eq!(display_width(&text), expected);
+        let repeat_sum: usize = text.graphemes(true).map(grapheme_width).sum();
+        prop_assert_eq!(repeat_sum, expected);
+    }
+
+    #[test]
+    fn proptest_cache_never_exceeds_capacity(text in complex_grapheme_strategy()) {
+        for grapheme in text.graphemes(true) {
+            let _ = grapheme_width(grapheme);
+        }
+        if let Some(stats) = ftui_core::text_width::width_cache_stats() {
+            prop_assert!(
+                stats.small_size + stats.main_size <= stats.capacity,
+                "len {} > capacity {}",
+                stats.small_size + stats.main_size,
+                stats.capacity
+            );
+        }
+    }
 
     #[test]
     fn cached_graphemes_equal_uncached_on_first_and_repeat_lookup(text in "\\PC{0,40}") {

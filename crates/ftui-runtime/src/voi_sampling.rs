@@ -243,7 +243,7 @@ impl VoiDecision {
     #[must_use]
     pub fn to_jsonl(&self) -> String {
         format!(
-            r#"{{"event":"voi_decision","idx":{},"should_sample":{},"forced":{},"blocked":{},"voi_gain":{:.6},"score":{:.6},"cost":{:.6},"log_bayes_factor":{:.4},"posterior_mean":{:.6},"posterior_variance":{:.6},"e_value":{:.6},"e_threshold":{:.6},"boundary_score":{:.6},"events_since_sample":{},"time_since_sample_ms":{:.3},"reason":"{}"}}"#,
+            r#"{{"schema_version":"ftui-evidence-v1","event":"voi_decision","idx":{},"should_sample":{},"forced":{},"blocked":{},"voi_gain":{:.6},"score":{:.6},"cost":{:.6},"log_bayes_factor":{:.4},"posterior_mean":{:.6},"posterior_variance":{:.6},"e_value":{:.6},"e_threshold":{:.6},"boundary_score":{:.6},"events_since_sample":{},"time_since_sample_ms":{:.3},"reason":"{}"}}"#,
             self.event_idx,
             self.should_sample,
             self.forced_by_interval,
@@ -283,7 +283,7 @@ impl VoiObservation {
     #[must_use]
     pub fn to_jsonl(&self) -> String {
         format!(
-            r#"{{"event":"voi_observe","idx":{},"sample_idx":{},"violated":{},"posterior_mean":{:.6},"posterior_variance":{:.6},"alpha":{:.3},"beta":{:.3},"e_value":{:.6},"e_threshold":{:.6}}}"#,
+            r#"{{"schema_version":"ftui-evidence-v1","event":"voi_observe","idx":{},"sample_idx":{},"violated":{},"posterior_mean":{:.6},"posterior_variance":{:.6},"alpha":{:.3},"beta":{:.3},"e_value":{:.6},"e_threshold":{:.6}}}"#,
             self.event_idx,
             self.sample_idx,
             self.violated,
@@ -1178,6 +1178,60 @@ mod tests {
                 now += Duration::from_millis(1);
                 prop_assert!(sampler.e_value >= E_MIN - 1e-12);
             }
+        }
+
+        #[test]
+        fn prop_voi_decision_to_jsonl_valid_json(
+            event_idx in any::<u64>(),
+            should_sample in any::<bool>(),
+            forced in any::<bool>(),
+            blocked in any::<bool>(),
+            voi_gain in -100.0f64..100.0f64,
+            score in -100.0f64..100.0f64,
+            cost in 0.0f64..100.0f64,
+            log_bayes_factor in -50.0f64..50.0f64,
+            posterior_mean in 0.0f64..1.0f64,
+            posterior_variance in 0.0f64..1.0f64,
+            e_value in 0.0f64..100.0f64,
+            e_threshold in 1.0f64..100.0f64,
+            boundary_score in 0.0f64..1.0f64,
+            events_since_sample in any::<u64>(),
+            time_since_sample_ms in 0.0f64..100_000.0f64,
+            reason_idx in 0..5usize,
+        ) {
+            let reasons = [
+                "forced_max_interval",
+                "blocked_min_interval",
+                "score_exceeds_cost",
+                "e_value_threshold",
+                "test_reason",
+            ];
+            let reason = reasons[reason_idx];
+            let decision = VoiDecision {
+                event_idx,
+                should_sample,
+                forced_by_interval: forced,
+                blocked_by_min_interval: blocked,
+                voi_gain,
+                score,
+                cost,
+                log_bayes_factor,
+                posterior_mean,
+                posterior_variance,
+                e_value,
+                e_threshold,
+                boundary_score,
+                events_since_sample,
+                time_since_sample_ms,
+                reason,
+            };
+            let jsonl = decision.to_jsonl();
+            let parsed: serde_json::Value = serde_json::from_str(&jsonl).expect("valid json");
+            prop_assert_eq!(parsed["event"].as_str(), Some("voi_decision"));
+            prop_assert_eq!(parsed["schema_version"].as_str(), Some("ftui-evidence-v1"));
+            prop_assert_eq!(parsed["should_sample"].as_bool(), Some(should_sample));
+            prop_assert_eq!(parsed["forced"].as_bool(), Some(forced));
+            prop_assert_eq!(parsed["blocked"].as_bool(), Some(blocked));
         }
     }
 

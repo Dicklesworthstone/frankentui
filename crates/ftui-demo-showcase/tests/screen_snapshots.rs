@@ -2974,6 +2974,40 @@ fn i18n_demo_initial_80x24() {
 }
 
 #[test]
+fn i18n_demo_arabic_rtl_80x24() {
+    let mut screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
+    screen.select_locale(4); // Arabic ("ar", RTL)
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("i18n_demo_arabic_rtl_80x24", &frame.buffer);
+}
+
+#[test]
+fn i18n_demo_german_80x24() {
+    let mut screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
+    screen.select_locale(5); // German ("de", LTR)
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("i18n_demo_german_80x24", &frame.buffer);
+}
+
+#[test]
+fn i18n_demo_locale_switch_ar_to_en_80x24() {
+    let mut screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
+    screen.select_locale(4); // Arabic ("ar", RTL)
+    screen.select_locale(0); // Switch back to English ("en", LTR)
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("i18n_demo_initial_80x24", &frame.buffer);
+}
+
+#[test]
 fn i18n_demo_zero_area() {
     let screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
     let mut pool = GraphemePool::new();

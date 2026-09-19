@@ -1131,4 +1131,16 @@ mod tests {
         let left = seg.move_left(start_pos);
         assert_eq!(left, 3, "move_left from RTL end should stay at end");
     }
+
+    #[test]
+    fn bidi_segment_visual_logical_roundtrip() {
+        proptest::proptest!(|(s in "\\PC{1,30}")| {
+            let seg = BidiSegment::new(&s, None);
+            for i in 0..seg.len() {
+                let v = seg.visual_pos(i);
+                let l = seg.logical_pos(v);
+                proptest::prop_assert_eq!(l, i, "roundtrip failed for logical {} -> visual {} -> logical {}", i, v, l);
+            }
+        });
+    }
 }

@@ -51,6 +51,7 @@ pub mod terminal_model;
 // Terminal color fidelity is owned by ftui-core and re-exported here so the
 // downstream style layer can share the exact contract without a dependency
 // cycle back from the render kernel.
+pub use frame::TextDirection;
 pub use ftui_core::terminal_capabilities::ColorDepth;
 
 // Re-export text width helpers from ftui-core (single source of truth).

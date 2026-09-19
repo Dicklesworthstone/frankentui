@@ -142,6 +142,24 @@ metrics:
     max_ratio: 1.50
     safe_mode_trigger: false
 
+  diff_sparse_200x60_p99_ns:
+    metric_type: latency
+    max_value: 84.0
+    max_ratio: 1.10
+    safe_mode_trigger: false
+
+  text_width_non_ascii_p99_ns:
+    metric_type: latency
+    max_value: 0.030
+    max_ratio: 1.15
+    safe_mode_trigger: false
+
+  text_width_non_ascii_uncached_p99_ns:
+    metric_type: latency
+    max_value: 0.130
+    max_ratio: 1.15
+    safe_mode_trigger: false
+
   # ===========================================================================
   # Data Plane: Memory
   # ===========================================================================

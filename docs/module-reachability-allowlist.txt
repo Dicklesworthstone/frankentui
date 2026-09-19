@@ -61,6 +61,10 @@ ftui-widgets::receipt_verifier_panel  # bd-g00-root-epic-ewths.11.3
 # Succinct data structures with no consumer. These are orphan-module
 # candidates rather than unwired widgets, so they sit with the G07 set.
 ftui-widgets::elias_fano  # bd-g00-root-epic-ewths.11.5
+# Duplicate, not merely unused: virtualized.rs carries its own
+# VariableHeightsFenwick (:741) and never touches crate::fenwick::FenwickTree,
+# so this is a second Fenwick implementation with no consumer. Merge or remove
+# rather than wire.
 ftui-widgets::fenwick  # bd-g00-root-epic-ewths.11.5
 ftui-widgets::louds  # bd-g00-root-epic-ewths.11.5
 
@@ -69,11 +73,18 @@ ftui-widgets::louds  # bd-g00-root-epic-ewths.11.5
 # The owner granted deletion permission for its enumerated set on 2026-09-18;
 # these are the ones this gate found, which is not the same list, so they need
 # their own pass before anything is removed.
-ftui::advanced  # bd-g00-root-epic-ewths.11.5
 ftui-core::event_coalescer  # bd-g00-root-epic-ewths.11.5
 ftui-core::generic_diff  # bd-g00-root-epic-ewths.11.5
+# Superseded, not merely unused: this is a second Esc-Esc interpreter (708
+# lines, bd-2vne.2). The one that actually runs is keybinding::SequenceDetector,
+# which KeyDispatcher owns (keybinding.rs:775), constructs (:782) and feeds Esc
+# through (:835) - so the README's "Esc Esc goes through the SequenceDetector
+# window" is true, just not via this module. Merge or remove rather than wire.
 ftui-core::key_sequence  # bd-g00-root-epic-ewths.11.5
 ftui-core::mode_typestate  # bd-g00-root-epic-ewths.11.5
+# Unreachable by decision, not neglect: benchmarked 2026-09-18 at 4-19x slower
+# than Flex::split on the same constraints, so wiring it in would cost every
+# layout pass. Evidence and reasoning in docs/perf/egraph_vs_flex_2026-09-18.md.
 ftui-layout::egraph  # bd-g00-root-epic-ewths.11.5
 ftui-layout::incremental  # bd-g00-root-epic-ewths.11.5
 ftui-layout::veb_tree  # bd-g00-root-epic-ewths.11.5
