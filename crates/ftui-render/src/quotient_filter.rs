@@ -12,15 +12,33 @@
 //! - `q`-bit *quotient* (slot index): determines the canonical slot
 //! - `r`-bit *remainder*: stored in the slot
 //!
-//! Collisions are resolved by linear probing within a cluster. Three
-//! metadata bits per slot track the structure of runs and clusters.
+//! Collisions are resolved by linear probing within a cluster.
 //!
 //! # Complexity
 //!
 //! - Insert: O(1) amortized
 //! - Lookup: O(1) amortized
 //! - Delete: O(1) amortized
-//! - Space: `(r + 3) * 2^q` bits ≈ 10% overhead above information-theoretic minimum
+//!
+//! # Space: this implementation is not compact
+//!
+//! A canonical quotient filter is chosen *for* its space: `(r + 3) * 2^q` bits,
+//! around 10% above the information-theoretic minimum, using three metadata
+//! bits per slot to encode runs and clusters.
+//!
+//! **This implementation does not do that.** Slots are
+//! `Vec<Option<(u32, u64)>>` — a full quotient and remainder per slot, roughly
+//! 24 bytes, or about **17x** the canonical `r + 3` bits at `r = 8`. The
+//! Implementation Note below has always said the 3-bit metadata scheme is
+//! avoided; what was missing is that avoiding it gives up the space win that is
+//! the whole reason to prefer a quotient filter over a Bloom filter you cannot
+//! delete from.
+//!
+//! An earlier version of this section documented the canonical layout and the
+//! `(r + 3) * 2^q` bound as though they described this code. They did not.
+//! Treat what is here as a correct, tested approximate-membership structure
+//! with deletion, and size it from the figure above rather than from the
+//! literature. See `bd-gqit2`.
 //!
 //! # Use Case
 //!
