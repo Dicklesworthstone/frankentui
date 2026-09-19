@@ -669,3 +669,26 @@ fn playback_state_machine_regression() {
         "All state transitions verified",
     );
 }
+
+/// Invariant: Scrubbing to an index renders that frame.
+#[test]
+fn scrub_to_index_renders_that_frame() {
+    let start = Instant::now();
+    let mut player = SnapshotPlayer::new();
+    assert!(player.frame_count() >= 10);
+    player.set_current_frame(5);
+    assert_eq!(player.current_frame(), 5);
+    let expected = player.time_travel.get(5);
+    assert!(expected.is_some());
+    assert_eq!(player.current_buffer(), expected);
+
+    log_case(
+        "scrub_to_index_renders_that_frame",
+        "pass",
+        player.frame_count(),
+        player.current_frame(),
+        player.checksum_chain(),
+        start.elapsed().as_millis(),
+        "Scrubber rendered frame matches time_travel.get(5)",
+    );
+}

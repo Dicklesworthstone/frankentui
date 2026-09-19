@@ -190,7 +190,6 @@ impl TeardownPlan {
     ) -> io::Result<()> {
         #[cfg(feature = "tracing")]
         tracing::info!(
-            target: "ftui.core.session",
             backend = _backend,
             plan = ?self,
             "teardown start"
@@ -234,11 +233,7 @@ impl TeardownPlan {
         }
 
         #[cfg(feature = "tracing")]
-        tracing::info!(
-            target: "ftui.core.session",
-            backend = _backend,
-            "teardown end"
-        );
+        tracing::info!(backend = _backend, "teardown end");
 
         Ok(())
     }

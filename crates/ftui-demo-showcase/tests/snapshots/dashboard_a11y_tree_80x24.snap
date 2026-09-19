@@ -1,0 +1,56 @@
+Group "Plasma" [] @0,1 20x13
+Group "Charts · Pulse" [] @20,1 32x13
+Label "g:cycle · sparklines + mini bars · CPU  46% · MEM  41% · EPS 1150" [] @21,2 30x1
+Group "Code · Rust (1/28)" [] @52,1 28x8
+Label "// runtime.rs" [] @53,2 13x1
+Label "use" [] @53,3 3x1
+Label " " [] @56,3 1x1
+Label "std" [] @57,3 3x1
+Label ":" [] @60,3 1x1
+Label ":" [] @61,3 1x1
+Label "{" [] @62,3 1x1
+Label "collections" [] @63,3 11x1
+Label ":" [] @74,3 1x1
+Label ":" [] @75,3 1x1
+Label "HashMap" [] @76,3 3x1
+Label "use" [] @53,5 3x1
+Label " " [] @56,5 1x1
+Label "ftui_core" [] @57,5 9x1
+Label ":" [] @66,5 1x1
+Label ":" [] @67,5 1x1
+Label "event" [] @68,5 5x1
+Label ":" [] @73,5 1x1
+Label ":" [] @74,5 1x1
+Label "Event" [] @75,5 4x1
+Label "use" [] @53,6 3x1
+Label " " [] @56,6 1x1
+Label "ftui_render" [] @57,6 11x1
+Label ":" [] @68,6 1x1
+Label ":" [] @69,6 1x1
+Label "cell" [] @70,6 4x1
+Label ":" [] @74,6 1x1
+Label ":" [] @75,6 1x1
+Label "Cell" [] @76,6 3x1
+Label "use" [] @53,7 3x1
+Label " " [] @56,7 1x1
+Label "ftui_render" [] @57,7 11x1
+Label ":" [] @68,7 1x1
+Label ":" [] @69,7 1x1
+Label "frame" [] @70,7 5x1
+Label ":" [] @75,7 1x1
+Label ":" [] @76,7 1x1
+Label "Frame" [] @77,7 2x1
+Group "Info" [] @52,9 28x5
+Label "Status:NOMINAL FPS:0 EPS:1150  80x24 Cyberpunk Aurora" [] @53,10 26x3
+Group "Text FX · 2-Up (1/28)" [] @0,14 20x9
+Label "Sample 1 of 3 · 2-" [] @1,15 18x1
+Label "1 · None · S1" [] @1,16 18x1
+Label "2 · FadeIn · S2" [] @1,18 18x1
+Group "Activity" [] @20,14 32x9
+Label "SEV TIME  COMP  MESSAGE" [] @21,15 30x1
+Label "00:02" [] @28,16 6x1
+Label "● CPU" [] @35,16 0x1
+Group "Markdown · Streaming… 0%" [] @52,14 27x9
+Label "▌" [] @53,15 25x7
+Label "│ │ │ │ ⋮ │ │ │ │" [] @19,14 1x9
+Label "│ │ │ │ ⋮ │ │ │ │" [] @51,14 1x9

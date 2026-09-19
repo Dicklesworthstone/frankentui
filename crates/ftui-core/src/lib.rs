@@ -297,9 +297,33 @@ pub mod text_width {
     }
 
     /// Fast-path width for pure printable ASCII.
+    ///
+    /// `None` means the run needs the real width tables, which covers both
+    /// non-ASCII bytes and ASCII control characters.
+    ///
+    /// With the `simd` feature this delegates to `ftui_simd::ascii_width`,
+    /// which is the same predicate over 64-byte vector chunks: measured at
+    /// 21x the scalar loop over a kilobyte and 5x over 64 bytes
+    /// (`docs/perf/simd_kernels_2026-09-18.md`). Both paths return identical
+    /// answers for identical input, which `ascii_width_matches_scalar` pins.
     #[inline]
     #[must_use]
     pub fn ascii_width(text: &str) -> Option<usize> {
+        #[cfg(feature = "simd")]
+        {
+            ftui_simd::ascii_width(text.as_bytes())
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            ascii_width_scalar(text)
+        }
+    }
+
+    /// Scalar printable-ASCII width, and the reference the `simd` path is
+    /// tested against.
+    #[inline]
+    #[must_use]
+    pub fn ascii_width_scalar(text: &str) -> Option<usize> {
         if text.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
             Some(text.len())
         } else {
@@ -346,6 +370,9 @@ pub mod text_width {
         width: usize,
     }
 
+    /// Tracing target for width cache operations and misses.
+    pub const TARGET_WIDTH_CACHE: &str = "ftui.text.width_cache";
+
     struct GraphemeWidthCache {
         entries: crate::s3_fifo::S3Fifo<u64, CachedGraphemeWidth>,
         hits: u64,
@@ -370,6 +397,8 @@ pub mod text_width {
             }
 
             self.misses += 1;
+            #[cfg(feature = "tracing")]
+            tracing::trace!(target: TARGET_WIDTH_CACHE, grapheme, key, "width cache miss");
             let width = grapheme_width_uncached(grapheme);
             self.entries.insert(
                 key,
@@ -1033,6 +1062,52 @@ pub mod text_width {
             // Non-printable ASCII control chars in non-pure-ASCII path
             // Tab/newline/CR get width 1 via ascii_display_width
             assert_eq!(display_width("a\tb"), 3);
+        }
+
+        // ── ascii_width ─────────────────────────────────────────────
+
+        /// Whichever path the `simd` feature selected must agree with the
+        /// scalar reference, including on the boundaries either side of
+        /// printable ASCII and past a full 64-byte vector chunk.
+        #[test]
+        fn ascii_width_matches_scalar() {
+            let cases: &[&str] = &[
+                "",
+                " ",
+                "~",
+                "hello world",
+                "\u{1f}",
+                "\u{7f}",
+                "\t",
+                "caf\u{e9}",
+                "\u{65e5}\u{672c}",
+            ];
+            for case in cases {
+                assert_eq!(ascii_width(case), ascii_width_scalar(case), "{case:?}");
+            }
+
+            // Lengths around one chunk, with a rejected byte at each end and
+            // in the middle, so a chunked implementation cannot pass by
+            // looking only at the head.
+            for len in [63_usize, 64, 65, 129, 300] {
+                let clean = "a".repeat(len);
+                assert_eq!(ascii_width(&clean), Some(len), "clean len {len}");
+                assert_eq!(ascii_width(&clean), ascii_width_scalar(&clean));
+
+                for idx in [0, len / 2, len - 1] {
+                    for bad in ['\u{0}', '\u{1f}', '\u{7f}', '\u{e9}'] {
+                        let mut probe: Vec<char> = clean.chars().collect();
+                        probe[idx] = bad;
+                        let probe: String = probe.into_iter().collect();
+                        assert_eq!(
+                            ascii_width(&probe),
+                            ascii_width_scalar(&probe),
+                            "len {len}, idx {idx}, bad {bad:?}"
+                        );
+                        assert_eq!(ascii_width(&probe), None);
+                    }
+                }
+            }
         }
 
         // ── grapheme_width ──────────────────────────────────────────

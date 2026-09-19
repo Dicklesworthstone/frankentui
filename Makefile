@@ -3,7 +3,7 @@
 # This Makefile provides convenient targets for building and developing FrankenTUI.
 # The reference libraries are automatically synchronized before builds.
 
-.PHONY: all build check test clean sync-refs setup help clippy fmt-check
+.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability
 
 # Default target
 all: build
@@ -37,6 +37,13 @@ clippy: sync-refs
 fmt-check:
 	@if [ -f Cargo.toml ]; then cargo fmt --check; else echo "Note: Cargo.toml not yet created"; fi
 
+# Fail when a pub module is reachable from nothing in production.
+# Pure stdlib Python and about two seconds, so it belongs in every DSR
+# verification run alongside clippy. GitHub Actions is not used in this
+# project (AGENTS.md, owner override 2026-09-06).
+reachability:
+	@python3 scripts/check_module_reachability.py --quiet --json target/module-reachability.json
+
 # Clean build artifacts
 clean:
 	@if [ -f Cargo.toml ]; then cargo clean; fi
@@ -52,5 +59,6 @@ help:
 	@echo "  make test       - Run tests"
 	@echo "  make clippy     - Run clippy lints"
 	@echo "  make fmt-check  - Check formatting"
+	@echo "  make reachability - Fail on pub modules nothing references"
 	@echo "  make clean      - Clean build artifacts"
 	@echo "  make help       - Show this help"

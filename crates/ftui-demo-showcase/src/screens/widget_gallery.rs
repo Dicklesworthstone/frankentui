@@ -9,6 +9,11 @@ use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_runtime::Cmd;
+use ftui_runtime::transparency::{
+    BayesianDetails, Disclosure, DisclosureEvidence, DisclosureLevel, EvidenceDirection,
+    TrafficLight,
+};
+use ftui_runtime::unified_evidence::DecisionDomain;
 use ftui_style::{Style, StyleFlags};
 use ftui_text::WrapMode;
 use ftui_widgets::Badge;
@@ -16,10 +21,16 @@ use ftui_widgets::StatefulWidget;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderSet, BorderType, Borders};
+use ftui_widgets::cached::{CachedWidget, CachedWidgetState};
 use ftui_widgets::columns::{Column, Columns};
 use ftui_widgets::command_palette::{ActionItem, CommandPalette};
 use ftui_widgets::constraint_overlay::ConstraintOverlay;
+use ftui_widgets::decision_card::DecisionCard;
+use ftui_widgets::drift_visualization::{
+    DomainSnapshot, DriftSnapshot, DriftTimeline, DriftVisualization,
+};
 use ftui_widgets::emoji::Emoji;
+use ftui_widgets::error_boundary::{ErrorBoundary, ErrorBoundaryState};
 use ftui_widgets::file_picker::{FilePicker, FilePickerState};
 use ftui_widgets::group::Group;
 use ftui_widgets::help::{Help as HelpWidget, HelpMode};
@@ -62,7 +73,7 @@ use crate::theme;
 use crate::theme::{BadgeSpec, PriorityBadge, StatusBadge};
 
 /// Number of gallery sections.
-const SECTION_COUNT: usize = 8;
+const SECTION_COUNT: usize = 9;
 
 /// Section names.
 const SECTION_NAMES: [&str; SECTION_COUNT] = [
@@ -74,9 +85,25 @@ const SECTION_NAMES: [&str; SECTION_COUNT] = [
     "F: Layout",
     "G: Utility",
     "H: Advanced",
+    "I: Diagnostics",
 ];
 
 const VIRTUALIZED_SCROLLBAR_HIT_ID: HitId = HitId::new(0x1777);
+
+#[derive(Debug, Clone)]
+struct FlakyParagraph {
+    text: String,
+    fail: bool,
+}
+
+impl Widget for FlakyParagraph {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        if self.fail {
+            panic!("ErrorBoundary fallback");
+        }
+        Paragraph::new(self.text.as_str()).render(area, frame);
+    }
+}
 
 #[derive(Debug, Clone)]
 struct GalleryVirtualItem {
@@ -111,6 +138,12 @@ pub struct WidgetGallery {
     layout_virtualized: Cell<Rect>,
     pane_workspace: LayoutLab,
     pane_workspace_visible: Cell<bool>,
+    diag_tick: u64,
+    cached_state: RefCell<CachedWidgetState>,
+    cached_hits: Cell<u32>,
+    cached_misses: Cell<u32>,
+    error_boundary_state: RefCell<ErrorBoundaryState>,
+    drift_samples: [f32; 32],
 }
 
 impl Default for WidgetGallery {
@@ -195,6 +228,22 @@ impl WidgetGallery {
             layout_virtualized: Cell::new(Rect::default()),
             pane_workspace: LayoutLab::new(),
             pane_workspace_visible: Cell::new(false),
+            diag_tick: 1,
+            cached_state: RefCell::new(CachedWidgetState::new()),
+            cached_hits: Cell::new(0),
+            cached_misses: Cell::new(0),
+            error_boundary_state: RefCell::new(ErrorBoundaryState::Healthy),
+            drift_samples: {
+                let mut samples = [0.0f32; 32];
+                for (i, sample) in samples.iter_mut().enumerate() {
+                    if i < 20 {
+                        *sample = 0.85 + 0.05 * ((i as f32) * 0.5).sin();
+                    } else {
+                        *sample = 0.25 + 0.05 * ((i as f32) * 0.5).sin();
+                    }
+                }
+                samples
+            },
         }
     }
 }
@@ -328,6 +377,7 @@ impl Screen for WidgetGallery {
 
     fn tick(&mut self, tick_count: u64) {
         self.tick_count = tick_count;
+        self.diag_tick = tick_count;
         self.spinner_state.tick();
     }
 
@@ -433,6 +483,7 @@ impl WidgetGallery {
             5 => self.render_layout_widgets(frame, area),
             6 => self.render_utility_widgets(frame, area),
             7 => self.render_advanced_widgets(frame, area),
+            8 => self.render_diagnostics(frame, area),
             _ => {}
         }
     }
@@ -2123,6 +2174,153 @@ impl WidgetGallery {
             Widget::render(&help, help_cols[1], frame);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Section I: Diagnostics
+    // -----------------------------------------------------------------------
+    fn render_diagnostics(&self, frame: &mut Frame, area: Rect) {
+        tracing::debug!(
+            target: crate::app::TARGET_WIDGET_GALLERY,
+            section = 8,
+            tick = self.diag_tick,
+            cache_hits = self.cached_hits.get(),
+            "render_diagnostics"
+        );
+
+        let vertical_chunks = Flex::vertical()
+            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+            .split(area);
+
+        if vertical_chunks.len() < 2 {
+            return;
+        }
+
+        let top_chunks = Flex::horizontal()
+            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+            .split(vertical_chunks[0]);
+
+        let bottom_chunks = Flex::horizontal()
+            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+            .split(vertical_chunks[1]);
+
+        if top_chunks.len() < 2 || bottom_chunks.len() < 2 {
+            return;
+        }
+
+        // 1. Top-Left: DecisionCard
+        let disclosure = Disclosure {
+            domain: DecisionDomain::DiffStrategy,
+            level: DisclosureLevel::FullBayesian,
+            signal: TrafficLight::Green,
+            action_label: "Diff strategy".to_string(),
+            explanation: Some(
+                "Diff strategy: chose 'hybrid_diff' with 0.82 posterior.".to_string(),
+            ),
+            evidence_terms: Some(vec![
+                DisclosureEvidence {
+                    label: "change_rate",
+                    bayes_factor: 3.5,
+                    direction: EvidenceDirection::Supporting,
+                },
+                DisclosureEvidence {
+                    label: "frame_cost",
+                    bayes_factor: 0.8,
+                    direction: EvidenceDirection::Opposing,
+                },
+                DisclosureEvidence {
+                    label: "stability",
+                    bayes_factor: 1.0,
+                    direction: EvidenceDirection::Neutral,
+                },
+            ]),
+            bayesian_details: Some(BayesianDetails {
+                log_posterior: 0.82,
+                confidence_interval: (0.70, 0.95),
+                expected_loss: 0.10,
+                next_best_loss: 0.50,
+                loss_avoided: 0.40,
+            }),
+        };
+        let decision_card = DecisionCard::new(&disclosure).border_type(BorderType::Rounded);
+        decision_card.render(top_chunks[0], frame);
+
+        // 2. Top-Right: DriftVisualization
+        let mut timeline = DriftTimeline::new(32);
+        for (i, &sample) in self.drift_samples.iter().enumerate() {
+            let in_fallback = i >= 20;
+            let signal = if in_fallback {
+                TrafficLight::Red
+            } else if sample < 0.7 {
+                TrafficLight::Yellow
+            } else {
+                TrafficLight::Green
+            };
+            timeline.push(DriftSnapshot {
+                domains: vec![DomainSnapshot {
+                    domain: DecisionDomain::DiffStrategy,
+                    confidence: sample as f64,
+                    signal,
+                    in_fallback,
+                    regime_label: if in_fallback { "fallback" } else { "bayesian" },
+                }],
+                frame_id: i as u64,
+            });
+        }
+        let drift_viz = DriftVisualization::new(&timeline)
+            .border_type(BorderType::Rounded)
+            .show_regime_banner(true);
+        drift_viz.render(top_chunks[1], frame);
+
+        // 3. Bottom-Left: CachedWidget
+        let key = self.diag_tick;
+        let mut cached_state = self.cached_state.borrow_mut();
+        let was_cached = cached_state.is_cached() && cached_state.last_key() == Some(key);
+        if was_cached {
+            self.cached_hits.set(self.cached_hits.get() + 1);
+        } else {
+            self.cached_misses.set(self.cached_misses.get() + 1);
+        }
+        let hits = self.cached_hits.get();
+        let misses = self.cached_misses.get();
+        let cached_title = format!(" Cached (hits={hits}, misses={misses}) ");
+        let cached_block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(&cached_title);
+        let inner_cached = cached_block.inner(bottom_chunks[0]);
+        cached_block.render(bottom_chunks[0], frame);
+
+        let cached_p = Paragraph::new(format!(
+            "Cached content at tick {key}\nKey function: diag_tick\nHits: {hits} | Misses: {misses}"
+        ));
+        let cached_widget = CachedWidget::with_key(cached_p, |_| key);
+        cached_widget.render(inner_cached, frame, &mut cached_state);
+
+        // 4. Bottom-Right: ErrorBoundary
+        let fail = self.diag_tick % 2 == 1;
+        let mut eb_state = self.error_boundary_state.borrow_mut();
+        if !fail && matches!(*eb_state, ErrorBoundaryState::Failed(_)) {
+            *eb_state = ErrorBoundaryState::Healthy;
+        }
+        let boundary = ErrorBoundary::new(
+            FlakyParagraph {
+                text: "ErrorBoundary: Healthy state rendering successfully.".to_string(),
+                fail,
+            },
+            "Paragraph",
+        );
+        let eb_block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" ErrorBoundary ");
+        let inner_eb = eb_block.inner(bottom_chunks[1]);
+        if !fail && !matches!(*eb_state, ErrorBoundaryState::Failed(_)) {
+            eb_block.render(bottom_chunks[1], frame);
+            boundary.render(inner_eb, frame, &mut eb_state);
+        } else {
+            boundary.render(bottom_chunks[1], frame, &mut eb_state);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2402,5 +2600,98 @@ mod tests {
         gallery.update(&down_track);
 
         assert_eq!(gallery.virtualized_state.borrow().scroll_offset(), 3);
+    }
+
+    #[test]
+    fn diagnostics_section_renders_four_widgets() {
+        let mut gallery = WidgetGallery::new();
+        gallery.current_section = 8;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        gallery.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let space = CellContent::from_char(' ');
+        let q1_has_content = (0..40).any(|x| {
+            (2..12).any(|y| {
+                frame
+                    .buffer
+                    .get(x, y)
+                    .is_some_and(|c| c.content != CellContent::EMPTY && c.content != space)
+            })
+        });
+        let q2_has_content = (40..80).any(|x| {
+            (2..12).any(|y| {
+                frame
+                    .buffer
+                    .get(x, y)
+                    .is_some_and(|c| c.content != CellContent::EMPTY && c.content != space)
+            })
+        });
+        let q3_has_content = (0..40).any(|x| {
+            (12..24).any(|y| {
+                frame
+                    .buffer
+                    .get(x, y)
+                    .is_some_and(|c| c.content != CellContent::EMPTY && c.content != space)
+            })
+        });
+        let q4_has_content = (40..80).any(|x| {
+            (12..24).any(|y| {
+                frame
+                    .buffer
+                    .get(x, y)
+                    .is_some_and(|c| c.content != CellContent::EMPTY && c.content != space)
+            })
+        });
+
+        assert!(
+            q1_has_content,
+            "Top-left quadrant (DecisionCard) should have content"
+        );
+        assert!(
+            q2_has_content,
+            "Top-right quadrant (DriftVisualization) should have content"
+        );
+        assert!(
+            q3_has_content,
+            "Bottom-left quadrant (CachedWidget) should have content"
+        );
+        assert!(
+            q4_has_content,
+            "Bottom-right quadrant (ErrorBoundary) should have content"
+        );
+    }
+
+    #[test]
+    fn cached_widget_hit_counter_increments() {
+        let mut gallery = WidgetGallery::new();
+        gallery.current_section = 8;
+        let mut pool = GraphemePool::new();
+
+        // First render: misses=1, hits=0
+        let mut frame1 = Frame::new(80, 24, &mut pool);
+        gallery.view(&mut frame1, Rect::new(0, 0, 80, 24));
+
+        // Second render with the same key: hits=1
+        let mut frame2 = Frame::new(80, 24, &mut pool);
+        gallery.view(&mut frame2, Rect::new(0, 0, 80, 24));
+
+        let mut text = String::new();
+        for y in 0..24 {
+            for x in 0..80 {
+                if let Some(cell) = frame2.buffer.get(x, y) {
+                    if let Some(ch) = cell.content.as_char() {
+                        text.push(ch);
+                    } else {
+                        text.push(' ');
+                    }
+                }
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("hits=1"),
+            "Title should show hits=1 on second render, got:\n{text}"
+        );
     }
 }

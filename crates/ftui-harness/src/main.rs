@@ -1724,6 +1724,7 @@ impl AgentHarness {
             .locale_override
             .as_ref()
             .map(|override_locale| ctx.push_override(override_locale.clone()));
+        frame.text_direction = ctx.direction().into();
         let current_locale = ctx.current_locale();
 
         let info_text = format!(
@@ -1968,7 +1969,7 @@ fn default_minimize_ledger_path(trace_path: &Path) -> PathBuf {
 fn run_log_injection(mode: &str) -> io::Result<()> {
     use ftui_core::terminal_capabilities::TerminalCapabilities;
     use ftui_render::buffer::Buffer;
-    use ftui_runtime::{TerminalWriter, UiAnchor};
+    use ftui_runtime::{TerminalPresenter, TerminalWriter, UiAnchor};
 
     let command_mode = mode.starts_with("cmd-");
     let mode = mode.strip_prefix("cmd-").unwrap_or(mode);
@@ -2078,7 +2079,7 @@ fn run_log_injection(mode: &str) -> io::Result<()> {
                 },
                 events,
                 features,
-                writer,
+                TerminalPresenter::new(writer),
                 config,
             )?
             .run()?;
@@ -2485,6 +2486,17 @@ fn main() -> std::io::Result<()> {
         }
     });
 
+    let locale_override = std::env::var("FTUI_HARNESS_LOCALE_OVERRIDE")
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
     let mut config = ProgramConfig {
         screen_mode,
         mouse_capture_policy: if enable_mouse {
@@ -2498,6 +2510,11 @@ fn main() -> std::io::Result<()> {
     };
     if let Some(locale) = locale_base {
         config = config.with_locale(locale);
+    }
+    if let Some(ref override_locale) = locale_override {
+        let dir = ftui_runtime::locale::TextDirection::for_locale(override_locale);
+        config.locale_context.set_direction(Some(dir));
+        ftui_runtime::locale::set_direction(Some(dir));
     }
     if let Some(enabled) = env_flag("FTUI_HARNESS_DIFF_BAYESIAN") {
         config.diff_config = config.diff_config.with_bayesian_enabled(enabled);
@@ -2567,8 +2584,26 @@ fn main() -> std::io::Result<()> {
     let clock = TraceFixtureClock::from_config(view_mode, &config.render_trace)?;
     let mut model = AgentHarness::new(view_mode, log_keys);
     model.trace_fixture_clock = clock.clone();
-    let mut program = Program::with_config(model, config)?;
-    program.run()?;
+    let backend = std::env::var("FTUI_DEMO_BACKEND").ok();
+    let backend = backend.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    #[cfg(all(unix, feature = "native-backend"))]
+    match backend {
+        Some("crossterm") => {
+            let mut program = Program::with_config(model, config)?;
+            program.run()?;
+        }
+        _ => {
+            let mut program = Program::with_native_backend(model, config)?;
+            program.run()?;
+        }
+    }
+
+    #[cfg(not(all(unix, feature = "native-backend")))]
+    {
+        let mut program = Program::with_config(model, config)?;
+        program.run()?;
+    }
     if let Some(clock) = clock {
         clock.check()?;
     }

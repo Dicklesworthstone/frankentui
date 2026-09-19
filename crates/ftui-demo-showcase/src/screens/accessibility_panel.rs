@@ -27,6 +27,52 @@ use crate::theme;
 
 const MAX_EVENTS: usize = 6;
 
+/// Width the toggles/preview column needs for its widest line, plus its border.
+///
+/// `render_preview` draws "Links look like this and code looks like fn main()"
+/// at 50 cells; nothing the toggles draw is wider (the `Shift+A` hint is 33).
+const TOGGLES_COLUMN_WIDTH: u16 = 52;
+
+/// Width the WCAG/telemetry column needs for its widest line, plus its border.
+///
+/// `render_telemetry`'s empty state, "No a11y events yet. Toggle a mode to emit
+/// telemetry.", is 52 cells and outgrows the WCAG legend's 40.
+const TELEMETRY_COLUMN_WIDTH: u16 = 54;
+
+/// Width below which the tree column stops being worth a column of its own.
+///
+/// Tree dumps truncate by design, but the disabled notice contains the 35-cell
+/// word "(ProgramConfig::with_accessibility)", which word wrapping cannot break.
+const TREE_COLUMN_MIN_WIDTH: u16 = 37;
+
+/// Three columns fit only once every column can show its content whole.
+const THREE_COLUMN_MIN_WIDTH: u16 =
+    TOGGLES_COLUMN_WIDTH + TREE_COLUMN_MIN_WIDTH + TELEMETRY_COLUMN_WIDTH;
+
+/// Two columns fit once the two fixed-width columns do; the tree moves into the
+/// left column underneath the preview.
+const TWO_COLUMN_MIN_WIDTH: u16 = TOGGLES_COLUMN_WIDTH + TELEMETRY_COLUMN_WIDTH;
+
+/// Rows the toggles block needs: four lines plus its border.
+const TOGGLES_HEIGHT: u16 = 6;
+
+/// Rows the preview block needs: five lines plus its border.
+const PREVIEW_HEIGHT: u16 = 7;
+
+/// Rows the WCAG block needs: eight lines plus its border.
+const WCAG_HEIGHT: u16 = 10;
+
+/// Rows below which a tree block shows too little of the dump to be worth it:
+/// its `nodes=/focused=` header, two dump lines, and the border.
+const TREE_MIN_HEIGHT: u16 = 5;
+
+/// Rows the telemetry block takes in the stacked layout: two entries plus its
+/// border.
+///
+/// One row less than it used to take, which is the row the toggles block needs
+/// to stop cutting its last line; the tree keeps the rest either way.
+const STACKED_TELEMETRY_HEIGHT: u16 = 4;
+
 #[derive(Clone, Copy)]
 struct A11yEventEntry {
     kind: A11yEventKind,
@@ -632,16 +678,21 @@ impl Screen for AccessibilityPanel {
 
         self.render_overview(frame, rows[0]);
 
-        if rows[1].width >= 78 && rows[1].height >= 8 {
+        // The side columns carry lines that must not be cut, so they take the
+        // width their content needs and the tree absorbs whatever is left. The
+        // tree only earns a column of its own once one is wide enough to be
+        // readable; below that it stacks under the preview, and below that
+        // again everything stacks full width.
+        if rows[1].width >= THREE_COLUMN_MIN_WIDTH && rows[1].height >= 8 {
             let cols = Flex::horizontal()
                 .constraints([
-                    Constraint::Percentage(30.0),
-                    Constraint::Percentage(40.0),
-                    Constraint::Percentage(30.0),
+                    Constraint::Fixed(TOGGLES_COLUMN_WIDTH),
+                    Constraint::Fill,
+                    Constraint::Fixed(TELEMETRY_COLUMN_WIDTH),
                 ])
                 .split(rows[1]);
             let left_rows = Flex::vertical()
-                .constraints([Constraint::Fixed(6), Constraint::Min(1)])
+                .constraints([Constraint::Fixed(TOGGLES_HEIGHT), Constraint::Min(1)])
                 .split(cols[0]);
             self.layout_toggles.set(left_rows[0]);
             self.render_toggles(frame, left_rows[0]);
@@ -649,16 +700,47 @@ impl Screen for AccessibilityPanel {
             self.render_tree(frame, cols[1]);
 
             let right_rows = Flex::vertical()
-                .constraints([Constraint::Percentage(55.0), Constraint::Percentage(45.0)])
+                .constraints([Constraint::Fixed(WCAG_HEIGHT), Constraint::Min(1)])
                 .split(cols[2]);
             self.layout_wcag.set(right_rows[0]);
             self.render_wcag(frame, right_rows[0]);
             self.render_telemetry(frame, right_rows[1]);
+        } else if rows[1].width >= TWO_COLUMN_MIN_WIDTH && rows[1].height >= 8 {
+            let cols = Flex::horizontal()
+                .constraints([Constraint::Fixed(TOGGLES_COLUMN_WIDTH), Constraint::Fill])
+                .split(rows[1]);
+            let left_rows = Flex::vertical()
+                .constraints([
+                    Constraint::Fixed(TOGGLES_HEIGHT),
+                    Constraint::Fixed(PREVIEW_HEIGHT),
+                    Constraint::Min(1),
+                ])
+                .split(cols[0]);
+            self.layout_toggles.set(left_rows[0]);
+            self.render_toggles(frame, left_rows[0]);
+            self.render_preview(frame, left_rows[1]);
+            self.render_tree(frame, left_rows[2]);
+
+            let right_rows = Flex::vertical()
+                .constraints([Constraint::Fixed(WCAG_HEIGHT), Constraint::Min(1)])
+                .split(cols[1]);
+            self.layout_wcag.set(right_rows[0]);
+            self.render_wcag(frame, right_rows[0]);
+            self.render_telemetry(frame, right_rows[1]);
         } else {
-            let telemetry_height = if rows[1].height >= 16 { 5 } else { 0 };
+            // Stacked at full width, so no line has to be cut and the tree
+            // gets every row the other two do not need. The toggles block
+            // takes TOGGLES_HEIGHT rather than the 5 rows it used to get,
+            // which cut the "Shift+A opens the compact overlay" hint off the
+            // bottom at exactly the sizes most terminals open at.
+            let telemetry_height = if rows[1].height >= 16 {
+                STACKED_TELEMETRY_HEIGHT
+            } else {
+                0
+            };
             let stack = Flex::vertical()
                 .constraints([
-                    Constraint::Fixed(5),
+                    Constraint::Fixed(TOGGLES_HEIGHT),
                     Constraint::Min(1),
                     Constraint::Fixed(telemetry_height),
                 ])

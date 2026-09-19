@@ -1,0 +1,24 @@
+  A: Inputs │   B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F
+╭──────────────────────────────────────╮╭──────────────────────────────────────╮
+│ OK  Diff strategy                    ││Drift Monitor                         │
+│Diff strategy: chose 'hybrid_diff' wit││diff_strategy  26%  FALLBACK          │
+│Evidence:                             ││▇▇▇▇▇▇▇▇▆▆▆▇▇▇▇▇▇▇▇▇|▂▂▂▂▂▂▂▂▂▂▂      │
+│  + change_rate: BF=3.50              ││ REGIME: diff_strategy -> deterministi│
+│  - frame_cost: BF=0.80               ││                                      │
+│  ~ stability: BF=1.00                ││                                      │
+│──────────────────────────────────────││                                      │
+│log_post=0.820 CI=[0.700,0.950] loss=0││                                      │
+│                                      ││                                      │
+╰──────────────────────────────────────╯╰──────────────────────────────────────╯
+╭ Cached (hits=1, misses=1) ───────────╮┌[Error]───────────────────────────────┐
+│Cached content at tick 1              ││ ! ErrorBoundary fallback             │
+│Key function: diag_tick               ││   in: Paragraph                      │
+│Hits: 0 | Misses: 1                   ││   Press R to retry                   │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+╰──────────────────────────────────────╯└──────────────────────────────────────┘
+........*                                                                       

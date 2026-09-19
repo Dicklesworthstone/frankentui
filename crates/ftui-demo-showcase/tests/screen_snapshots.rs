@@ -31,6 +31,8 @@ use ftui_demo_showcase::app::{AppModel, AppMsg, ScreenId};
 use ftui_demo_showcase::screens::Screen;
 use ftui_demo_showcase::theme::{ScopedThemeLock, ThemeId};
 use ftui_harness::{assert_snapshot, assert_snapshot_ansi, buffer_to_text};
+use ftui_render::buffer::Buffer;
+use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
@@ -498,6 +500,68 @@ fn widget_gallery_with_tick_120x40() {
     let area = Rect::new(0, 0, 120, 40);
     screen.view(&mut frame, area);
     assert_snapshot!("widget_gallery_with_tick_120x40", &frame.buffer);
+}
+
+#[test]
+fn widget_gallery_decision_card_80x24() {
+    let _caps = stable_caps();
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Left));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_decision_card_80x24", &frame.buffer);
+}
+
+#[test]
+fn widget_gallery_drift_visualization_80x24() {
+    let _caps = stable_caps();
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Left));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_drift_visualization_80x24", &frame.buffer);
+}
+
+#[test]
+fn widget_gallery_cached_widget_80x24() {
+    let _caps = stable_caps();
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Left));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_cached_widget_80x24", &frame.buffer);
+}
+
+#[test]
+fn widget_gallery_error_boundary_80x24() {
+    let _caps = stable_caps();
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Left));
+    screen.tick(1);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_error_boundary_80x24", &frame.buffer);
+}
+
+#[test]
+fn widget_gallery_diagnostics_120x40() {
+    let _caps = stable_caps();
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    screen.update(&press(KeyCode::Left));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("widget_gallery_diagnostics_120x40", &frame.buffer);
 }
 
 // ============================================================================
@@ -2154,6 +2218,30 @@ fn snapshot_player_middle_frame_80x24() {
 }
 
 #[test]
+fn snapshot_player_scrub_frame_5_80x24() {
+    let _caps = stable_caps();
+    let config = ftui_demo_showcase::screens::snapshot_player::SnapshotPlayerConfig {
+        max_frames: 20,
+        playback_speed: 1,
+        auto_generate_demo: false,
+        demo_frame_count: 0,
+    };
+    let mut screen =
+        ftui_demo_showcase::screens::snapshot_player::SnapshotPlayer::with_config(config);
+    for i in 0..10 {
+        let mut buf = Buffer::new(40, 15);
+        buf.set_fast(0, 0, Cell::from_char((b'0' + i as u8) as char));
+        screen.record_frame(&buf);
+    }
+    screen.set_current_frame(5);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("snapshot_player_scrub_frame_5_80x24", &frame.buffer);
+}
+
+#[test]
 fn snapshot_player_zero_area() {
     let screen = ftui_demo_showcase::screens::snapshot_player::SnapshotPlayer::new();
     let mut pool = GraphemePool::new();
@@ -2878,6 +2966,40 @@ fn command_palette_lab_title() {
 #[test]
 fn i18n_demo_initial_80x24() {
     let screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("i18n_demo_initial_80x24", &frame.buffer);
+}
+
+#[test]
+fn i18n_demo_arabic_rtl_80x24() {
+    let mut screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
+    screen.select_locale(4); // Arabic ("ar", RTL)
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("i18n_demo_arabic_rtl_80x24", &frame.buffer);
+}
+
+#[test]
+fn i18n_demo_german_80x24() {
+    let mut screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
+    screen.select_locale(5); // German ("de", LTR)
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("i18n_demo_german_80x24", &frame.buffer);
+}
+
+#[test]
+fn i18n_demo_locale_switch_ar_to_en_80x24() {
+    let mut screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
+    screen.select_locale(4); // Arabic ("ar", RTL)
+    screen.select_locale(0); // Switch back to English ("en", LTR)
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);

@@ -2,23 +2,23 @@
 ╭────────────────────────────────Accessibility─────────────────────────────────╮
 │╭─────────────────────── Accessibility Control Panel ────────────────────────╮│
 ││Active Theme: Cyberpunk Aurora                                              ││
-││Base Theme: Cyberpunk Aurora  Mode: Standard                                ││
-││Motion: Full (1.0x)  Large Text: OFF                                        ││
-││Shortcuts: h = contrast, m = motion, l = large text                         ││
-││                                                                            ││
 │╰────────────────────────────────────────────────────────────────────────────╯│
 │╭───────────────────────────────── Toggles ──────────────────────────────────╮│
 ││ [h] High Contrast: OFF                                                     ││
 ││ [m] Reduced Motion: OFF                                                    ││
 ││ [l] Large Text: OFF                                                        ││
 ││Shift+A opens the compact overlay                                           ││
+│╰────────────────────────────────────────────────────────────────────────────╯│
+│╭ Tree · previous frame ─────────────────────────────────────────────────────╮│
+││accessibility tree disabled (ProgramConfig::with_accessibility)             ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
 ││                                                                            ││
 │╰────────────────────────────────────────────────────────────────────────────╯│
-│╭────────────────────────────── WCAG Contrast ───────────────────────────────╮│
-││Primary on Base    13.6:1 AAA                                               ││
-││Secondary on Base   8.7:1 AAA                                               ││
-││Accent Primary      7.2:1 AAA                                               ││
-││Accent Warning     13.7:1 AAA                                               ││
+│╭────────────────────────────── A11y Telemetry ──────────────────────────────╮│
+││No a11y events yet. Toggle a mode to emit telemetry.                        ││
+││                                                                            ││
 │╰────────────────────────────────────────────────────────────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Accessibility [37/45] [h] [cmd] [p] [d]   Tab/Shift+Tab: next/prev   0x0 00:00 

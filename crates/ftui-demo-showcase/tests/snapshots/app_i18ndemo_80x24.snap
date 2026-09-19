@@ -1,23 +1,23 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭───────────────────────────────i18n Stress Lab────────────────────────────────╮
-│            [English]  Español  Français  Русский  العربية  ??????            │
+│       [English]  Español  Français  Русский  العربية  Deutsch  ??????        │
 │                                                                              │
 │──────────────────────────────────────────────────────────────────────────────│
 │╭String Lookup────────────────────────╮ ╭Coverage Report─────────────────────╮│
 ││--- Internationalization ---         │ │--- Coverage Report ---             ││
 ││                                     │ │                                    ││
 ││  Hello!                             │ │  Total keys: 6                     ││
-││  Welcome, Alice!                    │ │  Locales: 6                        ││
+││  Welcome, Alice!                    │ │  Locales: 7                        ││
 ││                                     │ │                                    ││
 ││  Locale: English (English)          │ │  ar 100% (6/6)                     ││
-││  Direction: Left-to-Right           │ │  en 100% (6/6) <--                 ││
-││  Flow: Ltr                          │ │  es 100% (6/6)                     ││
+││  Direction: Left-to-Right           │ │  de 100% (6/6)                     ││
+││  Flow: Ltr                          │ │  en 100% (6/6) <--                 ││
+││                                     │ │  es 100% (6/6)                     ││
 ││                                     │ │  fr 100% (6/6)                     ││
 ││                                     │ │  ja 100% (6/6)                     ││
 ││                                     │ │  ru 100% (6/6)                     ││
 ││                                     │ │                                    ││
 ││                                     │ │  Fallback chain: en                ││
-││                                     │ │                                    ││
 │╰─────────────────────────────────────╯ ╰────────────────────────────────────╯│
 │ 1-4: panels (Overview)  L/R: locale  Dir: LTR  Current: English (en)         │
 ╰──────────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,24 @@
+        English  Español  Français  Русский  العربية  [Deutsch]  ??????         
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+╭String Lookup─────────────────────────╮ ╭Coverage Report──────────────────────╮
+│--- Internationalisierung ---         │ │--- Coverage Report ---              │
+│                                      │ │                                     │
+│  Hallo!                              │ │  Total keys: 6                      │
+│  Willkommen, Alice!                  │ │  Locales: 7                         │
+│                                      │ │                                     │
+│  Locale: German (Deutsch)            │ │  ar 100% (6/6)                      │
+│  Direction: Links nach rechts        │ │  de 100% (6/6) <--                  │
+│  Flow: Ltr                           │ │  en 100% (6/6)                      │
+│                                      │ │  es 100% (6/6)                      │
+│                                      │ │  fr 100% (6/6)                      │
+│                                      │ │  ja 100% (6/6)                      │
+│                                      │ │  ru 100% (6/6)                      │
+│                                      │ │                                     │
+│                                      │ │  Fallback chain: en                 │
+│                                      │ │                                     │
+│                                      │ │                                     │
+│                                      │ │                                     │
+│                                      │ │                                     │
+╰──────────────────────────────────────╯ ╰─────────────────────────────────────╯
+ 1-4: panels (Overview)  L/R: locale  Dir: LTR  Current: German (de)            

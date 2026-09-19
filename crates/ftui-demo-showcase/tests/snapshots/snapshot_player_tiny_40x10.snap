@@ -2,9 +2,9 @@
 │░░░░░░░░░░░░░░░░░░░░░░││Status: ⏸ Paus│
 ╰──────────────────────╯│              │
 ╭────Frame Preview─────╮│Frame: 1/50   │
-│Frame 1/50            ││Size: 40x15   │
-│                      ││Changes: 600 c│
+│Frame 1/50 | 100us | e││Size: 40x15   │
+│Frame 1/50            ││Changes: 600 c│
 │                      ││Memory: 9600 b│
-│Hello, World!         ││Checksum: 18f5│
-│                      ││Render: 100µs │
+│                      ││Checksum: 18f5│
+│Hello, World!         ││Render: 100µs │
 ╰──────────────────────╯╰──────────────╯

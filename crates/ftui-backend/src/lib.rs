@@ -7,11 +7,56 @@
 #![doc = "See ADR-008 for the design rationale."]
 
 use core::time::Duration;
+use std::sync::Arc;
 
 use ftui_core::event::Event;
+use ftui_core::osc52::ClipboardSelection;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
+pub use ftui_render::diff_strategy::DiffStrategy;
+use ftui_render::grapheme_pool::GraphemePool;
+use ftui_render::link_registry::LinkRegistry;
+pub use ftui_render::sanitize::SanitizeMode;
+
+/// Presentation phase timing measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PresentTimings {
+    /// Time spent computing the buffer diff in microseconds.
+    pub diff_us: u64,
+}
+
+/// Screen mode determines whether we use alternate screen or inline mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScreenMode {
+    /// Inline mode preserves scrollback. UI is anchored at bottom/top.
+    Inline {
+        /// Height of the UI region in rows.
+        ui_height: u16,
+    },
+    /// Inline mode with automatic UI height based on rendered content.
+    ///
+    /// The measured height is clamped between `min_height` and `max_height`.
+    InlineAuto {
+        /// Minimum UI height in rows.
+        min_height: u16,
+        /// Maximum UI height in rows.
+        max_height: u16,
+    },
+    /// Alternate screen mode for full-screen applications.
+    #[default]
+    AltScreen,
+}
+
+/// Where the UI region is anchored in inline mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiAnchor {
+    /// UI at bottom of terminal (default for agent harness).
+    #[default]
+    Bottom,
+    /// UI at top of terminal.
+    Top,
+}
 
 /// Terminal feature toggles that backends must support.
 ///
@@ -104,11 +149,132 @@ pub trait BackendPresenter {
 
     /// Optional: release resources held by the presenter (e.g., grapheme pool compaction).
     fn gc(&mut self) {}
+
+    /// Resize the presentation surface.
+    fn resize(&mut self, _cols: u16, _rows: u16) {}
+
+    /// Current screen mode.
+    fn screen_mode(&self) -> ScreenMode {
+        ScreenMode::default()
+    }
+
+    /// Set screen mode.
+    fn set_screen_mode(&mut self, _mode: ScreenMode) {}
+
+    /// Configure an evidence-writer callback.
+    fn set_evidence_writer(&mut self, _w: Option<Arc<dyn Fn(&str) + Send + Sync>>) {}
+
+    /// Last diff strategy used, if any.
+    fn last_diff_strategy(&self) -> Option<DiffStrategy> {
+        None
+    }
+
+    /// Last diff elapsed duration, if any.
+    fn last_diff_elapsed(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Begin shutting down the presenter.
+    fn begin_shutdown(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Flush any pending output to the terminal or host.
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Take a reusable render buffer sized for the current frame.
+    fn take_render_buffer(&mut self, width: u16, height: u16) -> Buffer {
+        Buffer::new(width, height)
+    }
+
+    /// Mark the beginning of a frame for hyperlink tracking.
+    fn begin_link_frame(&mut self) {}
+
+    /// Mutably borrow the grapheme pool and link registry.
+    fn pool_and_links_mut(&mut self) -> (&mut GraphemePool, &mut LinkRegistry);
+
+    /// Mutably borrow the grapheme pool.
+    fn pool_mut(&mut self) -> &mut GraphemePool;
+
+    /// Configured bounds for inline auto mode, if active.
+    fn inline_auto_bounds(&self) -> Option<(u16, u16)> {
+        None
+    }
+
+    /// Current measured or auto-determined UI height for inline auto mode.
+    fn auto_ui_height(&self) -> Option<u16> {
+        None
+    }
+
+    /// Height hint to use when rendering a frame.
+    fn render_height_hint(&self) -> u16 {
+        0
+    }
+
+    /// Set auto UI height for inline auto mode.
+    fn set_auto_ui_height(&mut self, _height: u16) {}
+
+    /// Clear auto UI height for inline auto mode.
+    fn clear_auto_ui_height(&mut self) {}
+
+    /// Take presentation timings from the last rendered frame, if recorded.
+    fn take_last_present_timings(&mut self) -> Option<PresentTimings> {
+        None
+    }
+
+    /// Estimate memory usage of buffers and pools held by the presenter.
+    fn estimate_memory_usage(&self) -> usize {
+        0
+    }
+
+    /// Present a UI frame, taking ownership of the buffer.
+    fn present_ui_owned(
+        &mut self,
+        buf: Buffer,
+        cursor: Option<(u16, u16)>,
+        cursor_visible: bool,
+    ) -> Result<(), Self::Error> {
+        let _ = (cursor, cursor_visible);
+        self.present_ui(&buf, None, false)
+    }
+
+    /// Write a log line with a specific sanitization mode.
+    fn write_log_line_with_mode(
+        &mut self,
+        text: &str,
+        _mode: SanitizeMode,
+    ) -> Result<(), Self::Error> {
+        self.write_log(text)
+    }
+
+    /// Write an OSC 52 set clipboard sequence.
+    fn write_osc52_set(
+        &mut self,
+        _selection: ClipboardSelection,
+        _data: &[u8],
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Write an OSC 52 query clipboard sequence.
+    fn write_osc52_query(&mut self, _selection: ClipboardSelection) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Enable or disable presentation timing measurements.
+    fn set_timing_enabled(&mut self, _enabled: bool) {}
+
+    /// Set hyperlink limit for tracking.
+    fn set_hyperlink_limit(&mut self, _limit: usize) {}
 }
 
-/// Unified backend combining clock, event source, and presenter.
+/// Unified backend combining clock and event source.
 ///
-/// The `Program` runtime is generic over this trait. Concrete implementations:
+/// The `Program` runtime drives event handling through this trait (or through
+/// [`BackendEventSource`] directly), and presents through [`BackendPresenter`].
+/// Concrete implementations:
 /// - `ftui-tty`: native Unix/macOS terminal (and eventually Windows).
 /// - `ftui-web`: WASM + DOM + WebGPU renderer.
 pub trait Backend {
@@ -121,17 +287,11 @@ pub trait Backend {
     /// Event source implementation.
     type Events: BackendEventSource<Error = Self::Error>;
 
-    /// Presenter implementation.
-    type Presenter: BackendPresenter<Error = Self::Error>;
-
     /// Access the monotonic clock.
     fn clock(&self) -> &Self::Clock;
 
     /// Access the event source (mutable for polling/reading).
     fn events(&mut self) -> &mut Self::Events;
-
-    /// Access the presenter (mutable for rendering).
-    fn presenter(&mut self) -> &mut Self::Presenter;
 }
 
 #[cfg(test)]
@@ -258,6 +418,8 @@ mod tests {
         logs: Vec<String>,
         present_count: usize,
         gc_count: usize,
+        pool: GraphemePool,
+        links: LinkRegistry,
     }
 
     impl BackendPresenter for TestPresenter {
@@ -285,19 +447,25 @@ mod tests {
         fn gc(&mut self) {
             self.gc_count += 1;
         }
+
+        fn pool_and_links_mut(&mut self) -> (&mut GraphemePool, &mut LinkRegistry) {
+            (&mut self.pool, &mut self.links)
+        }
+
+        fn pool_mut(&mut self) -> &mut GraphemePool {
+            &mut self.pool
+        }
     }
 
     struct TestBackend {
         clock: TestClock,
         events: TestEventSource,
-        presenter: TestPresenter,
     }
 
     impl Backend for TestBackend {
         type Error = TestError;
         type Clock = TestClock;
         type Events = TestEventSource;
-        type Presenter = TestPresenter;
 
         fn clock(&self) -> &Self::Clock {
             &self.clock
@@ -305,10 +473,6 @@ mod tests {
 
         fn events(&mut self) -> &mut Self::Events {
             &mut self.events
-        }
-
-        fn presenter(&mut self) -> &mut Self::Presenter {
-            &mut self.presenter
         }
     }
 
@@ -320,12 +484,6 @@ mod tests {
             events: TestEventSource {
                 features: BackendFeatures::default(),
                 events: Vec::new(),
-            },
-            presenter: TestPresenter {
-                caps: TerminalCapabilities::default(),
-                logs: Vec::new(),
-                present_count: 0,
-                gc_count: 0,
             },
         }
     }
@@ -425,25 +583,26 @@ mod tests {
     // BackendPresenter tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn presenter_capabilities() {
-        let p = TestPresenter {
+    fn make_test_presenter() -> TestPresenter {
+        TestPresenter {
             caps: TerminalCapabilities::default(),
             logs: Vec::new(),
             present_count: 0,
             gc_count: 0,
-        };
+            pool: GraphemePool::new(),
+            links: LinkRegistry::new(),
+        }
+    }
+
+    #[test]
+    fn presenter_capabilities() {
+        let p = make_test_presenter();
         let _caps = p.capabilities();
     }
 
     #[test]
     fn presenter_write_log() {
-        let mut p = TestPresenter {
-            caps: TerminalCapabilities::default(),
-            logs: Vec::new(),
-            present_count: 0,
-            gc_count: 0,
-        };
+        let mut p = make_test_presenter();
         p.write_log("hello").unwrap();
         p.write_log("world").unwrap();
         assert_eq!(p.logs.len(), 2);
@@ -453,12 +612,7 @@ mod tests {
 
     #[test]
     fn presenter_present_ui() {
-        let mut p = TestPresenter {
-            caps: TerminalCapabilities::default(),
-            logs: Vec::new(),
-            present_count: 0,
-            gc_count: 0,
-        };
+        let mut p = make_test_presenter();
         let buf = Buffer::new(10, 5);
         p.present_ui(&buf, None, false).unwrap();
         p.present_ui(&buf, None, true).unwrap();
@@ -467,15 +621,24 @@ mod tests {
 
     #[test]
     fn presenter_gc() {
-        let mut p = TestPresenter {
-            caps: TerminalCapabilities::default(),
-            logs: Vec::new(),
-            present_count: 0,
-            gc_count: 0,
-        };
+        let mut p = make_test_presenter();
         p.gc();
         p.gc();
         assert_eq!(p.gc_count, 2);
+    }
+
+    #[test]
+    fn presenter_defaults() {
+        let mut p = make_test_presenter();
+        assert_eq!(p.screen_mode(), ScreenMode::default());
+        p.set_screen_mode(ScreenMode::AltScreen);
+        p.resize(120, 40);
+        assert_eq!(p.render_height_hint(), 0);
+        assert_eq!(p.estimate_memory_usage(), 0);
+        assert!(p.last_diff_strategy().is_none());
+        assert!(p.last_diff_elapsed().is_none());
+        assert!(p.begin_shutdown().is_ok());
+        assert!(p.flush().is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -496,16 +659,9 @@ mod tests {
     }
 
     #[test]
-    fn backend_presenter_access() {
-        let mut backend = make_test_backend();
-        let buf = Buffer::new(10, 5);
-        backend.presenter().present_ui(&buf, None, false).unwrap();
-        assert_eq!(backend.presenter.present_count, 1);
-    }
-
-    #[test]
     fn backend_full_cycle() {
         let mut backend = make_test_backend();
+        let mut presenter = make_test_presenter();
 
         // Clock
         let _now = backend.clock().now_mono();
@@ -522,13 +678,13 @@ mod tests {
 
         // Present
         let buf = Buffer::new(80, 24);
-        backend.presenter().write_log("frame start").unwrap();
-        backend.presenter().present_ui(&buf, None, false).unwrap();
-        backend.presenter().gc();
+        presenter.write_log("frame start").unwrap();
+        presenter.present_ui(&buf, None, false).unwrap();
+        presenter.gc();
 
-        assert_eq!(backend.presenter.logs.len(), 1);
-        assert_eq!(backend.presenter.present_count, 1);
-        assert_eq!(backend.presenter.gc_count, 1);
+        assert_eq!(presenter.logs.len(), 1);
+        assert_eq!(presenter.present_count, 1);
+        assert_eq!(presenter.gc_count, 1);
     }
 
     // -----------------------------------------------------------------------

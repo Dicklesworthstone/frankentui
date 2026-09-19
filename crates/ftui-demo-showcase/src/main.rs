@@ -170,26 +170,42 @@ fn main() -> ExitCode {
     // Use a generous total budget so VFX doesn't degrade to ASCII/black after a few seconds.
     budget.total = Duration::from_millis(200);
 
+    let enable_focus = std::env::var("FTUI_DEMO_ENABLE_FOCUS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+    let enable_kitty = std::env::var("FTUI_DEMO_ENABLE_KITTY_KEYBOARD")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+
     let config = ProgramConfig {
         screen_mode,
         mouse_capture_policy: mouse_policy,
         budget,
+        focus_reporting: enable_focus,
+        kitty_keyboard: enable_kitty,
         ..ProgramConfig::default()
     };
     let config = apply_evidence_config(config);
     if let Err(e) = run_program(model, config) {
+        if let Some(signal) = ftui_runtime::signal_termination_from_error(&e) {
+            return ExitCode::from(128 + (signal as u8));
+        }
         eprintln!("Runtime error: {e}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }
 
-/// Run a program using the best available backend.
+/// Run a program using the selected or best available backend.
 ///
-/// On Unix, when the `native-backend` feature is enabled, uses the ftui-tty
-/// native backend. On non-Unix (e.g. Windows), falls back to the
-/// crossterm-compat backend so the demo is fully functional instead of
-/// silently using a headless 1x1 surface.
+/// Backend selection can be controlled via the `FTUI_DEMO_BACKEND` environment
+/// variable (`native` or `crossterm`).
+///
+/// When unspecified:
+/// - On Unix, when the `native-backend` feature is enabled, uses the ftui-tty
+///   native backend.
+/// - On non-Unix (e.g. Windows), or when `native-backend` is disabled, falls back
+///   to the `crossterm-compat` backend.
 fn run_program<M: ftui_runtime::Model>(model: M, config: ProgramConfig) -> std::io::Result<()>
 where
     M::Message: Send + 'static,
@@ -197,32 +213,82 @@ where
     // Every showcase entry point collects the same accessibility tree. The
     // main model delivers it and its announcements to the accessibility panel.
     let config = config.with_accessibility(ScreenReaderPolicy::default());
-    // Unix: prefer the native ftui-tty backend when available.
-    #[cfg(all(unix, feature = "native-backend"))]
-    {
-        let mut program = Program::with_native_backend(model, config)?;
-        program.run()
-    }
 
-    // Crossterm-compat fallback: used on non-Unix (Windows) always, or on
-    // Unix when native-backend is not enabled.
-    #[cfg(all(
-        not(all(unix, feature = "native-backend")),
-        feature = "crossterm-compat"
-    ))]
-    {
-        let mut program = Program::with_config(model, config)?;
-        program.run()
-    }
+    let backend_env = std::env::var("FTUI_DEMO_BACKEND").ok();
+    let backend = backend_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    // Neither backend is usable — provide a helpful error.
-    #[cfg(not(any(all(unix, feature = "native-backend"), feature = "crossterm-compat")))]
-    {
-        let _ = (model, config);
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "no usable backend: enable `native-backend` (Unix) or `crossterm-compat` (Windows)",
-        ))
+    match backend {
+        Some("crossterm") => {
+            #[cfg(feature = "crossterm-compat")]
+            {
+                let mut program = Program::with_config(model, config)?;
+                program.run()
+            }
+            #[cfg(not(feature = "crossterm-compat"))]
+            {
+                let _ = (model, config);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "backend 'crossterm' requested via FTUI_DEMO_BACKEND but `crossterm-compat` feature is disabled",
+                ))
+            }
+        }
+        Some("native") => {
+            #[cfg(all(unix, feature = "native-backend"))]
+            {
+                let mut program = Program::with_native_backend(model, config)?;
+                program.run()
+            }
+            #[cfg(not(all(unix, feature = "native-backend")))]
+            {
+                let _ = (model, config);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "backend 'native' requested via FTUI_DEMO_BACKEND but `native-backend` is disabled or not on Unix",
+                ))
+            }
+        }
+        Some(other) => {
+            let _ = (model, config);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown backend '{other}' requested via FTUI_DEMO_BACKEND (expected 'native' or 'crossterm')"
+                ),
+            ))
+        }
+        None => {
+            // Unix: prefer the native ftui-tty backend when available.
+            #[cfg(all(unix, feature = "native-backend"))]
+            {
+                let mut program = Program::with_native_backend(model, config)?;
+                program.run()
+            }
+
+            // Crossterm-compat fallback: used on non-Unix (Windows) always, or on
+            // Unix when native-backend is not enabled.
+            #[cfg(all(
+                not(all(unix, feature = "native-backend")),
+                feature = "crossterm-compat"
+            ))]
+            {
+                let mut program = Program::with_config(model, config)?;
+                program.run()
+            }
+
+            // Neither backend is usable — provide a helpful error.
+            #[cfg(not(any(all(unix, feature = "native-backend"), feature = "crossterm-compat")))]
+            {
+                let _ = (model, config);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "no usable backend: enable `native-backend` (Unix) or `crossterm-compat` (Windows)",
+                ))
+            }
+        }
     }
 }
 

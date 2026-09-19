@@ -1108,6 +1108,11 @@ impl TerminalSession {
             return;
         }
 
+        if !TERMINAL_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
+            let _ = self.session_lock.take();
+            return;
+        }
+
         let mut stdout = io::stdout();
         let caps = TerminalCapabilities::with_overrides();
 
@@ -1192,7 +1197,7 @@ pub fn best_effort_cleanup_for_exit() {
 }
 
 fn best_effort_cleanup() {
-    if panic_cleanup_suppressed() || !TERMINAL_SESSION_ACTIVE.load(Ordering::SeqCst) {
+    if panic_cleanup_suppressed() || !TERMINAL_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
         return;
     }
     let mut stdout = io::stdout();
@@ -1200,7 +1205,7 @@ fn best_effort_cleanup() {
     best_effort_cleanup_to(&mut stdout, &caps);
 }
 
-/// Emission body of [`best_effort_cleanup`], parameterized over the output
+/// Emission body of `best_effort_cleanup`, parameterized over the output
 /// for testability. Consumes the process-global stack-pop budget: only the
 /// first invocation emits the kitty-keyboard pop.
 pub fn best_effort_cleanup_to(stdout: &mut impl Write, caps: &TerminalCapabilities) {

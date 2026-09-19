@@ -432,6 +432,11 @@ fn accumulate_tile_counts_range(
 }
 
 /// Configuration for tile-based diff skipping.
+///
+/// Uses a summed-area table (SAT) to perform constant-time tile row and
+/// rectangle dirty-density queries, skipping clean tile rows wholesale.
+/// Performance measurements and ablation results are recorded in
+/// `docs/perf/sat_tile_skip_2026-09.md`.
 #[derive(Debug, Clone)]
 pub struct TileDiffConfig {
     /// Whether tile-based skipping is enabled.
@@ -445,7 +450,11 @@ pub struct TileDiffConfig {
     /// When true, the tile build only scans rows marked dirty, reducing
     /// build cost for sparse updates. Disable to force full-row scans.
     pub skip_clean_rows: bool,
-    /// Minimum total cells required before enabling tiles.
+    /// Minimum total cells required before enabling tiles (default: 12,000, i.e. 200x60).
+    ///
+    /// Smaller viewports (e.g. 80x24 = 1,920 cells) fall back to direct row diffs
+    /// because SAT construction overhead exceeds tile skip savings below this threshold
+    /// (see `docs/perf/sat_tile_skip_2026-09.md`).
     pub min_cells_for_tiles: usize,
     /// Dense cell ratio threshold for falling back to non-tile diff.
     pub dense_cell_ratio: f64,
@@ -772,7 +781,6 @@ impl TileDiffBuilder {
             return TileDiffBuild::Fallback(stats);
         }
 
-        debug_assert_eq!(dirty_bits.len(), total_cells);
         if dirty_bits.len() < total_cells {
             stats.fallback = Some(TileDiffFallback::Overflow);
             return TileDiffBuild::Fallback(stats);
@@ -3432,6 +3440,66 @@ mod tests {
     }
 
     // --- TileDiffBuilder direct ---
+
+    #[test]
+    fn sat_overflow_falls_back() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig::default().with_min_cells_for_tiles(0);
+        let dirty_rows = vec![true; 10];
+        let dirty_bits = vec![0u8; 100]; // less than 20x10 = 200 total_cells
+
+        let input = TileDiffInput {
+            width: 20,
+            height: 10,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 0,
+            dirty_all: false,
+        };
+
+        let result = builder.build(&config, input);
+        assert!(matches!(
+            result,
+            TileDiffBuild::Fallback(stats) if stats.fallback == Some(TileDiffFallback::Overflow)
+        ));
+    }
+
+    #[test]
+    fn min_cells_threshold_engages_tiles_exactly_at_12000() {
+        let config = TileDiffConfig::default();
+        assert_eq!(config.min_cells_for_tiles, 12_000);
+
+        let mut builder = TileDiffBuilder::new();
+        let dirty_rows = vec![true; 24];
+        let dirty_bits = vec![0u8; 80 * 24];
+        let input_small = TileDiffInput {
+            width: 80,
+            height: 24,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 5,
+            dirty_all: false,
+        };
+        let result_small = builder.build(&config, input_small);
+        assert!(matches!(
+            result_small,
+            TileDiffBuild::Fallback(stats) if stats.fallback == Some(TileDiffFallback::SmallScreen)
+        ));
+
+        let dirty_rows_large = vec![true; 60];
+        let mut dirty_bits_large = vec![0u8; 200 * 60];
+        dirty_bits_large[0] = 1;
+        let input_large = TileDiffInput {
+            width: 200,
+            height: 60,
+            dirty_rows: &dirty_rows_large,
+            dirty_bits: &dirty_bits_large,
+            dirty_cells: 1,
+            dirty_all: false,
+        };
+        let result_large = builder.build(&config, input_large);
+        assert!(matches!(result_large, TileDiffBuild::UseTiles(_)));
+    }
 
     #[test]
     fn tile_builder_dirty_all_fallback() {

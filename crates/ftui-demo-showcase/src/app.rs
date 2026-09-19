@@ -40,6 +40,9 @@ const TARGET_EXPLAINABILITY_COCKPIT: &str = "ftui.explainability_cockpit";
 /// accepts `"ftui.<name>"` definitions in this file and in
 /// `ftui-runtime`'s `telemetry_schema`.
 pub(crate) const TARGET_ACCESSIBILITY_PANEL: &str = "ftui.demo.a11y";
+
+/// Tracing target for the widget gallery's diagnostics section.
+pub(crate) const TARGET_WIDGET_GALLERY: &str = "ftui.demo.gallery";
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -1789,6 +1792,8 @@ pub enum AppMsg {
     },
     /// Quit the application.
     Quit,
+    /// Deliberate test-seam panic triggered by `FTUI_DEMO_PANIC_AFTER_MS`.
+    PanicSeam,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3648,6 +3653,9 @@ impl AppModel {
     fn handle_msg(&mut self, msg: AppMsg, source: EventSource) -> Cmd<AppMsg> {
         match msg {
             AppMsg::Quit => Cmd::Quit,
+            AppMsg::PanicSeam => {
+                panic!("demo showcase deliberate panic from FTUI_DEMO_PANIC_AFTER_MS");
+            }
             AppMsg::ScreenMessage { origin, message } => match message {
                 ScreenMessage::Event(event) => self.screens.update(origin, &event),
                 ScreenMessage::Unit => Cmd::None,
@@ -4508,10 +4516,27 @@ impl Model for AppModel {
             Cmd::None
         };
 
+        let panic_cmd = if let Ok(val) = std::env::var("FTUI_DEMO_PANIC_AFTER_MS") {
+            if let Ok(ms) = val.trim().parse::<u64>() {
+                Cmd::task_named("demo_panic_after", move || {
+                    std::thread::sleep(Duration::from_millis(ms));
+                    AppMsg::PanicSeam
+                })
+            } else {
+                Cmd::None
+            }
+        } else {
+            Cmd::None
+        };
+
         // Keep terminal and web semantics aligned: both runtimes are driven by
         // the same command-based tick source instead of target-specific branches.
         let tick_ms = self.tick_interval_ms().max(1);
-        Cmd::batch(vec![base_cmd, Cmd::Tick(Duration::from_millis(tick_ms))])
+        Cmd::batch(vec![
+            base_cmd,
+            panic_cmd,
+            Cmd::Tick(Duration::from_millis(tick_ms)),
+        ])
     }
 
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {

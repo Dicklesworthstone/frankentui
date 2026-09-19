@@ -1,0 +1,24 @@
+╭──────────────────────── Accessibility Control Panel ─────────────────────────╮
+│Active Theme: Cyberpunk Aurora                                                │
+│Base Theme: Cyberpunk Aurora  Mode: Standard                                  │
+│Motion: Full (1.0x)  Large Text: OFF                                          │
+│Shortcuts: h = contrast, m = motion, l = large text                           │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭────────────────────────────────── Toggles ───────────────────────────────────╮
+│ [h] High Contrast: OFF                                                       │
+│ [m] Reduced Motion: OFF                                                      │
+│ [l] Large Text: OFF                                                          │
+│Shift+A opens the compact overlay                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ Tree · previous frame ───────────────────────────────────────────────────────╮
+│nodes=2 focused=2                                                             │
+│Group "Dashboard" [] @0,0 80x24                                               │
+│  Button "Refresh" [] @1,1 10x1                                               │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────── A11y Telemetry ───────────────────────────────╮
+│No a11y events yet. Toggle a mode to emit telemetry.                          │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

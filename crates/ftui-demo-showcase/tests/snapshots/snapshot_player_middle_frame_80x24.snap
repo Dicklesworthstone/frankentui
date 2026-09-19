@@ -2,22 +2,22 @@
 │███████████████████████░░░░░░░░░░░░░░░░░░░░░░░││Status: ⏸ Paused              │
 ╰──────────────────────────────────────────────╯│                              │
 ╭────────────────Frame Preview─────────────────╮│Frame: 26/50                  │
-│Frame 26/50                                   ││Size: 40x15                   │
-│                                              ││Changes: 32 cells             │
+│Frame 26/50 | 350us | events=0                ││Size: 40x15                   │
+│Frame 26/50                                   ││Changes: 32 cells             │
 │                                              ││Memory: 9600 bytes            │
 │                                              ││Checksum: 925a0b60274b12d4    │
 │                                              ││Render: 350µs                 │
 │                                              ││                              │
 │                                              ││Chain hash: 48a61a424c087d5d  │
 │                                              ││Markers: 0                    │
-│     FrankenTUI Demo                          ││Marked: No                    │
-│                                              ││                              │
+│                                              ││Marked: No                    │
+│     FrankenTUI Demo                          ││                              │
 │                                              ││── Compare ──                 │
 │                                              ││View: Single                  │
 │                                              ││Heatmap: Off                  │
-│          █                                   ││A: #1  18f5a12b74525a16       │
-│━━━━━━━━━━━━━━━━━━━━                          ││B: #2  c5b5eeab873924ca       │
-│                                              ││Diff: n/a                     │
+│                                              ││A: #1  18f5a12b74525a16       │
+│          █                                   ││B: #2  c5b5eeab873924ca       │
+│━━━━━━━━━━━━━━━━━━━━                          ││Diff: n/a                     │
 │                                              ││                              │
 │                                              ││── Controls ──                │
 │                                              ││Space: Play/Pause             │
