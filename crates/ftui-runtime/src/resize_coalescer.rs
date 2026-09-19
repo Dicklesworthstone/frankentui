@@ -142,6 +142,36 @@ fn evidence_prefix(
 }
 
 /// Configuration for the resize coalescer.
+///
+/// # Defaults
+///
+/// | Field | Default | Meaning |
+/// |---|---|---|
+/// | `steady_delay_ms` | 16 | how long a resize is held in the steady regime |
+/// | `burst_delay_ms` | 40 | how long a resize is held in the burst regime |
+/// | `hard_deadline_ms` | 100 | applied regardless of regime once this elapses |
+/// | `enable_bocpd` | `true` | the posterior is the detector |
+/// | `heuristic_fallback` | `true` | the rate heuristic covers what it cannot |
+///
+/// These are *hold* times. They are not [`BocpdConfig`]'s `mu_steady_ms` (200)
+/// and `mu_burst_ms` (20), which are the expected *inter-arrival* times the
+/// observation model is written in terms of. The README reported the latter
+/// pair as the coalescing delays for a while; the two pairs are easy to swap
+/// and mean opposite things.
+///
+/// # The fallback rule
+///
+/// With `heuristic_fallback` on, the 10/5 events-per-second rate heuristic
+/// decides only where the posterior cannot: the first event of a session (no
+/// inter-arrival yet), an inter-arrival outside
+/// `[min_observation_ms, max_observation_ms]`, or a non-finite posterior.
+/// While the heuristic owns the decision it also owns the burst exit.
+/// [`CoalescerConfig::without_bocpd`] returns to the heuristic alone;
+/// `heuristic_fallback = false` hands even the first event to the posterior.
+///
+/// Every decision row records which of the two decided, in `detector`, and
+/// carries `p_burst` whenever the posterior is finite — including on rows the
+/// heuristic decided, so the log can answer what BOCPD would have said.
 #[derive(Debug, Clone)]
 pub struct CoalescerConfig {
     /// Maximum coalesce delay in steady regime (ms).

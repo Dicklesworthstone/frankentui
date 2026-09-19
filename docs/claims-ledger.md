@@ -268,7 +268,7 @@ complete `.5.2`.
 | V33 | Zero unsafe | README.md :: Zero unsafe | status | DOC | bd-g00-root-epic-ewths.5 | count:20 of 20 crate roots carry #![forbid(unsafe_code)] | proven | 2026-09-19 |
 | V34 | Formal proof sketches Theorems 1-4 | README.md :: Formal proof sketches Theorems 1-4 | status | DOC | bd-g00-root-epic-ewths.5 | ident:Theorem 4 (Diff-Dirty Equivalence); test:ftui-render::buffer::set_marks_row_dirty | proven | 2026-09-19 |
 | V35 | Property tests, snapshots, benches | README.md :: Property tests, snapshots, benches | status | DOC | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
-| V36 | Resize coalescing regimes | README.md :: Resize coalescing regimes | status | DOC | bd-g00-root-epic-ewths.16 | bead:bd-g00-root-epic-ewths.16 | pending-doc | - |
+| V36 | Resize coalescing regimes | README.md :: Resize coalescing regimes | status | DOC | bd-g00-root-epic-ewths.16 | test:ftui-runtime::resize_coalescer::tests::steady_regime_delay_is_16ms_and_burst_is_40ms; test:ftui-runtime::bocpd::tests::default_config_matches_readme_constants | proven | 2026-09-19 |
 | V37 | Budget degradation PID | README.md :: Budget degradation PID | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V38 | Input fairness guard | README.md :: Input fairness guard | status | DOC | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-doc | - |
 | V39 | Table theming engine | README.md :: Table theming engine | status | CODE | bd-g00-root-epic-ewths.23 | test:ftui::readme_snippets::readme_table_theme_snippet | proven | 2026-09-19 |

@@ -1043,6 +1043,29 @@ Decision thresholds:
     otherwise      →  Transitional (interpolate delay)
 ```
 
+**The delays those regimes select**, and the two numbers most easily confused
+with them:
+
+| | Value | Where |
+|---|---|---|
+| Steady coalescing delay | **16 ms** | `CoalescerConfig::steady_delay_ms` |
+| Burst coalescing delay | **40 ms** | `CoalescerConfig::burst_delay_ms` |
+| Hard deadline | **100 ms** | `CoalescerConfig::hard_deadline_ms` |
+| Steady observation mean μ_steady | 200 ms | `BocpdConfig::mu_steady_ms` |
+| Burst observation mean μ_burst | 20 ms | `BocpdConfig::mu_burst_ms` |
+
+The first three are how long a resize is *held*; the last two are how far apart
+resizes are *expected to arrive* in each regime, and are what the exponential
+observation model above is written in terms of. An earlier version of this
+section reported 200 ms and 20 ms as the coalescing delays, which is the one
+confusion this table exists to prevent. The hard deadline outranks both: a
+pending resize is applied at 100 ms whatever the posterior thinks, so a drag
+cannot be coalesced indefinitely.
+
+`default_config_matches_readme_constants` (`bocpd.rs`) and
+`steady_regime_delay_is_16ms_and_burst_is_40ms` (`resize_coalescer.rs`) fail if
+any number above stops matching the code.
+
 **Where it runs:** on by default. `CoalescerConfig::default()` carries `enable_bocpd = true` and `heuristic_fallback = true`; `ResizeCoalescer` feeds every resize event's inter‑arrival to the posterior and reads the regime and the recommended delay from it. The 10/5 events‑per‑second rate heuristic decides only when the posterior is undefined: the first event of a session, an inter‑arrival outside `[min_observation_ms, max_observation_ms]` (1 ms to 10 s by default, which the posterior would otherwise see clamped), or a non‑finite posterior. While the heuristic decides it also owns the Burst exit (cooldown on ticks, rate check on the immediate path). The posterior itself only moves on events, so in BOCPD mode a Burst regime returns to Steady on a frame tick once the silence reaches `mu_steady_ms` (200 ms; reason code `bocpd_idle_exit`, confidence `1 − exp(−idle/μ_burst)`). Every `decision` and `regime_transition` evidence row carries `detector` (`bocpd` or `heuristic`) and `p_burst`, the `config` row carries both flags, `budget_decision` carries `resize_detector`, and `CoalescerStats::detector_decisions` counts decisions per detector. `CoalescerConfig::without_bocpd()` returns to the heuristic alone; `with_heuristic_fallback(false)` hands even the first event to the posterior.
 
 ### Bayes-Factor Evidence Ledger (Resize Coalescer)
@@ -2079,6 +2102,12 @@ Run-Length Posterior:
 Regime Decision:
   P(burst | observations) → coalescing delay selection
 ```
+
+The defaults, the 16/40/100 ms delays, the fallback rule and the evidence
+fields are stated once, in
+[BOCPD: Online Change-Point Detection](#bocpd-online-change-point-detection).
+This section is the motivation; that one is the contract. Restating the numbers
+here is how they drifted apart before.
 
 **Why Bayesian?**
 - **No magic thresholds:** Prior beliefs updated with evidence
