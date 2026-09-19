@@ -45,8 +45,10 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-09-18 the distribution across 152 rows is 46 pending-code,
-91 pending-doc, 3 retracted and 12 proven.
+As of 2026-09-19 the distribution across 152 rows is 43 pending-code,
+90 pending-doc, 4 retracted and 15 proven. Regenerate this sentence from
+`python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
+it had drifted from the table before 2026-09-19.
 
 A row becomes `proven` only when a named test pins the specific thing the
 README says, not something adjacent. The proven set:
@@ -147,7 +149,7 @@ complete `.5.2`.
 | V21 | W-TinyLFU width cache + PAC-Bayes CMS | README.md :: W-TinyLFU width cache + PAC-Bayes CMS | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
 | V22 | Flat combining | README.md :: Flat combining | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
 | V23 | Bidirectional lenses `field_lens!` | README.md :: Bidirectional lenses `field_lens!` | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V24 | IVM DAG | README.md :: IVM DAG | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
+| V24 | IVM DAG | README.md :: IVM DAG | status | DOC | bd-lksq7 | ident:There is no propagation engine | retracted | 2026-09-19 |
 | V25 | SLO schema + safe mode | README.md :: SLO schema + safe mode | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
 | V26 | State persistence | README.md :: State persistence | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
 | V27 | Input macro record/playback | README.md :: Input macro record/playback | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
@@ -225,7 +227,7 @@ complete `.5.2`.
 | S28 | Formal Cost Models production status | README.md:1584 :: Formal Cost Models | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S29 | Flake Detection & Sequential FDR Control production status | README.md:1625 :: Flake Detection & Sequential FDR Control | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S30 | Rough-Path Signatures production status | README.md:1665 :: Rough-Path Signatures | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S31 | Incremental View Maintenance (IVM) production status | README.md:2642 :: Incremental View Maintenance (IVM) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S31 | Incremental View Maintenance (IVM) production status | README.md :: Incremental View Maintenance (IVM) | status | DOC | bd-lksq7 | ident:Where it runs: nowhere. There is no propagation engine | retracted | 2026-09-19 |
 | S32 | SOS Barrier Certificates production status | README.md:2667 :: SOS Barrier Certificates | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S33 | S3-FIFO Cache production status | README.md:2694 :: S3-FIFO Cache | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S34 | Flat Combining production status | README.md:2717 :: Flat Combining | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
@@ -312,7 +314,11 @@ These are September 1 observations, not current verification results.
 - V21: DEAD / NOT COMPILED. Historical evidence: width_cache.rs; countmin_sketch.rs orphan.
 - V22: UNREFERENCED. Historical evidence: flat_combine.rs.
 - V23: WRONG_API / DEAD. Historical evidence: lens.rs.
-- V24: DEAD. Historical evidence: ivm.rs.
+- V24: DEAD. Historical evidence: ivm.rs. Re-verified 2026-09-19 and still dead:
+  no propagation engine, only `std::fmt`/`std::hash` imported, and the four
+  operators the README diagram named (`StyleMap`, `TextWrap`, `FlexSolve`,
+  `RenderPlan`) exist nowhere. Claim retracted in both README.md and ivm.rs;
+  building the engine is bd-lksq7.
 - V25: WRONG_API / DEAD. Historical evidence: slo.rs.
 - V26: WORKING (API names wrong). Historical evidence: state_persistence.rs, program.rs:3224.
 - V27: WORKING (player API wrong). Historical evidence: input_macro.rs.

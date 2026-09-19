@@ -2733,26 +2733,17 @@ Scroll-region without synchronized output: the fast path is the same DECSTBM reg
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-Rather than recomputing layouts, styled text, and visibility flags from scratch every frame, FrankenTUI can propagate *deltas* through a DAG of view operators:
+The idea is to stop recomputing layouts, styled text, and visibility flags from scratch every frame, and instead propagate *deltas* through a DAG of view operators — the technique materialized-view databases use (Materialize, Noria), adapted for frame-rate rendering.
 
-```
-Observable<Theme>   Observable<Content>   Observable<Constraint>
-       │                    │                      │
-       ▼                    ▼                      ▼
-   ┌────────┐         ┌─────────┐           ┌───────────┐
-   │StyleMap │         │ TextWrap │           │ FlexSolve │
-   └────┬───┘         └────┬────┘           └─────┬─────┘
-        │                  │                       │
-        └──────────┬───────┘───────────────────────┘
-                   ▼
-            ┌────────────┐
-            │ RenderPlan │  ← only dirty nodes recomputed
-            └────────────┘
-```
+**Where it runs: nowhere. There is no propagation engine.** `ftui_runtime::ivm` has the pieces such an engine would need and not the engine itself, verified 2026-09-19:
 
-When only the theme changes, the style map operator emits deltas that flow to `RenderPlan` without re-running text wrapping or constraint solving. When only a single text cell changes, only that cell's wrapping is recomputed.
+- Nothing walks the DAG feeding one view's output into the next. The module's only `use` statements are `std::fmt` and `std::hash`, so no delta can reach a `Buffer` or the presenter.
+- An earlier version of this section showed a diagram with `StyleMap`, `TextWrap`, `FlexSolve` and `RenderPlan` operators, and said theme-change deltas flow to `RenderPlan` without re-running wrapping or constraint solving. **None of those four types exist**, and neither do the `LayoutView`/`RenderView` that the module's own docs named — the two descriptions did not even agree with each other.
+- `FRANKENTUI_FULL_RECOMPUTE=1` is read by `IvmConfig::from_env`, but nothing reads the resulting flag, so it changes no behaviour.
 
-This is the same technique used by materialized-view databases (e.g., Materialize, Noria), adapted for frame-rate rendering.
+What does exist, and is tested: the signed-tuple delta algebra (`(key, weight, logical_time)` with cancellation), a DAG with topological ordering and cycle detection, a fallback-policy predicate, and two `IncrementalView` implementations (`StyleResolutionView`, `FilteredListView`). Useful groundwork; not something you can turn on.
+
+Before anyone builds the engine, note that the render cost surface measured on 2026-09-19 found `buffer_diff` to be the **cheapest** pipeline stage at 9–18% of the frame, while `cell_mutation` and `presenter_emit` dominate ([docs/perf/cost_surface_stage_dominance_2026-09-19.md](docs/perf/cost_surface_stage_dominance_2026-09-19.md)). An incremental layer that avoids recomputation has to beat simply doing the work — which is the measurement that stopped the e-graph. Tracked in `bd-lksq7`.
 
 ---
 
