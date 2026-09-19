@@ -444,6 +444,22 @@ impl<T> Virtualized<T> {
             return;
         }
 
+        // With variable heights, how many items fit depends on *where* in the
+        // list you are, and `visible_count` was measured at the previous
+        // offset. Subtracting a count taken near the top lands short of the
+        // end when the trailing items are taller, leaving the final item off
+        // screen — which is what happens when a list renders and the user then
+        // presses End. Defer to `visible_range`, whose bottom-anchoring arm
+        // measures from the end instead.
+        //
+        // Fixed heights keep the concrete offset: the count cannot vary with
+        // position, so it is always right, and callers reading
+        // `scroll_offset()` still see a real index.
+        if !matches!(self.item_height, ItemHeight::Fixed(_)) {
+            self.scroll_offset = usize::MAX;
+            return;
+        }
+
         let visible_count = self.visible_count.get();
         if visible_count == 0 {
             // Viewport unknown; keep a sentinel and let `visible_range` clamp lazily.
@@ -3462,6 +3478,60 @@ mod tests {
         // All items height 2, viewport 6 -> 3 items visible
         let range = virt.visible_range(6);
         assert_eq!(range.end - range.start, 3);
+    }
+
+    proptest! {
+        /// The Fenwick tracker is an O(log n) reimplementation of the cache's
+        /// linear scan, and the two must answer identically. The only existing
+        /// Fenwick coverage uses one viewport and uniform heights, which cannot
+        /// catch a divergence in the bottom-anchoring arms - those only engage
+        /// when the tail from the current offset cannot fill the viewport.
+        #[test]
+        fn variable_height_implementations_agree(
+            heights in proptest::collection::vec(1u16..=5, 1..40),
+            viewport in 1u16..=20,
+            default_height in 1u16..=4,
+            offset_seed in 0usize..64,
+        ) {
+            let len = heights.len();
+            let mut cache: Virtualized<usize> =
+                Virtualized::new(len).with_variable_heights(default_height);
+            let mut fenwick: Virtualized<usize> =
+                Virtualized::new(len).with_variable_heights_fenwick(default_height, len);
+            for i in 0..len {
+                cache.push(i);
+                fenwick.push(i);
+            }
+            for (idx, height) in heights.iter().enumerate() {
+                cache.observe_height(idx, *height);
+                fenwick.observe_height(idx, *height);
+            }
+
+            let offset = offset_seed % len;
+            cache.scroll_to(offset);
+            fenwick.scroll_to(offset);
+            prop_assert_eq!(
+                cache.visible_range(viewport),
+                fenwick.visible_range(viewport),
+                "implementations disagree at len={} viewport={} offset={}",
+                len,
+                viewport,
+                offset
+            );
+
+            // Both must also be able to reach the last item.
+            cache.scroll_to_bottom();
+            fenwick.scroll_to_bottom();
+            let bottom_cache = cache.visible_range(viewport);
+            let bottom_fenwick = fenwick.visible_range(viewport);
+            prop_assert_eq!(&bottom_cache, &bottom_fenwick, "bottom anchoring disagrees");
+            prop_assert!(
+                bottom_cache.contains(&(len - 1)),
+                "last item unreachable: range {:?} of {} items",
+                bottom_cache,
+                len
+            );
+        }
     }
 
     #[test]
