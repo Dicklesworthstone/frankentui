@@ -3782,6 +3782,18 @@ mod tests {
                     }
                 }
 
+                // The invariants below are safety properties: they say no bad
+                // transition appears, so they would also hold if no transition
+                // appeared at all. This keeps that from passing silently --
+                // every event logs a decision, so an empty log means logging
+                // stopped rather than that the schedule was calm. That
+                // transitions do occur on realistic schedules is pinned
+                // deterministically by
+                // `transition_reason_codes_and_evidence_fields_are_logged`.
+                if !gaps.is_empty() {
+                    prop_assert!(!c.logs().is_empty(), "events logged no decisions");
+                }
+
                 let mut previous_to: Option<Regime> = None;
                 for log in c.logs() {
                     if let Some(p) = log.p_burst {
