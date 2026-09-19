@@ -1104,7 +1104,7 @@ settings can enable sampling between forced intervals.
 
 ### E-Process: Anytime-Valid Testing
 
-All statistical thresholds use **e-processes** (wealth-based sequential tests):
+Several statistical thresholds use **e-processes** (wealth-based sequential tests):
 
 ```
 Wealth process:
@@ -1119,10 +1119,14 @@ This holds at ANY stopping time, with no peeking penalty.
 ```
 
 **Applications in FrankenTUI:**
-- Budget degradation decisions
+- Budget degradation decisions (`ftui_render::budget`'s `EProcessState`, on the render path)
 - Flake detection in tests (experimental)
 - Allocation budget alerts (experimental)
-- Conformal prediction thresholds
+- Conformal *alert* threshold calibration (experimental `conformal_alert`)
+
+Not the Mondrian conformal frame-time gate described below, which is the
+conformal path that is on by default: it calibrates from residual quantiles
+and carries no e-process.
 
 ### Conformal Alerting
 
