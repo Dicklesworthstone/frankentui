@@ -916,6 +916,7 @@ mod tests {
     use ftui_render::cell::{CellAttrs, PackedRgba};
     use ftui_render::frame::Frame;
     use ftui_render::grapheme_pool::GraphemePool;
+    use proptest::prelude::*;
 
     #[test]
     fn empty_source() {
@@ -1641,6 +1642,173 @@ mod tests {
                         fb.buffer.get(x, y).unwrap().content.as_char(),
                         "cell ({x},{y})"
                     );
+                }
+            }
+        }
+
+        #[test]
+        fn stateless_widget_equals_default_state() {
+            stateful_render_equals_widget_when_unfolded();
+        }
+
+        fn frame_row(frame: &Frame, y: u16, width: u16) -> String {
+            (0..width)
+                .map(|x| {
+                    let cell = frame.buffer.get(x, y).unwrap();
+                    if let Some(ch) = cell.content.as_char() {
+                        ch
+                    } else if let Some(gid) = cell.content.grapheme_id() {
+                        frame
+                            .pool
+                            .get(gid)
+                            .and_then(|s| s.chars().next())
+                            .unwrap_or(' ')
+                    } else {
+                        ' '
+                    }
+                })
+                .collect()
+        }
+
+        #[test]
+        fn scroll_keeps_cursor_visible() {
+            // 40x4 area, 20 lines (18 numbers in array + [ and ]), cursor at line 15 -> scroll becomes 12.
+            let items: Vec<String> = (1..=18).map(|i| i.to_string()).collect();
+            let json = format!("[{}]", items.join(","));
+            let view = JsonView::new(&json);
+            assert_eq!(view.formatted_lines().len(), 20);
+
+            let mut state = JsonViewState::new();
+            state.cursor_line = 15;
+
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(40, 4, &mut pool);
+            StatefulWidget::render(&view, Rect::new(0, 0, 40, 4), &mut frame, &mut state);
+
+            assert_eq!(state.scroll, 12);
+        }
+
+        #[test]
+        fn json_view_folded_root_40x12() {
+            let doc = r#"{"name":"ftui","widgets":57,"screens":[1,2,3],"nested":{"ok":true,"deep":{"x":null}}}"#;
+            let view = JsonView::new(doc);
+            let mut state = JsonViewState::new();
+            state.fold(&vec![]); // root path is empty
+
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(40, 12, &mut pool);
+            StatefulWidget::render(&view, Rect::new(0, 0, 40, 12), &mut frame, &mut state);
+
+            let row0 = frame_row(&frame, 0, 40);
+            assert_eq!(row0.trim_end(), "▸ {…} (4 keys)");
+            for y in 1..12 {
+                let row = frame_row(&frame, y, 40);
+                assert_eq!(row.trim(), "", "row {y} should be empty");
+            }
+        }
+
+        #[test]
+        fn json_view_unfolded_40x12() {
+            let doc = r#"{"name":"ftui","widgets":57,"screens":[1,2,3],"nested":{"ok":true,"deep":{"x":null}}}"#;
+            let view = JsonView::new(doc);
+            let mut state = JsonViewState::new();
+
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(40, 12, &mut pool);
+            StatefulWidget::render(&view, Rect::new(0, 0, 40, 12), &mut frame, &mut state);
+
+            let rows: Vec<String> = (0..12)
+                .map(|y| frame_row(&frame, y, 40).trim_end().to_string())
+                .collect();
+            let expected = [
+                "{",
+                "  \"name\": \"ftui\",",
+                "  \"widgets\": 57,",
+                "  \"screens\": [",
+                "    1,",
+                "    2,",
+                "    3",
+                "  ],\"nested\": {",
+                "    \"ok\": true,",
+                "    \"deep\": {",
+                "      \"x\": null",
+                "    }",
+            ];
+            assert_eq!(rows, expected);
+        }
+
+        fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
+            let leaf = prop_oneof![
+                Just(serde_json::Value::Null),
+                any::<bool>().prop_map(serde_json::Value::Bool),
+                (-1000i64..1000).prop_map(|n| serde_json::Value::Number(n.into())),
+                "[a-zA-Z0-9_]{1,8}".prop_map(serde_json::Value::String),
+            ];
+            leaf.prop_recursive(
+                4,  // 4 levels deep
+                24, // max size 24 nodes
+                6,  // up to 6 items per collection
+                |inner| {
+                    prop_oneof![
+                        prop::collection::vec(inner.clone(), 0..6)
+                            .prop_map(serde_json::Value::Array),
+                        prop::collection::hash_map("[a-z]{1,4}", inner, 0..6).prop_map(|m| {
+                            let map = m.into_iter().collect::<serde_json::Map<_, _>>();
+                            serde_json::Value::Object(map)
+                        }),
+                    ]
+                },
+            )
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            #[test]
+            fn prop_fold_all_unfold_all_identity(val in arb_json_value()) {
+                let json_str = val.to_string();
+                let view = JsonView::new(&json_str);
+                let flat = view.formatted_lines();
+                let mut state = JsonViewState::new();
+                state.fold_all(&view);
+                state.unfold_all();
+                let restored: Vec<Vec<JsonToken>> = view
+                    .lines_with_state(&state)
+                    .into_iter()
+                    .map(|l| l.tokens)
+                    .collect();
+                prop_assert_eq!(flat, restored);
+            }
+
+            #[test]
+            fn prop_foldable_paths_are_unique(val in arb_json_value()) {
+                let json_str = val.to_string();
+                let view = JsonView::new(&json_str);
+                let lines = view.lines_with_state(&JsonViewState::default());
+                let paths: Vec<JsonPath> = lines
+                    .iter()
+                    .filter(|l| l.foldable)
+                    .filter_map(|l| l.path.clone())
+                    .collect();
+                let unique: HashSet<JsonPath> = paths.iter().cloned().collect();
+                prop_assert_eq!(paths.len(), unique.len());
+            }
+
+            #[test]
+            fn prop_folding_never_increases_line_count(val in arb_json_value()) {
+                let json_str = val.to_string();
+                let view = JsonView::new(&json_str);
+                let default_lines = view.lines_with_state(&JsonViewState::default());
+                let foldable_paths: Vec<JsonPath> = default_lines
+                    .iter()
+                    .filter(|l| l.foldable)
+                    .filter_map(|l| l.path.clone())
+                    .collect();
+                for path in foldable_paths {
+                    let mut state = JsonViewState::new();
+                    state.fold(&path);
+                    let folded_lines = view.lines_with_state(&state);
+                    prop_assert!(folded_lines.len() <= default_lines.len());
                 }
             }
         }
