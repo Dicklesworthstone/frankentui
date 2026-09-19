@@ -2418,6 +2418,7 @@ mod tests {
     fn steady_regime_delay_is_16ms_and_burst_is_40ms() {
         let config = CoalescerConfig::default();
         assert_eq!((config.steady_delay_ms, config.burst_delay_ms), (16, 40));
+        let thresholds = config.bocpd_config.clone().unwrap_or_default();
 
         // Steady: 200 ms spacing is exactly mu_steady_ms.
         let mut steady = ResizeCoalescer::new(config.clone(), (80, 24));
@@ -2427,20 +2428,20 @@ mod tests {
         }
         let p_steady = steady.bocpd_p_burst().expect("bocpd is on by default");
         assert!(
-            p_steady < config.bocpd_config.clone().unwrap_or_default().steady_threshold,
+            p_steady < thresholds.steady_threshold,
             "200 ms spacing should read as steady, p_burst={p_steady}"
         );
         assert_eq!(steady.bocpd_recommended_delay(), Some(16));
 
         // Burst: 5 ms spacing is well under mu_burst_ms.
-        let mut burst = ResizeCoalescer::new(config.clone(), (80, 24));
+        let mut burst = ResizeCoalescer::new(config, (80, 24));
         let base = Instant::now();
         for i in 1..=30u64 {
             burst.handle_resize_at(100, 40, base + Duration::from_millis(i * 5));
         }
         let p_burst = burst.bocpd_p_burst().expect("bocpd is on by default");
         assert!(
-            p_burst > config.bocpd_config.clone().unwrap_or_default().burst_threshold,
+            p_burst > thresholds.burst_threshold,
             "5 ms spacing should read as burst, p_burst={p_burst}"
         );
         assert_eq!(burst.bocpd_recommended_delay(), Some(40));
