@@ -898,8 +898,8 @@ fn integration_locale_cycle_wraps() {
 
     let initial = render_lines(&screen, 120, 40);
 
-    // Press Right 6 times (for 6 locales) should wrap back to initial
-    for _ in 0..6 {
+    // Press Right 7 times (for 7 locales) should wrap back to initial
+    for _ in 0..7 {
         let _ = screen.update(&key_press(KeyCode::Right));
     }
     let after_cycle = render_lines(&screen, 120, 40);
