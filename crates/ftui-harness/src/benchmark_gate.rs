@@ -1018,6 +1018,9 @@ mod tests {
             Measurement::new("runtime_first_frame", 5_000_000.0).unit("ns"),
             Measurement::new("runtime_command_roundtrip", 100_000.0).unit("ns"),
             Measurement::new("runtime_effect_queue_drain", 500_000.0).unit("ns"),
+            Measurement::new("diff_200x60_sparse", 42_000.0).unit("ns"),
+            Measurement::new("text_width_non_ascii", 15.0).unit("ns"),
+            Measurement::new("text_width_non_ascii_uncached", 65.0).unit("ns"),
         ]
     }
 
@@ -1066,7 +1069,7 @@ mod tests {
             "all runtime metrics should pass: {}",
             result.summary()
         );
-        assert_eq!(result.pass_count, 14);
+        assert_eq!(result.pass_count, 17);
         assert!(result.validation_errors.is_empty());
     }
 
@@ -1086,7 +1089,7 @@ mod tests {
         let result = gate.evaluate(&measurements);
         assert!(!result.passed(), "regression should fail the gate");
         assert_eq!(result.fail_count, 1);
-        assert_eq!(result.pass_count, 13);
+        assert_eq!(result.pass_count, 16);
         assert!(result.validation_errors.is_empty());
 
         let failures = result.failures();
