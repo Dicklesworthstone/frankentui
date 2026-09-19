@@ -28,7 +28,7 @@ use ftui_widgets::padding::Padding;
 use ftui_widgets::panel::Panel;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
-use ftui_widgets::table::{Row, Table, TableState};
+use ftui_widgets::table::{Row, Table, TableState, Truncate};
 use ftui_widgets::{StatefulWidget, Widget};
 use std::time::{Duration, Instant};
 
@@ -47,6 +47,7 @@ fn preset_label(preset: Option<TablePresetId>) -> &'static str {
         Some(TablePresetId::Paper) => "paper",
         Some(TablePresetId::Midnight) => "midnight",
         Some(TablePresetId::TerminalClassic) => "terminal_classic",
+        Some(TablePresetId::Modern) => "modern",
         None => "custom",
     }
 }
@@ -421,6 +422,35 @@ fn snapshot_table_fit_content_wide_glyphs() {
     let mut frame = Frame::new(24, 4, &mut pool);
     Widget::render(&table, Rect::new(0, 0, 24, 4), &mut frame);
     assert_snapshot!("table_fit_content_wide_glyphs", &frame.buffer);
+}
+
+#[test]
+fn snapshot_table_column_options_60x8() {
+    let theme = TableTheme::modern().with_stripe_period(3);
+    let table = Table::new(
+        [
+            Row::new(["Item 1", "日本語テキスト 長い文字列", "1,250"]),
+            Row::new(["Item 2", "短いテキスト", "340"]),
+            Row::new(["Item 3", "非常に長い日本語の説明文", "9,876"]),
+            Row::new(["Item 4", "通常テキスト", "42"]),
+            Row::new(["Item 5", "第五行のテキスト", "100"]),
+            Row::new(["Item 6", "第六行のテキスト", "200"]),
+        ],
+        [
+            Constraint::Fixed(12),
+            Constraint::Percentage(50.0),
+            Constraint::Fixed(12),
+        ],
+    )
+    .header(Row::new(["ID", "CJK Description", "Amount"]))
+    .theme(theme)
+    .with_column_truncation(1, Truncate::Ellipsis)
+    .with_column_alignment(2, Alignment::Right);
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(60, 8, &mut pool);
+    Widget::render(&table, Rect::new(0, 0, 60, 8), &mut frame);
+    assert_snapshot!("table_column_options_60x8", &frame.buffer);
 }
 
 // ============================================================================

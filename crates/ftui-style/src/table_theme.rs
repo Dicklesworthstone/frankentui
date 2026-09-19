@@ -47,6 +47,24 @@ pub enum TablePresetId {
     Midnight,
     /// Classic terminal styling (ANSI-friendly).
     TerminalClassic,
+    /// Neutral modern palette based on graphite with bold header and subtle dividers.
+    Modern,
+}
+
+impl TablePresetId {
+    /// All available table preset IDs.
+    pub const ALL: &'static [Self] = &[
+        Self::Aurora,
+        Self::Graphite,
+        Self::Neon,
+        Self::Slate,
+        Self::Solar,
+        Self::Orchard,
+        Self::Paper,
+        Self::Midnight,
+        Self::TerminalClassic,
+        Self::Modern,
+    ];
 }
 
 /// Semantic table sections.
@@ -408,7 +426,7 @@ impl<'a> TableEffectResolver<'a> {
 /// use ftui_render::cell::PackedRgba;
 ///
 /// let theme = TableTheme::terminal_classic()
-///     .with_header(Style::new().fg(PackedRgba::rgb(240, 240, 240)).bold())
+///     .with_header_style(Style::new().fg(PackedRgba::rgb(240, 240, 240)).bold())
 ///     .with_row_alt(Style::new().bg(PackedRgba::rgb(20, 20, 20)))
 ///     .with_divider(Style::new().fg(PackedRgba::rgb(60, 60, 60)))
 ///     .with_padding(1)
@@ -436,6 +454,8 @@ pub struct TableTheme {
     pub column_gap: u8,
     /// Row height in terminal lines.
     pub row_height: u8,
+    /// Stripe period for alternate rows (default 2; 0 disables striping).
+    pub stripe_period: u8,
     /// Effect rules resolved per row/column/section.
     pub effects: Vec<TableEffectRule>,
     /// Optional preset identifier for diagnostics.
@@ -452,6 +472,13 @@ pub struct TableThemeDiagnostics {
     pub padding: u8,
     pub column_gap: u8,
     pub row_height: u8,
+    pub stripe_period: u8,
+}
+
+#[inline]
+#[allow(dead_code)]
+const fn default_stripe_period() -> u8 {
+    2
 }
 
 /// Serializable spec for exporting/importing table themes.
@@ -476,6 +503,9 @@ pub struct TableThemeSpec {
     pub padding: u8,
     pub column_gap: u8,
     pub row_height: u8,
+    /// Stripe period for alternate rows (default 2; 0 disables striping).
+    #[cfg_attr(feature = "serde", serde(default = "default_stripe_period"))]
+    pub stripe_period: u8,
     /// Style buckets.
     pub styles: TableThemeStyleSpec,
     /// Effects applied to the theme.
@@ -652,6 +682,7 @@ impl TableThemeSpec {
             padding: theme.padding,
             column_gap: theme.column_gap,
             row_height: theme.row_height,
+            stripe_period: theme.stripe_period,
             styles: TableThemeStyleSpec {
                 border: StyleSpec::from_style(&theme.border),
                 header: StyleSpec::from_style(&theme.header),
@@ -683,6 +714,7 @@ impl TableThemeSpec {
             padding: self.padding,
             column_gap: self.column_gap,
             row_height: self.row_height,
+            stripe_period: self.stripe_period,
             effects: self
                 .effects
                 .into_iter()
@@ -1176,6 +1208,7 @@ impl TableTheme {
             TablePresetId::Paper => Self::paper(),
             TablePresetId::Midnight => Self::midnight(),
             TablePresetId::TerminalClassic => Self::terminal_classic(),
+            TablePresetId::Modern => Self::modern(),
         }
     }
 
@@ -1188,7 +1221,7 @@ impl TableTheme {
 
     /// Set the header style.
     #[must_use]
-    pub fn with_header(mut self, header: Style) -> Self {
+    pub fn with_header_style(mut self, header: Style) -> Self {
         self.header = header;
         self
     }
@@ -1209,7 +1242,7 @@ impl TableTheme {
 
     /// Set the selected row style.
     #[must_use]
-    pub fn with_row_selected(mut self, row_selected: Style) -> Self {
+    pub fn with_selection_style(mut self, row_selected: Style) -> Self {
         self.row_selected = row_selected;
         self
     }
@@ -1246,6 +1279,13 @@ impl TableTheme {
     #[must_use]
     pub fn with_row_height(mut self, row_height: u8) -> Self {
         self.row_height = row_height;
+        self
+    }
+
+    /// Set stripe period for alternate rows (0 disables striping).
+    #[must_use]
+    pub fn with_stripe_period(mut self, stripe_period: u8) -> Self {
+        self.stripe_period = stripe_period;
         self
     }
 
@@ -1493,6 +1533,32 @@ impl TableTheme {
         )
     }
 
+    /// Neutral modern palette based on graphite with bold header and subtle dividers.
+    #[must_use]
+    pub fn modern() -> Self {
+        Self::build(
+            TablePresetId::Modern,
+            ThemeStyles {
+                border: Style::new().fg(PackedRgba::rgb(140, 140, 140)),
+                header: Style::new()
+                    .fg(PackedRgba::rgb(240, 240, 240))
+                    .bg(PackedRgba::rgb(70, 70, 70))
+                    .bold(),
+                row: Style::new().fg(PackedRgba::rgb(220, 220, 220)),
+                row_alt: Style::new()
+                    .fg(PackedRgba::rgb(220, 220, 220))
+                    .bg(PackedRgba::rgb(35, 35, 35)),
+                row_selected: Style::new()
+                    .fg(PackedRgba::rgb(255, 255, 255))
+                    .bg(PackedRgba::rgb(90, 90, 90)),
+                row_hover: Style::new()
+                    .fg(PackedRgba::rgb(245, 245, 245))
+                    .bg(PackedRgba::rgb(60, 60, 60)),
+                divider: Style::new().fg(PackedRgba::rgb(74, 85, 104)),
+            },
+        )
+    }
+
     /// ANSI-16 baseline with richer palettes on 256/truecolor terminals.
     #[must_use]
     pub fn terminal_classic() -> Self {
@@ -1537,6 +1603,7 @@ impl TableTheme {
             padding: 1,
             column_gap: 1,
             row_height: 1,
+            stripe_period: 2,
             effects: Vec::new(),
             preset_id: Some(preset_id),
         }
@@ -1553,6 +1620,7 @@ impl TableTheme {
             padding: self.padding,
             column_gap: self.column_gap,
             row_height: self.row_height,
+            stripe_period: self.stripe_period,
         }
     }
 
@@ -1570,6 +1638,7 @@ impl TableTheme {
         hash_u8(self.padding, &mut hasher);
         hash_u8(self.column_gap, &mut hasher);
         hash_u8(self.row_height, &mut hasher);
+        hash_u8(self.stripe_period, &mut hasher);
         hash_preset(self.preset_id, &mut hasher);
         hasher.finish()
     }
@@ -1906,6 +1975,7 @@ fn hash_table_preset(preset: TablePresetId, hasher: &mut StableHasher) {
         TablePresetId::Paper => 7,
         TablePresetId::Midnight => 8,
         TablePresetId::TerminalClassic => 9,
+        TablePresetId::Modern => 10,
     };
     hash_u8(tag, hasher);
 }
@@ -2584,6 +2654,7 @@ mod tests {
             "\"padding\"",
             "\"column_gap\"",
             "\"row_height\"",
+            "\"stripe_period\"",
             "\"styles\"",
             "\"effects\"",
         ];
@@ -3367,12 +3438,13 @@ mod tests {
         let s = Style::new().fg(PackedRgba::RED);
         let theme = TableTheme::graphite()
             .with_border(s)
-            .with_header(s)
+            .with_header_style(s)
             .with_row(s)
             .with_row_alt(s)
-            .with_row_selected(s)
+            .with_selection_style(s)
             .with_row_hover(s)
-            .with_divider(s);
+            .with_divider(s)
+            .with_stripe_period(3);
         assert_eq!(theme.border.fg, Some(PackedRgba::RED));
         assert_eq!(theme.header.fg, Some(PackedRgba::RED));
         assert_eq!(theme.row.fg, Some(PackedRgba::RED));
@@ -3380,6 +3452,7 @@ mod tests {
         assert_eq!(theme.row_selected.fg, Some(PackedRgba::RED));
         assert_eq!(theme.row_hover.fg, Some(PackedRgba::RED));
         assert_eq!(theme.divider.fg, Some(PackedRgba::RED));
+        assert_eq!(theme.stripe_period, 3);
     }
 
     #[test]
@@ -3389,7 +3462,7 @@ mod tests {
                 TableEffectTarget::AllRows,
                 pulse_effect(PackedRgba::RED, PackedRgba::BLACK),
             ))
-            .with_effects(vec![]);
+            .with_effects(Vec::new());
         assert!(theme.effects.is_empty());
     }
 
@@ -3415,6 +3488,7 @@ mod tests {
             TablePresetId::Paper,
             TablePresetId::Midnight,
             TablePresetId::TerminalClassic,
+            TablePresetId::Modern,
         ];
         for id in presets {
             let theme = TableTheme::preset(id);
@@ -3422,8 +3496,50 @@ mod tests {
             assert_eq!(theme.padding, 1);
             assert_eq!(theme.column_gap, 1);
             assert_eq!(theme.row_height, 1);
+            assert_eq!(theme.stripe_period, 2);
             assert!(theme.effects.is_empty());
         }
+    }
+
+    #[test]
+    fn modern_preset_has_id() {
+        let theme = TableTheme::modern();
+        assert_eq!(theme.preset_id, Some(TablePresetId::Modern));
+        assert_eq!(theme.stripe_period, 2);
+        let preset_theme = TableTheme::preset(TablePresetId::Modern);
+        assert_eq!(preset_theme.preset_id, Some(TablePresetId::Modern));
+        assert_eq!(theme.style_hash(), preset_theme.style_hash());
+    }
+
+    #[test]
+    fn stripe_period_default_is_two() {
+        assert_eq!(TableTheme::default().stripe_period, 2);
+        for id in TablePresetId::ALL {
+            assert_eq!(TableTheme::preset(*id).stripe_period, 2);
+        }
+    }
+
+    #[test]
+    fn diagnostics_include_stripe_period() {
+        let theme = TableTheme::modern().with_stripe_period(3);
+        let diag = theme.diagnostics();
+        assert_eq!(diag.stripe_period, 3);
+    }
+
+    #[test]
+    fn readme_builder_chain_compiles() {
+        let theme = TableTheme::modern()
+            .with_stripe_period(2)
+            .with_header_style(Style::new().bold())
+            .with_selection_style(Style::new());
+        assert_eq!(theme.stripe_period, 2);
+        assert!(
+            theme
+                .header
+                .attrs
+                .unwrap_or_default()
+                .contains(crate::style::StyleFlags::BOLD)
+        );
     }
 
     #[test]

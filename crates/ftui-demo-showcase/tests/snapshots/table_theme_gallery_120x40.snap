@@ -20,16 +20,16 @@
 │                           │ │                           │ │                           │ │                           │ 
 ╰───────────────────────────╯ ╰───────────────────────────╯ ╰───────────────────────────╯ ╰───────────────────────────╯ 
                                                                                                                         
-╭─────Terminal Classic──────╮ ╭─────Terminal Classic+─────╮                                                             
-│ANSI-16 baseline           │ │modern terminals           │                                                             
-│                           │ │                           │                                                             
-│Metric       │Value   │Tren│ │Metric       │Value   │Tren│                                                             
-│Latency      │16.2ms  │v   │ │Latency      │16.2ms  │v   │                                                             
-│Errors       │0.3%    │v   │ │Errors       │0.3%    │v   │                                                             
-│Throughput   │9.8k/s  │^   │ │Throughput   │9.8k/s  │^   │                                                             
-│Cache Hit    │94%     │^   │ │Cache Hit    │94%     │^   │                                                             
-│                           │ │                           │                                                             
-╰───────────────────────────╯ ╰───────────────────────────╯                                                             
+╭──────────Modern───────────╮ ╭─────Terminal Classic──────╮ ╭─────Terminal Classic+─────╮                               
+│neutral + bold header      │ │ANSI-16 baseline           │ │modern terminals           │                               
+│                           │ │                           │ │                           │                               
+│Metric       │Value   │Tren│ │Metric       │Value   │Tren│ │Metric       │Value   │Tren│                               
+│Latency      │16.2ms  │v   │ │Latency      │16.2ms  │v   │ │Latency      │16.2ms  │v   │                               
+│Errors       │0.3%    │v   │ │Errors       │0.3%    │v   │ │Errors       │0.3%    │v   │                               
+│Throughput   │9.8k/s  │^   │ │Throughput   │9.8k/s  │^   │ │Throughput   │9.8k/s  │^   │                               
+│Cache Hit    │94%     │^   │ │Cache Hit    │94%     │^   │ │Cache Hit    │94%     │^   │                               
+│                           │ │                           │ │                           │                               
+╰───────────────────────────╯ ╰───────────────────────────╯ ╰───────────────────────────╯                               
                                                                                                                         
 ╭─────────────────────────────────────────────Preview · Aurora · Markdown──────────────────────────────────────────────╮
 │View(V): Markdown | Header(H): Off | Zebra(Z): Subtle                                                                 │

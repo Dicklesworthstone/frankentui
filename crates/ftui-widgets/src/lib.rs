@@ -271,6 +271,7 @@ pub use paginator::{Paginator, PaginatorMode};
 pub use panel::Panel;
 pub use sparkline::{Sparkline, SparklineMarkers};
 pub use status_line::{StatusItem, StatusLine};
+pub use table::{ColumnSpec, Row, Table, TableState, Truncate};
 pub use tabs::{Tab, Tabs, TabsState};
 pub use virtualized::{
     HeightCache, ItemHeight, RenderItem, Virtualized, VirtualizedList, VirtualizedListState,

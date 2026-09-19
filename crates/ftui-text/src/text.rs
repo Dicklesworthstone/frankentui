@@ -997,6 +997,14 @@ fn wrap_line_words<'a>(line: &Line<'a>, width: usize, char_fallback: bool) -> Ve
                     let available = width.saturating_sub(current_width).max(1);
                     let (left, right) = remaining.split_at_cell(available);
 
+                    if left.is_empty() && !current.is_empty() {
+                        lines.push(trim_line_trailing(current));
+                        current = Line::new();
+                        current_width = 0;
+                        first_line = false;
+                        continue;
+                    }
+
                     // Force progress if the first grapheme is too wide for `available`
                     // and we are at the start of a line (so we can't wrap further).
                     let (left, right) =

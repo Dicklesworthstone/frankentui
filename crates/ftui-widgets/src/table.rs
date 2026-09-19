@@ -1,4 +1,4 @@
-use crate::block::Block;
+use crate::block::{Alignment, Block};
 use crate::mouse::MouseResult;
 use crate::undo_support::{TableUndoExt, UndoSupport, UndoWidgetId};
 use crate::{
@@ -12,7 +12,8 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::{
-    Style, TableEffectResolver, TableEffectScope, TableEffectTarget, TableSection, TableTheme,
+    Style, TableEffectResolver, TableEffectScope, TableEffectTarget, TablePresetId, TableSection,
+    TableTheme,
 };
 use ftui_text::{Line, Span, Text};
 use std::any::Any;
@@ -73,11 +74,44 @@ impl Row {
     }
 }
 
+/// Text truncation policy for table columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Truncate {
+    /// Hard clip at column boundary without ellipsis.
+    #[default]
+    Clip,
+    /// Truncate with an ellipsis (`…` or `...` for ASCII themes) when text exceeds column width.
+    Ellipsis,
+    /// Wrap text across multiple lines up to `TableTheme::row_height` lines.
+    Wrap,
+}
+
+/// Layout and formatting specifications for an individual table column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ColumnSpec {
+    /// Truncation policy for cells in this column.
+    pub truncation: Truncate,
+    /// Text alignment within the column.
+    pub alignment: Alignment,
+}
+
+impl ColumnSpec {
+    /// Create a new column specification.
+    #[must_use]
+    pub const fn new(truncation: Truncate, alignment: Alignment) -> Self {
+        Self {
+            truncation,
+            alignment,
+        }
+    }
+}
+
 /// A widget to display data in a table.
 #[derive(Debug, Clone, Default)]
 pub struct Table<'a> {
     rows: Vec<Row>,
     widths: Vec<Constraint>,
+    column_specs: Vec<ColumnSpec>,
     header: Option<Row>,
     block: Option<Block<'a>>,
     style: Style,
@@ -105,6 +139,7 @@ impl<'a> Table<'a> {
         Self {
             rows,
             widths,
+            column_specs: Vec::new(),
             header: None,
             block: None,
             style: Style::default(),
@@ -115,6 +150,36 @@ impl<'a> Table<'a> {
             hit_id: None,
             data_hash: None,
         }
+    }
+
+    /// Set the specification for a column by index.
+    #[must_use]
+    pub fn with_column_spec(mut self, col: usize, spec: ColumnSpec) -> Self {
+        if col >= self.column_specs.len() {
+            self.column_specs.resize(col + 1, ColumnSpec::default());
+        }
+        self.column_specs[col] = spec;
+        self
+    }
+
+    /// Set the truncation mode for a column by index.
+    #[must_use]
+    pub fn with_column_truncation(mut self, col: usize, truncation: Truncate) -> Self {
+        if col >= self.column_specs.len() {
+            self.column_specs.resize(col + 1, ColumnSpec::default());
+        }
+        self.column_specs[col].truncation = truncation;
+        self
+    }
+
+    /// Set the text alignment for a column by index.
+    #[must_use]
+    pub fn with_column_alignment(mut self, col: usize, alignment: Alignment) -> Self {
+        if col >= self.column_specs.len() {
+            self.column_specs.resize(col + 1, ColumnSpec::default());
+        }
+        self.column_specs[col].alignment = alignment;
+        self
     }
 
     /// Set an explicit data hash to enable caching of filtered and sorted indices.
@@ -724,6 +789,47 @@ impl<'a> StatefulWidget for Table<'a> {
             return;
         }
 
+        // Calculate column widths
+        let flex = Flex::horizontal()
+            .constraints(self.widths.clone())
+            .gap(self.column_spacing);
+
+        let intrinsic_col_widths = if Self::requires_measurement(&self.widths) {
+            if let Some(hash) = self.data_hash {
+                if let Some((cached_hash, ref widths)) = state.cached_intrinsic_widths
+                    && cached_hash == hash
+                    && widths.len() == self.widths.len()
+                {
+                    widths.clone()
+                } else {
+                    let widths: std::sync::Arc<[u16]> =
+                        Self::compute_intrinsic_widths(&self.rows, None, self.widths.len()).into();
+                    state.cached_intrinsic_widths = Some((hash, widths.clone()));
+                    widths
+                }
+            } else {
+                Self::compute_intrinsic_widths(&self.rows, None, self.widths.len()).into()
+            }
+        } else {
+            std::sync::Arc::new([])
+        };
+
+        // Solve column widths across table area
+        let column_rects = flex.split_with_measurer_stably(
+            Rect::new(table_area.x, table_area.y, table_area.width, 1),
+            |idx, _| {
+                let row_width = intrinsic_col_widths.get(idx).copied().unwrap_or(0);
+                let header_width = self
+                    .header
+                    .as_ref()
+                    .and_then(|h| h.cells.get(idx))
+                    .map(|c| c.width().min(u16::MAX as usize) as u16)
+                    .unwrap_or(0);
+                ftui_layout::LayoutSizeHint::exact(row_width.max(header_width))
+            },
+            &mut state.coherence,
+        );
+
         // Viewport geometry for rows (below the header).
         let rows_height = table_area.height.saturating_sub(header_height);
         let rows_top = table_area.y.saturating_add(header_height);
@@ -747,10 +853,12 @@ impl<'a> StatefulWidget for Table<'a> {
             let mut bottom_offset = row_count.saturating_sub(1);
             for i in (0..row_count).rev() {
                 let row = &self.rows[display_indices[i]];
+                let eff_h =
+                    effective_row_height(row, &column_rects, &self.column_specs, theme.row_height);
                 let total_row_height = if i == row_count - 1 {
-                    row.height
+                    eff_h
                 } else {
-                    row.height.saturating_add(row.bottom_margin)
+                    eff_h.saturating_add(row.bottom_margin)
                 };
 
                 if total_row_height > available_height.saturating_sub(accumulated) {
@@ -788,11 +896,17 @@ impl<'a> StatefulWidget for Table<'a> {
 
                 for (i, &row_idx) in display_indices.iter().enumerate().skip(state.offset) {
                     let row = &self.rows[row_idx];
-                    if row.height > max_y.saturating_sub(current_y) {
+                    let eff_h = effective_row_height(
+                        row,
+                        &column_rects,
+                        &self.column_specs,
+                        theme.row_height,
+                    );
+                    if eff_h > max_y.saturating_sub(current_y) {
                         break;
                     }
                     current_y = current_y
-                        .saturating_add(row.height)
+                        .saturating_add(eff_h)
                         .saturating_add(row.bottom_margin);
                     last_visible = i;
                 }
@@ -804,10 +918,16 @@ impl<'a> StatefulWidget for Table<'a> {
 
                     for i in (0..=selected_display_idx).rev() {
                         let row = &self.rows[display_indices[i]];
+                        let eff_h = effective_row_height(
+                            row,
+                            &column_rects,
+                            &self.column_specs,
+                            theme.row_height,
+                        );
                         let total_row_height = if i == selected_display_idx {
-                            row.height
+                            eff_h
                         } else {
-                            row.height.saturating_add(row.bottom_margin)
+                            eff_h.saturating_add(row.bottom_margin)
                         };
 
                         if total_row_height > available_height.saturating_sub(accumulated_height) {
@@ -838,48 +958,6 @@ impl<'a> StatefulWidget for Table<'a> {
         );
         #[cfg(feature = "tracing")]
         let _table_span_guard = table_span.clone().entered();
-
-        // Calculate column widths
-        let flex = Flex::horizontal()
-            .constraints(self.widths.clone())
-            .gap(self.column_spacing);
-
-        let intrinsic_col_widths = if Self::requires_measurement(&self.widths) {
-            if let Some(hash) = self.data_hash {
-                if let Some((cached_hash, ref widths)) = state.cached_intrinsic_widths
-                    && cached_hash == hash
-                    && widths.len() == self.widths.len()
-                {
-                    widths.clone()
-                } else {
-                    let widths: std::sync::Arc<[u16]> =
-                        Self::compute_intrinsic_widths(&self.rows, None, self.widths.len()).into();
-                    state.cached_intrinsic_widths = Some((hash, widths.clone()));
-                    widths
-                }
-            } else {
-                Self::compute_intrinsic_widths(&self.rows, None, self.widths.len()).into()
-            }
-        } else {
-            std::sync::Arc::new([])
-        };
-
-        // We need a dummy rect with correct width to solve horizontal constraints
-        let column_rects = flex.split_with_measurer_stably(
-            Rect::new(table_area.x, table_area.y, table_area.width, 1),
-            |idx, _| {
-                // Use cached intrinsic widths (rows) and merge with header width
-                let row_width = intrinsic_col_widths.get(idx).copied().unwrap_or(0);
-                let header_width = self
-                    .header
-                    .as_ref()
-                    .and_then(|h| h.cells.get(idx))
-                    .map(|c| c.width().min(u16::MAX as usize) as u16)
-                    .unwrap_or(0);
-                ftui_layout::LayoutSizeHint::exact(row_width.max(header_width))
-            },
-            &mut state.coherence,
-        );
 
         let mut y = table_area.y;
         let max_y = table_area.bottom();
@@ -946,6 +1024,9 @@ impl<'a> StatefulWidget for Table<'a> {
                 None,
                 effects,
                 effects.is_some(),
+                &self.column_specs,
+                header.height,
+                theme.preset_id,
             );
 
             // Draw sort indicator
@@ -981,32 +1062,40 @@ impl<'a> StatefulWidget for Table<'a> {
             }
 
             let row = &self.rows[row_idx];
+            let eff_height =
+                effective_row_height(row, &column_rects, &self.column_specs, theme.row_height);
             let is_selected = state.selected == Some(row_idx);
             let is_hovered = state.hovered == Some(row_idx);
-            let row_area = Rect::new(table_area.x, y, table_area.width, row.height);
+            let row_area = Rect::new(table_area.x, y, table_area.width, eff_height);
             // Include bottom margin for dividers
             let divider_area = Rect::new(
                 table_area.x,
                 y,
                 table_area.width,
-                row.height.saturating_add(row.bottom_margin),
+                eff_height.saturating_add(row.bottom_margin),
             );
 
             let row_style = if apply_styling {
                 // 1. Base: Table style
                 let mut style = self.style;
                 // 2. Theme Stripe
-                let stripe = if i % 2 == 0 { theme.row } else { theme.row_alt };
+                let stripe = if theme.stripe_period > 0
+                    && (i % (theme.stripe_period as usize)) == (theme.stripe_period as usize - 1)
+                {
+                    theme.row_alt
+                } else {
+                    theme.row
+                };
                 style = stripe.merge(&style);
                 // 3. Row Specific
                 style = row.style.merge(&style);
-                // 4. Theme Selection
-                if is_selected {
-                    style = theme.row_selected.merge(&style);
-                }
-                // 5. Theme Hover
+                // 4. Theme Hover
                 if is_hovered {
                     style = theme.row_hover.merge(&style);
+                }
+                // 5. Theme Selection
+                if is_selected {
+                    style = theme.row_selected.merge(&style);
                 }
                 // 6. Manual Highlight
                 if is_selected {
@@ -1022,7 +1111,7 @@ impl<'a> StatefulWidget for Table<'a> {
             if apply_styling && let Some((resolver, phase)) = effects {
                 if has_column_effects {
                     for (col_idx, rect) in column_rects.iter().enumerate() {
-                        let cell_area = Rect::new(rect.x, y, rect.width, row.height);
+                        let cell_area = Rect::new(rect.x, y, rect.width, eff_height);
                         let scope = TableEffectScope {
                             section: TableSection::Body,
                             row: Some(i),
@@ -1061,6 +1150,9 @@ impl<'a> StatefulWidget for Table<'a> {
                 Some(i),
                 effects,
                 has_column_effects,
+                &self.column_specs,
+                eff_height,
+                theme.preset_id,
             );
 
             // Register hit region for this row (if hit testing enabled)
@@ -1071,7 +1163,7 @@ impl<'a> StatefulWidget for Table<'a> {
 
             rendered_rows = rendered_rows.saturating_add(1);
             y = y
-                .saturating_add(row.height)
+                .saturating_add(eff_height)
                 .saturating_add(row.bottom_margin);
         }
 
@@ -1079,6 +1171,33 @@ impl<'a> StatefulWidget for Table<'a> {
         table_span.record("rendered_rows", rendered_rows as u64);
         frame.buffer.pop_scissor();
     }
+}
+
+/// Compute effective row height taking into account any wrapped columns,
+/// capped at `theme_row_height` (or `row.height` if already larger).
+fn effective_row_height(
+    row: &Row,
+    col_rects: &[Rect],
+    column_specs: &[ColumnSpec],
+    theme_row_height: u8,
+) -> u16 {
+    let mut h = row.height;
+    for (col_idx, cell) in row.cells.iter().enumerate() {
+        let spec = column_specs.get(col_idx).copied().unwrap_or_default();
+        if spec.truncation == Truncate::Wrap && col_idx < col_rects.len() {
+            let col_w = col_rects[col_idx].width as usize;
+            if col_w > 0 {
+                let mut cell_lines = 0usize;
+                for line in cell.lines() {
+                    let wrapped = line.wrap(col_w, ftui_text::WrapMode::WordChar);
+                    cell_lines = cell_lines.saturating_add(wrapped.len().max(1));
+                }
+                h = h.max(cell_lines as u16);
+            }
+        }
+    }
+    let max_h = (theme_row_height as u16).max(row.height);
+    h.min(max_h)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1092,6 +1211,9 @@ fn render_row(
     row_idx: Option<usize>,
     effects: Option<(&TableEffectResolver<'_>, f32)>,
     column_effects: bool,
+    column_specs: &[ColumnSpec],
+    rendered_height: u16,
+    preset_id: Option<TablePresetId>,
 ) {
     let apply_styling = frame.degradation.apply_styling();
     let row_effect_base = if apply_styling {
@@ -1113,12 +1235,22 @@ fn render_row(
         None
     };
 
+    let is_ascii_theme = preset_id == Some(TablePresetId::TerminalClassic);
+    let (ellipsis_str, ellipsis_width) = if is_ascii_theme {
+        ("...", 3)
+    } else {
+        ("…", 1)
+    };
+
     for (col_idx, cell_text) in row.cells.iter().enumerate() {
         if col_idx >= col_rects.len() {
             break;
         }
         let rect = col_rects[col_idx];
-        let cell_area = Rect::new(rect.x, y, rect.width, row.height);
+        let cell_area = Rect::new(rect.x, y, rect.width, rendered_height);
+        if cell_area.width == 0 {
+            continue;
+        }
         let scope = if effects.is_some() {
             Some(TableEffectScope {
                 section,
@@ -1138,14 +1270,107 @@ fn render_row(
             None
         };
 
-        for (line_idx, line) in cell_text.lines().iter().enumerate() {
-            if line_idx as u16 >= row.height {
-                break;
-            }
+        let spec = column_specs.get(col_idx).copied().unwrap_or_default();
+        let max_w = cell_area.width as usize;
 
-            let mut x = cell_area.x;
+        let lines_to_render: Vec<Line<'static>> = match spec.truncation {
+            Truncate::Wrap => {
+                let mut out_lines = Vec::new();
+                for line in cell_text.lines() {
+                    let wrapped = line.wrap(max_w, ftui_text::WrapMode::WordChar);
+                    if wrapped.is_empty() {
+                        out_lines.push(Line::new());
+                    } else {
+                        out_lines.extend(wrapped);
+                    }
+                }
+                out_lines
+            }
+            Truncate::Ellipsis => cell_text
+                .lines()
+                .iter()
+                .map(|line| {
+                    let line_width = line
+                        .spans()
+                        .iter()
+                        .map(|s| ftui_core::text_width::display_width(&s.content))
+                        .sum::<usize>();
+                    if line_width <= max_w {
+                        line.clone()
+                    } else if max_w <= ellipsis_width {
+                        let s = if is_ascii_theme {
+                            &ellipsis_str[..max_w.min(ellipsis_str.len())]
+                        } else if max_w >= 1 {
+                            "…"
+                        } else {
+                            ""
+                        };
+                        Line::from_spans([Span::raw(s.to_string())])
+                    } else {
+                        let budget = max_w - ellipsis_width;
+                        let mut truncated_spans = Vec::new();
+                        let mut used = 0usize;
+                        let mut hit_limit = false;
+                        for span in line.spans() {
+                            let mut span_text = String::new();
+                            for g in unicode_segmentation::UnicodeSegmentation::graphemes(
+                                span.content.as_ref(),
+                                true,
+                            ) {
+                                let gw = ftui_core::text_width::grapheme_width(g);
+                                if gw == 0 {
+                                    span_text.push_str(g);
+                                    continue;
+                                }
+                                if used + gw > budget {
+                                    hit_limit = true;
+                                    break;
+                                }
+                                span_text.push_str(g);
+                                used += gw;
+                            }
+                            if !span_text.is_empty() {
+                                let mut s = Span::styled(span_text, span.style.unwrap_or_default());
+                                s.link = span.link.clone();
+                                truncated_spans.push(s);
+                            }
+                            if hit_limit {
+                                break;
+                            }
+                        }
+                        let last_style = truncated_spans
+                            .last()
+                            .and_then(|s| s.style)
+                            .unwrap_or(base_style);
+                        truncated_spans.push(Span::styled(ellipsis_str.to_string(), last_style));
+                        Line::from_spans(truncated_spans)
+                    }
+                })
+                .collect(),
+            Truncate::Clip => cell_text.lines().to_vec(),
+        };
+
+        for (line_idx, line) in lines_to_render
+            .into_iter()
+            .take(rendered_height as usize)
+            .enumerate()
+        {
+            let line_width = line
+                .spans()
+                .iter()
+                .map(|s| ftui_core::text_width::display_width(&s.content))
+                .sum::<usize>();
+
+            let left_offset = match spec.alignment {
+                Alignment::Left => 0,
+                Alignment::Center => (cell_area.width as usize).saturating_sub(line_width) / 2,
+                Alignment::Right => (cell_area.width as usize).saturating_sub(line_width),
+            };
+
+            let mut x = cell_area.x.saturating_add(left_offset as u16);
+            let line_y = cell_area.y.saturating_add(line_idx as u16);
+
             for span in line.spans() {
-                // At NoStyling+, ignore span-level styles
                 let mut span_style = if apply_styling {
                     match span.style {
                         Some(s) => s.merge(&base_style),
@@ -1170,7 +1395,7 @@ fn render_row(
                 x = crate::draw_text_span_with_link(
                     frame,
                     x,
-                    cell_area.y.saturating_add(line_idx as u16),
+                    line_y,
                     &span.content,
                     span_style,
                     cell_area.right(),
@@ -3159,5 +3384,354 @@ mod tests {
             "expected rendered_rows between 1 and 4, got {:?}",
             snapshot.rendered_rows
         );
+    }
+
+    #[test]
+    fn stripe_period_zero_disables_alt_rows() {
+        let row_fg = PackedRgba::WHITE;
+        let row_alt_fg = PackedRgba::rgb(255, 255, 0);
+        let theme = TableTheme::default()
+            .with_stripe_period(0)
+            .with_row(Style::new().fg(row_fg))
+            .with_row_alt(Style::new().fg(row_alt_fg));
+
+        let rows = (0..6).map(|i| Row::new([format!("r{i}")]));
+        let table = Table::new(rows, [Constraint::Fixed(10)]).theme(theme);
+        let area = Rect::new(0, 0, 10, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 6, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        for y in 0..6 {
+            assert_eq!(
+                cell_fg(&frame.buffer, 0, y),
+                Some(row_fg),
+                "row {y} cell fg should be row_fg when stripe_period is 0"
+            );
+        }
+    }
+
+    #[test]
+    fn stripe_period_two_matches_previous_behaviour() {
+        let row_fg = PackedRgba::WHITE;
+        let row_alt_fg = PackedRgba::rgb(255, 255, 0);
+        let theme = TableTheme::default()
+            .with_stripe_period(2)
+            .with_row(Style::new().fg(row_fg))
+            .with_row_alt(Style::new().fg(row_alt_fg));
+
+        let rows = (0..6).map(|i| Row::new([format!("r{i}")]));
+        let table = Table::new(rows, [Constraint::Fixed(10)]).theme(theme);
+        let area = Rect::new(0, 0, 10, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 6, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        for y in 0..6 {
+            let expected_fg = if y % 2 == 1 { row_alt_fg } else { row_fg };
+            assert_eq!(
+                cell_fg(&frame.buffer, 0, y),
+                Some(expected_fg),
+                "row {y} cell fg unexpected for stripe_period 2"
+            );
+        }
+    }
+
+    #[test]
+    fn stripe_period_three_pattern() {
+        let row_fg = PackedRgba::WHITE;
+        let row_alt_fg = PackedRgba::rgb(255, 255, 0);
+        let theme = TableTheme::default()
+            .with_stripe_period(3)
+            .with_row(Style::new().fg(row_fg))
+            .with_row_alt(Style::new().fg(row_alt_fg));
+
+        let rows = (0..6).map(|i| Row::new([format!("r{i}")]));
+        let table = Table::new(rows, [Constraint::Fixed(10)]).theme(theme);
+        let area = Rect::new(0, 0, 10, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 6, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        // With period 3, row_index % 3 == 2 gets row_alt (rows 2 and 5)
+        for y in 0..6 {
+            let expected_fg = if y % 3 == 2 { row_alt_fg } else { row_fg };
+            assert_eq!(
+                cell_fg(&frame.buffer, 0, y),
+                Some(expected_fg),
+                "row {y} cell fg unexpected for stripe_period 3"
+            );
+        }
+    }
+
+    #[test]
+    fn header_style_applied_to_header_row() {
+        let cyan = PackedRgba::rgb(0, 205, 205);
+        let theme = TableTheme::default()
+            .with_header_style(Style::new().bold().fg(cyan))
+            .with_row(Style::new().fg(PackedRgba::WHITE));
+
+        let table = Table::new([Row::new(["B0"])], [Constraint::Fixed(10)])
+            .header(Row::new(["H0"]))
+            .theme(theme);
+
+        let area = Rect::new(0, 0, 10, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 2, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        // Header at y=0
+        let header_cell = frame.buffer.get(0, 0).copied().unwrap();
+        assert_eq!(header_cell.fg, cyan);
+        assert!(
+            header_cell
+                .attrs
+                .has_flag(ftui_render::cell::StyleFlags::BOLD)
+        );
+
+        // Body at y=1
+        let body_cell = frame.buffer.get(0, 1).copied().unwrap();
+        assert_eq!(body_cell.fg, PackedRgba::WHITE);
+        assert!(
+            !body_cell
+                .attrs
+                .has_flag(ftui_render::cell::StyleFlags::BOLD)
+        );
+    }
+
+    #[test]
+    fn selection_style_over_stripe() {
+        let stripe_bg = PackedRgba::rgb(30, 30, 30);
+        let selected_bg = PackedRgba::rgb(100, 100, 0);
+
+        let theme = TableTheme::default()
+            .with_stripe_period(2)
+            .with_row_alt(Style::new().bg(stripe_bg))
+            .with_selection_style(Style::new().bg(selected_bg));
+
+        let rows = (0..4).map(|i| Row::new([format!("r{i}")]));
+        let table = Table::new(rows, [Constraint::Fixed(10)]).theme(theme);
+
+        let area = Rect::new(0, 0, 10, 4);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 4, &mut pool);
+        let mut state = TableState::default();
+        state.select(Some(1)); // r1 would normally get row_alt (stripe_bg)
+
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        let r1_cell = frame.buffer.get(0, 1).copied().unwrap();
+        assert_eq!(
+            r1_cell.bg, selected_bg,
+            "selected row bg should override stripe bg"
+        );
+    }
+
+    #[test]
+    fn truncate_clip() {
+        let table = Table::new([Row::new(["abcdef"])], [Constraint::Fixed(4)])
+            .with_column_truncation(0, Truncate::Clip);
+
+        let area = Rect::new(0, 0, 4, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(raw_row_text(&frame.buffer, 0), "abcd");
+    }
+
+    #[test]
+    fn truncate_ellipsis_cjk_width() {
+        // In a 6-wide column, "日本語テキスト" (each glyph width 2) with Ellipsis:
+        // Budget = 6 - 1 = 5. Fits "日本" (width 4) + "…" (width 1) = 5 cells.
+        // The remaining cell 5 is blank (' '), avoiding half-glyph splitting of "語".
+        let table = Table::new([Row::new(["日本語テキスト"])], [Constraint::Fixed(6)])
+            .with_column_truncation(0, Truncate::Ellipsis);
+
+        let area = Rect::new(0, 0, 6, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        let c4 = frame.buffer.get(4, 0).and_then(|c| c.content.as_char());
+        assert_eq!(c4, Some('…'), "cell 4 should be ellipsis glyph");
+        let c5 = frame.buffer.get(5, 0).and_then(|c| c.content.as_char());
+        assert_eq!(
+            c5,
+            Some(' '),
+            "cell 5 should be trailing blank cell, not a split half glyph"
+        );
+    }
+
+    #[test]
+    fn truncate_ellipsis_ascii_fallback() {
+        // Theme preset TerminalClassic uses ASCII fallback "..." (width 3).
+        // In a 5-wide column, "abcdef" with Ellipsis:
+        // Budget = 5 - 3 = 2. Fits "ab" + "..." = "ab...".
+        let theme = TableTheme::preset(TablePresetId::TerminalClassic);
+        let table = Table::new([Row::new(["abcdef"])], [Constraint::Fixed(5)])
+            .theme(theme)
+            .with_column_truncation(0, Truncate::Ellipsis);
+
+        let area = Rect::new(0, 0, 5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(raw_row_text(&frame.buffer, 0), "ab...");
+    }
+
+    #[test]
+    fn truncate_wrap_increases_row_height() {
+        let theme = TableTheme::default().with_row_height(2);
+        let table = Table::new([Row::new(["abcdefgh"])], [Constraint::Fixed(4)])
+            .theme(theme.clone())
+            .with_column_truncation(0, Truncate::Wrap);
+
+        let area = Rect::new(0, 0, 4, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(raw_row_text(&frame.buffer, 0), "abcd");
+        assert_eq!(raw_row_text(&frame.buffer, 1), "efgh");
+
+        // Now test that longer text (12 chars) is capped at row_height = 2 lines
+        let table_capped = Table::new([Row::new(["abcdefghijkl"])], [Constraint::Fixed(4)])
+            .theme(theme)
+            .with_column_truncation(0, Truncate::Wrap);
+
+        let mut frame2 = Frame::new(4, 3, &mut pool);
+        Widget::render(&table_capped, area, &mut frame2);
+        assert_eq!(raw_row_text(&frame2.buffer, 0), "abcd");
+        assert_eq!(raw_row_text(&frame2.buffer, 1), "efgh");
+        assert_eq!(raw_row_text(&frame2.buffer, 2), "    "); // Not rendered beyond row_height
+    }
+
+    #[test]
+    fn align_right_unicode_width() {
+        // "12😀": "12" is 2 cells, "😀" is 2 cells. Total display width is 4.
+        // Width 8, right-aligned: left offset is 8 - 4 = 4.
+        // Cells 0..4 are blank, cell 4 is '1', cell 5 is '2', cell 6 is '😀', cell 7 is continuation/empty.
+        let table = Table::new([Row::new(["12😀"])], [Constraint::Fixed(8)])
+            .with_column_alignment(0, Alignment::Right);
+
+        let area = Rect::new(0, 0, 8, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(8, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        for x in 0..4 {
+            assert_eq!(
+                cell_char(&frame.buffer, x, 0),
+                Some(' '),
+                "cell {x} should be blank"
+            );
+        }
+        assert_eq!(cell_char(&frame.buffer, 4, 0), Some('1'));
+        assert_eq!(cell_char(&frame.buffer, 5, 0), Some('2'));
+        // Cell 6 holds the emoji grapheme
+        assert!(
+            frame
+                .buffer
+                .get(6, 0)
+                .is_some_and(|c| c.content.is_grapheme())
+        );
+        // Cell 7 is the trailing cell of the 2-cell emoji
+        assert!(
+            frame
+                .buffer
+                .get(7, 0)
+                .is_some_and(|c| c.content.is_continuation())
+        );
+    }
+
+    #[test]
+    fn align_center_odd_padding() {
+        // Width 7, text "ab" (width 2). Center offset = (7 - 2) / 2 = 2.
+        let table = Table::new([Row::new(["ab"])], [Constraint::Fixed(7)])
+            .with_column_alignment(0, Alignment::Center);
+
+        let area = Rect::new(0, 0, 7, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(7, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some(' '));
+        assert_eq!(cell_char(&frame.buffer, 1, 0), Some(' '));
+        assert_eq!(cell_char(&frame.buffer, 2, 0), Some('a'));
+        assert_eq!(cell_char(&frame.buffer, 3, 0), Some('b'));
+        assert_eq!(cell_char(&frame.buffer, 4, 0), Some(' '));
+        assert_eq!(cell_char(&frame.buffer, 5, 0), Some(' '));
+        assert_eq!(cell_char(&frame.buffer, 6, 0), Some(' '));
+    }
+
+    #[test]
+    fn column_spec_out_of_range_is_ignored() {
+        let table = Table::new(
+            [Row::new(["c0", "c1"])],
+            [Constraint::Fixed(5), Constraint::Fixed(5)],
+        )
+        .with_column_alignment(9, Alignment::Right);
+
+        let area = Rect::new(0, 0, 11, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(11, 1, &mut pool);
+        // Should not panic and should render normally
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('c'));
+        assert_eq!(cell_char(&frame.buffer, 1, 0), Some('0'));
+    }
+
+    use proptest::prelude::*;
+
+    fn prop_unicode_strategy() -> impl Strategy<Value = String> {
+        let ascii = "[a-zA-Z0-9 _-]{1,15}";
+        let cjk = "[\\u{4e00}-\\u{4e20}]{1,6}";
+        let emoji = prop_oneof![
+            Just("😀".to_string()),
+            Just("🎉".to_string()),
+            Just("🚀".to_string()),
+            Just("🦀".to_string()),
+            Just("✨".to_string()),
+        ];
+        let part = prop_oneof![
+            3 => ascii.prop_map(String::from),
+            2 => cjk.prop_map(String::from),
+            1 => emoji,
+        ];
+        proptest::collection::vec(part, 1..=4).prop_map(|parts| parts.concat())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        #[test]
+        fn prop_truncation_never_exceeds_width(
+            s in prop_unicode_strategy(),
+            w in 1u16..=20u16,
+            mode_idx in 0u8..3u8,
+        ) {
+            let mode = match mode_idx {
+                0 => Truncate::Clip,
+                1 => Truncate::Ellipsis,
+                _ => Truncate::Wrap,
+            };
+
+            let table = Table::new([Row::new([s])], [Constraint::Fixed(w)])
+                .with_column_truncation(0, mode);
+
+            let area = Rect::new(0, 0, w + 4, 3);
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(w + 4, 3, &mut pool);
+            Widget::render(&table, area, &mut frame);
+
+            for y in 0..3 {
+                for x in w..frame.buffer.width() {
+                    let ch = frame.buffer.get(x, y).and_then(|c| c.content.as_char());
+                    prop_assert!(ch.is_none() || ch == Some(' '));
+                }
+            }
+        }
     }
 }

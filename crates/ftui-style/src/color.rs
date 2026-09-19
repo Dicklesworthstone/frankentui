@@ -279,6 +279,41 @@ pub enum Color {
 }
 
 impl Color {
+    #[allow(non_upper_case_globals)]
+    pub const Black: PackedRgba = PackedRgba::BLACK;
+    #[allow(non_upper_case_globals)]
+    pub const White: PackedRgba = PackedRgba::WHITE;
+    #[allow(non_upper_case_globals)]
+    pub const Red: PackedRgba = PackedRgba::RED;
+    #[allow(non_upper_case_globals)]
+    pub const Green: PackedRgba = PackedRgba::GREEN;
+    #[allow(non_upper_case_globals)]
+    pub const Blue: PackedRgba = PackedRgba::BLUE;
+    #[allow(non_upper_case_globals)]
+    pub const Yellow: PackedRgba = PackedRgba::rgb(255, 255, 0);
+    #[allow(non_upper_case_globals)]
+    pub const Cyan: PackedRgba = PackedRgba::rgb(0, 205, 205);
+    #[allow(non_upper_case_globals)]
+    pub const Magenta: PackedRgba = PackedRgba::rgb(205, 0, 205);
+    #[allow(non_upper_case_globals)]
+    pub const Gray: PackedRgba = PackedRgba::rgb(128, 128, 128);
+    #[allow(non_upper_case_globals)]
+    pub const DarkGray: PackedRgba = PackedRgba::rgb(64, 64, 64);
+    #[allow(non_upper_case_globals)]
+    pub const LightGray: PackedRgba = PackedRgba::rgb(192, 192, 192);
+
+    pub const BLACK: PackedRgba = PackedRgba::BLACK;
+    pub const WHITE: PackedRgba = PackedRgba::WHITE;
+    pub const RED: PackedRgba = PackedRgba::RED;
+    pub const GREEN: PackedRgba = PackedRgba::GREEN;
+    pub const BLUE: PackedRgba = PackedRgba::BLUE;
+    pub const YELLOW: PackedRgba = PackedRgba::rgb(255, 255, 0);
+    pub const CYAN: PackedRgba = PackedRgba::rgb(0, 205, 205);
+    pub const MAGENTA: PackedRgba = PackedRgba::rgb(205, 0, 205);
+    pub const GRAY: PackedRgba = PackedRgba::rgb(128, 128, 128);
+    pub const DARK_GRAY: PackedRgba = PackedRgba::rgb(64, 64, 64);
+    pub const LIGHT_GRAY: PackedRgba = PackedRgba::rgb(192, 192, 192);
+
     /// Create a true-color RGB value.
     #[must_use]
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
@@ -330,6 +365,13 @@ impl Color {
 impl From<PackedRgba> for Color {
     fn from(color: PackedRgba) -> Self {
         Self::Rgb(Rgb::from(color))
+    }
+}
+
+impl From<Color> for PackedRgba {
+    fn from(color: Color) -> Self {
+        let rgb = color.to_rgb();
+        Self::rgb(rgb.r, rgb.g, rgb.b)
     }
 }
 

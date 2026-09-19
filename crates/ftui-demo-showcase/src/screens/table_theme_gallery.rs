@@ -68,6 +68,7 @@ impl PresetSpec {
             PresetKind::Preset(TablePresetId::Orchard) => "orchard",
             PresetKind::Preset(TablePresetId::Paper) => "paper",
             PresetKind::Preset(TablePresetId::Midnight) => "midnight",
+            PresetKind::Preset(TablePresetId::Modern) => "modern",
             PresetKind::Preset(TablePresetId::TerminalClassic) => "terminal_classic",
             PresetKind::TerminalClassicAnsi => "terminal_classic_ansi16",
             PresetKind::TerminalClassicAuto => "terminal_classic_auto",
@@ -79,13 +80,15 @@ impl PresetSpec {
 enum PreviewMode {
     Widget,
     Markdown,
+    Columns,
 }
 
 impl PreviewMode {
     fn toggle(self) -> Self {
         match self {
-            Self::Widget => Self::Markdown,
             Self::Markdown => Self::Widget,
+            Self::Widget => Self::Columns,
+            Self::Columns => Self::Markdown,
         }
     }
 
@@ -93,6 +96,7 @@ impl PreviewMode {
         match self {
             Self::Widget => "Widget",
             Self::Markdown => "Markdown",
+            Self::Columns => "Columns",
         }
     }
 }
@@ -198,6 +202,11 @@ const PRESETS: &[PresetSpec] = &[
         name: "Midnight",
         desc: "dark focus",
         kind: PresetKind::Preset(TablePresetId::Midnight),
+    },
+    PresetSpec {
+        name: "Modern",
+        desc: "neutral + bold header",
+        kind: PresetKind::Preset(TablePresetId::Modern),
     },
     PresetSpec {
         name: "Terminal Classic",
@@ -689,7 +698,38 @@ impl TableThemeGallery {
         match self.preview_mode {
             PreviewMode::Markdown => self.render_markdown_preview(frame, preview_area, theme),
             PreviewMode::Widget => self.render_widget_preview(frame, preview_area, theme),
+            PreviewMode::Columns => self.render_columns_preview(frame, preview_area, theme),
         }
+    }
+
+    fn render_columns_preview(&self, frame: &mut Frame, area: Rect, theme: TableTheme) {
+        if area.is_empty() {
+            return;
+        }
+        let widths = [
+            Constraint::Fixed(10),
+            Constraint::Percentage(50.0),
+            Constraint::Fixed(12),
+        ];
+        let rows = vec![
+            Row::new(["Item 1", "日本語テキスト 長い文字列", "1,250"]),
+            Row::new(["Item 2", "短いテキスト", "340"]),
+            Row::new(["Item 3", "非常に長い日本語の説明文", "9,876"]),
+            Row::new(["Item 4", "通常テキスト", "42"]),
+        ];
+        let theme = theme.with_stripe_period(3);
+        let table = Table::new(rows, widths)
+            .header(Row::new(["ID", "CJK Description", "Amount"]))
+            .theme(theme)
+            .theme_phase(PREVIEW_PHASE)
+            .column_spacing(1)
+            .with_column_truncation(1, ftui_widgets::table::Truncate::Ellipsis)
+            .with_column_alignment(2, Alignment::Right);
+
+        let selected_row = self.highlight_row.then_some(HIGHLIGHT_ROW_INDEX);
+        let mut state = self.preview_table_state.borrow_mut();
+        Self::reset_table_state(&mut state, selected_row);
+        StatefulWidget::render(&table, area, frame, &mut state);
     }
 
     fn card_table_area(&self, preset_idx: usize, area: Rect) -> Rect {
@@ -788,6 +828,7 @@ impl TableThemeGallery {
                 "phase": PREVIEW_PHASE,
                 "style_hash": diagnostics.style_hash,
                 "effects_hash": diagnostics.effects_hash,
+                "stripe_period": diagnostics.stripe_period,
                 "column_widths": widths,
             });
             let _ = writeln!(file, "{payload}");
@@ -815,6 +856,7 @@ impl TableThemeGallery {
             "style_hash": diagnostics.style_hash,
             "effects_hash": diagnostics.effects_hash,
             "effect_count": diagnostics.effect_count,
+            "stripe_period": diagnostics.stripe_period,
             "file_path": file_path,
             "clipboard_path": clipboard_path,
         });
@@ -863,6 +905,9 @@ impl Screen for TableThemeGallery {
                 }
                 KeyCode::Char('w') | KeyCode::Char('W') => {
                     self.preview_mode = PreviewMode::Widget;
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.preview_mode = PreviewMode::Columns;
                 }
                 KeyCode::Char('h') | KeyCode::Char('H') => {
                     self.header_emphasis = !self.header_emphasis;
@@ -1127,6 +1172,8 @@ mod tests {
         assert_eq!(gallery.preview_mode, PreviewMode::Markdown);
         gallery.update(&key_press(KeyCode::Char('w')));
         assert_eq!(gallery.preview_mode, PreviewMode::Widget);
+        gallery.update(&key_press(KeyCode::Char('c')));
+        assert_eq!(gallery.preview_mode, PreviewMode::Columns);
 
         gallery.update(&key_press(KeyCode::Char('h')));
         assert!(gallery.header_emphasis);

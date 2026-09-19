@@ -1001,6 +1001,7 @@ fn default_markdown_table_theme() -> TableTheme {
         row_height: 1,
         effects: Vec::new(),
         preset_id: None,
+        stripe_period: 2,
     }
 }
 
