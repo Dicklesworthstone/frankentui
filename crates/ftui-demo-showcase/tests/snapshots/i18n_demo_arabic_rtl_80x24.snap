@@ -1,14 +1,14 @@
-        English  Español  Français  Русский  [العربية]  Deutsch  ??????         
+        Deutsch  ??????  ]ةيبرعلا[  English  Español  Français  Русский         
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
 ╭Coverage Report──────────────────────╮ ╭String Lookup─────────────────────────╮
-│              --- Coverage Report ---│ │                       --- التدويل ---│
+│              --- Coverage Report ---│ │                       --- ليودتلا ---│
 │                                     │ │                                      │
-│                        Total keys: 6│ │                                مرحب?!│
-│                           Locales: 7│ │                           أهل? Alice!│
+│                        Total keys: 6│ │                              ?ابحرم  │
+│                           Locales: 7│ │                         !Alice?الهأ  │
 │                                     │ │                                      │
-│                    ar 100% (6/6) <--│ │              Locale: Arabic (العربية)│
-│                        de 100% (6/6)│ │       Direction: من اليمين إلى اليسار│
+│                    ar 100% (6/6) <--│ │            )ةيبرعلا( Locale: Arabic  │
+│                        de 100% (6/6)│ │     راسيلا ىلإ نيميلا نم :Direction  │
 │                        en 100% (6/6)│ │                             Flow: Rtl│
 │                        es 100% (6/6)│ │                                      │
 │                        fr 100% (6/6)│ │                                      │
