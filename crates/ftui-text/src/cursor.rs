@@ -393,9 +393,31 @@ fn line_text<'a>(rope: &'a Rope, line: usize) -> Cow<'a, str> {
     rope.line(line).unwrap_or(Cow::Borrowed(""))
 }
 
+/// Strip the line terminator from a line produced by [`Rope::line`].
+///
+/// ropey splits lines on the full Unicode set — LF, CR, CRLF, VT, FF, NEL,
+/// LINE SEPARATOR and PARAGRAPH SEPARATOR — so a line handed back by the rope
+/// can end with any of them. Stripping only LF and CR left the other five
+/// sitting in the line body, and every caller here is asking "what is this
+/// line's content", so they all saw a terminator as a grapheme.
+///
+/// That mismatch is what made backspace unable to remove U+2028 or U+2029
+/// (bd-jlecn): with the terminator counted as content, `move_grapheme_backward`
+/// returned a position on the previous line that resolved to the *same* byte
+/// offset as the cursor, so the delete range was empty.
 fn strip_trailing_newline(text: &str) -> &str {
-    let stripped = text.strip_suffix('\n').unwrap_or(text);
-    stripped.strip_suffix('\r').unwrap_or(stripped)
+    // CRLF first: the CR belongs to the same terminator as the LF.
+    if let Some(stripped) = text.strip_suffix('\n') {
+        return stripped.strip_suffix('\r').unwrap_or(stripped);
+    }
+    for terminator in [
+        '\r', '\u{000B}', '\u{000C}', '\u{0085}', '\u{2028}', '\u{2029}',
+    ] {
+        if let Some(stripped) = text.strip_suffix(terminator) {
+            return stripped;
+        }
+    }
+    text
 }
 
 fn is_blank_line(rope: &Rope, line: usize) -> bool {
@@ -1210,5 +1232,46 @@ mod tests {
         let prev_line = nav.move_grapheme_backward(next_line);
         assert_eq!(prev_line.line, 0);
         assert_eq!(prev_line.grapheme, 3);
+    }
+
+    #[test]
+    fn strip_trailing_newline_covers_every_terminator_ropey_splits_on() {
+        // ropey splits lines on all of these, so `Rope::line` can hand back a
+        // line ending with any one of them. Leaving them in the body made them
+        // count as graphemes, which is what broke backspace on U+2028/U+2029.
+        assert_eq!(strip_trailing_newline("ab\n"), "ab");
+        assert_eq!(strip_trailing_newline("ab\r\n"), "ab");
+        assert_eq!(strip_trailing_newline("ab\r"), "ab");
+        assert_eq!(strip_trailing_newline("ab\u{000B}"), "ab");
+        assert_eq!(strip_trailing_newline("ab\u{000C}"), "ab");
+        assert_eq!(strip_trailing_newline("ab\u{0085}"), "ab");
+        assert_eq!(strip_trailing_newline("ab\u{2028}"), "ab");
+        assert_eq!(strip_trailing_newline("ab\u{2029}"), "ab");
+        // Only a trailing terminator goes; interior ones and plain text stay.
+        assert_eq!(strip_trailing_newline("ab"), "ab");
+        assert_eq!(strip_trailing_newline("a\u{2028}b"), "a\u{2028}b");
+        assert_eq!(strip_trailing_newline(""), "");
+    }
+
+    #[test]
+    fn a_separator_only_line_has_no_content_to_navigate() {
+        // The rope reports two lines for a lone LINE SEPARATOR. Line 0 is the
+        // separator itself, and its *content* is empty - so stepping back from
+        // the start of line 1 must land at the start of line 0, not after it.
+        for sep in ['\u{2028}', '\u{2029}'] {
+            let r = rope(&sep.to_string());
+            let nav = CursorNavigator::new(&r);
+            let start_of_second = nav.from_line_grapheme(1, 0);
+            let back = nav.move_grapheme_backward(start_of_second);
+            assert_eq!(back.line, 0, "separator U+{:04X}", sep as u32);
+            assert_eq!(back.grapheme, 0, "separator U+{:04X}", sep as u32);
+            // Distinct byte offsets, so a delete between them is non-empty.
+            assert_ne!(
+                nav.to_byte_index(back),
+                nav.to_byte_index(start_of_second),
+                "separator U+{:04X} collapsed to an empty range",
+                sep as u32
+            );
+        }
     }
 }

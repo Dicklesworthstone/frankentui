@@ -1431,6 +1431,40 @@ mod tests {
     }
 
     #[test]
+    fn delete_removes_unicode_line_separators() {
+        // ropey counts U+2028 and U+2029 as line breaks; the cursor navigator
+        // did not, so it saw the separator as content on the previous line and
+        // produced an empty delete range. Every delete path shares that
+        // navigation, so all of them are worth pinning (bd-jlecn).
+        for sep in ['\u{2028}', '\u{2029}'] {
+            let mut ed = Editor::new();
+            ed.insert_char(sep);
+            assert!(ed.delete_backward(), "backspace U+{:04X}", sep as u32);
+            assert!(ed.is_empty(), "backspace left U+{:04X} behind", sep as u32);
+
+            let mut ed = Editor::new();
+            ed.insert_char(sep);
+            ed.move_backward();
+            assert!(ed.delete_forward(), "delete U+{:04X}", sep as u32);
+            assert!(ed.is_empty(), "delete left U+{:04X} behind", sep as u32);
+
+            let mut ed = Editor::new();
+            ed.insert_char(sep);
+            ed.move_backward();
+            assert!(
+                ed.delete_to_end_of_line(),
+                "delete_to_end_of_line U+{:04X}",
+                sep as u32
+            );
+            assert!(
+                ed.is_empty(),
+                "delete_to_end_of_line left U+{:04X} behind",
+                sep as u32
+            );
+        }
+    }
+
+    #[test]
     fn delete_backward_rtl_single_char() {
         let mut ed = Editor::new();
         // U+1E800 Mende Kikakui Syllable M001 Ki (RTL, outside BMP)
