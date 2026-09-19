@@ -172,6 +172,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # Fail when a `pub mod` is reachable from nothing in production code.
 # Pure stdlib Python, about two seconds, no cargo needed.
 make reachability        # or: python3 scripts/check_module_reachability.py
+
+# Fail when a README section marked "Status: experimental" does not say where
+# its module runs, and when a quarantined module gains a production consumer
+# while the README still says it has none. Also validates the claims ledger.
+make claims
 ```
 
 **Module reachability.** `scripts/check_module_reachability.py` exists because
@@ -189,6 +194,23 @@ entry pointed at one is stranded in silence. That happened twice (`.11.3`'s
 widgets, `.11.5`'s harness modules) before the check existed.
 
 - **Definition of done for modules:** A module counts as delivered only when it is reachable from `Program`/`Frame`/`TerminalWriter`/a widget render/the showcase, or gated experimental.
+
+**Experimental means quarantined.** `make claims` enforces the other half of
+that definition. `experimental` in this project does not mean "works but the API
+may change" — it means nothing in the render path, the runtime loop or the
+widget library constructs it. On 2026-09-19 all eleven README sections carrying
+**Status: experimental** described their module in working present tense ("the
+runtime can enter safe mode", "individual render pipeline stages have
+independent conformal monitors") while no crate imported any of them. Each such
+section must now carry a **Where it runs** line. If you wire one up, say so
+there and in the Experimental modules table; the gate fails either way round, so
+the table and the prose cannot drift apart again.
+
+Two traps when checking this by hand, both of which produced a wrong answer
+first: `ftui-render/src/presenter.rs` declares a private `mod cost_model`
+unrelated to `ftui_runtime::cost_model`, so resolve qualified paths rather than
+grepping bare names; and several experimental modules import each other, which
+is a quarantined cluster, not production adoption.
 
 If you see errors, **carefully understand and resolve each issue**. Read sufficient context to fix them the RIGHT way.
 
