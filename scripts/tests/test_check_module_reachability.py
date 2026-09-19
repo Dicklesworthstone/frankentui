@@ -223,6 +223,35 @@ class Evaluate(unittest.TestCase):
             verdicts = {f.qualified: f.verdict for f in gate.evaluate(root, {}, None)}
             self.assertEqual(verdicts["demo::inline_code"], "UNREACHABLE")
 
+    def test_module_used_only_by_tests_is_test_only(self):
+        # "nothing uses this" and "only tests use this" are different states.
+        # ftui_render::headless is 843 lines of documented CI harness with two
+        # test consumers; reporting it as dead code is what makes a gate get
+        # ignored, and acting on that report would break the tests.
+        with TemporaryDirectory() as tmp:
+            root = _workspace(Path(tmp), "pub mod thing;\n")
+            tests = root / "crates" / "demo" / "tests"
+            tests.mkdir(parents=True)
+            (tests / "uses_thing.rs").write_text(
+                "use demo::thing::Thing;\n#[test]\nfn t() { let _ = Thing; }\n",
+                encoding="utf-8",
+            )
+            verdicts = {f.qualified: f.verdict for f in gate.evaluate(root, {}, None)}
+            self.assertEqual(verdicts["demo::thing"], "TEST_ONLY")
+
+    def test_test_only_module_makes_its_allowlist_entry_stale(self):
+        # Test infrastructure does not belong on a dead-code list, so the entry
+        # should be reported as stale rather than silently accepted.
+        with TemporaryDirectory() as tmp:
+            root = _workspace(Path(tmp), "pub mod thing;\n")
+            tests = root / "crates" / "demo" / "tests"
+            tests.mkdir(parents=True)
+            (tests / "uses_thing.rs").write_text(
+                "use demo::thing::Thing;\n", encoding="utf-8"
+            )
+            findings = gate.evaluate(root, {"demo::thing": "bd-123"}, None)
+            self.assertEqual(findings[0].verdict, "STALE_ALLOWLIST")
+
     def test_allowlisted_module_passes(self):
         with TemporaryDirectory() as tmp:
             root = _workspace(Path(tmp), "pub mod thing;\n")

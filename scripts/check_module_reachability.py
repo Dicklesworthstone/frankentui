@@ -481,6 +481,16 @@ def evaluate(root: Path, allowlist: dict[str, str], only: str | None) -> list[Fi
                     hit = (Path(f"crates/{crate}/src/lib.rs"), reexport_line)
                     detail = f"re-exported at {hit[0]}:{reexport_line}"
 
+            # "Nothing uses this at all" and "only tests use this" are
+            # different states, and reporting both as UNREACHABLE is what makes
+            # this gate cry wolf. `ftui_render::headless` is 843 lines of
+            # documented CI harness with two test consumers; calling it dead
+            # code is simply wrong. TEST_ONLY names that case, does not fail,
+            # and stays countable so the set can be audited.
+            test_hit = None
+            if not hit:
+                test_hit = find_reference(module, test_paths, test_index, root)
+
             allowlisted = qualified in allowlist
 
             if hit and allowlisted:
@@ -491,6 +501,27 @@ def evaluate(root: Path, allowlist: dict[str, str], only: str | None) -> list[Fi
                 )
             elif hit:
                 findings.append(Finding(crate, module.name, "OK", detail))
+            elif test_hit and allowlisted:
+                # Test infrastructure does not belong on a dead-code list, so
+                # the entry is stale even though production still does not
+                # reference it.
+                findings.append(
+                    Finding(
+                        crate,
+                        module.name,
+                        "STALE_ALLOWLIST",
+                        f"test infrastructure, not dead: {test_hit[0]}:{test_hit[1]}",
+                    )
+                )
+            elif test_hit:
+                findings.append(
+                    Finding(
+                        crate,
+                        module.name,
+                        "TEST_ONLY",
+                        f"only tests use it, e.g. {test_hit[0]}:{test_hit[1]}",
+                    )
+                )
             elif allowlisted:
                 findings.append(
                     Finding(crate, module.name, "ALLOWLISTED", allowlist[qualified])
