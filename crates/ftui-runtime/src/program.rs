@@ -65,13 +65,16 @@ use crate::render_trace::RenderTraceConfig;
 use crate::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
-use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, TerminalWriter, UiAnchor};
+use crate::terminal_presenter::TerminalPresenter;
+#[cfg(any(feature = "crossterm-compat", test))]
+use crate::terminal_writer::TerminalWriter;
+use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, UiAnchor};
 use crate::voi_sampling::{VoiConfig, VoiSampler};
 use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor, ConformalStatus};
 #[cfg(feature = "asupersync-executor")]
 use asupersync::runtime::{BlockingTaskHandle, Runtime as AsupersyncRuntime, RuntimeBuilder};
 use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, ScreenReaderAnnouncement, ScreenReaderPolicy};
-use ftui_backend::{BackendEventSource, BackendFeatures};
+use ftui_backend::{BackendEventSource, BackendFeatures, BackendPresenter};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -101,7 +104,7 @@ use ftui_render::frame_guardrails::{
 use ftui_render::sanitize::{SanitizeMode, Text};
 use std::any::Any;
 use std::collections::HashMap;
-use std::io::{self, Stdout, Write};
+use std::io::{self, Stdout};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -146,13 +149,13 @@ pub const NO_BACKEND_MESSAGE: &str =
 
 /// The concrete [`Program`] type that `Program::open` returns in this build.
 #[cfg(all(feature = "native-backend", unix))]
-pub type DefaultProgram<M> = Program<M, ftui_tty::TtyBackend, Stdout>;
+pub type DefaultProgram<M> = Program<M, ftui_tty::TtyBackend, TerminalPresenter<Stdout>>;
 /// The concrete [`Program`] type that `Program::open` returns in this build.
 #[cfg(all(
     feature = "crossterm-compat",
     not(all(feature = "native-backend", unix))
 ))]
-pub type DefaultProgram<M> = Program<M, CrosstermEventSource, Stdout>;
+pub type DefaultProgram<M> = Program<M, CrosstermEventSource, TerminalPresenter<Stdout>>;
 
 /// Ask the live terminal what environment detection could not establish.
 ///
@@ -300,11 +303,11 @@ fn verify_scroll_region(
 /// Shared by every [`AppBuilder`] run method so the three backend paths cannot
 /// drift in how they honor the `SignalTerminationError` contract.
 #[cfg(any(all(feature = "native-backend", unix), feature = "crossterm-compat"))]
-fn finish_run<M, E, W>(mut program: Program<M, E, W>) -> io::Result<()>
+fn finish_run<M, E, P>(mut program: Program<M, E, P>) -> io::Result<()>
 where
     M: Model,
     E: BackendEventSource<Error = io::Error>,
-    W: Write + Send,
+    P: BackendPresenter<Error = io::Error>,
 {
     let result = program.run();
     if let Err(ref err) = result
@@ -545,7 +548,10 @@ impl std::fmt::Display for SignalTerminationError {
 
 impl std::error::Error for SignalTerminationError {}
 
-fn signal_termination_from_error(err: &io::Error) -> Option<i32> {
+/// If this error represents an interrupted runtime terminated by a signal,
+/// return the signal number (e.g. 15 for SIGTERM, 2 for SIGINT).
+#[must_use]
+pub fn signal_termination_from_error(err: &io::Error) -> Option<i32> {
     err.get_ref()
         .and_then(|inner| inner.downcast_ref::<SignalTerminationError>())
         .map(|inner| inner.signal)
@@ -4203,7 +4209,7 @@ fn emit_task_executor_backend_evidence(sink: Option<&EvidenceSink>, backend: &st
         return;
     };
     let _ = sink.write_jsonl(&format!(
-        r#"{{"event":"task_executor_backend","backend":"{backend}"}}"#
+        r#"{{"schema_version":"ftui-evidence-v1","event":"task_executor_backend","backend":"{backend}"}}"#
     ));
 }
 
@@ -4216,7 +4222,7 @@ fn emit_task_executor_completion_evidence(
         return;
     };
     let _ = sink.write_jsonl(&format!(
-        r#"{{"event":"task_executor_complete","backend":"{backend}","duration_us":{duration_us}}}"#
+        r#"{{"schema_version":"ftui-evidence-v1","event":"task_executor_complete","backend":"{backend}","duration_us":{duration_us}}}"#
     ));
 }
 
@@ -4231,7 +4237,7 @@ fn emit_task_executor_panic_evidence(sink: Option<&EvidenceSink>, backend: &str,
         .replace('\r', "\\r")
         .replace('\t', "\\t");
     let _ = sink.write_jsonl(&format!(
-        r#"{{"event":"task_executor_panic","backend":"{backend}","panic_msg":"{escaped}"}}"#
+        r#"{{"schema_version":"ftui-evidence-v1","event":"task_executor_panic","backend":"{backend}","panic_msg":"{escaped}"}}"#
     ));
 }
 
@@ -4247,7 +4253,7 @@ fn emit_task_executor_backpressure_evidence(
         return;
     };
     let _ = sink.write_jsonl(&format!(
-        r#"{{"event":"task_executor_backpressure","backend":"{backend}","action":"{action}","queue_length":{queue_length},"max_queue_size":{max_queue_size},"total_rejected":{total_rejected}}}"#
+        r#"{{"schema_version":"ftui-evidence-v1","event":"task_executor_backpressure","backend":"{backend}","action":"{action}","queue_length":{queue_length},"max_queue_size":{max_queue_size},"total_rejected":{total_rejected}}}"#
     ));
 }
 
@@ -4596,7 +4602,7 @@ impl BudgetDecisionEvidence {
         let queue_max_depth = Self::opt_usize(self.load_governor.queue_max_depth);
 
         format!(
-            r#"{{"event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"recovery_streak":{},"total_degrades":{},"total_recoveries":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
+            r#"{{"schema_version":"ftui-evidence-v1","event":"budget_decision","frame_idx":{},"decision":"{}","decision_controller":"{}","decision_controller_reason":"{}","degradation_before":"{}","degradation_after":"{}","frame_time_us":{:.6},"budget_us":{:.6},"pid_output":{:.6},"pid_p":{:.6},"pid_i":{:.6},"pid_d":{:.6},"e_value":{:.6},"frames_observed":{},"frames_since_change":{},"in_warmup":{},"recovery_streak":{},"total_degrades":{},"total_recoveries":{},"runtime_mode":"{}","runtime_mode_before":"{}","pressure_class":"{}","work_disposition":"{}","governor_reason":"{}","governor_transition":{},"strict_semantics_preserved":{},"queue_in_flight":{},"queue_max_depth":{},"queue_dropped_delta":{},"resize_coalescing_active":{},"resize_detector":"{}","recovery_intervals_observed":{},"recovery_intervals_required":{},"deferred_work_total":{},"coalesced_work_total":{},"dropped_work_total":{},"bucket_key":{},"n_b":{},"alpha":{},"q_b":{},"y_hat":{},"upper_us":{},"risk":{},"conformal_status":{},"required_rank":{},"fallback_level":{},"window_size":{},"reset_count":{}}}"#,
             self.frame_idx,
             self.decision.as_str(),
             self.controller_decision.as_str(),
@@ -5012,7 +5018,7 @@ impl WidgetRefreshPlan {
     #[must_use]
     fn to_jsonl(&self) -> String {
         let mut out = String::with_capacity(256 + self.selected.len() * 96);
-        out.push_str(r#"{"event":"widget_refresh""#);
+        out.push_str(r#"{"schema_version":"ftui-evidence-v1","event":"widget_refresh""#);
         out.push_str(&format!(
             r#","frame_idx":{},"budget_us":{:.3},"degradation":"{}","essentials_cost_us":{:.3},"selected_cost_us":{:.3},"selected_value":{:.3},"selected_count":{},"skipped_count":{},"starved_selected":{},"starved_skipped":{},"over_budget":{}"#,
             self.frame_idx,
@@ -5145,11 +5151,15 @@ impl BackendEventSource for HeadlessEventSource {
 // =============================================================================
 
 /// The program runtime that manages the update/view loop.
-pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send = Stdout> {
+pub struct Program<
+    M: Model,
+    E: BackendEventSource<Error = io::Error>,
+    P: BackendPresenter<Error = io::Error> = TerminalPresenter<Stdout>,
+> {
     /// The application model.
     model: M,
-    /// Terminal output coordinator.
-    writer: TerminalWriter<W>,
+    /// Terminal output presenter.
+    presenter: P,
     /// Event source (terminal input, size queries, feature toggles).
     events: E,
     /// Currently active backend feature toggles.
@@ -5292,7 +5302,7 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
 }
 
 #[cfg(feature = "crossterm-compat")]
-impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
+impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
     /// Create a new program with default configuration.
     pub fn new(model: M) -> io::Result<Self>
     where
@@ -5430,7 +5440,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
 
         Ok(Self {
             model,
-            writer,
+            presenter: TerminalPresenter::new(writer),
             events,
             backend_features: initial_features,
             running: true,
@@ -5498,8 +5508,10 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
     }
 }
 
-impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Program<M, E, W> {
-    /// Create a program with an externally-constructed event source and writer.
+impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Error = io::Error>>
+    Program<M, E, P>
+{
+    /// Create a program with an externally-constructed event source and presenter.
     ///
     /// This is the generic entry point for alternative backends (native tty,
     /// WASM, headless testing). The caller is responsible for terminal
@@ -5509,7 +5521,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         model: M,
         events: E,
         backend_features: BackendFeatures,
-        writer: TerminalWriter<W>,
+        presenter: P,
         config: ProgramConfig,
     ) -> io::Result<Self>
     where
@@ -5523,32 +5535,32 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let width = width.max(1);
         let height = height.max(1);
 
-        let mut writer = writer;
+        let mut presenter = presenter;
         if let Some(limit) = config.hyperlink_limit {
-            writer.set_hyperlink_limit(limit);
+            presenter.set_hyperlink_limit(limit);
         }
-        writer.set_size(width, height);
+        presenter.resize(width, height);
 
         let evidence_sink = EvidenceSink::from_config(&config.evidence_sink)?;
         if let Some(ref sink) = evidence_sink {
-            writer = writer.with_evidence_sink(sink.clone());
+            let sink_clone = sink.clone();
+            presenter.set_evidence_writer(Some(Arc::new(move |line| {
+                let _ = sink_clone.write_jsonl(line);
+            })));
         }
 
-        let render_trace = crate::RenderTraceRecorder::from_config(
+        let _render_trace = crate::RenderTraceRecorder::from_config(
             &config.render_trace,
             crate::RenderTraceContext {
-                capabilities: writer.capabilities(),
+                capabilities: presenter.capabilities(),
                 diff_config: config.diff_config.clone(),
                 resize_config: config.resize_coalescer.clone(),
                 conformal_config: config.conformal_config.clone(),
             },
         )?;
-        if let Some(recorder) = render_trace {
-            writer = writer.with_render_trace(recorder);
-        }
 
         let frame_timing = config.frame_timing.clone();
-        writer.set_timing_enabled(frame_timing.is_some());
+        presenter.set_timing_enabled(frame_timing.is_some());
 
         let budget = render_budget_from_program_config(&config);
         let load_governor = LoadGovernorState::new(
@@ -5600,7 +5612,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
         Ok(Self {
             model,
-            writer,
+            presenter,
             events,
             backend_features,
             running: true,
@@ -5690,7 +5702,7 @@ const fn sanitize_backend_features_for_capabilities(
 }
 
 #[cfg(all(feature = "native-backend", unix))]
-impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
+impl<M: Model> Program<M, ftui_tty::TtyBackend, TerminalPresenter<Stdout>> {
     /// Open the default backend for this build (the native TTY backend).
     ///
     /// See [`DEFAULT_BACKEND`] and [`DefaultProgram`]; on builds without
@@ -5757,11 +5769,19 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
             scroll_region.region_bottom,
         );
 
-        Self::with_event_source(model, backend, features, writer, config)
+        Self::with_event_source(
+            model,
+            backend,
+            features,
+            TerminalPresenter::new(writer),
+            config,
+        )
     }
 }
 
-impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Program<M, E, W> {
+impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Error = io::Error>>
+    Program<M, E, P>
+{
     /// Run the main event loop.
     ///
     /// This is the main entry point. It handles:
@@ -6105,7 +6125,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
             // Periodic grapheme pool GC
             if loop_count.is_multiple_of(1000) {
-                self.writer.gc(None);
+                self.presenter.gc();
             }
         }
 
@@ -6206,6 +6226,31 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         self.reap_finished_tasks();
         if let Err(error) = self.drain_shutdown_task_results() {
             shutdown_error.get_or_insert(error);
+        }
+
+        if let Some(ref sink) = self.evidence_sink {
+            let (hits, misses, len, capacity, enabled) =
+                if let Some(stats) = ftui_core::text_width::width_cache_stats() {
+                    (
+                        stats.hits,
+                        stats.misses,
+                        stats.small_size + stats.main_size,
+                        stats.capacity,
+                        true,
+                    )
+                } else {
+                    (0, 0, 0, 0, false)
+                };
+            let line = format!(
+                r#"{{"schema_version":"{}","event":"width_cache_stats","hits":{},"misses":{},"len":{},"capacity":{},"enabled":{},"thread":"main"}}"#,
+                crate::evidence_sink::EVIDENCE_SCHEMA_VERSION,
+                hits,
+                misses,
+                len,
+                capacity,
+                enabled,
+            );
+            let _ = sink.write_jsonl(&line);
         }
 
         match shutdown_error {
@@ -6568,7 +6613,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let result = self.execute_cmd(cmd);
         self.running = was_running && self.running;
         // Lifecycle hooks may run after the render loop has stopped.
-        let flush_result = self.writer.flush();
+        let flush_result = self.presenter.flush();
         result.and(flush_result)
     }
 
@@ -6648,7 +6693,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             Cmd::None => {}
             Cmd::Quit => {
                 self.running = false;
-                self.writer.flush()?;
+                self.presenter.flush()?;
             }
             Cmd::Msg(m) => {
                 let start = Instant::now();
@@ -6681,7 +6726,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 self.last_tick = Instant::now();
             }
             Cmd::Log { text, mode } => {
-                self.writer.write_log_line_with_mode(&text, mode)?;
+                self.presenter.write_log_line_with_mode(&text, mode)?;
             }
             Cmd::Task(spec, f) => {
                 crate::effect_system::record_command_effect("task", 0);
@@ -6698,19 +6743,19 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 self.events.set_features(self.backend_features)?;
             }
             Cmd::SetClipboard(text) => {
-                self.writer.write_osc52_set(
+                self.presenter.write_osc52_set(
                     ftui_core::osc52::ClipboardSelection::Clipboard,
                     text.as_bytes(),
                 )?;
                 if !self.dirty {
-                    self.writer.flush()?;
+                    self.presenter.flush()?;
                 }
             }
             Cmd::GetClipboard => {
-                self.writer
+                self.presenter
                     .write_osc52_query(ftui_core::osc52::ClipboardSelection::Clipboard)?;
                 if !self.dirty {
-                    self.writer.flush()?;
+                    self.presenter.flush()?;
                 }
             }
             Cmd::SetTickStrategy(strategy) => {
@@ -6833,7 +6878,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // make this one shed frames.
         // Retained capacity, not live usage: sustained growth across frames is
         // the leak signal. Usage-level accounting requires an allocator hook.
-        let memory_bytes = self.writer.estimate_memory_usage() + self.frame_arena.allocated_bytes();
+        let memory_bytes =
+            self.presenter.estimate_memory_usage() + self.frame_arena.allocated_bytes();
         let queue_depth = u32::try_from(self.task_executor.in_flight()).unwrap_or(u32::MAX);
         let verdict = self.guardrails.check_frame(memory_bytes, queue_depth);
 
@@ -6872,7 +6918,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             // sensor. Rebuilding the arena frees the retained chunk so the
             // next frame re-measures honestly.
             self.frame_arena = FrameArena::default();
-            self.writer.gc(None);
+            self.presenter.gc();
             self.guardrails.reset_leak_detector();
             tracing::warn!(
                 target: crate::telemetry_schema::TARGET_GUARDRAILS,
@@ -6905,7 +6951,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             };
             if soft_alert && cooldown_elapsed {
                 self.frame_arena = FrameArena::default();
-                self.writer.gc(None);
+                self.presenter.gc();
                 self.guardrails.reset_leak_detector();
                 self.last_soft_trim_frame = Some(self.frame_idx);
                 tracing::debug!(
@@ -6923,12 +6969,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 .last_frame_time_us
                 .unwrap_or_else(|| self.budget.total().as_secs_f64() * 1_000_000.0);
             let diff_strategy = self
-                .writer
+                .presenter
                 .last_diff_strategy()
                 .unwrap_or(DiffStrategy::Full);
-            let frame_height_hint = self.writer.render_height_hint().max(1);
+            let frame_height_hint = self.presenter.render_height_hint().max(1);
             let key = BucketKey::from_context(
-                self.writer.screen_mode(),
+                self.presenter.screen_mode(),
                 diff_strategy,
                 self.width,
                 frame_height_hint,
@@ -7010,8 +7056,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             return Ok(());
         }
 
-        let auto_bounds = self.writer.inline_auto_bounds();
-        let needs_measure = auto_bounds.is_some() && self.writer.auto_ui_height().is_none();
+        let auto_bounds = self.presenter.inline_auto_bounds();
+        let needs_measure = auto_bounds.is_some() && self.presenter.auto_ui_height().is_none();
         let mut should_measure = needs_measure;
         if auto_bounds.is_some()
             && let Some(state) = self.inline_auto_remeasure.as_mut()
@@ -7034,15 +7080,15 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let render_start = Instant::now();
         if let (Some((min_height, max_height)), true) = (auto_bounds, should_measure) {
             let measure_height = if needs_measure {
-                self.writer.render_height_hint().max(1)
+                self.presenter.render_height_hint().max(1)
             } else {
                 max_height.max(1)
             };
             let (measure_buffer, _) = self.render_measure_buffer(measure_height);
             let measured_height = measure_buffer.content_height();
             let clamped = measured_height.clamp(min_height, max_height);
-            let previous_height = self.writer.auto_ui_height();
-            self.writer.set_auto_ui_height(clamped);
+            let previous_height = self.presenter.auto_ui_height();
+            self.presenter.set_auto_ui_height(clamped);
             if let Some(state) = self.inline_auto_remeasure.as_mut() {
                 let threshold = state.config.change_threshold_rows;
                 let violated = previous_height
@@ -7058,7 +7104,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             crate::voi_telemetry::set_inline_auto_voi_snapshot(Some(snapshot));
         }
 
-        let frame_height = self.writer.render_height_hint().max(1);
+        let frame_height = self.presenter.render_height_hint().max(1);
         let _frame_span = info_span!(
             crate::telemetry_schema::span::RENDER_FRAME,
             width = self.width,
@@ -7095,7 +7141,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             {
                 let _present_span =
                     debug_span!(crate::telemetry_schema::span::RENDER_PRESENT).entered();
-                self.writer
+                self.presenter
                     .present_ui_owned(buffer, cursor, cursor_visible)?;
             }
             presented = true;
@@ -7122,12 +7168,12 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             let render_us = render_elapsed.as_micros() as u64;
             let present_us = present_elapsed.as_micros() as u64;
             let diff_us = if presented {
-                self.writer
+                self.presenter
                     .take_last_present_timings()
                     .map(|timings| timings.diff_us)
                     .unwrap_or(0)
             } else {
-                let _ = self.writer.take_last_present_timings();
+                let _ = self.presenter.take_last_present_timings();
                 0
             };
             let total_us = update_us
@@ -7153,11 +7199,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             conformal_prediction.as_ref(),
         ) {
             let diff_strategy = self
-                .writer
+                .presenter
                 .last_diff_strategy()
                 .unwrap_or(DiffStrategy::Full);
             let key = BucketKey::from_context(
-                self.writer.screen_mode(),
+                self.presenter.screen_mode(),
                 diff_strategy,
                 self.width,
                 frame_height,
@@ -7327,18 +7373,19 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // Pin the successful presentation baseline before registering this
         // frame's URLs. Also retire links from any abandoned render, since a
         // budget decision can skip presentation after model.view has run.
-        self.writer.begin_link_frame();
+        self.presenter.begin_link_frame();
 
-        // Note: Frame borrows the pool and links from writer.
-        // We scope it so it drops before we call present_ui (which needs exclusive writer access).
-        let buffer = self.writer.take_render_buffer(self.width, frame_height);
+        // Note: Frame borrows the pool and links from presenter.
+        // We scope it so it drops before we call present_ui (which needs exclusive presenter access).
+        let buffer = self.presenter.take_render_buffer(self.width, frame_height);
         let mut a11y_builder = self.a11y_policy.map(|_| A11yTreeBuilder::new());
-        let (pool, links) = self.writer.pool_and_links_mut();
+        let (pool, links) = self.presenter.pool_and_links_mut();
         let mut frame = Frame::from_buffer(buffer, pool);
         frame.set_degradation(self.budget.degradation());
         frame.set_links(links);
         frame.set_widget_budget(self.widget_refresh_plan.as_budget());
         frame.set_arena(&self.frame_arena);
+        frame.text_direction = self.locale_context.direction().into();
         if let Some(builder) = a11y_builder.as_mut() {
             frame.set_a11y(builder);
         }
@@ -7559,10 +7606,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         // Reset the per-frame arena for measurement pass.
         self.frame_arena.reset();
 
-        let pool = self.writer.pool_mut();
+        let pool = self.presenter.pool_mut();
         let mut frame = Frame::new(self.width, frame_height, pool);
         frame.set_degradation(self.budget.degradation());
         frame.set_arena(&self.frame_arena);
+        frame.text_direction = self.locale_context.direction().into();
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
@@ -7680,7 +7728,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         let height = height.max(1);
         self.width = width;
         self.height = height;
-        self.writer.set_size(width, height);
+        self.presenter.resize(width, height);
         info!(
             width = width,
             height = height,
@@ -7802,8 +7850,8 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
     /// Request a re-measure of inline auto UI height on next render.
     pub fn request_ui_height_remeasure(&mut self) {
-        if self.writer.inline_auto_bounds().is_some() {
-            self.writer.clear_auto_ui_height();
+        if self.presenter.inline_auto_bounds().is_some() {
+            self.presenter.clear_auto_ui_height();
             if let Some(state) = self.inline_auto_remeasure.as_mut() {
                 state.reset();
             }
@@ -8332,6 +8380,7 @@ mod tests {
     use ftui_render::frame_guardrails::{MemoryBudgetConfig, QueueConfig};
     use serde_json::Value;
     use std::collections::{HashMap, VecDeque};
+    use std::io::Write;
     use std::path::PathBuf;
     use std::sync::mpsc;
     use std::sync::{
@@ -10743,7 +10792,7 @@ mod tests {
             TestModel { value: 0 },
             events,
             features,
-            writer,
+            TerminalPresenter::new(writer),
             ProgramConfig::default()
                 .with_signal_interception(false)
                 .with_conformal_config(ConformalConfig {
@@ -12074,7 +12123,7 @@ mod tests {
                 builder.model,
                 events,
                 BackendFeatures::default(),
-                writer,
+                TerminalPresenter::new(writer),
                 config,
             )
             .expect("construct actual program");
@@ -12102,10 +12151,10 @@ mod tests {
                 program
                     .render_frame()
                     .expect("render and present changed URLs");
-                assert!(program.writer.links().len() <= 2 * limit);
-                assert!(program.writer.links().slot_count() <= 2 * limit);
+                assert!(program.presenter.writer.links().len() <= 2 * limit);
+                assert!(program.presenter.writer.links().slot_count() <= 2 * limit);
             }
-            let output = String::from_utf8(program.writer.into_inner().unwrap()).unwrap();
+            let output = String::from_utf8(program.presenter.into_inner().unwrap()).unwrap();
             let actual_links: Vec<_> = output
                 .split("\x1b]8;;")
                 .skip(1)
@@ -12153,7 +12202,7 @@ mod tests {
         );
         program.render_frame().expect("render initial inline frame");
         assert_eq!(program.model().frame_sizes.borrow().as_slice(), &[(80, 24)]);
-        assert_eq!(program.writer.ui_height(), 64);
+        assert_eq!(program.presenter.ui_height(), 64);
 
         for (width, height, expected_height) in [
             (40, 3, 3),
@@ -12173,7 +12222,7 @@ mod tests {
                 "terminal resize to {width}x{height}"
             );
             assert_eq!(
-                program.writer.ui_height(),
+                program.presenter.ui_height(),
                 64,
                 "resizing must retain the configured inline height"
             );
@@ -12536,7 +12585,7 @@ mod tests {
     fn headless_program_with_resolved_config<M: Model>(
         model: M,
         config: ProgramConfig,
-    ) -> Program<M, HeadlessEventSource, Vec<u8>>
+    ) -> Program<M, HeadlessEventSource, TerminalPresenter<Vec<u8>>>
     where
         M::Message: Send + 'static,
     {
@@ -12610,7 +12659,7 @@ mod tests {
 
         Program {
             model,
-            writer,
+            presenter: TerminalPresenter::new(writer),
             events,
             backend_features: initial_features,
             running: true,
@@ -12683,7 +12732,7 @@ mod tests {
     fn headless_program_with_config<M: Model>(
         model: M,
         config: ProgramConfig,
-    ) -> Program<M, HeadlessEventSource, Vec<u8>>
+    ) -> Program<M, HeadlessEventSource, TerminalPresenter<Vec<u8>>>
     where
         M::Message: Send + 'static,
     {
@@ -12695,7 +12744,7 @@ mod tests {
     fn headless_signal_program_with_config<M: Model>(
         model: M,
         config: ProgramConfig,
-    ) -> Program<M, HeadlessEventSource, Vec<u8>>
+    ) -> Program<M, HeadlessEventSource, TerminalPresenter<Vec<u8>>>
     where
         M::Message: Send + 'static,
     {
@@ -12721,6 +12770,59 @@ mod tests {
             .find(|line| line.contains(&needle))
             .expect(&missing_msg);
         serde_json::from_str(line).expect("valid evidence json")
+    }
+
+    #[test]
+    fn startup_emits_capability_decision_per_capability() {
+        use ftui_core::caps_probe::{CapabilityDecision, ProbeOutcome, ProbeableCapability};
+
+        let evidence_path = temp_evidence_path("startup_emits_capability_decision");
+        let sink = EvidenceSink::from_config(
+            &crate::evidence_sink::EvidenceSinkConfig::enabled_file(&evidence_path),
+        )
+        .expect("sink config")
+        .expect("sink enabled");
+
+        let decisions: Vec<CapabilityDecision> = ProbeableCapability::ALL
+            .iter()
+            .map(|&cap| {
+                CapabilityDecision::build(cap, false, ProbeOutcome::Confirmed, None, false, true)
+            })
+            .collect();
+
+        assert_eq!(decisions.len(), ProbeableCapability::ALL.len());
+
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            TerminalCapabilities::basic(),
+        )
+        .with_evidence_sink(sink)
+        .with_capability_decisions(decisions);
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        let cap_lines: Vec<&str> = contents
+            .lines()
+            .filter(|l| l.contains(r#""event":"capability_decision""#))
+            .collect();
+        assert_eq!(
+            cap_lines.len(),
+            ProbeableCapability::ALL.len(),
+            "expected {} capability_decision lines, got {}",
+            ProbeableCapability::ALL.len(),
+            cap_lines.len()
+        );
+        for cap in ProbeableCapability::ALL {
+            let cap_str = cap.as_str();
+            assert!(
+                cap_lines
+                    .iter()
+                    .any(|l| l.contains(&format!(r#""capability":"{cap_str}""#))),
+                "missing capability_decision line for {cap_str}"
+            );
+        }
     }
 
     #[test]
@@ -12845,7 +12947,7 @@ mod tests {
             headless_program_with_config(TestModel { value: 0 }, ProgramConfig::default());
         program.execute_cmd(Cmd::log("hello world")).expect("log");
 
-        let bytes = program.writer.into_inner().expect("writer output");
+        let bytes = program.presenter.into_inner().expect("writer output");
         let output = String::from_utf8_lossy(&bytes);
         assert!(output.contains("hello world"));
     }
@@ -13480,12 +13582,12 @@ mod tests {
 
         let mut program = headless_program_with_config(TestModel { value: 0 }, config);
         program.dirty = false;
-        program.writer.set_auto_ui_height(5);
+        program.presenter.set_auto_ui_height(5);
 
-        assert_eq!(program.writer.auto_ui_height(), Some(5));
+        assert_eq!(program.presenter.auto_ui_height(), Some(5));
         program.request_ui_height_remeasure();
 
-        assert_eq!(program.writer.auto_ui_height(), None);
+        assert_eq!(program.presenter.auto_ui_height(), None);
         assert!(program.dirty);
     }
 
@@ -13505,6 +13607,73 @@ mod tests {
         program.locale_context.set_locale("fr");
         program.check_locale_change();
         assert!(program.dirty || prev_dirty);
+    }
+
+    #[test]
+    fn frame_text_direction_follows_locale_context() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct DirectionModel {
+            directions: Rc<RefCell<Vec<ftui_render::TextDirection>>>,
+        }
+
+        #[derive(Debug)]
+        enum DirectionMsg {
+            Noop,
+        }
+
+        impl From<Event> for DirectionMsg {
+            fn from(_: Event) -> Self {
+                DirectionMsg::Noop
+            }
+        }
+
+        impl Model for DirectionModel {
+            type Message = DirectionMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                self.directions.borrow_mut().push(frame.text_direction);
+            }
+        }
+
+        let directions = Rc::new(RefCell::new(Vec::new()));
+        let model = DirectionModel {
+            directions: Rc::clone(&directions),
+        };
+        let config = ProgramConfig::default().with_locale("ar");
+        let mut program = headless_program_with_config(model, config);
+
+        program.render_frame().expect("render initial frame");
+        assert_eq!(program.frame_idx, 1);
+        assert_eq!(
+            directions.borrow().as_slice(),
+            &[ftui_render::TextDirection::Rtl]
+        );
+        assert!(!program.dirty);
+
+        program.locale_context.set_locale("en");
+        program.check_locale_change();
+        assert!(
+            program.dirty,
+            "check_locale_change must trigger redraw on locale switch"
+        );
+
+        program
+            .render_frame()
+            .expect("render frame after locale change");
+        assert_eq!(program.frame_idx, 2);
+        assert_eq!(
+            directions.borrow().as_slice(),
+            &[
+                ftui_render::TextDirection::Rtl,
+                ftui_render::TextDirection::Ltr,
+            ]
+        );
     }
 
     #[test]
@@ -13538,7 +13707,7 @@ mod tests {
         program.render_frame().expect("render frame");
 
         assert!(!program.dirty);
-        assert!(program.writer.last_diff_strategy().is_some());
+        assert!(program.presenter.last_diff_strategy().is_some());
         assert_eq!(program.frame_idx, 1);
     }
 
@@ -13714,6 +13883,105 @@ mod tests {
             contents.contains(r#""should_sample":"#) && contents.contains(r#""voi_gain":"#),
             "voi_decision row must carry the sampler reasoning"
         );
+    }
+
+    #[test]
+    fn voi_sample_written_for_inline_auto() {
+        headless_inline_auto_exports_voi_decision_evidence();
+    }
+
+    #[test]
+    fn voi_sample_not_written_without_auto_bounds() {
+        struct NoAutoModel;
+
+        #[derive(Debug)]
+        enum NoAutoMsg {}
+
+        impl From<Event> for NoAutoMsg {
+            fn from(_: Event) -> Self {
+                unreachable!()
+            }
+        }
+
+        impl Model for NoAutoModel {
+            type Message = NoAutoMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('N'));
+            }
+        }
+
+        let evidence_path = temp_evidence_path("voi_no_auto");
+        let config = ProgramConfig::default()
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+        assert!(config.inline_auto_remeasure.is_none());
+
+        let mut program = headless_program_with_config(NoAutoModel, config);
+        for _ in 0..3 {
+            program.dirty = true;
+            program.render_frame().expect("render frame");
+        }
+
+        let contents = std::fs::read_to_string(&evidence_path).unwrap_or_default();
+        assert!(
+            !contents.contains(r#""event":"voi_decision""#)
+                && !contents.contains(r#""event":"voi_sample""#),
+            "programs without auto bounds must not emit VOI events; got: {contents}"
+        );
+    }
+
+    #[test]
+    fn evidence_lines_all_carry_schema_version() {
+        use crate::telemetry_schema::ALL_EVIDENCE_EVENTS;
+
+        let evidence_path = temp_evidence_path("all_evidence_schema_version");
+        let config = ProgramConfig::inline_auto(1, 6)
+            .with_evidence_sink(EvidenceSinkConfig::enabled_file(&evidence_path));
+
+        struct EvidenceModel;
+        #[derive(Debug)]
+        enum EvMsg {}
+        impl From<Event> for EvMsg {
+            fn from(_: Event) -> Self {
+                unreachable!()
+            }
+        }
+        impl Model for EvidenceModel {
+            type Message = EvMsg;
+            fn update(&mut self, _: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('E'));
+            }
+        }
+
+        let mut program = headless_program_with_config(EvidenceModel, config);
+        program.dirty = true;
+        program.render_frame().expect("render frame");
+
+        let contents = std::fs::read_to_string(&evidence_path).expect("evidence file written");
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let val: serde_json::Value = serde_json::from_str(line).expect("valid jsonl line");
+            assert_eq!(
+                val["schema_version"].as_str(),
+                Some("ftui-evidence-v1"),
+                "each evidence line must carry schema_version ftui-evidence-v1: {line}"
+            );
+            let event = val["event"].as_str().expect("event string");
+            assert!(
+                ALL_EVIDENCE_EVENTS.contains(&event),
+                "event {event} must be in ALL_EVIDENCE_EVENTS"
+            );
+        }
     }
 
     /// Bytes the startup probes swallowed (a click and a key sent while the
@@ -14674,6 +14942,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn guardrails_receive_live_queue_depth() {
+        headless_render_frame_feeds_live_effect_backlog_to_queue_guardrail();
+    }
+
+    #[test]
+    fn guardrails_queue_depth_zero_without_queue() {
+        struct ZeroQueueModel;
+
+        #[derive(Debug)]
+        enum ZeroMsg {}
+
+        impl From<Event> for ZeroMsg {
+            fn from(_: Event) -> Self {
+                unreachable!()
+            }
+        }
+
+        impl Model for ZeroQueueModel {
+            type Message = ZeroMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                frame.buffer.set_raw(0, 0, Cell::from_char('Z'));
+            }
+        }
+
+        let config = ProgramConfig {
+            guardrails: GuardrailsConfig {
+                memory: MemoryBudgetConfig::default(),
+                queue: QueueConfig {
+                    warn_depth: 1,
+                    ..QueueConfig::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut program = headless_program_with_config(ZeroQueueModel, config);
+        assert_eq!(program.task_executor.in_flight(), 0);
+        program.dirty = true;
+        program.render_frame().expect("render frame with no tasks");
+        let snapshot = program.guardrails.snapshot();
+        assert_eq!(snapshot.queue_depth, 0);
+        assert_eq!(snapshot.frames_with_alerts, 0);
+    }
+
     /// CONTRACT (bd-1za0z): a soft memory alert must trigger a capacity trim
     /// (arena rebuild + pool gc) so the degradation actuator can actually
     /// move the sensor — retained capacity alone must not pin alerts forever.
@@ -15282,9 +15601,14 @@ mod tests {
                 .with_signal_interception(false)
                 .with_budget(FrameBudgetConfig::with_total(Duration::from_secs(5)))
         };
-        let mut program =
-            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
-                .expect("program construction");
+        let mut program = Program::with_event_source(
+            model,
+            events,
+            BackendFeatures::default(),
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("program construction");
         program
             .run()
             .expect("burst completes through the real loop");
@@ -16719,8 +17043,12 @@ mod tests {
             headless_program_with_config(ClipboardModel::default(), ProgramConfig::default());
         let mut caps = TerminalCapabilities::basic();
         caps.osc52_clipboard = true;
-        program.writer =
-            TerminalWriter::new(Vec::new(), ScreenMode::AltScreen, UiAnchor::Bottom, caps);
+        program.presenter = TerminalPresenter::new(TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            caps,
+        ));
         program.handle_event(Event::Tick).unwrap();
         assert!(
             program.model.0.is_empty(),
@@ -16733,7 +17061,7 @@ mod tests {
             )))
             .unwrap();
         assert_eq!(program.model.0, ["hi"]);
-        let bytes = program.writer.into_inner().unwrap();
+        let bytes = program.presenter.into_inner().unwrap();
         assert!(bytes.starts_with(b"\x1b]52;c;aGk=\x07\x1b]52;c;?\x07"));
         assert_eq!(Cmd::<()>::set_clipboard("hi").type_name(), "SetClipboard");
         assert_eq!(Cmd::<()>::get_clipboard().type_name(), "GetClipboard");
@@ -16770,7 +17098,7 @@ mod tests {
             TestModel { value: 0 },
             HeadlessEventSource::new(10, 3, BackendFeatures::default()),
             BackendFeatures::default(),
-            writer,
+            TerminalPresenter::new(writer),
             ProgramConfig::default(),
         )
         .unwrap();
@@ -17052,9 +17380,14 @@ mod tests {
             processed: 0,
             quit_after: burst_events,
         };
-        let mut program =
-            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
-                .expect("program creation");
+        let mut program = Program::with_event_source(
+            model,
+            events,
+            BackendFeatures::default(),
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("program creation");
         program.run().expect("run burst");
 
         assert_eq!(program.model().processed, burst_events);
@@ -17177,9 +17510,14 @@ mod tests {
             ticks: 0,
             quit_after: 3,
         };
-        let mut program =
-            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
-                .expect("program creation");
+        let mut program = Program::with_event_source(
+            model,
+            events,
+            BackendFeatures::default(),
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("program creation");
         // If spurious readiness parked the loop (the frankentui#95 failure
         // mode with a blocking read), this would hang instead of returning.
         program.run().expect("run with spurious readiness");
@@ -17284,9 +17622,14 @@ mod tests {
             quit_after: burst_events,
         };
 
-        let mut program =
-            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
-                .expect("program creation");
+        let mut program = Program::with_event_source(
+            model,
+            events,
+            BackendFeatures::default(),
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("program creation");
         program.run().expect("run clamp");
 
         let stats = program.immediate_drain_stats();
@@ -17384,9 +17727,14 @@ mod tests {
         };
         let events = QuitBurstSource { queue };
 
-        let mut program =
-            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
-                .expect("program creation");
+        let mut program = Program::with_event_source(
+            model,
+            events,
+            BackendFeatures::default(),
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("program creation");
         program.run().expect("run burst quit");
 
         assert_eq!(program.model().processed, quit_after);
@@ -17450,8 +17798,7 @@ mod tests {
         let event = Event::Key(ftui_core::event::KeyEvent::new(
             ftui_core::event::KeyCode::Char('a'),
         ));
-        let classification =
-            Program::<TestModel, HeadlessEventSource, Vec<u8>>::classify_event_for_fairness(&event);
+        let classification = DefaultProgram::<TestModel>::classify_event_for_fairness(&event);
         assert_eq!(classification, FairnessEventType::Input);
     }
 
@@ -17461,32 +17808,28 @@ mod tests {
             width: 80,
             height: 24,
         };
-        let classification =
-            Program::<TestModel, HeadlessEventSource, Vec<u8>>::classify_event_for_fairness(&event);
+        let classification = DefaultProgram::<TestModel>::classify_event_for_fairness(&event);
         assert_eq!(classification, FairnessEventType::Resize);
     }
 
     #[test]
     fn classify_event_fairness_tick_is_tick() {
         let event = Event::Tick;
-        let classification =
-            Program::<TestModel, HeadlessEventSource, Vec<u8>>::classify_event_for_fairness(&event);
+        let classification = DefaultProgram::<TestModel>::classify_event_for_fairness(&event);
         assert_eq!(classification, FairnessEventType::Tick);
     }
 
     #[test]
     fn classify_event_fairness_paste_is_input() {
         let event = Event::Paste(ftui_core::event::PasteEvent::bracketed("hello"));
-        let classification =
-            Program::<TestModel, HeadlessEventSource, Vec<u8>>::classify_event_for_fairness(&event);
+        let classification = DefaultProgram::<TestModel>::classify_event_for_fairness(&event);
         assert_eq!(classification, FairnessEventType::Input);
     }
 
     #[test]
     fn classify_event_fairness_focus_is_input() {
         let event = Event::Focus(true);
-        let classification =
-            Program::<TestModel, HeadlessEventSource, Vec<u8>>::classify_event_for_fairness(&event);
+        let classification = DefaultProgram::<TestModel>::classify_event_for_fairness(&event);
         assert_eq!(classification, FairnessEventType::Input);
     }
 
@@ -17693,7 +18036,7 @@ mod tests {
                     TestModel { value: 0 },
                     events,
                     features,
-                    writer,
+                    TerminalPresenter::new(writer),
                     config,
                 )
                 .expect("fallback executor initializes");
@@ -17741,9 +18084,14 @@ mod tests {
             TerminalCapabilities::basic(),
             config.diff_config.clone(),
         );
-        let mut program =
-            Program::with_event_source(TestModel { value: 0 }, events, features, writer, config)
-                .expect("Asupersync lane initializes its executor");
+        let mut program = Program::with_event_source(
+            TestModel { value: 0 },
+            events,
+            features,
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("Asupersync lane initializes its executor");
         assert_eq!(program.task_executor.kind_name(), "asupersync");
         let executions = Arc::new(AtomicUsize::new(0));
         for _ in 0..32 {
@@ -18043,7 +18391,7 @@ mod tests {
             headless_program_with_config(TestModel { value: 0 }, ProgramConfig::default());
         program.execute_cmd(Cmd::log("no newline")).expect("log");
 
-        let bytes = program.writer.into_inner().expect("writer output");
+        let bytes = program.presenter.into_inner().expect("writer output");
         let output = String::from_utf8_lossy(&bytes);
         // The sanitized output should end with a newline
         assert!(output.contains("no newline"));
@@ -18057,7 +18405,7 @@ mod tests {
             .execute_cmd(Cmd::log("with newline\n"))
             .expect("log");
 
-        let bytes = program.writer.into_inner().expect("writer output");
+        let bytes = program.presenter.into_inner().expect("writer output");
         let output = String::from_utf8_lossy(&bytes);
         assert!(output.contains("with newline"));
     }
@@ -18068,18 +18416,18 @@ mod tests {
             headless_program_with_config(TestModel { value: 0 }, ProgramConfig::default());
         let mut caps = TerminalCapabilities::basic();
         caps.scroll_region = true;
-        program.writer = TerminalWriter::new(
+        program.presenter = TerminalPresenter::new(TerminalWriter::new(
             Vec::new(),
             ScreenMode::Inline { ui_height: 3 },
             UiAnchor::Bottom,
             caps,
-        );
-        program.writer.set_size(80, 24);
+        ));
+        program.presenter.set_size(80, 24);
         program
-            .writer
+            .presenter
             .present_ui(&Buffer::new(80, 3), None, false)
             .expect("establish log region");
-        assert!(program.writer.scroll_region_active());
+        assert!(program.presenter.writer.scroll_region_active());
         for text in ["first\nsecond", "first\r\nsecond\r\n"] {
             program.execute_cmd(Cmd::log(text)).expect("log lines");
         }
@@ -18092,7 +18440,7 @@ mod tests {
         program
             .execute_cmd(Cmd::log_sgr_only("\x1b[31mred\x1b[2J\nplain"))
             .expect("colored command");
-        let output = String::from_utf8(program.writer.into_inner().unwrap()).unwrap();
+        let output = String::from_utf8(program.presenter.into_inner().unwrap()).unwrap();
         assert_eq!(output.matches("first\r\nsecond\r\n").count(), 2);
         assert!(output.contains("joined\r\nnext\r\n"));
         assert!(!output.contains("joined\r\r\n"));
@@ -18148,7 +18496,7 @@ mod tests {
             LoggingModel,
             HeadlessEventSource::new(80, 24, features),
             features,
-            writer,
+            TerminalPresenter::new(writer),
             config,
         )
         .expect("construct real Program");
@@ -18696,7 +19044,7 @@ mod tests {
         active: &str,
         screens: &[&str],
     ) -> (
-        Program<MultiScreenModel, HeadlessEventSource, Vec<u8>>,
+        Program<MultiScreenModel, HeadlessEventSource, TerminalPresenter<Vec<u8>>>,
         TransitionLog,
     ) {
         let model = MultiScreenModel {
@@ -18716,9 +19064,14 @@ mod tests {
             tick_strategy: Some(crate::tick_strategy::TickStrategyKind::ActiveOnly),
             ..ProgramConfig::default()
         };
-        let mut prog =
-            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
-                .expect("headless program creation failed");
+        let mut prog = Program::with_event_source(
+            model,
+            events,
+            BackendFeatures::default(),
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("headless program creation failed");
 
         // Replace the default strategy with our recording strategy.
         let log: TransitionLog = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -18970,9 +19323,14 @@ mod tests {
         );
         let config = ProgramConfig::default().with_forced_size(80, 24);
 
-        let mut program =
-            Program::with_event_source(model, events, BackendFeatures::default(), writer, config)
-                .expect("program creation");
+        let mut program = Program::with_event_source(
+            model,
+            events,
+            BackendFeatures::default(),
+            TerminalPresenter::new(writer),
+            config,
+        )
+        .expect("program creation");
         program.tick_strategy = Some(Box::new(TransitionStrategy));
 
         program.check_screen_transition();
@@ -19001,5 +19359,145 @@ mod tests {
             !stats.is_empty(),
             "stats should not be empty when strategy is configured"
         );
+    }
+
+    // =========================================================================
+    // BackendPresenter decoupling tests (bd-g00-root-epic-ewths.17.7)
+    // =========================================================================
+
+    struct CountingPresenter {
+        caps: TerminalCapabilities,
+        pool: ftui_render::grapheme_pool::GraphemePool,
+        links: ftui_render::link_registry::LinkRegistry,
+        present_count: usize,
+        log_lines: Vec<String>,
+    }
+
+    impl CountingPresenter {
+        fn new() -> Self {
+            Self {
+                caps: TerminalCapabilities::basic(),
+                pool: ftui_render::grapheme_pool::GraphemePool::new(),
+                links: ftui_render::link_registry::LinkRegistry::new(),
+                present_count: 0,
+                log_lines: Vec::new(),
+            }
+        }
+    }
+
+    impl BackendPresenter for CountingPresenter {
+        type Error = io::Error;
+
+        fn capabilities(&self) -> &TerminalCapabilities {
+            &self.caps
+        }
+
+        fn present_ui(
+            &mut self,
+            _buf: &Buffer,
+            _diff: Option<&ftui_render::diff::BufferDiff>,
+            _full_repaint_hint: bool,
+        ) -> Result<(), Self::Error> {
+            self.present_count += 1;
+            Ok(())
+        }
+
+        fn present_ui_owned(
+            &mut self,
+            _buf: Buffer,
+            _cursor: Option<(u16, u16)>,
+            _cursor_visible: bool,
+        ) -> Result<(), Self::Error> {
+            self.present_count += 1;
+            Ok(())
+        }
+
+        fn write_log(&mut self, text: &str) -> Result<(), Self::Error> {
+            self.log_lines.push(text.to_owned());
+            Ok(())
+        }
+
+        fn write_log_line_with_mode(
+            &mut self,
+            text: &str,
+            _mode: SanitizeMode,
+        ) -> Result<(), Self::Error> {
+            self.log_lines.push(text.to_owned());
+            Ok(())
+        }
+
+        fn pool_and_links_mut(
+            &mut self,
+        ) -> (
+            &mut ftui_render::grapheme_pool::GraphemePool,
+            &mut ftui_render::link_registry::LinkRegistry,
+        ) {
+            (&mut self.pool, &mut self.links)
+        }
+
+        fn pool_mut(&mut self) -> &mut ftui_render::grapheme_pool::GraphemePool {
+            &mut self.pool
+        }
+    }
+
+    #[test]
+    fn program_presents_through_backend_presenter() {
+        let model = TestModel { value: 42 };
+        let events = HeadlessEventSource::new(80, 24, BackendFeatures::default());
+        let presenter = CountingPresenter::new();
+        let config = ProgramConfig::default().with_forced_size(80, 24);
+
+        let mut program = Program::with_event_source(
+            model,
+            events,
+            BackendFeatures::default(),
+            presenter,
+            config,
+        )
+        .expect("program creation with CountingPresenter");
+
+        // Initial render frame calls present_ui / present_ui_owned
+        program.render_frame().expect("render frame");
+        assert_eq!(program.presenter.present_count, 1);
+
+        // Second render frame increments present count
+        program.dirty = true;
+        program.render_frame().expect("second render frame");
+        assert_eq!(program.presenter.present_count, 2);
+
+        // Logging via Cmd::log forwards through write_log / write_log_line_with_mode
+        program
+            .execute_cmd(Cmd::log("hello from counting presenter"))
+            .expect("execute log command");
+        assert_eq!(program.presenter.log_lines.len(), 1);
+        assert!(program.presenter.log_lines[0].contains("hello from counting presenter"));
+    }
+
+    #[test]
+    fn native_and_crossterm_constructors_build_terminal_presenter() {
+        // Compile-time / type-level verification that DefaultProgram and
+        // Program::with_config / with_native_backend build Program with TerminalPresenter<Stdout>.
+
+        fn assert_uses_terminal_presenter<M: Model, E: BackendEventSource<Error = io::Error>>(
+            _p: &Program<M, E, TerminalPresenter<Stdout>>,
+        ) {
+        }
+
+        fn assert_default_program_alias<M: Model>(_p: &DefaultProgram<M>) {
+            assert_uses_terminal_presenter(_p);
+        }
+
+        let _ = assert_uses_terminal_presenter::<TestModel, CrosstermEventSource>;
+        let _ = assert_default_program_alias::<TestModel>;
+
+        // Also test TerminalPresenter::with_writer type check and basic construction
+        let sink = Vec::<u8>::new();
+        let presenter = TerminalPresenter::with_writer(
+            sink,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            TerminalCapabilities::basic(),
+        );
+        assert_eq!(presenter.writer.screen_mode(), ScreenMode::AltScreen);
     }
 }

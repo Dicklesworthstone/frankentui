@@ -106,6 +106,7 @@ pub mod stdio_capture;
 pub mod string_model;
 pub mod subscription;
 pub mod telemetry_schema;
+pub mod terminal_presenter;
 pub mod terminal_writer;
 pub mod tick_strategy;
 #[cfg(feature = "experimental")]
@@ -147,7 +148,10 @@ pub use input_macro::{
     RecordingFilter, RecordingState, TimedEvent,
 };
 pub use locale::{
-    Locale, LocaleContext, LocaleOverride, current_locale, detect_system_locale, set_locale,
+    Date, DateFormatStyle, DateTime, DateTimeError, DateTimeFormatter, FormattingError, Locale,
+    LocaleContext, LocaleOverride, NumberFormat, NumberFormatter, NumberStyle, NumberingSystem,
+    RoundingMode, TextDirection, Time, TimeFormatStyle, current_locale, detect_system_locale,
+    direction, format_date, format_datetime, format_int, format_number, set_direction, set_locale,
 };
 pub use log_sink::LogSink;
 pub use process_subscription::{
@@ -167,7 +171,7 @@ pub use program::{
     Program, ProgramConfig, ResizeBehavior, RolloutPolicy, RuntimeLane, TaskExecutorBackend,
     TaskSpec, WidgetRefreshConfig, pane_terminal_resolve_splitter_target,
     pane_terminal_splitter_handles, pane_terminal_target_from_hit,
-    register_pane_terminal_splitter_hits,
+    register_pane_terminal_splitter_hits, signal_termination_from_error,
 };
 pub use program::{DEFAULT_BACKEND, NO_BACKEND_MESSAGE};
 pub use render_trace::{
@@ -181,7 +185,10 @@ pub use subscription::{
     Every, FileEvent, FileWatcher, StopSignal, SubId, Subscription, SubscriptionSender,
     file_watcher, tick_every,
 };
-pub use terminal_writer::{ScreenMode, TerminalWriter, UiAnchor, inline_active_widgets};
+pub use terminal_presenter::TerminalPresenter;
+pub use terminal_writer::{
+    PresentTimings, ScreenMode, TerminalWriter, UiAnchor, inline_active_widgets,
+};
 pub use tick_strategy::{
     ActiveOnly, ActivePlusAdjacent, AllocationCurve, Custom, DecayConfig, MarkovPredictor,
     Predictive, PredictiveConfig, PredictiveStrategyConfig, ScreenPrediction, ScreenTickDispatch,
@@ -337,3 +344,29 @@ pub use telemetry::{
     SpanId, TelemetryConfig, TelemetryError, TelemetryGuard, TraceContextSource, TraceId,
     is_safe_env_var, redact,
 };
+
+#[cfg(all(test, feature = "experimental"))]
+mod experimental_smoke {
+    use crate::countmin_sketch::CountMinSketch;
+    use crate::timeline_aggregator::{AggregatorConfig, TimelineAggregator};
+
+    #[test]
+    fn timeline_aggregator_and_cms_compile() {
+        let mut agg = TimelineAggregator::new(AggregatorConfig::default());
+        for _ in 0..60 {
+            agg.observe(&"a", 1);
+        }
+        for _ in 0..40 {
+            agg.observe(&"b", 1);
+        }
+        assert!(agg.estimate(&"a") >= 60);
+
+        let mut cms = CountMinSketch::with_dimensions(64, 4);
+        for i in 0..100 {
+            cms.add(&i, 1);
+        }
+        for i in 0..100 {
+            assert!(cms.estimate(&i) >= 1);
+        }
+    }
+}

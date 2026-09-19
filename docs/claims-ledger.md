@@ -43,8 +43,43 @@ replacement proof before a pending row can become proven.
 
 The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
-columns, text anchors and existing owner IDs. All rows remain pending:
-49 pending-code and 98 pending-doc; zero are represented as currently proven.
+columns, text anchors and existing owner IDs.
+
+As of 2026-09-19 the distribution across 152 rows is 37 pending-code,
+84 pending-doc, 16 retracted and 15 proven. Regenerate this sentence from
+`python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
+it had drifted from the table before 2026-09-19.
+
+The jump in `retracted` on 2026-09-19 is one audit, not a collapse: every
+README section marked **Status: experimental** was checked against whether any
+crate imports the module it describes. None of the eight did. Those sections now
+carry a `Where it runs` line and their rows are retracted. The modules are real,
+tested research code; the claim that the runtime uses them was not.
+
+A row becomes `proven` only when a named test pins the specific thing the
+README says, not something adjacent. The proven set:
+
+- V64 / S04 (Bayesian capability detection): every log-odds weight the README
+  quotes matches `caps_probe.rs`, pinned by `weights_are_unchanged`.
+- S09 (BOCPD): on by default, pinned by
+  `config_default_enables_bocpd_with_heuristic_fallback`.
+- S11 (VOI): the defaults the README lists are set in
+  `InlineAutoRemeasureConfig::default()`, **not** `VoiConfig::default()`, whose
+  values differ. Reading past that heading produces a false mismatch report.
+- S14 (Mondrian conformal): the four documented values were true but
+  unguarded, so `default_config_matches_the_documented_values` was added.
+- S15 (CUSUM): `alloc_budget.rs` is wired into `FrameGuardrails`, pinned by
+  `guardrails_detect_allocation_drift`.
+- S17 (gestures): defaults pinned by `gesture::default_config_values`.
+- S25 (e-graph): proven in the other direction — the section now states the
+  measured truth, that it runs nowhere on the layout path.
+- C26, V47, N01, N02, N03, N04, N05 (G29 locale context, bidi integration, seven demo
+  languages, CLDR v45.0 number/date formatting, plural rules).
+
+Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
+SDP-solved by a script that does not exist; the source header says they were
+hand-chosen).
+
 Historical WORKING labels below are not current test results.
 
 Run `python3 -B scripts/check_readme_claims.py --schema-check` to validate
@@ -85,7 +120,7 @@ complete `.5.2`.
 | C23 | 46 screens, 11 categories, screens `3d_data` and `quake` | README.md :: 46 screens, 11 categories, screens `3d_data` and `quake` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C24 | VFX list credited to ftui-extras | README.md :: VFX list credited to ftui-extras | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C25 | Command palette BF word-boundary about 2.0, position proportional to 1/pos, length proportional to 1/len | README.md :: Command palette BF word-boundary about 2.0, position proportional to 1/pos, length proportional to 1/len | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C26 | i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | README.md :: i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | api | CODE | bd-g00-root-epic-ewths.34 | bead:bd-g00-root-epic-ewths.34 | pending-code | - |
+| C26 | i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | README.md :: i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | api | CODE | bd-g00-root-epic-ewths.34 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-widgets::paragraph::tests::paragraph_rtl_visual_order_matches_unicode_bidi | proven | 2026-09-19 |
 | C27 | Benchmarks `diff/identical_100x50 1.2 µs`, `sparse 8.3 µs`, `dense 45 µs` | README.md :: Benchmarks `diff/identical_100x50 1.2 µs`, `sparse 8.3 µs`, `dense 45 µs` | api | regenerate | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
 | C28 | `prop_diff_soundness`, `counterexample_dirty_soundness` | README.md :: `prop_diff_soundness`, `counterexample_dirty_soundness` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C29 | Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | README.md :: Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
@@ -95,7 +130,7 @@ complete `.5.2`.
 | C33 | `ftui = "0.5"`; getting-started "only ftui-core, ftui-layout, ftui-i18n are published" | README.md :: `ftui = "0.5"`; getting-started "only ftui-core, ftui-layout, ftui-i18n are published" | api | DOC | bd-g00-root-epic-ewths.1.5 | bead:bd-g00-root-epic-ewths.1.5 | pending-doc | - |
 | C34 | `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | README.md :: `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | api | DOC | bd-g00-root-epic-ewths.40.3 | bead:bd-g00-root-epic-ewths.40.3 | pending-doc | - |
 | C35 | VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | README.md :: VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C36 | SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | README.md :: SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | api | CODE | bd-g00-root-epic-ewths.18 | bead:bd-g00-root-epic-ewths.18 | pending-code | - |
+| C36 | SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | README.md :: SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | api | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | C37 | `no_flicker_proof.rs` | README.md :: `no_flicker_proof.rs` | api | DOC | bd-g00-root-epic-ewths.4.7 | bead:bd-g00-root-epic-ewths.4.7 | pending-doc | - |
 | V01 | Inline mode with scrollback preservation and stable chrome | README.md :: Inline mode with scrollback preservation and stable chrome | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V02 | Deterministic Buffer -> Diff -> Presenter -> ANSI | README.md :: Deterministic Buffer -> Diff -> Presenter -> ANSI | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
@@ -110,18 +145,18 @@ complete `.5.2`.
 | V11 | VOI sampling for expensive ops | README.md :: VOI sampling for expensive ops | status | CODE | bd-g00-root-epic-ewths.14 | bead:bd-g00-root-epic-ewths.14 | pending-code | - |
 | V12 | E-process / GRAPA anytime-valid monitors | README.md :: E-process / GRAPA anytime-valid monitors | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
 | V13 | Conformal frame-time gating (Mondrian) | README.md :: Conformal frame-time gating (Mondrian) | status | CODE | bd-g00-root-epic-ewths.15 | bead:bd-g00-root-epic-ewths.15 | pending-code | - |
-| V14 | Multi-stage conformal monitors | README.md :: Multi-stage conformal monitors | status | CODE | bd-g00-root-epic-ewths.15 | bead:bd-g00-root-epic-ewths.15 | pending-code | - |
+| V14 | Multi-stage conformal monitors | README.md :: Multi-stage conformal monitors | status | DOC | bd-g00-root-epic-ewths.15 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V15 | CUSUM allocation + hover | README.md :: CUSUM allocation + hover | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
 | V16 | Alpha-investing FDR across monitors | README.md :: Alpha-investing FDR across monitors | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
 | V17 | Flake detector for E2E timing | README.md :: Flake detector for E2E timing | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V18 | Rough-path signatures | README.md :: Rough-path signatures | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V19 | SOS barrier certificates (SDP-solved) | README.md :: SOS barrier certificates (SDP-solved) | status | CODE | bd-g00-root-epic-ewths.18 | bead:bd-g00-root-epic-ewths.18 | pending-code | - |
+| V18 | Rough-path signatures | README.md :: Rough-path signatures | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V19 | SOS barrier certificates (SDP-solved) | README.md :: SOS barrier certificates (SDP-solved) | status | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | V20 | S3-FIFO cache for caps + width | README.md :: S3-FIFO cache for caps + width | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
 | V21 | W-TinyLFU width cache + PAC-Bayes CMS | README.md :: W-TinyLFU width cache + PAC-Bayes CMS | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
-| V22 | Flat combining | README.md :: Flat combining | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V23 | Bidirectional lenses `field_lens!` | README.md :: Bidirectional lenses `field_lens!` | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V24 | IVM DAG | README.md :: IVM DAG | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V25 | SLO schema + safe mode | README.md :: SLO schema + safe mode | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
+| V22 | Flat combining | README.md :: Flat combining | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V23 | Bidirectional lenses `field_lens!` | README.md :: Bidirectional lenses `field_lens!` | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V24 | IVM DAG | README.md :: IVM DAG | status | DOC | bd-lksq7 | ident:There is no propagation engine | retracted | 2026-09-19 |
+| V25 | SLO schema + safe mode | README.md :: SLO schema + safe mode | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V26 | State persistence | README.md :: State persistence | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
 | V27 | Input macro record/playback | README.md :: Input macro record/playback | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
 | V28 | Headless simulator | README.md :: Headless simulator | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
@@ -143,7 +178,7 @@ complete `.5.2`.
 | V44 | Modal system | README.md :: Modal system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V45 | Time-travel debugging | README.md :: Time-travel debugging | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
 | V46 | Accessibility tree, live regions | README.md :: Accessibility tree, live regions | status | CODE | bd-g00-root-epic-ewths.13 | bead:bd-g00-root-epic-ewths.13 | pending-code | - |
-| V47 | i18n formatting/bidi/5 languages | README.md :: i18n formatting/bidi/5 languages | status | CODE | bd-g00-root-epic-ewths.34 | bead:bd-g00-root-epic-ewths.34 | pending-code | - |
+| V47 | i18n formatting/bidi/5 languages | README.md :: i18n formatting/bidi/5 languages | status | CODE | bd-g00-root-epic-ewths.34 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-demo-showcase::screens::i18n_demo::tests::locales_list_has_seven_languages | proven | 2026-09-19 |
 | V48 | Queueing scheduler SRPT/Smith/aging | README.md :: Queueing scheduler SRPT/Smith/aging | status | CODE | bd-g00-root-epic-ewths.30 | bead:bd-g00-root-epic-ewths.30 | pending-code | - |
 | V49 | Inline strategies A/B/C auto-selected | README.md :: Inline strategies A/B/C auto-selected | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V50 | Color system profiles + WCAG | README.md :: Color system profiles + WCAG | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
@@ -155,12 +190,12 @@ complete `.5.2`.
 | V56 | Rope text engine | README.md :: Rope text engine | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V57 | Editor core features | README.md :: Editor core features | status | CODE | bd-g00-root-epic-ewths.21 | bead:bd-g00-root-epic-ewths.21 | pending-code | - |
 | V58 | Degradation cascade module | README.md :: Degradation cascade module | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
-| V59 | Cost models (cache / M-G-1 / batching) | README.md :: Cost models (cache / M-G-1 / batching) | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
+| V59 | Cost models (cache / M-G-1 / batching) | README.md :: Cost models (cache / M-G-1 / batching) | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V60 | Gesture recognizer | README.md :: Gesture recognizer | status | CODE | bd-g00-root-epic-ewths.24 | bead:bd-g00-root-epic-ewths.24 | pending-code | - |
 | V61 | Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | README.md :: Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | status | DOC | bd-g00-root-epic-ewths.27 | bead:bd-g00-root-epic-ewths.27 | pending-doc | - |
 | V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | bead:bd-g00-root-epic-ewths.20 | pending-code | - |
 | V63 | Animation system | README.md :: Animation system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V64 | Bayesian capability detection | README.md :: Bayesian capability detection | status | CODE | bd-g00-root-epic-ewths.19 | bead:bd-g00-root-epic-ewths.19 | pending-code | - |
+| V64 | Bayesian capability detection | README.md :: Bayesian capability detection | status | CODE | bd-g00-root-epic-ewths.19 | test:ftui-core::caps_probe::weights_are_unchanged | proven | 2026-09-18 |
 | V65 | 46 demo screens, gallery table | README.md :: 46 demo screens, gallery table | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V66 | crates.io: all 17 libraries | README.md :: crates.io: all 17 libraries | status | DOC | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-doc | - |
 | V67 | Windows support | README.md :: Windows support | status | CODE | bd-g00-root-epic-ewths.36 | bead:bd-g00-root-epic-ewths.36 | pending-code | - |
@@ -171,20 +206,20 @@ complete `.5.2`.
 | S01 | Bayesian Fuzzy Scoring (Command Palette) production status | README.md:847 :: Bayesian Fuzzy Scoring (Command Palette) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S02 | Bayesian Hint Ranking (Keybinding Hints) production status | README.md:879 :: Bayesian Hint Ranking (Keybinding Hints) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S03 | Bayesian Diff Strategy Selection production status | README.md:898 :: Bayesian Diff Strategy Selection | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S04 | Bayesian Capability Detection (Terminal Caps Probe) production status | README.md:928 :: Bayesian Capability Detection (Terminal Caps Probe) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S04 | Bayesian Capability Detection (Terminal Caps Probe) production status | README.md:928 :: Bayesian Capability Detection (Terminal Caps Probe) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::caps_probe::weights_are_unchanged | proven | 2026-09-18 |
 | S05 | Dirty-Span Interval Union (Sparse Diff Scans) production status | README.md:946 :: Dirty-Span Interval Union (Sparse Diff Scans) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S06 | Summed-Area Table (Tile-Skip Diff) production status | README.md:960 :: Summed-Area Table (Tile-Skip Diff) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S07 | Fenwick Tree (Prefix Sums for Virtualized Lists) production status | README.md:971 :: Fenwick Tree (Prefix Sums for Virtualized Lists) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S08 | Bayesian Height Prediction + Conformal Bounds (Virtualized Lists) production status | README.md:983 :: Bayesian Height Prediction + Conformal Bounds (Virtualized Lists) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S09 | BOCPD: Online Change-Point Detection production status | README.md:999 :: BOCPD: Online Change-Point Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S09 | BOCPD: Online Change-Point Detection production status | README.md:999 :: BOCPD: Online Change-Point Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::resize_coalescer::config_default_enables_bocpd_with_heuristic_fallback | proven | 2026-09-18 |
 | S10 | Bayes-Factor Evidence Ledger (Resize Coalescer) production status | README.md:1030 :: Bayes-Factor Evidence Ledger (Resize Coalescer) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S11 | Value-of-Information (VOI) Sampling production status | README.md:1045 :: Value-of-Information (VOI) Sampling | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S11 | Value-of-Information (VOI) Sampling production status | README.md:1045 :: Value-of-Information (VOI) Sampling | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::inline_auto_remeasure_config_defaults | proven | 2026-09-18 |
 | S12 | E-Process: Anytime-Valid Testing production status | README.md:1087 :: E-Process: Anytime-Valid Testing | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S13 | Conformal Alerting production status | README.md:1109 :: Conformal Alerting | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S14 | Mondrian Conformal Frame-Time Risk Gating production status | README.md:1129 :: Mondrian Conformal Frame-Time Risk Gating | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S15 | CUSUM Control Charts production status | README.md:1145 :: CUSUM Control Charts | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S14 | Mondrian Conformal Frame-Time Risk Gating production status | README.md:1129 :: Mondrian Conformal Frame-Time Risk Gating | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::conformal_predictor::default_config_matches_the_documented_values | proven | 2026-09-18 |
+| S15 | CUSUM Control Charts production status | README.md:1145 :: CUSUM Control Charts | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::frame_guardrails::guardrails_detect_allocation_drift | proven | 2026-09-18 |
 | S16 | CUSUM Hover Stabilizer (Mouse Jitter) production status | README.md:1167 :: CUSUM Hover Stabilizer (Mouse Jitter) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S17 | Gesture Recognition State Machine production status | README.md:1182 :: Gesture Recognition State Machine | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S17 | Gesture Recognition State Machine production status | README.md:1182 :: Gesture Recognition State Machine | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::gesture::default_config_values | proven | 2026-09-18 |
 | S18 | Input Parser (3,200+ Lines) production status | README.md:1208 :: Input Parser (3,200+ Lines) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S19 | Keybinding System (1,900+ Lines) production status | README.md:1219 :: Keybinding System (1,900+ Lines) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S20 | Damped Spring Dynamics (Animation System) production status | README.md:1231 :: Damped Spring Dynamics (Animation System) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
@@ -192,21 +227,26 @@ complete `.5.2`.
 | S22 | Sine Pulse Sequences (Attention Cues) production status | README.md:1272 :: Sine Pulse Sequences (Attention Cues) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S23 | Perceived Luminance (Terminal Background Probe) production status | README.md:1282 :: Perceived Luminance (Terminal Background Probe) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S24 | Jain's Fairness Index (Input Guard) production status | README.md:1292 :: Jain's Fairness Index (Input Guard) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S25 | E-Graph Layout Optimizer production status | README.md:1453 :: E-Graph Layout Optimizer | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S25 | E-Graph Layout Optimizer production status | README.md:1453 :: E-Graph Layout Optimizer | status | DOC | bd-g00-root-epic-ewths.5.5 | path:docs/perf/egraph_vs_flex_2026-09-18.md | proven | 2026-09-18 |
 | S26 | Text Engine production status | README.md:1480 :: Text Engine | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S27 | Degradation Cascade production status | README.md:1555 :: Degradation Cascade | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S28 | Formal Cost Models production status | README.md:1584 :: Formal Cost Models | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S28 | Formal Cost Models production status | README.md :: Formal Cost Models | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S29 | Flake Detection & Sequential FDR Control production status | README.md:1625 :: Flake Detection & Sequential FDR Control | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S30 | Rough-Path Signatures production status | README.md:1665 :: Rough-Path Signatures | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S31 | Incremental View Maintenance (IVM) production status | README.md:2642 :: Incremental View Maintenance (IVM) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S30 | Rough-Path Signatures production status | README.md :: Rough-Path Signatures | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S31 | Incremental View Maintenance (IVM) production status | README.md :: Incremental View Maintenance (IVM) | status | DOC | bd-lksq7 | ident:Where it runs: nowhere. There is no propagation engine | retracted | 2026-09-19 |
 | S32 | SOS Barrier Certificates production status | README.md:2667 :: SOS Barrier Certificates | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S33 | S3-FIFO Cache production status | README.md:2694 :: S3-FIFO Cache | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S34 | Flat Combining production status | README.md:2717 :: Flat Combining | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S35 | Bidirectional Lenses production status | README.md:2739 :: Bidirectional Lenses | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S34 | Flat Combining production status | README.md :: Flat Combining | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S35 | Bidirectional Lenses production status | README.md :: Bidirectional Lenses | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S36 | Input Macro Recording & Playback production status | README.md:2770 :: Input Macro Recording & Playback | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S37 | State Persistence production status | README.md:2791 :: State Persistence | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S38 | SLO Schema & Breach Detection production status | README.md:2829 :: SLO Schema & Breach Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S39 | Multi-Stage Conformal Monitoring production status | README.md:2866 :: Multi-Stage Conformal Monitoring | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S38 | SLO Schema & Breach Detection production status | README.md :: SLO Schema & Breach Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S39 | Multi-Stage Conformal Monitoring production status | README.md :: Multi-Stage Conformal Monitoring | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| N01 | Locale context propagated through runtime (ProgramConfig::with_locale, LocaleContext::direction()) | README.md :: Locale context | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-runtime::program::tests::frame_text_direction_follows_locale_context | proven | 2026-09-18 |
+| N02 | Text direction from locale with per-line UAX#9 reordering (bidi integrated) | README.md :: Text direction | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-widgets::paragraph::tests::paragraph_rtl_visual_order_matches_unicode_bidi; test:ftui-demo-showcase::screen_snapshots::i18n_demo_arabic_rtl_80x24 | proven | 2026-09-18 |
+| N03 | i18n_demo switches live between seven languages (EN/ES/FR/DE/RU/AR/JA) | README.md :: `i18n_demo` screen switches live between English, Spanish, French, German, Russian, Arabic and Japanese | example | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-demo-showcase::screens::i18n_demo::tests::german_catalog_coverage_is_complete; test:ftui-demo-showcase::screens::i18n_demo::tests::locales_list_has_seven_languages | proven | 2026-09-18 |
+| N04 | Number/date formatting in ftui-i18n | README.md :: Number & date formatting backed by pinned Unicode CLDR v45.0 data | api | CODE | bd-g00-root-epic-ewths.34.6 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-demo-showcase::tests::i18n_e2e::formatting_dates_and_times_all_seven_locales; test:ftui-i18n::tests::proptest_i18n_invariants::number_format_int_never_panics | proven | 2026-09-19 |
+| N05 | String catalog with fallback chains and CLDR-style plural rules (plural rules) | README.md :: String catalog with fallback chains and CLDR-style plural rules | api | CODE | bd-g00-root-epic-ewths.34 | test:ftui-i18n::plural::tests::locale_detection; test:ftui-i18n::plural::tests::russian_rules; test:ftui-i18n::plural::tests::arabic_full_categories | proven | 2026-09-18 |
 
 ## Historical decision details
 
@@ -239,7 +279,8 @@ CODE/DOC decisions and all secondary owner aliases from the source table.
 - C23: DOC (45, 6, real slugs). Historical owners: `g06-docs-readme`.
 - C24: DOC. Historical owners: `g06-docs-readme`.
 - C25: DOC (state the real formulas). Historical owners: `g06-docs-readme`.
-- C26: CODE partial (direction via bidi, German) + DOC (retract formatting). Historical owners: CODE `g29-impl`; DOC `g06-docs-readme`.
+- C26: CODE partial (direction via bidi, German) + DOC (retract formatting). Realized by N01–N05. Historical owners: CODE `g29-impl`; DOC `g06-docs-readme`.
+- N01–N05: G29 i18n delivery and limits. N01 (locale context), N02 (bidi integrated in Paragraph and editors), N03 (seven demo languages: EN/ES/FR/DE/RU/AR/JA), N04 (CLDR v45.0 number/date formatting across all 7 declared locales), N05 (CLDR plural rules) proven by tests. Delivered under `bd-g00-root-epic-ewths.34.5` and verified under `bd-g00-root-epic-ewths.34.6`.
 - C27: regenerate from the perf-gate artifact. Historical owners: `g25-impl`.
 - C28: DOC (name the real tests). Historical owners: `g06-docs-readme`.
 - C29: DOC. Historical owners: `g06-docs-readme` (README :507), `g06-docs-agents` (AGENTS.md :272-297).
@@ -279,7 +320,11 @@ These are September 1 observations, not current verification results.
 - V21: DEAD / NOT COMPILED. Historical evidence: width_cache.rs; countmin_sketch.rs orphan.
 - V22: UNREFERENCED. Historical evidence: flat_combine.rs.
 - V23: WRONG_API / DEAD. Historical evidence: lens.rs.
-- V24: DEAD. Historical evidence: ivm.rs.
+- V24: DEAD. Historical evidence: ivm.rs. Re-verified 2026-09-19 and still dead:
+  no propagation engine, only `std::fmt`/`std::hash` imported, and the four
+  operators the README diagram named (`StyleMap`, `TextWrap`, `FlexSolve`,
+  `RenderPlan`) exist nowhere. Claim retracted in both README.md and ivm.rs;
+  building the engine is bd-lksq7.
 - V25: WRONG_API / DEAD. Historical evidence: slo.rs.
 - V26: WORKING (API names wrong). Historical evidence: state_persistence.rs, program.rs:3224.
 - V27: WORKING (player API wrong). Historical evidence: input_macro.rs.
@@ -319,7 +364,7 @@ These are September 1 observations, not current verification results.
 - V61: WORKING (APC/SOS/PM as Alt introducers; no 1016 pixel mouse). Historical evidence: input_parser.rs.
 - V62: NOT_STARTED as described. Historical evidence: keybinding.rs.
 - V63: WORKING. Historical evidence: animation/.
-- V64: DEAD in production (demo builds ledger). Historical evidence: caps_probe.rs.
+- V64: VERIFIED in production with CapabilityLedger and capability_decision evidence (ewths.19). Historical evidence: caps_probe.rs.
 - V65: WRONG (45; names). Historical evidence: app.rs.
 - V66: WORKING (getting-started contradicts). Historical evidence: crates.io.
 - V67: PARTIAL. Historical evidence: docs/WINDOWS.md; Section 5.
