@@ -169,15 +169,19 @@ cargo fmt --check
 # and hides every other rustdoc regression across the workspace.
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-# Fail when a `pub mod` is reachable from nothing in production code.
-# Pure stdlib Python, about two seconds, no cargo needed.
-make reachability        # or: python3 scripts/check_module_reachability.py
-
-# Fail when a README section marked "Status: experimental" does not say where
-# its module runs, and when a quarantined module gains a production consumer
-# while the README still says it has none. Also validates the claims ledger.
-make claims
+# Every non-cargo gate in one command: about six seconds, pure stdlib Python,
+# no compilation and no network. `make check` runs it too, so you get it for
+# free, but run it directly after doc or ledger edits that touch no code.
+make gates
 ```
+
+`make gates` is three checks, each runnable on its own:
+
+| Target | Fails when |
+|---|---|
+| `make reachability` | a `pub mod` is reachable from nothing in production; an allowlist entry cites a closed or unknown bead |
+| `make claims` | the ledger is malformed; a proof cites a test or path that does not exist; a README section marked `Status: experimental` has no `Where it runs` line, or a quarantined module gains a production consumer |
+| `make env-docs` | the code reads an environment variable that nothing documents |
 
 **Module reachability.** `scripts/check_module_reachability.py` exists because
 "reachable from production" was never part of the definition of done here, and

@@ -3,7 +3,7 @@
 # This Makefile provides convenient targets for building and developing FrankenTUI.
 # The reference libraries are automatically synchronized before builds.
 
-.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability claims
+.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability claims gates env-docs
 
 # Default target
 all: build
@@ -21,9 +21,24 @@ build: sync-refs
 	@echo "Building FrankenTUI..."
 	@if [ -f Cargo.toml ]; then cargo build; else echo "Note: Cargo.toml not yet created"; fi
 
-# Check compilation without producing binaries
-check: sync-refs
+# Check compilation without producing binaries, then the truth gates.
+#
+# The gates run here on purpose. AGENTS.md has listed them as mandatory after
+# any substantive change since they were written, but nothing invoked them:
+# they existed only as prose and as Make targets you had to remember. Six
+# seconds of pure-stdlib Python is cheap enough that the obvious entry point
+# should just run them. `make gates` alone skips the cargo work.
+check: sync-refs gates
 	@if [ -f Cargo.toml ]; then cargo check --all-targets; else echo "Note: Cargo.toml not yet created"; fi
+
+# Every non-cargo correctness gate, about six seconds total. No compilation,
+# no network, stdlib only, so this is safe to run constantly.
+gates: reachability claims env-docs
+	@echo "gates: reachability, claims and env-docs all green"
+
+# Fail when an environment variable is read by the code but undocumented.
+env-docs:
+	@python3 scripts/check_env_docs.py > /dev/null
 
 # Run tests
 test: sync-refs
@@ -64,11 +79,12 @@ help:
 	@echo "  make setup      - Initial setup: sync reference libraries"
 	@echo "  make sync-refs  - Pull latest reference library code"
 	@echo "  make build      - Build the project (syncs refs first)"
-	@echo "  make check      - Check compilation"
+	@echo "  make check      - Check compilation, then run the gates"
 	@echo "  make test       - Run tests"
 	@echo "  make clippy     - Run clippy lints"
 	@echo "  make fmt-check  - Check formatting"
 	@echo "  make reachability - Fail on pub modules nothing references"
 	@echo "  make claims     - Validate the claims ledger and experimental sections"
+	@echo "  make gates      - All non-cargo gates (~6s): reachability, claims, env-docs"
 	@echo "  make clean      - Clean build artifacts"
 	@echo "  make help       - Show this help"
