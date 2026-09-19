@@ -2354,6 +2354,150 @@ mod tests {
         assert!(forced_by_deadline, "Should be forced by deadline");
     }
 
+    /// The hard deadline survives the BOCPD default flip.
+    ///
+    /// `hard_deadline_forces_apply` above proves this for the heuristic, but
+    /// `test_config()` sets `enable_bocpd: false` while
+    /// `CoalescerConfig::default()` sets it true, so that test says nothing
+    /// about what ships. G12's claim is that turning the posterior on does not
+    /// regress coalescing; a 100 ms SLA that quietly stopped applying under the
+    /// detector everyone actually runs is the way that claim would be wrong.
+    #[test]
+    fn hard_deadline_still_forces_apply_with_bocpd_on() {
+        let mut config = CoalescerConfig::default();
+        config.enable_logging = true;
+        assert!(config.enable_bocpd, "the flip under test is the default");
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+        // A drag: 30 events 5 ms apart is well inside burst territory, so the
+        // posterior will want to keep coalescing. The deadline must win.
+        let mut forced_at_ms = None;
+        for i in 0..30u64 {
+            let now = base + Duration::from_millis(i * 5);
+            if let CoalesceAction::ApplyResize {
+                forced_by_deadline: true,
+                ..
+            } = c.handle_resize_at(100 + i as u16, 40, now)
+            {
+                forced_at_ms.get_or_insert(i * 5);
+            }
+        }
+        // 30 events at 5 ms only spans 145 ms, and the first is not pending
+        // until it arrives, so give the tick path the chance the event path
+        // may not have had.
+        if forced_at_ms.is_none()
+            && let CoalesceAction::ApplyResize {
+                forced_by_deadline: true,
+                ..
+            } = c.tick_at(base + Duration::from_millis(200))
+        {
+            forced_at_ms = Some(200);
+        }
+
+        assert!(
+            forced_at_ms.is_some(),
+            "BOCPD on: nothing was ever forced by the {} ms deadline across 30 events",
+            CoalescerConfig::default().hard_deadline_ms
+        );
+        // Every decision in this window should have been the posterior's, not
+        // the rate heuristic's -- otherwise the test proves the deadline holds
+        // for the fallback rather than for BOCPD.
+        assert!(
+            c.detector_decisions().bocpd > 0,
+            "expected the posterior to have decided at least once: {:?}",
+            c.detector_decisions()
+        );
+    }
+
+    /// The two delays the README prints, read back from the posterior.
+    ///
+    /// README: "Decision thresholds: p_burst > 0.7 → Burst regime (aggressive
+    /// coalescing), p_burst < 0.3 → Steady regime (responsive)", against
+    /// `steady_delay_ms: 16` and `burst_delay_ms: 40`.
+    #[test]
+    fn steady_regime_delay_is_16ms_and_burst_is_40ms() {
+        let config = CoalescerConfig::default();
+        assert_eq!((config.steady_delay_ms, config.burst_delay_ms), (16, 40));
+
+        // Steady: 200 ms spacing is exactly mu_steady_ms.
+        let mut steady = ResizeCoalescer::new(config.clone(), (80, 24));
+        let base = Instant::now();
+        for i in 1..=12u64 {
+            steady.handle_resize_at(100, 40, base + Duration::from_millis(i * 200));
+        }
+        let p_steady = steady.bocpd_p_burst().expect("bocpd is on by default");
+        assert!(
+            p_steady < config.bocpd_config.clone().unwrap_or_default().steady_threshold,
+            "200 ms spacing should read as steady, p_burst={p_steady}"
+        );
+        assert_eq!(steady.bocpd_recommended_delay(), Some(16));
+
+        // Burst: 5 ms spacing is well under mu_burst_ms.
+        let mut burst = ResizeCoalescer::new(config.clone(), (80, 24));
+        let base = Instant::now();
+        for i in 1..=30u64 {
+            burst.handle_resize_at(100, 40, base + Duration::from_millis(i * 5));
+        }
+        let p_burst = burst.bocpd_p_burst().expect("bocpd is on by default");
+        assert!(
+            p_burst > config.bocpd_config.clone().unwrap_or_default().burst_threshold,
+            "5 ms spacing should read as burst, p_burst={p_burst}"
+        );
+        assert_eq!(burst.bocpd_recommended_delay(), Some(40));
+    }
+
+    /// Every decision row carries its detector, and `p_burst` is present
+    /// exactly when the posterior is the one that decided.
+    ///
+    /// README: "Every `decision` and `regime_transition` evidence row carries
+    /// `detector` (`bocpd` or `heuristic`) and `p_burst`". A row that says
+    /// `bocpd` with no posterior, or `heuristic` with one, makes the evidence
+    /// log unable to answer the question it exists to answer.
+    #[test]
+    fn decision_evidence_json_has_detector_and_p_burst() {
+        let mut config = CoalescerConfig::default();
+        config.enable_logging = true;
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+        // Mixed schedule so both detectors get to decide: the first event has
+        // no inter-arrival and falls back to the heuristic, then a burst, then
+        // a gap long enough to leave the clamp window.
+        for (i, dt) in [0u64, 5, 5, 5, 5, 5, 5, 400, 200, 12_000].iter().enumerate() {
+            let now = base + Duration::from_millis(dt * (i as u64 + 1));
+            c.handle_resize_at(100 + i as u16, 40, now);
+        }
+
+        let logs = c.logs();
+        assert!(!logs.is_empty(), "logging was enabled but nothing was logged");
+        let mut saw_heuristic = false;
+        let mut saw_bocpd = false;
+        for log in logs {
+            match log.detector {
+                RegimeDetector::Heuristic => {
+                    saw_heuristic = true;
+                    assert!(
+                        log.p_burst.is_none(),
+                        "a heuristic decision must not carry a posterior: {log:?}"
+                    );
+                }
+                RegimeDetector::Bocpd => {
+                    saw_bocpd = true;
+                    let p = log.p_burst.expect("a bocpd decision carries its posterior");
+                    assert!((0.0..=1.0).contains(&p), "p_burst out of range: {p}");
+                }
+            }
+        }
+        assert!(saw_heuristic, "the first event should fall back to the heuristic");
+        assert!(saw_bocpd, "the burst should have been decided by the posterior");
+
+        // The JSONL the evidence pipeline actually emits carries both fields.
+        let jsonl = c.decision_logs_jsonl();
+        assert!(jsonl.contains("\"detector\":"), "{jsonl}");
+        assert!(jsonl.contains("\"p_burst\":"), "{jsonl}");
+    }
+
     /// CONTRACT (bd-1za0z): an isolated resize arriving after a quiet gap is
     /// applied instantly but NOT flagged forced — nothing was waiting on the
     /// deadline, so it is not an SLA breach.
