@@ -1552,7 +1552,7 @@ native OSC 52 commands do not grant browser clipboard permissions.
 
 ### BiDi & Shaping
 
-- **BiDi** (`bidi.rs`, 1,100+ lines): Unicode Bidirectional Algorithm for mixed LTR/RTL text
+- **BiDi** (`bidi.rs`, 1,146 lines): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` and the editors)
 - **Shaping** (`shaping.rs`, 1,500+ lines): script/run segmentation for cluster-aware rendering
 - **Normalization** (`normalization.rs`): NFC/NFD Unicode normalization for consistent comparison
 
@@ -2615,12 +2615,13 @@ The `accessibility_panel` demo screen mirrors the live tree (size, leading dump 
 
 The `ftui-i18n` crate provides locale-aware rendering:
 
-- **Locale context** propagated through the runtime (`ProgramConfig::with_locale("fr")`)
-- **Number/date formatting** respecting locale conventions
-- **Text direction** (LTR/RTL) integrated with the BiDi module in `ftui-text`
-- **String table** support for message translation
+- **Locale context** propagated through the runtime (`ProgramConfig::with_locale("fr")`, `LocaleContext::direction()`)
+- **String catalog** with fallback chains and CLDR-style plural rules (`StringCatalog`, `PluralRule`)
+- **Text direction** from locale with per-line UAX#9 reordering in `Paragraph`/`TextInput`/`TextArea` (feature `bidi`, on by default in `ftui`)
 
-The `i18n_demo` screen demonstrates live locale switching between English, French, German, Japanese, and Arabic.
+Number/date formatting is out of scope for `ftui-i18n` (an ICU-sized dependency); format in your app or with a crate such as `icu` and pass strings to the catalog (planned formatting delivery tracked in `bd-g00-root-epic-ewths.34.5`).
+
+The `i18n_demo` screen switches live between English, Spanish, French, German, Russian, Arabic and Japanese; Arabic renders right-to-left.
 
 ---
 

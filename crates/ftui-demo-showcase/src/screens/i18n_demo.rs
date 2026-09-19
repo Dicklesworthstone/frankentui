@@ -1549,6 +1549,7 @@ mod tests {
 
     #[test]
     fn german_catalog_coverage_is_complete() {
+        assert_eq!(LOCALES.len(), 7, "expected 7 demo locales");
         let c = build_catalog();
         let report = c.coverage_report();
         for loc in ["en", "es", "fr", "ru", "ar", "de", "ja"] {
@@ -1561,6 +1562,13 @@ mod tests {
                 loc, entry.present, report.total_keys, entry.coverage_percent
             );
         }
+    }
+
+    #[test]
+    fn locales_list_has_seven_languages() {
+        assert_eq!(LOCALES.len(), 7);
+        let tags: Vec<&str> = LOCALES.iter().map(|l| l.tag).collect();
+        assert_eq!(tags, &["en", "es", "fr", "ru", "ar", "de", "ja"]);
     }
 
     #[test]
