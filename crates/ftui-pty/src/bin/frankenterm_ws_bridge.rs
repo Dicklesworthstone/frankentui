@@ -178,12 +178,21 @@ Options:
   --env <KEY=VALUE>            Extra environment variable (repeatable)
   --origin <url>               Allowed Origin header value (repeatable)
   --token <secret>             Require ?token=<secret> on websocket URI
+                               (compared undecoded; use only A-Z a-z 0-9 - . _ ~)
   --telemetry <path>           Append JSONL telemetry at path
   --max-message-bytes <n>      Max websocket frame/message size
   --idle-ms <n>                Idle loop sleep (default: 5 ms)
   --accept-once                Handle one client then exit (default)
   --serve-forever              Accept clients continuously
   -h, --help                   Show this help
+
+Security:
+  With neither --origin nor --token, every connection is accepted. This
+  bridge hands a client the stdin and stdout of a real shell, and a
+  websocket handshake is not subject to the same-origin policy, so any page
+  visited in a browser can open ws://127.0.0.1:9231/ and drive that shell.
+  Binding loopback does not prevent it - the browser is already inside it.
+  Pass --origin, --token, or both for anything but a throwaway session.
 "
     );
 }

@@ -47,9 +47,34 @@ pub struct WsPtyBridgeConfig {
     pub cols: u16,
     /// Initial PTY rows.
     pub rows: u16,
-    /// Allowlist for `Origin` headers. Empty means allow all.
+    /// Allowlist for `Origin` headers, compared for exact equality. Empty
+    /// means allow all, including a request that sends no `Origin` at all.
+    ///
+    /// See the note on [`Self::auth_token`] before leaving this empty.
     pub allowed_origins: Vec<String>,
     /// Optional shared secret expected as query parameter `token`.
+    ///
+    /// The value is compared against the **raw, undecoded** query string:
+    /// `?token=a%2Bb` presents the five bytes `a%2Bb`, not `a+b`. A secret
+    /// containing any character a client would percent-encode can therefore
+    /// never match, so pick one from the unreserved set
+    /// (`A-Z a-z 0-9 - . _ ~`).
+    ///
+    /// # Leaving this and the origin allowlist unset
+    ///
+    /// Both default to "no check", and the bridge's job is to hand a
+    /// websocket client the stdin and stdout of a real shell. A websocket
+    /// handshake is not subject to the same-origin policy and needs no CORS
+    /// preflight, so with neither check configured *any* page the operator
+    /// visits in a browser can open `ws://127.0.0.1:9231/` and drive that
+    /// shell. Binding loopback does not prevent this; the browser is already
+    /// inside it. That is cross-site websocket hijacking, and it is the
+    /// default shape of this struct.
+    ///
+    /// Set at least one of these for anything but a throwaway local session.
+    /// They defend different things and compose: the allowlist keeps a
+    /// browser from reaching the port at all, and the token keeps a non-browser
+    /// client - which can send any `Origin` it likes - from reaching it either.
     pub auth_token: Option<String>,
     /// Optional JSONL telemetry file path.
     pub telemetry_path: Option<PathBuf>,
@@ -633,7 +658,7 @@ fn validate_upgrade_request(
             status: StatusCode::UNAUTHORIZED,
             body: "Missing token".to_string(),
         })?;
-        if presented != token {
+        if !secret_eq(presented, token) {
             return Err(HandshakeRejection {
                 status: StatusCode::UNAUTHORIZED,
                 body: "Invalid token".to_string(),
@@ -644,6 +669,38 @@ fn validate_upgrade_request(
     Ok(())
 }
 
+/// Compare a presented shared secret against the expected one without an
+/// early exit on the first differing byte.
+///
+/// `str`'s `==` stops at the first mismatch, so its duration is a function of
+/// how many leading bytes a guess got right. The bridge binds loopback by
+/// default, where the jitter that normally buries that signal is at its
+/// smallest, and each probe costs an attacker only one TCP connection.
+///
+/// The length check is deliberately left early-exiting. A shared secret's
+/// length is not itself secret - it is right there in the request line the
+/// server just parsed - and comparing it up front keeps the fold below over a
+/// single fixed operand length.
+fn secret_eq(presented: &str, expected: &str) -> bool {
+    let presented = presented.as_bytes();
+    let expected = expected.as_bytes();
+    if presented.len() != expected.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (left, right) in presented.iter().zip(expected) {
+        diff |= left ^ right;
+    }
+    diff == 0
+}
+
+/// Extract a query parameter's **raw, undecoded** value.
+///
+/// Nothing here percent-decodes, so `?token=a%2Bb` presents the five bytes
+/// `a%2Bb`, not `a+b`. That matters for [`WsPtyBridgeConfig::auth_token`]: a
+/// secret containing any character a client would encode - `&`, `=`, `%`, `+`,
+/// a space - cannot be presented by a correctly-encoding client and will never
+/// match. Choose tokens from the unreserved set (`A-Z a-z 0-9 - . _ ~`).
 fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     query.split('&').find_map(|pair| {
         let mut pieces = pair.splitn(2, '=');
@@ -1551,6 +1608,42 @@ mod tests {
     #[test]
     fn query_param_value_with_equals() {
         assert_eq!(query_param("token=a=b", "token"), Some("a=b"));
+    }
+
+    // --- secret_eq ---
+
+    #[test]
+    fn secret_eq_agrees_with_plain_equality() {
+        // Timing is not observable from a test; what is testable is that
+        // hardening the comparison did not change which secrets it accepts.
+        for (presented, expected) in [
+            ("", ""),
+            ("s3cret", "s3cret"),
+            ("s3cret", "s3crey"),  // differs in the last byte
+            ("s3cret", "t3cret"),  // differs in the first byte
+            ("s3cret", "s3cret "), // trailing space, longer
+            ("s3cret", "s3cre"),   // prefix, shorter
+            ("", "s3cret"),
+            ("s3cret", ""),
+            ("\u{1f512}key", "\u{1f512}key"), // multi-byte, equal
+            ("\u{1f512}key", "\u{1f513}key"), // multi-byte, one byte apart
+        ] {
+            assert_eq!(
+                secret_eq(presented, expected),
+                presented == expected,
+                "secret_eq({presented:?}, {expected:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_eq_rejects_a_correct_prefix() {
+        // The property an early-exiting `==` gives away for free: a guess that
+        // is right up to byte n must be no more acceptable than one that is
+        // wrong at byte 0.
+        assert!(!secret_eq("s3cre", "s3cret"));
+        assert!(!secret_eq("s3cretX", "s3cret"));
+        assert!(secret_eq("s3cret", "s3cret"));
     }
 
     // --- validate_upgrade_request edge cases ---
