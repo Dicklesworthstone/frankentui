@@ -193,7 +193,15 @@ impl NumberFormatter {
     pub fn format_int<I: Into<i128>>(&self, value: I) -> String {
         let val = value.into();
         let is_negative = val < 0;
-        let abs_val = val.unsigned_abs();
+        let mut abs_val = val.unsigned_abs();
+        if matches!(self.config.style, NumberStyle::Percent) {
+            // `NumberStyle::Percent` is documented as "multiplied by 100", and
+            // `format_float` does multiply. Without this the same formatter
+            // rendered `12` as "12%" and `12.0` as "1,200%". Saturating rather
+            // than wrapping: a value within a factor of 100 of `i128::MAX` has
+            // no meaningful percentage, and this method cannot report an error.
+            abs_val = abs_val.saturating_mul(100);
+        }
         let raw_digits = abs_val.to_string();
 
         let padded_digits = if raw_digits.len() < self.config.min_integer_digits {
@@ -306,8 +314,13 @@ impl NumberFormatter {
         let max_frac = self.config.max_fraction_digits;
         let min_frac = self.config.min_fraction_digits;
 
-        let (int_part, frac_str) =
-            round_float_parts(abs_val, max_frac, min_frac, self.config.rounding_mode);
+        let (int_part, frac_str) = round_float_parts(
+            abs_val,
+            max_frac,
+            min_frac,
+            self.config.rounding_mode,
+            is_negative,
+        );
 
         let int_str = int_part.to_string();
         let padded_int = if int_str.len() < self.config.min_integer_digits {
@@ -417,13 +430,36 @@ fn group_digits(digits: &str, group_sep: &str, group_size: usize) -> String {
     result
 }
 
-/// Round a positive float into integer part and formatted fractional digits.
+/// Round a float's *magnitude* into integer part and formatted fractional digits.
+///
+/// `val` is always non-negative: [`NumberFormatter::format_float`] splits the
+/// sign off before calling and re-attaches it afterwards. That split is only
+/// sound for the rounding modes that commute with `abs`. `HalfUp` (half away
+/// from zero), `HalfEven` and `Truncate` (toward zero) are all defined in terms
+/// of the magnitude already, so they survive it. `Floor` and `Ceil` are not:
+/// they are defined against the number line, so below zero `Floor` rounds the
+/// magnitude *up* and `Ceil` rounds it *down*. Rounding the bare magnitude
+/// under those names gave `-2.9` as `-2` under `Floor` and `-2.1` as `-3` under
+/// `Ceil` - each the opposite of what its own doc comment promises. Reflect
+/// them here, which is the last point where the sign is still known.
 fn round_float_parts(
     val: f64,
     max_frac: usize,
     min_frac: usize,
     mode: RoundingMode,
+    is_negative: bool,
 ) -> (u128, String) {
+    let mode = if is_negative {
+        match mode {
+            // Toward -inf is away from zero; toward +inf is toward zero.
+            RoundingMode::Floor => RoundingMode::Ceil,
+            RoundingMode::Ceil => RoundingMode::Truncate,
+            symmetric => symmetric,
+        }
+    } else {
+        mode
+    };
+
     if max_frac == 0 {
         let rounded = match mode {
             RoundingMode::HalfUp => (val + 0.5).floor() as u128,
@@ -622,6 +658,89 @@ mod tests {
         assert_eq!(fmt_tr.format_float(2.9).unwrap(), "2");
         assert_eq!(fmt_fl.format_float(2.9).unwrap(), "2");
         assert_eq!(fmt_ce.format_float(2.1).unwrap(), "3");
+    }
+
+    #[test]
+    fn floor_and_ceil_follow_the_number_line_below_zero() {
+        // `test_rounding_modes` above only ever feeds positive values, where
+        // every mode agrees with its magnitude-only form. These are the cases
+        // that separate them.
+        let with = |mode| {
+            NumberFormatter::with_config(
+                "en",
+                NumberFormat::new()
+                    .fraction_digits(0, 0)
+                    .rounding_mode(mode),
+            )
+            .unwrap()
+        };
+        let floor = with(RoundingMode::Floor);
+        let ceil = with(RoundingMode::Ceil);
+        let trunc = with(RoundingMode::Truncate);
+
+        // Floor is toward -inf: it moves *away* from zero on a negative value.
+        assert_eq!(floor.format_float(-2.1).unwrap(), "-3");
+        assert_eq!(floor.format_float(-2.9).unwrap(), "-3");
+        // Ceil is toward +inf: it moves *toward* zero on a negative value.
+        assert_eq!(ceil.format_float(-2.1).unwrap(), "-2");
+        assert_eq!(ceil.format_float(-2.9).unwrap(), "-2");
+        // Truncate is toward zero from both sides - what Floor used to do.
+        assert_eq!(trunc.format_float(-2.9).unwrap(), "-2");
+        assert_eq!(trunc.format_float(2.9).unwrap(), "2");
+        // Above zero the three are unchanged.
+        assert_eq!(floor.format_float(2.9).unwrap(), "2");
+        assert_eq!(ceil.format_float(2.1).unwrap(), "3");
+    }
+
+    #[test]
+    fn floor_and_ceil_reflect_at_fractional_precision_too() {
+        let with = |mode| {
+            NumberFormatter::with_config(
+                "en",
+                NumberFormat::new()
+                    .fraction_digits(2, 2)
+                    .rounding_mode(mode),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            with(RoundingMode::Floor).format_float(-1.234).unwrap(),
+            "-1.24"
+        );
+        assert_eq!(
+            with(RoundingMode::Ceil).format_float(-1.236).unwrap(),
+            "-1.23"
+        );
+        assert_eq!(
+            with(RoundingMode::Floor).format_float(1.236).unwrap(),
+            "1.23"
+        );
+        assert_eq!(
+            with(RoundingMode::Ceil).format_float(1.234).unwrap(),
+            "1.24"
+        );
+    }
+
+    #[test]
+    fn percent_style_scales_ints_and_floats_alike() {
+        let fmt =
+            NumberFormatter::with_config("en", NumberFormat::new().style(NumberStyle::Percent))
+                .unwrap();
+
+        // `NumberStyle::Percent` promises "multiplied by 100"; both entry
+        // points have to keep that promise or one value renders two ways.
+        assert_eq!(fmt.format_int(12), "1,200%");
+        assert_eq!(fmt.format_float(12.0).unwrap(), "1,200%");
+        assert_eq!(fmt.format_int(-1), "-100%");
+        assert_eq!(fmt.format_int(0), "0%");
+
+        // `i128::MAX * 100` overflows `u128`, and `format_int` has no error
+        // channel, so the magnitude saturates instead of wrapping to a small
+        // number.
+        assert_eq!(
+            fmt.format_int(i128::MAX),
+            format!("{}%", group_digits(&u128::MAX.to_string(), ",", 3))
+        );
     }
 
     #[test]

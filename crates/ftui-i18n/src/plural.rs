@@ -106,15 +106,36 @@ impl PluralRule {
     /// Select the best rule for a locale tag (e.g., `"en"`, `"ru"`, `"ar"`).
     ///
     /// Falls back to English if the language is unknown.
+    ///
+    /// # Known approximations
+    ///
+    /// The variants above are language *families*, so a few tags below are
+    /// close rather than exact. Both of these are safe, and both are visible:
+    ///
+    /// - `he` really has a `two` category (CLDR: `i = 2 and v = 0`) that the
+    ///   English rule cannot produce, so a Hebrew `two` form would never be
+    ///   selected. Supply [`PluralRule::Custom`] via
+    ///   [`StringCatalog::set_plural_rule`] if you need it.
+    /// - `hr`, `sr` and `bs` have no `many` category at all - their CLDR rules
+    ///   are `one`/`few`/`other` - but [`Self::Russian`] returns `Many` where
+    ///   they want `Other`. That is harmless only because
+    ///   [`PluralForms::select`] falls back to `other` when `many` is absent,
+    ///   which it will be in a correctly authored catalog for those locales.
+    ///
+    /// [`StringCatalog::set_plural_rule`]: crate::catalog::StringCatalog::set_plural_rule
     #[must_use]
     pub fn for_locale(lang: &str) -> Self {
         // Extract the primary language subtag
         let primary = lang.split(['-', '_']).next().unwrap_or(lang);
 
         match primary.to_ascii_lowercase().as_str() {
-            "en" | "de" | "nl" | "sv" | "da" | "no" | "nb" | "nn" | "it" | "es" | "pt" | "el"
-            | "hu" | "fi" | "et" | "he" | "tr" | "bg" => Self::English,
-            "fr" | "hi" | "bn" => Self::French,
+            "en" | "de" | "nl" | "sv" | "da" | "no" | "nb" | "nn" | "it" | "es" | "el" | "hu"
+            | "fi" | "et" | "he" | "tr" | "bg" => Self::English,
+            // `pt` belongs here, not with `en`: CLDR gives Portuguese
+            // `one: i = 0..1`, the same integer behaviour as `fr`, `hi` and
+            // `bn`. Under the English rule a Portuguese zero selected `other`,
+            // so a catalog's `one` form was skipped for count 0.
+            "fr" | "pt" | "hi" | "bn" => Self::French,
             "ru" | "uk" | "hr" | "sr" | "bs" => Self::Russian,
             "pl" => Self::Polish,
             "ar" => Self::Arabic,
@@ -289,6 +310,50 @@ mod tests {
             PluralRule::for_locale("unknown"),
             PluralRule::English
         ));
+    }
+
+    #[test]
+    fn portuguese_treats_zero_as_singular() {
+        // CLDR `pt` is `one: i = 0..1`, which is the French rule, not the
+        // English one. Guards against filing Portuguese back under `en`
+        // because it looks Romance-and-ordinary next to `es` and `it`.
+        let rule = PluralRule::for_locale("pt");
+        assert_eq!(rule.categorize(0), PluralCategory::One);
+        assert_eq!(rule.categorize(1), PluralCategory::One);
+        assert_eq!(rule.categorize(2), PluralCategory::Other);
+        assert_eq!(
+            PluralRule::for_locale("pt-BR").categorize(0),
+            PluralCategory::One
+        );
+
+        // Spanish and Italian really are English-like for integers: only the
+        // `many` form for exact millions differs, and this subset omits it.
+        assert_eq!(
+            PluralRule::for_locale("es").categorize(0),
+            PluralCategory::Other
+        );
+        assert_eq!(
+            PluralRule::for_locale("it").categorize(0),
+            PluralCategory::Other
+        );
+    }
+
+    #[test]
+    fn serbo_croatian_many_is_absorbed_by_the_other_fallback() {
+        // `hr`/`sr`/`bs` use the Russian rule but have no `many` category of
+        // their own. The documented reason that is safe is the `select`
+        // fallback, so pin the fallback rather than the mapping.
+        let forms = PluralForms {
+            one: "{count} stvar".into(),
+            few: Some("{count} stvari".into()),
+            other: "{count} stvari".into(),
+            ..Default::default()
+        };
+        let rule = PluralRule::for_locale("hr");
+        assert_eq!(rule.categorize(5), PluralCategory::Many);
+        assert_eq!(forms.select(rule.categorize(5)), "{count} stvari");
+        assert_eq!(forms.select(rule.categorize(1)), "{count} stvar");
+        assert_eq!(forms.select(rule.categorize(3)), "{count} stvari");
     }
 
     #[test]
