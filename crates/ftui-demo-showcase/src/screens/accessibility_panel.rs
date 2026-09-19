@@ -495,24 +495,53 @@ impl AccessibilityPanel {
             ]));
         }
         if self.events.is_empty() {
-            lines.push(Line::from_spans([Span::styled(
-                "No a11y events yet. Toggle a mode to emit telemetry.",
-                theme::muted(),
-            )]));
+            const PLACEHOLDER: &str = "No a11y events yet. Toggle a mode to emit telemetry.";
+            if inner.width >= PLACEHOLDER.len() as u16 || inner.height < 2 {
+                lines.push(Line::from_spans([Span::styled(
+                    PLACEHOLDER,
+                    theme::muted(),
+                )]));
+            } else {
+                lines.push(Line::from_spans([Span::styled(
+                    "No a11y events yet.",
+                    theme::muted(),
+                )]));
+                lines.push(Line::from_spans([Span::styled(
+                    "Toggle a mode to emit telemetry.",
+                    theme::muted(),
+                )]));
+            }
         } else {
             for entry in self.events.iter().rev() {
-                let label = match entry.kind {
-                    A11yEventKind::Panel => "Panel",
-                    A11yEventKind::HighContrast => "High Contrast",
-                    A11yEventKind::ReducedMotion => "Reduced Motion",
-                    A11yEventKind::LargeText => "Large Text",
+                let (label, state) = if inner.width >= 44 {
+                    let label = match entry.kind {
+                        A11yEventKind::Panel => "Panel",
+                        A11yEventKind::HighContrast => "High Contrast",
+                        A11yEventKind::ReducedMotion => "Reduced Motion",
+                        A11yEventKind::LargeText => "Large Text",
+                    };
+                    let state = format!(
+                        "HC:{} RM:{} LT:{}",
+                        if entry.high_contrast { "ON" } else { "OFF" },
+                        if entry.reduced_motion { "ON" } else { "OFF" },
+                        if entry.large_text { "ON" } else { "OFF" }
+                    );
+                    (label, state)
+                } else {
+                    let label = match entry.kind {
+                        A11yEventKind::Panel => "Panel",
+                        A11yEventKind::HighContrast => "HiContrast",
+                        A11yEventKind::ReducedMotion => "Red Motion",
+                        A11yEventKind::LargeText => "Large Text",
+                    };
+                    let state = format!(
+                        "H:{} M:{} L:{}",
+                        if entry.high_contrast { "ON" } else { "OFF" },
+                        if entry.reduced_motion { "ON" } else { "OFF" },
+                        if entry.large_text { "ON" } else { "OFF" }
+                    );
+                    (label, state)
                 };
-                let state = format!(
-                    "HC:{} RM:{} LT:{}",
-                    if entry.high_contrast { "ON" } else { "OFF" },
-                    if entry.reduced_motion { "ON" } else { "OFF" },
-                    if entry.large_text { "ON" } else { "OFF" }
-                );
                 lines.push(Line::from_spans([
                     Span::styled(format!("[{:>4}] ", entry.tick), theme::muted()),
                     Span::styled(label, theme::body()),
@@ -522,7 +551,9 @@ impl AccessibilityPanel {
             }
         }
 
-        Paragraph::new(Text::from_lines(lines)).render(inner, frame);
+        Paragraph::new(Text::from_lines(lines))
+            .wrap(WrapMode::Word)
+            .render(inner, frame);
     }
 
     fn clamp_tree_scroll(&self) {
@@ -977,5 +1008,79 @@ mod tests {
         let panel = AccessibilityPanel::new();
         let bindings = panel.keybindings();
         assert!(bindings.iter().any(|b| b.key == "Click"));
+    }
+
+    #[test]
+    fn telemetry_placeholder_not_cut_at_narrow_widths() {
+        let panel = AccessibilityPanel::new();
+        let mut pool = GraphemePool::new();
+        for width in 40..=80 {
+            let mut frame = Frame::new(width, 24, &mut pool);
+            panel.view(&mut frame, Rect::new(0, 0, width, 24));
+            let text = ftui_harness::buffer_to_text(&frame.buffer);
+            assert!(
+                text.contains("No a11y events yet."),
+                "missing placeholder header at width {width}"
+            );
+            assert!(
+                text.contains("Toggle a mode to emit telemetry."),
+                "missing placeholder action at width {width}"
+            );
+            for line in text.lines() {
+                assert!(
+                    !line.contains("emit te│") && !line.contains("emit telemetry│"),
+                    "line clipped at border at width {width}: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn telemetry_events_not_cut_at_narrow_widths() {
+        let mut panel = AccessibilityPanel::new();
+        panel.record_event(&A11yTelemetryEvent {
+            kind: A11yEventKind::ReducedMotion,
+            tick: 42,
+            screen: "AccessibilityPanel",
+            panel_visible: true,
+            high_contrast: false,
+            reduced_motion: true,
+            large_text: false,
+        });
+        let mut pool = GraphemePool::new();
+        for width in 40..=80 {
+            let mut frame = Frame::new(width, 24, &mut pool);
+            panel.view(&mut frame, Rect::new(0, 0, width, 24));
+            let text = ftui_harness::buffer_to_text(&frame.buffer);
+            assert!(
+                text.contains("42"),
+                "telemetry tick missing at width {width}"
+            );
+            if width < 46 {
+                assert!(
+                    text.contains("Red Motion"),
+                    "compact label missing at width {width}"
+                );
+                assert!(
+                    text.contains("M:ON"),
+                    "compact state missing at width {width}"
+                );
+            } else {
+                assert!(
+                    text.contains("Reduced Motion"),
+                    "full label missing at width {width}"
+                );
+                assert!(
+                    text.contains("RM:ON"),
+                    "full state missing at width {width}"
+                );
+            }
+            for line in text.lines() {
+                assert!(
+                    !line.contains("Reduced Mo│") && !line.contains("RM:O│"),
+                    "event line clipped at border at width {width}: {line}"
+                );
+            }
+        }
     }
 }
