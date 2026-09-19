@@ -33,8 +33,8 @@ check: sync-refs gates
 
 # Every non-cargo correctness gate, about six seconds total. No compilation,
 # no network, stdlib only, so this is safe to run constantly.
-gates: reachability claims env-docs
-	@echo "gates: reachability, claims and env-docs all green"
+gates: reachability claims env-docs close-audit
+	@echo "gates: reachability, claims, env-docs and close-audit all green"
 
 # Fail when an environment variable is read by the code but undocumented.
 env-docs:
@@ -67,6 +67,16 @@ claims:
 	@python3 scripts/check_readme_claims.py --schema-check
 	@python3 scripts/check_readme_claims.py --proof-refs
 	@python3 scripts/check_readme_claims.py --experimental-check
+
+# Fail when a bead was closed without evidence anyone can follow. `br` enforces
+# `.beads/policy.yaml` at close time; this catches what that cannot see -- a
+# `--bypass-policy` close, or a status written straight into the JSONL. Only
+# closes after the policy landed count toward the exit code; the 2,899 older
+# ones are reported so the scale stays visible without making the gate
+# permanently red. Widen with `--epoch` to inspect history:
+#   python3 scripts/check_close_evidence.py --epoch 2026-09-01
+close-audit:
+	@python3 scripts/check_close_evidence.py --quiet
 
 # Clean build artifacts
 clean:

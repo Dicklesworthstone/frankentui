@@ -1,0 +1,86 @@
+# Close-time policy for this repository (bd-g00-root-epic-ewths.7.1, G37).
+#
+# Why this file exists
+# --------------------
+# Of 2,900 closed beads measured on 2026-09-19, 188 carried no close reason at
+# all and 859 more carried fewer than 20 characters -- "done", "Completed",
+# "fixed". That is 36% of the tracker's history recording that something ended
+# without recording what happened, and it is how a truth-restoration epic
+# regressed within weeks with nothing there to notice (reality check, 2.2.E).
+# AGENTS.md's own "Landing the Plane" examples used `--reason "Completed"`,
+# so the habit was documented rather than accidental.
+#
+# `br` enforces the gates below at close time. They are deliberately the two
+# that catch that failure and nothing more -- a gate that fires on ordinary
+# correct work teaches people to bypass it, which is worse than no gate.
+#
+# What is deliberately NOT enabled
+# --------------------------------
+# `require_acceptance_criteria_satisfied`: many beads here carry acceptance
+#   criteria written weeks ago against a tree that has since changed. Blocking
+#   closes on stale `- [ ]` items would fire mostly on bookkeeping, not on
+#   unfinished work.
+# `forbid_self_close_after_in_progress`: this repo is worked by a swarm in
+#   which the agent that claims a bead is normally the agent that finishes it.
+#   The gate assumes a reviewer separate from the author, which is not the
+#   workflow here, so it would fire on essentially every close.
+#
+# Both remain available if the workflow ever changes.
+
+close_policy:
+  # Reject "done". 80 characters is roughly one specific sentence -- long
+  # enough to require naming what changed, short enough that a genuine
+  # one-line close still passes:
+  #
+  #   "Fixed in event_coalescer.rs: scroll runs flush one event per notch,
+  #    commit:509710e0"   (81 chars)
+  #
+  # Half of this tracker's historical closes are shorter than this. That is
+  # the point: it is a change of norm, not a description of the current one.
+  require_close_reason:
+    enabled: true
+    min_length: 80
+
+  # The "evidence-bearing" half. A close must carry at least one `kind:value`
+  # token, so the reader can go look rather than take the closer's word.
+  #
+  # The listed kinds are the six built-ins plus four this project actually
+  # uses. Listing extra kinds makes the gate MORE permissive, not less --
+  # custom kinds are only accepted when named here -- so a question bead
+  # closed on an owner decision (`agent-mail:`), a doc fix (`path:`) and a
+  # code fix (`commit:`) all have an honest token available. There is no kind
+  # that means "trust me", which is the only case being excluded.
+  require_typed_references:
+    enabled: true
+    required_kinds:
+      - commit
+      - pr
+      - reviewer
+      - investigation
+      - agent-mail
+      - dashboard
+      - bead
+      - test
+      - path
+      - run
+
+  # Closing a prerequisite is the moment its deferred dependents are cheapest
+  # to notice -- afterwards the prereq leaves the ready graph and they are
+  # stranded silently. Five beads are deferred as of 2026-09-19.
+  forbid_close_with_deferred_dependents:
+    enabled: true
+
+  # Non-blocking. Records which agent, harness and model closed a bead, which
+  # a swarm this size cannot reconstruct afterwards.
+  attribution:
+    tier: capture
+    fields:
+      - agent_name
+      - harness
+      - model
+
+# Left at the default. A gate with no escape hatch gets removed the first time
+# it is wrong at 3am; `--bypass-policy` requires `--bypass-reason`, so a bypass
+# is recorded rather than silent, and `make close-audit` reports bypassed
+# closes alongside the legacy ones.
+allow_bypass: true
