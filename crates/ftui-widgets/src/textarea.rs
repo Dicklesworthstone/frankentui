@@ -2554,7 +2554,7 @@ mod tests {
 
     mod highlighter_tests {
         use super::*;
-        use ftui_render::cell::PackedRgba;
+        use ftui_render::cell::{PackedRgba, StyleFlags};
         use ftui_render::frame::Frame;
         use ftui_render::grapheme_pool::GraphemePool;
         use proptest::prelude::*;
@@ -2687,6 +2687,211 @@ mod tests {
                     PackedRgba::RED,
                     "continuation row highlighted"
                 );
+            });
+        }
+
+        #[test]
+        fn degraded_frame_ignores_highlight() {
+            use ftui_render::budget::DegradationLevel;
+
+            let ta = TextArea::new()
+                .with_text("abcdef")
+                .with_highlighter(Arc::new(|_l, _t| {
+                    vec![(0..3, Style::new().fg(PackedRgba::RED))]
+                }));
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(10, 1, &mut pool);
+            frame.buffer.degradation = DegradationLevel::NoStyling;
+            Widget::render(&ta, Rect::new(0, 0, 10, 1), &mut frame);
+            for x in 0..6 {
+                assert_ne!(
+                    frame.buffer.get(x, 0).unwrap().fg,
+                    PackedRgba::RED,
+                    "cell at x={x} must not have highlight fg under NoStyling"
+                );
+            }
+        }
+
+        #[test]
+        fn style_at_last_range_wins() {
+            let style_a = Style::new().fg(PackedRgba::RED);
+            let style_b = Style::new().fg(PackedRgba::BLUE);
+            let spans = vec![(0..5, style_a), (2..4, style_b)];
+            assert_eq!(style_at(&spans, 0), Some(style_a));
+            assert_eq!(style_at(&spans, 1), Some(style_a));
+            assert_eq!(style_at(&spans, 2), Some(style_b));
+            assert_eq!(style_at(&spans, 3), Some(style_b));
+            assert_eq!(style_at(&spans, 4), Some(style_a));
+            assert_eq!(style_at(&spans, 5), None);
+        }
+
+        #[test]
+        fn cjk_and_emoji_multibyte_ranges_align_to_graphemes() {
+            // "日本語 ok 🎉"
+            // 日本 is bytes 0..6 (columns 0 and 2; each width 2)
+            // 🎉 is bytes 13..17 (column 10; width 2)
+            let text = "日本語 ok 🎉";
+            let ta = TextArea::new()
+                .with_text(text)
+                .with_highlighter(Arc::new(|_l, _t| {
+                    vec![
+                        (0..6, Style::new().fg(PackedRgba::RED)),
+                        (13..17, Style::new().fg(PackedRgba::BLUE)),
+                    ]
+                }));
+            render(&ta, 20, 1, |frame| {
+                // Both wide graphemes in 日本 received RED
+                assert_eq!(
+                    frame.buffer.get(0, 0).unwrap().fg,
+                    PackedRgba::RED,
+                    "日 at col 0"
+                );
+                assert_eq!(
+                    frame.buffer.get(2, 0).unwrap().fg,
+                    PackedRgba::RED,
+                    "本 at col 2"
+                );
+
+                // Unstyled graphemes 語 (col 4), ' ' (col 6), 'o' (col 7), 'k' (col 8), ' ' (col 9)
+                for col in [4, 6, 7, 8, 9] {
+                    assert_ne!(
+                        frame.buffer.get(col, 0).unwrap().fg,
+                        PackedRgba::RED,
+                        "col {col} must not be red"
+                    );
+                    assert_ne!(
+                        frame.buffer.get(col, 0).unwrap().fg,
+                        PackedRgba::BLUE,
+                        "col {col} must not be blue"
+                    );
+                }
+
+                // Emoji 🎉 covering bytes 13..17 styles the whole emoji at col 10
+                assert_eq!(
+                    frame.buffer.get(10, 0).unwrap().fg,
+                    PackedRgba::BLUE,
+                    "col 10 of 🎉 must be blue"
+                );
+            });
+        }
+
+        fn toy_rust_highlighter(_line_idx: usize, line: &str) -> Vec<(Range<usize>, Style)> {
+            let mut spans = Vec::new();
+            let keyword_style = Style::new().bold();
+            let string_style = Style::new().fg(PackedRgba::GREEN);
+            let comment_style = Style::new().dim();
+
+            let code_part = if let Some(comment_pos) = line.find("//") {
+                spans.push((comment_pos..line.len(), comment_style));
+                &line[..comment_pos]
+            } else {
+                line
+            };
+
+            let mut in_quote: Option<usize> = None;
+            for (idx, ch) in code_part.char_indices() {
+                if ch == '"' {
+                    if let Some(start) = in_quote {
+                        spans.push((start..idx + 1, string_style));
+                        in_quote = None;
+                    } else {
+                        in_quote = Some(idx);
+                    }
+                }
+            }
+
+            for kw in ["fn", "let"] {
+                let mut search_from = 0;
+                while let Some(pos) = code_part[search_from..].find(kw) {
+                    let abs_pos = search_from + pos;
+                    let end_pos = abs_pos + kw.len();
+                    let prev_ok = abs_pos == 0
+                        || !code_part[..abs_pos]
+                            .chars()
+                            .next_back()
+                            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                    let next_ok = end_pos == code_part.len()
+                        || !code_part[end_pos..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                    let in_str = spans
+                        .iter()
+                        .any(|(r, s)| *s == string_style && r.contains(&abs_pos));
+                    if prev_ok && next_ok && !in_str {
+                        spans.push((abs_pos..end_pos, keyword_style));
+                    }
+                    search_from = end_pos;
+                }
+            }
+
+            spans.sort_by_key(|(r, _)| r.start);
+            spans
+        }
+
+        fn style_row_text(frame: &Frame, y: u16, width: u16) -> String {
+            (0..width)
+                .map(|x| {
+                    let cell = frame.buffer.get(x, y).unwrap();
+                    if cell.attrs.has_flag(StyleFlags::BOLD) {
+                        'B'
+                    } else if cell.fg == PackedRgba::GREEN {
+                        'S'
+                    } else if cell.attrs.has_flag(StyleFlags::DIM) {
+                        'C'
+                    } else {
+                        '.'
+                    }
+                })
+                .collect()
+        }
+
+        #[test]
+        fn textarea_highlighted_rust_60x8() {
+            let snippet =
+                "fn main() {\n    let name = \"ftui\"; // greet\n    println!(\"hi {name}\");\n}";
+            let ta = TextArea::new()
+                .with_text(snippet)
+                .with_highlighter(Arc::new(toy_rust_highlighter));
+
+            render(&ta, 60, 8, |frame| {
+                // Verify text content of lines
+                assert_eq!(raw_row_text(frame, 0, 60), format!("{:<60}", "fn main() {"));
+                assert_eq!(
+                    raw_row_text(frame, 1, 60),
+                    format!("{:<60}", "    let name = \"ftui\"; // greet")
+                );
+                assert_eq!(
+                    raw_row_text(frame, 2, 60),
+                    format!("{:<60}", "    println!(\"hi {name}\");")
+                );
+                assert_eq!(raw_row_text(frame, 3, 60), format!("{:<60}", "}"));
+                for y in 4..8 {
+                    assert_eq!(raw_row_text(frame, y, 60), " ".repeat(60));
+                }
+
+                // Verify style masks
+                // Row 0: fn (bold) main() {
+                assert_eq!(
+                    style_row_text(frame, 0, 60),
+                    format!("BB{}", ".".repeat(58))
+                );
+                // Row 1: let (bold), "ftui" (string/green), // greet (dim/comment)
+                assert_eq!(
+                    style_row_text(frame, 1, 60),
+                    format!("....BBB........SSSSSS..CCCCCCCC{}", ".".repeat(29))
+                );
+                // Row 2: "hi {name}" (string/green)
+                assert_eq!(
+                    style_row_text(frame, 2, 60),
+                    format!(".............SSSSSSSSSSS..{}", ".".repeat(34))
+                );
+                // Row 3: }
+                assert_eq!(style_row_text(frame, 3, 60), ".".repeat(60));
+                // Rows 4..8: empty
+                for y in 4..8 {
+                    assert_eq!(style_row_text(frame, y, 60), ".".repeat(60));
+                }
             });
         }
 
