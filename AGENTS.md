@@ -182,7 +182,11 @@ when it is behind a `#[cfg(feature = ...)]`. Known-dead modules live in
 [`docs/module-reachability-allowlist.txt`](docs/module-reachability-allowlist.txt), **which may only shrink**: each entry
 needs the bead that will wire or quarantine it, and an entry whose module has
 become reachable fails the gate. Do not add a line to silence the gate — that
-is what the bead id is there to prevent.
+is what the bead id is there to prevent. The bead must also still be **open**:
+the gate reads `.beads/issues.jsonl` and fails on an entry whose bead is closed
+or unknown, because a closed bead will never wire or quarantine anything and an
+entry pointed at one is stranded in silence. That happened twice (`.11.3`'s
+widgets, `.11.5`'s harness modules) before the check existed.
 
 - **Definition of done for modules:** A module counts as delivered only when it is reachable from `Program`/`Frame`/`TerminalWriter`/a widget render/the showcase, or gated experimental.
 

@@ -448,6 +448,94 @@ class ModuleReachabilityGateContract(unittest.TestCase):
         finally:
             sys.argv = old_argv
 
+    def test_closed_bead_owner_is_an_error(self):
+        # An entry outlives its owner silently: the bead closes, the module
+        # stays listed, and nothing revisits it. Two sets of modules were
+        # stranded this way before the gate started checking.
+        path = Path("docs/module-reachability-allowlist.txt")
+        statuses = {"bd-open1": "open", "bd-shut1": "closed"}
+        errors = gate.check_allowlist_owners(
+            {"a-crate::alpha": "bd-shut1"}, statuses, path
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("bd-shut1", errors[0])
+        self.assertIn("closed", errors[0])
+
+    def test_open_bead_owner_passes(self):
+        path = Path("docs/module-reachability-allowlist.txt")
+        statuses = {"bd-open1": "open"}
+        self.assertEqual(
+            gate.check_allowlist_owners({"a-crate::alpha": "bd-open1"}, statuses, path),
+            [],
+        )
+
+    def test_unknown_bead_owner_is_an_error(self):
+        # Catches a typo'd id, which would otherwise look like a real owner.
+        path = Path("docs/module-reachability-allowlist.txt")
+        errors = gate.check_allowlist_owners(
+            {"a-crate::alpha": "bd-nosuch"}, {"bd-open1": "open"}, path
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("br sync --flush-only", errors[0])
+
+    def test_owner_check_is_skipped_without_a_beads_export(self):
+        # The gate must stay runnable outside a Beads checkout.
+        path = Path("docs/module-reachability-allowlist.txt")
+        self.assertEqual(
+            gate.check_allowlist_owners({"a-crate::alpha": "bd-shut1"}, {}, path), []
+        )
+
+    def test_bead_id_is_found_inside_a_longer_comment(self):
+        path = Path("docs/module-reachability-allowlist.txt")
+        statuses = {"bd-shut1": "closed"}
+        errors = gate.check_allowlist_owners(
+            {"a-crate::alpha": "bd-shut1 - merge or remove rather than wire"},
+            statuses,
+            path,
+        )
+        self.assertEqual(len(errors), 1, errors)
+
+    def test_comment_without_a_bead_id_is_left_to_load_allowlist(self):
+        # load_allowlist already rejects an empty comment; a non-empty comment
+        # with no bead token is not this function's error to raise.
+        path = Path("docs/module-reachability-allowlist.txt")
+        self.assertEqual(
+            gate.check_allowlist_owners(
+                {"a-crate::alpha": "see the design doc"}, {"bd-open1": "open"}, path
+            ),
+            [],
+        )
+
+    def test_load_bead_status_reads_the_export(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".beads").mkdir()
+            (root / ".beads" / "issues.jsonl").write_text(
+                '{"id": "bd-one", "status": "open"}\n'
+                "\n"
+                "not json at all\n"
+                '{"id": "bd-two", "status": "closed"}\n',
+                encoding="utf-8",
+            )
+            statuses = gate.load_bead_status(root)
+        self.assertEqual(statuses, {"bd-one": "open", "bd-two": "closed"})
+
+    def test_load_bead_status_without_an_export_is_empty(self):
+        with TemporaryDirectory() as tmp:
+            self.assertEqual(gate.load_bead_status(Path(tmp)), {})
+
+    def test_every_live_allowlist_entry_has_an_open_owner(self):
+        # The real file, not a fixture: this is the assertion that would have
+        # caught .11.3 and .11.5 going closed underneath their entries.
+        root = Path(__file__).resolve().parent.parent.parent
+        allowlist_path = root / "docs" / "module-reachability-allowlist.txt"
+        errors = gate.check_allowlist_owners(
+            gate.load_allowlist(allowlist_path),
+            gate.load_bead_status(root),
+            allowlist_path,
+        )
+        self.assertEqual(errors, [], "\n".join(errors))
+
     declares_file_and_inline_modules = test_declares_file_and_inline_modules
     experimental_cfg_is_skipped = test_experimental_cfg_is_skipped
     reference_in_cfg_test_block_does_not_count = test_reference_in_cfg_test_block_does_not_count
@@ -457,6 +545,25 @@ class ModuleReachabilityGateContract(unittest.TestCase):
     allowlist_only_shrinks = test_allowlist_only_shrinks
     json_output_schema = test_json_output_schema
     exit_code_zero_on_clean_tree = test_exit_code_zero_on_clean_tree
+    closed_bead_owner_is_an_error = test_closed_bead_owner_is_an_error
+    open_bead_owner_passes = test_open_bead_owner_passes
+    unknown_bead_owner_is_an_error = test_unknown_bead_owner_is_an_error
+    owner_check_is_skipped_without_a_beads_export = (
+        test_owner_check_is_skipped_without_a_beads_export
+    )
+    bead_id_is_found_inside_a_longer_comment = (
+        test_bead_id_is_found_inside_a_longer_comment
+    )
+    comment_without_a_bead_id_is_left_to_load_allowlist = (
+        test_comment_without_a_bead_id_is_left_to_load_allowlist
+    )
+    load_bead_status_reads_the_export = test_load_bead_status_reads_the_export
+    load_bead_status_without_an_export_is_empty = (
+        test_load_bead_status_without_an_export_is_empty
+    )
+    every_live_allowlist_entry_has_an_open_owner = (
+        test_every_live_allowlist_entry_has_an_open_owner
+    )
 
 
 if __name__ == "__main__":

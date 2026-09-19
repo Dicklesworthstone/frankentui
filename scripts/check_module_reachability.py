@@ -442,6 +442,68 @@ def load_allowlist(path: Path) -> dict[str, str]:
     return entries
 
 
+BEAD_ID_RE = re.compile(r"\bbd-[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def load_bead_status(root: Path) -> dict[str, str]:
+    """Map bead id to status from the git-tracked Beads export.
+
+    Returns an empty map when the export is absent, which keeps this script
+    runnable outside a Beads checkout.
+    """
+    export = root / ".beads" / "issues.jsonl"
+    if not export.is_file():
+        return {}
+    statuses: dict[str, str] = {}
+    for raw in export.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            issue = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ident = issue.get("id")
+        status = issue.get("status")
+        if isinstance(ident, str) and isinstance(status, str):
+            statuses[ident] = status
+    return statuses
+
+
+def check_allowlist_owners(
+    allowlist: dict[str, str], statuses: dict[str, str], path: Path
+) -> list[str]:
+    """Report allowlist entries whose bead cannot resolve them.
+
+    An entry outlives its owner silently: the bead closes, the module stays
+    listed, and nothing ever revisits it. That has stranded two sets of modules
+    already (.11.3's widgets, .11.5's harness modules), so a closed or unknown
+    owner is an error rather than a note.
+    """
+    if not statuses:
+        return []
+    errors: list[str] = []
+    for module, comment in sorted(allowlist.items()):
+        match = BEAD_ID_RE.search(comment)
+        if not match:
+            continue
+        bead = match.group(0)
+        status = statuses.get(bead)
+        if status is None:
+            errors.append(
+                f"{path}: '{module}' cites {bead}, which is not in "
+                f".beads/issues.jsonl. Check the id, or run "
+                f"`br sync --flush-only` if the bead is new."
+            )
+        elif status == "closed":
+            errors.append(
+                f"{path}: '{module}' cites {bead}, which is closed. A closed "
+                f"bead will never wire or quarantine it; point the entry at a "
+                f"bead that owns the decision."
+            )
+    return errors
+
+
 def evaluate(root: Path, allowlist: dict[str, str], only: str | None) -> list[Finding]:
     crates = discover_crates(root)
     if only:
@@ -562,6 +624,9 @@ def main() -> int:
         args.allowlist if args.allowlist.is_absolute() else root / args.allowlist
     )
     allowlist = load_allowlist(allowlist_path)
+    owner_errors = check_allowlist_owners(
+        allowlist, load_bead_status(root), allowlist_path
+    )
 
     findings = evaluate(root, allowlist, args.crate)
 
@@ -611,6 +676,7 @@ def main() -> int:
             "stale_allowlist": [
                 f.qualified for f in findings if f.verdict == "STALE_ALLOWLIST"
             ],
+            "allowlist_owner_errors": owner_errors,
             "summary": {
                 "ok": counts.get("OK", 0),
                 "experimental": counts.get("EXPERIMENTAL", 0),
@@ -625,10 +691,23 @@ def main() -> int:
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
+    if owner_errors:
+        print(file=sys.stderr)
+        for error in owner_errors:
+            print(error, file=sys.stderr)
+
     if failures:
         print(
             f"\nFAILED: {len(failures)} module(s) need wiring, quarantining, or an "
             f"allowlist entry with a bead id.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if owner_errors:
+        print(
+            f"\nFAILED: {len(owner_errors)} allowlist entry/entries cite a bead "
+            f"that cannot resolve them.",
             file=sys.stderr,
         )
         return 1

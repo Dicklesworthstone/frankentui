@@ -14,6 +14,12 @@
 # Bead ids here are the beads that own the *decision*, not always the eventual
 # wiring. Re-point an entry at a more specific bead as soon as one exists.
 #
+# The bead must still be OPEN. The gate reads .beads/issues.jsonl and fails on
+# an entry whose bead is closed or unknown. A closed bead will never wire or
+# quarantine anything, so an entry pointing at one is stranded with no owner and
+# no one looking - which is how .11.3's widgets and .11.5's harness modules both
+# sat here unowned until someone happened to check the bead rather than the line.
+#
 # Format: <crate>::<module>  # <bead id>
 #
 # NOT on this list: modules whose only consumers are tests. The gate reports
@@ -70,19 +76,17 @@ ftui-web::release_readiness  # bd-g00-root-epic-ewths.29.1
 # verify_deadlock_free(), completeness_report()) that happens to live in
 # ftui-widgets. Wiring it into a widget gallery would be the wrong fix; it
 # needs the delete-or-wire decision with the rest of the orphan set.
-ftui-widgets::choreography  # bd-g00-root-epic-ewths.11.5
-# Succinct data structures with no consumer. These are orphan-module
-# candidates rather than unwired widgets, so they sit with the G07 set.
-# Duplicate, not merely unused: virtualized.rs carries its own
-# VariableHeightsFenwick (:741) and never touches crate::fenwick::FenwickTree,
-# so this is a second Fenwick implementation with no consumer. Merge or remove
-# rather than wire.
+ftui-widgets::choreography  # bd-gqit2
+# (ftui-widgets::fenwick sat here until the TEST_ONLY verdict landed and its
+# proptest counted as a consumer. It is still a duplicate of virtualized.rs's
+# own VariableHeightsFenwick (:741); that observation moved to bd-gqit2 rather
+# than staying as a comment with no entry under it.)
 
 # ── orphan-module candidates (G07) ───────────────────────────────────────
-# .11.5 is where the owner decides delete-or-wire for unreferenced modules.
-# The owner granted deletion permission for its enumerated set on 2026-09-18;
-# these are the ones this gate found, which is not the same list, so they need
-# their own pass before anything is removed.
+# .11.5 granted deletion for an enumerated set on 2026-09-18 and then closed.
+# None of the modules below are on that list, so its permission does not reach
+# them and its closure left them ownerless. bd-gqit2 is their owner and carries
+# the per-module analysis.
 # 1401 lines of input coalescing (mouse-move/scroll floods) with zero
 # consumers - not production, not tests. Not a sweep-deletion candidate: it is
 # real working code that nobody connected. bd-tu3l9 carries the analysis,
@@ -94,23 +98,28 @@ ftui-core::event_coalescer  # bd-tu3l9
 # which KeyDispatcher owns (keybinding.rs:775), constructs (:782) and feeds Esc
 # through (:835) - so the README's "Esc Esc goes through the SequenceDetector
 # window" is true, just not via this module. Merge or remove rather than wire.
-ftui-core::key_sequence  # bd-g00-root-epic-ewths.11.5
+ftui-core::key_sequence  # bd-gqit2
 # Unreachable by decision, not neglect: benchmarked 2026-09-18 at 4-19x slower
 # than Flex::split on the same constraints, so wiring it in would cost every
 # layout pass. Evidence and reasoning in docs/perf/egraph_vs_flex_2026-09-18.md.
-ftui-layout::egraph  # bd-g00-root-epic-ewths.11.5
-ftui-render::quotient_filter  # bd-g00-root-epic-ewths.11.5
+ftui-layout::egraph  # bd-gqit2
+# Not neglected — filed in the wrong crate for its own use case. Its doc says
+# it pays off for ">1M rows, <1% dirty"; ftui-render tracks dirty rows as
+# Buffer::dirty_rows: Vec<bool> sized to terminal height (buffer.rs:226), which
+# never approaches that. The workload it was written for lives in a virtualized
+# list widget. Its "How It Works" also describes 3-bit slot metadata that its
+# own Implementation Note says it does not use.
+ftui-render::quotient_filter  # bd-gqit2
 
 # ── ftui-harness ─────────────────────────────────────────────────────────
 # Reached by neither production code nor any test, which for a test-support
 # crate means nothing uses them at all. cost_surface left this list on
 # 2026-09-19 when render_gauntlet started using it for stage attribution.
 #
-# These divide into two kinds, and the .11.5 decision differs for each.
-#
 # These pointed at .11.5, which is closed and enumerates ftui-render and
 # ftui-runtime files — it never covered ftui-harness, so these had no owner.
-# bd-5h57k is that owner, and asks the three questions separately.
+# bd-5h57k is that owner. They divide into two kinds, and the wire-or-retire
+# answer differs for each, which is why one blanket question produced none.
 #
 # Engines — complete, tested analyzers with a callable API, waiting on a caller:
 ftui-harness::doctor_topology  # bd-5h57k
