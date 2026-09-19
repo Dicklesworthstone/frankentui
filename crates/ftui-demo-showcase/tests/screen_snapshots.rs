@@ -506,11 +506,21 @@ fn widget_gallery_with_tick_120x40() {
 fn widget_gallery_decision_card_80x24() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Section 8 by index. A single Left means "whatever section is last", so
+    // appending section J silently repointed all four of these at Verification
+    // and left the widgets they are named for with no coverage.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("Diff strategy"),
+        "expected the Diagnostics section: {text}"
+    );
     assert_snapshot!("widget_gallery_decision_card_80x24", &frame.buffer);
 }
 
@@ -518,11 +528,21 @@ fn widget_gallery_decision_card_80x24() {
 fn widget_gallery_drift_visualization_80x24() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Section 8 by index. A single Left means "whatever section is last", so
+    // appending section J silently repointed all four of these at Verification
+    // and left the widgets they are named for with no coverage.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("Drift"),
+        "expected the Diagnostics section: {text}"
+    );
     assert_snapshot!("widget_gallery_drift_visualization_80x24", &frame.buffer);
 }
 
@@ -530,12 +550,22 @@ fn widget_gallery_drift_visualization_80x24() {
 fn widget_gallery_cached_widget_80x24() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Section 8 by index. A single Left means "whatever section is last", so
+    // appending section J silently repointed all four of these at Verification
+    // and left the widgets they are named for with no coverage.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
     screen.view(&mut frame, area);
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("Cached"),
+        "expected the Diagnostics section: {text}"
+    );
     assert_snapshot!("widget_gallery_cached_widget_80x24", &frame.buffer);
 }
 
@@ -543,12 +573,22 @@ fn widget_gallery_cached_widget_80x24() {
 fn widget_gallery_error_boundary_80x24() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Section 8 by index. A single Left means "whatever section is last", so
+    // appending section J silently repointed all four of these at Verification
+    // and left the widgets they are named for with no coverage.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     screen.tick(1);
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("ErrorBoundary"),
+        "expected the Diagnostics section: {text}"
+    );
     assert_snapshot!("widget_gallery_error_boundary_80x24", &frame.buffer);
 }
 
