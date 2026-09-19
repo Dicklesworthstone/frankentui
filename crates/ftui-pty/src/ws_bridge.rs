@@ -1203,6 +1203,10 @@ impl PtyBridgeSession {
 impl Drop for PtyBridgeSession {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        // Without this a child that ignores SIGHUP is left `<defunct>`; in
+        // `--serve-forever` the bridge spawns one shell per client, so they
+        // accumulate against the system PID limit for the life of the server.
+        crate::reap_after_kill(&mut *self.child);
         if let Some(handle) = self.reader_thread.take() {
             detach_reader_join(handle);
         }

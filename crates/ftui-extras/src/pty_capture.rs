@@ -230,9 +230,40 @@ impl Drop for PtyCapture {
     fn drop(&mut self) {
         let _ = self.writer.flush();
         let _ = self.child.kill();
+        reap_after_kill(&mut *self.child);
 
         if let Some(handle) = self.reader_thread.take() {
             detach_reader_join(handle);
+        }
+    }
+}
+
+/// Reap a child after `ChildKiller::kill`, so a signalled process does not
+/// linger as a zombie.
+///
+/// `portable_pty`'s `ChildKiller for std::process::Child` sends SIGHUP and
+/// then polls `try_wait` for about 200ms, which reaps - so a child that
+/// *takes* the hangup is already gone when `kill` returns. One that ignores
+/// it falls through to `std::process::Child::kill`, which signals and
+/// returns, and `std::process::Child` has no `Drop`, so nothing ever waits
+/// for it.
+///
+/// Bounded rather than a bare `wait`: SIGKILL cannot be caught, but a child
+/// wedged in uninterruptible sleep would otherwise hang teardown. A child
+/// that took the hangup is reapable on the first poll, so the common path
+/// costs nothing.
+fn reap_after_kill(child: &mut dyn portable_pty::Child) {
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    loop {
+        match child.try_wait() {
+            // Reaped, or the child is not ours to reap any more.
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
         }
     }
 }
