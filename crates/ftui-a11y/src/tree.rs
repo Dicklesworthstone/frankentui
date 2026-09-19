@@ -471,15 +471,25 @@ impl A11yTreeDiff {
     /// determines the order.
     ///
     /// When the tree's focused ID stays on an existing non-presentational
-    /// node, changes to `disabled`, `readonly`, and `required` produce one
-    /// polite announcement of only the changed flags. Both directions are
-    /// explicit: disabled/enabled, read only/not read only, required/not
-    /// required. These independent states do not move focus or change widget
-    /// behavior. A node's `state.focused` flag alone does not establish focus.
+    /// node, changes to `disabled`, `readonly`, `required`, `checked`,
+    /// `expanded`, and `selected` produce one announcement of the changed
+    /// states. Both directions are explicit, including removal of optional
+    /// checked/expanded semantics. These independent states do not move focus
+    /// or change widget behavior. A node's `state.focused` flag alone does not
+    /// establish focus.
     ///
-    /// Changes to just these flags off focus remain silent, even on live regions; the
-    /// complete changes remain available in the raw diff. Entering a control
-    /// uses its normal focus summary, not an additional state announcement.
+    /// Retained-focus sliders and scrollbars also announce value changes,
+    /// preferring `value_text` to `value_now`. Numeric-only changes hidden by
+    /// a nonempty value description stay silent, even in live regions.
+    /// Text-input values, progress updates, and busy changes still require a
+    /// live region; this policy does not reread an entire field on every key
+    /// or turn background progress into unsolicited speech.
+    ///
+    /// Unfocused changes require a live region. Changes to just `disabled`,
+    /// `readonly`, and `required` remain silent off focus even in live regions.
+    /// The complete property changes remain available in the raw diff.
+    /// Entering a control uses its normal focus summary, not a second state
+    /// announcement. Standalone focused-state announcements are polite.
     /// Same-node live updates are coalesced before applying the batch cap:
     /// focus/state reasons take precedence, but live content and urgency are
     /// retained. Cleared flags are included explicitly in a coalesced summary;
@@ -543,15 +553,15 @@ impl A11yTreeDiff {
             } else {
                 Vec::new()
             };
-            // Positive flags are already in the full live summary. Only add
-            // cleared flags there, so neither direction is lost or repeated.
+            // Some false states (not checked, collapsed) and range values are
+            // already in the full summary. Add only missing transition text.
             let cleared_states: Vec<_> = control_changes
                 .iter()
-                .filter_map(|(set, text)| (!*set).then_some(*text))
+                .filter_map(|(summarized, text)| (!*summarized).then_some(text.as_str()))
                 .collect();
 
             if let Some(urgency) = node.live_region
-                && let Some(reason) = announcement_reason(changes)
+                && let Some(reason) = announcement_reason(node, changes)
                 && let Some(text) =
                     announcement_text(node, current.focused == Some(*id), true, &cleared_states)
             {
@@ -569,7 +579,10 @@ impl A11yTreeDiff {
                     },
                 );
             } else if !control_changes.is_empty() {
-                let states: Vec<_> = control_changes.iter().map(|(_, text)| *text).collect();
+                let states: Vec<_> = control_changes
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect();
                 candidates.push(ScreenReaderAnnouncement {
                     node_id: Some(*id),
                     urgency: LiveRegion::Polite,
@@ -665,7 +678,7 @@ pub struct ScreenReaderAnnouncement {
 pub enum AnnouncementReason {
     /// Keyboard focus moved to this node.
     FocusChanged,
-    /// Disabled, read-only, or required state changed while this node kept focus.
+    /// A control state or slider/scrollbar value changed while this node kept focus.
     /// May include a simultaneous live update, retaining its urgency.
     FocusedStateChanged,
     /// A live region appeared in the current tree.
@@ -820,7 +833,7 @@ fn diff_state(
     }
 }
 
-fn announcement_reason(changes: &[A11yChange]) -> Option<AnnouncementReason> {
+fn announcement_reason(node: &A11yNodeInfo, changes: &[A11yChange]) -> Option<AnnouncementReason> {
     if changes
         .iter()
         .any(|change| matches!(change, A11yChange::LiveRegionChanged { .. }))
@@ -828,53 +841,104 @@ fn announcement_reason(changes: &[A11yChange]) -> Option<AnnouncementReason> {
         return Some(AnnouncementReason::LiveRegionChanged);
     }
 
-    changes
-        .iter()
-        .any(|change| {
-            matches!(
-                change,
-                A11yChange::NameChanged { .. }
-                    | A11yChange::DescriptionChanged { .. }
-                    | A11yChange::RoleChanged { .. }
-            ) || matches!(
-                change,
-                A11yChange::StateChanged { field, .. }
-                    if matches!(
-                        field.as_str(),
-                        "busy" | "checked" | "expanded" | "selected" | "value_now" | "value_text"
-                    )
-            )
-        })
+    let content_changed = changes.iter().any(|change| {
+        matches!(
+            change,
+            A11yChange::NameChanged { .. }
+                | A11yChange::DescriptionChanged { .. }
+                | A11yChange::RoleChanged { .. }
+        ) || matches!(
+            change,
+            A11yChange::StateChanged { field, .. }
+                if matches!(field.as_str(), "busy" | "checked" | "expanded" | "selected")
+        )
+    });
+    (content_changed || announced_value_changed(node, changes))
         .then_some(AnnouncementReason::LiveContentChanged)
 }
 
-/// Changed control flags in stable order, with their current polarity and
-/// spoken text. Read typed state rather than parsing diff debug descriptions.
-fn changed_control_states(
-    node: &A11yNodeInfo,
-    changes: &[A11yChange],
-) -> Vec<(bool, &'static str)> {
-    [
-        ("disabled", node.state.disabled, "disabled", "enabled"),
-        (
-            "readonly",
-            node.state.readonly,
-            "read only",
-            "not read only",
-        ),
-        ("required", node.state.required, "required", "not required"),
-    ]
-    .into_iter()
-    .filter(|(field, _, _, _)| {
-        changes.iter().any(|change| {
-            matches!(
-                change,
-                A11yChange::StateChanged { field: changed, .. } if changed.as_str() == *field
-            )
-        })
+fn state_field_changed(changes: &[A11yChange], field: &str) -> bool {
+    changes.iter().any(|change| {
+        matches!(change, A11yChange::StateChanged { field: changed, .. } if changed.as_str() == field)
     })
-    .map(|(_, set, on, off)| (set, if set { on } else { off }))
-    .collect()
+}
+
+/// The spoken value uses text in preference to its underlying number. Keep
+/// numeric-only updates in the raw diff without repeating the same text.
+fn announced_value_changed(node: &A11yNodeInfo, changes: &[A11yChange]) -> bool {
+    state_field_changed(changes, "value_text")
+        || (state_field_changed(changes, "value_now")
+            && normalized_option(node.state.value_text.as_deref()).is_none())
+}
+
+fn value_summary(state: &crate::node::A11yState) -> Option<String> {
+    normalized_option(state.value_text.as_deref())
+        .or_else(|| state.value_now.map(|value| value.to_string()))
+}
+
+/// Changed control states in stable order. The bool says whether the current
+/// snapshot summary already contains the text, NOT whether the state is true.
+/// Read typed state rather than parsing diff debug descriptions.
+fn changed_control_states(node: &A11yNodeInfo, changes: &[A11yChange]) -> Vec<(bool, String)> {
+    let mut states = Vec::new();
+    for (field, set, on, off) in [
+        ("disabled", node.state.disabled, "disabled", "enabled"),
+        ("readonly", node.state.readonly, "read only", "not read only"),
+        ("required", node.state.required, "required", "not required"),
+    ] {
+        if state_field_changed(changes, field) {
+            states.push((set, if set { on } else { off }.to_owned()));
+        }
+    }
+    for (field, value, on, off, absent) in [
+        (
+            "checked",
+            node.state.checked,
+            "checked",
+            "not checked",
+            "not checkable",
+        ),
+        (
+            "expanded",
+            node.state.expanded,
+            "expanded",
+            "collapsed",
+            "not expandable",
+        ),
+    ] {
+        if state_field_changed(changes, field) {
+            let text = match value {
+                Some(true) => on,
+                Some(false) => off,
+                None => absent,
+            };
+            states.push((value.is_some(), text.to_owned()));
+        }
+    }
+    if state_field_changed(changes, "selected") {
+        states.push((
+            node.state.selected,
+            if node.state.selected {
+                "selected"
+            } else {
+                "not selected"
+            }
+            .to_owned(),
+        ));
+    }
+    if matches!(node.role, A11yRole::Slider | A11yRole::ScrollBar)
+        && announced_value_changed(node, changes)
+    {
+        let value = value_summary(&node.state);
+        states.push((
+            value.is_some(),
+            value.map_or_else(
+                || "value unavailable".to_owned(),
+                |value| format!("value {value}"),
+            ),
+        ));
+    }
+    states
 }
 
 /// The optional focus candidate is inserted first, before either node loop.
@@ -1004,10 +1068,8 @@ fn state_summaries(state: &crate::node::A11yState) -> Vec<String> {
     if state.busy {
         states.push("busy".to_owned());
     }
-    if let Some(value_text) = normalized_option(state.value_text.as_deref()) {
-        states.push(format!("value {value_text}"));
-    } else if let Some(value_now) = state.value_now {
-        states.push(format!("value {value_now}"));
+    if let Some(value) = value_summary(state) {
+        states.push(format!("value {value}"));
     }
     states
 }
@@ -1432,5 +1494,327 @@ mod focused_state_tests {
         let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert!(batch.announcements.is_empty());
         assert_eq!(batch.dropped_count, 0);
+    }
+
+    fn interaction_node(role: A11yRole, state: A11yState) -> A11yNodeInfo {
+        let mut node = A11yNodeInfo::new(7, role, Rect::new(0, 0, 20, 1)).with_name("Control");
+        node.state = state;
+        node
+    }
+
+    #[test]
+    fn retained_focus_announces_activation_states_and_removed_capabilities() {
+        for (field, role, from, to, text) in [
+            ("checked", A11yRole::Checkbox, None, Some(false), "not checked"),
+            ("checked", A11yRole::Checkbox, None, Some(true), "checked"),
+            ("checked", A11yRole::Checkbox, Some(false), Some(true), "checked"),
+            ("checked", A11yRole::Checkbox, Some(true), Some(false), "not checked"),
+            ("checked", A11yRole::Checkbox, Some(false), None, "not checkable"),
+            ("checked", A11yRole::Checkbox, Some(true), None, "not checkable"),
+            ("expanded", A11yRole::Button, None, Some(false), "collapsed"),
+            ("expanded", A11yRole::Button, None, Some(true), "expanded"),
+            ("expanded", A11yRole::Button, Some(false), Some(true), "expanded"),
+            ("expanded", A11yRole::Button, Some(true), Some(false), "collapsed"),
+            ("expanded", A11yRole::Button, Some(false), None, "not expandable"),
+            ("expanded", A11yRole::Button, Some(true), None, "not expandable"),
+            ("selected", A11yRole::Tab, Some(false), Some(true), "selected"),
+            ("selected", A11yRole::Tab, Some(true), Some(false), "not selected"),
+        ] {
+            for region in [None, Some(LiveRegion::Polite), Some(LiveRegion::Assertive)] {
+                let mut old = interaction_node(role, A11yState::default());
+                let mut new = old.clone();
+                match field {
+                    "checked" => {
+                        old.state.checked = from;
+                        new.state.checked = to;
+                    }
+                    "expanded" => {
+                        old.state.expanded = from;
+                        new.state.expanded = to;
+                    }
+                    "selected" => {
+                        old.state.selected = from.unwrap();
+                        new.state.selected = to.unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                old.live_region = region;
+                new.live_region = region;
+                let before = snapshot(vec![old], Some(7));
+                let after = snapshot(vec![new], Some(7));
+                let batch =
+                    after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+                assert_eq!(batch.announcements.len(), 1, "{field}: {from:?} -> {to:?}");
+                assert_eq!(batch.dropped_count, 0);
+                let announcement = &batch.announcements[0];
+                assert_eq!(announcement.node_id, Some(7));
+                assert_eq!(announcement.reason, AnnouncementReason::FocusedStateChanged);
+                assert_eq!(announcement.urgency, region.unwrap_or(LiveRegion::Polite));
+                let focus = if region.is_some() { "focused, " } else { "" };
+                assert_eq!(announcement.text, format!("{role}: Control. {focus}{text}"));
+                let filtered = AccessibilityPreferences::all()
+                    .motion_profile()
+                    .filter_announcements(&batch);
+                assert_eq!(filtered.announcements, batch.announcements);
+                assert_eq!(filtered.coalesced_count, 0);
+                assert_eq!(filtered.downgraded_count, 0);
+                assert!(
+                    after
+                        .screen_reader_announcements_since(&after, ScreenReaderPolicy::default())
+                        .announcements
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn activation_changes_do_not_speak_for_unfocused_or_presentational_nodes() {
+        for (role, focus) in [
+            (A11yRole::Checkbox, None),
+            (A11yRole::Checkbox, Some(999)),
+            (A11yRole::Presentation, Some(7)),
+        ] {
+            let old = interaction_node(
+                role,
+                A11yState {
+                    focused: true,
+                    checked: Some(false),
+                    expanded: Some(false),
+                    ..A11yState::default()
+                },
+            );
+            let mut new = old.clone();
+            new.state.checked = Some(true);
+            new.state.expanded = Some(true);
+            new.state.selected = true;
+            let before = snapshot(vec![old], focus);
+            let after = snapshot(vec![new], focus);
+            assert_eq!(after.diff(&before).changed[0].1.len(), 3);
+            let batch =
+                after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+            assert!(batch.announcements.is_empty());
+            assert_eq!(batch.dropped_count, 0);
+        }
+    }
+
+    #[test]
+    fn off_focus_activation_changes_still_honor_explicit_live_regions() {
+        let old = interaction_node(
+            A11yRole::Checkbox,
+            A11yState {
+                checked: Some(false),
+                ..A11yState::default()
+            },
+        )
+        .with_live_region(LiveRegion::Assertive);
+        let mut new = old.clone();
+        new.state.checked = Some(true);
+        let batch = snapshot(vec![new], None).screen_reader_announcements_since(
+            &snapshot(vec![old], None),
+            ScreenReaderPolicy::default(),
+        );
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::LiveContentChanged
+        );
+        assert_eq!(batch.announcements[0].urgency, LiveRegion::Assertive);
+        assert_eq!(batch.announcements[0].text, "checkbox: Control. checked");
+    }
+
+    #[test]
+    fn retained_focus_range_values_use_text_numeric_fallback_and_explicit_absence() {
+        for role in [A11yRole::Slider, A11yRole::ScrollBar] {
+            for region in [None, Some(LiveRegion::Polite), Some(LiveRegion::Assertive)] {
+                for (from_number, from_text, to_number, to_text, expected) in [
+                    (Some(10.0), None, Some(20.0), None, "value 20"),
+                    (
+                        Some(10.0),
+                        Some("Low"),
+                        Some(20.0),
+                        Some("  Very\n high "),
+                        "value Very high",
+                    ),
+                    (Some(10.0), Some("Low"), Some(20.0), None, "value 20"),
+                    (Some(10.0), Some("Low"), Some(20.0), Some(" \n "), "value 20"),
+                    (Some(10.0), None, None, None, "value unavailable"),
+                    (None, Some("Low"), None, None, "value unavailable"),
+                ] {
+                    let mut old = interaction_node(
+                        role,
+                        A11yState {
+                            value_now: from_number,
+                            value_text: from_text.map(str::to_owned),
+                            ..A11yState::default()
+                        },
+                    );
+                    let mut new = old.clone();
+                    new.state.value_now = to_number;
+                    new.state.value_text = to_text.map(str::to_owned);
+                    old.live_region = region;
+                    new.live_region = region;
+                    let batch = snapshot(vec![new], Some(7)).screen_reader_announcements_since(
+                        &snapshot(vec![old], Some(7)),
+                        ScreenReaderPolicy::default(),
+                    );
+                    assert_eq!(batch.announcements.len(), 1);
+                    assert_eq!(batch.dropped_count, 0);
+                    assert_eq!(
+                        batch.announcements[0].reason,
+                        AnnouncementReason::FocusedStateChanged
+                    );
+                    assert_eq!(
+                        batch.announcements[0].urgency,
+                        region.unwrap_or(LiveRegion::Polite)
+                    );
+                    let focus = if region.is_some() { "focused, " } else { "" };
+                    assert_eq!(
+                        batch.announcements[0].text,
+                        format!("{role}: Control. {focus}{expected}")
+                    );
+                    assert_eq!(batch.announcements[0].text.matches("value ").count(), 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_changes_hidden_by_value_text_remain_in_diff_without_speech() {
+        for role in [A11yRole::Slider, A11yRole::ScrollBar, A11yRole::ProgressBar] {
+            for region in [None, Some(LiveRegion::Polite), Some(LiveRegion::Assertive)] {
+                for focus in [None, Some(7)] {
+                    let mut old = interaction_node(
+                        role,
+                        A11yState {
+                            value_now: Some(10.0),
+                            value_text: Some("Medium".to_owned()),
+                            ..A11yState::default()
+                        },
+                    );
+                    old.live_region = region;
+                    let mut new = old.clone();
+                    new.state.value_now = Some(11.0);
+                    let before = snapshot(vec![old], focus);
+                    let after = snapshot(vec![new], focus);
+                    let diff = after.diff(&before);
+                    assert_eq!(diff.changed[0].1.len(), 1);
+                    assert!(matches!(
+                        &diff.changed[0].1[0],
+                        A11yChange::StateChanged { field, .. } if field == "value_now"
+                    ));
+                    let batch =
+                        diff.screen_reader_announcements(&after, ScreenReaderPolicy::default());
+                    assert!(batch.announcements.is_empty());
+                    assert_eq!(batch.dropped_count, 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn focused_text_edits_background_progress_and_range_metadata_stay_quiet() {
+        for role in [A11yRole::TextInput, A11yRole::ProgressBar, A11yRole::Label] {
+            let old = interaction_node(role, A11yState::default());
+            let mut new = old.clone();
+            new.state.value_text = Some("new content".to_owned());
+            new.state.value_now = Some(20.0);
+            new.state.busy = true;
+            let before = snapshot(vec![old], Some(7));
+            let after = snapshot(vec![new], Some(7));
+            assert!(!after.diff(&before).is_empty());
+            assert!(
+                after
+                    .screen_reader_announcements_since(&before, ScreenReaderPolicy::default())
+                    .announcements
+                    .is_empty()
+            );
+        }
+        let old = interaction_node(A11yRole::Slider, A11yState::default());
+        let mut new = old.clone();
+        new.state.value_min = Some(0.0);
+        new.state.value_max = Some(100.0);
+        let batch = snapshot(vec![new], Some(7)).screen_reader_announcements_since(
+            &snapshot(vec![old], Some(7)),
+            ScreenReaderPolicy::default(),
+        );
+        assert!(batch.announcements.is_empty());
+    }
+
+    #[test]
+    fn combined_interaction_changes_share_one_bounded_live_announcement() {
+        for region in [None, Some(LiveRegion::Assertive)] {
+            let mut old = interaction_node(
+                A11yRole::Slider,
+                A11yState {
+                    disabled: true,
+                    required: true,
+                    expanded: Some(true),
+                    selected: true,
+                    value_now: Some(10.0),
+                    ..A11yState::default()
+                },
+            );
+            old.live_region = region;
+            let mut new = old.clone();
+            new.state.disabled = false;
+            new.state.required = false;
+            new.state.expanded = Some(false);
+            new.state.selected = false;
+            new.state.value_now = Some(20.0);
+            let background = A11yNodeInfo::new(2, A11yRole::Label, Rect::new(0, 1, 20, 1))
+                .with_name("Background")
+                .with_live_region(LiveRegion::Assertive);
+            let before = snapshot(vec![old], Some(7));
+            let after = snapshot(vec![background, new], Some(7));
+            for cap in [0, 1, 2] {
+                let batch = after.screen_reader_announcements_since(
+                    &before,
+                    ScreenReaderPolicy {
+                        max_announcements: cap,
+                        ..ScreenReaderPolicy::default()
+                    },
+                );
+                assert_eq!(batch.announcements.len(), cap);
+                assert_eq!(batch.dropped_count, 2 - cap);
+                if cap > 0 {
+                    assert_eq!(batch.announcements[0].node_id, Some(7));
+                    assert_eq!(
+                        batch.announcements[0].reason,
+                        AnnouncementReason::FocusedStateChanged
+                    );
+                    assert_eq!(
+                        batch.announcements[0].text,
+                        if region.is_some() {
+                            "slider: Control. focused, collapsed, value 20, enabled, not required, not selected"
+                        } else {
+                            "slider: Control. enabled, not required, collapsed, not selected, value 20"
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arriving_focus_coalesces_activation_and_range_changes_with_live_content() {
+        let old = interaction_node(A11yRole::Slider, A11yState::default())
+            .with_live_region(LiveRegion::Assertive);
+        let mut new = old.clone();
+        new.state.value_now = Some(20.0);
+        new.state.selected = true;
+        new.state.expanded = Some(true);
+        let batch = snapshot(vec![new], Some(7)).screen_reader_announcements_since(
+            &snapshot(vec![old], None),
+            ScreenReaderPolicy::default(),
+        );
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.dropped_count, 0);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(batch.announcements[0].urgency, LiveRegion::Assertive);
+        assert_eq!(
+            batch.announcements[0].text,
+            "slider: Control. focused, expanded, selected, value 20"
+        );
     }
 }
