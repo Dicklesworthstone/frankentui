@@ -2,7 +2,7 @@
 
 //! Locale-aware date and time representation and formatting.
 
-use super::data::{lookup_locale_data, DateSymbols, LocaleData};
+use super::data::{DateSymbols, LocaleData, lookup_locale_data};
 use super::error::{DateTimeError, FormattingError};
 
 /// Date formatting style.
@@ -293,11 +293,7 @@ impl DateTimeFormatter {
         let dow_idx = date.day_of_week() as usize;
         let day_full = self.symbols.days_full[dow_idx];
 
-        let base_tag = self
-            .locale_tag
-            .split(['-', '_'])
-            .next()
-            .unwrap_or("en");
+        let base_tag = self.locale_tag.split(['-', '_']).next().unwrap_or("en");
 
         match base_tag {
             "en" => match style {
@@ -311,7 +307,13 @@ impl DateTimeFormatter {
                     format!("{} {}, {}", month_full, date.day(), date.year())
                 }
                 DateFormatStyle::Full => {
-                    format!("{}, {} {}, {}", day_full, month_full, date.day(), date.year())
+                    format!(
+                        "{}, {} {}, {}",
+                        day_full,
+                        month_full,
+                        date.day(),
+                        date.year()
+                    )
                 }
             },
             "de" => match style {
@@ -325,7 +327,13 @@ impl DateTimeFormatter {
                     format!("{}. {} {}", date.day(), month_full, date.year())
                 }
                 DateFormatStyle::Full => {
-                    format!("{}, {}. {} {}", day_full, date.day(), month_full, date.year())
+                    format!(
+                        "{}, {}. {} {}",
+                        day_full,
+                        date.day(),
+                        month_full,
+                        date.year()
+                    )
                 }
             },
             "fr" => match style {
@@ -353,7 +361,13 @@ impl DateTimeFormatter {
                     format!("{} de {} de {}", date.day(), month_full, date.year())
                 }
                 DateFormatStyle::Full => {
-                    format!("{}, {} de {} de {}", day_full, date.day(), month_full, date.year())
+                    format!(
+                        "{}, {} de {} de {}",
+                        day_full,
+                        date.day(),
+                        month_full,
+                        date.year()
+                    )
                 }
             },
             "ru" => match style {
@@ -367,7 +381,13 @@ impl DateTimeFormatter {
                     format!("{} {} {} г.", date.day(), month_full, date.year())
                 }
                 DateFormatStyle::Full => {
-                    format!("{}, {} {} {} г.", day_full, date.day(), month_full, date.year())
+                    format!(
+                        "{}, {} {} {} г.",
+                        day_full,
+                        date.day(),
+                        month_full,
+                        date.year()
+                    )
                 }
             },
             "ar" => match style {
@@ -381,7 +401,13 @@ impl DateTimeFormatter {
                     format!("{} {} {}", date.day(), month_full, date.year())
                 }
                 DateFormatStyle::Full => {
-                    format!("{}، {} {} {}", day_full, date.day(), month_full, date.year())
+                    format!(
+                        "{}، {} {} {}",
+                        day_full,
+                        date.day(),
+                        month_full,
+                        date.year()
+                    )
                 }
             },
             "ja" => match style {
@@ -392,7 +418,13 @@ impl DateTimeFormatter {
                     format!("{}年{}月{}日", date.year(), date.month(), date.day())
                 }
                 DateFormatStyle::Full => {
-                    format!("{}年{}月{}日 {}", date.year(), date.month(), date.day(), day_full)
+                    format!(
+                        "{}年{}月{}日 {}",
+                        date.year(),
+                        date.month(),
+                        date.day(),
+                        day_full
+                    )
                 }
             },
             _ => {
@@ -420,7 +452,7 @@ impl DateTimeFormatter {
             (h12.to_string(), Some(am_pm))
         };
 
-        let base_time = match style {
+        match style {
             TimeFormatStyle::Short => {
                 if let Some(ap) = am_pm_str {
                     format!("{}:{:02} {}", hour_str, time.minute(), ap)
@@ -430,14 +462,18 @@ impl DateTimeFormatter {
             }
             TimeFormatStyle::Medium | TimeFormatStyle::Long => {
                 if let Some(ap) = am_pm_str {
-                    format!("{}:{:02}:{:02} {}", hour_str, time.minute(), time.second(), ap)
+                    format!(
+                        "{}:{:02}:{:02} {}",
+                        hour_str,
+                        time.minute(),
+                        time.second(),
+                        ap
+                    )
                 } else {
                     format!("{}:{:02}:{:02}", hour_str, time.minute(), time.second())
                 }
             }
-        };
-
-        base_time
+        }
     }
 
     /// Format a combined DateTime.
@@ -451,14 +487,17 @@ impl DateTimeFormatter {
         let date_str = self.format_date(dt.date(), date_style);
         let mut time_str = self.format_time(dt.time(), time_style);
 
-        if time_style == TimeFormatStyle::Long {
-            if let Some(offset) = dt.timezone_offset_minutes() {
-                time_str.push(' ');
-                time_str.push_str(&format_tz_offset(offset));
-            }
+        if time_style == TimeFormatStyle::Long
+            && let Some(offset) = dt.timezone_offset_minutes()
+        {
+            time_str.push(' ');
+            time_str.push_str(&format_tz_offset(offset));
         }
 
-        format!("{}{}{}", date_str, self.symbols.datetime_separator, time_str)
+        format!(
+            "{}{}{}",
+            date_str, self.symbols.datetime_separator, time_str
+        )
     }
 }
 
@@ -565,21 +604,54 @@ mod tests {
         let date = Date::from_ymd(2026, 9, 19).unwrap();
 
         let fmt_en = DateTimeFormatter::for_locale("en").unwrap();
-        assert_eq!(fmt_en.format_date(&date, DateFormatStyle::Short), "09/19/2026");
-        assert_eq!(fmt_en.format_date(&date, DateFormatStyle::Medium), "Sep 19, 2026");
-        assert_eq!(fmt_en.format_date(&date, DateFormatStyle::Long), "September 19, 2026");
-        assert_eq!(fmt_en.format_date(&date, DateFormatStyle::Full), "Saturday, September 19, 2026");
+        assert_eq!(
+            fmt_en.format_date(&date, DateFormatStyle::Short),
+            "09/19/2026"
+        );
+        assert_eq!(
+            fmt_en.format_date(&date, DateFormatStyle::Medium),
+            "Sep 19, 2026"
+        );
+        assert_eq!(
+            fmt_en.format_date(&date, DateFormatStyle::Long),
+            "September 19, 2026"
+        );
+        assert_eq!(
+            fmt_en.format_date(&date, DateFormatStyle::Full),
+            "Saturday, September 19, 2026"
+        );
 
         let fmt_de = DateTimeFormatter::for_locale("de").unwrap();
-        assert_eq!(fmt_de.format_date(&date, DateFormatStyle::Short), "19.09.2026");
-        assert_eq!(fmt_de.format_date(&date, DateFormatStyle::Medium), "19. Sept. 2026");
-        assert_eq!(fmt_de.format_date(&date, DateFormatStyle::Long), "19. September 2026");
-        assert_eq!(fmt_de.format_date(&date, DateFormatStyle::Full), "Samstag, 19. September 2026");
+        assert_eq!(
+            fmt_de.format_date(&date, DateFormatStyle::Short),
+            "19.09.2026"
+        );
+        assert_eq!(
+            fmt_de.format_date(&date, DateFormatStyle::Medium),
+            "19. Sept. 2026"
+        );
+        assert_eq!(
+            fmt_de.format_date(&date, DateFormatStyle::Long),
+            "19. September 2026"
+        );
+        assert_eq!(
+            fmt_de.format_date(&date, DateFormatStyle::Full),
+            "Samstag, 19. September 2026"
+        );
 
         let fmt_ja = DateTimeFormatter::for_locale("ja").unwrap();
-        assert_eq!(fmt_ja.format_date(&date, DateFormatStyle::Short), "2026/09/19");
-        assert_eq!(fmt_ja.format_date(&date, DateFormatStyle::Long), "2026年9月19日");
-        assert_eq!(fmt_ja.format_date(&date, DateFormatStyle::Full), "2026年9月19日 土曜日");
+        assert_eq!(
+            fmt_ja.format_date(&date, DateFormatStyle::Short),
+            "2026/09/19"
+        );
+        assert_eq!(
+            fmt_ja.format_date(&date, DateFormatStyle::Long),
+            "2026年9月19日"
+        );
+        assert_eq!(
+            fmt_ja.format_date(&date, DateFormatStyle::Full),
+            "2026年9月19日 土曜日"
+        );
     }
 
     #[test]
@@ -589,15 +661,33 @@ mod tests {
 
         // 12-hour locale (en)
         let fmt_en = DateTimeFormatter::for_locale("en").unwrap();
-        assert_eq!(fmt_en.format_time(&t_afternoon, TimeFormatStyle::Short), "2:30 PM");
-        assert_eq!(fmt_en.format_time(&t_afternoon, TimeFormatStyle::Medium), "2:30:45 PM");
-        assert_eq!(fmt_en.format_time(&t_morning, TimeFormatStyle::Short), "9:05 AM");
+        assert_eq!(
+            fmt_en.format_time(&t_afternoon, TimeFormatStyle::Short),
+            "2:30 PM"
+        );
+        assert_eq!(
+            fmt_en.format_time(&t_afternoon, TimeFormatStyle::Medium),
+            "2:30:45 PM"
+        );
+        assert_eq!(
+            fmt_en.format_time(&t_morning, TimeFormatStyle::Short),
+            "9:05 AM"
+        );
 
         // 24-hour locale (de)
         let fmt_de = DateTimeFormatter::for_locale("de").unwrap();
-        assert_eq!(fmt_de.format_time(&t_afternoon, TimeFormatStyle::Short), "14:30");
-        assert_eq!(fmt_de.format_time(&t_afternoon, TimeFormatStyle::Medium), "14:30:45");
-        assert_eq!(fmt_de.format_time(&t_morning, TimeFormatStyle::Short), "09:05");
+        assert_eq!(
+            fmt_de.format_time(&t_afternoon, TimeFormatStyle::Short),
+            "14:30"
+        );
+        assert_eq!(
+            fmt_de.format_time(&t_afternoon, TimeFormatStyle::Medium),
+            "14:30:45"
+        );
+        assert_eq!(
+            fmt_de.format_time(&t_morning, TimeFormatStyle::Short),
+            "09:05"
+        );
     }
 
     #[test]

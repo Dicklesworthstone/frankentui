@@ -12,14 +12,12 @@ pub mod error;
 pub mod number;
 
 pub use data::{
-    lookup_locale_data, CurrencyPlacement, DateSymbols, DateTimeOrder, LocaleData, NumberSymbols,
-    PercentPlacement, CLDR_VERSION, SUPPORTED_LOCALES,
+    CLDR_VERSION, CurrencyPlacement, DateSymbols, DateTimeOrder, LocaleData, NumberSymbols,
+    PercentPlacement, SUPPORTED_LOCALES, lookup_locale_data,
 };
 pub use datetime::{
-    days_in_month, is_leap_year, Date, DateFormatStyle, DateTime, DateTimeFormatter, Time,
-    TimeFormatStyle,
+    Date, DateFormatStyle, DateTime, DateTimeFormatter, Time, TimeFormatStyle, days_in_month,
+    is_leap_year,
 };
 pub use error::{DateTimeError, FormattingError};
-pub use number::{
-    NumberFormat, NumberFormatter, NumberStyle, NumberingSystem, RoundingMode,
-};
+pub use number::{NumberFormat, NumberFormatter, NumberStyle, NumberingSystem, RoundingMode};

@@ -8,6 +8,11 @@
 
 use crate::reactive::{Observable, Subscription};
 pub use ftui_i18n::catalog::Locale;
+pub use ftui_i18n::format::{
+    Date, DateFormatStyle, DateTime, DateTimeError, DateTimeFormatter, FormattingError,
+    NumberFormat, NumberFormatter, NumberStyle, NumberingSystem, RoundingMode, Time,
+    TimeFormatStyle,
+};
 use std::cell::RefCell;
 use std::env;
 use std::rc::Rc;
@@ -214,6 +219,78 @@ impl LocaleContext {
             .version()
             .saturating_add(self.direction_override.version())
     }
+
+    /// Create a `NumberFormatter` configured for the active locale.
+    ///
+    /// # Errors
+    /// Returns `FormattingError::UnsupportedLocale` if the active locale is not supported.
+    pub fn number_formatter(&self) -> Result<NumberFormatter, FormattingError> {
+        NumberFormatter::for_locale(&self.current_locale())
+    }
+
+    /// Create a `NumberFormatter` with custom configuration for the active locale.
+    ///
+    /// # Errors
+    /// Returns `FormattingError::UnsupportedLocale` if the active locale is not supported.
+    pub fn number_formatter_with_config(
+        &self,
+        config: NumberFormat,
+    ) -> Result<NumberFormatter, FormattingError> {
+        NumberFormatter::with_config(&self.current_locale(), config)
+    }
+
+    /// Create a `DateTimeFormatter` for the active locale.
+    ///
+    /// # Errors
+    /// Returns `FormattingError::UnsupportedLocale` if the active locale is not supported.
+    pub fn datetime_formatter(&self) -> Result<DateTimeFormatter, FormattingError> {
+        DateTimeFormatter::for_locale(&self.current_locale())
+    }
+
+    /// Format an integer value using the active locale's conventions.
+    ///
+    /// # Errors
+    /// Returns `FormattingError::UnsupportedLocale` if the active locale is not supported.
+    pub fn format_int<I: Into<i128>>(&self, val: I) -> Result<String, FormattingError> {
+        let fmt = self.number_formatter()?;
+        Ok(fmt.format_int(val))
+    }
+
+    /// Format a float value using default decimal formatting for the active locale.
+    ///
+    /// # Errors
+    /// Returns `FormattingError` if the locale is unsupported or if the float is non-finite.
+    pub fn format_number(&self, val: f64) -> Result<String, FormattingError> {
+        let fmt = self.number_formatter()?;
+        fmt.format_float(val)
+    }
+
+    /// Format a date using the active locale's conventions.
+    ///
+    /// # Errors
+    /// Returns `FormattingError::UnsupportedLocale` if the active locale is not supported.
+    pub fn format_date(
+        &self,
+        date: &Date,
+        style: DateFormatStyle,
+    ) -> Result<String, FormattingError> {
+        let fmt = self.datetime_formatter()?;
+        Ok(fmt.format_date(date, style))
+    }
+
+    /// Format a combined date and time using the active locale's conventions.
+    ///
+    /// # Errors
+    /// Returns `FormattingError::UnsupportedLocale` if the active locale is not supported.
+    pub fn format_datetime(
+        &self,
+        dt: &DateTime,
+        date_style: DateFormatStyle,
+        time_style: TimeFormatStyle,
+    ) -> Result<String, FormattingError> {
+        let fmt = self.datetime_formatter()?;
+        Ok(fmt.format_datetime(dt, date_style, time_style))
+    }
 }
 
 /// RAII guard for scoped locale overrides.
@@ -262,6 +339,30 @@ pub fn direction() -> TextDirection {
 /// Convenience: set the global text direction override.
 pub fn set_direction(direction: Option<TextDirection>) {
     LocaleContext::global().set_direction(direction);
+}
+
+/// Convenience: format an integer using the global locale context.
+pub fn format_int<I: Into<i128>>(val: I) -> Result<String, FormattingError> {
+    LocaleContext::global().format_int(val)
+}
+
+/// Convenience: format a float using the global locale context.
+pub fn format_number(val: f64) -> Result<String, FormattingError> {
+    LocaleContext::global().format_number(val)
+}
+
+/// Convenience: format a date using the global locale context.
+pub fn format_date(date: &Date, style: DateFormatStyle) -> Result<String, FormattingError> {
+    LocaleContext::global().format_date(date, style)
+}
+
+/// Convenience: format a datetime using the global locale context.
+pub fn format_datetime(
+    dt: &DateTime,
+    date_style: DateFormatStyle,
+    time_style: TimeFormatStyle,
+) -> Result<String, FormattingError> {
+    LocaleContext::global().format_datetime(dt, date_style, time_style)
 }
 
 fn normalize_locale(mut locale: Locale) -> Locale {
@@ -618,5 +719,71 @@ mod tests {
             TextDirection::from(ftui_render::TextDirection::Rtl),
             TextDirection::Rtl
         );
+    }
+
+    #[test]
+    fn locale_context_formatting_reflects_active_locale() {
+        let ctx = LocaleContext::new("en");
+        assert_eq!(ctx.format_int(1_234_567).unwrap(), "1,234,567");
+
+        ctx.set_locale("de");
+        assert_eq!(ctx.format_int(1_234_567).unwrap(), "1.234.567");
+
+        ctx.set_locale("fr");
+        assert_eq!(
+            ctx.format_int(1_234_567).unwrap(),
+            "1\u{202f}234\u{202f}567"
+        );
+
+        ctx.set_locale("ru");
+        assert_eq!(
+            ctx.format_int(1_234_567).unwrap(),
+            "1\u{00a0}234\u{00a0}567"
+        );
+    }
+
+    #[test]
+    fn locale_context_formatting_respects_scoped_override() {
+        let ctx = LocaleContext::new("en");
+        assert_eq!(ctx.format_int(1_234_567).unwrap(), "1,234,567");
+
+        {
+            let _guard = ctx.push_override("de");
+            assert_eq!(ctx.format_int(1_234_567).unwrap(), "1.234.567");
+        }
+
+        assert_eq!(ctx.format_int(1_234_567).unwrap(), "1,234,567");
+    }
+
+    #[test]
+    fn locale_context_date_formatting() {
+        let ctx = LocaleContext::new("en");
+        let date = Date::from_ymd(2026, 9, 19).unwrap();
+
+        assert_eq!(
+            ctx.format_date(&date, DateFormatStyle::Short).unwrap(),
+            "09/19/2026"
+        );
+
+        ctx.set_locale("de");
+        assert_eq!(
+            ctx.format_date(&date, DateFormatStyle::Short).unwrap(),
+            "19.09.2026"
+        );
+
+        ctx.set_locale("ja");
+        assert_eq!(
+            ctx.format_date(&date, DateFormatStyle::Short).unwrap(),
+            "2026/09/19"
+        );
+    }
+
+    #[test]
+    fn locale_context_unsupported_locale_error() {
+        let ctx = LocaleContext::new("unknown-xyz");
+        assert!(matches!(
+            ctx.format_int(100),
+            Err(FormattingError::UnsupportedLocale(_))
+        ));
     }
 }

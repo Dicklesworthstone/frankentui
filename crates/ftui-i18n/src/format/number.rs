@@ -3,7 +3,7 @@
 //! Locale-aware number, currency, and percentage formatting.
 
 use super::data::{
-    lookup_locale_data, CurrencyPlacement, LocaleData, NumberSymbols, PercentPlacement,
+    CurrencyPlacement, LocaleData, NumberSymbols, PercentPlacement, lookup_locale_data,
 };
 use super::error::FormattingError;
 
@@ -207,7 +207,11 @@ impl NumberFormatter {
         };
 
         let grouped = if self.config.use_grouping {
-            group_digits(&padded_digits, self.symbols.group_sep, self.symbols.group_size)
+            group_digits(
+                &padded_digits,
+                self.symbols.group_sep,
+                self.symbols.group_size,
+            )
         } else {
             padded_digits
         };
@@ -227,23 +231,21 @@ impl NumberFormatter {
                     }
                 }
             }
-            NumberStyle::Percent => {
-                match self.symbols.percent_placement {
-                    PercentPlacement::Prefix => {
-                        out.push_str(self.symbols.percent_sign);
-                        out.push_str(&grouped);
-                    }
-                    PercentPlacement::Suffix => {
-                        out.push_str(&grouped);
-                        out.push_str(self.symbols.percent_sign);
-                    }
-                    PercentPlacement::SuffixWithSpace => {
-                        out.push_str(&grouped);
-                        out.push(' ');
-                        out.push_str(self.symbols.percent_sign);
-                    }
+            NumberStyle::Percent => match self.symbols.percent_placement {
+                PercentPlacement::Prefix => {
+                    out.push_str(self.symbols.percent_sign);
+                    out.push_str(&grouped);
                 }
-            }
+                PercentPlacement::Suffix => {
+                    out.push_str(&grouped);
+                    out.push_str(self.symbols.percent_sign);
+                }
+                PercentPlacement::SuffixWithSpace => {
+                    out.push_str(&grouped);
+                    out.push(' ');
+                    out.push_str(self.symbols.percent_sign);
+                }
+            },
             NumberStyle::Currency { symbol, .. } => {
                 let sym = symbol.unwrap_or(self.symbols.default_currency_symbol);
                 match self.symbols.currency_placement {
@@ -304,11 +306,16 @@ impl NumberFormatter {
         let max_frac = self.config.max_fraction_digits;
         let min_frac = self.config.min_fraction_digits;
 
-        let (int_part, frac_str) = round_float_parts(abs_val, max_frac, min_frac, self.config.rounding_mode);
+        let (int_part, frac_str) =
+            round_float_parts(abs_val, max_frac, min_frac, self.config.rounding_mode);
 
         let int_str = int_part.to_string();
         let padded_int = if int_str.len() < self.config.min_integer_digits {
-            format!("{:0>width$}", int_str, width = self.config.min_integer_digits)
+            format!(
+                "{:0>width$}",
+                int_str,
+                width = self.config.min_integer_digits
+            )
         } else {
             int_str
         };
@@ -335,23 +342,21 @@ impl NumberFormatter {
             NumberStyle::Decimal => {
                 out.push_str(&num_str);
             }
-            NumberStyle::Percent => {
-                match self.symbols.percent_placement {
-                    PercentPlacement::Prefix => {
-                        out.push_str(self.symbols.percent_sign);
-                        out.push_str(&num_str);
-                    }
-                    PercentPlacement::Suffix => {
-                        out.push_str(&num_str);
-                        out.push_str(self.symbols.percent_sign);
-                    }
-                    PercentPlacement::SuffixWithSpace => {
-                        out.push_str(&num_str);
-                        out.push(' ');
-                        out.push_str(self.symbols.percent_sign);
-                    }
+            NumberStyle::Percent => match self.symbols.percent_placement {
+                PercentPlacement::Prefix => {
+                    out.push_str(self.symbols.percent_sign);
+                    out.push_str(&num_str);
                 }
-            }
+                PercentPlacement::Suffix => {
+                    out.push_str(&num_str);
+                    out.push_str(self.symbols.percent_sign);
+                }
+                PercentPlacement::SuffixWithSpace => {
+                    out.push_str(&num_str);
+                    out.push(' ');
+                    out.push_str(self.symbols.percent_sign);
+                }
+            },
             NumberStyle::Currency { symbol, .. } => {
                 let sym = symbol.unwrap_or(self.symbols.default_currency_symbol);
                 match self.symbols.currency_placement {
@@ -391,7 +396,8 @@ fn group_digits(digits: &str, group_sep: &str, group_size: usize) -> String {
         return digits.to_string();
     }
 
-    let mut result = String::with_capacity(digits.len() + (digits.len() / group_size) * group_sep.len());
+    let mut result =
+        String::with_capacity(digits.len() + (digits.len() / group_size) * group_sep.len());
     let rem = digits.len() % group_size;
 
     if rem > 0 {
@@ -401,7 +407,7 @@ fn group_digits(digits: &str, group_sep: &str, group_size: usize) -> String {
         }
     }
 
-    for (i, chunk) in digits[rem..].as_bytes().chunks(group_size).enumerate() {
+    for (i, chunk) in digits.as_bytes()[rem..].chunks(group_size).enumerate() {
         if i > 0 {
             result.push_str(group_sep);
         }
@@ -425,7 +431,7 @@ fn round_float_parts(
                 let floor = val.floor();
                 let diff = val - floor;
                 if (diff - 0.5).abs() < 1e-9 {
-                    if (floor as u128) % 2 == 0 {
+                    if (floor as u128).is_multiple_of(2) {
                         floor as u128
                     } else {
                         (floor + 1.0) as u128
@@ -449,7 +455,7 @@ fn round_float_parts(
             let floor = scaled.floor();
             let diff = scaled - floor;
             if (diff - 0.5).abs() < 1e-9 {
-                if (floor as u128) % 2 == 0 {
+                if (floor as u128).is_multiple_of(2) {
                     floor
                 } else {
                     floor + 1.0
@@ -537,35 +543,66 @@ mod tests {
         let val = 1234.56;
         let cfg = NumberFormat::new().fraction_digits(2, 2);
 
-        let en = NumberFormatter::with_config("en", cfg).unwrap().format_float(val).unwrap();
+        let en = NumberFormatter::with_config("en", cfg)
+            .unwrap()
+            .format_float(val)
+            .unwrap();
         assert_eq!(en, "1,234.56");
 
-        let de = NumberFormatter::with_config("de", cfg).unwrap().format_float(val).unwrap();
+        let de = NumberFormatter::with_config("de", cfg)
+            .unwrap()
+            .format_float(val)
+            .unwrap();
         assert_eq!(de, "1.234,56");
 
-        let fr = NumberFormatter::with_config("fr", cfg).unwrap().format_float(val).unwrap();
+        let fr = NumberFormatter::with_config("fr", cfg)
+            .unwrap()
+            .format_float(val)
+            .unwrap();
         assert_eq!(fr, "1\u{202f}234,56");
 
-        let es = NumberFormatter::with_config("es", cfg).unwrap().format_float(val).unwrap();
+        let es = NumberFormatter::with_config("es", cfg)
+            .unwrap()
+            .format_float(val)
+            .unwrap();
         assert_eq!(es, "1.234,56");
 
-        let ru = NumberFormatter::with_config("ru", cfg).unwrap().format_float(val).unwrap();
+        let ru = NumberFormatter::with_config("ru", cfg)
+            .unwrap()
+            .format_float(val)
+            .unwrap();
         assert_eq!(ru, "1\u{00a0}234,56");
 
-        let ar = NumberFormatter::with_config("ar", cfg).unwrap().format_float(val).unwrap();
+        let ar = NumberFormatter::with_config("ar", cfg)
+            .unwrap()
+            .format_float(val)
+            .unwrap();
         assert_eq!(ar, "1,234.56");
 
-        let ja = NumberFormatter::with_config("ja", cfg).unwrap().format_float(val).unwrap();
+        let ja = NumberFormatter::with_config("ja", cfg)
+            .unwrap()
+            .format_float(val)
+            .unwrap();
         assert_eq!(ja, "1,234.56");
     }
 
     #[test]
     fn test_rounding_modes() {
-        let half_up_cfg = NumberFormat::new().fraction_digits(0, 0).rounding_mode(RoundingMode::HalfUp);
-        let half_even_cfg = NumberFormat::new().fraction_digits(0, 0).rounding_mode(RoundingMode::HalfEven);
-        let trunc_cfg = NumberFormat::new().fraction_digits(0, 0).rounding_mode(RoundingMode::Truncate);
-        let ceil_cfg = NumberFormat::new().fraction_digits(0, 0).rounding_mode(RoundingMode::Ceil);
-        let floor_cfg = NumberFormat::new().fraction_digits(0, 0).rounding_mode(RoundingMode::Floor);
+        let half_up_cfg = NumberFormat::new()
+            .fraction_digits(0, 0)
+            .rounding_mode(RoundingMode::HalfUp);
+        let half_even_cfg = NumberFormat::new()
+            .fraction_digits(0, 0)
+            .rounding_mode(RoundingMode::HalfEven);
+        let trunc_cfg = NumberFormat::new()
+            .fraction_digits(0, 0)
+            .rounding_mode(RoundingMode::Truncate);
+        let ceil_cfg = NumberFormat::new()
+            .fraction_digits(0, 0)
+            .rounding_mode(RoundingMode::Ceil);
+        let floor_cfg = NumberFormat::new()
+            .fraction_digits(0, 0)
+            .rounding_mode(RoundingMode::Floor);
 
         let fmt_hu = NumberFormatter::with_config("en", half_up_cfg).unwrap();
         let fmt_he = NumberFormatter::with_config("en", half_even_cfg).unwrap();
@@ -590,22 +627,40 @@ mod tests {
     #[test]
     fn test_currency_formatting() {
         let cfg = NumberFormat::new()
-            .style(NumberStyle::Currency { code: None, symbol: None })
+            .style(NumberStyle::Currency {
+                code: None,
+                symbol: None,
+            })
             .fraction_digits(2, 2);
 
-        let en = NumberFormatter::with_config("en", cfg).unwrap().format_float(1234.56).unwrap();
+        let en = NumberFormatter::with_config("en", cfg)
+            .unwrap()
+            .format_float(1234.56)
+            .unwrap();
         assert_eq!(en, "$1,234.56");
 
-        let de = NumberFormatter::with_config("de", cfg).unwrap().format_float(1234.56).unwrap();
+        let de = NumberFormatter::with_config("de", cfg)
+            .unwrap()
+            .format_float(1234.56)
+            .unwrap();
         assert_eq!(de, "1.234,56 €");
 
-        let ru = NumberFormatter::with_config("ru", cfg).unwrap().format_float(1234.56).unwrap();
+        let ru = NumberFormatter::with_config("ru", cfg)
+            .unwrap()
+            .format_float(1234.56)
+            .unwrap();
         assert_eq!(ru, "1\u{00a0}234,56 ₽");
 
-        let ja = NumberFormatter::with_config("ja", cfg).unwrap().format_float(1234.56).unwrap();
+        let ja = NumberFormatter::with_config("ja", cfg)
+            .unwrap()
+            .format_float(1234.56)
+            .unwrap();
         assert_eq!(ja, "￥1,234.56");
 
-        let ar = NumberFormatter::with_config("ar", cfg).unwrap().format_float(1234.56).unwrap();
+        let ar = NumberFormatter::with_config("ar", cfg)
+            .unwrap()
+            .format_float(1234.56)
+            .unwrap();
         assert_eq!(ar, "1,234.56 ر.س");
     }
 
@@ -615,10 +670,16 @@ mod tests {
             .style(NumberStyle::Percent)
             .fraction_digits(1, 1);
 
-        let en = NumberFormatter::with_config("en", cfg).unwrap().format_float(0.125).unwrap();
+        let en = NumberFormatter::with_config("en", cfg)
+            .unwrap()
+            .format_float(0.125)
+            .unwrap();
         assert_eq!(en, "12.5%");
 
-        let de = NumberFormatter::with_config("de", cfg).unwrap().format_float(0.125).unwrap();
+        let de = NumberFormatter::with_config("de", cfg)
+            .unwrap()
+            .format_float(0.125)
+            .unwrap();
         assert_eq!(de, "12,5 %");
     }
 
@@ -647,7 +708,10 @@ mod tests {
         let fmt_permissive = NumberFormatter::with_config("en", cfg).unwrap();
         assert_eq!(fmt_permissive.format_float(f64::NAN).unwrap(), "NaN");
         assert_eq!(fmt_permissive.format_float(f64::INFINITY).unwrap(), "∞");
-        assert_eq!(fmt_permissive.format_float(f64::NEG_INFINITY).unwrap(), "-∞");
+        assert_eq!(
+            fmt_permissive.format_float(f64::NEG_INFINITY).unwrap(),
+            "-∞"
+        );
     }
 
     #[test]

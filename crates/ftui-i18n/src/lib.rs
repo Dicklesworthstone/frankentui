@@ -23,9 +23,9 @@ pub use catalog::{
     CoverageReport, I18nError, LocaleCoverage, LocaleStrings, StringCatalog, StringEntry,
 };
 pub use format::{
-    days_in_month, is_leap_year, lookup_locale_data, CurrencyPlacement, Date, DateFormatStyle,
-    DateSymbols, DateTime, DateTimeError, DateTimeFormatter, DateTimeOrder, FormattingError,
-    LocaleData, NumberFormat, NumberFormatter, NumberStyle, NumberSymbols, NumberingSystem,
-    PercentPlacement, RoundingMode, Time, TimeFormatStyle, CLDR_VERSION, SUPPORTED_LOCALES,
+    CLDR_VERSION, CurrencyPlacement, Date, DateFormatStyle, DateSymbols, DateTime, DateTimeError,
+    DateTimeFormatter, DateTimeOrder, FormattingError, LocaleData, NumberFormat, NumberFormatter,
+    NumberStyle, NumberSymbols, NumberingSystem, PercentPlacement, RoundingMode, SUPPORTED_LOCALES,
+    Time, TimeFormatStyle, days_in_month, is_leap_year, lookup_locale_data,
 };
 pub use plural::{PluralCategory, PluralForms, PluralRule};

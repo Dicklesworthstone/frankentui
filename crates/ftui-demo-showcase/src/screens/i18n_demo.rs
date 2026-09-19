@@ -293,6 +293,47 @@ impl I18nDemo {
         self.locale_ctx.set_direction(None);
     }
 
+    /// Format a sample integer using the demo's current active locale.
+    pub fn format_sample_int(
+        &self,
+        val: i128,
+    ) -> Result<String, ftui_runtime::locale::FormattingError> {
+        self.locale_ctx.format_int(val)
+    }
+
+    /// Format a sample float using the demo's current active locale.
+    pub fn format_sample_number(
+        &self,
+        val: f64,
+    ) -> Result<String, ftui_runtime::locale::FormattingError> {
+        self.locale_ctx.format_number(val)
+    }
+
+    /// Format a sample currency amount using the demo's current active locale.
+    pub fn format_sample_currency(
+        &self,
+        amount: f64,
+    ) -> Result<String, ftui_runtime::locale::FormattingError> {
+        let fmt = self.locale_ctx.number_formatter_with_config(
+            ftui_runtime::locale::NumberFormat::new()
+                .style(ftui_runtime::locale::NumberStyle::Currency {
+                    code: None,
+                    symbol: None,
+                })
+                .fraction_digits(2, 2),
+        )?;
+        fmt.format_float(amount)
+    }
+
+    /// Format a sample date using the demo's current active locale.
+    pub fn format_sample_date(
+        &self,
+        date: &ftui_runtime::locale::Date,
+        style: ftui_runtime::locale::DateFormatStyle,
+    ) -> Result<String, ftui_runtime::locale::FormattingError> {
+        self.locale_ctx.format_date(date, style)
+    }
+
     fn current_sample_set(&self) -> &'static SampleSet {
         &SAMPLE_SETS[self.sample_set_idx]
     }
@@ -515,7 +556,81 @@ impl I18nDemo {
             .flow_direction(flow)
             .gap(theme::spacing::INLINE)
             .split(area);
-        {
+        let left_col = cols[0];
+        if left_col.height > 20 {
+            let left_rows = Flex::vertical()
+                .constraints([Constraint::Fixed(11), Constraint::Fill])
+                .gap(theme::spacing::INLINE)
+                .split(left_col);
+
+            let title = self
+                .catalog
+                .get(locale, "demo.title")
+                .unwrap_or("i18n Demo");
+            let greeting = self.catalog.get(locale, "greeting").unwrap_or("Hello");
+            let welcome = self
+                .catalog
+                .format(locale, "welcome", &[("name", self.interp_name)])
+                .unwrap_or_else(|| format!("Welcome, {}!", self.interp_name));
+            let dir = self.catalog.get(locale, "direction").unwrap_or(
+                if self.locale_ctx.direction().is_rtl() {
+                    "RTL"
+                } else {
+                    "LTR"
+                },
+            );
+            let text = format!(
+                "--- {} ---\n\n  {}\n  {}\n\n  Locale: {} ({})\n  Direction: {}\n  Flow: {:?}",
+                title, greeting, welcome, info.name, info.native, dir, flow
+            );
+            Paragraph::new(text)
+                .style(Style::new().fg(theme::fg::PRIMARY))
+                .block(
+                    Block::new()
+                        .title("String Lookup")
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::new().fg(theme::accent::ACCENT_1)),
+                )
+                .render(left_rows[0], frame);
+
+            let num = self
+                .locale_ctx
+                .format_int(1_234_567)
+                .unwrap_or_else(|_| "-".into());
+            let cur = self
+                .format_sample_currency(1234.56)
+                .unwrap_or_else(|_| "-".into());
+            let date = ftui_runtime::locale::Date::from_ymd(2026, 9, 19).unwrap();
+            let date_str = self
+                .format_sample_date(&date, ftui_runtime::locale::DateFormatStyle::Long)
+                .unwrap_or_else(|_| "-".into());
+            let time = ftui_runtime::locale::Time::from_hms(14, 30, 0).unwrap();
+            let dt = ftui_runtime::locale::DateTime::new(date, time);
+            let time_str = self
+                .locale_ctx
+                .format_datetime(
+                    &dt,
+                    ftui_runtime::locale::DateFormatStyle::Short,
+                    ftui_runtime::locale::TimeFormatStyle::Short,
+                )
+                .unwrap_or_else(|_| "-".into());
+
+            let fmt_text = format!(
+                "--- CLDR v45.0 Pinned Formatting ---\n\n  Integer:  {}\n  Currency: {}\n  Date:     {}\n  DateTime: {}",
+                num, cur, date_str, time_str
+            );
+            Paragraph::new(fmt_text)
+                .style(Style::new().fg(theme::fg::PRIMARY))
+                .block(
+                    Block::new()
+                        .title("Locale Formatting")
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::new().fg(theme::accent::ACCENT_2)),
+                )
+                .render(left_rows[1], frame);
+        } else {
             let title = self
                 .catalog
                 .get(locale, "demo.title")

@@ -330,3 +330,66 @@ proptest! {
         }
     }
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// 15. Number formatting never panics for supported locales
+// ═════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn number_format_int_never_panics(
+        val in any::<i64>(),
+        loc_idx in 0usize..7,
+    ) {
+        let locales = ["en", "de", "fr", "es", "ru", "ar", "ja"];
+        let loc = locales[loc_idx];
+        let fmt = ftui_i18n::format::NumberFormatter::for_locale(loc).unwrap();
+        let s = fmt.format_int(val);
+        prop_assert!(!s.is_empty());
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 16. Finite float formatting succeeds
+// ═════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn float_format_finite_succeeds(
+        val in -1_000_000.0f64..=1_000_000.0f64,
+        loc_idx in 0usize..7,
+    ) {
+        let locales = ["en", "de", "fr", "es", "ru", "ar", "ja"];
+        let loc = locales[loc_idx];
+        let fmt = ftui_i18n::format::NumberFormatter::for_locale(loc).unwrap();
+        let res = fmt.format_float(val);
+        prop_assert!(res.is_ok());
+        let formatted = res.unwrap();
+        prop_assert!(!formatted.is_empty());
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 17. Date calendar validation consistency
+// ═════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn date_validation_consistent_with_days_in_month(
+        year in 1900i32..=2100,
+        month in 1u8..=12,
+        day in 1u8..=31,
+    ) {
+        let max_days = ftui_i18n::format::days_in_month(year, month);
+        let date_res = ftui_i18n::format::Date::from_ymd(year, month, day);
+        if day <= max_days {
+            prop_assert!(date_res.is_ok());
+            let date = date_res.unwrap();
+            let fmt = ftui_i18n::format::DateTimeFormatter::for_locale("en").unwrap();
+            let s = fmt.format_date(&date, ftui_i18n::format::DateFormatStyle::Full);
+            prop_assert!(!s.is_empty());
+        } else {
+            prop_assert!(date_res.is_err());
+        }
+    }
+}

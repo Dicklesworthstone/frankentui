@@ -148,7 +148,10 @@ pub use input_macro::{
     RecordingFilter, RecordingState, TimedEvent,
 };
 pub use locale::{
-    Locale, LocaleContext, LocaleOverride, current_locale, detect_system_locale, set_locale,
+    Date, DateFormatStyle, DateTime, DateTimeError, DateTimeFormatter, FormattingError, Locale,
+    LocaleContext, LocaleOverride, NumberFormat, NumberFormatter, NumberStyle, NumberingSystem,
+    RoundingMode, TextDirection, Time, TimeFormatStyle, current_locale, detect_system_locale,
+    direction, format_date, format_datetime, format_int, format_number, set_direction, set_locale,
 };
 pub use log_sink::LogSink;
 pub use process_subscription::{

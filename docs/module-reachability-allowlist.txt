@@ -108,16 +108,20 @@ ftui-render::quotient_filter  # bd-g00-root-epic-ewths.11.5
 #
 # These divide into two kinds, and the .11.5 decision differs for each.
 #
+# These pointed at .11.5, which is closed and enumerates ftui-render and
+# ftui-runtime files — it never covered ftui-harness, so these had no owner.
+# bd-5h57k is that owner, and asks the three questions separately.
+#
 # Engines — complete, tested analyzers with a callable API, waiting on a caller:
-ftui-harness::doctor_topology  # bd-g00-root-epic-ewths.11.5
-ftui-harness::frame_comparison  # bd-g00-root-epic-ewths.11.5
-ftui-harness::hotspot_extraction  # bd-g00-root-epic-ewths.11.5
-ftui-harness::optimization_policy  # bd-g00-root-epic-ewths.11.5
-ftui-harness::proof_oracle  # bd-g00-root-epic-ewths.11.5
+ftui-harness::doctor_topology  # bd-5h57k
+ftui-harness::frame_comparison  # bd-5h57k
+ftui-harness::hotspot_extraction  # bd-5h57k
+ftui-harness::optimization_policy  # bd-5h57k
+ftui-harness::proof_oracle  # bd-5h57k
 #
 # Reference models — taxonomies encoded as enums, with 0-2 public functions
 # between them. There is nothing here to call, so "wiring" them means writing
 # the checker they describe, not connecting an existing one.
-ftui-harness::layout_reuse  # bd-g00-root-epic-ewths.11.5
-ftui-harness::presenter_equivalence  # bd-g00-root-epic-ewths.11.5
-ftui-harness::rollout_runbook  # bd-g00-root-epic-ewths.11.5
+ftui-harness::layout_reuse  # bd-5h57k
+ftui-harness::presenter_equivalence  # bd-5h57k
+ftui-harness::rollout_runbook  # bd-5h57k
