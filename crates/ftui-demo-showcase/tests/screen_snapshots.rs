@@ -556,12 +556,43 @@ fn widget_gallery_error_boundary_80x24() {
 fn widget_gallery_diagnostics_120x40() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Walk forward to section 8 rather than wrapping backwards from 0. A single
+    // Left used to land here, but it lands on whatever section is last, so
+    // adding section J silently repointed this snapshot at Verification and
+    // left Diagnostics with no coverage at all.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);
     let area = Rect::new(0, 0, 120, 40);
     screen.view(&mut frame, area);
     assert_snapshot!("widget_gallery_diagnostics_120x40", &frame.buffer);
+}
+
+/// Section J pins `pretty`, `popover` and `receipt_verifier_panel`, which the
+/// module-reachability gate had listed as reached by nothing in production.
+#[test]
+fn widget_gallery_verification_120x40() {
+    let _caps = stable_caps();
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    for _ in 0..9 {
+        screen.update(&press(KeyCode::Right));
+    }
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("receipt-0f3a91"),
+        "ReceiptVerifierPanel: {text}"
+    );
+    assert!(text.contains("Pretty (Debug)"), "Pretty: {text}");
+    assert!(text.contains("Popover"), "Popover: {text}");
+
+    assert_snapshot!("widget_gallery_verification_120x40", &frame.buffer);
 }
 
 // ============================================================================

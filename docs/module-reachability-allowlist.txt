@@ -59,11 +59,18 @@ ftui-web::runtime_options  # bd-g00-root-epic-ewths.29.1
 ftui-web::sdk_adapter  # bd-g00-root-epic-ewths.29.1
 
 # ── ftui-widgets ─────────────────────────────────────────────────────────
-# Widgets with no gallery entry: .11.3 adds the entries that would reach them.
-ftui-widgets::choreography  # bd-g00-root-epic-ewths.11.3
-ftui-widgets::popover  # bd-g00-root-epic-ewths.11.3
-ftui-widgets::pretty  # bd-g00-root-epic-ewths.11.3
-ftui-widgets::receipt_verifier_panel  # bd-g00-root-epic-ewths.11.3
+# popover, pretty and receipt_verifier_panel were here with .11.3 as their
+# owner; that bead closed without covering them, so they had no owner left.
+# Gallery section "J: Verification" now renders all three and
+# widget_gallery_verification_120x40 pins the result, so they are gone from
+# this list rather than re-pointed at another bead.
+#
+# choreography is NOT a widget and never belonged with them: it has no Widget
+# impl at all. It is a protocol/choreography specification verifier (project(),
+# verify_deadlock_free(), completeness_report()) that happens to live in
+# ftui-widgets. Wiring it into a widget gallery would be the wrong fix; it
+# needs the delete-or-wire decision with the rest of the orphan set.
+ftui-widgets::choreography  # bd-g00-root-epic-ewths.11.5
 # Succinct data structures with no consumer. These are orphan-module
 # candidates rather than unwired widgets, so they sit with the G07 set.
 ftui-widgets::elias_fano  # bd-g00-root-epic-ewths.11.5
