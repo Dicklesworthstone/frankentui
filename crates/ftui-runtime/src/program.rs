@@ -15098,15 +15098,22 @@ mod tests {
         assert_eq!(program.model.events.len(), 0);
         assert!(program.event_coalescer().unwrap().has_pending());
 
+        // Four notches in, four notches out. The batching win is that the model
+        // is updated once at flush time rather than four times as the events
+        // arrive; it is *not* that the application scrolls a quarter as far as
+        // the user asked, which is what collapsing the run used to do
+        // (`bd-minjt`).
         program.flush_coalesced_events().unwrap();
-        assert_eq!(program.model.events.len(), 1);
-        match &program.model.events[0] {
-            Event::Mouse(m) => {
-                assert_eq!(m.kind, MouseEventKind::ScrollUp);
-                assert_eq!(m.x, 10);
-                assert_eq!(m.y, 20);
+        assert_eq!(program.model.events.len(), 4);
+        for event in &program.model.events {
+            match event {
+                Event::Mouse(m) => {
+                    assert_eq!(m.kind, MouseEventKind::ScrollUp);
+                    assert_eq!(m.x, 10);
+                    assert_eq!(m.y, 20);
+                }
+                other => panic!("expected ScrollUp, got {other:?}"),
             }
-            other => panic!("expected ScrollUp, got {other:?}"),
         }
     }
 
@@ -15141,7 +15148,10 @@ mod tests {
             .unwrap();
         assert_eq!(program.model.events.len(), 0);
 
-        // Direction change flushes old ScrollUp and makes ScrollDown pending.
+        // Direction change closes the ScrollUp run and opens a ScrollDown one.
+        // Neither is dispatched yet: a closed run keeps its notch count, which
+        // does not fit in the single event `push` can hand back, so it waits
+        // for the flush that ends the batch.
         program
             .handle_event(Event::Mouse(MouseEvent {
                 kind: MouseEventKind::ScrollDown,
@@ -15150,18 +15160,23 @@ mod tests {
                 modifiers: Modifiers::NONE,
             }))
             .unwrap();
-        assert_eq!(program.model.events.len(), 1);
-        match &program.model.events[0] {
-            Event::Mouse(m) => assert_eq!(m.kind, MouseEventKind::ScrollUp),
-            other => panic!("expected ScrollUp, got {other:?}"),
-        }
+        assert_eq!(program.model.events.len(), 0);
 
+        // Both runs arrive in input order.
         program.flush_coalesced_events().unwrap();
-        assert_eq!(program.model.events.len(), 2);
-        match &program.model.events[1] {
-            Event::Mouse(m) => assert_eq!(m.kind, MouseEventKind::ScrollDown),
-            other => panic!("expected ScrollDown, got {other:?}"),
-        }
+        let kinds: Vec<MouseEventKind> = program
+            .model
+            .events
+            .iter()
+            .map(|e| match e {
+                Event::Mouse(m) => m.kind,
+                other => panic!("expected mouse event, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![MouseEventKind::ScrollUp, MouseEventKind::ScrollDown]
+        );
     }
 
     #[test]
