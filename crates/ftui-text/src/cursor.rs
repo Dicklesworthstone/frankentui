@@ -102,7 +102,45 @@ impl<'a> CursorNavigator<'a> {
         self.from_line_grapheme(line, grapheme)
     }
 
+    /// Move cursor backward by one grapheme in logical document order (across line boundaries).
+    #[must_use]
+    pub fn move_grapheme_backward(&self, pos: CursorPosition) -> CursorPosition {
+        let pos = self.clamp(pos);
+        if pos.grapheme > 0 {
+            return self.from_line_grapheme(pos.line, pos.grapheme - 1);
+        }
+        if pos.line == 0 {
+            return pos;
+        }
+        let prev_line = pos.line - 1;
+        let prev_raw = line_text(self.rope, prev_line);
+        let prev_text = strip_trailing_newline(&prev_raw);
+        let prev_end = grapheme_count(prev_text);
+        self.from_line_grapheme(prev_line, prev_end)
+    }
+
+    /// Move cursor forward by one grapheme in logical document order (across line boundaries).
+    #[must_use]
+    pub fn move_grapheme_forward(&self, pos: CursorPosition) -> CursorPosition {
+        let pos = self.clamp(pos);
+        let raw = line_text(self.rope, pos.line);
+        let current_text = strip_trailing_newline(&raw);
+        let line_end = grapheme_count(current_text);
+        if pos.grapheme < line_end {
+            return self.from_line_grapheme(pos.line, pos.grapheme + 1);
+        }
+        let last_line = last_line_index(self.rope);
+        if pos.line >= last_line {
+            return pos;
+        }
+        self.from_line_grapheme(pos.line + 1, 0)
+    }
+
     /// Move cursor left by one grapheme (across line boundaries).
+    ///
+    /// When the `bidi` feature is enabled and the line contains RTL characters,
+    /// this moves in visual left order on screen. Otherwise, moves backward in
+    /// logical document order.
     #[must_use]
     pub fn move_left(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -127,20 +165,14 @@ impl<'a> CursorNavigator<'a> {
                 return self.from_line_grapheme(prev_line, prev_end);
             }
         }
-        if pos.grapheme > 0 {
-            return self.from_line_grapheme(pos.line, pos.grapheme - 1);
-        }
-        if pos.line == 0 {
-            return pos;
-        }
-        let prev_line = pos.line - 1;
-        let prev_raw = line_text(self.rope, prev_line);
-        let prev_text = strip_trailing_newline(&prev_raw);
-        let prev_end = grapheme_count(prev_text);
-        self.from_line_grapheme(prev_line, prev_end)
+        self.move_grapheme_backward(pos)
     }
 
     /// Move cursor right by one grapheme (across line boundaries).
+    ///
+    /// When the `bidi` feature is enabled and the line contains RTL characters,
+    /// this moves in visual right order on screen. Otherwise, moves forward in
+    /// logical document order.
     #[must_use]
     pub fn move_right(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -166,17 +198,7 @@ impl<'a> CursorNavigator<'a> {
                 return self.from_line_grapheme(next_line, next_start);
             }
         }
-        let raw = line_text(self.rope, pos.line);
-        let current_text = strip_trailing_newline(&raw);
-        let line_end = grapheme_count(current_text);
-        if pos.grapheme < line_end {
-            return self.from_line_grapheme(pos.line, pos.grapheme + 1);
-        }
-        let last_line = last_line_index(self.rope);
-        if pos.line >= last_line {
-            return pos;
-        }
-        self.from_line_grapheme(pos.line + 1, 0)
+        self.move_grapheme_forward(pos)
     }
 
     /// Move cursor up one line, preserving visual column.
@@ -244,7 +266,28 @@ impl<'a> CursorNavigator<'a> {
         self.from_line_grapheme(line, 0)
     }
 
+    /// Move cursor to start of line in logical document order (grapheme 0).
+    #[must_use]
+    pub fn logical_line_start(&self, pos: CursorPosition) -> CursorPosition {
+        let pos = self.clamp(pos);
+        self.from_line_grapheme(pos.line, 0)
+    }
+
+    /// Move cursor to end of line in logical document order (after last grapheme).
+    #[must_use]
+    pub fn logical_line_end(&self, pos: CursorPosition) -> CursorPosition {
+        let pos = self.clamp(pos);
+        let line_text = line_text(self.rope, pos.line);
+        let line_text = strip_trailing_newline(&line_text);
+        let end = grapheme_count(line_text);
+        self.from_line_grapheme(pos.line, end)
+    }
+
     /// Move cursor to start of line.
+    ///
+    /// When the `bidi` feature is enabled and the line contains RTL characters,
+    /// this moves to the visual left start of the line. Otherwise, moves to the
+    /// logical start of the line.
     #[must_use]
     pub fn line_start(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
@@ -257,24 +300,27 @@ impl<'a> CursorNavigator<'a> {
                 return self.from_line_grapheme(pos.line, seg.logical_cursor_pos(0));
             }
         }
-        self.from_line_grapheme(pos.line, 0)
+        self.logical_line_start(pos)
     }
 
     /// Move cursor to end of line.
+    ///
+    /// When the `bidi` feature is enabled and the line contains RTL characters,
+    /// this moves to the visual right end of the line. Otherwise, moves to the
+    /// logical end of the line.
     #[must_use]
     pub fn line_end(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
-        let line_text = line_text(self.rope, pos.line);
-        let line_text = strip_trailing_newline(&line_text);
         #[cfg(feature = "bidi")]
         {
+            let line_text = line_text(self.rope, pos.line);
+            let line_text = strip_trailing_newline(&line_text);
             if crate::bidi::has_rtl(line_text) {
                 let seg = crate::bidi::BidiSegment::new(line_text, None);
                 return self.from_line_grapheme(pos.line, seg.logical_cursor_pos(seg.len()));
             }
         }
-        let end = grapheme_count(line_text);
-        self.from_line_grapheme(pos.line, end)
+        self.logical_line_end(pos)
     }
 
     /// Move cursor to start of document.
@@ -1133,5 +1179,36 @@ mod tests {
         // End goes to visual right (logical 0)
         let end = nav.line_end(home);
         assert_eq!(end.grapheme, 0);
+
+        // Logical movements are independent of bidi visual reordering:
+        assert_eq!(nav.move_grapheme_forward(pos0).grapheme, 1);
+        assert_eq!(nav.move_grapheme_backward(pos0).grapheme, 0);
+        let pos5 = nav.from_line_grapheme(0, 5);
+        assert_eq!(nav.move_grapheme_backward(pos5).grapheme, 4);
+        assert_eq!(nav.move_grapheme_forward(pos5).grapheme, 5);
+
+        assert_eq!(nav.logical_line_start(pos5).grapheme, 0);
+        assert_eq!(nav.logical_line_end(pos0).grapheme, 5);
+    }
+
+    #[test]
+    fn logical_cursor_navigation_multiline() {
+        let r = rope("abc\ndef");
+        let nav = CursorNavigator::new(&r);
+
+        let pos_start = nav.from_line_grapheme(0, 0);
+        assert_eq!(nav.logical_line_start(pos_start).grapheme, 0);
+        assert_eq!(nav.logical_line_end(pos_start).grapheme, 3);
+
+        // Moving forward past end of line wraps to next line
+        let pos_eol = nav.from_line_grapheme(0, 3);
+        let next_line = nav.move_grapheme_forward(pos_eol);
+        assert_eq!(next_line.line, 1);
+        assert_eq!(next_line.grapheme, 0);
+
+        // Moving backward from start of line 1 wraps to end of line 0
+        let prev_line = nav.move_grapheme_backward(next_line);
+        assert_eq!(prev_line.line, 0);
+        assert_eq!(prev_line.grapheme, 3);
     }
 }

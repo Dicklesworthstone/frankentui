@@ -415,7 +415,7 @@ impl Editor {
         }
         let nav = CursorNavigator::new(&self.rope);
         let old_pos = self.cursor;
-        let new_pos = nav.move_left(old_pos);
+        let new_pos = nav.move_grapheme_backward(old_pos);
 
         if new_pos == old_pos {
             return false; // At beginning, nothing to delete
@@ -452,7 +452,7 @@ impl Editor {
         }
         let nav = CursorNavigator::new(&self.rope);
         let old_pos = self.cursor;
-        let next_pos = nav.move_right(old_pos);
+        let next_pos = nav.move_grapheme_forward(old_pos);
 
         if next_pos == old_pos {
             return false; // At end, nothing to delete
@@ -568,7 +568,7 @@ impl Editor {
         }
         let nav = CursorNavigator::new(&self.rope);
         let old_pos = self.cursor;
-        let line_end = nav.line_end(old_pos);
+        let line_end = nav.logical_line_end(old_pos);
 
         if line_end == old_pos {
             // At end of line: delete the newline to join lines
@@ -763,6 +763,22 @@ impl Editor {
     // ====================================================================
     // Cursor movement (clears selection)
     // ====================================================================
+
+    /// Move cursor backward by one grapheme in logical document order.
+    pub fn move_backward(&mut self) {
+        self.break_undo_group();
+        self.selection = None;
+        let nav = CursorNavigator::new(&self.rope);
+        self.cursor = nav.move_grapheme_backward(self.cursor);
+    }
+
+    /// Move cursor forward by one grapheme in logical document order.
+    pub fn move_forward(&mut self) {
+        self.break_undo_group();
+        self.selection = None;
+        let nav = CursorNavigator::new(&self.rope);
+        self.cursor = nav.move_grapheme_forward(self.cursor);
+    }
 
     /// Move cursor left by one grapheme.
     pub fn move_left(&mut self) {
@@ -1412,6 +1428,48 @@ mod tests {
         assert!(ed.delete_backward());
         assert_eq!(ed.text(), "helloworld");
         assert_eq!(ed.line_count(), 1);
+    }
+
+    #[test]
+    fn delete_backward_rtl_single_char() {
+        let mut ed = Editor::new();
+        // U+1E800 Mende Kikakui Syllable M001 Ki (RTL, outside BMP)
+        ed.insert_char('𞠀');
+        assert_eq!(ed.text(), "𞠀");
+        assert!(!ed.is_empty());
+        assert!(ed.delete_backward());
+        assert!(ed.is_empty());
+    }
+
+    #[test]
+    fn delete_backward_rtl_multiple_chars() {
+        let mut ed = Editor::new();
+        // Arabic text: "مرحبا"
+        ed.insert_text("مرحبا");
+        assert_eq!(ed.text(), "مرحبا");
+        assert!(ed.delete_backward());
+        assert_eq!(ed.text(), "مرحب");
+        assert!(ed.delete_backward());
+        assert_eq!(ed.text(), "مرح");
+    }
+
+    #[test]
+    fn delete_forward_rtl() {
+        let mut ed = Editor::new();
+        ed.insert_text("مرحبا");
+        ed.set_cursor(CursorPosition::new(0, 0, 0));
+        assert!(ed.delete_forward());
+        assert_eq!(ed.text(), "رحبا");
+    }
+
+    #[test]
+    fn delete_to_end_of_line_rtl() {
+        let mut ed = Editor::new();
+        ed.insert_text("مرحبا\nworld");
+        ed.set_cursor(CursorPosition::new(0, 2, 0));
+        assert!(ed.delete_to_end_of_line());
+        assert_eq!(ed.line_text(0), Some("مر".to_string()));
+        assert_eq!(ed.line_text(1), Some("world".to_string()));
     }
 
     #[test]
