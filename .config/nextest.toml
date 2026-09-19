@@ -92,6 +92,7 @@ filter = '''
     | test(=regression_word_movement_large)
     | test(=stress_many_insertions)
     | test(=stress_cursor_movements)
+    | test(=focus::graph::tests::perf_insert_1000_nodes)
 '''
 threads-required = "num-test-threads"
 
