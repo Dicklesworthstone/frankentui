@@ -149,7 +149,7 @@ Each screen is also a snapshot test target. `BLESS=1 cargo test -p ftui-demo-sho
 
 ## Minimal API Example
 
-This example targets FrankenTUI 0.8.0 with the default features enabled. See
+This example targets FrankenTUI 0.9.0 with the default features enabled. See
 [installation](#installation) for version and local checkout dependencies.
 
 ```rust
@@ -254,7 +254,7 @@ fn main() -> std::io::Result<()> {
 |------|---------|--------|
 | `ftui-a11y` | Accessibility tree and node structures | Implemented |
 | `ftui-i18n` | Internationalization support | Implemented |
-| `ftui-simd` | SIMD acceleration | Reserved |
+| `ftui-simd` | Portable-SIMD ASCII detection and row compare (opt-in `simd` feature) | Implemented |
 
 ---
 
@@ -323,10 +323,10 @@ The workspace provides 17 library crates (the `ftui` facade plus
 
 ```toml
 [dependencies]
-ftui = "=0.8.0"
+ftui = "=0.9.0"
 ```
 
-These dependency examples target **0.8.0**. To work from a local checkout, use
+These dependency examples target **0.9.0**. To work from a local checkout, use
 the path dependency above instead.
 
 The default features are `runtime`, `extras`, and `backend`. `App::run()` selects
@@ -336,7 +336,7 @@ disable the defaults:
 
 ```toml
 [dependencies]
-ftui = { version = "=0.8.0", default-features = false, features = ["runtime"] }
+ftui = { version = "=0.9.0", default-features = false, features = ["runtime"] }
 ```
 
 Without a compiled terminal backend, `App::run()` returns an `Unsupported`
@@ -378,11 +378,13 @@ See `docs/telemetry.md` for integration patterns and trace‑parent attachment.
 
 | Crate | Feature | What It Enables |
 |------|---------|------------------|
+| `ftui` | `bidi` | Bidirectional text reordering via `unicode-bidi` (default) |
 | `ftui-core` | `tracing` | Structured spans for terminal lifecycle |
 | `ftui-core` | `tracing-json` | JSON output via tracing-subscriber |
 | `ftui-render` | `tracing` | Performance spans for diff/presenter |
 | `ftui-runtime` | `tracing` | Runtime loop instrumentation |
 | `ftui-runtime` | `telemetry` | OpenTelemetry export (OTLP) |
+| `ftui-widgets` | `bidi` | BiDi reordering and RTL cursor support for widgets |
 
 Enable features per-crate in your `Cargo.toml` as needed.
 
@@ -730,7 +732,7 @@ Prove rendering determinism across runtime migrations by running the same model 
 use ftui_harness::{ShadowRun, ShadowRunConfig, ShadowVerdict};
 
 let config = ShadowRunConfig::new("migration_test", "tick_counter", 42).viewport(80, 24);
-let result = ShadowRun::compare(config, || MyModel::new(), |session| {
+let result = ShadowRun::compare(config, MyModel::new, |session| {
     session.init();
     session.tick();
     session.capture_frame();
@@ -743,15 +745,18 @@ assert_eq!(result.verdict, ShadowVerdict::Match);
 Combine shadow evidence + benchmark results into a single go/no‑go release decision:
 
 ```rust
-use ftui_harness::{RolloutScorecard, RolloutScorecardConfig, RolloutVerdict, RolloutEvidenceBundle};
+use ftui_harness::{
+    RolloutEvidenceBundle, RolloutScorecard, RolloutScorecardConfig, RolloutVerdict,
+};
 
-let mut scorecard = RolloutScorecard::new(
-    RolloutScorecardConfig::default().min_shadow_scenarios(3)
-);
-scorecard.add_shadow_result(shadow_result);
+let mut scorecard =
+    RolloutScorecard::new(RolloutScorecardConfig::default().min_shadow_scenarios(3));
+for shadow_result in shadow_results {
+    scorecard.add_shadow_result(shadow_result);
+}
 assert_eq!(scorecard.evaluate(), RolloutVerdict::Go);
 
-// Machine‑readable JSON evidence for CI gates
+// Machine-readable JSON evidence for CI gates
 let bundle = RolloutEvidenceBundle {
     scorecard: scorecard.summary(),
     queue_telemetry: Some(ftui_runtime::effect_system::queue_telemetry()),
@@ -759,7 +764,7 @@ let bundle = RolloutEvidenceBundle {
     resolved_lane: "structured".to_string(),
     rollout_policy: "shadow".to_string(),
 };
-println!("{}", bundle.to_json());  // Self‑contained release decision artifact
+println!("{}", bundle.to_json()); // Self-contained release decision artifact
 ```
 
 ### Effect Queue Telemetry & Backpressure
@@ -941,6 +946,19 @@ log-odds = Σ log BF_i
 P = 1 / (1 + exp(−log-odds))   →   upgrade when P ≥ 0.8
 ```
 
+In code: `ftui_core::caps_probe::CapabilityLedger` with weights, threshold $P \ge 0.8$, upgrade-only refinement (`refine_from_ledgers`), evidence event `capability_decision` per capability at startup, feature `caps-probe` (enabled by the showcase; consumers enable it on `ftui-core`), and the probe preconditions (currently: native backend, stdin is a TTY, color depth Ansi256 for the truecolor probe; G05 extends to DECRPM 2026 on all non-mux terminals).
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `ENV_POSITIVE` | `+3.0` | Environment variable explicitly indicates support (e.g. `COLORTERM=truecolor`) |
+| `ENV_ABSENT` | `-0.4` | Environment variable absent but not definitive |
+| `DA2_KNOWN_TERMINAL` | `+1.8` | DA2 terminal type matches known-good terminal |
+| `DA1_CONFIRMED` | `+3.5` | DA1 attribute code confirms feature (e.g. Sixel) |
+| `DECRPM_CONFIRMED` | `+4.6` | DECRPM confirms mode is recognized (status 1–4) |
+| `DECRPM_DENIED` | `-4.6` | DECRPM denies mode (status 0) |
+| `TIMEOUT` | `-0.7` | Probe timed out — weak negative evidence |
+| `MUX_PENALTY` | `-0.5` | Multiplexer detected — slight negative for passthrough features |
+
 The ledger is **upgrade-only**: a capability the environment or the allowlist already granted is never removed by a negative or absent reply (terminfo under-reports truecolor over `ssh`; the allowlist knows terminals that ignore DECRPM). The startup probe sends only the two bounded queries above (300 ms, fail-open, `FTUI_CAPS_PROBE=0` disables it); DA1/DA2 weights exist for the asynchronous `CapabilityProber` used by the showcase's capability screen. Every session writes one `capability_decision` evidence row per capability (truecolor, synchronized output, scroll region) carrying exactly the rows that decided.
 
 ### Dirty-Span Interval Union (Sparse Diff Scans)
@@ -966,7 +984,7 @@ SAT(x,y) = A(x,y)
          + SAT(x-1,y) + SAT(x,y-1) - SAT(x-1,y-1)
 ```
 
-Tile sum queries over any rectangle become constant time, so empty tiles are skipped deterministically.
+The SAT is queried per tile row (one subtraction) to skip whole rows of clean tiles before per-tile checks; tiles engage at $\ge 12,000$ cells (200×60 by default); measured: `diff/sparse_5pct_rows/200x60` p50 28 µs → 21 µs (~25% speedup retiring 5 of 8 tile rows, [`docs/perf/sat_tile_skip_2026-09.md`](docs/perf/sat_tile_skip_2026-09.md)).
 
 ### Fenwick Tree (Prefix Sums for Virtualized Lists)
 
@@ -1102,8 +1120,8 @@ This holds at ANY stopping time, with no peeking penalty.
 
 **Applications in FrankenTUI:**
 - Budget degradation decisions
-- Flake detection in tests
-- Allocation budget alerts
+- Flake detection in tests (experimental)
+- Allocation budget alerts (experimental)
 - Conformal prediction thresholds
 
 ### Conformal Alerting
@@ -1473,7 +1491,9 @@ Rewrite Rules (equality saturation):
 
 **How it works:** rather than applying rewrites greedily (which can miss global optima), the e-graph compactly represents *all* equivalent forms simultaneously. After saturation, the cheapest expression is extracted using a cost model that penalizes deep nesting and prefers constant propagation.
 
-**Result:** complex constraint layouts (nested flex + grid + min/max) are optimized to simpler equivalent forms before the solver runs, reducing both computation and allocation.
+**Where it runs: nowhere on the layout path, by measurement.** `ftui_layout::egraph::solve_layout` is a complete, tested alternative solver, but `Flex`/`Grid` do not call it and should not: benchmarked against `Flex::split` over the same constraint sets it is **4x to 19x slower** — 233 ns vs 1.99 µs for a typical three-way split, and 5.2 µs vs 99.8 µs for a pathological 200-constraint layout (`cargo bench -p ftui-layout --bench layout_bench -- layout/egraph`, numbers in [docs/perf/egraph_vs_flex_2026-09-18.md](docs/perf/egraph_vs_flex_2026-09-18.md)).
+
+Equality saturation buys a globally optimal expression, and for this problem that optimum is not worth its price: the constraint counts a terminal layout produces are small enough that the direct solver wins outright. The module stays because the saturation engine is a sound piece of work and the comparison is worth keeping honest, not because it is on a path to being switched on.
 
 ---
 
@@ -1583,6 +1603,8 @@ Evidence Emission
 
 ## Formal Cost Models
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 The `cost_model` module (1,800 lines) provides closed-form cost models for three subsystems:
 
 ### Cache Cost Model
@@ -1626,6 +1648,8 @@ Applies to: ANSI emission, change run coalescing, event drain bursts
 
 ### Anytime-Valid Flake Detector
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 E2E timing tests use an **e-process** to detect flaky regressions without inflating false positives across the hundreds of frames tested:
 
 ```
@@ -1641,6 +1665,8 @@ Reject H₀ when E_t ≥ 1/α, valid at ANY stopping time.
 **Why this matters:** traditional significance tests become unreliable when you check p-values after every frame (the "peeking problem"). E-processes eliminate this entirely.
 
 ### Alpha-Investing (Sequential FDR Control)
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 When many monitors fire simultaneously (budget alerts, degradation triggers, capability decisions), testing each at a fixed alpha inflates false discoveries. Alpha-Investing treats significance as a **spendable resource**:
 
@@ -1663,6 +1689,8 @@ FDR guarantee:
 ---
 
 ## Rough-Path Signatures
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 The `rough_path` module implements **rough-path signatures** for sequential trace feature extraction, a technique from stochastic analysis:
 
@@ -1905,7 +1933,7 @@ The visual effects screen is deterministic math, not “random shader noise.” 
 | **Conformal Rank Confidence** | Command palette stability | $p_i=\frac{1}{n}\sum_j \mathbf{1}[g_j\le g_i]$ (gap‑based p‑value) | Deterministic tie‑breaks + stable top‑k |
 | **Beta-Binomial** | Diff strategy selection | $p\sim\mathrm{Beta}(\alpha,\beta)$ with binomial updates | Avoids slow strategies as workload shifts |
 | **Interval Union** | Dirty-span diff scan | $S_y=\bigcup_k [x_{0k},x_{1k})$ | Scan proportional to changed segments |
-| **Summed-Area Table** | Tile-skip diff | $SAT(x,y)=A(x,y)+SAT(x-1,y)+SAT(x,y-1)-SAT(x-1,y-1)$ | Skip empty tiles on large screens |
+| **Summed-Area Table** | Tile-skip diff | $SAT(x,y)=A(x,y)+SAT(x-1,y)+SAT(x,y-1)-SAT(x-1,y-1)$ | Row-level clean-tile skip on large screens (200x60: 28→21 µs) |
 | **Fenwick Tree** | Virtualized lists | Prefix sums with $i\pm (i\&-i)$ | O(log n) scroll + height queries |
 | **Bayesian Height Predictor** | Virtualized list preallocation | $\mu_n=\frac{\kappa_0\mu_0+n\bar{x}}{\kappa_0+n}$ + conformal $q_{1-\alpha}$ | Fewer scroll jumps |
 | **BOCPD** | Resize coalescing | Run‑length posterior + hazard $H(r)$ | Fewer redundant renders during drags |
@@ -1951,6 +1979,14 @@ Every terminal cell is exactly **16 bytes**, fitting 4 cells per 64-byte cache l
 - **Cache efficiency:** 4 cells per cache line means sequential row scans hit L1 cache optimally
 - **SIMD comparison:** Single 128-bit comparison via `bits_eq()` for cell equality
 - **No heap allocation:** 99% of cells store their character inline; only complex graphemes (emoji, ZWJ sequences) use the grapheme pool
+
+That 128-bit comparison is the compiler's, not a hand-written kernel's, and
+measurement says to leave it that way: explicit `std::simd` row compares in
+`ftui-simd` run 3–4× *slower*, because safe code cannot view `&[Cell]` as lanes
+and has to build each vector with shifts and masks, while `bits_eq()` already
+lowers to one 128-bit compare. The `simd` feature therefore accelerates only the
+printable-ASCII width fast path, where the same kernels win by 5–44×. Numbers in
+[docs/perf/simd_kernels_2026-09-18.md](docs/perf/simd_kernels_2026-09-18.md).
 
 ### Block-Based Diff Algorithm
 
@@ -2047,6 +2083,46 @@ VOI = 1/12 - 1/18 = 1/36
 
 Both possible observations contribute to the expectation. The sampler compares
 the scaled gain with cost, subject to its minimum and maximum sampling intervals.
+
+---
+
+## Experimental modules
+
+These modules compile only with `--features experimental` on the crate that owns them. They are research code with unit tests and no production consumer; APIs may change or be removed without notice.
+
+```toml
+ftui-runtime = { version = "0.8", features = ["experimental"] }
+```
+
+| Crate | Module | What it is | Status |
+|-------|--------|------------|--------|
+| `ftui-render` | `roaring_bitmap` | Minimal Roaring Bitmap for cell-level dirty region tracking | `experimental` |
+| `ftui-runtime` | `allocation_budget` | Sequential allocation leak detection using CUSUM and e-processes | `merge pending (G13)` |
+| `ftui-runtime` | `alpha_investing` | Sequential FDR control for multiple simultaneous statistical monitors | `experimental` |
+| `ftui-runtime` | `conformal_alert` | Conformal alert threshold calibration with anytime-valid e-process control | `experimental` |
+| `ftui-runtime` | `conformal_frame_guard` | Conformal frame guard for frame timing with explicit unavailable bounds | `experimental` |
+| `ftui-runtime` | `conformal_stages` | Multi-stage Mondrian conformal prediction for render pipeline timing | `experimental` |
+| `ftui-runtime` | `cost_model` | Formal mathematical cost models for caches, scheduling, and batching | `experimental` |
+| `ftui-runtime` | `countmin_sketch` | Count-Min Sketch with PAC-Bayes error budgeting for timeline aggregation | `experimental` |
+| `ftui-runtime` | `degradation_cascade` | Cascade from conformal frame guard risk detection through budget controller to widget priority | `merge pending (G13)` |
+| `ftui-runtime` | `diff_evidence` | Bayesian diff strategy evidence ledger in a fixed-capacity ring buffer | `merge pending (G13)` |
+| `ftui-runtime` | `eprocess_throttle` | Anytime-valid adaptive recompute throttle using GRAPA test martingales | `merge pending (G13)` |
+| `ftui-runtime` | `evidence_bridges` | Convert domain-specific decision types into unified evidence ledger records | `experimental` |
+| `ftui-runtime` | `flake_detector` | Anytime-valid test martingale detector for flaky timing regressions in E2E tests | `experimental` |
+| `ftui-runtime` | `flat_combine` | Caller-driven flat combining for batched operation dispatch | `experimental` |
+| `ftui-runtime` | `ivm` | Incremental View Maintenance (IVM) delta-propagation DAG for derived render state | `experimental` |
+| `ftui-runtime` | `lens` | Bidirectional algebraic lenses for state-widget binding | `experimental` |
+| `ftui-runtime` | `policy_config` | Policy-as-data configuration capturing tunable parameters across the decision stack | `experimental` |
+| `ftui-runtime` | `policy_registry` | Thread-safe registry of named policy configurations with lock-free reads and atomic hot-swap | `experimental` |
+| `ftui-runtime` | `resize_sla` | Resize SLA monitoring with conformal alerting | `experimental` |
+| `ftui-runtime` | `reversible` | Reversible computing primitives where mutations know their own inverses for undo | `experimental` |
+| `ftui-runtime` | `rough_path` | Rough-path signatures for sequential trace feature extraction | `experimental` |
+| `ftui-runtime` | `schedule_trace` | Deterministic golden trace infrastructure for async task manager testing | `experimental` |
+| `ftui-runtime` | `slo` | Machine-readable SLO definitions, breach detection, and safe-mode enforcement | `experimental` |
+| `ftui-runtime` | `sos_barrier` | Sum-of-squares (SOS) polynomial barrier certificate evaluator for frame-budget admissibility | `experimental` |
+| `ftui-runtime` | `timeline_aggregator` | Bounded-memory action timeline event aggregation and change-point alerting | `experimental` |
+| `ftui-runtime` | `validation_pipeline` | Expected-cost validation ordering with Bayesian online learning | `experimental` |
+| `ftui-runtime` | `wasm_runner` | Step-based synchronous program runner driving a Model without background threads | `experimental` |
 
 ---
 
@@ -2446,7 +2522,8 @@ fn view(&self, frame: &mut Frame) {
 
 ```rust
 let link_id = frame.register_link("https://example.com");
-let cell = Cell::from_char('x').with_link(link_id);
+let mut cell = Cell::from_char('x');
+cell.attrs = cell.attrs.with_link(link_id);
 // Emits OSC 8 hyperlink sequences for supporting terminals
 ```
 
@@ -2454,9 +2531,10 @@ let cell = Cell::from_char('x').with_link(link_id);
 
 ```rust
 // Declarative focus graph: FocusManager owns a FocusGraph of nodes and nav edges
-let input1 = focus.graph_mut().insert(FocusNode::new(1, input1_area));
-let input2 = focus.graph_mut().insert(FocusNode::new(2, input2_area));
-focus.graph_mut().connect(input1, NavDirection::Next, input2); // Tab order
+let graph = focus.graph_mut();
+let input1 = graph.insert(FocusNode::new(1, input1_area));
+let input2 = graph.insert(FocusNode::new(2, input2_area));
+graph.connect(input1, NavDirection::Next, input2); // Tab order
 
 // Navigation
 focus.focus_next(); // Tab
@@ -2641,6 +2719,8 @@ Scroll-region without synchronized output: the fast path is the same DECSTBM reg
 
 ## Incremental View Maintenance (IVM)
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 Rather than recomputing layouts, styled text, and visibility flags from scratch every frame, FrankenTUI can propagate *deltas* through a DAG of view operators:
 
 ```
@@ -2665,6 +2745,8 @@ This is the same technique used by materialized-view databases (e.g., Materializ
 ---
 
 ## SOS Barrier Certificates
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 Frame-budget admissibility is checked using a **sum-of-squares (SOS) polynomial barrier certificate**, precomputed offline via semidefinite programming:
 
@@ -2716,6 +2798,8 @@ The key insight: S3-FIFO is scan-resistant without the overhead of an LRU doubly
 
 ## Flat Combining
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 When multiple event sources (timers, background tasks, input) post operations concurrently, **flat combining** batches them into a single pass. One thread becomes the "combiner" and executes ALL pending operations while holding the state lock:
 
 ```
@@ -2737,6 +2821,8 @@ Benefits over a bare `Mutex`:
 ---
 
 ## Bidirectional Lenses
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 The `lens` module provides algebraic lenses for binding widgets to model subfields:
 
@@ -2828,6 +2914,8 @@ Widgets opt in by implementing the `Stateful` trait. On program start, the regis
 
 ## SLO Schema & Breach Detection
 
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
 FrankenTUI supports machine-readable **Service Level Objectives** for runtime behavior:
 
 ```yaml
@@ -2864,6 +2952,8 @@ When an SLO is breached, the runtime can enter safe mode (reduced rendering, agg
 ---
 
 ## Multi-Stage Conformal Monitoring
+
+**Status: experimental** (see [Experimental modules](#experimental-modules))
 
 Individual render pipeline stages have independent conformal monitors:
 
