@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-09-19 the distribution across 152 rows is 21 pending-code,
-57 pending-doc, 46 retracted and 28 proven. Regenerate this sentence from
+As of 2026-09-19 the distribution across 152 rows is 11 pending-code,
+57 pending-doc, 49 retracted and 35 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -103,6 +103,18 @@ README says, not something adjacent. The proven set:
   nothing. S27 says the cascade *runs*, and is proven. Both are correct at once.
   A row that names a module is a claim about that module, not about the
   capability that shares its name.
+
+Three retractions on 2026-09-19 are **half-true claims**, which are their own
+hazard: the row reads as correct because part of it is.
+
+- V20 "S3-FIFO cache for caps **+ width**" — S3-FIFO really does back the width
+  cache (`ftui-core/src/lib.rs:378`), but terminal capability detection is not
+  cached at all; it runs once per session, as the README now says.
+- V21 "**W-TinyLFU** width cache + PAC-Bayes CMS" — the W-TinyLFU and LRU caches
+  in `ftui-text` are benchmark subjects and are not on the render path.
+- V41 "Widget composition helpers `render_widget`, **`Layout`**" —
+  `render_widget` is real and compiled by a snippet; there is no `Layout` type
+  in ftui-layout, only `Flex`.
 
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
@@ -183,7 +195,7 @@ complete `.5.2`.
 | V03 | One-writer rule | README.md :: One-writer rule | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V04 | RAII cleanup even on panic | README.md :: RAII cleanup even on panic | status | DOC | bd-g00-root-epic-ewths.37 | bead:bd-g00-root-epic-ewths.37 | pending-doc | - |
 | V05 | Composable crates, add only what you need | README.md :: Composable crates, add only what you need | status | CODE | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-code | - |
-| V06 | 80+ widgets | README.md :: 80+ widgets | status | CODE | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-code | - |
+| V06 | 80+ widgets | README.md :: 80+ widgets | status | CODE | bd-g00-root-epic-ewths.23 | count:91 Widget/StatefulWidget impls under crates/ftui-widgets/src >= 80 | proven | 2026-09-19 |
 | V07 | Pane workspaces with drag/dock/snap/throw/undo | README.md :: Pane workspaces with drag/dock/snap/throw/undo | status | DOC | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-doc | - |
 | V08 | Web/WASM backend, runs in browser | README.md :: Web/WASM backend, runs in browser | status | CODE | bd-g00-root-epic-ewths.29 | bead:bd-g00-root-epic-ewths.29 | pending-code | - |
 | V09 | Bayesian diff strategy | README.md :: Bayesian diff strategy | status | DOC | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-doc | - |
@@ -197,8 +209,8 @@ complete `.5.2`.
 | V17 | Flake detector for E2E timing | README.md :: Flake detector for E2E timing | status | CODE | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | V18 | Rough-path signatures | README.md :: Rough-path signatures | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V19 | SOS barrier certificates (SDP-solved) | README.md :: SOS barrier certificates (SDP-solved) | status | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
-| V20 | S3-FIFO cache for caps + width | README.md :: S3-FIFO cache for caps + width | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
-| V21 | W-TinyLFU width cache + PAC-Bayes CMS | README.md :: W-TinyLFU width cache + PAC-Bayes CMS | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
+| V20 | S3-FIFO cache for caps + width | README.md :: S3-FIFO cache for caps + width | status | CODE | bd-g00-root-epic-ewths.12 | test:ftui-core::s3_fifo::scan_resistance | retracted | 2026-09-19 |
+| V21 | W-TinyLFU width cache + PAC-Bayes CMS | README.md :: W-TinyLFU width cache + PAC-Bayes CMS | status | CODE | bd-g00-root-epic-ewths.12 | path:docs/perf/text_width_cache_2026-09-02.md | retracted | 2026-09-19 |
 | V22 | Flat combining | README.md :: Flat combining | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V23 | Bidirectional lenses `field_lens!` | README.md :: Bidirectional lenses `field_lens!` | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V24 | IVM DAG | README.md :: IVM DAG | status | DOC | bd-lksq7 | ident:There is no propagation engine | retracted | 2026-09-19 |
@@ -216,20 +228,20 @@ complete `.5.2`.
 | V36 | Resize coalescing regimes | README.md :: Resize coalescing regimes | status | DOC | bd-g00-root-epic-ewths.16 | bead:bd-g00-root-epic-ewths.16 | pending-doc | - |
 | V37 | Budget degradation PID | README.md :: Budget degradation PID | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V38 | Input fairness guard | README.md :: Input fairness guard | status | DOC | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-doc | - |
-| V39 | Table theming engine | README.md :: Table theming engine | status | CODE | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-code | - |
-| V40 | Stylesheet | README.md :: Stylesheet | status | CODE | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-code | - |
-| V41 | Widget composition helpers `render_widget`, `Layout` | README.md :: Widget composition helpers `render_widget`, `Layout` | status | CODE | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-code | - |
+| V39 | Table theming engine | README.md :: Table theming engine | status | CODE | bd-g00-root-epic-ewths.23 | test:ftui::readme_snippets::readme_table_theme_snippet | proven | 2026-09-19 |
+| V40 | Stylesheet | README.md :: Stylesheet | status | CODE | bd-g00-root-epic-ewths.23 | test:ftui::readme_snippets::readme_stylesheet_snippet | proven | 2026-09-19 |
+| V41 | Widget composition helpers `render_widget`, `Layout` | README.md :: Widget composition helpers `render_widget`, `Layout` | status | CODE | bd-g00-root-epic-ewths.23 | test:ftui::readme_snippets::readme_model_snippets_match | retracted | 2026-09-19 |
 | V42 | Hyperlinks | README.md :: Hyperlinks | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V43 | Focus management | README.md :: Focus management | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V44 | Modal system | README.md :: Modal system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V45 | Time-travel debugging | README.md :: Time-travel debugging | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V46 | Accessibility tree, live regions | README.md :: Accessibility tree, live regions | status | CODE | bd-g00-root-epic-ewths.13 | bead:bd-g00-root-epic-ewths.13 | pending-code | - |
+| V45 | Time-travel debugging | README.md :: Time-travel debugging | status | CODE | bd-g00-root-epic-ewths.11 | test:ftui::readme_snippets::readme_time_travel_snippet | proven | 2026-09-19 |
+| V46 | Accessibility tree, live regions | README.md :: Accessibility tree, live regions | status | CODE | bd-g00-root-epic-ewths.13 | test:ftui::readme_snippets::readme_accessibility_snippets | proven | 2026-09-19 |
 | V47 | i18n formatting/bidi/5 languages | README.md :: i18n formatting/bidi/5 languages | status | CODE | bd-g00-root-epic-ewths.34 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-demo-showcase::screens::i18n_demo::tests::locales_list_has_seven_languages | proven | 2026-09-19 |
 | V48 | Queueing scheduler SRPT/Smith/aging | README.md :: Queueing scheduler SRPT/Smith/aging | status | CODE | bd-g00-root-epic-ewths.30 | bead:bd-g00-root-epic-ewths.30 | pending-code | - |
 | V49 | Inline strategies A/B/C auto-selected | README.md :: Inline strategies A/B/C auto-selected | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V50 | Color system profiles + WCAG | README.md :: Color system profiles + WCAG | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V51 | Evidence sink categories | README.md :: Evidence sink categories | status | CODE | bd-g00-root-epic-ewths.26 | bead:bd-g00-root-epic-ewths.26 | pending-code | - |
-| V52 | Runtime lanes + rollout + shadow-run | README.md :: Runtime lanes + rollout + shadow-run | status | CODE | bd-g00-root-epic-ewths.30 | bead:bd-g00-root-epic-ewths.30 | pending-code | - |
+| V51 | Evidence sink categories | README.md :: Evidence sink categories | status | CODE | bd-g00-root-epic-ewths.26 | test:ftui::readme_snippets::readme_model_snippets_match | proven | 2026-09-19 |
+| V52 | Runtime lanes + rollout + shadow-run | README.md :: Runtime lanes + rollout + shadow-run | status | CODE | bd-g00-root-epic-ewths.30 | test:ftui::readme_snippets::readme_runtime_lanes_snippet; test:ftui::readme_snippets::readme_shadow_run_snippet; test:ftui::readme_snippets::readme_rollout_scorecard_snippet | proven | 2026-09-19 |
 | V53 | Effect queue telemetry + backpressure | README.md :: Effect queue telemetry + backpressure | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V54 | Telemetry schema targets | README.md :: Telemetry schema targets | status | CODE | bd-g00-root-epic-ewths.26 | bead:bd-g00-root-epic-ewths.26 | pending-code | - |
 | V55 | E-graph layout optimizer before solver | README.md :: E-graph layout optimizer before solver | status | CODE | bd-g00-root-epic-ewths.11 | path:docs/perf/egraph_vs_flex_2026-09-18.md | retracted | 2026-09-19 |
