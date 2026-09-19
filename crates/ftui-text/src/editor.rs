@@ -1178,7 +1178,7 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn undo_groups_roundtrip_and_accounting(
-            ops in proptest::collection::vec((0u8..8, 0u64..800), 0..100)
+            ops in proptest::collection::vec((0u8..12, 0u64..800), 0..200)
         ) {
             let mut ed = Editor::with_text("界e\u{301}\nseed");
             let mut first_edit_cursor = None;
@@ -1197,7 +1197,22 @@ mod tests {
                     4 => { ed.delete_forward(); }
                     5 => ed.move_left(),
                     6 => ed.insert_text("paste"),
-                    _ => ed.insert_newline(),
+                    7 => ed.insert_newline(),
+                    // A word delete spans several graphemes in one op, so it
+                    // exercises byte accounting that single-grapheme deletes
+                    // cannot: the group's `bytes` has to match the text it
+                    // actually removed, not the number of times it was called.
+                    8 => { ed.delete_word_backward(); }
+                    // Closing a group by hand must leave the accounting alone.
+                    9 => ed.break_undo_group(),
+                    // Only `move_left` was exercised, so a cursor that walked
+                    // right never tested the `cursor == group.after`
+                    // contiguity rule from the other side.
+                    10 => ed.move_right(),
+                    // A ZWJ emoji is one grapheme made of three scalars: it
+                    // catches an undo that splits a cluster, which neither
+                    // 'x' nor a lone combining mark can.
+                    _ => ed.insert_text("\u{1F469}\u{200D}\u{1F4BB}"),
                 }
                 if ed.text() != before_text {
                     first_edit_cursor.get_or_insert(before_cursor);
@@ -1206,6 +1221,10 @@ mod tests {
                 let bytes: usize = ed.undo_stack.iter()
                     .flat_map(|g| &g.ops).map(EditOp::byte_len).sum();
                 proptest::prop_assert_eq!(ed.current_undo_size, bytes);
+                // One group is one undo step and holds at least one op, so the
+                // group count can never outrun the op count. A grouping bug
+                // that pushed empty groups would show up here first.
+                proptest::prop_assert!(ed.undo_group_count() <= ed.undo_op_count());
                 proptest::prop_assert_eq!(ed.cursor(), CursorNavigator::new(ed.rope()).clamp(ed.cursor()));
             }
             let final_text = ed.text();
