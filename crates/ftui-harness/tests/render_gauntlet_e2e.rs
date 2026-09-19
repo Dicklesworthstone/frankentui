@@ -6,7 +6,7 @@
 use ftui_harness::baseline_capture::{
     FixtureFamily, MetricBaseline, MetricCategory, Percentiles, StabilityClass,
 };
-use ftui_harness::cost_surface::{CostSurfaceAnalyzer, RenderStage};
+use ftui_harness::cost_surface::{CostComparison, CostSurfaceAnalyzer, RenderStage};
 use ftui_harness::fixture_runner::FixtureRunner;
 use ftui_harness::fixture_suite::{FixtureRegistry, SuitePartition};
 use ftui_harness::render_gauntlet::{
@@ -97,6 +97,8 @@ fn cost_surface_stage_costs_stay_within_the_frame_total() {
         .collect();
     assert!(!specs.is_empty(), "no canonical render fixtures");
 
+    let mut reports = Vec::new();
+
     for spec in specs {
         let result = FixtureRunner::run(spec);
         let surface = CostSurfaceAnalyzer::from_baseline(&result.record);
@@ -121,7 +123,39 @@ fn cost_surface_stage_costs_stay_within_the_frame_total() {
             "{}: no component stage to attribute cost to",
             spec.id
         );
+
+        // Stage means are hundreds of microseconds against a 1us truncation
+        // floor in FixtureRunner. If a fixture ever lands near that floor its
+        // stages read as 0.0 and the attribution becomes noise, so check the
+        // floor rather than assume it.
+        assert!(
+            total.mean_us > 10.0,
+            "{}: frame total {:.3}us is close to the 1us recording floor; stage \
+             attribution is not meaningful here",
+            spec.id,
+            total.mean_us
+        );
+
+        reports.push(surface.report());
     }
+
+    // The bottleneck is workload-dependent: cell mutation dominates sparse
+    // updates, presenter emit dominates dense ones. An optimization ranked on
+    // one of these workloads alone is ranked on the wrong one. Measurements in
+    // docs/perf/cost_surface_stage_dominance_2026-09-19.md.
+    let comparison = CostComparison::new(reports);
+    assert!(
+        comparison.has_dominance_shift(),
+        "every canonical render fixture now has the same dominant stage; the \
+         cost surface has stopped distinguishing sparse from dense workloads"
+    );
+    assert!(
+        comparison.diff_dominated_fixtures().is_empty(),
+        "buffer_diff has become the dominant stage in {:?}, which it was not in \
+         any canonical fixture as of 2026-09-19 (it was the cheapest stage \
+         everywhere, at 9-18% of the frame)",
+        comparison.diff_dominated_fixtures()
+    );
 }
 
 #[test]
