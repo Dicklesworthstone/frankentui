@@ -46,7 +46,7 @@ Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
 As of 2026-09-19 the distribution across 152 rows is 6 pending-code,
-49 pending-doc, 53 retracted and 44 proven. Regenerate this sentence from
+41 pending-doc, 56 retracted and 49 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -237,10 +237,10 @@ complete `.5.2`.
 | V28 | Headless simulator | README.md :: Headless simulator | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
 | V29 | Frame arena in hot path | README.md :: Frame arena in hot path | status | DOC | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
 | V30 | Grapheme pool with width bits | README.md :: Grapheme pool with width bits | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V31 | Synchronized output every frame | README.md :: Synchronized output every frame | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
+| V31 | Synchronized output every frame | README.md :: Synchronized output every frame | status | DOC | bd-g00-root-epic-ewths.4 | test:ftui-demo-showcase::capability_sim_e2e::degradation_sync_output_disabled_in_all_muxes | retracted | 2026-09-19 |
 | V32 | Elm architecture Model/Cmd/Subscriptions | README.md :: Elm architecture Model/Cmd/Subscriptions | status | DOC | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-doc | - |
 | V33 | Zero unsafe | README.md :: Zero unsafe | status | DOC | bd-g00-root-epic-ewths.5 | count:20 of 20 crate roots carry #![forbid(unsafe_code)] | proven | 2026-09-19 |
-| V34 | Formal proof sketches Theorems 1-4 | README.md :: Formal proof sketches Theorems 1-4 | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
+| V34 | Formal proof sketches Theorems 1-4 | README.md :: Formal proof sketches Theorems 1-4 | status | DOC | bd-g00-root-epic-ewths.5 | ident:Theorem 4 (Diff-Dirty Equivalence); test:ftui-render::buffer::set_marks_row_dirty | proven | 2026-09-19 |
 | V35 | Property tests, snapshots, benches | README.md :: Property tests, snapshots, benches | status | DOC | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
 | V36 | Resize coalescing regimes | README.md :: Resize coalescing regimes | status | DOC | bd-g00-root-epic-ewths.16 | bead:bd-g00-root-epic-ewths.16 | pending-doc | - |
 | V37 | Budget degradation PID | README.md :: Budget degradation PID | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
@@ -287,16 +287,16 @@ complete `.5.2`.
 | S07 | Fenwick Tree (Prefix Sums for Virtualized Lists) production status | README.md:971 :: Fenwick Tree (Prefix Sums for Virtualized Lists) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S08 | Bayesian Height Prediction + Conformal Bounds (Virtualized Lists) production status | README.md:983 :: Bayesian Height Prediction + Conformal Bounds (Virtualized Lists) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S09 | BOCPD: Online Change-Point Detection production status | README.md:999 :: BOCPD: Online Change-Point Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::resize_coalescer::config_default_enables_bocpd_with_heuristic_fallback | proven | 2026-09-18 |
-| S10 | Bayes-Factor Evidence Ledger (Resize Coalescer) production status | README.md:1030 :: Bayes-Factor Evidence Ledger (Resize Coalescer) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S10 | Bayes-Factor Evidence Ledger (Resize Coalescer) production status | README.md:1030 :: Bayes-Factor Evidence Ledger (Resize Coalescer) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::resize_coalescer::config_default_enables_bocpd_with_heuristic_fallback | proven | 2026-09-19 |
 | S11 | Value-of-Information (VOI) Sampling production status | README.md:1045 :: Value-of-Information (VOI) Sampling | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::inline_auto_remeasure_config_defaults | proven | 2026-09-18 |
-| S12 | E-Process: Anytime-Valid Testing production status | README.md:1087 :: E-Process: Anytime-Valid Testing | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S12 | E-Process: Anytime-Valid Testing production status | README.md:1087 :: E-Process: Anytime-Valid Testing | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::budget::eprocess_grows_under_overload | retracted | 2026-09-19 |
 | S13 | Conformal Alerting production status | README.md:1109 :: Conformal Alerting | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | S14 | Mondrian Conformal Frame-Time Risk Gating production status | README.md:1129 :: Mondrian Conformal Frame-Time Risk Gating | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::conformal_predictor::default_config_matches_the_documented_values | proven | 2026-09-18 |
 | S15 | CUSUM Control Charts production status | README.md:1145 :: CUSUM Control Charts | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::frame_guardrails::guardrails_detect_allocation_drift | proven | 2026-09-18 |
-| S16 | CUSUM Hover Stabilizer (Mouse Jitter) production status | README.md:1167 :: CUSUM Hover Stabilizer (Mouse Jitter) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S16 | CUSUM Hover Stabilizer (Mouse Jitter) production status | README.md:1167 :: CUSUM Hover Stabilizer (Mouse Jitter) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::hover_stabilizer::default_config_values | proven | 2026-09-19 |
 | S17 | Gesture Recognition State Machine production status | README.md:1182 :: Gesture Recognition State Machine | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::gesture::default_config_values | proven | 2026-09-18 |
-| S18 | Input Parser (3,200+ Lines) production status | README.md:1208 :: Input Parser (3,200+ Lines) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S19 | Keybinding System (1,900+ Lines) production status | README.md:1219 :: Keybinding System (1,900+ Lines) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S18 | Input Parser (3,200+ Lines) production status | README.md:1208 :: Input Parser (3,200+ Lines) | status | DOC | bd-g00-root-epic-ewths.5.5 | count:crates/ftui-core/src/input_parser.rs is 3,660 lines >= 3,200 | proven | 2026-09-19 |
+| S19 | Keybinding System (1,900+ Lines) production status | README.md:1219 :: Keybinding System (1,900+ Lines) | status | DOC | bd-g00-root-epic-ewths.5.5 | count:crates/ftui-core/src/keybinding.rs is 3,796 lines | retracted | 2026-09-19 |
 | S20 | Damped Spring Dynamics (Animation System) production status | README.md:1231 :: Damped Spring Dynamics (Animation System) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S21 | Easing Curves + Stagger Distributions production status | README.md:1250 :: Easing Curves + Stagger Distributions | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S22 | Sine Pulse Sequences (Attention Cues) production status | README.md:1272 :: Sine Pulse Sequences (Attention Cues) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
@@ -310,7 +310,7 @@ complete `.5.2`.
 | S30 | Rough-Path Signatures production status | README.md :: Rough-Path Signatures | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S31 | Incremental View Maintenance (IVM) production status | README.md :: Incremental View Maintenance (IVM) | status | DOC | bd-lksq7 | ident:Where it runs: nowhere. There is no propagation engine | retracted | 2026-09-19 |
 | S32 | SOS Barrier Certificates production status | README.md:2667 :: SOS Barrier Certificates | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
-| S33 | S3-FIFO Cache production status | README.md:2694 :: S3-FIFO Cache | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S33 | S3-FIFO Cache production status | README.md:2694 :: S3-FIFO Cache | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::s3_fifo::scan_resistance | proven | 2026-09-19 |
 | S34 | Flat Combining production status | README.md :: Flat Combining | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S35 | Bidirectional Lenses production status | README.md :: Bidirectional Lenses | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S36 | Input Macro Recording & Playback production status | README.md:2770 :: Input Macro Recording & Playback | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |

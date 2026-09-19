@@ -1253,7 +1253,7 @@ The `InputParser` in `ftui-core` handles the full complexity of terminal input e
 - **UTF-8 streaming**: multi-byte character assembly across partial reads
 - **Ambiguous prefix handling**: `ESC` alone vs `ESC [` (Alt+key vs CSI) resolved by timing
 
-### Keybinding System (1,900+ Lines)
+### Keybinding System (3,700+ Lines)
 
 The `Keybinding` module supports:
 
@@ -2684,7 +2684,7 @@ The `i18n_demo` screen switches live between English, Spanish, French, German, R
 
 ## Queueing-Theoretic Scheduler (Deep Dive)
 
-The effect queue scheduler (1,900+ lines) implements multiple scheduling disciplines from queueing theory:
+The effect queue scheduler (2,800+ lines in `queueing_scheduler.rs`) implements multiple scheduling disciplines from queueing theory:
 
 ### SRPT (Shortest Remaining Processing Time)
 
