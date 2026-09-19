@@ -581,5 +581,17 @@ proptest! {
             .map(|row| row.trim_end().to_string())
             .collect();
         prop_assert_eq!(got, want, "presented bytes did not reproduce the buffer at {}x{}", w, h);
+
+        // The oracle above only works because it never has to scroll.
+        // `TerminalModel` says so itself — "this model does not implement
+        // scrolling because ... wrapping/scrolling behavior should not be
+        // triggered by the Presenter" — so if the presenter ever emitted a
+        // line feed, every assertion made through HeadlessTerm would be
+        // checked against a screen that had silently stopped tracking reality.
+        // `ansi::lf` has no callers today; this keeps it that way.
+        prop_assert!(
+            !out.contains(&b'\n'),
+            "presenter emitted a line feed, which the terminal model cannot model"
+        );
     }
 }
