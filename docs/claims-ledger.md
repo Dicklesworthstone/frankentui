@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-09-19 the distribution across 152 rows is 37 pending-code,
-84 pending-doc, 16 retracted and 15 proven. Regenerate this sentence from
+As of 2026-09-19 the distribution across 152 rows is 33 pending-code,
+73 pending-doc, 28 retracted and 18 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -80,10 +80,23 @@ README says, not something adjacent. The proven set:
   measured truth, that it runs nowhere on the layout path.
 - C26, V47, N01, N02, N03, N04, N05 (G29 locale context, bidi integration, seven demo
   languages, CLDR v45.0 number/date formatting, plural rules).
+- C01 (`frame.render_widget` / `render_stateful_widget` / `area`), C12
+  (clipboard commands) and C13 (`tick_every`, `file_watcher`): all three were
+  filed as `pending-code` — implementation outstanding — for code that already
+  existed and was already covered by a test. Verified 2026-09-19.
 
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
 hand-chosen).
+
+Most C-row retractions on 2026-09-19 are the same shape: the API named in the
+claim no longer exists, the README was corrected to the API that does, **and
+that corrected form is now compiled and byte-matched by `readme_snippets`**. So
+the retraction cites a test rather than a date — `Layout::horizontal` became
+`Flex::horizontal`, `frame.link_registry().register(url)` became
+`frame.register_link(url)`, `Stylesheet`/`register`/`get().unwrap_or_default()`
+became `StyleSheet`/`define`/`get_or_default`. A `manual:` proof expires in 90
+days; a snippet test does not.
 
 Historical WORKING labels below are not current test results.
 
@@ -100,21 +113,21 @@ complete `.5.2`.
 
 | id | claim | location | kind | decision | owner | proof | status | last_verified |
 |---|---|---|---|---|---|---|---|---|
-| C01 | `frame.render_widget(w, area)`, `frame.render_stateful_widget(..)`, `frame.area()` | README.md :: `frame.render_widget(w, area)`, `frame.render_stateful_widget(..)`, `frame.area()` | api | CODE | bd-g00-root-epic-ewths.23.17 | bead:bd-g00-root-epic-ewths.23.17 | pending-code | - |
-| C02 | `Layout::horizontal([Constraint::Percentage(30), ..]).split(frame.area())` | README.md :: `Layout::horizontal([Constraint::Percentage(30), ..]).split(frame.area())` | api | CODE | bd-g00-root-epic-ewths.23.17 | bead:bd-g00-root-epic-ewths.23.17 | pending-code | - |
-| C03 | `focus_manager.register("input1", FocusNode::new()); set_next(..)` | README.md :: `focus_manager.register("input1", FocusNode::new()); set_next(..)` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| C01 | `frame.render_widget(w, area)`, `frame.render_stateful_widget(..)`, `frame.area()` | README.md :: `frame.render_widget(w, area)`, `frame.render_stateful_widget(..)`, `frame.area()` | api | CODE | bd-g00-root-epic-ewths.23.17 | test:ftui::readme_snippets::readme_model_snippets_match | proven | 2026-09-19 |
+| C02 | `Layout::horizontal([Constraint::Percentage(30), ..]).split(frame.area())` | README.md :: `Layout::horizontal([Constraint::Percentage(30), ..]).split(frame.area())` | api | CODE | bd-g00-root-epic-ewths.23.17 | test:ftui::readme_snippets::readme_model_snippets_match | retracted | 2026-09-19 |
+| C03 | `focus_manager.register("input1", FocusNode::new()); set_next(..)` | README.md :: `focus_manager.register("input1", FocusNode::new()); set_next(..)` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_focus_graph_snippet | retracted | 2026-09-19 |
 | C04 | `modal_stack.push(ConfirmDialog::new("Delete file?"))` | README.md :: `modal_stack.push(ConfirmDialog::new("Delete file?"))` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C05 | `frame.link_registry().register(url)`; `cell.link_id = id` | README.md :: `frame.link_registry().register(url)`; `cell.link_id = id` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| C05 | `frame.link_registry().register(url)`; `cell.link_id = id` | README.md :: `frame.link_registry().register(url)`; `cell.link_id = id` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_hyperlink_snippet | retracted | 2026-09-19 |
 | C06 | Cell layout content 4 + fg 4 + bg 4 + attrs 2 + link 2; `GraphemeId` width bits [31:25], 16M slots, width 0-127 | README.md :: Cell layout content 4 + fg 4 + bg 4 + attrs 2 + link 2; `GraphemeId` width bits [31:25], 16M slots, width 0-127 | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C07 | `TimeTravel::new(); record(frame); seek(i); current()` | README.md :: `TimeTravel::new(); record(frame); seek(i); current()` | api | DOC+quarantine | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C08 | `Stylesheet::new(); sheet.register(..); sheet.get(..).unwrap_or_default()` | README.md :: `Stylesheet::new(); sheet.register(..); sheet.get(..).unwrap_or_default()` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| C07 | `TimeTravel::new(); record(frame); seek(i); current()` | README.md :: `TimeTravel::new(); record(frame); seek(i); current()` | api | DOC+quarantine | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_time_travel_snippet | retracted | 2026-09-19 |
+| C08 | `Stylesheet::new(); sheet.register(..); sheet.get(..).unwrap_or_default()` | README.md :: `Stylesheet::new(); sheet.register(..); sheet.get(..).unwrap_or_default()` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_stylesheet_snippet | retracted | 2026-09-19 |
 | C09 | `TableTheme::modern().with_stripe_period(2).with_header_style(..).with_selection_style(..)` | README.md :: `TableTheme::modern().with_stripe_period(2).with_header_style(..).with_selection_style(..)` | api | CODE | bd-g00-root-epic-ewths.23.13 | bead:bd-g00-root-epic-ewths.23.13 | pending-code | - |
 | C10 | 9 border styles | README.md :: 9 border styles | api | DOC | bd-g00-root-epic-ewths.23.11 | bead:bd-g00-root-epic-ewths.23.11 | pending-doc | - |
 | C11 | `Cmd::perform(future, mapper)` | README.md :: `Cmd::perform(future, mapper)` | api | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | C12 | `Cmd::SetClipboard/GetClipboard` | README.md :: `Cmd::SetClipboard/GetClipboard` | api | CODE | bd-g00-root-epic-ewths.21 | test:ftui-runtime::program::clipboard_commands_reach_writer_and_reply_reaches_model_once | proven | 2026-09-19 |
 | C13 | `tick_every`, `file_watcher` | README.md :: `tick_every`, `file_watcher` | api | CODE | bd-g00-root-epic-ewths.22 | test:ftui::readme_snippets::readme_model_snippets_match | proven | 2026-09-19 |
-| C14 | `frame.checksum()`, `MacroPlayer::next() -> (event, delay)`, `simulator.send_event` | README.md :: `frame.checksum()`, `MacroPlayer::next() -> (event, delay)`, `simulator.send_event` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C15 | `PersistenceConfig::new().with_auto_save(true).with_backend(FileBackend::new(..))`, `MemoryBackend` | README.md :: `PersistenceConfig::new().with_auto_save(true).with_backend(FileBackend::new(..))`, `MemoryBackend` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| C14 | `frame.checksum()`, `MacroPlayer::next() -> (event, delay)`, `simulator.send_event` | README.md :: `frame.checksum()`, `MacroPlayer::next() -> (event, delay)`, `simulator.send_event` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_simulator_snippet | retracted | 2026-09-19 |
+| C15 | `PersistenceConfig::new().with_auto_save(true).with_backend(FileBackend::new(..))`, `MemoryBackend` | README.md :: `PersistenceConfig::new().with_auto_save(true).with_backend(FileBackend::new(..))`, `MemoryBackend` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_persistence_snippet | retracted | 2026-09-19 |
 | C16 | `field_lens!` macro | README.md :: `field_lens!` macro | api | DOC+quarantine | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_lens_snippet | retracted | 2026-09-19 |
 | C17 | `slo.yaml` with `objectives / budget_us / window_seconds / error_budget_pct` | README.md :: `slo.yaml` with `objectives / budget_us / window_seconds / error_budget_pct` | api | DOC+quarantine | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C18 | Evidence events `resize_decision`, `conformal_gate`, `degradation_event`, `queue_select`, `voi_sample` | README.md :: Evidence events `resize_decision`, `conformal_gate`, `degradation_event`, `queue_select`, `voi_sample` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
