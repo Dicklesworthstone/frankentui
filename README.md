@@ -2479,7 +2479,7 @@ FrankenTUI ships 80+ direct `Widget` and `StatefulWidget` implementations across
 
 | Widget | Description | Key Feature |
 |--------|-------------|-------------|
-| `Block` | Container with borders/title | 9 border styles, title alignment |
+| `Block` | Container with borders/title | 7 named border styles, title alignment |
 | `Paragraph` | Text with wrapping | Word/char wrap, scroll |
 | `List` | Selectable items | Virtualized, custom highlight |
 | `Table` | Columnar data | Column constraints, row selection, themed |
@@ -2498,7 +2498,7 @@ FrankenTUI ships 80+ direct `Widget` and `StatefulWidget` implementations across
 | `Spinner` | Activity indicator | Multiple styles |
 | `Scrollbar` | Scroll position | Proportional thumb |
 
-Plus: `Align`, `Badge`, `Cached`, `Columns`, `ConstraintOverlay`, `DebugOverlay`, `DecisionCard`, `DragHandle`, `Emoji`, `ErrorBoundary`, `Group`, `Help`, `HistoryPanel`, `Inspector`, `LogViewer`, `NotificationQueue`, `Padding`, `Paginator`, `Panel`, `Pretty`, `Rule`, `StatusLine`, `Stopwatch`, `Timer`, `ValidationError`, `VoiDebugOverlay`, `DriftVisualization`, and more.
+Plus: `Align`, `Badge`, `CachedWidget`, `Columns`, `ConstraintOverlay`, `DebugOverlay`, `DecisionCard`, `Draggable`, `Emoji`, `ErrorBoundary`, `Group`, `Help`, `HistoryPanel`, `InspectorOverlay`, `LogViewer`, `NotificationQueue`, `Padding`, `Paginator`, `Panel`, `Pretty`, `Rule`, `StatusLine`, `Stopwatch`, `Timer`, `ValidationErrorDisplay`, `VoiDebugOverlay`, `DriftVisualization`, and more.
 
 ### Table Theming System
 
@@ -2511,7 +2511,7 @@ The table widget has a dedicated theme engine (3,500+ lines in `ftui-style/src/t
 | **Header styling** | Separate style for header row with bottom border |
 | **Selection highlight** | Active row/cell highlight with blend modes |
 | **Hover state** | Mouse-over styling with CUSUM-stabilized transitions |
-| **Border variants** | 9 built-in border styles per table edge |
+| **Border variants** | 7 built-in border styles + Custom per table edge |
 | **Cell padding** | Per-cell horizontal/vertical padding |
 | **Truncation** | Ellipsis, clip, or wrap per column |
 | **Alignment** | Left/center/right per column with Unicode-aware width |
