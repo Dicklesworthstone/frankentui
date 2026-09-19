@@ -2977,20 +2977,45 @@ Widgets opt in by implementing the `Stateful` trait. On program start, the regis
 FrankenTUI supports machine-readable **Service Level Objectives** for runtime behavior:
 
 ```yaml
-# slo.yaml
-objectives:
-  - name: frame_render_p99
-    metric: frame_render_us
-    budget_us: 16000          # 16ms = 60fps
-    window_seconds: 60
-    error_budget_pct: 1.0     # allow 1% of frames to exceed
+# slo.yaml - the schema parse_slo_yaml actually accepts
+regression_threshold: 0.10
+noise_tolerance: 0.05
+safe_mode_breach_count: 2
+safe_mode_error_rate: 0.05
 
-  - name: shutdown_latency
-    metric: shutdown_us
-    budget_us: 5000           # 5ms shutdown target
-    window_seconds: 300
-    error_budget_pct: 0.1
+metrics:
+  render_p99:
+    metric_type: latency
+    max_value: 16000.0
+    max_ratio: 1.25
+    safe_mode_trigger: true
+  shutdown_us:
+    metric_type: latency
+    max_value: 5000.0
+    safe_mode_trigger: false
 ```
+
+`metrics` is a **map keyed by metric name**, not a list. `regression_threshold`
+and `noise_tolerance` are global fractions in `[0.0, 1.0]`; `max_value` is an
+absolute ceiling and `max_ratio` a multiple of the baseline; `safe_mode_trigger`
+makes one breach trip safe mode on its own, while `safe_mode_breach_count`
+covers simultaneous breaches. `metric_type` accepts exactly `latency`, `memory`
+and `error_rate` — anything else is an `UnknownMetricType` error.
+
+Note the parser skips whole-line `#` comments but does **not** strip trailing
+ones, so `max_value: 16000.0  # ceiling` fails to parse. Keep annotations on
+their own lines.
+
+The project's own [`slo.yaml`](slo.yaml) is the worked example, and
+`slo_yaml_parses_without_errors` keeps it parsing.
+
+An earlier version of this block documented an `objectives:` *list* with
+`metric` / `budget_us` / `window_seconds` / `error_budget_pct` keys. No such
+schema exists — not in the parser, and not in the repository's own `slo.yaml`,
+which has used the fields above all along. Because an empty document parses to
+defaults, copying the old example produced a schema with zero metrics rather
+than failing loudly. `readme_slo_yaml_example_parses` now pins the block above
+byte-for-byte against the parser so it cannot drift again.
 
 The SLO engine checks observations against budgets and tracks error-budget consumption:
 

@@ -46,7 +46,7 @@ Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
 As of 2026-09-19 the distribution across 152 rows is 32 pending-code,
-72 pending-doc, 30 retracted and 18 proven. Regenerate this sentence from
+70 pending-doc, 32 retracted and 18 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -129,7 +129,7 @@ complete `.5.2`.
 | C14 | `frame.checksum()`, `MacroPlayer::next() -> (event, delay)`, `simulator.send_event` | README.md :: `frame.checksum()`, `MacroPlayer::next() -> (event, delay)`, `simulator.send_event` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_simulator_snippet | retracted | 2026-09-19 |
 | C15 | `PersistenceConfig::new().with_auto_save(true).with_backend(FileBackend::new(..))`, `MemoryBackend` | README.md :: `PersistenceConfig::new().with_auto_save(true).with_backend(FileBackend::new(..))`, `MemoryBackend` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_persistence_snippet | retracted | 2026-09-19 |
 | C16 | `field_lens!` macro | README.md :: `field_lens!` macro | api | DOC+quarantine | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_lens_snippet | retracted | 2026-09-19 |
-| C17 | `slo.yaml` with `objectives / budget_us / window_seconds / error_budget_pct` | README.md :: `slo.yaml` with `objectives / budget_us / window_seconds / error_budget_pct` | api | DOC+quarantine | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| C17 | `slo.yaml` with `objectives / budget_us / window_seconds / error_budget_pct` | README.md :: `slo.yaml` with `objectives / budget_us / window_seconds / error_budget_pct` | api | DOC+quarantine | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::slo_yaml_validation::readme_slo_yaml_example_parses | retracted | 2026-09-19 |
 | C18 | Evidence events `resize_decision`, `conformal_gate`, `degradation_event`, `queue_select`, `voi_sample` | README.md :: Evidence events `resize_decision`, `conformal_gate`, `degradation_event`, `queue_select`, `voi_sample` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C19 | Degradation ladder Full, SimpleBorders, NoColors, TextOnly | README.md :: Degradation ladder Full, SimpleBorders, NoColors, TextOnly | api | DOC | bd-g00-root-epic-ewths.5.5 | ident:pub enum DegradationLevel; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | C20 | Editor: undo coalescing, paragraph movement | README.md :: Editor: undo coalescing, paragraph movement | api | CODE | bd-g00-root-epic-ewths.21 | bead:bd-g00-root-epic-ewths.21 | pending-code | - |
@@ -146,7 +146,7 @@ complete `.5.2`.
 | C31 | 80+ widgets | README.md :: 80+ widgets | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C32 | 850K+ lines | README.md :: 850K+ lines | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C33 | `ftui = "0.5"`; getting-started "only ftui-core, ftui-layout, ftui-i18n are published" | README.md :: `ftui = "0.5"`; getting-started "only ftui-core, ftui-layout, ftui-i18n are published" | api | DOC | bd-g00-root-epic-ewths.1.5 | test:ftui::readme_snippets::readme_versions_match_the_workspace | retracted | 2026-09-19 |
-| C34 | `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | README.md :: `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | api | DOC | bd-g00-root-epic-ewths.40.3 | bead:bd-g00-root-epic-ewths.40.3 | pending-doc | - |
+| C34 | `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | README.md :: `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | api | DOC | bd-g00-root-epic-ewths.40.3 | cmd:python3 scripts/check_env_docs.py | retracted | 2026-09-19 |
 | C35 | VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | README.md :: VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C36 | SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | README.md :: SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | api | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | C37 | `no_flicker_proof.rs` | README.md :: `no_flicker_proof.rs` | api | DOC | bd-g00-root-epic-ewths.4.7 | bead:bd-g00-root-epic-ewths.4.7 | pending-doc | - |

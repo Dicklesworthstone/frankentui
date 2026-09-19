@@ -478,3 +478,48 @@ fn slo_yaml_parse_is_deterministic() {
         assert_eq!(slo1.safe_mode_trigger, slo2.safe_mode_trigger);
     }
 }
+
+/// The SLO section of README.md hands the reader a `slo.yaml` to copy. Until
+/// 2026-09-19 it documented an `objectives:` list with `budget_us` /
+/// `window_seconds` / `error_budget_pct` keys, none of which `parse_slo_yaml`
+/// has ever read -- and because an empty document parses to defaults, copying
+/// it produced a schema with zero metrics rather than an error.
+///
+/// This pins the block byte-for-byte, so the example cannot drift from the
+/// parser again. If you edit the README's YAML, edit this string to match.
+#[test]
+fn readme_slo_yaml_example_parses() {
+    let yaml = r#"# slo.yaml - the schema parse_slo_yaml actually accepts
+regression_threshold: 0.10
+noise_tolerance: 0.05
+safe_mode_breach_count: 2
+safe_mode_error_rate: 0.05
+
+metrics:
+  render_p99:
+    metric_type: latency
+    max_value: 16000.0
+    max_ratio: 1.25
+    safe_mode_trigger: true
+  shutdown_us:
+    metric_type: latency
+    max_value: 5000.0
+    safe_mode_trigger: false
+"#;
+    let schema =
+        parse_slo_yaml(yaml).unwrap_or_else(|e| panic!("README slo.yaml does not parse: {e:?}"));
+    assert_eq!(schema.metrics.len(), 2, "{:?}", schema.metrics.keys());
+    assert!(schema.metrics["render_p99"].safe_mode_trigger);
+    assert_eq!(schema.metrics["render_p99"].max_value, Some(16000.0));
+    assert_eq!(schema.metrics["render_p99"].max_ratio, Some(1.25));
+    assert!(!schema.metrics["shutdown_us"].safe_mode_trigger);
+    assert_eq!(schema.safe_mode_breach_count, 2);
+    assert!((schema.regression_threshold - 0.10).abs() < f64::EPSILON);
+
+    // And the block really is the one in the README, not a copy that drifted.
+    let readme = include_str!("../../../README.md");
+    assert!(
+        readme.contains(yaml),
+        "README.md no longer contains this exact slo.yaml block"
+    );
+}
