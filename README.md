@@ -2158,15 +2158,22 @@ ftui-runtime = { version = "0.9", features = ["experimental"] }
 Every buffer mutation marks its row dirty in O(1):
 
 ```rust
-fn set(&mut self, x: u16, y: u16, cell: Cell) {
-    self.cells[y as usize * self.width as usize + x as usize] = cell;
-    self.dirty_rows.set(y as usize, true);  // O(1) bitmap write
+// ftui-render/src/buffer.rs
+#[inline]
+fn mark_dirty_row(&mut self, y: u16) {
+    if let Some(slot) = self.dirty_rows.get_mut(y as usize) {
+        *slot = true;
+    }
 }
 ```
 
+`Buffer::set` calls this after bounds, scissor, opacity and wide-grapheme handling — it is not a bare index-and-assign, and an out-of-bounds or fully clipped write marks nothing.
+
 **Invariant:** If `is_row_dirty(y) == false`, row y is guaranteed unchanged since last clear.
 
-**Cost:** O(height) space, <2% runtime overhead, but enables skipping 90%+ of cells in typical frames.
+**Three levels, not one.** `dirty_rows` is a `Vec<bool>` (one byte per row) for row-granularity skipping; `dirty_spans` is a per-row `SmallVec<[DirtySpan; 4]>` that keeps sparse edits to a few ranges before overflowing to whole-row; and `dirty_bits` is a per-cell `Vec<u8>` — one **byte** per cell, not one bit — backing tile-based skipping.
+
+**Cost:** `dirty_bits` dominates at width × height bytes, so dirty tracking adds roughly 6% to the memory of a 16-byte-per-`Cell` buffer; `dirty_rows` and `dirty_spans` are O(height). In exchange the diff skips clean rows entirely and clean spans within dirty rows.
 
 ### Grapheme Pooling
 
@@ -2231,10 +2238,14 @@ FrankenTUI implements the **Elm/Bubbletea** architecture with Rust's type system
 pub trait Model: Sized {
     type Message: From<Event> + Send + 'static;
 
-    fn init(&mut self) -> Cmd<Self::Message>;
+    // Required.
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message>;
     fn view(&self, frame: &mut Frame);
-    fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>>;
+
+    // Defaulted — override only what you need.
+    fn init(&mut self) -> Cmd<Self::Message> { Cmd::none() }
+    fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> { vec![] }
+    fn on_gesture(&mut self, gesture: SemanticEvent) -> Cmd<Self::Message> { Cmd::none() }
 }
 ```
 

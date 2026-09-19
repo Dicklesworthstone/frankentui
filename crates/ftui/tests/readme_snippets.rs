@@ -386,6 +386,34 @@ fn readme_stylesheet_snippet() {
     assert_in_readme(&["stylesheet"]);
 }
 
+/// The README's `Model` fence marks `init`, `subscriptions` and `on_gesture`
+/// as defaulted and only `update`/`view` as required. That is a claim about
+/// what a consumer must write, so compile it: this impl provides exactly the
+/// two required methods and nothing else. If a default is ever removed, this
+/// stops building and the README is wrong in the same commit.
+///
+/// (An earlier README showed all four as required, which would have had every
+/// new consumer writing `init` and `subscriptions` they did not need.)
+#[test]
+fn readme_model_trait_requires_only_update_and_view() {
+    struct Minimal;
+
+    impl Model for Minimal {
+        type Message = Msg;
+
+        fn update(&mut self, _msg: Msg) -> Cmd<Msg> {
+            Cmd::none()
+        }
+
+        fn view(&self, _frame: &mut Frame) {}
+    }
+
+    let mut model = Minimal;
+    // The defaults are reachable and behave as the README documents them.
+    assert!(matches!(model.init(), Cmd::None));
+    assert!(model.subscriptions().is_empty());
+}
+
 #[cfg(feature = "experimental")]
 #[test]
 fn readme_lens_snippet() {
