@@ -2488,4 +2488,30 @@ mod tests {
         let p = predictor.predict(key, 0.0, 1_000.0);
         assert_eq!(p.reset_count, 3, "reset_count should accumulate");
     }
+
+    /// The README documents the frame-time gate as "on by default
+    /// (`ProgramConfig::default()` carries `ConformalConfig::default()`:
+    /// alpha = 0.05, `min_samples` = 20, window 256, `q_default` = 10 ms)".
+    ///
+    /// Those four numbers were true but unguarded: the existing coverage
+    /// asserts `is_some()` for an explicitly supplied config and `is_none()`
+    /// after `without_conformal`, so flipping a default would have left the
+    /// README quietly false. This pins the documented values themselves.
+    #[test]
+    fn default_config_matches_the_documented_values() {
+        let config = ConformalConfig::default();
+        assert!(
+            (config.alpha - 0.05).abs() < f64::EPSILON,
+            "README documents alpha = 0.05, found {}",
+            config.alpha
+        );
+        assert_eq!(config.min_samples, 20, "README documents min_samples = 20");
+        assert_eq!(config.window_size, 256, "README documents window 256");
+        // Stored in microseconds; the README quotes it as 10 ms.
+        assert!(
+            (config.q_default - 10_000.0).abs() < f64::EPSILON,
+            "README documents q_default = 10 ms, found {} us",
+            config.q_default
+        );
+    }
 }

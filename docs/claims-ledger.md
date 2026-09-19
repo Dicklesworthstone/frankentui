@@ -45,14 +45,12 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-09-18 the distribution is 46 pending-code, 98 pending-doc,
-2 retracted and 1 proven. V64 (Bayesian capability detection) is the first
-proven row: every log-odds weight the README quotes matches `caps_probe.rs`
-and is pinned by `weights_are_unchanged`. C36 and V19 are retracted together:
-the README claimed the SOS barrier coefficients were produced by
-`scripts/solve_sos_barrier.py`, that script exists nowhere in this repository
-or its history, and `sos_barrier_coeffs.rs` says in its own header that the
-constants were hand-chosen.
+As of 2026-09-18 the distribution across 152 rows is 46 pending-code,
+98 pending-doc, 3 retracted and 5 proven. V64 (Bayesian capability detection)
+and N01, N02, N03, N05 (G29 locale context, bidi integration, seven demo languages,
+plural rules) are proven. C36 and V19 (SOS barrier coefficients) are retracted
+together with hand-typed constants, and N04 (number/date formatting) is retracted
+due to ICU-sized scope, with future delivery tracked in `bd-g00-root-epic-ewths.34.5`.
 
 Historical WORKING labels below are not current test results.
 
@@ -216,6 +214,11 @@ complete `.5.2`.
 | S37 | State Persistence production status | README.md:2791 :: State Persistence | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S38 | SLO Schema & Breach Detection production status | README.md:2829 :: SLO Schema & Breach Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S39 | Multi-Stage Conformal Monitoring production status | README.md:2866 :: Multi-Stage Conformal Monitoring | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| N01 | Locale context propagated through runtime (ProgramConfig::with_locale, LocaleContext::direction()) | README.md :: Locale context | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-runtime::program::tests::frame_text_direction_follows_locale_context | proven | 2026-09-18 |
+| N02 | Text direction from locale with per-line UAX#9 reordering (bidi integrated) | README.md :: Text direction | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-widgets::paragraph::tests::paragraph_rtl_visual_order_matches_unicode_bidi; test:ftui-demo-showcase::screen_snapshots::i18n_demo_arabic_rtl_80x24 | proven | 2026-09-18 |
+| N03 | i18n_demo switches live between seven languages (EN/ES/FR/DE/RU/AR/JA) | README.md :: `i18n_demo` screen switches live between English, Spanish, French, German, Russian, Arabic and Japanese | example | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-demo-showcase::screens::i18n_demo::tests::german_catalog_coverage_is_complete; test:ftui-demo-showcase::screens::i18n_demo::tests::locales_list_has_seven_languages | proven | 2026-09-18 |
+| N04 | Number/date formatting in ftui-i18n | README.md :: Number/date formatting is out of scope for `ftui-i18n` | api | DOC | bd-g00-root-epic-ewths.34.5 | bead:bd-g00-root-epic-ewths.34.5 | retracted | 2026-09-18 |
+| N05 | String catalog with fallback chains and CLDR-style plural rules (plural rules) | README.md :: String catalog with fallback chains and CLDR-style plural rules | api | CODE | bd-g00-root-epic-ewths.34 | test:ftui-i18n::plural::tests::locale_detection; test:ftui-i18n::plural::tests::russian_rules; test:ftui-i18n::plural::tests::arabic_full_categories | proven | 2026-09-18 |
 
 ## Historical decision details
 
@@ -248,7 +251,8 @@ CODE/DOC decisions and all secondary owner aliases from the source table.
 - C23: DOC (45, 6, real slugs). Historical owners: `g06-docs-readme`.
 - C24: DOC. Historical owners: `g06-docs-readme`.
 - C25: DOC (state the real formulas). Historical owners: `g06-docs-readme`.
-- C26: CODE partial (direction via bidi, German) + DOC (retract formatting). Historical owners: CODE `g29-impl`; DOC `g06-docs-readme`.
+- C26: CODE partial (direction via bidi, German) + DOC (retract formatting). Realized by N01–N05. Historical owners: CODE `g29-impl`; DOC `g06-docs-readme`.
+- N01–N05: G29 i18n delivery and limits. N01 (locale context), N02 (bidi integrated in Paragraph and editors), N03 (seven demo languages: EN/ES/FR/DE/RU/AR/JA), N05 (CLDR plural rules) proven by tests. N04 (number/date formatting) retracted 2026-09-18: excluded from initial kernel to avoid ICU-sized scope dependency; planned formatting delivery tracked in `bd-g00-root-epic-ewths.34.5`.
 - C27: regenerate from the perf-gate artifact. Historical owners: `g25-impl`.
 - C28: DOC (name the real tests). Historical owners: `g06-docs-readme`.
 - C29: DOC. Historical owners: `g06-docs-readme` (README :507), `g06-docs-agents` (AGENTS.md :272-297).
