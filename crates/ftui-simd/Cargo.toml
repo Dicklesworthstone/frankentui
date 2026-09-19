@@ -1,14 +1,14 @@
 [package]
 name = "ftui-simd"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-description = "Optional safe SIMD-friendly optimizations for FrankenTUI."
+description = "Safe portable-SIMD row comparison and ASCII detection kernels for FrankenTUI."
 repository = "https://github.com/Dicklesworthstone/frankentui"
 homepage = "https://github.com/Dicklesworthstone/frankentui"
 documentation = "https://docs.rs/ftui-simd"
 readme = "../../README.md"
-keywords = ["tui", "terminal", "ui", "ftui", "frankentui"]
+keywords = ["simd", "terminal", "ftui", "frankentui", "ascii"]
 categories = ["command-line-interface", "gui"]
 
 [features]
@@ -20,3 +20,10 @@ experimental = []
 workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+
+[[bench]]
+name = "simd_bench"
+harness = false

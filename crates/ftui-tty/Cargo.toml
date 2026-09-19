@@ -1,6 +1,6 @@
 [package]
 name = "ftui-tty"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Native Unix terminal backend for FrankenTUI (replaces Crossterm)."
@@ -20,9 +20,9 @@ experimental = []
 workspace = true
 
 [dependencies]
-ftui-backend = { path = "../ftui-backend", version = "0.8.0" }
-ftui-core = { path = "../ftui-core", version = "0.8.0" }
-ftui-render = { path = "../ftui-render", version = "0.8.0" }
+ftui-backend = { path = "../ftui-backend", version = "0.9.0" }
+ftui-core = { path = "../ftui-core", version = "0.9.0" }
+ftui-render = { path = "../ftui-render", version = "0.9.0" }
 
 # Safe Unix terminal control (termios, ioctl).
 [target.'cfg(unix)'.dependencies]
@@ -31,6 +31,6 @@ rustix = { version = "1.1.3", features = ["termios", "fs"] }
 signal-hook = { version = "0.4.3", features = ["iterator"] }
 
 [dev-dependencies]
-ftui-core = { path = "../ftui-core", version = "0.8.0", features = ["crossterm"] }
+ftui-core = { path = "../ftui-core", version = "0.9.0", features = ["crossterm"] }
 portable-pty = "0.9.0"
 proptest = "1.6.0"

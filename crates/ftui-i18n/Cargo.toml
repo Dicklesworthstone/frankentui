@@ -1,6 +1,6 @@
 [package]
 name = "ftui-i18n"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 description = "Localization catalog and interpolation utilities for FrankenTUI."
