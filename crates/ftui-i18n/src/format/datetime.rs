@@ -536,10 +536,30 @@ pub const fn days_in_month(year: i32, month: u8) -> u8 {
 }
 
 /// Compute day of week (0 = Monday, 1 = Tuesday, ..., 6 = Sunday).
+///
+/// Sakamoto's method, evaluated in `i64` with Euclidean division. Neither of
+/// those is cosmetic:
+///
+/// - `i32` overflows. [`Date::from_ymd`] validates the month and the day but
+///   accepts *any* `i32` year, so `from_ymd(i32::MAX, 3, 1)` is a perfectly
+///   well-formed `Date` - and `y + y / 4` on it exceeds `i32::MAX`, which is a
+///   panic in a debug build (and a wrapped, nonsense weekday in release).
+///   Widening covers the whole `i32` domain the constructor admits.
+/// - Rust's `/` truncates toward zero, but the century corrections are
+///   leap-day *counts* and need the floor. The two agree above zero and
+///   diverge below it, where truncation placed 0000-01-01 on a Sunday; the
+///   proleptic Gregorian calendar has it on a Saturday. `div_euclid` is the
+///   floor, and `rem_euclid` then keeps the result non-negative so the ISO
+///   rotation below cannot yield a negative index for the weekday tables.
 fn compute_day_of_week(y: i32, m: u8, d: u8) -> u8 {
-    let t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    const T: [i64; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let y = i64::from(y);
     let y_adj = if m < 3 { y - 1 } else { y };
-    let dow = (y_adj + y_adj / 4 - y_adj / 100 + y_adj / 400 + t[(m - 1) as usize] + d as i32) % 7;
+    let dow = (y_adj + y_adj.div_euclid(4) - y_adj.div_euclid(100)
+        + y_adj.div_euclid(400)
+        + T[(m - 1) as usize]
+        + i64::from(d))
+    .rem_euclid(7);
     // dow: 0 = Sun, 1 = Mon, 2 = Tue, 3 = Wed, 4 = Thu, 5 = Fri, 6 = Sat
     // Convert to ISO: 0 = Mon, 1 = Tue, 2 = Wed, 3 = Thu, 4 = Fri, 5 = Sat, 6 = Sun
     let dow_iso = (dow + 6) % 7;
@@ -597,6 +617,52 @@ mod tests {
         // 2026-09-21 is Monday (ISO 0)
         let mon = Date::from_ymd(2026, 9, 21).unwrap();
         assert_eq!(mon.day_of_week(), 0);
+    }
+
+    #[test]
+    fn day_of_week_spans_every_year_from_ymd_accepts() {
+        // `from_ymd` validates month and day but takes any `i32` year, so
+        // both of these are well-formed `Date`s that a caller can build. In
+        // `i32`, `y + y / 4` on the first one overflows - a debug-build panic
+        // reachable from safe, validated input.
+        for date in [
+            Date::from_ymd(i32::MAX, 3, 1).unwrap(),
+            Date::from_ymd(i32::MAX, 1, 1).unwrap(),
+            Date::from_ymd(i32::MIN, 1, 1).unwrap(),
+            Date::from_ymd(i32::MIN, 12, 31).unwrap(),
+        ] {
+            // In range means the weekday tables can be indexed by it; out of
+            // range means `format_date(.., Full)` panics.
+            assert!(date.day_of_week() <= 6, "{date:?}");
+            let fmt = DateTimeFormatter::for_locale("en").unwrap();
+            assert!(!fmt.format_date(&date, DateFormatStyle::Full).is_empty());
+        }
+    }
+
+    #[test]
+    fn day_of_week_uses_floor_division_below_year_one() {
+        // Sakamoto's century terms count leap days, so they need the floor,
+        // not Rust's truncation toward zero. The two agree above zero and
+        // diverge below it.
+        //
+        // Anchor: the Gregorian 400-year cycle is 146097 days, which is
+        // exactly 20871 weeks, so 0000-03-01 and 2000-03-01 are the same
+        // weekday - a Wednesday. Every value below is that anchor walked
+        // forwards or backwards by a known number of days.
+        assert_eq!(Date::from_ymd(2000, 3, 1).unwrap().day_of_week(), 2); // Wed
+        assert_eq!(Date::from_ymd(0, 3, 1).unwrap().day_of_week(), 2); // Wed
+
+        // Year 0 is a leap year, so Jan 1 is 60 days before Mar 1: Saturday.
+        // Truncating division reported Sunday here.
+        assert_eq!(Date::from_ymd(0, 1, 1).unwrap().day_of_week(), 5); // Sat
+
+        // Year 0 then runs 366 days (2 mod 7) to a Monday, the conventional
+        // weekday for 0001-01-01 proleptic Gregorian.
+        assert_eq!(Date::from_ymd(1, 1, 1).unwrap().day_of_week(), 0); // Mon
+
+        // Year -1 is not a leap year, so it runs 365 days (1 mod 7) up to
+        // that Saturday, putting its own Jan 1 on a Friday.
+        assert_eq!(Date::from_ymd(-1, 1, 1).unwrap().day_of_week(), 4); // Fri
     }
 
     #[test]
