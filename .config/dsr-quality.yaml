@@ -16,6 +16,30 @@ tools:
       - python3 -B scripts/check_env_docs.py
       - python3 -B scripts/check_readme_claims.py --self-test
       - python3 -B scripts/check_readme_claims.py --schema-check
+  # The whole non-cargo gate set, self-tests included, for the scheduled audit
+  # (bd-g00-root-epic-ewths.7.1). G37 originally asked for a monthly
+  # `reality_check.yml`; GitHub Actions was disabled for this project on
+  # 2026-09-06, so the schedule belongs on a DSR host instead. Nothing here
+  # compiles or hits the network, so it is cheap to run often:
+  #   DSR_REPOS_FILE="$PWD/.config/dsr-quality.yaml" dsr quality \
+  #     --tool frankentui-truth-gates -w "$PWD"
+  #
+  # `frankentui-env-docs` above is the narrower subset some hosts already run;
+  # it is left alone so existing invocations keep working. This is the superset
+  # and is the one to schedule.
+  frankentui-truth-gates:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - python3 -B scripts/check_module_reachability.py --quiet
+      - python3 -B scripts/check_readme_claims.py --self-test
+      - python3 -B scripts/check_readme_claims.py --schema-check
+      - python3 -B scripts/check_readme_claims.py --proof-refs
+      - python3 -B scripts/check_readme_claims.py --experimental-check
+      - python3 -B scripts/check_env_docs.py --self-test
+      - python3 -B scripts/check_env_docs.py
+      - python3 -B scripts/check_close_evidence.py --self-test
+      - python3 -B scripts/check_close_evidence.py
   frankentui-examples:
     repo: Dicklesworthstone/frankentui
     language: rust
