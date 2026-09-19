@@ -698,6 +698,7 @@ impl Drop for PtyProcess {
     fn drop(&mut self) {
         // Best-effort cleanup
         let _ = self.child.kill();
+        crate::reap_after_kill(&mut *self.child);
         self.input_writer.flush_best_effort();
         self.input_writer
             .detach_thread("ftui-pty-process-detached-writer");
@@ -1090,6 +1091,91 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_secs(2),
             "write_all should fail promptly instead of hanging"
+        );
+    }
+
+    /// The `ps` STAT field for `pid`, or empty when no such process exists.
+    #[cfg(unix)]
+    fn process_stat(pid: u32) -> String {
+        std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Spawn a child running `script`, drop the `PtyProcess`, and return the
+    /// child's lingering `ps` STAT - empty when it was reaped.
+    ///
+    /// Deliberately `/bin/sh` rather than `$SHELL`: these two tests are about
+    /// which branch of the teardown runs, and that depends on whether the
+    /// child still exists to ignore a signal. zsh exec-optimises away the last
+    /// command of a `-c` script, trap and all, so under `$SHELL` both cases
+    /// would collapse into the same one and the second test would pass for no
+    /// reason.
+    #[cfg(unix)]
+    fn stat_after_drop(script: &str) -> (u32, String) {
+        // The script echoes READY once it has finished setting itself up, and
+        // this waits for it before dropping. Without that handshake the test
+        // races the shell: a SIGHUP that arrives before `trap` has run kills
+        // the child outright, so the "ignores the hangup" case silently
+        // becomes the "takes the hangup" case and passes for no reason. That
+        // is exactly what it did before the handshake was added.
+        let config = ShellConfig::with_shell("/bin/sh")
+            .logging(false)
+            .arg("-c")
+            .arg(format!("{script}; echo READY; sleep 30"));
+        let mut proc = PtyProcess::spawn(config).expect("spawn should succeed");
+        let pid = proc.pid().expect("a spawned child has a pid");
+        proc.read_until(b"READY", Duration::from_secs(5))
+            .expect("child should reach its ready marker");
+        assert!(
+            !process_stat(pid).is_empty(),
+            "the child should be running before the drop"
+        );
+
+        drop(proc);
+
+        // A zombie persists until its parent waits for it, and this test
+        // process is that parent, so the state holds for as long as the test
+        // runs. The poll is only to let the signals land.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut stat = process_stat(pid);
+        while !stat.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            stat = process_stat(pid);
+        }
+        (pid, stat)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_process_reaps_a_child_that_takes_the_hangup() {
+        // Nothing in `Drop` waits, and `std::process::Child` has no `Drop`, so
+        // this passes only because `portable_pty`'s `ChildKiller::kill` sends
+        // SIGHUP and then polls `try_wait` - which reaps. That is an upstream
+        // implementation detail this crate leans on; pin it so a version bump
+        // that changes it fails here instead of leaking processes.
+        let (pid, stat) = stat_after_drop(":");
+        assert!(
+            stat.is_empty(),
+            "child {pid} outlived its PtyProcess as `{stat}`; \
+             a `Z` state means it was killed but never reaped"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_process_reaps_a_child_that_ignores_the_hangup() {
+        // The other half of that upstream `kill`: when the child is still
+        // alive after the SIGHUP grace period it falls through to
+        // `std::process::Child::kill`, which signals and does *not* reap. A
+        // shell with `trap '' HUP` takes that branch.
+        let (pid, stat) = stat_after_drop("trap '' HUP");
+        assert!(
+            stat.is_empty(),
+            "child {pid} outlived its PtyProcess as `{stat}`; \
+             a `Z` state means it was killed but never reaped"
         );
     }
 }

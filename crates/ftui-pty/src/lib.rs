@@ -784,6 +784,7 @@ impl PtySession {
 impl Drop for PtySession {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        reap_after_kill(&mut *self.child);
         self.input_writer.flush_best_effort();
         self.input_writer
             .detach_thread("ftui-pty-session-detached-writer");
@@ -805,6 +806,43 @@ pub(crate) fn deadline_after(timeout: Duration, operation: &str) -> io::Result<I
             format!("{operation}: timeout is too large"),
         )
     })
+}
+
+/// How long a teardown will wait for a signalled child to be reapable.
+const REAP_TIMEOUT: Duration = Duration::from_millis(250);
+/// Poll interval while waiting for that.
+const REAP_POLL: Duration = Duration::from_millis(5);
+
+/// Reap a child after `ChildKiller::kill`, so a signalled process does not
+/// linger as a zombie.
+///
+/// `portable_pty`'s `ChildKiller for std::process::Child` sends SIGHUP and
+/// then polls `try_wait` for about 200ms, so a child that *takes* the hangup
+/// is already reaped by the time `kill` returns. A child that ignores it is
+/// not: that path falls through to `std::process::Child::kill`, which signals
+/// and returns. `std::process::Child` has no `Drop`, so without this nothing
+/// ever waits, and the process stays `<defunct>` for the lifetime of the host.
+///
+/// Bounded rather than a bare `wait`: SIGKILL cannot be caught, but a child
+/// wedged in uninterruptible sleep would otherwise hang teardown, and
+/// promptness here is load-bearing - see
+/// `drop_returns_without_waiting_for_background_descendants`. A child that
+/// takes the hangup is reapable on the first poll, so the common path costs
+/// nothing.
+pub(crate) fn reap_after_kill(child: &mut dyn portable_pty::Child) {
+    let deadline = Instant::now() + REAP_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            // Reaped, or the child is not ours to reap any more.
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return;
+                }
+                thread::sleep(REAP_POLL);
+            }
+        }
+    }
 }
 
 pub(crate) fn detach_join(handle: thread::JoinHandle<()>, thread_name: &str) {
