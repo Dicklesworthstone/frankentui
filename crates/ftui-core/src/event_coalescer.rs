@@ -8,14 +8,26 @@
 //!
 //! This module provides [`EventCoalescer`] which:
 //! - Coalesces rapid mouse moves into a single event
-//! - Coalesces consecutive scroll events in the same direction
+//! - Batches consecutive scroll events in the same direction
 //! - Passes through all other events immediately
 //!
 //! # Design
 //!
-//! The coalescer uses a "latest wins" strategy for coalescable events:
-//! - Mouse moves: keep only the most recent position
-//! - Scroll events: keep direction and total delta
+//! The two coalescable kinds are treated differently, because what is
+//! redundant about them is different:
+//!
+//! - **Mouse moves: latest wins.** The intermediate positions the pointer
+//!   passed through carry no information the final position does not, so all
+//!   but the newest are dropped.
+//! - **Scroll: batched, never dropped.** A scroll event is a *delta*, so
+//!   discarding one discards distance the user asked for. Consecutive notches
+//!   in the same direction accumulate into a run, and flushing a run of `n`
+//!   notches delivers `n` events. The saving is one dispatch-and-render pass
+//!   per batch rather than one per notch — not fewer notches.
+//!
+//! That distinction is the whole point: an earlier version collapsed a run to
+//! a single event, so four notches scrolled a quarter as far as the user asked,
+//! and the faster you scrolled the more was lost (`bd-minjt`).
 //!
 //! Non-coalescable events (key presses, mouse clicks, etc.) pass through
 //! immediately. The caller is responsible for flushing pending events.
@@ -56,15 +68,23 @@ use crate::event::{Event, MouseEvent, MouseEventKind};
 ///
 /// # Performance
 ///
-/// All operations are O(1). The coalescer holds at most two pending events
-/// (one mouse move and one scroll sequence).
+/// [`push`](Self::push) is O(1) and allocation-free in the common path; the
+/// closed-run vector only allocates when scroll direction actually reverses
+/// between two flushes. [`flush`](Self::flush) is O(total notches), since it
+/// materialises one event per notch.
 #[derive(Debug, Clone, Default)]
 pub struct EventCoalescer {
     /// Pending mouse move event (latest position wins).
     pending_mouse_move: Option<MouseEvent>,
 
-    /// Pending scroll state (direction + count).
+    /// Scroll run currently accumulating (direction + notch count).
     pending_scroll: Option<ScrollState>,
+
+    /// Runs closed by a direction reversal, oldest first, awaiting flush.
+    ///
+    /// A reversal ends a run but must not discard it, so the run waits here
+    /// instead of being collapsed into the single event `push` can return.
+    closed_scrolls: Vec<ScrollState>,
 }
 
 /// Accumulated scroll state for coalescing.
@@ -101,8 +121,11 @@ impl EventCoalescer {
     /// # Coalescing Rules
     ///
     /// - **Mouse move**: Replaces any pending mouse move. Returns `None`.
-    /// - **Scroll (same direction)**: Increments pending scroll count. Returns `None`.
-    /// - **Scroll (different direction)**: Flushes pending scroll, starts new. Returns the old scroll.
+    /// - **Scroll (same direction)**: Adds a notch to the current run. Returns `None`.
+    /// - **Scroll (different direction)**: Closes the current run and starts a
+    ///   new one. Returns `None` — the closed run is delivered in full by the
+    ///   next `flush()`, because its notch count will not fit in the single
+    ///   event this method can return.
     /// - **Other events**: Flush is NOT automatic; caller should call `flush()` first.
     ///   Returns the event immediately.
     ///
@@ -132,11 +155,12 @@ impl EventCoalescer {
         }
     }
 
-    /// Handle a scroll event, coalescing if same direction.
+    /// Handle a scroll event, adding to the current run or starting a new one.
     fn handle_scroll(&mut self, direction: ScrollDirection, mouse: &MouseEvent) -> Option<Event> {
         if let Some(pending) = self.pending_scroll {
             if pending.direction == direction {
-                // Same direction: increment count, update position to latest
+                // Same direction: one more notch on the current run, position
+                // and modifiers from the latest event.
                 self.pending_scroll = Some(ScrollState {
                     count: pending.count.saturating_add(1),
                     x: mouse.x,
@@ -144,10 +168,10 @@ impl EventCoalescer {
                     modifiers: mouse.modifiers,
                     ..pending
                 });
-                None
             } else {
-                // Different direction: flush old, start new
-                let old = self.scroll_to_event(pending);
+                // Reversal: the old run is finished but keeps its notch count,
+                // so it waits for flush rather than collapsing into one event.
+                self.closed_scrolls.push(pending);
                 self.pending_scroll = Some(ScrollState {
                     direction,
                     count: 1,
@@ -155,10 +179,9 @@ impl EventCoalescer {
                     x: mouse.x,
                     y: mouse.y,
                 });
-                Some(old)
             }
         } else {
-            // No pending scroll: start accumulating
+            // No run in progress: start one.
             self.pending_scroll = Some(ScrollState {
                 direction,
                 count: 1,
@@ -166,8 +189,8 @@ impl EventCoalescer {
                 x: mouse.x,
                 y: mouse.y,
             });
-            None
         }
+        None
     }
 
     /// Convert scroll state to an event.
@@ -184,40 +207,46 @@ impl EventCoalescer {
 
     /// Flush all pending coalesced events.
     ///
-    /// Returns a vector of events that were pending. The order is:
-    /// 1. Pending scroll event (single coalesced event; use
-    ///    `pending_scroll_count` before flushing if you need the count)
-    /// 2. Pending mouse move (latest position)
+    /// Returns a vector of events that were pending, in input order:
+    /// 1. Scroll runs closed by a direction reversal, oldest first
+    /// 2. The scroll run still accumulating
+    /// 3. Pending mouse move (latest position)
+    ///
+    /// **A run of `n` notches yields `n` events.** Scroll is a delta, so
+    /// collapsing a run would silently shorten the distance the user asked to
+    /// travel; the batching win is that the whole run is dispatched and
+    /// rendered once, not that notches disappear (`bd-minjt`).
     ///
     /// After calling `flush()`, the coalescer is empty.
     #[must_use]
     pub fn flush(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
-
-        // Scroll first (older) - single coalesced event
-        if let Some(scroll) = self.pending_scroll.take() {
-            events.push(self.scroll_to_event(scroll));
-        }
-
-        // Then mouse move (newer)
-        if let Some(mouse) = self.pending_mouse_move.take() {
-            events.push(Event::Mouse(mouse));
-        }
-
+        self.flush_each(|event| events.push(event));
         events
     }
 
     /// Flush pending events, calling a closure for each.
     ///
-    /// This is more efficient than `flush()` when you need to process
-    /// events immediately rather than collecting them.
+    /// Same events and same order as [`flush`](Self::flush), including one call
+    /// per scroll notch, without building the intermediate vector.
     pub fn flush_each<F>(&mut self, mut f: F)
     where
         F: FnMut(Event),
     {
-        if let Some(scroll) = self.pending_scroll.take() {
-            f(self.scroll_to_event(scroll));
+        // Closed runs first (oldest input), then the run still accumulating.
+        for run in std::mem::take(&mut self.closed_scrolls) {
+            let event = self.scroll_to_event(run);
+            for _ in 0..run.count {
+                f(event.clone());
+            }
         }
+        if let Some(run) = self.pending_scroll.take() {
+            let event = self.scroll_to_event(run);
+            for _ in 0..run.count {
+                f(event.clone());
+            }
+        }
+        // Then mouse move (newest).
         if let Some(mouse) = self.pending_mouse_move.take() {
             f(Event::Mouse(mouse));
         }
@@ -226,15 +255,29 @@ impl EventCoalescer {
     /// Check if there are any pending coalesced events.
     #[must_use]
     pub fn has_pending(&self) -> bool {
-        self.pending_mouse_move.is_some() || self.pending_scroll.is_some()
+        self.pending_mouse_move.is_some()
+            || self.pending_scroll.is_some()
+            || !self.closed_scrolls.is_empty()
     }
 
-    /// Get the pending scroll count (for applications that batch scroll handling).
+    /// Notches accumulated in the scroll run currently in progress.
     ///
-    /// Returns 0 if no scroll is pending.
+    /// Returns 0 if no run is in progress. This counts only the open run, not
+    /// runs already closed by a direction reversal; for the full pending total
+    /// use [`pending_scroll_events`](Self::pending_scroll_events).
     #[must_use]
     pub fn pending_scroll_count(&self) -> u32 {
-        self.pending_scroll.map(|s| s.count).unwrap_or(0)
+        self.pending_scroll.map_or(0, |s| s.count)
+    }
+
+    /// Total scroll events the next flush will deliver, across all runs.
+    #[must_use]
+    pub fn pending_scroll_events(&self) -> u32 {
+        self.closed_scrolls
+            .iter()
+            .fold(self.pending_scroll_count(), |total, run| {
+                total.saturating_add(run.count)
+            })
     }
 
     /// Clear all pending events without processing them.
@@ -244,6 +287,7 @@ impl EventCoalescer {
     pub fn clear(&mut self) {
         self.pending_mouse_move = None;
         self.pending_scroll = None;
+        self.closed_scrolls.clear();
     }
 }
 
@@ -337,71 +381,112 @@ mod tests {
         assert_eq!(result, Some(key));
     }
 
-    #[test]
-    fn scroll_same_direction_coalesces() {
-        let mut coalescer = EventCoalescer::new();
-
-        // Three scroll-ups
-        coalescer.push(Event::Mouse(MouseEvent::new(
-            MouseEventKind::ScrollUp,
-            0,
-            0,
-        )));
-        coalescer.push(Event::Mouse(MouseEvent::new(
-            MouseEventKind::ScrollUp,
-            0,
-            0,
-        )));
-        coalescer.push(Event::Mouse(MouseEvent::new(
-            MouseEventKind::ScrollUp,
-            0,
-            0,
-        )));
-
-        assert_eq!(coalescer.pending_scroll_count(), 3);
-
-        let pending = coalescer.flush();
-        assert_eq!(pending.len(), 1);
-        if let Event::Mouse(m) = &pending[0] {
-            assert!(matches!(m.kind, MouseEventKind::ScrollUp));
+    /// Push `n` scroll events of one kind at the origin.
+    fn push_scrolls(coalescer: &mut EventCoalescer, kind: MouseEventKind, n: usize) {
+        for _ in 0..n {
+            coalescer.push(Event::Mouse(MouseEvent::new(kind, 0, 0)));
         }
     }
 
+    fn scroll_kinds(events: &[Event]) -> Vec<MouseEventKind> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Mouse(m) => Some(m.kind),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn scroll_direction_change_flushes() {
+    fn scroll_same_direction_batches_without_losing_notches() {
         let mut coalescer = EventCoalescer::new();
 
-        // Scroll up twice
-        coalescer.push(Event::Mouse(MouseEvent::new(
-            MouseEventKind::ScrollUp,
-            0,
-            0,
-        )));
-        coalescer.push(Event::Mouse(MouseEvent::new(
-            MouseEventKind::ScrollUp,
-            0,
-            0,
-        )));
+        push_scrolls(&mut coalescer, MouseEventKind::ScrollUp, 3);
 
-        // Scroll down: should flush the pending up scrolls
+        assert_eq!(coalescer.pending_scroll_count(), 3);
+        assert_eq!(coalescer.pending_scroll_events(), 3);
+
+        // Three notches in, three notches out: the run is dispatched as one
+        // batch, but the model still scrolls the full distance (`bd-minjt`).
+        let pending = coalescer.flush();
+        assert_eq!(
+            scroll_kinds(&pending),
+            vec![
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollUp
+            ]
+        );
+        assert!(!coalescer.has_pending());
+    }
+
+    #[test]
+    fn scroll_direction_change_keeps_both_runs_whole() {
+        let mut coalescer = EventCoalescer::new();
+
+        push_scrolls(&mut coalescer, MouseEventKind::ScrollUp, 2);
+
+        // Reversing closes the up-run; it is held for flush rather than
+        // returned, because two notches do not fit in one returned event.
         let result = coalescer.push(Event::Mouse(MouseEvent::new(
             MouseEventKind::ScrollDown,
             0,
             0,
         )));
+        assert!(result.is_none());
 
-        // Should return the old scroll (up)
-        assert!(result.is_some());
-        if let Some(Event::Mouse(m)) = result {
-            assert!(matches!(m.kind, MouseEventKind::ScrollUp));
-        }
+        assert_eq!(coalescer.pending_scroll_count(), 1, "the open down-run");
+        assert_eq!(coalescer.pending_scroll_events(), 3, "both runs");
 
-        // New scroll (down) is now pending
-        assert_eq!(coalescer.pending_scroll_count(), 1);
+        // Input order: the two ups, then the down.
         let pending = coalescer.flush();
-        if let Event::Mouse(m) = &pending[0] {
-            assert!(matches!(m.kind, MouseEventKind::ScrollDown));
-        }
+        assert_eq!(
+            scroll_kinds(&pending),
+            vec![
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollDown
+            ]
+        );
+        assert!(!coalescer.has_pending());
+    }
+
+    #[test]
+    fn scroll_runs_alternating_directions_survive_in_order() {
+        let mut coalescer = EventCoalescer::new();
+
+        push_scrolls(&mut coalescer, MouseEventKind::ScrollDown, 2);
+        push_scrolls(&mut coalescer, MouseEventKind::ScrollUp, 1);
+        push_scrolls(&mut coalescer, MouseEventKind::ScrollDown, 3);
+
+        assert_eq!(coalescer.pending_scroll_events(), 6);
+        assert_eq!(
+            scroll_kinds(&coalescer.flush()),
+            vec![
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollDown
+            ]
+        );
+    }
+
+    #[test]
+    fn clear_discards_closed_runs_too() {
+        let mut coalescer = EventCoalescer::new();
+
+        push_scrolls(&mut coalescer, MouseEventKind::ScrollUp, 2);
+        push_scrolls(&mut coalescer, MouseEventKind::ScrollDown, 2);
+        assert!(coalescer.has_pending());
+
+        coalescer.clear();
+
+        assert!(!coalescer.has_pending());
+        assert_eq!(coalescer.pending_scroll_events(), 0);
+        assert!(coalescer.flush().is_empty());
     }
 
     #[test]
@@ -596,14 +681,16 @@ mod tests {
             25,
         )));
 
+        // Two notches, two events, both reporting the run's latest position.
         let pending = coalescer.flush();
-        assert_eq!(pending.len(), 1);
-        if let Event::Mouse(m) = &pending[0] {
+        assert_eq!(pending.len(), 2);
+        for event in &pending {
+            let Event::Mouse(m) = event else {
+                panic!("expected mouse event");
+            };
             assert!(matches!(m.kind, MouseEventKind::ScrollUp));
             assert_eq!(m.x, 15, "scroll should preserve latest x position");
             assert_eq!(m.y, 25, "scroll should preserve latest y position");
-        } else {
-            panic!("expected mouse event");
         }
     }
 
@@ -630,24 +717,25 @@ mod tests {
             0,
         )));
 
-        // Change direction -> returns old scroll event
+        // Change direction -> closes the up-run, which waits for flush
         let result = coalescer.push(Event::Mouse(MouseEvent::new(
             MouseEventKind::ScrollDown,
             0,
             0,
         )));
-        assert!(result.is_some());
-        if let Some(Event::Mouse(m)) = result {
-            assert!(matches!(m.kind, MouseEventKind::ScrollUp));
-        }
+        assert!(result.is_none());
 
-        // Pending should be the new down scroll
+        // The open run is the new down scroll; the closed up-run is still held
         assert_eq!(coalescer.pending_scroll_count(), 1);
-        let pending = coalescer.flush();
-        assert_eq!(pending.len(), 1);
-        if let Event::Mouse(m) = &pending[0] {
-            assert!(matches!(m.kind, MouseEventKind::ScrollDown));
-        }
+        assert_eq!(coalescer.pending_scroll_events(), 3);
+        assert_eq!(
+            scroll_kinds(&coalescer.flush()),
+            vec![
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollDown
+            ]
+        );
     }
 
     #[test]
@@ -681,11 +769,13 @@ mod tests {
         assert_eq!(coalescer.pending_scroll_count(), 2);
 
         let pending = coalescer.flush();
-        assert_eq!(pending.len(), 1);
-        if let Event::Mouse(m) = &pending[0] {
-            assert!(matches!(m.kind, MouseEventKind::ScrollRight));
-            assert_eq!(m.x, 6);
-            assert_eq!(m.y, 11);
+        assert_eq!(pending.len(), 2);
+        for event in &pending {
+            if let Event::Mouse(m) = event {
+                assert!(matches!(m.kind, MouseEventKind::ScrollRight));
+                assert_eq!(m.x, 6);
+                assert_eq!(m.y, 11);
+            }
         }
     }
 
@@ -879,20 +969,22 @@ mod tests {
         // Direction change with different modifiers
         let scroll_down =
             MouseEvent::new(MouseEventKind::ScrollDown, 5, 5).with_modifiers(Modifiers::CTRL);
-        let flushed = coalescer.push(Event::Mouse(scroll_down));
+        assert!(coalescer.push(Event::Mouse(scroll_down)).is_none());
 
-        // Flushed old event should have SHIFT
-        if let Some(Event::Mouse(m)) = flushed {
-            assert_eq!(m.modifiers, Modifiers::SHIFT);
-        } else {
-            panic!("expected flushed scroll event");
-        }
-
-        // Pending new event should have CTRL
+        // Both runs flush together, each keeping its own modifiers.
         let pending = coalescer.flush();
-        if let Event::Mouse(m) = &pending[0] {
-            assert_eq!(m.modifiers, Modifiers::CTRL);
-        }
+        assert_eq!(pending.len(), 2);
+        let Event::Mouse(old) = &pending[0] else {
+            panic!("expected the closed up-run first");
+        };
+        assert!(matches!(old.kind, MouseEventKind::ScrollUp));
+        assert_eq!(old.modifiers, Modifiers::SHIFT);
+
+        let Event::Mouse(new) = &pending[1] else {
+            panic!("expected the open down-run second");
+        };
+        assert!(matches!(new.kind, MouseEventKind::ScrollDown));
+        assert_eq!(new.modifiers, Modifiers::CTRL);
     }
 
     #[test]
@@ -941,20 +1033,15 @@ mod tests {
 
         for &dir in &directions[1..] {
             let flushed = coalescer.push(Event::Mouse(MouseEvent::new(dir, 0, 0)));
-            // Each direction change flushes old
-            assert!(flushed.is_some());
+            // Each direction change closes a run rather than returning it
+            assert!(flushed.is_none());
         }
 
-        // Last direction (Right) is still pending
+        // Only the last direction (Right) is still open; the other three runs
+        // are closed but intact.
         assert_eq!(coalescer.pending_scroll_count(), 1);
-        let pending = coalescer.flush();
-        assert!(matches!(
-            pending[0],
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::ScrollRight,
-                ..
-            })
-        ));
+        assert_eq!(coalescer.pending_scroll_events(), 4);
+        assert_eq!(scroll_kinds(&coalescer.flush()), directions.to_vec());
     }
 
     #[test]
@@ -971,15 +1058,23 @@ mod tests {
             0,
         )));
 
+        // Switching axis closes the horizontal run and starts a vertical one;
+        // neither is returned from `push`, and neither loses a notch.
         let old = coalescer.push(Event::Mouse(MouseEvent::new(
             MouseEventKind::ScrollUp,
             0,
             0,
         )));
-        assert!(old.is_some());
-        if let Some(Event::Mouse(m)) = old {
-            assert!(matches!(m.kind, MouseEventKind::ScrollLeft));
-        }
+        assert!(old.is_none());
+
+        assert_eq!(
+            scroll_kinds(&coalescer.flush()),
+            vec![
+                MouseEventKind::ScrollLeft,
+                MouseEventKind::ScrollLeft,
+                MouseEventKind::ScrollUp
+            ]
+        );
     }
 
     #[test]
@@ -1157,30 +1252,31 @@ mod tests {
     #[test]
     fn rapid_alternating_scroll_directions() {
         let mut coalescer = EventCoalescer::new();
-        let mut flushed_count = 0;
 
-        // Alternate up/down rapidly
+        // Alternate up/down rapidly: ten one-notch runs, nine reversals.
+        let mut expected = Vec::new();
         for i in 0..10 {
             let kind = if i % 2 == 0 {
                 MouseEventKind::ScrollUp
             } else {
                 MouseEventKind::ScrollDown
             };
-            if coalescer
-                .push(Event::Mouse(MouseEvent::new(kind, 0, 0)))
-                .is_some()
-            {
-                flushed_count += 1;
-            }
+            expected.push(kind);
+            // No scroll is ever returned from `push` - runs leave via `flush`.
+            assert!(
+                coalescer
+                    .push(Event::Mouse(MouseEvent::new(kind, 0, 0)))
+                    .is_none()
+            );
         }
 
-        // First push coalesces (None), each subsequent alternation flushes
-        // 10 pushes: push 0 (Up, None), push 1 (Down, Some), push 2 (Up, Some), ...
-        // So 9 direction changes return Some
-        assert_eq!(flushed_count, 9);
-
-        // Last push (Down at i=9) is still pending
+        // Only the newest run is open; the nine closed ones are still held.
         assert_eq!(coalescer.pending_scroll_count(), 1);
+        assert_eq!(coalescer.pending_scroll_events(), 10);
+
+        // Worst case for the old collapse-to-one behaviour: every notch
+        // reversed direction, so every notch mattered.
+        assert_eq!(scroll_kinds(&coalescer.flush()), expected);
     }
 
     #[test]
@@ -1265,13 +1361,13 @@ mod tests {
             0,
             0,
         )));
-        // Direction change returns old
+        // Direction change closes the up-run and holds it for flush
         let _ = coalescer.push(Event::Mouse(MouseEvent::new(
             MouseEventKind::ScrollDown,
             0,
             0,
         )));
-        // Clear the new pending scroll
+        // Clear drops the closed run as well as the open one
         coalescer.clear();
         assert!(!coalescer.has_pending());
         assert_eq!(coalescer.pending_scroll_count(), 0);
@@ -1381,12 +1477,12 @@ mod tests {
         coalescer.flush_each(|e| processed.push(e));
 
         // Verify coalescing occurred:
-        // - 2 mouse moves -> 1 coalesced move
+        // - 2 mouse moves -> 1 coalesced move (intermediate positions are redundant)
         // - down, drag, up -> 3 pass-through events
-        // - 2 scroll ups -> 1 coalesced scroll
+        // - 2 scroll ups -> 2 events in one batch (notches are distance, not position)
         // - escape -> 1 pass-through event
-        // Total: 1 + 3 + 1 + 1 = 6 events (down from 8 input events)
-        assert_eq!(processed.len(), 6);
+        // Total: 1 + 3 + 2 + 1 = 7 events (down from 8 input events)
+        assert_eq!(processed.len(), 7);
 
         // Verify the coalesced move has the final position
         let move_event = processed
