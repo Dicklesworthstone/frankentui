@@ -937,14 +937,65 @@ git push                # Push to remote
 
 **When ending a work session**, you MUST complete ALL steps below.
 
+**Why this section names commands instead of categories.** It used to say "Run
+quality gates (if code changed) — Tests, linters, builds", which names no gate,
+and "Close finished work", which names no evidence. The 2026-09-01 reality check
+found the result: 99.9% bead closure alongside a front-page README example that
+neither compiled nor ran, 188 closes with no reason at all and 859 more under 20
+characters. A step you can satisfy by believing you did it is not a step.
+
 **MANDATORY WORKFLOW:**
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Sync beads** - `br sync --flush-only` to export to JSONL
-5. **Hand off** - Provide context for next session
+1. **File beads for remaining work.** `br create --title=... --type=... --priority=N`,
+   each with what "done" would look like. Anything you decided not to do, and
+   anything you discovered and did not fix, becomes a bead — that is the only
+   place it survives this session.
 
+2. **Run the gates and keep the output.** Not "tests, linters, builds":
+
+   ```bash
+   cargo check --workspace --all-targets
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo fmt --check
+   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+   cargo nextest run --workspace --no-fail-fast   # or the affected crates
+   make gates                                     # 4 stdlib checks, ~6s
+   ```
+
+   For E2E-affecting changes, the relevant `tests/e2e/scripts/*.sh` too. Builds
+   go through `rch`; verification and release go through `dsr`, never GitHub
+   Actions. If a gate fails and you are handing off anyway, **say which one and
+   paste the failure** — a skipped check never becomes a pass by being omitted.
+
+3. **Close finished beads with evidence.**
+
+   ```bash
+   br close <id> --reason "<what changed and what proves it, with a reference>"
+   ```
+
+   `.beads/policy.yaml` rejects anything under 80 characters or with no
+   `kind:value` token from `commit`, `pr`, `reviewer`, `investigation`,
+   `agent-mail`, `dashboard`, `bead`, `test`, `path`, `run`. Write the reason
+   for someone who will read it in six weeks with no memory of this session.
+   `--bypass-policy` exists, needs `--bypass-reason`, and is recorded.
+
+4. **Sync and commit.** `br sync --flush-only`, then `git add .beads/` and
+   commit — `br` never runs git itself, so an unsynced close exists only on
+   your machine.
+
+5. **Push.** `git pull --rebase && git push && git push origin main:master`.
+   `master` exists only for legacy URLs and must stay synchronized. Work that
+   is not pushed is work that is stranded.
+
+6. **Hand off** with the bead ids you touched, the gate results, and what you
+   deliberately left undone.
+
+**Monthly drift check.** Run the `frankentui-truth-gates` tool in
+`.config/dsr-quality.yaml` on a DSR host (it runs all four `make gates` checks
+plus every script self-test, compiles nothing, and needs no network). File a
+bead per drift row it reports. This is the scheduled audit G37 asked for; it is
+a DSR job rather than a `reality_check.yml` workflow because GitHub Actions was
+disabled for this project on 2026-09-06.
 
 ---
 

@@ -216,6 +216,23 @@ On failures, the suite prints:
 - Hex dumps of the first 512 bytes of PTY output
 - Printable tail excerpts (via `strings`)
 
+## "Did we really finish?"
+
+A green suite says the scripts passed, not that the work they were run for was
+finished and recorded. For that, audit the tracker rather than the run:
+
+```bash
+make close-audit                                    # closes since the policy landed
+python3 -B scripts/check_close_evidence.py --epoch 2026-09-01   # widen to inspect history
+```
+
+It reads `.beads/issues.jsonl` and reports every close carrying no evidence a
+reader can follow — which catches the cases `br`'s own close policy cannot see,
+namely a `--bypass-policy` close and a status written straight into the JSONL.
+`legacy_failures` in the summary counts closes predating the policy; those are
+reported, never enforced. See **Landing the Plane** in AGENTS.md for the close
+format itself.
+
 ## CI Gate Tightening Checklist
 
 When tightening E2E JSONL gates (bd-1mzp6):
