@@ -360,7 +360,14 @@ mod tests {
         };
 
         for len in 0..200_usize {
-            let a: Vec<u128> = (0..len).map(|_| u128::from(next())).collect();
+            // Fill both halves of each cell. Widening a single u64 left every
+            // base value with a zero high half, so a kernel that only ever
+            // compared the low 64 bits of equal cells would have passed —
+            // the perturbation below can flip a high bit, but two *equal*
+            // cells were never wide.
+            let a: Vec<u128> = (0..len)
+                .map(|_| (u128::from(next()) << 64) | u128::from(next()))
+                .collect();
             let mut b = a.clone();
             if len > 0 {
                 let idx = (next() as usize) % len;
