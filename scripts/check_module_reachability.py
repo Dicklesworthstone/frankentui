@@ -471,7 +471,10 @@ def load_bead_status(root: Path) -> dict[str, str]:
 
 
 def check_allowlist_owners(
-    allowlist: dict[str, str], statuses: dict[str, str], path: Path
+    allowlist: dict[str, str],
+    statuses: dict[str, str],
+    path: Path,
+    only: str | None = None,
 ) -> list[str]:
     """Report allowlist entries whose bead cannot resolve them.
 
@@ -479,13 +482,25 @@ def check_allowlist_owners(
     listed, and nothing ever revisits it. That has stranded two sets of modules
     already (.11.3's widgets, .11.5's harness modules), so a closed or unknown
     owner is an error rather than a note.
+
+    `only` scopes the report to one crate, matching `--crate`, so a local run
+    of a single crate is not failed by an unrelated entry.
     """
     if not statuses:
         return []
     errors: list[str] = []
     for module, comment in sorted(allowlist.items()):
+        if only and not module.startswith(f"{only}::"):
+            continue
         match = BEAD_ID_RE.search(comment)
         if not match:
+            # `load_allowlist` only rejects an *empty* comment, so prose alone
+            # would otherwise be a way to keep a module listed with no owner at
+            # all -- the exact thing the bead id is there to prevent.
+            errors.append(
+                f"{path}: '{module}' has a comment but no bead id in it. "
+                f"Name the bead that will wire or quarantine it."
+            )
             continue
         bead = match.group(0)
         status = statuses.get(bead)
@@ -625,7 +640,7 @@ def main() -> int:
     )
     allowlist = load_allowlist(allowlist_path)
     owner_errors = check_allowlist_owners(
-        allowlist, load_bead_status(root), allowlist_path
+        allowlist, load_bead_status(root), allowlist_path, args.crate
     )
 
     findings = evaluate(root, allowlist, args.crate)

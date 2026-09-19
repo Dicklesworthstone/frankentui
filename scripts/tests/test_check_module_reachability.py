@@ -495,16 +495,29 @@ class ModuleReachabilityGateContract(unittest.TestCase):
         )
         self.assertEqual(len(errors), 1, errors)
 
-    def test_comment_without_a_bead_id_is_left_to_load_allowlist(self):
-        # load_allowlist already rejects an empty comment; a non-empty comment
-        # with no bead token is not this function's error to raise.
+    def test_comment_without_a_bead_id_is_an_error(self):
+        # load_allowlist only rejects an *empty* comment, so prose alone would
+        # otherwise keep a module listed with no owner -- the exact thing the
+        # bead id exists to prevent.
         path = Path("docs/module-reachability-allowlist.txt")
-        self.assertEqual(
-            gate.check_allowlist_owners(
-                {"a-crate::alpha": "see the design doc"}, {"bd-open1": "open"}, path
-            ),
-            [],
+        errors = gate.check_allowlist_owners(
+            {"a-crate::alpha": "see the design doc"}, {"bd-open1": "open"}, path
         )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("no bead id", errors[0])
+
+    def test_owner_check_scopes_to_the_requested_crate(self):
+        # `--crate` is for local single-crate runs; an unrelated stale entry
+        # must not fail it.
+        path = Path("docs/module-reachability-allowlist.txt")
+        allowlist = {"a-crate::alpha": "bd-shut1", "b-crate::beta": "bd-shut1"}
+        statuses = {"bd-shut1": "closed"}
+        self.assertEqual(
+            len(gate.check_allowlist_owners(allowlist, statuses, path)), 2
+        )
+        scoped = gate.check_allowlist_owners(allowlist, statuses, path, "a-crate")
+        self.assertEqual(len(scoped), 1, scoped)
+        self.assertIn("a-crate::alpha", scoped[0])
 
     def test_load_bead_status_reads_the_export(self):
         with TemporaryDirectory() as tmp:
@@ -554,8 +567,9 @@ class ModuleReachabilityGateContract(unittest.TestCase):
     bead_id_is_found_inside_a_longer_comment = (
         test_bead_id_is_found_inside_a_longer_comment
     )
-    comment_without_a_bead_id_is_left_to_load_allowlist = (
-        test_comment_without_a_bead_id_is_left_to_load_allowlist
+    comment_without_a_bead_id_is_an_error = test_comment_without_a_bead_id_is_an_error
+    owner_check_scopes_to_the_requested_crate = (
+        test_owner_check_scopes_to_the_requested_crate
     )
     load_bead_status_reads_the_export = test_load_bead_status_reads_the_export
     load_bead_status_without_an_export_is_empty = (
