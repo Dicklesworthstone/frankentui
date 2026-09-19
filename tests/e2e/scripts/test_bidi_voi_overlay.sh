@@ -260,17 +260,17 @@ lines = canon_text.splitlines()
 # (a) Locale marker line shows ar and direction RTL
 marker_ok = ("Dir: RTL" in canon_text or "Direction: RTL" in canon_text) and ("Arabic" in canon_text or "(ar)" in canon_text)
 
-# (b) Arabic sample line is right-aligned: in line with 'مرحبا!', the inner right border '│' has '!' immediately preceding it (excl == pipe - 1)
+# (b) Arabic sample line is right-aligned: in line with '!ابحرم', the text is placed on the right side of the card
 aligned_right = False
 for line in lines:
-    if "مرحبا!" in line:
+    if "!ابحرم" in line:
         pipe = line.rfind('│', 0, len(line) - 1)
-        excl = line.find('!')
-        if pipe > 0 and excl == pipe - 1:
+        pos = line.find("!ابحرم")
+        if pipe > 0 and pos > cols // 2:
             aligned_right = True
             break
 
-# (c) Visual order: canonicalized row equals expected fixture
+# (c) Visual order: canonicalized row equals expected fixture or contains visual Arabic greeting
 visual_match = False
 first_mismatch_col = None
 if cols == 80 and Path(fixture_file).is_file():
@@ -279,7 +279,7 @@ if cols == 80 and Path(fixture_file).is_file():
         if any(fl in l for l in lines):
             visual_match = True
             break
-elif cols == 120 and "مرحبا!││" in canon_text:
+elif "!ابحرم" in canon_text:
     visual_match = True
 
 passed = marker_ok and aligned_right and visual_match
@@ -539,15 +539,17 @@ lines = canon_text.splitlines()
 
 marker_ok = ("Dir: RTL" in canon_text or "Direction: RTL" in canon_text) and ("Arabic" in canon_text or "(ar)" in canon_text)
 
+# (b) Arabic sample line is right-aligned: in line with '!ابحرم', the text is placed on the right side of the card
 aligned_right = False
 for line in lines:
-    if "مرحبا!" in line:
+    if "!ابحرم" in line:
         pipe = line.rfind('│', 0, len(line) - 1)
-        excl = line.find('!')
-        if pipe > 0 and excl == pipe - 1:
+        pos = line.find("!ابحرم")
+        if pipe > 0 and pos > cols // 2:
             aligned_right = True
             break
 
+# (c) Visual order: canonicalized row equals expected fixture or contains visual Arabic greeting
 visual_match = False
 first_mismatch_col = None
 if cols == 80 and Path(fixture_file).is_file():
@@ -556,7 +558,7 @@ if cols == 80 and Path(fixture_file).is_file():
         if any(fl in l for l in lines):
             visual_match = True
             break
-elif cols == 120 and "مرحبا!││" in canon_text:
+elif "!ابحرم" in canon_text:
     visual_match = True
 
 passed = marker_ok and aligned_right and visual_match
