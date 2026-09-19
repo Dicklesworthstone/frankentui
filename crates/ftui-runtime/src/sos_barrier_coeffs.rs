@@ -46,7 +46,11 @@ pub const BARRIER_COEFFS: [f64; 15] = [
     0.02,  // x1^4 * x2^0
 ];
 
-/// Verification results from offline SDP solver.
-/// Each entry: (x1, x2, B_value, passed).
+/// How many state points the coefficients above were hand-checked against.
+///
+/// Hand-checked, not solver-verified: no SDP/SOS solver has ever been run in
+/// this repository (see the provenance note at the top of this file). This is a
+/// count only — the points themselves are not recorded here, so the check
+/// cannot be repeated from this constant.
 pub const BARRIER_VERIFICATION_POINTS: usize = 8;
 

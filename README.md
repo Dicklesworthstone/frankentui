@@ -2808,7 +2808,7 @@ Before anyone builds the engine, note that the render cost surface measured on 2
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-Frame-budget admissibility is checked against a **polynomial barrier certificate** in the sum-of-squares style:
+The module offers a frame-budget admissibility test built on a **polynomial barrier certificate** in the sum-of-squares style. Nothing calls it — see **Where it runs** below — so the present tense here describes the function, not the render path:
 
 ```
 State space:
