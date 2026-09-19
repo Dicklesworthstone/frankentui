@@ -268,21 +268,31 @@ TEST_FN_RE = re.compile(r'\bfn\s+([a-z_][a-z0-9_]*)\s*[(<]')
 
 
 def collect_test_fn_names(crates_dir):
-    """Every `fn name(` defined under crates/, as a set of bare names.
+    """Map each `fn name` under crates/ to the (crate, file stem) pairs defining it.
 
-    Deliberately ignores module paths. A ledger proof writes
-    `test:<crate>::<module>::<name>`, but inline `#[cfg(test)] mod tests` blocks
-    make the middle segments ambiguous and not worth policing; what matters is
-    that the named test exists at all.
+    Bare names are not enough to police a proof: `default_config_values` is
+    defined in five different modules (gesture, hover_stabilizer, key_sequence,
+    pty_capture, voi_sampling), so a proof naming the wrong one would pass a
+    name-only check. Recording crate and file stem lets `check_proof_refs`
+    verify as much of `test:<crate>::<module>::<name>` as is unambiguous.
+
+    Inline `#[cfg(test)] mod tests` means a proof's middle segment is usually
+    the *file* stem rather than a real module path, which is why the stem is
+    what gets matched.
     """
-    names = set()
+    index: dict[str, set[tuple[str, str]]] = {}
     for source in crates_dir.glob('*/**/*.rs'):
         try:
             text = source.read_text(encoding='utf-8', errors='replace')
         except OSError:
             continue
-        names.update(TEST_FN_RE.findall(text))
-    return names
+        try:
+            crate = source.relative_to(crates_dir).parts[0]
+        except ValueError:  # pragma: no cover - source is always under crates/
+            continue
+        for name in TEST_FN_RE.findall(text):
+            index.setdefault(name, set()).add((crate, source.stem))
+    return index
 
 
 def check_proof_refs(rows, crates_dir, root):
@@ -294,21 +304,66 @@ def check_proof_refs(rows, crates_dir, root):
     `russian_rules`), each a near-miss for a real test written from memory
     rather than looked up. A fabricated proof is worse than the `bead:`
     placeholder it replaced, because it reads as settled.
+
+    Exactly what is caught, so nobody over-trusts a green run:
+
+    1. a `test:` proof whose final segment names no `fn` anywhere in crates/;
+    2. one whose first segment names a real crate that does not define it;
+    3. one whose path segments name no file that defines it;
+    4. a `path:` proof pointing at a file that does not exist.
+
+    Not caught: a bogus *inner* module segment when a sibling segment is right
+    (`progress::indeterminate_tests::x` passes because `progress.rs` defines
+    `x`), and a real test that pins the wrong thing. Distinguishing a fake
+    inner module from a real one needs the module tree, and proofs legitimately
+    appear as `crate::file::name`, `crate::file::tests::name` and
+    `crate::dir::file::tests::name`.
     """
     errors = []
-    names = collect_test_fn_names(crates_dir)
-    if not names:
+    index = collect_test_fn_names(crates_dir)
+    if not index:
         return errors
+    crates = {crate for sites in index.values() for crate, _ in sites}
     for row in rows:
         for proof in row['proof'].split('; '):
             kind, _, payload = proof.partition(':')
             if kind == 'test':
-                name = payload.split('::')[-1].strip()
-                if name and name not in names:
+                segments = [s.strip() for s in payload.split('::') if s.strip()]
+                if not segments:
+                    continue
+                name = segments[-1]
+                sites = index.get(name)
+                if not sites:
                     errors.append(
                         f"{row['id']}: cites test `{payload}` but no `fn {name}` "
                         f"exists under crates/. Check the name -- a proof that "
                         f"cannot be run is worse than no proof."
+                    )
+                    continue
+                # Only police a crate segment that names a real crate, so a
+                # proof written as bare `test:some_name` stays acceptable.
+                crate = segments[0] if len(segments) > 1 else None
+                if crate in crates and not any(c == crate for c, _ in sites):
+                    found = ', '.join(sorted({c for c, _ in sites}))
+                    errors.append(
+                        f"{row['id']}: cites `{payload}`, but `fn {name}` is not "
+                        f"in {crate} -- it is in {found}."
+                    )
+                    continue
+                # Likewise the module path, when the name is ambiguous enough
+                # for the wrong one to matter. Any middle segment may be the
+                # file stem: proofs are written both as `crate::file::name` and
+                # as the true Rust path `crate::file::tests::name`, and a
+                # nested module adds `crate::dir::file::tests::name`. Requiring
+                # *some* middle segment to match the defining file accepts all
+                # three without pretending to resolve real module paths.
+                middle = set(segments[1:-1])
+                stems = {s for c, s in sites if crate not in crates or c == crate}
+                if middle and stems and not (middle & stems):
+                    errors.append(
+                        f"{row['id']}: cites `{payload}`, but `fn {name}` is "
+                        f"defined in {', '.join(sorted(stems))}.rs, which none "
+                        f"of its path segments name."
                     )
             elif kind == 'path':
                 target = payload.strip()
@@ -452,7 +507,35 @@ def self_test():
     assert check_proof_refs([{'id': 'C01', 'proof': 'test:x::nope'}],
                             fake, Path('.')) == []
 
-    print(json.dumps({'scope': 'schema-self-test', 'passed': len(fixtures) + 11}))
+    # The path rules, against a stub index. Both `crate::file::name` and the
+    # true Rust path `crate::file::tests::name` are legitimate in the ledger,
+    # and an earlier version of this check condemned fourteen correct proofs by
+    # assuming the file stem was always the second-to-last segment.
+    # Two crates, so `ftui-widgets` counts as *known* -- the crate rule only
+    # polices a segment that names a crate the index has actually seen, so a
+    # one-crate fixture would silently skip the case it means to cover.
+    real = {'alpha': {('ftui-core', 'gesture')},
+            'beta': {('ftui-widgets', 'input')}}
+    original = globals()['collect_test_fn_names']
+    globals()['collect_test_fn_names'] = lambda _d: real
+    try:
+        ok = ['test:ftui-core::gesture::alpha',
+              'test:ftui-core::gesture::tests::alpha',
+              'test:ftui-core::sub::gesture::tests::alpha',
+              'test:alpha']
+        for proof in ok:
+            assert check_proof_refs([{'id': 'C01', 'proof': proof}],
+                                    fake, Path('.')) == [], proof
+        bad = ['test:ftui-core::gesture::missing',      # no such fn
+               'test:ftui-widgets::gesture::alpha',     # real crate, not this one
+               'test:ftui-core::hover::tests::alpha']   # no segment names gesture
+        for proof in bad:
+            assert check_proof_refs([{'id': 'C01', 'proof': proof}],
+                                    fake, Path('.')) != [], proof
+    finally:
+        globals()['collect_test_fn_names'] = original
+
+    print(json.dumps({'scope': 'schema-self-test', 'passed': len(fixtures) + 18}))
 
 
 def main():
