@@ -878,36 +878,58 @@ impl DeterminismLab {
             ),
         ]));
 
-        summary.push(Line::from_spans(vec![
-            Span::styled("Controls:", muted),
-            Span::raw(" "),
-            Span::raw("1/2/3 "),
-            Span::styled("strategy", muted),
-            Span::raw("  "),
-            Span::raw("[/] "),
-            Span::styled("seed", muted),
-            Span::raw("  "),
-            Span::raw("Space "),
-            Span::styled("pause", muted),
-            Span::raw("  "),
-            Span::raw("F "),
-            Span::styled("fault", muted),
-            Span::raw("  "),
-            Span::raw("E "),
-            Span::styled("export", muted),
-            Span::raw("  "),
-            Span::raw("Enter/R "),
-            Span::styled("run", muted),
-            Span::raw("  "),
-            Span::raw("A "),
-            Span::styled("all", muted),
-            Span::raw("  "),
-            Span::raw("C "),
-            Span::styled("checksum", muted),
-            Span::raw("  "),
-            Span::raw("X "),
-            Span::styled("reset", muted),
-        ]));
+        let controls_items: [(&'static str, &'static str); 9] = [
+            ("1/2/3", "strategy"),
+            ("[/]", "seed"),
+            ("Space", "pause"),
+            ("F", "fault"),
+            ("E", "export"),
+            ("Enter/R", "run"),
+            ("A", "all"),
+            ("C", "checksum"),
+            ("X", "reset"),
+        ];
+
+        let mut control_lines: Vec<Vec<Span<'static>>> = Vec::new();
+        let mut current_spans: Vec<Span<'static>> = Vec::new();
+        let mut current_width: u16 = 0;
+
+        for (key, desc) in controls_items {
+            let item_width = key.len() as u16 + 1 + desc.len() as u16;
+            let sep_width = if current_spans.is_empty() { 0 } else { 2 };
+
+            if current_spans.is_empty() {
+                let prefix_width = if control_lines.is_empty() { 10 } else { 2 };
+                current_width = prefix_width + item_width;
+                if control_lines.is_empty() {
+                    current_spans.push(Span::styled("Controls:", muted));
+                    current_spans.push(Span::raw(" "));
+                } else {
+                    current_spans.push(Span::raw("  "));
+                }
+                current_spans.push(Span::raw(format!("{key} ")));
+                current_spans.push(Span::styled(desc, muted));
+            } else if current_width + sep_width + item_width <= area.width {
+                current_spans.push(Span::raw("  "));
+                current_spans.push(Span::raw(format!("{key} ")));
+                current_spans.push(Span::styled(desc, muted));
+                current_width += sep_width + item_width;
+            } else {
+                control_lines.push(std::mem::take(&mut current_spans));
+                let prefix_width = 2;
+                current_width = prefix_width + item_width;
+                current_spans.push(Span::raw("  "));
+                current_spans.push(Span::raw(format!("{key} ")));
+                current_spans.push(Span::styled(desc, muted));
+            }
+        }
+        if !current_spans.is_empty() {
+            control_lines.push(current_spans);
+        }
+
+        for line_spans in control_lines {
+            summary.push(Line::from_spans(line_spans));
+        }
 
         if let Some(export) = &self.last_export {
             let export_style = if export.ok {
@@ -1401,5 +1423,32 @@ mod tests {
             DeterminismLab::with_seed(123).results.full.checksum,
             "distinct seeds must generate distinct scenes"
         );
+    }
+
+    #[test]
+    fn controls_legend_shows_all_controls_at_80_columns() {
+        let lab = DeterminismLab::with_seed(7);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 80, 24));
+        let text = ftui_harness::buffer_to_text(&frame.buffer);
+
+        // All 9 controls must be present at 80 columns without truncation
+        assert!(text.contains("1/2/3 strategy"), "missing strategy control");
+        assert!(text.contains("[/] seed"), "missing seed control");
+        assert!(text.contains("Space pause"), "missing pause control");
+        assert!(text.contains("F fault"), "missing fault control");
+        assert!(text.contains("E export"), "missing export control");
+        assert!(text.contains("Enter/R run"), "missing run control");
+        assert!(text.contains("A all"), "missing all control");
+        assert!(text.contains("C checksum"), "missing checksum control");
+        assert!(text.contains("X reset"), "missing reset control");
+
+        for line in text.lines() {
+            assert!(
+                !line.contains("Space pau│") && !line.contains("Space pau │"),
+                "control truncated mid-word: {line}"
+            );
+        }
     }
 }

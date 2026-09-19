@@ -9,11 +9,11 @@ Determinism Lab  Seed: 7  Frame: 0  Status: Live  Fault: off
 │Timeline: a2153d                              ││..............................│
 │                                              ││..............................│
 │Scenario: Baseline (10f)                      ││..............................│
-│Controls: 1/2/3 strategy  [/] seed  Space paus││M.....K..LW......JI.I..N....Y.│
-│No runs yet. Click a scenario or press Enter. ││...R.X...V....A.CH....O..F..GN│
-│Keys: Enter/R run selected  A run all  C log c│└──────────────────────────────┘
-│                                              │┌Checks────────────────────────┐
-│                                              ││Scenarios  (click/Enter)  A al│
+│Controls: 1/2/3 strategy  [/] seed            ││M.....K..LW......JI.I..N....Y.│
+│  Space pause  F fault  E export  Enter/R run ││...R.X...V....A.CH....O..F..GN│
+│  A all  C checksum  X reset                  │└──────────────────────────────┘
+│No runs yet. Click a scenario or press Enter. │┌Checks────────────────────────┐
+│Keys: Enter/R run selected  A run all  C log c││Scenarios  (click/Enter)  A al│
 │                                              ││> Baseline (10f)              │
 │                                              ││  Drift (30f)                 │
 │                                              ││  Fault Injection (1f)        │

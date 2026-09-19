@@ -11,11 +11,11 @@
 ││Timeline: a2153d                             ││.............................││
 ││                                             ││.............................││
 ││Scenario: Baseline (10f)                     ││.............................││
-││Controls: 1/2/3 strategy  [/] seed  Space pau│└─────────────────────────────┘│
-││No runs yet. Click a scenario or press Enter.│┌Checks───────────────────────┐│
-││Keys: Enter/R run selected  A run all  C log ││Scenarios  (click/Enter)  A a││
-││                                             ││> Baseline (10f)             ││
-││                                             ││  Drift (30f)                ││
+││Controls: 1/2/3 strategy  [/] seed           │└─────────────────────────────┘│
+││  Space pause  F fault  E export  Enter/R run│┌Checks───────────────────────┐│
+││  A all  C checksum  X reset                 ││Scenarios  (click/Enter)  A a││
+││No runs yet. Click a scenario or press Enter.││> Baseline (10f)             ││
+││Keys: Enter/R run selected  A run all  C log ││  Drift (30f)                ││
 ││                                             ││  Fault Injection (1f)       ││
 ││                                             ││Runs  (click row to inspect) ││
 ││                                             ││                             ││
