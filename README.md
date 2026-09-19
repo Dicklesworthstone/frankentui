@@ -1132,10 +1132,12 @@ and carries no e-process.
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-This describes `ftui-runtime`'s `conformal_alert`, whose only consumers are
-other experimental modules (`timeline_aggregator`, `alpha_investing`) and a
-proptest. The conformal path that is on by default is the Mondrian frame-time
-gate above, which has no e-process layer.
+**Where it runs: nowhere in production.** This describes `ftui-runtime`'s
+`conformal_alert`, whose only consumers are other experimental modules
+(`timeline_aggregator`, `alpha_investing`, `resize_sla`) and a proptest — a
+quarantined cluster wired to itself, not to the runtime. The conformal path that
+is on by default is the Mondrian frame-time gate above, which has no e-process
+layer.
 
 Budget and performance alerts in that module use **distribution-free conformal prediction**:
 
@@ -1663,7 +1665,7 @@ Applies to: ANSI emission, change run coalescing, event drain bursts
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-E2E timing tests use an **e-process** to detect flaky regressions without inflating false positives across the hundreds of frames tested:
+The design is for E2E timing tests to use an **e-process** to detect flaky regressions without inflating false positives across the hundreds of frames tested:
 
 ```
 Sub-Gaussian e-value:
@@ -1676,6 +1678,8 @@ Reject H₀ when E_t ≥ 1/α, valid at ANY stopping time.
 ```
 
 **Why this matters:** traditional significance tests become unreliable when you check p-values after every frame (the "peeking problem"). E-processes eliminate this entirely.
+
+**Where it runs: nowhere.** No E2E test uses `flake_detector` — no crate imports it, and its only exercisers are a proptest over the module itself and the quarantine compile check. The detector is implemented and tested; nothing feeds it E2E timings.
 
 ### Alpha-Investing (Sequential FDR Control)
 
@@ -1697,7 +1701,9 @@ FDR guarantee:
   E[FDP] ≤ initial_wealth / (initial_wealth + reward_total)
 ```
 
-**Result:** FrankenTUI can safely run dozens of simultaneous statistical monitors (BOCPD, CUSUM, conformal, e-process) without false-alarm inflation.
+**Result:** the wealth process lets dozens of simultaneous statistical monitors run without false-alarm inflation.
+
+**Where it runs: nowhere.** No crate imports `ftui_runtime::alpha_investing`, so the monitors that *are* on by default — BOCPD and the Mondrian conformal frame-time gate — do not spend from a shared alpha budget. They are two monitors, not dozens, which is why this has not bitten; the accounting exists for a future where it would.
 
 ---
 
