@@ -1953,4 +1953,45 @@ mod tests {
             assert_eq!(regime, det.regime());
         }
     }
+
+    /// Every number the README's BOCPD block prints, checked against the code.
+    ///
+    /// The README states these as facts about the running system — μ_steady ≈
+    /// 200 ms, μ_burst ≈ 20 ms, λ_hazard = 50, K = 100, the 0.7/0.3 decision
+    /// thresholds — and the "Where it runs" line adds the 1 ms to 10 s
+    /// observation clamp that decides when the heuristic takes over instead.
+    /// Nothing else stops a default from being retuned and the prose drifting
+    /// away from it, which is the failure this repository keeps finding.
+    ///
+    /// If you are changing a default deliberately, change the README block at
+    /// the same time; this test failing is the reminder, not the obstacle.
+    #[test]
+    fn default_config_matches_readme_constants() {
+        let config = BocpdConfig::default();
+
+        // "Steady: x_t ~ Exponential(λ_steady) where μ_steady ≈ 200ms"
+        assert_eq!(config.mu_steady_ms, 200.0);
+        // "Burst: x_t ~ Exponential(λ_burst) where μ_burst ≈ 20ms"
+        assert_eq!(config.mu_burst_ms, 20.0);
+        // "H(r) = 1/λ_hazard where λ_hazard = 50"
+        assert_eq!(config.hazard_lambda, 50.0);
+        // "Complexity: O(K) per update with K=100 run-length truncation"
+        assert_eq!(config.max_run_length, 100);
+        // "p_burst > 0.7 → Burst regime" / "p_burst < 0.3 → Steady regime"
+        assert_eq!(config.burst_threshold, 0.7);
+        assert_eq!(config.steady_threshold, 0.3);
+        // "an inter-arrival outside [min_observation_ms, max_observation_ms]
+        // (1 ms to 10 s by default ...)"
+        assert_eq!(config.min_observation_ms, 1.0);
+        assert_eq!(config.max_observation_ms, 10_000.0);
+        // Not printed as a formula, but the prior the posterior starts from.
+        assert_eq!(config.burst_prior, 0.2);
+
+        // The thresholds must leave a transitional band, or "otherwise →
+        // Transitional (interpolate delay)" describes an unreachable branch.
+        assert!(config.steady_threshold < config.burst_threshold);
+        // Burst means "arriving faster than steady". If these ever cross, the
+        // two regimes swap meaning and every reason code inverts silently.
+        assert!(config.mu_burst_ms < config.mu_steady_ms);
+    }
 }
