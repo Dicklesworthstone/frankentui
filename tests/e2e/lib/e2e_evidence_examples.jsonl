@@ -27,3 +27,4 @@
 {"event":"a11y_announcement","frame_idx":9,"node_id":12185758060053980160,"urgency":"polite","reason":"FocusChanged","text":"textInput: Password. password input. focused"}
 {"schema_version":"ftui-evidence-v1","run_id":"resize-4242","event_idx":0,"screen_mode":"altscreen","cols":100,"rows":30,"event":"allocation_budget_config","alpha":0.05,"mu_0":1000.0,"sigma_sq":2500.0,"cusum_k":0.5,"cusum_h":5.0,"lambda":0.1,"window_size":64}
 {"schema_version":"ftui-evidence-v1","run_id":"resize-4242","event_idx":3,"screen_mode":"altscreen","cols":100,"rows":30,"event":"allocation_budget_evidence","frame":3,"x":1020.0,"residual":20.0,"cusum_plus":0.4,"cusum_minus":0.0,"e_value":1.05,"alert":false}
+{"schema_version":"ftui-evidence-v1","event":"width_cache_stats","hits":120,"misses":15,"len":15,"capacity":4096,"enabled":true,"thread":"main"}

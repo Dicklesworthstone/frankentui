@@ -459,6 +459,30 @@ Required fields:
 - `cusum_plus`, `cusum_minus`, `e_value`
 - `alert` (bool)
 
+#### Event: `capability_decision`
+
+Written once per probeable capability at startup when the evidence sink attaches
+to the writer. Records the Bayesian evidence ledger combining environment detection,
+runtime probe responses (DA1, DA2, DECRPM, XTGETTCAP), multiplexer penalties, and
+operator overrides.
+
+Required fields:
+- `capability` (string): capability name (e.g. `true_color`, `sync_output`, `scroll_region`)
+- `env_detected` (bool): initial detection from terminal environment
+- `probe` (`confirmed` | `denied` | `timeout` | `not_probed`)
+- `operator_override` (bool or `null`): explicit override from environment variable policy
+- `in_mux` (bool): whether a terminal multiplexer (tmux/screen) was detected
+- `final` (bool): whether the capability is enabled in the active runtime
+- `log_odds` (f64): combined log-evidence sum across all recorded evidence sources
+- `probability` (f64): posterior probability from logistic transform
+- `evidence`: array of `{"source": string, "log_odds": float}` entries
+
+Example:
+
+```json
+{"event":"capability_decision","capability":"true_color","env_detected":true,"probe":"not_probed","operator_override":null,"in_mux":false,"final":true,"log_odds":3.0,"probability":0.952574,"evidence":[{"source":"environment","log_odds":3.0}]}
+```
+
 #### Event: `inline_strategy`
 
 Written once when the evidence sink attaches to the writer (after the
@@ -568,6 +592,26 @@ Required fields:
 These additions may be emitted via OTEL events, the local evidence sink, or both.
 Once the runtime-performance lane adopts them, missing mode/recovery evidence is
 a contract failure rather than optional telemetry.
+
+#### Event: `width_cache_stats`
+
+Written once at lifecycle completion when the evidence sink is configured. Records
+the calling thread's grapheme width cache statistics (S3-FIFO) and whether caching
+was enabled for non-ASCII cluster measurement.
+
+Required fields:
+- `hits` (integer): number of cache hits
+- `misses` (integer): number of cache misses
+- `len` (integer): current count of cached graphemes (small + main queues)
+- `capacity` (integer): total cache capacity (default 4096)
+- `enabled` (bool): whether width caching was active (`FTUI_WIDTH_CACHE != 0`)
+- `thread` (string): thread identifier (`"main"`)
+
+Example:
+
+```json
+{"schema_version":"ftui-evidence-v1","event":"width_cache_stats","hits":120,"misses":15,"len":15,"capacity":4096,"enabled":true,"thread":"main"}
+```
 
 ---
 

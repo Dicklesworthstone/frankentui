@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use ftui_backend::{Backend, BackendClock, BackendEventSource, BackendFeatures, BackendPresenter};
+use ftui_backend::{Backend, BackendClock, BackendEventSource, BackendFeatures};
 use ftui_core::event::{Event, MouseEventKind};
 use ftui_core::input_parser::InputParser;
 use ftui_core::session_teardown::seq::{
@@ -39,9 +39,8 @@ use ftui_core::session_teardown::seq::{
 };
 use ftui_core::session_teardown::{KittyPopLatch, TeardownPlan, install_chained_panic_hook};
 use ftui_core::terminal_capabilities::TerminalCapabilities;
+#[cfg(test)]
 use ftui_render::buffer::Buffer;
-use ftui_render::diff::BufferDiff;
-use ftui_render::presenter::Presenter;
 
 #[cfg(unix)]
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGWINCH};
@@ -246,11 +245,17 @@ fn restore_raw_mode_snapshot() {
 
 #[cfg(unix)]
 fn best_effort_termination_cleanup() {
-    if !TTY_SESSION_ACTIVE.load(Ordering::SeqCst) {
+    if !TTY_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
         return;
     }
     let mut stdout = io::stdout();
     let caps = TerminalCapabilities::with_overrides();
+    // This path cannot prove ownership of an active sync block; avoid emitting
+    // standalone DEC ?2026l during panic/signal cleanup. Extracting the shared
+    // TeardownPlan in bd-g00-root-epic-ewths.17.6 flipped this to true, which
+    // fails vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences: under a
+    // multiplexer identity the policy forbids the sequence outright, and there
+    // is no open block here for it to close even when it does not.
     let mut plan = TeardownPlan::from_capabilities(&caps, true, false);
     if !KittyPopLatch::try_claim() {
         plan.pop_kitty_keyboard = false;
@@ -546,6 +551,14 @@ impl TtyEventSource {
             last_input_byte_at: None,
             input_trace: None,
         }
+    }
+
+    /// Create an event source in headless mode with explicit capabilities.
+    #[must_use]
+    pub fn with_capabilities(width: u16, height: u16, capabilities: TerminalCapabilities) -> Self {
+        let mut source = Self::new(width, height);
+        source.capabilities = capabilities;
+        source
     }
 
     /// Create an event source in live mode (reads from /dev/tty, writes
@@ -1270,90 +1283,12 @@ impl BackendEventSource for TtyEventSource {
     }
 }
 
-// ── Presenter ────────────────────────────────────────────────────────────
-
-/// Native ANSI presenter (Buffer → escape sequences → stdout).
-///
-/// Wraps `ftui_render::presenter::Presenter<W>` for real ANSI output.
-/// In headless mode (`inner = None`), all operations are no-ops.
-pub struct TtyPresenter<W: Write + Send = io::Stdout> {
-    capabilities: TerminalCapabilities,
-    inner: Option<Presenter<W>>,
-}
-
-impl TtyPresenter {
-    /// Create a headless presenter (no output). Used for tests and headless backends.
-    #[must_use]
-    pub fn new(capabilities: TerminalCapabilities) -> Self {
-        Self {
-            capabilities,
-            inner: None,
-        }
-    }
-
-    /// Create a live presenter that writes ANSI escape sequences to stdout.
-    #[must_use]
-    pub fn live(capabilities: TerminalCapabilities) -> Self {
-        Self {
-            capabilities,
-            inner: Some(Presenter::new(io::stdout(), capabilities)),
-        }
-    }
-}
-
-impl<W: Write + Send> TtyPresenter<W> {
-    /// Create a presenter that writes to an arbitrary `Write` sink.
-    pub fn with_writer(writer: W, capabilities: TerminalCapabilities) -> Self {
-        Self {
-            capabilities,
-            inner: Some(Presenter::new(writer, capabilities)),
-        }
-    }
-}
-
-impl<W: Write + Send> BackendPresenter for TtyPresenter<W> {
-    type Error = io::Error;
-
-    fn capabilities(&self) -> &TerminalCapabilities {
-        &self.capabilities
-    }
-
-    fn write_log(&mut self, _text: &str) -> Result<(), Self::Error> {
-        // The runtime's terminal path routes logs through `TerminalWriter`, which
-        // positions output in the inline scrollback region safely. Emitting from
-        // here risks interleaving with UI ANSI output on the same terminal stream.
-        // Until this backend owns a dedicated safe log channel, keep this a no-op.
-        Ok(())
-    }
-
-    fn present_ui(
-        &mut self,
-        buf: &Buffer,
-        diff: Option<&BufferDiff>,
-        full_repaint_hint: bool,
-    ) -> Result<(), Self::Error> {
-        let Some(ref mut presenter) = self.inner else {
-            return Ok(());
-        };
-        if full_repaint_hint {
-            let full = BufferDiff::full(buf.width(), buf.height());
-            presenter.present(buf, &full)?;
-        } else if let Some(diff) = diff {
-            presenter.present(buf, diff)?;
-        } else {
-            let full = BufferDiff::full(buf.width(), buf.height());
-            presenter.present(buf, &full)?;
-        }
-        Ok(())
-    }
-}
-
 // ── Backend ──────────────────────────────────────────────────────────────
 
 /// Native Unix terminal backend.
 ///
-/// Combines `TtyClock`, `TtyEventSource`, and `TtyPresenter` into a single
-/// `Backend` implementation that the ftui runtime can drive.
+/// Combines `TtyClock` and `TtyEventSource` into a single `Backend` implementation
+/// that the ftui runtime can drive.
 ///
 /// When created with [`TtyBackend::open`], the backend enters raw mode and
 /// manages the terminal lifecycle via RAII. On drop (including panics),
@@ -1365,12 +1300,10 @@ pub struct TtyBackend {
     // Fields are ordered for correct drop sequence:
     // 1. clock (no cleanup needed)
     // 2. events (feature state tracking)
-    // 3. presenter (BufWriter flush on drop; benign — present() always flushes)
-    // 4. alt_screen_active (tracked for cleanup)
-    // 5. raw_mode — MUST be last: termios is restored after escape sequences
+    // 3. alt_screen_active (tracked for cleanup)
+    // 4. raw_mode — MUST be last: termios is restored after escape sequences
     clock: TtyClock,
     events: TtyEventSource,
-    presenter: TtyPresenter,
     alt_screen_active: bool,
     #[cfg(unix)]
     signal_interception_active: bool,
@@ -1385,7 +1318,6 @@ impl TtyBackend {
         Self {
             clock: TtyClock::new(),
             events: TtyEventSource::new(width, height),
-            presenter: TtyPresenter::new(TerminalCapabilities::detect()),
             alt_screen_active: false,
             #[cfg(unix)]
             signal_interception_active: false,
@@ -1399,8 +1331,7 @@ impl TtyBackend {
     pub fn with_capabilities(width: u16, height: u16, capabilities: TerminalCapabilities) -> Self {
         Self {
             clock: TtyClock::new(),
-            events: TtyEventSource::new(width, height),
-            presenter: TtyPresenter::new(capabilities),
+            events: TtyEventSource::with_capabilities(width, height, capabilities),
             alt_screen_active: false,
             #[cfg(unix)]
             signal_interception_active: false,
@@ -1473,7 +1404,6 @@ impl TtyBackend {
         Ok(Self {
             clock: TtyClock::new(),
             events,
-            presenter: TtyPresenter::live(capabilities),
             alt_screen_active,
             signal_interception_active: signal_guard.disarm(),
             raw_mode: Some(raw_mode),
@@ -1499,14 +1429,23 @@ impl Drop for TtyBackend {
         // Only run cleanup if we have an active session.
         #[cfg(unix)]
         if self.raw_mode.is_some() {
-            TTY_SESSION_ACTIVE.store(false, Ordering::SeqCst);
+            if !TTY_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
+                return;
+            }
             let mut stdout = io::stdout();
             let mouse_disable_seq =
                 mouse_disable_sequence_for_capabilities(self.events.capabilities);
+            // Only close a synchronized-output block when the policy actually
+            // let one be opened. Under a multiplexer identity `use_sync_output`
+            // is false, no `?2026h` is ever written, and a standalone `?2026l`
+            // at teardown is both unpaired and forbidden by that policy - which
+            // is what vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences
+            // asserts. The pre-refactor Drop emitted no sync end at all.
+            let emit_sync_end = self.events.capabilities.use_sync_output();
             let _ = write_cleanup_sequence_policy_with_mouse(
                 &self.events.features(),
                 self.alt_screen_active,
-                false,
+                emit_sync_end,
                 mouse_disable_seq,
                 &mut stdout,
             );
@@ -1527,7 +1466,7 @@ impl Drop for TtyBackend {
 }
 
 /// Allow `TtyBackend` to be used directly as a `BackendEventSource` in
-/// `Program<M, TtyBackend, W>`.  Delegates to the inner `TtyEventSource`.
+/// `Program<M, TtyBackend, P>`. Delegates to the inner `TtyEventSource`.
 /// This is the primary integration point: the runtime owns a `TtyBackend`
 /// as its event source, which also provides RAII terminal cleanup on drop.
 impl BackendEventSource for TtyBackend {
@@ -1554,7 +1493,6 @@ impl Backend for TtyBackend {
     type Error = io::Error;
     type Clock = TtyClock;
     type Events = TtyEventSource;
-    type Presenter = TtyPresenter;
 
     fn clock(&self) -> &Self::Clock {
         &self.clock
@@ -1562,10 +1500,6 @@ impl Backend for TtyBackend {
 
     fn events(&mut self) -> &mut Self::Events {
         &mut self.events
-    }
-
-    fn presenter(&mut self) -> &mut Self::Presenter {
-        &mut self.presenter
     }
 }
 
@@ -1617,11 +1551,16 @@ fn write_cleanup_sequence_policy_with_mouse(
     mouse_disable_seq: &'static [u8],
     writer: &mut impl Write,
 ) -> io::Result<()> {
+    let pop_kitty = if features.kitty_keyboard {
+        !KittyPopLatch::is_claimed()
+    } else {
+        false
+    };
     let plan = TeardownPlan {
         emit_sync_end,
         reset_scroll_region: true,
         reset_style: true,
-        pop_kitty_keyboard: features.kitty_keyboard,
+        pop_kitty_keyboard: pop_kitty,
         disable_focus: features.focus_events,
         disable_paste: features.bracketed_paste,
         disable_mouse: features.mouse_capture,
@@ -1639,6 +1578,21 @@ fn write_cleanup_sequence_policy_with_mouse(
 mod tests {
     use super::*;
     use ftui_core::session_teardown::seq::*;
+
+    /// Shared lock for all tests that depend on the process-global `KittyPopLatch`.
+    ///
+    /// `write_cleanup_sequence*` consults `KittyPopLatch::is_claimed()` so that only
+    /// one component emits the kitty keyboard pop per process. Tests that assert on
+    /// that pop must reset the latch first and must not race each other for it.
+    /// Mirrors the `gpu_test_lock` pattern in `ftui-extras`.
+    fn kitty_latch_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static KITTY_LATCH_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        KITTY_LATCH_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn clock_is_monotonic() {
@@ -2562,145 +2516,6 @@ mod tests {
     }
 
     #[test]
-    fn presenter_1x1_buffer_does_not_panic() {
-        let caps = TerminalCapabilities::detect();
-        let mut presenter = TtyPresenter::with_writer(Vec::<u8>::new(), caps);
-        let buf = Buffer::new(1, 1);
-        let diff = BufferDiff::full(1, 1);
-        presenter.present_ui(&buf, Some(&diff), false).unwrap();
-        // Verify output was emitted for the single cell.
-        let bytes = presenter.inner.unwrap().into_inner().unwrap();
-        assert!(!bytes.is_empty(), "1x1 buffer should produce output");
-    }
-
-    #[test]
-    fn presenter_capabilities() {
-        let caps = TerminalCapabilities::detect();
-        let presenter = TtyPresenter::new(caps);
-        let _c = presenter.capabilities();
-    }
-
-    // ── TtyPresenter rendering tests ─────────────────────────────────
-
-    #[test]
-    fn headless_presenter_present_ui_is_noop() {
-        let caps = TerminalCapabilities::detect();
-        let mut presenter = TtyPresenter::new(caps);
-        let buf = Buffer::new(10, 5);
-        let diff = BufferDiff::full(10, 5);
-        // All variants should return Ok without panicking.
-        presenter.present_ui(&buf, Some(&diff), false).unwrap();
-        presenter.present_ui(&buf, None, false).unwrap();
-        presenter.present_ui(&buf, Some(&diff), true).unwrap();
-    }
-
-    #[test]
-    fn live_presenter_emits_ansi() {
-        use ftui_render::cell::{Cell, CellAttrs, CellContent, PackedRgba, StyleFlags};
-
-        let caps = TerminalCapabilities::detect();
-        let output = Vec::<u8>::new();
-        let mut presenter = TtyPresenter::with_writer(output, caps);
-
-        let mut buf = Buffer::new(10, 2);
-        // Place a bold red 'X' at (0, 0).
-        let cell = Cell {
-            content: CellContent::from_char('X'),
-            fg: PackedRgba::RED,
-            bg: PackedRgba::BLACK,
-            attrs: CellAttrs::new(StyleFlags::BOLD, 0),
-        };
-        buf.set(0, 0, cell);
-
-        let diff = BufferDiff::full(10, 2);
-        presenter.present_ui(&buf, Some(&diff), false).unwrap();
-
-        // Extract the written bytes from the inner Presenter's writer.
-        // The Presenter wraps writer in BufWriter<CountingWriter<W>>,
-        // so we just check the output isn't empty and contains CSI (ESC[).
-        let inner = presenter.inner.unwrap();
-        let bytes = inner.into_inner().unwrap();
-        assert!(!bytes.is_empty(), "live presenter should emit output");
-        assert!(
-            bytes.windows(2).any(|w| w == b"\x1b["),
-            "output should contain CSI escape sequences"
-        );
-    }
-
-    #[test]
-    fn full_repaint_when_diff_is_none() {
-        use ftui_render::cell::Cell;
-
-        let caps = TerminalCapabilities::detect();
-        let output = Vec::<u8>::new();
-        let mut presenter = TtyPresenter::with_writer(output, caps);
-
-        let mut buf = Buffer::new(5, 1);
-        for x in 0..5 {
-            buf.set(x, 0, Cell::from_char(b"ABCDE"[x as usize] as char));
-        }
-
-        // Pass diff=None — should trigger full repaint.
-        presenter.present_ui(&buf, None, false).unwrap();
-
-        let bytes = presenter.inner.unwrap().into_inner().unwrap();
-        // All 5 characters should appear in the output.
-        let output_str = String::from_utf8_lossy(&bytes);
-        for ch in ['A', 'B', 'C', 'D', 'E'] {
-            assert!(
-                output_str.contains(ch),
-                "full repaint should emit '{ch}', got: {output_str}"
-            );
-        }
-    }
-
-    #[test]
-    fn diff_based_partial_update() {
-        use ftui_render::cell::Cell;
-
-        let caps = TerminalCapabilities::detect();
-        let output = Vec::<u8>::new();
-        let mut presenter = TtyPresenter::with_writer(output, caps);
-
-        let mut old = Buffer::new(5, 1);
-        for x in 0..5 {
-            old.set(x, 0, Cell::from_char(b"ABCDE"[x as usize] as char));
-        }
-        let mut new = old.clone();
-        new.set(2, 0, Cell::from_char('Z'));
-        let diff = BufferDiff::compute(&old, &new);
-        presenter.present_ui(&new, Some(&diff), false).unwrap();
-
-        let bytes = presenter.inner.unwrap().into_inner().unwrap();
-        let output_str = String::from_utf8_lossy(&bytes);
-        // The changed cell should appear; unchanged leading cell should not.
-        assert!(
-            output_str.contains('Z'),
-            "diff-based update should emit changed cell 'Z'"
-        );
-        assert!(
-            !output_str.contains('A'),
-            "diff-based update should not emit unchanged cell 'A'"
-        );
-    }
-
-    #[test]
-    fn write_log_headless_does_not_panic() {
-        let caps = TerminalCapabilities::detect();
-        let mut presenter = TtyPresenter::new(caps);
-        presenter.write_log("headless log test").unwrap();
-    }
-
-    #[test]
-    fn write_log_live_does_not_corrupt_ui_stream() {
-        let caps = TerminalCapabilities::detect();
-        let mut presenter = TtyPresenter::with_writer(Vec::<u8>::new(), caps);
-        presenter.write_log("live log test").unwrap();
-        let bytes = presenter.inner.unwrap().into_inner().unwrap();
-        assert!(bytes.is_empty(), "write_log must not emit UI bytes");
-    }
-
-    #[test]
     fn backend_headless_construction() {
         let backend = TtyBackend::new(120, 40);
         assert!(!backend.is_live());
@@ -2715,7 +2530,6 @@ mod tests {
         let _t = backend.clock().now_mono();
         let (w, h) = backend.events().size().unwrap();
         assert_eq!((w, h), (80, 24));
-        let _c = backend.presenter().capabilities();
     }
 
     #[test]
@@ -2925,6 +2739,7 @@ mod tests {
 
     #[test]
     fn cleanup_sequence_contains_all_disable() {
+        let _latch_guard = kitty_latch_test_lock();
         let features = BackendFeatures {
             mouse_capture: true,
             bracketed_paste: true,
@@ -2932,6 +2747,7 @@ mod tests {
             kitty_keyboard: true,
         };
         let mut buf = Vec::new();
+        ftui_core::session_teardown::KittyPopLatch::reset_for_tests();
         write_cleanup_sequence(&features, true, &mut buf).unwrap();
 
         // Verify expected cleanup disables are present.
@@ -3013,6 +2829,8 @@ mod tests {
         use ftui_core::terminal_capabilities::TerminalCapabilities;
         use ftui_core::terminal_session::best_effort_cleanup_to;
 
+        let _latch_guard = kitty_latch_test_lock();
+
         for (mouse, paste, focus, kitty) in [
             (true, true, true, true),
             (true, false, true, false),
@@ -3036,7 +2854,11 @@ mod tests {
             KittyPopLatch::reset_for_tests();
             best_effort_cleanup_to(&mut core_buf, &caps);
 
+            // Each backend must be measured from the same starting state: the
+            // latch is one-shot, so without this reset the core call above would
+            // have claimed it and tty would correctly decline to pop again.
             let mut tty_buf = Vec::new();
+            KittyPopLatch::reset_for_tests();
             write_cleanup_sequence_with_sync_end(&features, true, &mut tty_buf).unwrap();
 
             assert_eq!(
@@ -3684,6 +3506,7 @@ mod tests {
 
         #[test]
         fn per_feature_disable_on_drop() {
+            let _latch_guard = super::kitty_latch_test_lock();
             let (mut master, slave) = pty_pair();
             let slave_dup = slave.try_clone().unwrap();
 
@@ -3698,6 +3521,7 @@ mod tests {
                     kitty_keyboard: true,
                 };
                 let mut cleanup = Vec::new();
+                ftui_core::session_teardown::KittyPopLatch::reset_for_tests();
                 write_cleanup_sequence(&all_on, false, &mut cleanup).unwrap();
 
                 let output = write_to_slave_and_read_master(&mut master, &slave_dup, &cleanup);

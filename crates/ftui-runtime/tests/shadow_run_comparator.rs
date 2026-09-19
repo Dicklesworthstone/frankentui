@@ -16,6 +16,7 @@ use ftui_harness::validation_matrix::AssertionCategory;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::sanitize::sanitize;
+use ftui_runtime::TerminalPresenter;
 use ftui_runtime::program::{Cmd, Model, Program, ProgramConfig, RuntimeLane};
 use ftui_runtime::terminal_writer::TerminalWriter;
 use ftui_runtime::{BackendEventSource, BackendFeatures};
@@ -780,8 +781,14 @@ fn run_lane(lane: RuntimeLane, msgs: Vec<SMsg>, capture_frames: &[(u16, u16)]) -
         model.script.len(),
         Arc::clone(&shared),
     );
-    let mut program = Program::with_event_source(model, events, initial_features, writer, config)
-        .expect("headless program for shadow comparator");
+    let mut program = Program::with_event_source(
+        model,
+        events,
+        initial_features,
+        TerminalPresenter::new(writer),
+        config,
+    )
+    .expect("headless program for shadow comparator");
     program.run().expect("run shadow comparator lane");
 
     let mut frame_hashes = Vec::new();

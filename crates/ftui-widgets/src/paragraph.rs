@@ -108,7 +108,7 @@ pub struct Paragraph<'a> {
     block: Option<Block<'a>>,
     style: Style,
     wrap: Option<WrapMode>,
-    alignment: Alignment,
+    alignment: Option<Alignment>,
     scroll: (u16, u16),
 }
 
@@ -144,7 +144,7 @@ impl<'a> Paragraph<'a> {
             block: None,
             style: Style::default(),
             wrap: None,
-            alignment: Alignment::Left,
+            alignment: None,
             scroll: (0, 0),
         }
     }
@@ -191,7 +191,7 @@ impl<'a> Paragraph<'a> {
     /// Set the text alignment.
     #[must_use]
     pub fn alignment(mut self, alignment: Alignment) -> Self {
-        self.alignment = alignment;
+        self.alignment = Some(alignment);
         self
     }
 
@@ -371,9 +371,18 @@ impl Widget for Paragraph<'_> {
         let mut current_visual_line = 0;
         let scroll_offset = self.scroll.0 as usize;
 
+        let text_direction = frame.text_direction;
+        let effective_alignment = self.alignment.unwrap_or_else(|| {
+            if text_direction.is_rtl() {
+                Alignment::Right
+            } else {
+                Alignment::Left
+            }
+        });
+
         let mut render_line = |line: &ftui_text::Line, line_width: usize, y: u16| {
             let scroll_x = usize::from(self.scroll.1);
-            let start_x = align_x(text_area, line_width, self.alignment);
+            let start_x = align_x(text_area, line_width, effective_alignment);
 
             // Logical text widths can exceed the terminal coordinate range.
             let mut span_visual_offset: usize = 0;
@@ -446,13 +455,19 @@ impl Widget for Paragraph<'_> {
             }
         };
 
+        #[cfg(feature = "bidi")]
+        let para_dir = match text_direction {
+            ftui_render::TextDirection::Rtl => ftui_text::bidi::ParagraphDirection::Rtl,
+            ftui_render::TextDirection::Ltr => ftui_text::bidi::ParagraphDirection::Ltr,
+        };
+
         let metrics = self.cached_metrics(false);
         let rendered_lines: Option<CachedWrappedParagraph> = self
             .wrap
             .map(|wrap_mode| self.cached_wrapped_lines(text_area.width as usize, wrap_mode));
 
         if let Some(wrapped) = rendered_lines {
-            for (line, line_width) in wrapped.lines.iter().zip(wrapped.line_widths.iter()) {
+            for (line, _line_width) in wrapped.lines.iter().zip(wrapped.line_widths.iter()) {
                 if current_visual_line < scroll_offset {
                     current_visual_line += 1;
                     continue;
@@ -460,12 +475,19 @@ impl Widget for Paragraph<'_> {
                 if y >= text_area.bottom() {
                     break;
                 }
-                render_line(line, *line_width, y);
+                #[cfg(feature = "bidi")]
+                {
+                    let (reordered_line, reordered_width) = reorder_line_bidi(line, para_dir);
+                    render_line(&reordered_line, reordered_width, y);
+                }
+                #[cfg(not(feature = "bidi"))]
+                render_line(line, *_line_width, y);
+
                 y = y.saturating_add(1);
                 current_visual_line += 1;
             }
         } else {
-            for (line, line_width) in self.text.lines().iter().zip(metrics.line_widths.iter()) {
+            for (line, _line_width) in self.text.lines().iter().zip(metrics.line_widths.iter()) {
                 if current_visual_line < scroll_offset {
                     current_visual_line += 1;
                     continue;
@@ -473,12 +495,96 @@ impl Widget for Paragraph<'_> {
                 if y >= text_area.bottom() {
                     break;
                 }
-                render_line(line, *line_width, y);
+                #[cfg(feature = "bidi")]
+                {
+                    let (reordered_line, reordered_width) = reorder_line_bidi(line, para_dir);
+                    render_line(&reordered_line, reordered_width, y);
+                }
+                #[cfg(not(feature = "bidi"))]
+                render_line(line, *_line_width, y);
+
                 y = y.saturating_add(1);
                 current_visual_line += 1;
             }
         }
     }
+}
+
+#[cfg(feature = "bidi")]
+fn reorder_line_bidi(
+    line: &ftui_text::Line,
+    para_dir: ftui_text::bidi::ParagraphDirection,
+) -> (ftui_text::Line<'static>, usize) {
+    let full_text: String = line.spans().iter().map(|s| s.content.as_ref()).collect();
+    if full_text.is_empty() || !ftui_text::bidi::has_rtl(&full_text) {
+        let width = line.width();
+        let spans: Vec<ftui_text::Span<'static>> = line
+            .spans()
+            .iter()
+            .cloned()
+            .map(ftui_text::Span::into_owned)
+            .collect();
+        return (ftui_text::Line::from_spans(spans), width);
+    }
+    let reordered = ftui_text::bidi::reorder(&full_text, para_dir);
+    let width = ftui_text::display_width(&reordered);
+
+    if line.spans().len() <= 1 {
+        let style = line
+            .spans()
+            .first()
+            .and_then(|s| s.style)
+            .unwrap_or_default();
+        return (ftui_text::Line::styled(reordered, style), width);
+    }
+
+    let dir_opt = match para_dir {
+        ftui_text::bidi::ParagraphDirection::Ltr => Some(ftui_text::bidi::Direction::Ltr),
+        ftui_text::bidi::ParagraphDirection::Rtl => Some(ftui_text::bidi::Direction::Rtl),
+        ftui_text::bidi::ParagraphDirection::Auto => None,
+    };
+    let seg = ftui_text::bidi::BidiSegment::new(&full_text, dir_opt);
+    let mut char_styles: Vec<Option<Style>> = Vec::with_capacity(full_text.chars().count());
+    for span in line.spans() {
+        for _ in span.content.chars() {
+            char_styles.push(span.style);
+        }
+    }
+    let mut new_spans: Vec<ftui_text::Span<'static>> = Vec::new();
+    let mut current_str = String::new();
+    let mut current_style: Option<Style> = None;
+
+    for &logical_idx in &seg.visual_to_logical {
+        if logical_idx < seg.chars.len() {
+            let ch = seg.chars[logical_idx];
+            let style = char_styles.get(logical_idx).copied().flatten();
+            if current_str.is_empty() {
+                current_str.push(ch);
+                current_style = style;
+            } else if current_style == style {
+                current_str.push(ch);
+            } else {
+                if let Some(st) = current_style {
+                    new_spans.push(ftui_text::Span::styled(
+                        std::mem::take(&mut current_str),
+                        st,
+                    ));
+                } else {
+                    new_spans.push(ftui_text::Span::raw(std::mem::take(&mut current_str)));
+                }
+                current_str.push(ch);
+                current_style = style;
+            }
+        }
+    }
+    if !current_str.is_empty() {
+        if let Some(st) = current_style {
+            new_spans.push(ftui_text::Span::styled(current_str, st));
+        } else {
+            new_spans.push(ftui_text::Span::raw(current_str));
+        }
+    }
+    (ftui_text::Line::from_spans(new_spans), width)
 }
 impl MeasurableWidget for Paragraph<'_> {
     fn measure(&self, available: Size) -> SizeConstraints {
@@ -655,12 +761,26 @@ mod tests {
         let width = frame.buffer.width();
         let mut actual = String::new();
         for x in 0..width {
-            let ch = frame
-                .buffer
-                .get(x, y)
-                .and_then(|cell| cell.content.as_char())
-                .unwrap_or(' ');
-            actual.push(ch);
+            let cell = match frame.buffer.get(x, y) {
+                Some(c) => c,
+                None => {
+                    actual.push(' ');
+                    continue;
+                }
+            };
+            if cell.content.is_empty() {
+                actual.push(' ');
+            } else if let Some(ch) = cell.content.as_char() {
+                actual.push(ch);
+            } else if let Some(gid) = cell.content.grapheme_id() {
+                if let Some(s) = frame.pool.get(gid) {
+                    actual.push_str(s);
+                } else {
+                    actual.push(' ');
+                }
+            } else {
+                actual.push(' ');
+            }
         }
         actual
     }
@@ -1510,5 +1630,160 @@ mod tests {
         assert!(name.chars().count() <= 200);
         assert_eq!(ftui_text::graphemes(prefix).count(), 98);
         assert!(prefix.ends_with("e\u{301}"));
+    }
+
+    #[test]
+    fn paragraph_rtl_default_alignment_right() {
+        let sample = "مرحبا بالعالم";
+        let para = Paragraph::new(sample);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 3, &mut pool);
+        frame.set_text_direction(ftui_render::TextDirection::Rtl);
+        let area = Rect::new(0, 0, 40, 3);
+        para.render(area, &mut frame);
+
+        let row = raw_row_text(&frame, 0);
+        assert!(
+            !row.ends_with(' '),
+            "RTL frame paragraph should right-align by default: {:?}",
+            row
+        );
+
+        let para_left = Paragraph::new(sample).alignment(Alignment::Left);
+        let mut frame_left = Frame::new(40, 3, &mut pool);
+        frame_left.set_text_direction(ftui_render::TextDirection::Rtl);
+        para_left.render(area, &mut frame_left);
+
+        let row_left = raw_row_text(&frame_left, 0);
+        assert!(
+            !row_left.starts_with(' '),
+            "Explicit Alignment::Left should left-align: {:?}",
+            row_left
+        );
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn paragraph_rtl_visual_order_matches_unicode_bidi() {
+        let corpus = [
+            "مرحبا بكم",
+            "السلام عليكم",
+            "اللغة العربية جميلة",
+            "صباح الخير",
+            "استخدم Rust للبرمجة",
+            "مرحبا بكم في FrankenTUI",
+            "جرب Linux اليوم",
+            "تطبيق Terminal جديد",
+            "العدد هو 12345",
+            "سعر المنتج 50 دولار",
+            "عام 2026 الحالي",
+            "رقم 42 هو الجواب",
+            "هل أنت بخير؟",
+            "نعم، بالتأكيد!",
+            "واحد، اثنان، ثلاثة.",
+            "مرحبا يا عالم",
+            "שלום עולם",
+            "עברית ו-Rust",
+            "בוקר טוב ישראל",
+            "מספר 100 כאן",
+        ];
+
+        for sample in corpus {
+            let para = Paragraph::new(sample).alignment(Alignment::Left);
+            let width = 60;
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(width, 1, &mut pool);
+            frame.set_text_direction(ftui_render::TextDirection::Rtl);
+            let area = Rect::new(0, 0, width, 1);
+            para.render(area, &mut frame);
+
+            let bidi_info = unicode_bidi::BidiInfo::new(sample, Some(unicode_bidi::Level::rtl()));
+            let oracle_reordered =
+                bidi_info.reorder_line(&bidi_info.paragraphs[0], 0..sample.len());
+
+            let row = raw_row_text(&frame, 0);
+            let rendered_trimmed = row.trim_end();
+            assert_eq!(
+                rendered_trimmed,
+                oracle_reordered.as_ref(),
+                "Mismatch for sample {:?}: got {:?}, expected oracle {:?}",
+                sample,
+                rendered_trimmed,
+                oracle_reordered
+            );
+        }
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn paragraph_wrap_then_reorder_per_line() {
+        let text = "هذا نص عربي طويل جدا لتجربة تقسيم الأسطر وإعادة الترتيب بشكل مستقل لكل سطر";
+        let width = 25;
+        let para = Paragraph::new(text)
+            .wrap(WrapMode::Word)
+            .alignment(Alignment::Left);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(width, 5, &mut pool);
+        frame.set_text_direction(ftui_render::TextDirection::Rtl);
+        let area = Rect::new(0, 0, width, 5);
+        para.render(area, &mut frame);
+
+        let cached = para.cached_wrapped_lines(width as usize, WrapMode::Word);
+        for (y, wrapped_line) in cached.lines.iter().take(3).enumerate() {
+            let logical_text: String = wrapped_line
+                .spans()
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            let expected =
+                ftui_text::bidi::reorder(&logical_text, ftui_text::bidi::ParagraphDirection::Rtl);
+            let row = raw_row_text(&frame, y as u16);
+            assert_eq!(
+                row.trim_end(),
+                expected.as_str(),
+                "Line {} mismatch against independently reordered wrapped line",
+                y
+            );
+        }
+    }
+
+    #[cfg(feature = "bidi")]
+    proptest::proptest! {
+        #[test]
+        fn paragraph_ltr_text_is_unchanged_by_direction_rtl(s in "[a-zA-Z0-9 _-]{1,30}") {
+            let area = Rect::new(0, 0, 40, 1);
+            let mut pool = GraphemePool::new();
+
+            let mut ltr_frame = Frame::new(40, 1, &mut pool);
+            ltr_frame.set_text_direction(ftui_render::TextDirection::Ltr);
+            Paragraph::new(s.as_str()).alignment(Alignment::Left).render(area, &mut ltr_frame);
+            let ltr_row = raw_row_text(&ltr_frame, 0);
+
+            let mut rtl_frame = Frame::new(40, 1, &mut pool);
+            rtl_frame.set_text_direction(ftui_render::TextDirection::Rtl);
+            Paragraph::new(s.as_str()).alignment(Alignment::Left).render(area, &mut rtl_frame);
+            let rtl_row = raw_row_text(&rtl_frame, 0);
+
+            proptest::prop_assert_eq!(ltr_row.trim_end(), rtl_row.trim_end());
+        }
+    }
+
+    #[cfg(not(feature = "bidi"))]
+    #[test]
+    fn paragraph_rtl_without_bidi_only_aligns_right() {
+        let sample = "مرحبا بالعالم";
+        let para = Paragraph::new(sample);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        frame.set_text_direction(ftui_render::TextDirection::Rtl);
+        let area = Rect::new(0, 0, 40, 1);
+        para.render(area, &mut frame);
+
+        let row = raw_row_text(&frame, 0);
+        assert!(
+            !row.ends_with(' '),
+            "RTL frame paragraph should right-align even without bidi feature"
+        );
+        assert!(row.trim().starts_with("مرحبا"));
     }
 }

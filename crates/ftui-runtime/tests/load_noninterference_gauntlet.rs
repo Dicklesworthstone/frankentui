@@ -64,7 +64,7 @@ use ftui_runtime::subscription::{Every, Subscription};
 use ftui_runtime::terminal_writer::TerminalWriter;
 use ftui_runtime::{
     BackendEventSource, BackendFeatures, EffectQueueConfig, EvidenceSinkConfig, LoadGovernorConfig,
-    ScreenMode,
+    ScreenMode, TerminalPresenter,
 };
 use proptest::prelude::*;
 use std::io::{self, Write};
@@ -500,8 +500,14 @@ fn run_gauntlet(
     let events = BurstSource::new(WIDTH, HEIGHT, initial_features, spec.scripted_steps());
 
     let start = Instant::now();
-    let mut program = Program::with_event_source(model, events, initial_features, writer, config)
-        .expect("headless program for load non-interference gauntlet");
+    let mut program = Program::with_event_source(
+        model,
+        events,
+        initial_features,
+        TerminalPresenter::new(writer),
+        config,
+    )
+    .expect("headless program for load non-interference gauntlet");
     program.run().expect("run load non-interference scenario");
     let elapsed = start.elapsed();
 

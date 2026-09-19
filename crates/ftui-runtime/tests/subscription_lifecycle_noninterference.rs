@@ -45,6 +45,7 @@ use ftui_runtime::subscription::{Every, Subscription};
 use ftui_runtime::terminal_writer::TerminalWriter;
 use ftui_runtime::{
     BackendEventSource, BackendFeatures, ProcessEvent, ProcessSubscription, ScreenMode,
+    TerminalPresenter,
 };
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
@@ -331,8 +332,14 @@ fn run_scenario(screen_mode: ScreenMode, spec: SubSpec) -> Outcome {
     let events = ScriptedSource::new(WIDTH, HEIGHT, initial_features, STEPS);
 
     let start = Instant::now();
-    let mut program = Program::with_event_source(model, events, initial_features, writer, config)
-        .expect("headless program for non-interference harness");
+    let mut program = Program::with_event_source(
+        model,
+        events,
+        initial_features,
+        TerminalPresenter::new(writer),
+        config,
+    )
+    .expect("headless program for non-interference harness");
     program.run().expect("run non-interference scenario");
     let elapsed = start.elapsed();
 

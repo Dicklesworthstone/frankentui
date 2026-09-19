@@ -21,11 +21,26 @@ ALL_CASES=(
     cleanup_altscreen_mouse_focus
 )
 
+if [[ -z "${E2E_HARNESS_BIN:-}" || ! -x "${E2E_HARNESS_BIN:-}" ]]; then
+    TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+    if [[ -x "$TARGET_DIR/debug/ftui-harness" ]]; then
+        E2E_HARNESS_BIN="$TARGET_DIR/debug/ftui-harness"
+    elif [[ -x "/data/tmp/cargo-target/debug/ftui-harness" ]]; then
+        E2E_HARNESS_BIN="/data/tmp/cargo-target/debug/ftui-harness"
+    fi
+fi
+
+BACKEND="${FTUI_DEMO_BACKEND:-native}"
+BACKEND_TAG=""
+if [[ -n "${FTUI_DEMO_BACKEND:-}" ]]; then
+    BACKEND_TAG="_${FTUI_DEMO_BACKEND}"
+fi
+
 if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
-    LOG_FILE="$E2E_LOG_DIR/cleanup_missing.log"
+    LOG_FILE="$E2E_LOG_DIR/cleanup_missing${BACKEND_TAG}.log"
     for t in "${ALL_CASES[@]}"; do
-        log_test_skip "$t" "ftui-harness binary missing"
-        record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
+        log_test_skip "${t}${BACKEND_TAG}" "ftui-harness binary missing"
+        record_result "${t}${BACKEND_TAG}" "skipped" 0 "$LOG_FILE" "binary missing"
     done
     exit 0
 fi
@@ -60,7 +75,9 @@ cleanup_pty_run() (
         WEZTERM_UNIX_SOCKET WEZTERM_PANE WEZTERM_EXECUTABLE KITTY_WINDOW_ID \
         WT_SESSION TERM_PROGRAM_VERSION LC_TERMINAL LC_TERMINAL_VERSION
     export TERM=xterm-256color COLORTERM=truecolor TERM_PROGRAM=Alacritty
+    export FTUI_DEMO_BACKEND="$BACKEND"
     log_info "PTY profile: TERM=$TERM COLORTERM=$COLORTERM TERM_PROGRAM=$TERM_PROGRAM; inherited capability/mux markers cleared"
+    log_info "Backend: $FTUI_DEMO_BACKEND"
     log_info "Requested modes: screen=${FTUI_HARNESS_SCREEN_MODE:-inline} mouse=${FTUI_HARNESS_ENABLE_MOUSE:-0} focus=${FTUI_HARNESS_ENABLE_FOCUS:-0} paste=1 (ProgramConfig default)"
     pty_run "$@"
 )
@@ -95,10 +112,10 @@ PY
 }
 
 cleanup_normal() {
-    LOG_FILE="$E2E_LOG_DIR/cleanup_normal.log"
-    local output_file="$E2E_LOG_DIR/cleanup_normal.pty"
+    LOG_FILE="$E2E_LOG_DIR/cleanup_normal${BACKEND_TAG}.log"
+    local output_file="$E2E_LOG_DIR/cleanup_normal${BACKEND_TAG}.pty"
 
-    log_test_start "cleanup_normal"
+    log_test_start "cleanup_normal${BACKEND_TAG}"
 
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     FTUI_HARNESS_LOG_LINES=0 \
@@ -109,10 +126,10 @@ cleanup_normal() {
 }
 
 cleanup_cursor_visible() {
-    LOG_FILE="$E2E_LOG_DIR/cleanup_cursor_visible.log"
-    local output_file="$E2E_LOG_DIR/cleanup_cursor_visible.pty"
+    LOG_FILE="$E2E_LOG_DIR/cleanup_cursor_visible${BACKEND_TAG}.log"
+    local output_file="$E2E_LOG_DIR/cleanup_cursor_visible${BACKEND_TAG}.pty"
 
-    log_test_start "cleanup_cursor_visible"
+    log_test_start "cleanup_cursor_visible${BACKEND_TAG}"
 
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
     FTUI_HARNESS_LOG_LINES=0 \
@@ -129,10 +146,10 @@ cleanup_cursor_visible() {
 }
 
 cleanup_sigterm() {
-    LOG_FILE="$E2E_LOG_DIR/cleanup_sigterm.log"
-    local output_file="$E2E_LOG_DIR/cleanup_sigterm.pty"
+    LOG_FILE="$E2E_LOG_DIR/cleanup_sigterm${BACKEND_TAG}.log"
+    local output_file="$E2E_LOG_DIR/cleanup_sigterm${BACKEND_TAG}.pty"
 
-    log_test_start "cleanup_sigterm"
+    log_test_start "cleanup_sigterm${BACKEND_TAG}"
 
     # Start harness with a long timeout so we can send SIGTERM
     FTUI_HARNESS_EXIT_AFTER_MS=10000 \
@@ -154,10 +171,10 @@ cleanup_sigterm() {
 }
 
 cleanup_mouse_disabled() {
-    LOG_FILE="$E2E_LOG_DIR/cleanup_mouse_disabled.log"
-    local output_file="$E2E_LOG_DIR/cleanup_mouse_disabled.pty"
+    LOG_FILE="$E2E_LOG_DIR/cleanup_mouse_disabled${BACKEND_TAG}.log"
+    local output_file="$E2E_LOG_DIR/cleanup_mouse_disabled${BACKEND_TAG}.pty"
 
-    log_test_start "cleanup_mouse_disabled"
+    log_test_start "cleanup_mouse_disabled${BACKEND_TAG}"
 
     # Enable mouse capture — cleanup must disable it
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
@@ -172,10 +189,10 @@ cleanup_mouse_disabled() {
 }
 
 cleanup_bracketed_paste_disabled() {
-    LOG_FILE="$E2E_LOG_DIR/cleanup_bracketed_paste_disabled.log"
-    local output_file="$E2E_LOG_DIR/cleanup_bracketed_paste_disabled.pty"
+    LOG_FILE="$E2E_LOG_DIR/cleanup_bracketed_paste_disabled${BACKEND_TAG}.log"
+    local output_file="$E2E_LOG_DIR/cleanup_bracketed_paste_disabled${BACKEND_TAG}.pty"
 
-    log_test_start "cleanup_bracketed_paste_disabled"
+    log_test_start "cleanup_bracketed_paste_disabled${BACKEND_TAG}"
 
     # Bracketed paste is enabled by default in ProgramConfig.
     # Cleanup must emit CSI ? 2004 l
@@ -189,10 +206,10 @@ cleanup_bracketed_paste_disabled() {
 }
 
 cleanup_altscreen_exit() {
-    LOG_FILE="$E2E_LOG_DIR/cleanup_altscreen_exit.log"
-    local output_file="$E2E_LOG_DIR/cleanup_altscreen_exit.pty"
+    LOG_FILE="$E2E_LOG_DIR/cleanup_altscreen_exit${BACKEND_TAG}.log"
+    local output_file="$E2E_LOG_DIR/cleanup_altscreen_exit${BACKEND_TAG}.pty"
 
-    log_test_start "cleanup_altscreen_exit"
+    log_test_start "cleanup_altscreen_exit${BACKEND_TAG}"
 
     # Run in alt-screen mode — cleanup must exit alt screen
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
@@ -206,10 +223,10 @@ cleanup_altscreen_exit() {
 }
 
 cleanup_altscreen_mouse_focus() {
-    LOG_FILE="$E2E_LOG_DIR/cleanup_altscreen_mouse_focus.log"
-    local output_file="$E2E_LOG_DIR/cleanup_altscreen_mouse_focus.pty"
+    LOG_FILE="$E2E_LOG_DIR/cleanup_altscreen_mouse_focus${BACKEND_TAG}.log"
+    local output_file="$E2E_LOG_DIR/cleanup_altscreen_mouse_focus${BACKEND_TAG}.pty"
 
-    log_test_start "cleanup_altscreen_mouse_focus"
+    log_test_start "cleanup_altscreen_mouse_focus${BACKEND_TAG}"
 
     # Enable all features — verify combined cleanup
     FTUI_HARNESS_EXIT_AFTER_MS=800 \
@@ -225,11 +242,11 @@ cleanup_altscreen_mouse_focus() {
 }
 
 FAILURES=0
-run_case "cleanup_normal" cleanup_normal                               || FAILURES=$((FAILURES + 1))
-run_case "cleanup_cursor_visible" cleanup_cursor_visible               || FAILURES=$((FAILURES + 1))
-run_case "cleanup_sigterm" cleanup_sigterm                             || FAILURES=$((FAILURES + 1))
-run_case "cleanup_mouse_disabled" cleanup_mouse_disabled               || FAILURES=$((FAILURES + 1))
-run_case "cleanup_bracketed_paste_disabled" cleanup_bracketed_paste_disabled || FAILURES=$((FAILURES + 1))
-run_case "cleanup_altscreen_exit" cleanup_altscreen_exit               || FAILURES=$((FAILURES + 1))
-run_case "cleanup_altscreen_mouse_focus" cleanup_altscreen_mouse_focus || FAILURES=$((FAILURES + 1))
+run_case "cleanup_normal${BACKEND_TAG}" cleanup_normal                               || FAILURES=$((FAILURES + 1))
+run_case "cleanup_cursor_visible${BACKEND_TAG}" cleanup_cursor_visible               || FAILURES=$((FAILURES + 1))
+run_case "cleanup_sigterm${BACKEND_TAG}" cleanup_sigterm                             || FAILURES=$((FAILURES + 1))
+run_case "cleanup_mouse_disabled${BACKEND_TAG}" cleanup_mouse_disabled               || FAILURES=$((FAILURES + 1))
+run_case "cleanup_bracketed_paste_disabled${BACKEND_TAG}" cleanup_bracketed_paste_disabled || FAILURES=$((FAILURES + 1))
+run_case "cleanup_altscreen_exit${BACKEND_TAG}" cleanup_altscreen_exit               || FAILURES=$((FAILURES + 1))
+run_case "cleanup_altscreen_mouse_focus${BACKEND_TAG}" cleanup_altscreen_mouse_focus || FAILURES=$((FAILURES + 1))
 exit "$FAILURES"

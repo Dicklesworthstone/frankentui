@@ -106,6 +106,27 @@ impl<'a> CursorNavigator<'a> {
     #[must_use]
     pub fn move_left(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
+        #[cfg(feature = "bidi")]
+        {
+            let raw = line_text(self.rope, pos.line);
+            let current_text = strip_trailing_newline(&raw);
+            if crate::bidi::has_rtl(current_text) {
+                let seg = crate::bidi::BidiSegment::new(current_text, None);
+                let next_grapheme = seg.move_left(pos.grapheme);
+                if next_grapheme != pos.grapheme {
+                    return self.from_line_grapheme(pos.line, next_grapheme);
+                }
+                if pos.line == 0 {
+                    return pos;
+                }
+                let prev_line = pos.line - 1;
+                let prev_raw = line_text(self.rope, prev_line);
+                let prev_text = strip_trailing_newline(&prev_raw);
+                let prev_seg = crate::bidi::BidiSegment::new(prev_text, None);
+                let prev_end = prev_seg.logical_cursor_pos(prev_seg.len());
+                return self.from_line_grapheme(prev_line, prev_end);
+            }
+        }
         if pos.grapheme > 0 {
             return self.from_line_grapheme(pos.line, pos.grapheme - 1);
         }
@@ -113,8 +134,8 @@ impl<'a> CursorNavigator<'a> {
             return pos;
         }
         let prev_line = pos.line - 1;
-        let prev_text = line_text(self.rope, prev_line);
-        let prev_text = strip_trailing_newline(&prev_text);
+        let prev_raw = line_text(self.rope, prev_line);
+        let prev_text = strip_trailing_newline(&prev_raw);
         let prev_end = grapheme_count(prev_text);
         self.from_line_grapheme(prev_line, prev_end)
     }
@@ -123,9 +144,31 @@ impl<'a> CursorNavigator<'a> {
     #[must_use]
     pub fn move_right(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
-        let line_text = line_text(self.rope, pos.line);
-        let line_text = strip_trailing_newline(&line_text);
-        let line_end = grapheme_count(line_text);
+        #[cfg(feature = "bidi")]
+        {
+            let raw = line_text(self.rope, pos.line);
+            let current_text = strip_trailing_newline(&raw);
+            if crate::bidi::has_rtl(current_text) {
+                let seg = crate::bidi::BidiSegment::new(current_text, None);
+                let next_grapheme = seg.move_right(pos.grapheme);
+                if next_grapheme != pos.grapheme {
+                    return self.from_line_grapheme(pos.line, next_grapheme);
+                }
+                let last_line = last_line_index(self.rope);
+                if pos.line >= last_line {
+                    return pos;
+                }
+                let next_line = pos.line + 1;
+                let next_raw = line_text(self.rope, next_line);
+                let next_text = strip_trailing_newline(&next_raw);
+                let next_seg = crate::bidi::BidiSegment::new(next_text, None);
+                let next_start = next_seg.logical_cursor_pos(0);
+                return self.from_line_grapheme(next_line, next_start);
+            }
+        }
+        let raw = line_text(self.rope, pos.line);
+        let current_text = strip_trailing_newline(&raw);
+        let line_end = grapheme_count(current_text);
         if pos.grapheme < line_end {
             return self.from_line_grapheme(pos.line, pos.grapheme + 1);
         }
@@ -205,6 +248,15 @@ impl<'a> CursorNavigator<'a> {
     #[must_use]
     pub fn line_start(&self, pos: CursorPosition) -> CursorPosition {
         let pos = self.clamp(pos);
+        #[cfg(feature = "bidi")]
+        {
+            let line_text = line_text(self.rope, pos.line);
+            let line_text = strip_trailing_newline(&line_text);
+            if crate::bidi::has_rtl(line_text) {
+                let seg = crate::bidi::BidiSegment::new(line_text, None);
+                return self.from_line_grapheme(pos.line, seg.logical_cursor_pos(0));
+            }
+        }
         self.from_line_grapheme(pos.line, 0)
     }
 
@@ -214,6 +266,13 @@ impl<'a> CursorNavigator<'a> {
         let pos = self.clamp(pos);
         let line_text = line_text(self.rope, pos.line);
         let line_text = strip_trailing_newline(&line_text);
+        #[cfg(feature = "bidi")]
+        {
+            if crate::bidi::has_rtl(line_text) {
+                let seg = crate::bidi::BidiSegment::new(line_text, None);
+                return self.from_line_grapheme(pos.line, seg.logical_cursor_pos(seg.len()));
+            }
+        }
         let end = grapheme_count(line_text);
         self.from_line_grapheme(pos.line, end)
     }
@@ -304,10 +363,43 @@ fn grapheme_count(text: &str) -> usize {
 }
 
 fn visual_col_for_grapheme(text: &str, grapheme_idx: usize) -> usize {
+    #[cfg(feature = "bidi")]
+    if crate::bidi::has_rtl(text) {
+        let seg = crate::bidi::BidiSegment::new(text, None);
+        let visual_grapheme = seg.visual_cursor_pos(grapheme_idx);
+        let mut col = 0usize;
+        for v in 0..visual_grapheme {
+            if let Some(ch) = seg.char_at_visual(v) {
+                let mut buf = [0u8; 4];
+                col = col.saturating_add(display_width(ch.encode_utf8(&mut buf)));
+            }
+        }
+        return col;
+    }
     graphemes(text).take(grapheme_idx).map(display_width).sum()
 }
 
 fn grapheme_index_at_visual_col(text: &str, visual_col: usize) -> usize {
+    #[cfg(feature = "bidi")]
+    if crate::bidi::has_rtl(text) {
+        let seg = crate::bidi::BidiSegment::new(text, None);
+        let mut col = 0usize;
+        let mut visual_idx = 0usize;
+        for v in 0..seg.len() {
+            let w = if let Some(ch) = seg.char_at_visual(v) {
+                let mut buf = [0u8; 4];
+                display_width(ch.encode_utf8(&mut buf))
+            } else {
+                1
+            };
+            if col.saturating_add(w) > visual_col {
+                break;
+            }
+            col = col.saturating_add(w);
+            visual_idx = visual_idx.saturating_add(1);
+        }
+        return seg.logical_cursor_pos(visual_idx);
+    }
     let mut col = 0usize;
     let mut idx = 0usize;
     for g in graphemes(text) {
@@ -1015,5 +1107,31 @@ mod tests {
         assert_eq!(move_word_right_in_line("hello", 0), 5);
         // Empty string
         assert_eq!(move_word_right_in_line("", 0), 0);
+    }
+
+    #[cfg(feature = "bidi")]
+    #[test]
+    fn rtl_cursor_navigation() {
+        // Arabic text: "مرحبا" (5 characters, pure RTL)
+        let r = rope("\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}");
+        let nav = CursorNavigator::new(&r);
+
+        // At logical 0 (visual right end):
+        let pos0 = nav.from_line_grapheme(0, 0);
+        // Right at visual right edge should be a no-op
+        let right = nav.move_right(pos0);
+        assert_eq!(right.grapheme, 0);
+
+        // Left moves visually left (logical +1)
+        let left1 = nav.move_left(pos0);
+        assert_eq!(left1.grapheme, 1);
+
+        // Home goes to visual left (logical 5)
+        let home = nav.line_start(pos0);
+        assert_eq!(home.grapheme, 5);
+
+        // End goes to visual right (logical 0)
+        let end = nav.line_end(home);
+        assert_eq!(end.grapheme, 0);
     }
 }
