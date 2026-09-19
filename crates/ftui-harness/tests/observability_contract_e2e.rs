@@ -213,6 +213,21 @@ fn evidence_ledger_joins_the_vocabularies_end_to_end() {
         );
     }
 
+    // And the ledger enforces that itself, rather than trusting whoever wrote
+    // the entry: a plausible-looking code that is not in the vocabulary is a
+    // defect, not a silently accepted string.
+    let mut invented = entry.clone();
+    invented.reason_codes = vec!["SHADOW_DIVERGANCE".to_string()];
+    let mut ledger = PerfEvidenceLedger::default();
+    ledger.record(invented);
+    let defects = ledger.validate(&LedgerSpec::canonical());
+    let unknown: Vec<_> = defects
+        .iter()
+        .filter(|d| d.kind == ftui_harness::perf_evidence_ledger::DefectKind::UnknownReasonCode)
+        .collect();
+    assert_eq!(unknown.len(), 1, "{defects:?}");
+    assert_eq!(unknown[0].subject, "SHADOW_DIVERGANCE");
+
     // Strip the reason codes: the same failing entry becomes a visible
     // silent-failure defect.
     let mut silent = entry;

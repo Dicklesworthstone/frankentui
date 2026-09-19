@@ -3,19 +3,29 @@
 //! Behavior-preservation proof oracles for optimization validation (bd-js3c3).
 //!
 //! This module defines the equivalence contracts that optimization work must
-//! satisfy. It builds on `golden.rs` (checksum capture) and `shadow_run.rs`
-//! (baseline vs candidate comparison) to provide:
+//! satisfy:
 //!
 //! - **Equivalence dimensions**: What must match exactly, what may differ with justification
 //! - **Proof templates**: Structured evidence for behavioral preservation
 //! - **Replay commands**: Counterexample reproduction from failed proofs
 //! - **Difference classification**: Presentation-only vs semantic divergence
 //!
+//! # Status: vocabulary, not machinery
+//!
+//! These are definitions. Nothing here captures a checksum, runs a candidate,
+//! or compares two runs — the module imports only `std`, and no caller anywhere
+//! in the workspace consumes it. An earlier version of this doc said it "builds
+//! on `golden.rs` and `shadow_run.rs`"; it never did, and a reader who believed
+//! that would think optimizations were being checked against these contracts
+//! automatically. They are not. `golden.rs` and `shadow_run.rs` are where the
+//! executable equivalence checking actually lives, and they do not know this
+//! module exists. Closing that gap is `bd-g00-root-epic-ewths.11.5`.
+//!
 //! # Design rationale
 //!
 //! Optimizations that skip work or change scheduling can accidentally alter
 //! visible output, timing-sensitive semantics, or failure artifacts. This
-//! module provides the proof layer that blocks bad speedups.
+//! module names the properties such a proof layer would have to establish.
 //!
 //! # Equivalence dimensions
 //!
