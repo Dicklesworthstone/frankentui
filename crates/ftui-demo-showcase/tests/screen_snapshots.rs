@@ -2963,6 +2963,23 @@ fn command_palette_lab_title() {
 // I18n Demo
 // ============================================================================
 
+fn assert_i18n_demo_snapshot(
+    name: &str,
+    screen: &ftui_demo_showcase::screens::i18n_demo::I18nDemo,
+    frame: &Frame,
+) {
+    let loc = screen.locale_ctx.current_locale();
+    let dir = screen.locale_ctx.direction();
+    let ver = screen.locale_ctx.version();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_snapshot!(name, &frame.buffer);
+    }));
+    if let Err(payload) = res {
+        eprintln!("Snapshot failure for {name}: locale={loc}, direction={dir:?}, version={ver}");
+        std::panic::resume_unwind(payload);
+    }
+}
+
 #[test]
 fn i18n_demo_initial_80x24() {
     let screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
@@ -2970,7 +2987,7 @@ fn i18n_demo_initial_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("i18n_demo_initial_80x24", &frame.buffer);
+    assert_i18n_demo_snapshot("i18n_demo_initial_80x24", &screen, &frame);
 }
 
 #[test]
@@ -2981,7 +2998,7 @@ fn i18n_demo_arabic_rtl_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("i18n_demo_arabic_rtl_80x24", &frame.buffer);
+    assert_i18n_demo_snapshot("i18n_demo_arabic_rtl_80x24", &screen, &frame);
 }
 
 #[test]
@@ -2992,7 +3009,7 @@ fn i18n_demo_german_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("i18n_demo_german_80x24", &frame.buffer);
+    assert_i18n_demo_snapshot("i18n_demo_german_80x24", &screen, &frame);
 }
 
 #[test]
@@ -3004,7 +3021,7 @@ fn i18n_demo_locale_switch_ar_to_en_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("i18n_demo_initial_80x24", &frame.buffer);
+    assert_i18n_demo_snapshot("i18n_demo_initial_80x24", &screen, &frame);
 }
 
 #[test]

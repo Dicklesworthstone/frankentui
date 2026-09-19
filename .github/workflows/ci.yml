@@ -186,7 +186,10 @@ jobs:
           done
 
       - name: Test ftui-widgets features
-        run: cargo check -p ftui-widgets --features debug-overlay
+        run: |
+          cargo check -p ftui-widgets --features debug-overlay
+          cargo check -p ftui-widgets --features bidi
+          cargo check -p ftui-widgets --no-default-features
 
       - name: Test native runtime without crossterm
         run: cargo check -p ftui-runtime --lib --no-default-features --features native-backend

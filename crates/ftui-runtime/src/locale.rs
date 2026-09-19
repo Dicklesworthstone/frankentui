@@ -459,34 +459,133 @@ mod tests {
     }
 
     #[test]
-    fn text_direction_for_locale_inferences() {
-        assert_eq!(TextDirection::for_locale("ar-EG"), TextDirection::Rtl);
-        assert_eq!(TextDirection::for_locale("en-US"), TextDirection::Ltr);
-        assert_eq!(TextDirection::for_locale("ku-Arab"), TextDirection::Rtl);
-        assert_eq!(TextDirection::for_locale("he"), TextDirection::Rtl);
-        assert_eq!(TextDirection::for_locale("fa_IR"), TextDirection::Rtl);
-        assert_eq!(TextDirection::for_locale("ur"), TextDirection::Rtl);
-        assert_eq!(TextDirection::for_locale("de-DE"), TextDirection::Ltr);
-        assert_eq!(TextDirection::for_locale(""), TextDirection::Ltr);
+    fn direction_for_locale_table() {
+        let cases = [
+            ("ar", TextDirection::Rtl),
+            ("ar-EG", TextDirection::Rtl),
+            ("he-IL", TextDirection::Rtl),
+            ("fa", TextDirection::Rtl),
+            ("ur", TextDirection::Rtl),
+            ("ckb", TextDirection::Rtl),
+            ("ku-Arab", TextDirection::Rtl),
+            ("en", TextDirection::Ltr),
+            ("de-DE", TextDirection::Ltr),
+            ("ja", TextDirection::Ltr),
+            ("", TextDirection::Ltr),
+            ("AR_sa", TextDirection::Rtl),
+        ];
+        for (tag, expected) in cases {
+            assert_eq!(
+                TextDirection::for_locale(tag),
+                expected,
+                "Failed direction inference for locale tag {tag:?}"
+            );
+        }
     }
 
     #[test]
-    fn locale_context_direction_override_and_version() {
+    fn set_direction_override_wins_and_bumps_version() {
+        use tracing_subscriber::prelude::*;
+
+        #[derive(Clone, Default)]
+        struct LocaleTraceCapture(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>);
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LocaleTraceCapture {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if event.metadata().target() == crate::telemetry_schema::TARGET_LOCALE {
+                    struct Visitor {
+                        locale: String,
+                        direction: String,
+                        source: String,
+                    }
+                    impl tracing::field::Visit for Visitor {
+                        fn record_debug(
+                            &mut self,
+                            field: &tracing::field::Field,
+                            value: &dyn std::fmt::Debug,
+                        ) {
+                            let val_str = format!("{value:?}");
+                            let val_trimmed = val_str.trim_matches('"').to_string();
+                            match field.name() {
+                                "locale" => self.locale = val_trimmed,
+                                "direction" => self.direction = val_str,
+                                "source" => self.source = val_trimmed,
+                                _ => {}
+                            }
+                        }
+                        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                            match field.name() {
+                                "locale" => self.locale = value.to_string(),
+                                "source" => self.source = value.to_string(),
+                                _ => {}
+                            }
+                        }
+                    }
+                    let mut visitor = Visitor {
+                        locale: String::new(),
+                        direction: String::new(),
+                        source: String::new(),
+                    };
+                    event.record(&mut visitor);
+                    self.0.lock().expect("capture lock").push((
+                        visitor.locale,
+                        visitor.direction,
+                        visitor.source,
+                    ));
+                }
+            }
+        }
+
+        let capture = LocaleTraceCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+
+        tracing::subscriber::with_default(subscriber, || {
+            let ctx = LocaleContext::new("en");
+            assert_eq!(ctx.direction(), TextDirection::Ltr);
+            let v0 = ctx.version();
+
+            let call_count = Rc::new(Cell::new(0));
+            let call_count_clone = Rc::clone(&call_count);
+            let _sub = ctx.subscribe(move |_| {
+                call_count_clone.set(call_count_clone.get() + 1);
+            });
+
+            ctx.set_direction(Some(TextDirection::Rtl));
+            assert_eq!(ctx.direction(), TextDirection::Rtl);
+            assert!(ctx.version() > v0);
+            assert_eq!(call_count.get(), 1);
+
+            let v1 = ctx.version();
+            ctx.set_direction(None);
+            assert_eq!(ctx.direction(), TextDirection::Ltr);
+            assert!(ctx.version() > v1);
+            assert_eq!(call_count.get(), 2);
+        });
+
+        let events = capture.0.lock().expect("capture lock");
+        assert!(
+            !events.is_empty(),
+            "Expected tracing events from ftui.runtime.locale"
+        );
+        let (loc, dir, src) = &events[0];
+        assert_eq!(loc, "en");
+        assert!(dir.contains("Rtl"));
+        assert_eq!(src, "override");
+    }
+
+    #[test]
+    fn push_override_changes_direction() {
         let ctx = LocaleContext::new("en");
         assert_eq!(ctx.direction(), TextDirection::Ltr);
-        let v0 = ctx.version();
-
-        ctx.set_direction(Some(TextDirection::Rtl));
-        assert_eq!(ctx.direction(), TextDirection::Rtl);
-        assert!(ctx.version() > v0);
-        let v1 = ctx.version();
-
-        ctx.set_direction(None);
+        {
+            let _guard = ctx.push_override("ar");
+            assert_eq!(ctx.direction(), TextDirection::Rtl);
+        }
         assert_eq!(ctx.direction(), TextDirection::Ltr);
-        assert!(ctx.version() > v1);
-
-        ctx.set_locale("ar");
-        assert_eq!(ctx.direction(), TextDirection::Rtl);
     }
 
     #[test]

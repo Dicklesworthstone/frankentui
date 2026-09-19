@@ -13610,6 +13610,73 @@ mod tests {
     }
 
     #[test]
+    fn frame_text_direction_follows_locale_context() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct DirectionModel {
+            directions: Rc<RefCell<Vec<ftui_render::TextDirection>>>,
+        }
+
+        #[derive(Debug)]
+        enum DirectionMsg {
+            Noop,
+        }
+
+        impl From<Event> for DirectionMsg {
+            fn from(_: Event) -> Self {
+                DirectionMsg::Noop
+            }
+        }
+
+        impl Model for DirectionModel {
+            type Message = DirectionMsg;
+
+            fn update(&mut self, _msg: Self::Message) -> Cmd<Self::Message> {
+                Cmd::none()
+            }
+
+            fn view(&self, frame: &mut Frame) {
+                self.directions.borrow_mut().push(frame.text_direction);
+            }
+        }
+
+        let directions = Rc::new(RefCell::new(Vec::new()));
+        let model = DirectionModel {
+            directions: Rc::clone(&directions),
+        };
+        let config = ProgramConfig::default().with_locale("ar");
+        let mut program = headless_program_with_config(model, config);
+
+        program.render_frame().expect("render initial frame");
+        assert_eq!(program.frame_idx, 1);
+        assert_eq!(
+            directions.borrow().as_slice(),
+            &[ftui_render::TextDirection::Rtl]
+        );
+        assert!(!program.dirty);
+
+        program.locale_context.set_locale("en");
+        program.check_locale_change();
+        assert!(
+            program.dirty,
+            "check_locale_change must trigger redraw on locale switch"
+        );
+
+        program
+            .render_frame()
+            .expect("render frame after locale change");
+        assert_eq!(program.frame_idx, 2);
+        assert_eq!(
+            directions.borrow().as_slice(),
+            &[
+                ftui_render::TextDirection::Rtl,
+                ftui_render::TextDirection::Ltr,
+            ]
+        );
+    }
+
+    #[test]
     fn headless_render_frame_marks_clean_and_sets_diff() {
         struct RenderModel;
 
