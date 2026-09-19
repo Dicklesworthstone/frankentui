@@ -122,6 +122,61 @@ def policy_matches(policy_path):
     return "ok" if set(KINDS) <= listed else "drifted"
 
 
+FIXTURE = Path("tests/fixtures/close_evidence/closed_beads.jsonl")
+
+
+def self_test_audit(root):
+    """Run `audit` over the retained fixture and check what it selects.
+
+    The fixture is a real file under `tests/fixtures/`, not a temp directory
+    built and torn down per run: Rule 1 forbids this repo's tooling from
+    deleting anything, including files it created itself, and a test whose
+    cleanup is the thing that breaks the rule is not worth the coverage.
+    """
+    jsonl = root / FIXTURE
+    records, legacy, checked = audit(jsonl, "2026-09-19T21:10:00Z")
+    flagged = {record["id"]: record["violations"] for record in records}
+
+    assert flagged == {
+        "fx-null-reason": ["no_reason", "no_typed_reference"],
+        "fx-done": ["too_short", "no_typed_reference"],
+        "fx-prose-no-reference": ["no_typed_reference"],
+        "fx-short-but-referenced": ["too_short"],
+    }, flagged
+    # The two well-formed closes are not flagged, and neither are the open
+    # and in-progress beads -- an unclosed bead has nothing to justify yet.
+    assert "fx-valid-test" not in flagged and "fx-valid-commit" not in flagged
+    assert "fx-open" not in flagged and "fx-in-progress" not in flagged
+    assert checked == 4
+
+    # Pre-epoch failures are counted, never enforced. `fx-no-timestamp` lands
+    # here too: `br` records `closed_at` on every close it performs, so a close
+    # without one was not made under the policy.
+    assert legacy == 3, legacy
+
+    # Widening the epoch moves history into the enforced set rather than
+    # changing any verdict. `fx-no-timestamp` stays legacy at every epoch --
+    # a close that records no time cannot be placed relative to one, and no
+    # widening should make it enforceable.
+    records, legacy, _ = audit(jsonl, "2026-01-01")
+    assert len(records) == 6 and legacy == 1, (len(records), legacy)
+    assert "fx-no-timestamp" not in {record["id"] for record in records}
+
+    # An epoch after every close leaves nothing to enforce, which is what a
+    # freshly installed policy looks like.
+    records, legacy, _ = audit(jsonl, "2099-01-01")
+    assert records == [] and legacy == 7
+
+    # Report shape: the keys a consumer can rely on.
+    records, _, _ = audit(jsonl, "2026-01-01")
+    assert records
+    for record in records:
+        assert set(record) == {"kind", "id", "closed_at", "violations", "status"}
+        assert record["kind"] == "close" and record["status"] == "failed"
+        assert record["violations"]
+    return len(flagged)
+
+
 def self_test():
     """Fixtures for the reason checker and the reference matcher."""
     assert violations(None) == ["no_reason", "no_typed_reference"]
@@ -141,7 +196,7 @@ def self_test():
     assert violations("z" * 100 + " commit: ") == ["no_typed_reference"]
     # Hyphenated built-in kinds still match.
     assert violations("w" * 100 + " agent-mail:1558") == []
-    print(json.dumps(dict(kind="self-test", status="passed", checks=10)))
+    return 10
 
 
 def main():
@@ -150,6 +205,8 @@ def main():
     parser.add_argument("--epoch", default=EPOCH,
                         help=f"enforce closes at or after this ISO-8601 UTC instant "
                              f"(default {EPOCH}); pass a bare date to widen it")
+    parser.add_argument("--jsonl", type=Path,
+                        help="audit this JSONL instead of <root>/.beads/issues.jsonl")
     parser.add_argument("--quiet", action="store_true",
                         help="print the summary only, not each failing close")
     parser.add_argument("--self-test", action="store_true")
@@ -157,9 +214,12 @@ def main():
 
     try:
         if args.self_test:
-            self_test()
+            reasons = self_test()
+            flagged = self_test_audit(args.root)
+            print(json.dumps(dict(kind="self-test", status="passed",
+                                  reason_checks=reasons, fixture_flagged=flagged)))
             return 0
-        jsonl = args.root / ".beads" / "issues.jsonl"
+        jsonl = args.jsonl or (args.root / ".beads" / "issues.jsonl")
         records, legacy, checked = audit(jsonl, args.epoch)
         if not args.quiet:
             for record in records:

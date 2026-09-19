@@ -40,6 +40,11 @@ tools:
       - python3 -B scripts/check_env_docs.py
       - python3 -B scripts/check_close_evidence.py --self-test
       - python3 -B scripts/check_close_evidence.py
+      # Proves the installed `br` still enforces .beads/policy.yaml, which the
+      # audit's own self-test cannot see: a br upgrade or a schema rename would
+      # leave the audit green while every close sailed through. Builds a
+      # throwaway beads project under the run root and never deletes it.
+      - bash scripts/check_close_policy_e2e.sh "${DSR_CLOSE_POLICY_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_close_policy/dsr}"
   frankentui-examples:
     repo: Dicklesworthstone/frankentui
     language: rust

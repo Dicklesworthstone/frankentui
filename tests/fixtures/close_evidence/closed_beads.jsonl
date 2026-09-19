@@ -1,0 +1,11 @@
+{"id":"fx-null-reason","status":"closed","closed_at":"2026-09-19T22:00:00Z","close_reason":null}
+{"id":"fx-done","status":"closed","closed_at":"2026-09-19T22:00:01Z","close_reason":"done"}
+{"id":"fx-prose-no-reference","status":"closed","closed_at":"2026-09-19T22:00:02Z","close_reason":"Reworked the presenter seam so the writer is owned in one place, which took most of the afternoon and is worth reading before touching it again."}
+{"id":"fx-short-but-referenced","status":"closed","closed_at":"2026-09-19T22:00:03Z","close_reason":"commit:ab07291f"}
+{"id":"fx-valid-test","status":"closed","closed_at":"2026-09-19T22:00:04Z","close_reason":"Grapheme width cache now evicts under S3-FIFO rather than growing without bound. test:width_cache_evicts_at_capacity"}
+{"id":"fx-valid-commit","status":"closed","closed_at":"2026-09-19T22:00:05Z","close_reason":"Scroll runs flush one event per notch instead of collapsing to one, so magnitude survives. commit:509710e0"}
+{"id":"fx-legacy-null","status":"closed","closed_at":"2026-03-05T12:00:00Z","close_reason":null}
+{"id":"fx-legacy-done","status":"closed","closed_at":"2026-03-05T12:00:01Z","close_reason":"Completed"}
+{"id":"fx-no-timestamp","status":"closed","closed_at":"","close_reason":"done"}
+{"id":"fx-open","status":"open","closed_at":"","close_reason":null}
+{"id":"fx-in-progress","status":"in_progress","closed_at":"","close_reason":null}
