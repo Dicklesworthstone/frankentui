@@ -706,7 +706,21 @@ fn main() -> std::io::Result<()> {
 
     // Terminal is restored here. Emit the deterministic, greppable result line.
     #[cfg(unix)]
-    let termios_restored = terminal_attributes()? == initial_termios;
+    let termios_restored = {
+        let final_termios = terminal_attributes()?;
+        let restored = final_termios == initial_termios;
+        if !restored {
+            // `termios_restored=false` on its own says a comparison failed and
+            // nothing about what. Print both `stty -g` strings so the test
+            // failure names the flags that did not come back.
+            eprintln!(
+                "PANE_TERMIOS before={} after={}",
+                String::from_utf8_lossy(&initial_termios).trim(),
+                String::from_utf8_lossy(&final_termios).trim(),
+            );
+        }
+        restored
+    };
     #[cfg(not(unix))]
     let termios_restored = false;
     let snap = shared.lock().expect("shared state lock").clone();
@@ -745,6 +759,10 @@ fn main() -> std::io::Result<()> {
 }
 
 /// Read actual kernel terminal attributes, independently of backend bookkeeping.
+///
+/// The result has the kernel's `c_lflag` *state* bits masked off, so it
+/// describes the terminal's configuration and nothing else. See
+/// [`mask_termios_state_bits`].
 #[cfg(unix)]
 fn terminal_attributes() -> std::io::Result<Vec<u8>> {
     let tty = std::fs::File::open("/dev/tty")?;
@@ -758,5 +776,55 @@ fn terminal_attributes() -> std::io::Result<Vec<u8>> {
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    Ok(output.stdout)
+    Ok(mask_termios_state_bits(&output.stdout))
+}
+
+/// Clear the kernel-managed bits from the `lflag` field of an `stty -g` string.
+///
+/// `<sys/termios.h>` annotates two `c_lflag` bits as `(state)`: `FLUSHO`
+/// ("output being flushed") and `PENDIN` ("retype pending input"). They are
+/// kernel bookkeeping, not settings an application chooses, and comparing them
+/// makes a restore look broken when it is not.
+///
+/// `PENDIN` is the one that bites. BSD sets it when a terminal returns to
+/// canonical mode with bytes still sitting unread in the queue, so those bytes
+/// get reprocessed - which means its presence after teardown is *evidence the
+/// restore ran*, not evidence it failed. The cancel scenarios here deliberately
+/// leave input unread (a stale drag and release sent after ESC), so a raw
+/// string comparison reported `termios_restored=false` for four tests whose
+/// every real attribute - `cflag`, `iflag`, `oflag`, every control character,
+/// both speeds, and all of `lflag` except that one bit - matched exactly.
+///
+/// Only the BSD `gfmt1:name=hex:...` form is masked, which is what this is
+/// built and run against. Any other `stty -g` layout (Linux emits a positional
+/// colon-separated list, where `c_lflag` is the fourth field and `PENDIN` is a
+/// different bit) is returned untouched and compares as before, rather than
+/// having a field index guessed at from a format this cannot verify.
+#[cfg(unix)]
+fn mask_termios_state_bits(raw: &[u8]) -> Vec<u8> {
+    // sys/termios.h: FLUSHO 0x00800000, PENDIN 0x20000000.
+    const STATE_BITS: u64 = 0x0080_0000 | 0x2000_0000;
+    const KEY: &str = "lflag=";
+
+    let text = String::from_utf8_lossy(raw);
+    let Some(key_at) = text.find(KEY) else {
+        return raw.to_vec();
+    };
+    let value_at = key_at + KEY.len();
+    let rest = &text[value_at..];
+    let value_end = value_at
+        + rest
+            .find(|c: char| !c.is_ascii_hexdigit())
+            .unwrap_or(rest.len());
+    let Ok(lflag) = u64::from_str_radix(&text[value_at..value_end], 16) else {
+        return raw.to_vec();
+    };
+
+    format!(
+        "{}{:x}{}",
+        &text[..value_at],
+        lflag & !STATE_BITS,
+        &text[value_end..]
+    )
+    .into_bytes()
 }

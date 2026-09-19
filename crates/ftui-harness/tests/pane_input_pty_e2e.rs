@@ -434,9 +434,14 @@ fn run(scn: &Scenario) -> Vec<u8> {
         .expect("wait_and_drain harness");
     assert!(status.success(), "harness exited with failure: {status:?}");
     for line in String::from_utf8_lossy(session.output()).lines() {
+        // `PANE_TERMIOS` is only emitted when the restore comparison fails,
+        // and it carries the two `stty -g` strings - without it, a
+        // `termios_restored` assertion says a comparison failed and nothing
+        // about which flags did not come back.
         if let Some(start) = line
             .find("PANE_INPUT ")
             .or_else(|| line.find("PANE_RESULT "))
+            .or_else(|| line.find("PANE_TERMIOS "))
         {
             eprintln!("{}", &line[start..]);
         }
