@@ -2619,7 +2619,7 @@ The `ftui-i18n` crate provides locale-aware rendering:
 - **String catalog** with fallback chains and CLDR-style plural rules (`StringCatalog`, `PluralRule`)
 - **Text direction** from locale with per-line UAX#9 reordering in `Paragraph`/`TextInput`/`TextArea` (feature `bidi`, on by default in `ftui`)
 
-Number/date formatting is out of scope for `ftui-i18n` (an ICU-sized dependency); format in your app or with a crate such as `icu` and pass strings to the catalog (planned formatting delivery tracked in `bd-g00-root-epic-ewths.34.5`).
+- **Number & date formatting** backed by pinned Unicode CLDR v45.0 data for 7 declared locales (`NumberFormatter`, `DateTimeFormatter`, `format_number`, `format_date`)
 
 The `i18n_demo` screen switches live between English, Spanish, French, German, Russian, Arabic and Japanese; Arabic renders right-to-left.
 

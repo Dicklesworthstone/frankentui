@@ -65,13 +65,12 @@ README says, not something adjacent. The proven set:
 - S17 (gestures): defaults pinned by `gesture::default_config_values`.
 - S25 (e-graph): proven in the other direction — the section now states the
   measured truth, that it runs nowhere on the layout path.
-- N01, N02, N03, N05 (G29 locale context, bidi integration, seven demo
-  languages, plural rules).
+- C26, V47, N01, N02, N03, N04, N05 (G29 locale context, bidi integration, seven demo
+  languages, CLDR v45.0 number/date formatting, plural rules).
 
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
-hand-chosen), and N04 (number/date formatting, ICU-sized scope, future
-delivery tracked in `bd-g00-root-epic-ewths.34.5`).
+hand-chosen).
 
 Historical WORKING labels below are not current test results.
 
@@ -113,7 +112,7 @@ complete `.5.2`.
 | C23 | 46 screens, 11 categories, screens `3d_data` and `quake` | README.md :: 46 screens, 11 categories, screens `3d_data` and `quake` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C24 | VFX list credited to ftui-extras | README.md :: VFX list credited to ftui-extras | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C25 | Command palette BF word-boundary about 2.0, position proportional to 1/pos, length proportional to 1/len | README.md :: Command palette BF word-boundary about 2.0, position proportional to 1/pos, length proportional to 1/len | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C26 | i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | README.md :: i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | api | CODE | bd-g00-root-epic-ewths.34 | bead:bd-g00-root-epic-ewths.34 | pending-code | - |
+| C26 | i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | README.md :: i18n: number/date formatting, LTR/RTL via ftui-text bidi, demo in EN/FR/DE/JA/AR | api | CODE | bd-g00-root-epic-ewths.34 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-widgets::paragraph::tests::paragraph_rtl_visual_order_matches_unicode_bidi | proven | 2026-09-19 |
 | C27 | Benchmarks `diff/identical_100x50 1.2 µs`, `sparse 8.3 µs`, `dense 45 µs` | README.md :: Benchmarks `diff/identical_100x50 1.2 µs`, `sparse 8.3 µs`, `dense 45 µs` | api | regenerate | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
 | C28 | `prop_diff_soundness`, `counterexample_dirty_soundness` | README.md :: `prop_diff_soundness`, `counterexample_dirty_soundness` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C29 | Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | README.md :: Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
@@ -171,7 +170,7 @@ complete `.5.2`.
 | V44 | Modal system | README.md :: Modal system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V45 | Time-travel debugging | README.md :: Time-travel debugging | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
 | V46 | Accessibility tree, live regions | README.md :: Accessibility tree, live regions | status | CODE | bd-g00-root-epic-ewths.13 | bead:bd-g00-root-epic-ewths.13 | pending-code | - |
-| V47 | i18n formatting/bidi/5 languages | README.md :: i18n formatting/bidi/5 languages | status | CODE | bd-g00-root-epic-ewths.34 | bead:bd-g00-root-epic-ewths.34 | pending-code | - |
+| V47 | i18n formatting/bidi/5 languages | README.md :: i18n formatting/bidi/5 languages | status | CODE | bd-g00-root-epic-ewths.34 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-demo-showcase::screens::i18n_demo::tests::locales_list_has_seven_languages | proven | 2026-09-19 |
 | V48 | Queueing scheduler SRPT/Smith/aging | README.md :: Queueing scheduler SRPT/Smith/aging | status | CODE | bd-g00-root-epic-ewths.30 | bead:bd-g00-root-epic-ewths.30 | pending-code | - |
 | V49 | Inline strategies A/B/C auto-selected | README.md :: Inline strategies A/B/C auto-selected | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V50 | Color system profiles + WCAG | README.md :: Color system profiles + WCAG | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
@@ -238,7 +237,7 @@ complete `.5.2`.
 | N01 | Locale context propagated through runtime (ProgramConfig::with_locale, LocaleContext::direction()) | README.md :: Locale context | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-runtime::program::tests::frame_text_direction_follows_locale_context | proven | 2026-09-18 |
 | N02 | Text direction from locale with per-line UAX#9 reordering (bidi integrated) | README.md :: Text direction | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-widgets::paragraph::tests::paragraph_rtl_visual_order_matches_unicode_bidi; test:ftui-demo-showcase::screen_snapshots::i18n_demo_arabic_rtl_80x24 | proven | 2026-09-18 |
 | N03 | i18n_demo switches live between seven languages (EN/ES/FR/DE/RU/AR/JA) | README.md :: `i18n_demo` screen switches live between English, Spanish, French, German, Russian, Arabic and Japanese | example | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-demo-showcase::screens::i18n_demo::tests::german_catalog_coverage_is_complete; test:ftui-demo-showcase::screens::i18n_demo::tests::locales_list_has_seven_languages | proven | 2026-09-18 |
-| N04 | Number/date formatting in ftui-i18n | README.md :: Number/date formatting is out of scope for `ftui-i18n` | api | DOC | bd-g00-root-epic-ewths.34.5 | bead:bd-g00-root-epic-ewths.34.5 | retracted | 2026-09-18 |
+| N04 | Number/date formatting in ftui-i18n | README.md :: Number & date formatting backed by pinned Unicode CLDR v45.0 data | api | CODE | bd-g00-root-epic-ewths.34.6 | test:ftui-demo-showcase::tests::i18n_e2e::formatting_numbers_all_seven_locales; test:ftui-demo-showcase::tests::i18n_e2e::formatting_dates_and_times_all_seven_locales; test:ftui-i18n::tests::proptest_i18n_invariants::number_format_int_never_panics | proven | 2026-09-19 |
 | N05 | String catalog with fallback chains and CLDR-style plural rules (plural rules) | README.md :: String catalog with fallback chains and CLDR-style plural rules | api | CODE | bd-g00-root-epic-ewths.34 | test:ftui-i18n::plural::tests::locale_detection; test:ftui-i18n::plural::tests::russian_rules; test:ftui-i18n::plural::tests::arabic_full_categories | proven | 2026-09-18 |
 
 ## Historical decision details
@@ -273,7 +272,7 @@ CODE/DOC decisions and all secondary owner aliases from the source table.
 - C24: DOC. Historical owners: `g06-docs-readme`.
 - C25: DOC (state the real formulas). Historical owners: `g06-docs-readme`.
 - C26: CODE partial (direction via bidi, German) + DOC (retract formatting). Realized by N01–N05. Historical owners: CODE `g29-impl`; DOC `g06-docs-readme`.
-- N01–N05: G29 i18n delivery and limits. N01 (locale context), N02 (bidi integrated in Paragraph and editors), N03 (seven demo languages: EN/ES/FR/DE/RU/AR/JA), N05 (CLDR plural rules) proven by tests. N04 (number/date formatting) retracted 2026-09-18: excluded from initial kernel to avoid ICU-sized scope dependency; planned formatting delivery tracked in `bd-g00-root-epic-ewths.34.5`.
+- N01–N05: G29 i18n delivery and limits. N01 (locale context), N02 (bidi integrated in Paragraph and editors), N03 (seven demo languages: EN/ES/FR/DE/RU/AR/JA), N04 (CLDR v45.0 number/date formatting across all 7 declared locales), N05 (CLDR plural rules) proven by tests. Delivered under `bd-g00-root-epic-ewths.34.5` and verified under `bd-g00-root-epic-ewths.34.6`.
 - C27: regenerate from the perf-gate artifact. Historical owners: `g25-impl`.
 - C28: DOC (name the real tests). Historical owners: `g06-docs-readme`.
 - C29: DOC. Historical owners: `g06-docs-readme` (README :507), `g06-docs-agents` (AGENTS.md :272-297).
