@@ -1985,16 +1985,23 @@ The visual effects screen is deterministic math, not “random shader noise.” 
 Every terminal cell is exactly **16 bytes**, fitting 4 cells per 64-byte cache line:
 
 ```
-┌──────────────┬──────────────┬──────────────┬──────────────┬─────────┐
-│              │              │              │              │         │
-│  CellContent │      fg      │      bg      │    attrs     │ link_id │
-│   (4 bytes)  │  PackedRgba  │  PackedRgba  │  CellAttrs   │  (2B)   │
-│   char/gid   │   (4 bytes)  │   (4 bytes)  │  (2 bytes)   │         │
-│              │              │              │              │         │
-└──────────────┴──────────────┴──────────────┴──────────────┴─────────┘
+┌──────────────┬──────────────┬──────────────┬───────────────────────┐
+│              │              │              │  CellAttrs (4 bytes)  │
+│  CellContent │      fg      │      bg      ├───────────┬───────────┤
+│   (4 bytes)  │  PackedRgba  │  PackedRgba  │StyleFlags │  link_id  │
+│   char/gid   │   (4 bytes)  │   (4 bytes)  │ bits 31-24│ bits 23-0 │
+│              │              │              │  (8 bits) │ (24 bits) │
+└──────────────┴──────────────┴──────────────┴───────────┴───────────┘
                               Cell (16 bytes)
 4 cells per 64-byte cache line. SIMD-friendly 128-bit equality via bits_eq().
 ```
+
+Four fields, not five: the hyperlink id has no field of its own, it lives in the
+low 24 bits of `CellAttrs` alongside 8 bits of `StyleFlags`. That is why the API
+is `cell.attrs = cell.attrs.with_link(id)` rather than `cell.link_id = id`, and
+why a link id is capped at `LINK_ID_MAX = 0x00FF_FFFF` with `0` reserved as the
+"no hyperlink" sentinel. `const _: () = assert!(size_of::<Cell>() == 16);` in
+`cell.rs` makes the 16 bytes a compile error to break.
 
 **Why 16 bytes?**
 - **Cache efficiency:** 4 cells per cache line means sequential row scans hit L1 cache optimally

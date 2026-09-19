@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-09-19 the distribution across 152 rows is 33 pending-code,
-73 pending-doc, 28 retracted and 18 proven. Regenerate this sentence from
+As of 2026-09-19 the distribution across 152 rows is 32 pending-code,
+72 pending-doc, 30 retracted and 18 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -118,10 +118,10 @@ complete `.5.2`.
 | C03 | `focus_manager.register("input1", FocusNode::new()); set_next(..)` | README.md :: `focus_manager.register("input1", FocusNode::new()); set_next(..)` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_focus_graph_snippet | retracted | 2026-09-19 |
 | C04 | `modal_stack.push(ConfirmDialog::new("Delete file?"))` | README.md :: `modal_stack.push(ConfirmDialog::new("Delete file?"))` | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C05 | `frame.link_registry().register(url)`; `cell.link_id = id` | README.md :: `frame.link_registry().register(url)`; `cell.link_id = id` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_hyperlink_snippet | retracted | 2026-09-19 |
-| C06 | Cell layout content 4 + fg 4 + bg 4 + attrs 2 + link 2; `GraphemeId` width bits [31:25], 16M slots, width 0-127 | README.md :: Cell layout content 4 + fg 4 + bg 4 + attrs 2 + link 2; `GraphemeId` width bits [31:25], 16M slots, width 0-127 | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| C06 | Cell layout content 4 + fg 4 + bg 4 + attrs 2 + link 2; `GraphemeId` width bits [31:25], 16M slots, width 0-127 | README.md :: Cell layout content 4 + fg 4 + bg 4 + attrs 2 + link 2; `GraphemeId` width bits [31:25], 16M slots, width 0-127 | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::cell::cell_is_16_bytes; ident:pub const LINK_ID_MAX: u32 = 0x00FF_FFFF | retracted | 2026-09-19 |
 | C07 | `TimeTravel::new(); record(frame); seek(i); current()` | README.md :: `TimeTravel::new(); record(frame); seek(i); current()` | api | DOC+quarantine | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_time_travel_snippet | retracted | 2026-09-19 |
 | C08 | `Stylesheet::new(); sheet.register(..); sheet.get(..).unwrap_or_default()` | README.md :: `Stylesheet::new(); sheet.register(..); sheet.get(..).unwrap_or_default()` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_stylesheet_snippet | retracted | 2026-09-19 |
-| C09 | `TableTheme::modern().with_stripe_period(2).with_header_style(..).with_selection_style(..)` | README.md :: `TableTheme::modern().with_stripe_period(2).with_header_style(..).with_selection_style(..)` | api | CODE | bd-g00-root-epic-ewths.23.13 | bead:bd-g00-root-epic-ewths.23.13 | pending-code | - |
+| C09 | `TableTheme::modern().with_stripe_period(2).with_header_style(..).with_selection_style(..)` | README.md :: `TableTheme::modern().with_stripe_period(2).with_header_style(..).with_selection_style(..)` | api | CODE | bd-g00-root-epic-ewths.23.13 | test:ftui::readme_snippets::readme_table_theme_snippet | retracted | 2026-09-19 |
 | C10 | 9 border styles | README.md :: 9 border styles | api | DOC | bd-g00-root-epic-ewths.23.11 | bead:bd-g00-root-epic-ewths.23.11 | pending-doc | - |
 | C11 | `Cmd::perform(future, mapper)` | README.md :: `Cmd::perform(future, mapper)` | api | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | C12 | `Cmd::SetClipboard/GetClipboard` | README.md :: `Cmd::SetClipboard/GetClipboard` | api | CODE | bd-g00-root-epic-ewths.21 | test:ftui-runtime::program::clipboard_commands_reach_writer_and_reply_reaches_model_once | proven | 2026-09-19 |
