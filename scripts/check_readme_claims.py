@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import date
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import re
 import sys
 
@@ -151,12 +152,27 @@ def strip_test_regions(text):
     tested next door, reuse it; if the import fails, fall back to the raw text,
     which errs toward reporting a consumer rather than hiding one.
     """
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    if _reachability_gate is None:
+        return text
+    return _reachability_gate.strip_test_regions(text)
+
+
+def _load_reachability_gate():
+    """Import the sibling gate once, without mutating `sys.path` repeatedly."""
+    scripts_dir = str(Path(__file__).resolve().parent)
+    added = scripts_dir not in sys.path
+    if added:
+        sys.path.insert(0, scripts_dir)
     try:
         import check_module_reachability
+        return check_module_reachability
     except ImportError:  # pragma: no cover - the gate is normally present
-        return text
-    return check_module_reachability.strip_test_regions(text)
+        if added:
+            sys.path.remove(scripts_dir)
+        return None
+
+
+_reachability_gate = _load_reachability_gate()
 
 
 def experimental_sections(readme_text):
@@ -215,23 +231,35 @@ def check_experimental(readme_path, crates_dir):
     # together, not the runtime picking any of it up. Counting those as
     # consumers would make this check fire on day one and teach everyone to
     # ignore it.
+    # One pass over the sources, not one per module. Stripping `#[cfg(test)]`
+    # means brace-matching the whole file, so scanning 600 files once per
+    # module took 27x longer than the reachability gate it sits next to. A
+    # cheap combined prefilter on the raw text decides which files are worth
+    # stripping at all; almost none are.
     modules = experimental_modules(readme_path.read_text(encoding='utf-8'))
     quarantined_files = {f'{module}.rs' for module in modules}
-    consumed = []
-    for module in sorted(modules):
-        pattern = re.compile(rf'use +(?:crate|ftui_runtime)::{re.escape(module)}\b'
-                             rf'|(?:crate|ftui_runtime)::{re.escape(module)}::')
-        for source in crates_dir.glob('*/src/**/*.rs'):
-            if source.name in quarantined_files or source.name == 'lib.rs':
-                continue
-            try:
-                text = strip_test_regions(
-                    source.read_text(encoding='utf-8', errors='replace'))
-                if pattern.search(text):
-                    consumed.append(f'{module} <- {source.relative_to(crates_dir.parent)}')
-                    break
-            except OSError:
-                continue
+    patterns = {
+        module: re.compile(rf'use +(?:crate|ftui_runtime)::{re.escape(module)}\b'
+                           rf'|(?:crate|ftui_runtime)::{re.escape(module)}::')
+        for module in modules
+    }
+    prefilter = re.compile('|'.join(re.escape(m) for m in sorted(modules))) \
+        if modules else None
+    consumed = {}
+    for source in sorted(crates_dir.glob('*/src/**/*.rs')):
+        if source.name in quarantined_files or source.name == 'lib.rs':
+            continue
+        try:
+            raw = source.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        if prefilter is None or not prefilter.search(raw):
+            continue
+        text = strip_test_regions(raw)
+        for module, pattern in patterns.items():
+            if module not in consumed and pattern.search(text):
+                consumed[module] = f'{module} <- {source.relative_to(crates_dir.parent)}'
+    consumed = [consumed[module] for module in sorted(consumed)]
     for hit in consumed:
         errors.append(
             f'experimental module now has a production consumer ({hit}); the '
@@ -298,7 +326,38 @@ def self_test():
     assert experimental_modules(table) == {'ivm', 'roaring_bitmap'}, \
         experimental_modules(table)
 
-    print(json.dumps({'scope': 'schema-self-test', 'passed': len(fixtures) + 4}))
+    # check_experimental end to end against a throwaway tree. A consumer check
+    # that cannot fire is worse than none, and the prefilter added for speed is
+    # exactly the kind of change that could silently disable it.
+    readme_text = (table.replace('## Something else\n', '') +
+                   '\n## Ivm\n\n**Status: experimental**\n\n'
+                   '**Where it runs: nowhere.**\n')
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        readme_file = root / 'README.md'
+        readme_file.write_text(readme_text, encoding='utf-8')
+        src = root / 'crates' / 'ftui-runtime' / 'src'
+        src.mkdir(parents=True)
+        (src / 'ivm.rs').write_text('// the module itself never counts\n'
+                                    'use crate::ivm::ViewId;\n', encoding='utf-8')
+        (src / 'lib.rs').write_text('pub mod ivm;\n', encoding='utf-8')
+        (src / 'quiet.rs').write_text('fn f() {}\n', encoding='utf-8')
+        _, clean = check_experimental(readme_file, root / 'crates')
+        assert not clean, clean
+
+        # A real consumer must be reported...
+        (src / 'user.rs').write_text('use crate::ivm::ViewId;\n', encoding='utf-8')
+        _, hits = check_experimental(readme_file, root / 'crates')
+        assert len(hits) == 1 and 'ivm <- crates/ftui-runtime/src/user.rs' in hits[0], hits
+
+        # ...but not when the only use sits inside #[cfg(test)].
+        (src / 'user.rs').write_text(
+            'fn f() {}\n#[cfg(test)]\nmod tests {\n    use crate::ivm::ViewId;\n}\n',
+            encoding='utf-8')
+        _, tested = check_experimental(readme_file, root / 'crates')
+        assert not tested, tested
+
+    print(json.dumps({'scope': 'schema-self-test', 'passed': len(fixtures) + 7}))
 
 
 def main():
