@@ -83,7 +83,12 @@ ftui-widgets::choreography  # bd-g00-root-epic-ewths.11.5
 # The owner granted deletion permission for its enumerated set on 2026-09-18;
 # these are the ones this gate found, which is not the same list, so they need
 # their own pass before anything is removed.
-ftui-core::event_coalescer  # bd-g00-root-epic-ewths.11.5
+# 1401 lines of input coalescing (mouse-move/scroll floods) with zero
+# consumers - not production, not tests. Not a sweep-deletion candidate: it is
+# real working code that nobody connected. bd-tu3l9 carries the analysis,
+# including the constraint that makes it non-trivial (the gesture recognizer
+# needs the raw event stream, and coalescing swallows events by construction).
+ftui-core::event_coalescer  # bd-tu3l9
 # Superseded, not merely unused: this is a second Esc-Esc interpreter (708
 # lines, bd-2vne.2). The one that actually runs is keybinding::SequenceDetector,
 # which KeyDispatcher owns (keybinding.rs:775), constructs (:782) and feeds Esc
