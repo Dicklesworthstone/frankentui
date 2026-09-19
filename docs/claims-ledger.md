@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-09-19 the distribution across 152 rows is 29 pending-code,
-57 pending-doc, 42 retracted and 24 proven. Regenerate this sentence from
+As of 2026-09-19 the distribution across 152 rows is 21 pending-code,
+57 pending-doc, 46 retracted and 28 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -97,6 +97,12 @@ README says, not something adjacent. The proven set:
   nothing: the cascade that runs lives in `ftui-render::budget` plus
   `program.rs` plus the widgets. Marking this section experimental because of
   the module name would be wrong.
+- V58 is the same distinction from the other side, and the two rows must not be
+  collapsed: V58 says *"degradation cascade **module**"* and is retracted,
+  because `ftui-runtime::degradation_cascade` is quarantined and imported by
+  nothing. S27 says the cascade *runs*, and is proven. Both are correct at once.
+  A row that names a module is a claim about that module, not about the
+  capability that shares its name.
 
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
