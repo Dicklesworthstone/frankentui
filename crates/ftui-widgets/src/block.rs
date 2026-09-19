@@ -55,7 +55,8 @@ impl<'a> Block<'a> {
     /// (e.g. `["heading", "heading.border"]`), allowing a border-specific style
     /// to override base properties.
     ///
-    /// Subsequent calls to [`.style()`] or [`.border_style()`] will override these values.
+    /// Subsequent calls to [`style`](Self::style) or
+    /// [`border_style`](Self::border_style) will override these values.
     #[must_use]
     pub fn styled(sheet: &StyleSheet, name: &str) -> Self {
         Self::default().with_stylesheet(sheet, name)
@@ -68,7 +69,8 @@ impl<'a> Block<'a> {
     /// (e.g. `["heading", "heading.border"]`), allowing a border-specific style
     /// to override base properties.
     ///
-    /// Subsequent calls to [`.style()`] or [`.border_style()`] will override these values.
+    /// Subsequent calls to [`style`](Self::style) or
+    /// [`border_style`](Self::border_style) will override these values.
     #[must_use]
     pub fn with_stylesheet(mut self, sheet: &StyleSheet, name: &str) -> Self {
         self.style = sheet.get_or_default(name);
