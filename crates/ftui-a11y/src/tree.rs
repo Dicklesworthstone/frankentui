@@ -850,10 +850,18 @@ fn announcement_reason(changes: &[A11yChange]) -> Option<AnnouncementReason> {
 
 /// Changed control flags in stable order, with their current polarity and
 /// spoken text. Read typed state rather than parsing diff debug descriptions.
-fn changed_control_states(node: &A11yNodeInfo, changes: &[A11yChange]) -> Vec<(bool, &'static str)> {
+fn changed_control_states(
+    node: &A11yNodeInfo,
+    changes: &[A11yChange],
+) -> Vec<(bool, &'static str)> {
     [
         ("disabled", node.state.disabled, "disabled", "enabled"),
-        ("readonly", node.state.readonly, "read only", "not read only"),
+        (
+            "readonly",
+            node.state.readonly,
+            "read only",
+            "not read only",
+        ),
         ("required", node.state.required, "required", "not required"),
     ]
     .into_iter()
@@ -1097,7 +1105,10 @@ mod focused_state_tests {
                 assert_eq!(announcement.reason, AnnouncementReason::FocusedStateChanged);
                 // A state-only change is not an assertive live-content update.
                 assert_eq!(announcement.urgency, LiveRegion::Polite);
-                assert_eq!(announcement.text, format!("textInput: Email address. {text}"));
+                assert_eq!(
+                    announcement.text,
+                    format!("textInput: Email address. {text}")
+                );
             }
         }
     }
@@ -1313,7 +1324,9 @@ mod focused_state_tests {
                 assert_eq!(batch.announcements[0].urgency, region);
                 assert_eq!(
                     batch.announcements[0].text,
-                    format!("textInput: Updated email. New help. focused, {states}. shortcut Alt+E")
+                    format!(
+                        "textInput: Updated email. New help. focused, {states}. shortcut Alt+E"
+                    )
                 );
                 // Actionable focused-state changes are not motion-like churn.
                 let filtered = AccessibilityPreferences::all()
