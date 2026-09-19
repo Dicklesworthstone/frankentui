@@ -3356,6 +3356,13 @@ pub struct ProgramConfig {
     /// When `Shadow`, both the baseline and candidate lanes run in parallel
     /// and evidence is emitted; rendering uses the baseline lane only.
     pub rollout_policy: RolloutPolicy,
+    /// Coalesce high-frequency mouse moves and consecutive same-direction scrolls.
+    ///
+    /// When `false` (the default), every input event triggers a model update.
+    /// When `true`, mouse move bursts and consecutive same-direction scroll
+    /// events are coalesced so intermediate states do not trigger redundant
+    /// updates and renders. The recognizer still receives all raw events.
+    pub event_coalescing: bool,
 }
 
 impl Default for ProgramConfig {
@@ -3398,6 +3405,7 @@ impl Default for ProgramConfig {
             tick_strategy: None,
             runtime_lane: RuntimeLane::default(),
             rollout_policy: RolloutPolicy::default(),
+            event_coalescing: false,
         }
     }
 }
@@ -3437,6 +3445,19 @@ impl ProgramConfig {
     #[must_use]
     pub fn with_gestures(mut self, config: ftui_core::gesture::GestureConfig) -> Self {
         self.gestures = Some(config);
+        self
+    }
+
+    /// Coalesce high-frequency mouse moves and consecutive same-direction scrolls.
+    ///
+    /// When enabled, mouse move bursts and same-direction scrolls are coalesced
+    /// so intermediate positions do not trigger individual model updates and renders.
+    /// Pending events are flushed at the end of ready event bursts, before
+    /// non-coalescable events, and on ticks. Raw events are still fed to the
+    /// gesture recognizer before coalescing.
+    #[must_use]
+    pub fn with_event_coalescing(mut self, enabled: bool) -> Self {
+        self.event_coalescing = enabled;
         self
     }
 
@@ -5259,6 +5280,9 @@ pub struct Program<
     /// Gesture recognizer fed by `handle_event` when
     /// `ProgramConfig::gestures` is set.
     gesture_recognizer: Option<ftui_core::gesture::GestureRecognizer>,
+    /// Event coalescer for mouse moves and scrolls when
+    /// `ProgramConfig::event_coalescing` is enabled.
+    event_coalescer: Option<ftui_core::event_coalescer::EventCoalescer>,
     /// Screen-reader policy when `ProgramConfig::accessibility` is set.
     a11y_policy: Option<ScreenReaderPolicy>,
     /// Explicit content capture policy for accessibility evidence only.
@@ -5419,6 +5443,11 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             .gestures
             .clone()
             .map(ftui_core::gesture::GestureRecognizer::new);
+        let event_coalescer = if config.event_coalescing {
+            Some(ftui_core::event_coalescer::EventCoalescer::new())
+        } else {
+            None
+        };
         let task_executor = TaskExecutor::new(
             &effect_queue_config,
             task_sender.clone(),
@@ -5497,6 +5526,7 @@ impl<M: Model> Program<M, CrosstermEventSource, TerminalPresenter<Stdout>> {
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
             gesture_recognizer,
+            event_coalescer,
             frame_arena: FrameArena::default(),
             guardrails,
             last_soft_trim_frame: None,
@@ -5591,6 +5621,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             .gestures
             .clone()
             .map(ftui_core::gesture::GestureRecognizer::new);
+        let event_coalescer = if config.event_coalescing {
+            Some(ftui_core::event_coalescer::EventCoalescer::new())
+        } else {
+            None
+        };
         let task_executor = TaskExecutor::new(
             &effect_queue_config,
             task_sender.clone(),
@@ -5669,6 +5704,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
             gesture_recognizer,
+            event_coalescer,
             frame_arena: FrameArena::default(),
             guardrails,
             last_soft_trim_frame: None,
@@ -6078,6 +6114,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                     self.deliver_gesture(gesture)?;
                 }
 
+                // Flush any pending coalesced events on tick so they do not sit unrendered.
+                if self.running {
+                    self.flush_coalesced_events()?;
+                }
+
                 if !used_screen_dispatch {
                     // Monolithic model path does not expose active-screen
                     // transitions, so clear dispatch-local transition state.
@@ -6336,6 +6377,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             .max_zero_timeout_polls_in_burst
             .max(zero_polls_in_burst_window);
 
+        if self.running {
+            self.flush_coalesced_events()?;
+        }
+
         Ok(())
     }
 
@@ -6417,6 +6462,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
         let event = match event {
             Event::Resize { width, height } => {
+                if let Some(ref mut coalescer) = self.event_coalescer {
+                    coalescer.clear();
+                }
                 debug!(
                     width,
                     height,
@@ -6490,6 +6538,61 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             .map(|recognizer| recognizer.process(&event, Instant::now()))
             .unwrap_or_default();
 
+        if self.event_coalescer.is_some() {
+            let is_coalescable = match &event {
+                Event::Mouse(m) => matches!(
+                    m.kind,
+                    MouseEventKind::Moved
+                        | MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::ScrollLeft
+                        | MouseEventKind::ScrollRight
+                ),
+                _ => false,
+            };
+
+            let mut to_dispatch = Vec::new();
+            if let Some(coalescer) = self.event_coalescer.as_mut() {
+                if !is_coalescable && coalescer.has_pending() {
+                    to_dispatch.extend(coalescer.flush());
+                }
+                if let Some(evt) = coalescer.push(event) {
+                    to_dispatch.push(evt);
+                }
+            }
+
+            for evt in to_dispatch {
+                self.dispatch_input_event(evt)?;
+                if !self.running {
+                    return Ok(());
+                }
+            }
+        } else {
+            self.dispatch_input_event(event)?;
+        }
+
+        if self.running {
+            for gesture in gestures {
+                self.deliver_gesture(gesture)?;
+            }
+        }
+
+        // Track input event processing for fairness.
+        self.fairness_guard.event_processed(
+            fairness_event_type,
+            event_start.elapsed(),
+            Instant::now(),
+        );
+
+        Ok(())
+    }
+
+    /// Dispatch a single input event to the model's `update()` method,
+    /// mark dirty, execute the returned command, and reconcile subscriptions.
+    fn dispatch_input_event(&mut self, event: Event) -> io::Result<()> {
+        if !self.running {
+            return Ok(());
+        }
         let msg = M::Message::from(event);
         let cmd = {
             let _span = debug_span!(
@@ -6513,18 +6616,28 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
         if self.running {
             self.reconcile_subscriptions();
         }
-        for gesture in gestures {
-            self.deliver_gesture(gesture)?;
-        }
-
-        // Track input event processing for fairness.
-        self.fairness_guard.event_processed(
-            fairness_event_type,
-            event_start.elapsed(),
-            Instant::now(),
-        );
-
         Ok(())
+    }
+
+    /// Flush any pending coalesced input events to the model.
+    pub fn flush_coalesced_events(&mut self) -> io::Result<()> {
+        let pending = match self.event_coalescer.as_mut() {
+            Some(coalescer) if coalescer.has_pending() => coalescer.flush(),
+            _ => return Ok(()),
+        };
+        for event in pending {
+            self.dispatch_input_event(event)?;
+            if !self.running {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Access the event coalescer, if enabled.
+    #[must_use]
+    pub fn event_coalescer(&self) -> Option<&ftui_core::event_coalescer::EventCoalescer> {
+        self.event_coalescer.as_ref()
     }
 
     /// Classify an event for fairness tracking.
@@ -12649,6 +12762,11 @@ mod tests {
             .gestures
             .clone()
             .map(ftui_core::gesture::GestureRecognizer::new);
+        let event_coalescer = if config.event_coalescing {
+            Some(ftui_core::event_coalescer::EventCoalescer::new())
+        } else {
+            None
+        };
         let guardrails = FrameGuardrails::new(config.guardrails);
         let task_executor = TaskExecutor::new(
             &effect_queue_config,
@@ -12719,6 +12837,7 @@ mod tests {
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
             gesture_recognizer,
+            event_coalescer,
             frame_arena: FrameArena::default(),
             guardrails,
             last_soft_trim_frame: None,
@@ -14845,6 +14964,295 @@ mod tests {
             .unwrap();
         assert!(quiet.lock().unwrap().is_empty());
         assert_eq!(program.model.raw, 2);
+    }
+
+    #[test]
+    fn headless_program_event_coalescing_disabled_by_default() {
+        use ftui_core::event::{Modifiers, MouseEvent, MouseEventKind};
+
+        #[derive(Default)]
+        struct CoalesceTestModel {
+            events: Vec<Event>,
+        }
+
+        impl Model for CoalesceTestModel {
+            type Message = Event;
+            fn update(&mut self, msg: Event) -> Cmd<Event> {
+                self.events.push(msg);
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let mut program =
+            headless_program_with_config(CoalesceTestModel::default(), ProgramConfig::default());
+        assert!(program.event_coalescer().is_none());
+
+        for i in 0..5 {
+            program
+                .handle_event(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Moved,
+                    x: i,
+                    y: i,
+                    modifiers: Modifiers::NONE,
+                }))
+                .unwrap();
+        }
+        assert_eq!(program.model.events.len(), 5);
+    }
+
+    #[test]
+    fn headless_program_event_coalesces_mouse_moves_and_flushes_latest() {
+        use ftui_core::event::{KeyCode, KeyEvent, Modifiers, MouseEvent, MouseEventKind};
+
+        #[derive(Default)]
+        struct CoalesceTestModel {
+            events: Vec<Event>,
+        }
+
+        impl Model for CoalesceTestModel {
+            type Message = Event;
+            fn update(&mut self, msg: Event) -> Cmd<Event> {
+                self.events.push(msg);
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let config = ProgramConfig::default().with_event_coalescing(true);
+        let mut program = headless_program_with_config(CoalesceTestModel::default(), config);
+        assert!(program.event_coalescer().is_some());
+
+        // Push 3 mouse move events.
+        for i in 1..=3 {
+            program
+                .handle_event(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Moved,
+                    x: i,
+                    y: i * 2,
+                    modifiers: Modifiers::NONE,
+                }))
+                .unwrap();
+        }
+
+        // None should have reached the model yet.
+        assert_eq!(program.model.events.len(), 0);
+        assert!(program.event_coalescer().unwrap().has_pending());
+
+        // A non-coalescable event (Key) arrives: flushes pending move, then delivers key.
+        let key_evt = Event::Key(KeyEvent::new(KeyCode::Enter));
+        program.handle_event(key_evt.clone()).unwrap();
+
+        assert_eq!(program.model.events.len(), 2);
+        match &program.model.events[0] {
+            Event::Mouse(m) => {
+                assert_eq!(m.kind, MouseEventKind::Moved);
+                assert_eq!(m.x, 3);
+                assert_eq!(m.y, 6);
+            }
+            other => panic!("expected Mouse move, got {other:?}"),
+        }
+        assert_eq!(program.model.events[1], key_evt);
+        assert!(!program.event_coalescer().unwrap().has_pending());
+    }
+
+    #[test]
+    fn headless_program_event_coalesces_scrolls_in_same_direction() {
+        use ftui_core::event::{Modifiers, MouseEvent, MouseEventKind};
+
+        #[derive(Default)]
+        struct CoalesceTestModel {
+            events: Vec<Event>,
+        }
+
+        impl Model for CoalesceTestModel {
+            type Message = Event;
+            fn update(&mut self, msg: Event) -> Cmd<Event> {
+                self.events.push(msg);
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let config = ProgramConfig::default().with_event_coalescing(true);
+        let mut program = headless_program_with_config(CoalesceTestModel::default(), config);
+
+        for _ in 0..4 {
+            program
+                .handle_event(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    x: 10,
+                    y: 20,
+                    modifiers: Modifiers::NONE,
+                }))
+                .unwrap();
+        }
+
+        assert_eq!(program.model.events.len(), 0);
+        assert!(program.event_coalescer().unwrap().has_pending());
+
+        program.flush_coalesced_events().unwrap();
+        assert_eq!(program.model.events.len(), 1);
+        match &program.model.events[0] {
+            Event::Mouse(m) => {
+                assert_eq!(m.kind, MouseEventKind::ScrollUp);
+                assert_eq!(m.x, 10);
+                assert_eq!(m.y, 20);
+            }
+            other => panic!("expected ScrollUp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn headless_program_event_coalescing_scroll_direction_change_flushes_old() {
+        use ftui_core::event::{Modifiers, MouseEvent, MouseEventKind};
+
+        #[derive(Default)]
+        struct CoalesceTestModel {
+            events: Vec<Event>,
+        }
+
+        impl Model for CoalesceTestModel {
+            type Message = Event;
+            fn update(&mut self, msg: Event) -> Cmd<Event> {
+                self.events.push(msg);
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let config = ProgramConfig::default().with_event_coalescing(true);
+        let mut program = headless_program_with_config(CoalesceTestModel::default(), config);
+
+        program
+            .handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                x: 5,
+                y: 5,
+                modifiers: Modifiers::NONE,
+            }))
+            .unwrap();
+        assert_eq!(program.model.events.len(), 0);
+
+        // Direction change flushes old ScrollUp and makes ScrollDown pending.
+        program
+            .handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                x: 6,
+                y: 6,
+                modifiers: Modifiers::NONE,
+            }))
+            .unwrap();
+        assert_eq!(program.model.events.len(), 1);
+        match &program.model.events[0] {
+            Event::Mouse(m) => assert_eq!(m.kind, MouseEventKind::ScrollUp),
+            other => panic!("expected ScrollUp, got {other:?}"),
+        }
+
+        program.flush_coalesced_events().unwrap();
+        assert_eq!(program.model.events.len(), 2);
+        match &program.model.events[1] {
+            Event::Mouse(m) => assert_eq!(m.kind, MouseEventKind::ScrollDown),
+            other => panic!("expected ScrollDown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn headless_program_event_coalescing_flushed_on_tick() {
+        use ftui_core::event::{Modifiers, MouseEvent, MouseEventKind};
+
+        #[derive(Default)]
+        struct CoalesceTestModel {
+            events: Vec<Event>,
+        }
+
+        impl Model for CoalesceTestModel {
+            type Message = Event;
+            fn update(&mut self, msg: Event) -> Cmd<Event> {
+                self.events.push(msg);
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let config = ProgramConfig::default().with_event_coalescing(true);
+        let mut program = headless_program_with_config(CoalesceTestModel::default(), config);
+
+        program
+            .handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                x: 42,
+                y: 24,
+                modifiers: Modifiers::NONE,
+            }))
+            .unwrap();
+        assert_eq!(program.model.events.len(), 0);
+
+        program.handle_event(Event::Tick).unwrap();
+        assert_eq!(program.model.events.len(), 2);
+        match &program.model.events[0] {
+            Event::Mouse(m) => {
+                assert_eq!(m.kind, MouseEventKind::Moved);
+                assert_eq!(m.x, 42);
+                assert_eq!(m.y, 24);
+            }
+            other => panic!("expected Moved before Tick, got {other:?}"),
+        }
+        assert_eq!(program.model.events[1], Event::Tick);
+    }
+
+    #[test]
+    fn headless_program_event_coalescing_cleared_on_resize() {
+        use ftui_core::event::{Modifiers, MouseEvent, MouseEventKind};
+
+        #[derive(Default)]
+        struct CoalesceTestModel {
+            events: Vec<Event>,
+        }
+
+        impl Model for CoalesceTestModel {
+            type Message = Event;
+            fn update(&mut self, msg: Event) -> Cmd<Event> {
+                self.events.push(msg);
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let config = ProgramConfig::default().with_event_coalescing(true);
+        let mut program = headless_program_with_config(CoalesceTestModel::default(), config);
+
+        program
+            .handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                x: 10,
+                y: 10,
+                modifiers: Modifiers::NONE,
+            }))
+            .unwrap();
+        assert!(program.event_coalescer().unwrap().has_pending());
+
+        program
+            .handle_event(Event::Resize {
+                width: 100,
+                height: 50,
+            })
+            .unwrap();
+        assert!(!program.event_coalescer().unwrap().has_pending());
+
+        program.flush_coalesced_events().unwrap();
+        // Mouse move was cleared, and resize is handled internally by the runtime.
+        assert_eq!(program.model.events.len(), 0);
+
+        // Subsequent input arrives normally without the stale mouse position.
+        program
+            .handle_event(Event::Key(KeyEvent::new(KeyCode::Char('a'))))
+            .unwrap();
+        assert_eq!(program.model.events.len(), 1);
+        assert_eq!(
+            program.model.events[0],
+            Event::Key(KeyEvent::new(KeyCode::Char('a')))
+        );
     }
 
     /// CONTRACT (bd-1za0z item 3): the queue guardrail sees the live effect

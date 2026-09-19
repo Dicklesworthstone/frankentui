@@ -86,14 +86,8 @@ ftui-widgets::choreography  # bd-gqit2
 # .11.5 granted deletion for an enumerated set on 2026-09-18 and then closed.
 # None of the modules below are on that list, so its permission does not reach
 # them and its closure left them ownerless. bd-gqit2 picked up the four that
-# were pointing at it and carries the per-module analysis; event_coalescer
-# already had its own owner in bd-tu3l9 and kept it.
-# 1401 lines of input coalescing (mouse-move/scroll floods) with zero
-# consumers - not production, not tests. Not a sweep-deletion candidate: it is
-# real working code that nobody connected. bd-tu3l9 carries the analysis,
-# including the constraint that makes it non-trivial (the gesture recognizer
-# needs the raw event stream, and coalescing swallows events by construction).
-ftui-core::event_coalescer  # bd-tu3l9
+# were pointing at it and carries the per-module analysis.
+# (event_coalescer was wired into Program in bd-tu3l9).
 # Superseded, not merely unused: this is a second Esc-Esc interpreter (708
 # lines, bd-2vne.2). The one that actually runs is keybinding::SequenceDetector,
 # which KeyDispatcher owns (keybinding.rs:775), constructs (:782) and feeds Esc

@@ -26,6 +26,7 @@ pub mod cursor;
 pub mod cx;
 pub mod event;
 pub mod event_coalescer;
+pub use event_coalescer::EventCoalescer;
 pub mod generic_diff;
 pub mod generic_repr;
 pub mod geometry;

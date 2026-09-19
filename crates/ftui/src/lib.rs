@@ -52,6 +52,7 @@ pub use ftui_core::event::{
     ClipboardEvent, ClipboardSource, Event, KeyCode, KeyEvent, KeyEventKind, Modifiers,
     MouseButton, MouseEvent, MouseEventKind, PasteEvent,
 };
+pub use ftui_core::event_coalescer::EventCoalescer;
 pub use ftui_core::osc52::ClipboardSelection;
 pub use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
 #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
