@@ -2349,44 +2349,58 @@ The codebase includes formal proof sketches in `no_flicker_proof.rs`:
 
 ### Property-Based Testing
 
+`crates/ftui-render/tests/proptest_diff_invariants.rs` generates random buffers and change sets and checks the diff against them from both directions:
+
 ```rust
-#[test]
-fn prop_diff_soundness() {
-    proptest!(|(
-        width in 10u16..200,
-        height in 5u16..100,
-        change_pct in 0.0f64..1.0
-    )| {
-        // Generate random buffers with controlled change percentage
-        // Verify diff output matches actual differences
-    });
+proptest! {
+    // Soundness: nothing the diff reports is actually unchanged.
+    #[test]
+    fn no_false_positive_changes((w, h) in dims(), changes in change_set(80, 40)) { /* .. */ }
+
+    // Completeness: nothing that changed is missing from the diff.
+    #[test]
+    fn no_false_negative_changes((w, h) in dims(), changes in change_set(80, 40)) { /* .. */ }
 }
 ```
+
+Alongside them: `identical_buffers_produce_empty_diff`, `diff_is_deterministic`, `compute_and_compute_into_equivalent`, `runs_cover_all_changes` and `changes_sorted_row_major`.
 
 ### Snapshot Testing
 
 ```bash
 # Run tests, auto-update baselines
-BLESS=1 cargo test -p ftui-harness
+BLESS=1 cargo test -p ftui-demo-showcase
 
-# Snapshots stored as .txt files for easy diff review
-tests/snapshots/
-├── layout_flex_horizontal.txt
-├── layout_grid_spanning.txt
-└── widget_table_styled.txt
+# 599 plain-text .snap files, one per case, reviewed as an ordinary diff
+crates/ftui-demo-showcase/tests/snapshots/   # 432
+├── a11y_accessibility_panel_all_modes_120x40.snap
+├── a11y_accessibility_panel_high_contrast_80x24.snap
+└── widget_gallery_verification_120x40.snap
+crates/ftui-extras/tests/snapshots/          # 101
+crates/ftui-harness/tests/snapshots/         #  66
 ```
+
+A `.snap` file is the rendered frame as text, so a failing snapshot diff shows the actual character grid that changed rather than an opaque blob.
 
 ### Formal Verification Patterns
 
+Theorem 3 (dirty-tracking soundness) is pinned by `set_marks_row_dirty` in `ftui-render/src/buffer.rs` — if it fails, the theorem is false:
+
 ```rust
-// Proof by counterexample: if this test fails, the theorem is false
 #[test]
-fn counterexample_dirty_soundness() {
-    let mut buf = Buffer::new(10, 10);
-    buf.set(5, 5, Cell::from_char('X'));
-    assert!(buf.is_row_dirty(5), "Theorem 3 violated: mutation without dirty flag");
+fn set_marks_row_dirty() {
+    let mut buf = Buffer::new(10, 5);
+    buf.clear_dirty(); // Reset initial dirty state
+    buf.set(3, 2, Cell::from_char('X'));
+    assert!(buf.is_row_dirty(2));
+    assert!(!buf.is_row_dirty(0));
+    assert!(!buf.is_row_dirty(1));
+    assert!(!buf.is_row_dirty(3));
+    assert!(!buf.is_row_dirty(4));
 }
 ```
+
+Note it clears the initial dirty state first: a fresh `Buffer` starts with every row dirty (`dirty_rows_start_dirty`), so a test that skipped `clear_dirty()` would pass without proving anything. Its siblings cover the other mutation paths — `set_raw_marks_row_dirty`, `get_mut_marks_row_dirty`, `fill_marks_affected_rows_dirty`, `clear_marks_all_dirty`.
 
 ### Benchmark Suite
 
