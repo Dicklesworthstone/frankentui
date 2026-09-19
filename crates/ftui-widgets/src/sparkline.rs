@@ -881,6 +881,37 @@ mod tests {
                 .with_max_marker('^', Style::default())
                 .render_to_string();
             assert!(s.contains('v') && s.contains('^'), "{s}");
+
+            // Same 20-sample dataset as the snapshot test:
+            let data20 = [
+                3.0, 7.0, 2.0, 9.0, 4.0, 1.0, 6.0, 8.0, 5.0, 7.0, 3.0, 9.0, 2.0, 6.0, 4.0, 8.0,
+                1.0, 5.0, 7.0, 3.0,
+            ];
+            let s20 = Sparkline::new(&data20)
+                .with_min_marker(SparklineMarkers::DEFAULT_MIN_GLYPH, Style::default())
+                .with_max_marker(SparklineMarkers::DEFAULT_MAX_GLYPH, Style::default())
+                .render_to_string();
+            let chars20: Vec<char> = s20.chars().collect();
+            assert_eq!(chars20.len(), 20);
+            assert_eq!(chars20[3], SparklineMarkers::DEFAULT_MAX_GLYPH);
+            assert_eq!(chars20[5], SparklineMarkers::DEFAULT_MIN_GLYPH);
+        }
+
+        #[test]
+        fn extreme_indices_pure_fn() {
+            // Ties choose earliest index
+            assert_eq!(
+                Sparkline::extreme_indices(&[1.0, 1.0, 5.0, 5.0]),
+                Some((0, 2))
+            );
+            // NaNs are ignored
+            assert_eq!(
+                Sparkline::extreme_indices(&[f64::NAN, 2.0, f64::NAN]),
+                Some((1, 1))
+            );
+            // All-NaN or empty returns None
+            assert_eq!(Sparkline::extreme_indices(&[f64::NAN]), None);
+            assert_eq!(Sparkline::extreme_indices(&[]), None);
         }
 
         #[test]
@@ -1014,11 +1045,12 @@ mod tests {
 
         #[test]
         fn sparkline_markers_20x1() {
-            // A 20-wide render with a unique min at column 3 and a unique max at
-            // column 12; both markers land on exactly those columns.
-            let mut data = [5.0f64; 20];
-            data[3] = 0.0;
-            data[12] = 9.0;
+            // A 20-wide render with min first at index 5 and max first at index 3.
+            // Ties (max also at 11, min also at 16) are resolved to earliest.
+            let data = [
+                3.0, 7.0, 2.0, 9.0, 4.0, 1.0, 6.0, 8.0, 5.0, 7.0, 3.0, 9.0, 2.0, 6.0, 4.0, 8.0,
+                1.0, 5.0, 7.0, 3.0,
+            ];
             let sparkline = Sparkline::new(&data)
                 .with_min_marker(SparklineMarkers::DEFAULT_MIN_GLYPH, Style::default())
                 .with_max_marker(SparklineMarkers::DEFAULT_MAX_GLYPH, Style::default());
@@ -1037,8 +1069,8 @@ mod tests {
                 })
                 .collect();
             let chars: Vec<char> = row.chars().collect();
-            assert_eq!(chars[3], SparklineMarkers::DEFAULT_MIN_GLYPH);
-            assert_eq!(chars[12], SparklineMarkers::DEFAULT_MAX_GLYPH);
+            assert_eq!(chars[3], SparklineMarkers::DEFAULT_MAX_GLYPH);
+            assert_eq!(chars[5], SparklineMarkers::DEFAULT_MIN_GLYPH);
             assert_eq!(
                 chars
                     .iter()
