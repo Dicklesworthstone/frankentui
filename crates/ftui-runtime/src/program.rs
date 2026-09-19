@@ -5579,16 +5579,6 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
             })));
         }
 
-        let _render_trace = crate::RenderTraceRecorder::from_config(
-            &config.render_trace,
-            crate::RenderTraceContext {
-                capabilities: presenter.capabilities(),
-                diff_config: config.diff_config.clone(),
-                resize_config: config.resize_coalescer.clone(),
-                conformal_config: config.conformal_config.clone(),
-            },
-        )?;
-
         let frame_timing = config.frame_timing.clone();
         presenter.set_timing_enabled(frame_timing.is_some());
 
@@ -5804,6 +5794,23 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, TerminalPresenter<Stdout>> {
             scroll_region.rows,
             scroll_region.region_bottom,
         );
+        let evidence_sink = EvidenceSink::from_config(&config.evidence_sink)?;
+        if let Some(ref sink) = evidence_sink {
+            writer = writer.with_evidence_sink(sink.clone());
+        }
+
+        let render_trace = crate::RenderTraceRecorder::from_config(
+            &config.render_trace,
+            crate::RenderTraceContext {
+                capabilities: writer.capabilities(),
+                diff_config: config.diff_config.clone(),
+                resize_config: config.resize_coalescer.clone(),
+                conformal_config: config.conformal_config.clone(),
+            },
+        )?;
+        if let Some(recorder) = render_trace {
+            writer = writer.with_render_trace(recorder);
+        }
 
         Self::with_event_source(
             model,
