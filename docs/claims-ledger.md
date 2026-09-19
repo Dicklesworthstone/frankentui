@@ -133,6 +133,19 @@ them if it did, because the root `Cargo.toml` is a virtual manifest with no
 `[package]` and cargo never builds a test target there. The 292 integration
 test files all live in each crate's own `tests/`.
 
+V70 "mandatory gates green" stays **pending-code**, with three of its four gates
+verified on 2026-09-19 and the fourth qualified rather than claimed:
+
+- `cargo check --workspace --all-targets` — clean
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean
+- `cargo fmt --check` — clean
+- `cargo test --workspace` — 4,295 tests passed across 38 suites, and
+  `perf_catalog_lookup_latency` failed. It passes in isolation and asserts a
+  2us wall-clock average on a shared, contended box, so it is a flake rather
+  than a regression (`bd-lbugy`). A gate that fails under the project's normal
+  multi-agent load is not a gate, so the row does not go proven on "it passed
+  when I re-ran it".
+
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
 hand-chosen).
@@ -276,10 +289,10 @@ complete `.5.2`.
 | V67 | Windows support | README.md :: Windows support | status | CODE | bd-g00-root-epic-ewths.36 | bead:bd-g00-root-epic-ewths.36 | pending-code | - |
 | V68 | doctor_frankentui verification stack | README.md :: doctor_frankentui verification stack | status | CODE | bd-g00-root-epic-ewths.28 | bead:bd-g00-root-epic-ewths.28 | pending-code | - |
 | V69 | Cross-component tests in workspace `tests/` | AGENTS.md :: Cross-component tests in workspace `tests/` | status | DOC | bd-g00-root-epic-ewths.8 | path:crates/ftui-runtime/tests; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| V70 | Mandatory gates green (check/clippy/fmt/tests) | README.md :: Mandatory gates green (check/clippy/fmt/tests) | status | CODE | bd-g00-root-epic-ewths.6 | bead:bd-g00-root-epic-ewths.6 | pending-code | - |
+| V70 | Mandatory gates green (check/clippy/fmt/tests) | README.md :: Mandatory gates green (check/clippy/fmt/tests) | status | CODE | bd-g00-root-epic-ewths.6 | bead:bd-lbugy | pending-code | - |
 | V71 | `master` synchronized with `main` | README.md :: `master` synchronized with `main` | status | DOC | bd-g00-root-epic-ewths.5 | cmd:test "$(git rev-parse origin/main)" = "$(git rev-parse origin/master)" | proven | 2026-09-19 |
-| S01 | Bayesian Fuzzy Scoring (Command Palette) production status | README.md:847 :: Bayesian Fuzzy Scoring (Command Palette) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S02 | Bayesian Hint Ranking (Keybinding Hints) production status | README.md:879 :: Bayesian Hint Ranking (Keybinding Hints) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S01 | Bayesian Fuzzy Scoring (Command Palette) production status | README.md:847 :: Bayesian Fuzzy Scoring (Command Palette) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-widgets::command_palette::scorer::tests::tag_match_boosts_score | proven | 2026-09-19 |
+| S02 | Bayesian Hint Ranking (Keybinding Hints) production status | README.md:879 :: Bayesian Hint Ranking (Keybinding Hints) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-widgets::hint_ranker::cold_start_uses_static_priority; test:ftui-widgets::hint_ranker::unit_ranking_stability | proven | 2026-09-19 |
 | S03 | Bayesian Diff Strategy Selection production status | README.md:898 :: Bayesian Diff Strategy Selection | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::terminal_writer::runtime_diff_config_default; test:ftui-render::diff_strategy::config_default_all_fields | proven | 2026-09-19 |
 | S04 | Bayesian Capability Detection (Terminal Caps Probe) production status | README.md:928 :: Bayesian Capability Detection (Terminal Caps Probe) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::caps_probe::weights_are_unchanged | proven | 2026-09-18 |
 | S05 | Dirty-Span Interval Union (Sparse Diff Scans) production status | README.md:946 :: Dirty-Span Interval Union (Sparse Diff Scans) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
@@ -300,8 +313,8 @@ complete `.5.2`.
 | S20 | Damped Spring Dynamics (Animation System) production status | README.md:1231 :: Damped Spring Dynamics (Animation System) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S21 | Easing Curves + Stagger Distributions production status | README.md:1250 :: Easing Curves + Stagger Distributions | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S22 | Sine Pulse Sequences (Attention Cues) production status | README.md:1272 :: Sine Pulse Sequences (Attention Cues) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S23 | Perceived Luminance (Terminal Background Probe) production status | README.md:1282 :: Perceived Luminance (Terminal Background Probe) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S24 | Jain's Fairness Index (Input Guard) production status | README.md:1292 :: Jain's Fairness Index (Input Guard) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S23 | Perceived Luminance (Terminal Background Probe) production status | README.md:1282 :: Perceived Luminance (Terminal Background Probe) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_contrast_ratio_snippet | proven | 2026-09-19 |
+| S24 | Jain's Fairness Index (Input Guard) production status | README.md:1292 :: Jain's Fairness Index (Input Guard) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::input_fairness::test_jain_index_perfect_fairness; test:ftui-runtime::input_fairness::default_fairness_threshold_is_above_two_class_floor | proven | 2026-09-19 |
 | S25 | E-Graph Layout Optimizer production status | README.md:1453 :: E-Graph Layout Optimizer | status | DOC | bd-g00-root-epic-ewths.5.5 | path:docs/perf/egraph_vs_flex_2026-09-18.md | proven | 2026-09-18 |
 | S26 | Text Engine production status | README.md:1480 :: Text Engine | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S27 | Degradation Cascade production status | README.md:1555 :: Degradation Cascade | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::widget_refresh_degradation_essential_only_skips_nonessential; test:ftui-widgets::badge::render_no_styling_drops_configured_style | proven | 2026-09-19 |
@@ -313,8 +326,8 @@ complete `.5.2`.
 | S33 | S3-FIFO Cache production status | README.md:2694 :: S3-FIFO Cache | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::s3_fifo::scan_resistance | proven | 2026-09-19 |
 | S34 | Flat Combining production status | README.md :: Flat Combining | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S35 | Bidirectional Lenses production status | README.md :: Bidirectional Lenses | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| S36 | Input Macro Recording & Playback production status | README.md:2770 :: Input Macro Recording & Playback | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S37 | State Persistence production status | README.md:2791 :: State Persistence | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S36 | Input Macro Recording & Playback production status | README.md:2770 :: Input Macro Recording & Playback | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_simulator_snippet | proven | 2026-09-19 |
+| S37 | State Persistence production status | README.md:2791 :: State Persistence | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui::readme_snippets::readme_persistence_snippet | proven | 2026-09-19 |
 | S38 | SLO Schema & Breach Detection production status | README.md :: SLO Schema & Breach Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S39 | Multi-Stage Conformal Monitoring production status | README.md :: Multi-Stage Conformal Monitoring | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | N01 | Locale context propagated through runtime (ProgramConfig::with_locale, LocaleContext::direction()) | README.md :: Locale context | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-runtime::program::tests::frame_text_direction_follows_locale_context | proven | 2026-09-18 |
