@@ -1440,7 +1440,7 @@ BLESS=1 cargo test -p ftui-demo-showcase
 
 ### What's the performance like?
 
-The 16‑byte cell design puts 4 cells per cache line. Bayesian diff strategy selection avoids scanning unchanged regions. The presenter uses cost‑optimal cursor positioning. Frame‑time budgets are enforced via conformal prediction with automatic degradation (Full → SimpleBorders → NoColors → TextOnly).
+The 16‑byte cell design puts 4 cells per cache line. Bayesian diff strategy selection avoids scanning unchanged regions. The presenter uses cost‑optimal cursor positioning. Frame‑time budgets are enforced via conformal prediction with automatic degradation (Full → SimpleBorders → NoStyling → EssentialOnly → Skeleton → SkipFrame).
 
 ### How does the rollout system work?
 
@@ -1597,7 +1597,7 @@ Budget Controller (PID)
   │ computes control signal from frame-time error
   ▼
 Degradation Level Selection
-  │ Full → SimpleBorders → NoColors → TextOnly
+  │ Full → SimpleBorders → NoStyling → EssentialOnly → Skeleton → SkipFrame
   ▼
 Widget Priority Filtering
   │ high-priority widgets rendered first
@@ -2439,12 +2439,15 @@ Regimes:
 Frame time is regulated with a PID controller:
 
 ```
-Error:        e_t = target_ms - actual_ms
+Error:        e_t = (actual_ms - target_ms) / target_ms   // normalized; POSITIVE = over budget
 Control:      u_t = Kp·e_t + Ki·Σe + Kd·Δe
-Degradation:  Full → SimpleBorders → NoColors → TextOnly
+Integral:     Σe clamped to ±5.0 (anti-windup)
+Degradation:  Full → SimpleBorders → NoStyling → EssentialOnly → Skeleton → SkipFrame
 
 Gains: Kp=0.5, Ki=0.05, Kd=0.2 (tuned for 16ms / 60fps)
 ```
+
+The error is a **fraction of the budget, not milliseconds**, and positive means the frame ran long — so a rising `u_t` degrades. The gains above are tuned for that normalized form; feeding them raw milliseconds would scale the response by the budget. An earlier version of this block had the error as `target_ms - actual_ms`, which is both un-normalized and the opposite sign, and would have had the controller degrading on *fast* frames.
 
 When frames exceed budget, the renderer automatically degrades visual fidelity to maintain responsiveness.
 
