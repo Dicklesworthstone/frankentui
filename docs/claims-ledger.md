@@ -52,9 +52,14 @@ it had drifted from the table before 2026-09-19.
 
 The jump in `retracted` on 2026-09-19 is one audit, not a collapse: every
 README section marked **Status: experimental** was checked against whether any
-crate imports the module it describes. None of the eight did. Those sections now
-carry a `Where it runs` line and their rows are retracted. The modules are real,
-tested research code; the claim that the runtime uses them was not.
+crate's `src/` imports the module it describes. None of the eleven did. Those
+sections now carry a `Where it runs` line, `make claims` keeps them carrying
+one, and their rows are retracted. The modules are real, tested research code;
+the claim that the runtime uses them was not.
+
+(A hand count of those sections found eight. The gate found eleven — three
+subsections carry the marker under a parent heading that does not. That is the
+argument for the gate over the audit.)
 
 A row becomes `proven` only when a named test pins the specific thing the
 README says, not something adjacent. The proven set:
@@ -145,18 +150,18 @@ complete `.5.2`.
 | V11 | VOI sampling for expensive ops | README.md :: VOI sampling for expensive ops | status | CODE | bd-g00-root-epic-ewths.14 | bead:bd-g00-root-epic-ewths.14 | pending-code | - |
 | V12 | E-process / GRAPA anytime-valid monitors | README.md :: E-process / GRAPA anytime-valid monitors | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
 | V13 | Conformal frame-time gating (Mondrian) | README.md :: Conformal frame-time gating (Mondrian) | status | CODE | bd-g00-root-epic-ewths.15 | bead:bd-g00-root-epic-ewths.15 | pending-code | - |
-| V14 | Multi-stage conformal monitors | README.md :: Multi-stage conformal monitors | status | DOC | bd-g00-root-epic-ewths.15 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V14 | Multi-stage conformal monitors | README.md :: Multi-stage conformal monitors | status | DOC | bd-g00-root-epic-ewths.15 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V15 | CUSUM allocation + hover | README.md :: CUSUM allocation + hover | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
 | V16 | Alpha-investing FDR across monitors | README.md :: Alpha-investing FDR across monitors | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
 | V17 | Flake detector for E2E timing | README.md :: Flake detector for E2E timing | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V18 | Rough-path signatures | README.md :: Rough-path signatures | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V18 | Rough-path signatures | README.md :: Rough-path signatures | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V19 | SOS barrier certificates (SDP-solved) | README.md :: SOS barrier certificates (SDP-solved) | status | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | V20 | S3-FIFO cache for caps + width | README.md :: S3-FIFO cache for caps + width | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
 | V21 | W-TinyLFU width cache + PAC-Bayes CMS | README.md :: W-TinyLFU width cache + PAC-Bayes CMS | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
-| V22 | Flat combining | README.md :: Flat combining | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| V23 | Bidirectional lenses `field_lens!` | README.md :: Bidirectional lenses `field_lens!` | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V22 | Flat combining | README.md :: Flat combining | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V23 | Bidirectional lenses `field_lens!` | README.md :: Bidirectional lenses `field_lens!` | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V24 | IVM DAG | README.md :: IVM DAG | status | DOC | bd-lksq7 | ident:There is no propagation engine | retracted | 2026-09-19 |
-| V25 | SLO schema + safe mode | README.md :: SLO schema + safe mode | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V25 | SLO schema + safe mode | README.md :: SLO schema + safe mode | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V26 | State persistence | README.md :: State persistence | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
 | V27 | Input macro record/playback | README.md :: Input macro record/playback | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
 | V28 | Headless simulator | README.md :: Headless simulator | status | DOC | bd-g00-root-epic-ewths.35 | bead:bd-g00-root-epic-ewths.35 | pending-doc | - |
@@ -190,7 +195,7 @@ complete `.5.2`.
 | V56 | Rope text engine | README.md :: Rope text engine | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V57 | Editor core features | README.md :: Editor core features | status | CODE | bd-g00-root-epic-ewths.21 | bead:bd-g00-root-epic-ewths.21 | pending-code | - |
 | V58 | Degradation cascade module | README.md :: Degradation cascade module | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
-| V59 | Cost models (cache / M-G-1 / batching) | README.md :: Cost models (cache / M-G-1 / batching) | status | DOC | bd-g00-root-epic-ewths.11 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| V59 | Cost models (cache / M-G-1 / batching) | README.md :: Cost models (cache / M-G-1 / batching) | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V60 | Gesture recognizer | README.md :: Gesture recognizer | status | CODE | bd-g00-root-epic-ewths.24 | bead:bd-g00-root-epic-ewths.24 | pending-code | - |
 | V61 | Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | README.md :: Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | status | DOC | bd-g00-root-epic-ewths.27 | bead:bd-g00-root-epic-ewths.27 | pending-doc | - |
 | V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | bead:bd-g00-root-epic-ewths.20 | pending-code | - |
@@ -230,18 +235,18 @@ complete `.5.2`.
 | S25 | E-Graph Layout Optimizer production status | README.md:1453 :: E-Graph Layout Optimizer | status | DOC | bd-g00-root-epic-ewths.5.5 | path:docs/perf/egraph_vs_flex_2026-09-18.md | proven | 2026-09-18 |
 | S26 | Text Engine production status | README.md:1480 :: Text Engine | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S27 | Degradation Cascade production status | README.md:1555 :: Degradation Cascade | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S28 | Formal Cost Models production status | README.md :: Formal Cost Models | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S28 | Formal Cost Models production status | README.md :: Formal Cost Models | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S29 | Flake Detection & Sequential FDR Control production status | README.md:1625 :: Flake Detection & Sequential FDR Control | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S30 | Rough-Path Signatures production status | README.md :: Rough-Path Signatures | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S30 | Rough-Path Signatures production status | README.md :: Rough-Path Signatures | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S31 | Incremental View Maintenance (IVM) production status | README.md :: Incremental View Maintenance (IVM) | status | DOC | bd-lksq7 | ident:Where it runs: nowhere. There is no propagation engine | retracted | 2026-09-19 |
 | S32 | SOS Barrier Certificates production status | README.md:2667 :: SOS Barrier Certificates | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S33 | S3-FIFO Cache production status | README.md:2694 :: S3-FIFO Cache | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S34 | Flat Combining production status | README.md :: Flat Combining | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| S35 | Bidirectional Lenses production status | README.md :: Bidirectional Lenses | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S34 | Flat Combining production status | README.md :: Flat Combining | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S35 | Bidirectional Lenses production status | README.md :: Bidirectional Lenses | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S36 | Input Macro Recording & Playback production status | README.md:2770 :: Input Macro Recording & Playback | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S37 | State Persistence production status | README.md:2791 :: State Persistence | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S38 | SLO Schema & Breach Detection production status | README.md :: SLO Schema & Breach Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| S39 | Multi-Stage Conformal Monitoring production status | README.md :: Multi-Stage Conformal Monitoring | status | DOC | bd-g00-root-epic-ewths.5.5 | manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S38 | SLO Schema & Breach Detection production status | README.md :: SLO Schema & Breach Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
+| S39 | Multi-Stage Conformal Monitoring production status | README.md :: Multi-Stage Conformal Monitoring | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | N01 | Locale context propagated through runtime (ProgramConfig::with_locale, LocaleContext::direction()) | README.md :: Locale context | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-runtime::program::tests::frame_text_direction_follows_locale_context | proven | 2026-09-18 |
 | N02 | Text direction from locale with per-line UAX#9 reordering (bidi integrated) | README.md :: Text direction | api | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-widgets::paragraph::tests::paragraph_rtl_visual_order_matches_unicode_bidi; test:ftui-demo-showcase::screen_snapshots::i18n_demo_arabic_rtl_80x24 | proven | 2026-09-18 |
 | N03 | i18n_demo switches live between seven languages (EN/ES/FR/DE/RU/AR/JA) | README.md :: `i18n_demo` screen switches live between English, Spanish, French, German, Russian, Arabic and Japanese | example | CODE | bd-g00-root-epic-ewths.34.1 | test:ftui-demo-showcase::screens::i18n_demo::tests::german_catalog_coverage_is_complete; test:ftui-demo-showcase::screens::i18n_demo::tests::locales_list_has_seven_languages | proven | 2026-09-18 |
