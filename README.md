@@ -2035,16 +2035,16 @@ The ANSI presenter dynamically chooses the cheapest cursor positioning strategy:
 
 ```rust
 // CUP (Cursor Position): CSI {row+1};{col+1}H
-fn cup_cost(row, col) → 4 + digits(row+1) + digits(col+1)   // e.g., "\x1b[12;45H" = 9 bytes
+fn cup_cost(row, col) → 4 + digits(row+1) + digits(col+1)   // e.g., "\x1b[12;45H" = 8 bytes
 
 // CHA (Column Absolute): CSI {col+1}G
-fn cha_cost(col) → 3 + digits(col+1)                        // e.g., "\x1b[45G" = 6 bytes
+fn cha_cost(col) → 3 + digits(col+1)                        // e.g., "\x1b[45G" = 5 bytes
 
 // Per-row decision: sparse runs vs merged write-through
 strategy = argmin(sparse_cost, merged_cost)
 ```
 
-This ensures expensive operations (like full diff computation) only run when the information gain justifies the cost.
+`cheapest_move_cost(from, to)` returns 0 when the cursor is already in place, and on the same row prefers CHA over CUP because CUP always pays the extra row field. The costs are byte counts, so the choice is exact rather than estimated: `cup_cost(0, 0) == 6` is pinned against the six bytes of `\x1b[1;1H`.
 
 ---
 
@@ -2318,7 +2318,7 @@ The entire render pipeline, runtime, and layout engine contain **zero `unsafe` b
 
 ### Integer Overflow Protection
 
-All coordinate arithmetic uses saturating or checked operations:
+Coordinate arithmetic uses saturating or checked operations — 3,216 `saturating_*` and 68 `checked_*` call sites across the workspace:
 
 ```rust
 // Cursor positioning (saturating)
@@ -2330,6 +2330,8 @@ let Some(target_x) = x.checked_add(offset) else { continue };
 // Intentional wrapping (PRNG only)
 seed.wrapping_mul(6364136223846793005).wrapping_add(1)
 ```
+
+This is a convention, not a compiler guarantee: no `clippy::arithmetic_side_effects` lint is enabled, so a bare `+` on a coordinate would compile. The `unsafe` ban above *is* enforced — `#![forbid(unsafe_code)]` is present in all 20 crates.
 
 ### Flicker-Free Proof Sketch
 
