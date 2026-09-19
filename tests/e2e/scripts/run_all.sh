@@ -204,6 +204,9 @@ else
     if [[ -x "$SCRIPT_DIR/test_bidi_voi_overlay.sh" ]]; then
         run_suite "bidi_voi_overlay" "$SCRIPT_DIR/test_bidi_voi_overlay.sh"
     fi
+    if [[ -x "$SCRIPT_DIR/test_locale_switch.sh" ]]; then
+        run_suite "locale_switch" "$SCRIPT_DIR/test_locale_switch.sh"
+    fi
     if [[ -x "$SCRIPT_DIR/test_pty_canonicalize.sh" ]]; then
         run_suite "pty_canonicalize" "$SCRIPT_DIR/test_pty_canonicalize.sh"
     fi

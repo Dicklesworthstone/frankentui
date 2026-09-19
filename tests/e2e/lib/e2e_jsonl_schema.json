@@ -814,6 +814,60 @@
         "output_hash": "string",
         "checksum": "string"
       }
+    },
+    "locale_case": {
+      "required": [
+        "scenario",
+        "identity",
+        "locale_before",
+        "locale_after",
+        "direction_before",
+        "direction_after",
+        "frames_before_switch",
+        "frames_after_switch",
+        "sync_pairs",
+        "aligned_right",
+        "visual_match",
+        "first_mismatch_col",
+        "exit_code",
+        "duration_ms",
+        "status",
+        "detail"
+      ],
+      "optional": [
+        "ts"
+      ],
+      "types": {
+        "scenario": "string",
+        "identity": "string",
+        "locale_before": "string",
+        "locale_after": "string",
+        "direction_before": "string",
+        "direction_after": "string",
+        "frames_before_switch": [
+          "integer",
+          "null"
+        ],
+        "frames_after_switch": [
+          "integer",
+          "null"
+        ],
+        "sync_pairs": "integer",
+        "aligned_right": [
+          "boolean",
+          "null"
+        ],
+        "visual_match": "boolean",
+        "first_mismatch_col": [
+          "integer",
+          "null"
+        ],
+        "exit_code": "integer",
+        "duration_ms": "integer",
+        "status": "string",
+        "detail": "string",
+        "ts": "string"
+      }
     }
   }
 }

@@ -64,11 +64,13 @@ pty_canonicalize_file() {
     local output_file="$2"
     local cols="$3"
     local rows="$4"
+    shift 4 || true
     local bin
     if ! bin="$(resolve_canonicalize_bin)"; then
         return 1
     fi
-    "$bin" --input "$input_file" --output "$output_file" --cols "$cols" --rows "$rows"
+    # shellcheck disable=SC2086
+    "$bin" --input "$input_file" --output "$output_file" --cols "$cols" --rows "$rows" ${PTY_CANONICALIZE_ARGS:-} "$@"
 }
 
 pty_record_metadata() {
