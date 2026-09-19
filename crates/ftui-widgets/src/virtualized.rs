@@ -412,11 +412,20 @@ impl<T> Virtualized<T> {
         if self.is_empty() {
             return;
         }
+        // `visible_count` is a cache written by the last `visible_range`, taken
+        // at whatever offset was showing then. With variable heights the number
+        // of items that fit depends on position, so a count measured near the
+        // top clamps the ceiling too low and the list stalls before the end —
+        // holding the down key over `[1, 1, 4, 4]` at viewport 4 stopped at
+        // offset 1 even though offset 3 is valid and shows the final item.
+        //
+        // Only fixed heights can trust the count, because there it cannot vary
+        // with position. Otherwise allow any real index and let `visible_range`
+        // apply the true ceiling, which it recomputes for the current offset.
         let visible_count = self.visible_count.get();
-        let max_offset = if visible_count > 0 {
-            self.len().saturating_sub(visible_count)
-        } else {
-            self.len().saturating_sub(1)
+        let max_offset = match self.item_height {
+            ItemHeight::Fixed(_) if visible_count > 0 => self.len().saturating_sub(visible_count),
+            _ => self.len().saturating_sub(1),
         };
         // Clamp current offset BEFORE adding delta, so lazy MAX doesn't swallow negative deltas
         let clamped_current = self.scroll_offset.min(max_offset);
