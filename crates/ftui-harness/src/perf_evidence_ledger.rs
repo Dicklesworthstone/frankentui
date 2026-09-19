@@ -472,6 +472,28 @@ impl PerfEvidenceLedger {
                     remediation: format!("re-emit under {PERF_EVIDENCE_LEDGER_SCHEMA_VERSION}"),
                 });
             }
+            // Above the kind lookup on purpose: "failure_signatures vocabulary
+            // only" is a contract on every entry, not a per-kind requirement,
+            // and a spec that does not list this entry's kind `continue`s past
+            // everything below. `canonical()` covers all eight kinds today, so
+            // this is a hole only for a partial spec -- but the check costs
+            // nothing here and cannot be skipped. Without it a typo'd code read
+            // as a real one forever.
+            for code in &entry.reason_codes {
+                if parse_reason_code(code).is_none() {
+                    defects.push(LedgerDefect {
+                        entry_id: entry.entry_id.clone(),
+                        kind: DefectKind::UnknownReasonCode,
+                        subject: code.clone(),
+                        remediation: "use a canonical FailureClass reason code from \
+                                      failure_signatures, not a free-form string"
+                            .to_string(),
+                    });
+                }
+            }
+            // NOTE: the SilentFailure check below is also kind-independent but
+            // sits under this guard, where it has been since bd-rw97d. Left as
+            // found rather than changed in passing.
             let Some(kind_spec) = spec.for_kind(entry.kind) else {
                 continue;
             };
@@ -529,21 +551,6 @@ impl PerfEvidenceLedger {
                     remediation: "failing evidence must carry failure-signature reason codes"
                         .to_string(),
                 });
-            }
-            // "failure_signatures vocabulary only" is the contract this ledger
-            // states for reason_codes; without this check it was only a comment,
-            // and a typo'd code read as a real one forever.
-            for code in &entry.reason_codes {
-                if parse_reason_code(code).is_none() {
-                    defects.push(LedgerDefect {
-                        entry_id: entry.entry_id.clone(),
-                        kind: DefectKind::UnknownReasonCode,
-                        subject: code.clone(),
-                        remediation: "use a canonical FailureClass reason code from \
-                                      failure_signatures, not a free-form string"
-                            .to_string(),
-                    });
-                }
             }
         }
         defects

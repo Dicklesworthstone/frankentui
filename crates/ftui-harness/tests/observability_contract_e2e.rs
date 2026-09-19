@@ -228,6 +228,32 @@ fn evidence_ledger_joins_the_vocabularies_end_to_end() {
     assert_eq!(unknown.len(), 1, "{defects:?}");
     assert_eq!(unknown[0].subject, "SHADOW_DIVERGANCE");
 
+    // The vocabulary is a contract on every entry, not a per-kind requirement.
+    // `validate` skips the rest of its checks for an entry whose kind the spec
+    // does not list, so a partial spec must not become a way to smuggle a
+    // free-form reason code past the ledger.
+    let mut partial = LedgerSpec::canonical();
+    partial.kinds.retain(|k| k.kind != EvidenceKind::GauntletRun);
+    let mut invented = entry.clone();
+    invented.reason_codes = vec!["NOT_A_REAL_CODE".to_string()];
+    let mut ledger = PerfEvidenceLedger::default();
+    ledger.record(invented);
+    let defects = ledger.validate(&partial);
+    // Exactly one, and that one: the partial spec really does skip every
+    // kind-driven check for this entry, so if the vocabulary check sat under
+    // the kind lookup this would be empty rather than merely different.
+    assert_eq!(
+        defects.len(),
+        1,
+        "partial spec should skip the kind-driven checks: {defects:?}"
+    );
+    assert_eq!(
+        defects[0].kind,
+        ftui_harness::perf_evidence_ledger::DefectKind::UnknownReasonCode,
+        "a spec that omits this kind must still reject an unknown reason code"
+    );
+    assert_eq!(defects[0].subject, "NOT_A_REAL_CODE");
+
     // Strip the reason codes: the same failing entry becomes a visible
     // silent-failure defect.
     let mut silent = entry;
