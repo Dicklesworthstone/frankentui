@@ -46,7 +46,7 @@ Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
 As of 2026-09-19 the distribution across 152 rows is 29 pending-code,
-62 pending-doc, 39 retracted and 22 proven. Regenerate this sentence from
+57 pending-doc, 42 retracted and 24 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -84,6 +84,19 @@ README says, not something adjacent. The proven set:
   (clipboard commands) and C13 (`tick_every`, `file_watcher`): all three were
   filed as `pending-code` — implementation outstanding — for code that already
   existed and was already covered by a test. Verified 2026-09-19.
+- S03 (Bayesian diff strategy): on by default (`bayesian_enabled: true`) and
+  driving the per-frame choice via `select_with_scan_estimate` in
+  `terminal_writer.rs`. The README's Beta prior — "α₀ = 1, β₀ = 19 → E[p] = 5%"
+  — and the `c_scan`/`c_emit` cost weights were true but unguarded, so
+  `config_default_all_fields` was extended to pin them, same as S14.
+- S27 (degradation cascade): **real, and easy to mis-audit.** The runtime's PID
+  controller sets a level (`program.rs:7048`), pushes it to the frame
+  (`frame.set_degradation`), and **34 of 68 widget modules read
+  `frame.buffer.degradation`** and shed work accordingly. Do not confuse it with
+  `ftui-runtime::degradation_cascade`, which is quarantined and wired to
+  nothing: the cascade that runs lives in `ftui-render::budget` plus
+  `program.rs` plus the widgets. Marking this section experimental because of
+  the module name would be wrong.
 
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
@@ -232,7 +245,7 @@ complete `.5.2`.
 | V71 | `master` synchronized with `main` | README.md :: `master` synchronized with `main` | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | S01 | Bayesian Fuzzy Scoring (Command Palette) production status | README.md:847 :: Bayesian Fuzzy Scoring (Command Palette) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S02 | Bayesian Hint Ranking (Keybinding Hints) production status | README.md:879 :: Bayesian Hint Ranking (Keybinding Hints) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S03 | Bayesian Diff Strategy Selection production status | README.md:898 :: Bayesian Diff Strategy Selection | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S03 | Bayesian Diff Strategy Selection production status | README.md:898 :: Bayesian Diff Strategy Selection | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::terminal_writer::runtime_diff_config_default; test:ftui-render::diff_strategy::config_default_all_fields | proven | 2026-09-19 |
 | S04 | Bayesian Capability Detection (Terminal Caps Probe) production status | README.md:928 :: Bayesian Capability Detection (Terminal Caps Probe) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-core::caps_probe::weights_are_unchanged | proven | 2026-09-18 |
 | S05 | Dirty-Span Interval Union (Sparse Diff Scans) production status | README.md:946 :: Dirty-Span Interval Union (Sparse Diff Scans) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S06 | Summed-Area Table (Tile-Skip Diff) production status | README.md:960 :: Summed-Area Table (Tile-Skip Diff) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
@@ -242,7 +255,7 @@ complete `.5.2`.
 | S10 | Bayes-Factor Evidence Ledger (Resize Coalescer) production status | README.md:1030 :: Bayes-Factor Evidence Ledger (Resize Coalescer) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S11 | Value-of-Information (VOI) Sampling production status | README.md:1045 :: Value-of-Information (VOI) Sampling | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::inline_auto_remeasure_config_defaults | proven | 2026-09-18 |
 | S12 | E-Process: Anytime-Valid Testing production status | README.md:1087 :: E-Process: Anytime-Valid Testing | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S13 | Conformal Alerting production status | README.md:1109 :: Conformal Alerting | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S13 | Conformal Alerting production status | README.md:1109 :: Conformal Alerting | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | S14 | Mondrian Conformal Frame-Time Risk Gating production status | README.md:1129 :: Mondrian Conformal Frame-Time Risk Gating | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::conformal_predictor::default_config_matches_the_documented_values | proven | 2026-09-18 |
 | S15 | CUSUM Control Charts production status | README.md:1145 :: CUSUM Control Charts | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::frame_guardrails::guardrails_detect_allocation_drift | proven | 2026-09-18 |
 | S16 | CUSUM Hover Stabilizer (Mouse Jitter) production status | README.md:1167 :: CUSUM Hover Stabilizer (Mouse Jitter) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
@@ -256,12 +269,12 @@ complete `.5.2`.
 | S24 | Jain's Fairness Index (Input Guard) production status | README.md:1292 :: Jain's Fairness Index (Input Guard) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S25 | E-Graph Layout Optimizer production status | README.md:1453 :: E-Graph Layout Optimizer | status | DOC | bd-g00-root-epic-ewths.5.5 | path:docs/perf/egraph_vs_flex_2026-09-18.md | proven | 2026-09-18 |
 | S26 | Text Engine production status | README.md:1480 :: Text Engine | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S27 | Degradation Cascade production status | README.md:1555 :: Degradation Cascade | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S27 | Degradation Cascade production status | README.md:1555 :: Degradation Cascade | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::widget_refresh_degradation_essential_only_skips_nonessential; test:ftui-widgets::badge::render_no_styling_drops_configured_style | proven | 2026-09-19 |
 | S28 | Formal Cost Models production status | README.md :: Formal Cost Models | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
-| S29 | Flake Detection & Sequential FDR Control production status | README.md:1625 :: Flake Detection & Sequential FDR Control | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S29 | Flake Detection & Sequential FDR Control production status | README.md:1625 :: Flake Detection & Sequential FDR Control | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | S30 | Rough-Path Signatures production status | README.md :: Rough-Path Signatures | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S31 | Incremental View Maintenance (IVM) production status | README.md :: Incremental View Maintenance (IVM) | status | DOC | bd-lksq7 | ident:Where it runs: nowhere. There is no propagation engine | retracted | 2026-09-19 |
-| S32 | SOS Barrier Certificates production status | README.md:2667 :: SOS Barrier Certificates | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| S32 | SOS Barrier Certificates production status | README.md:2667 :: SOS Barrier Certificates | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | S33 | S3-FIFO Cache production status | README.md:2694 :: S3-FIFO Cache | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S34 | Flat Combining production status | README.md :: Flat Combining | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | S35 | Bidirectional Lenses production status | README.md :: Bidirectional Lenses | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |

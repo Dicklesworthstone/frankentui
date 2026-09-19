@@ -1467,6 +1467,21 @@ mod tests {
         assert!((c.decay - 0.95).abs() < 1e-9);
         assert!(!c.conservative);
         assert!((c.conservative_quantile - 0.95).abs() < 1e-9);
+
+        // The README's "Bayesian Diff Strategy Selection" section quotes these
+        // by value: the Beta prior as "α₀ = 1, β₀ = 19 → E[p] = 5%", and the
+        // cost model in terms of c_scan and c_emit. They were true but
+        // unguarded, which is how a documented constant drifts without anyone
+        // noticing. Changing one here means changing that section too.
+        assert!((c.prior_alpha - 1.0).abs() < 1e-9);
+        assert!((c.prior_beta - 19.0).abs() < 1e-9);
+        let prior_mean = c.prior_alpha / (c.prior_alpha + c.prior_beta);
+        assert!(
+            (prior_mean - 0.05).abs() < 1e-9,
+            "prior E[p] is {prior_mean}, README says 5%"
+        );
+        assert!((c.c_scan - 1.0).abs() < 1e-9);
+        assert!((c.c_emit - 6.0).abs() < 1e-9);
     }
 
     #[test]
