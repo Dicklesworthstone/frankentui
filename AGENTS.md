@@ -229,7 +229,14 @@ Every component crate includes inline `#[cfg(test)]` unit tests alongside the im
 - Edge cases (empty input, max values, boundary conditions)
 - Error conditions
 
-Cross-component integration tests live in the workspace `tests/` directory.
+Cross-component integration tests live in each crate's own `tests/`
+directory -- 292 files, the largest being `ftui-runtime` (52),
+`ftui-harness` (46) and `ftui-demo-showcase` (46).
+
+**Not** in the repository-root `tests/`. That directory holds fixtures,
+baselines and captured artifacts, contains no `.rs` files, and could not run
+if it did: the root `Cargo.toml` is a virtual manifest with no `[package]`,
+so cargo never compiles a test target there.
 
 ### Unit Tests
 
@@ -272,7 +279,7 @@ cargo test -p ftui-harness
 | `ftui-extras` | Feature-gated add-ons, VFX rasterizer |
 | `ftui-demo-showcase` | Snapshot tests for all demo screens |
 | `ftui-harness` | Test utilities + snapshot framework |
-| `tests/` (workspace) | Cross-component integration, E2E viewport tests |
+| `tests/` (repo root) | Fixtures, baselines and captured artifacts. No Rust tests; cargo compiles nothing here |
 
 ### Snapshot Testing
 
@@ -420,7 +427,7 @@ frankentui/
 │   ├── ftui-web/                      # Web backend
 │   └── ftui-widgets/                  # Core widget library (80+ widgets)
 ├── scripts/                           # E2E test scripts + benchmarks
-├── tests/                             # Cross-component integration tests
+├── tests/                             # Fixtures/baselines/artifacts (no .rs, not a cargo target)
 └── fuzz/                              # Fuzz testing (excluded from workspace)
 ```
 

@@ -13,7 +13,7 @@
   <img src="docs/assets/frankentui_illustration.webp" alt="FrankenTUI - Minimal, high-performance terminal UI kernel">
 </div>
 
-High‑performance terminal UI kernel -- 850K+ lines of Rust across 20 crates, 80+ widget/stateful-widget implementations, 45 interactive demo screens, a Bayesian intelligence layer, resizable pane workspaces, and in-tree web/WASM backends -- focused on correctness, determinism, and clean architecture.
+High‑performance terminal UI kernel -- 1.1M+ lines of Rust across 20 crates, 80+ widget/stateful-widget implementations, 45 interactive demo screens, a Bayesian intelligence layer, resizable pane workspaces, and in-tree web/WASM backends -- focused on correctness, determinism, and clean architecture.
 
 ![status](https://img.shields.io/badge/status-WIP-yellow)
 ![rust](https://img.shields.io/badge/rust-nightly-blue)
@@ -1442,7 +1442,7 @@ BLESS=1 cargo test -p ftui-demo-showcase
 
 ### How many lines of code is it?
 
-850,000+ lines of Rust across 20 crates, with 80+ direct widget implementations, 45 demo screens, and a broad PTY/scripted E2E surface.
+1,110,000+ lines of Rust across 20 crates, with 80+ direct widget implementations, 45 demo screens, and a broad PTY/scripted E2E surface.
 
 ### What's the performance like?
 

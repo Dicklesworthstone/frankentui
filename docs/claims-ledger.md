@@ -46,7 +46,7 @@ Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
 As of 2026-09-19 the distribution across 152 rows is 6 pending-code,
-57 pending-doc, 50 retracted and 39 proven. Regenerate this sentence from
+49 pending-doc, 53 retracted and 44 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -125,6 +125,14 @@ hazard: the row reads as correct because part of it is.
   `W_t = W_{t-1}(1 + λ_t(X_t − μ₀))`, which matches *neither* implementation;
   both use the exponential form.
 
+V69 is the only claim found so far that misdirected **agents** rather than
+users. AGENTS.md said in three places that cross-component integration tests
+live in the repository-root `tests/` directory. That directory holds fixtures,
+baselines and captured artifacts; it contains no `.rs` files, and could not run
+them if it did, because the root `Cargo.toml` is a virtual manifest with no
+`[package]` and cargo never builds a test target there. The 292 integration
+test files all live in each crate's own `tests/`.
+
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
 hand-chosen).
@@ -192,13 +200,13 @@ complete `.5.2`.
 | C28 | `prop_diff_soundness`, `counterexample_dirty_soundness` | README.md :: `prop_diff_soundness`, `counterexample_dirty_soundness` | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::buffer::set_marks_row_dirty; test:ftui-render::proptest_diff_invariants::no_false_negative_changes | retracted | 2026-09-19 |
 | C29 | Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | README.md :: Architecture diagram "TerminalSession (crossterm)" (README and AGENTS.md) | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | C30 | "Hybrid" inline strategy is default with runtime DECSTBM-reliability fallback | README.md :: "Hybrid" inline strategy is default with runtime DECSTBM-reliability fallback | api | CODE | bd-g00-root-epic-ewths.4.3 | test:ftui-core::inline_mode::tests::strategy_selection_uses_hybrid_without_sync | retracted | 2026-09-19 |
-| C31 | 80+ widgets | README.md :: 80+ widgets | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C32 | 850K+ lines | README.md :: 850K+ lines | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
+| C31 | 80+ widgets | README.md :: 80+ widgets | api | DOC | bd-g00-root-epic-ewths.5.5 | count:91 Widget/StatefulWidget impls under crates/ftui-widgets/src >= 80 | proven | 2026-09-19 |
+| C32 | 850K+ lines | README.md :: 850K+ lines | api | DOC | bd-g00-root-epic-ewths.5.5 | count:1,110,773 lines across 981 .rs files under crates/ | retracted | 2026-09-19 |
 | C33 | `ftui = "0.5"`; getting-started "only ftui-core, ftui-layout, ftui-i18n are published" | README.md :: `ftui = "0.5"`; getting-started "only ftui-core, ftui-layout, ftui-i18n are published" | api | DOC | bd-g00-root-epic-ewths.1.5 | test:ftui::readme_snippets::readme_versions_match_the_workspace | retracted | 2026-09-19 |
 | C34 | `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | README.md :: `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | api | DOC | bd-g00-root-epic-ewths.40.3 | cmd:python3 scripts/check_env_docs.py | retracted | 2026-09-19 |
 | C35 | VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | README.md :: VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | api | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::inline_auto_remeasure_config_defaults | proven | 2026-09-19 |
 | C36 | SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | README.md :: SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | api | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
-| C37 | `no_flicker_proof.rs` | README.md :: `no_flicker_proof.rs` | api | DOC | bd-g00-root-epic-ewths.4.7 | bead:bd-g00-root-epic-ewths.4.7 | pending-doc | - |
+| C37 | `no_flicker_proof.rs` | README.md :: `no_flicker_proof.rs` | api | DOC | bd-g00-root-epic-ewths.4.7 | path:crates/ftui-render/tests/no_flicker_proof.rs | proven | 2026-09-19 |
 | V01 | Inline mode with scrollback preservation and stable chrome | README.md :: Inline mode with scrollback preservation and stable chrome | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V02 | Deterministic Buffer -> Diff -> Presenter -> ANSI | README.md :: Deterministic Buffer -> Diff -> Presenter -> ANSI | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V03 | One-writer rule | README.md :: One-writer rule | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
@@ -231,7 +239,7 @@ complete `.5.2`.
 | V30 | Grapheme pool with width bits | README.md :: Grapheme pool with width bits | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V31 | Synchronized output every frame | README.md :: Synchronized output every frame | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V32 | Elm architecture Model/Cmd/Subscriptions | README.md :: Elm architecture Model/Cmd/Subscriptions | status | DOC | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-doc | - |
-| V33 | Zero unsafe | README.md :: Zero unsafe | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
+| V33 | Zero unsafe | README.md :: Zero unsafe | status | DOC | bd-g00-root-epic-ewths.5 | count:20 of 20 crate roots carry #![forbid(unsafe_code)] | proven | 2026-09-19 |
 | V34 | Formal proof sketches Theorems 1-4 | README.md :: Formal proof sketches Theorems 1-4 | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V35 | Property tests, snapshots, benches | README.md :: Property tests, snapshots, benches | status | DOC | bd-g00-root-epic-ewths.31 | bead:bd-g00-root-epic-ewths.31 | pending-doc | - |
 | V36 | Resize coalescing regimes | README.md :: Resize coalescing regimes | status | DOC | bd-g00-root-epic-ewths.16 | bead:bd-g00-root-epic-ewths.16 | pending-doc | - |
@@ -263,13 +271,13 @@ complete `.5.2`.
 | V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | bead:bd-g00-root-epic-ewths.20 | pending-code | - |
 | V63 | Animation system | README.md :: Animation system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V64 | Bayesian capability detection | README.md :: Bayesian capability detection | status | CODE | bd-g00-root-epic-ewths.19 | test:ftui-core::caps_probe::weights_are_unchanged | proven | 2026-09-18 |
-| V65 | 46 demo screens, gallery table | README.md :: 46 demo screens, gallery table | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V66 | crates.io: all 17 libraries | README.md :: crates.io: all 17 libraries | status | DOC | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-doc | - |
+| V65 | 46 demo screens, gallery table | README.md :: 46 demo screens, gallery table | status | DOC | bd-g00-root-epic-ewths.5 | test:ftui-demo-showcase::app::tests::all_screens_count | retracted | 2026-09-19 |
+| V66 | crates.io: all 17 libraries | README.md :: crates.io: all 17 libraries | status | DOC | bd-g00-root-epic-ewths.1 | count:20 crates minus 3 publish=false = 17 library crates; path:CHANGELOG.md | proven | 2026-09-19 |
 | V67 | Windows support | README.md :: Windows support | status | CODE | bd-g00-root-epic-ewths.36 | bead:bd-g00-root-epic-ewths.36 | pending-code | - |
 | V68 | doctor_frankentui verification stack | README.md :: doctor_frankentui verification stack | status | CODE | bd-g00-root-epic-ewths.28 | bead:bd-g00-root-epic-ewths.28 | pending-code | - |
-| V69 | Cross-component tests in workspace `tests/` | AGENTS.md :: Cross-component tests in workspace `tests/` | status | DOC | bd-g00-root-epic-ewths.8 | bead:bd-g00-root-epic-ewths.8 | pending-doc | - |
+| V69 | Cross-component tests in workspace `tests/` | AGENTS.md :: Cross-component tests in workspace `tests/` | status | DOC | bd-g00-root-epic-ewths.8 | path:crates/ftui-runtime/tests; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V70 | Mandatory gates green (check/clippy/fmt/tests) | README.md :: Mandatory gates green (check/clippy/fmt/tests) | status | CODE | bd-g00-root-epic-ewths.6 | bead:bd-g00-root-epic-ewths.6 | pending-code | - |
-| V71 | `master` synchronized with `main` | README.md :: `master` synchronized with `main` | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
+| V71 | `master` synchronized with `main` | README.md :: `master` synchronized with `main` | status | DOC | bd-g00-root-epic-ewths.5 | cmd:test "$(git rev-parse origin/main)" = "$(git rev-parse origin/master)" | proven | 2026-09-19 |
 | S01 | Bayesian Fuzzy Scoring (Command Palette) production status | README.md:847 :: Bayesian Fuzzy Scoring (Command Palette) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S02 | Bayesian Hint Ranking (Keybinding Hints) production status | README.md:879 :: Bayesian Hint Ranking (Keybinding Hints) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S03 | Bayesian Diff Strategy Selection production status | README.md:898 :: Bayesian Diff Strategy Selection | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::terminal_writer::runtime_diff_config_default; test:ftui-render::diff_strategy::config_default_all_fields | proven | 2026-09-19 |
