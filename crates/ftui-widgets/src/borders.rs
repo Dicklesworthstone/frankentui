@@ -162,11 +162,18 @@ pub enum BorderType {
     Custom(BorderSet),
 }
 
+/// Total number of border style variants (7 named presets + 1 [`Custom`](BorderType::Custom)).
+/// Cited by the README and claims ledger.
+pub const BORDER_STYLE_COUNT: usize = 8;
+
 impl BorderType {
     /// The number of built-in named border styles (every variant except the
     /// open-ended [`Custom`](BorderType::Custom)). Cited by the README and the
     /// `border_type_variant_count_matches_readme` test.
     pub const NAMED_STYLE_COUNT: usize = 7;
+
+    /// The total number of border style variants including [`Custom`](BorderType::Custom).
+    pub const BORDER_STYLE_COUNT: usize = 8;
 
     /// Convert this border type to its corresponding border character set.
     pub fn to_border_set(&self) -> BorderSet {
@@ -186,6 +193,7 @@ impl BorderType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn ascii_is_ascii_only() {
@@ -336,11 +344,15 @@ mod tests {
         let set = BorderType::Dashed.to_border_set();
         assert_eq!(set, BorderSet::DASHED);
         // Dashed edges with plain square corners and junctions.
+        assert_eq!(BorderSet::DASHED.horizontal, '┄');
+        assert_eq!(BorderSet::DASHED.vertical, '┆');
         assert_eq!(set.horizontal, '┄');
         assert_eq!(set.vertical, '┆');
-        assert_eq!(set.top_left, '┌');
-        assert_eq!(set.top_right, '┐');
-        assert_eq!(set.cross, '┼');
+        assert_eq!(set.top_left, BorderSet::SQUARE.top_left);
+        assert_eq!(set.top_right, BorderSet::SQUARE.top_right);
+        assert_eq!(set.bottom_left, BorderSet::SQUARE.bottom_left);
+        assert_eq!(set.bottom_right, BorderSet::SQUARE.bottom_right);
+        assert_eq!(set.cross, BorderSet::SQUARE.cross);
     }
 
     #[test]
@@ -355,8 +367,34 @@ mod tests {
 
     #[test]
     fn border_type_variant_count_matches_readme() {
-        // Seven named styles plus the open-ended `Custom`. If a variant is
-        // added or removed, update this count and the README together.
+        // Seven named styles plus the open-ended `Custom`.
+        const ALL: &[BorderType] = &[
+            BorderType::Square,
+            BorderType::Ascii,
+            BorderType::Rounded,
+            BorderType::Double,
+            BorderType::Heavy,
+            BorderType::Dashed,
+            BorderType::HeavyDashed,
+            BorderType::Custom(BorderSet::SQUARE),
+        ];
+        assert_eq!(ALL.len(), BORDER_STYLE_COUNT);
+        assert_eq!(ALL.len(), BorderType::BORDER_STYLE_COUNT);
+
+        // Exhaustive match over ALL to guarantee every variant is represented:
+        for b in ALL {
+            match b {
+                BorderType::Square
+                | BorderType::Ascii
+                | BorderType::Rounded
+                | BorderType::Double
+                | BorderType::Heavy
+                | BorderType::Dashed
+                | BorderType::HeavyDashed
+                | BorderType::Custom(_) => {}
+            }
+        }
+
         let named = [
             BorderType::Square,
             BorderType::Ascii,
@@ -380,6 +418,24 @@ mod tests {
     #[test]
     fn border_type_default_is_square() {
         assert_eq!(BorderType::default(), BorderType::Square);
+    }
+
+    #[test]
+    fn custom_border_set_round_trips() {
+        let set = BorderSet {
+            top_left: '#',
+            horizontal: '+',
+            top_right: '-',
+            vertical: '|',
+            bottom_left: '=',
+            bottom_right: 'T',
+            tee_up: '^',
+            tee_down: '<',
+            tee_left: '>',
+            tee_right: '*',
+            cross: '~',
+        };
+        assert_eq!(BorderType::Custom(set).to_border_set(), set);
     }
 
     #[test]
@@ -476,17 +532,105 @@ mod tests {
 
     #[test]
     fn border_set_tees_are_consistent() {
-        // For SQUARE: tees should share chars with edges
-        let set = BorderSet::SQUARE;
-        // tee_up (┴) connects vertical and horizontal lines going up
-        // tee_down (┬) connects going down
-        // They should all be distinct from each other and from corners
-        let tees = [set.tee_up, set.tee_down, set.tee_left, set.tee_right];
-        for (i, a) in tees.iter().enumerate() {
-            for (j, b) in tees.iter().enumerate() {
-                if i != j {
-                    assert_ne!(a, b, "tees {i} and {j} should differ");
+        for set in [
+            BorderSet::ASCII,
+            BorderSet::SQUARE,
+            BorderSet::ROUNDED,
+            BorderSet::DOUBLE,
+            BorderSet::HEAVY,
+            BorderSet::DASHED,
+            BorderSet::HEAVY_DASHED,
+        ] {
+            let tees = [set.tee_up, set.tee_down, set.tee_left, set.tee_right];
+            for tee in tees {
+                assert_eq!(
+                    ftui_core::text_width::grapheme_width(&tee.to_string()),
+                    1,
+                    "tee glyph {tee} must have display width 1"
+                );
+            }
+            if set != BorderSet::ASCII {
+                for (i, a) in tees.iter().enumerate() {
+                    for (j, b) in tees.iter().enumerate() {
+                        if i != j {
+                            assert_ne!(a, b, "tees {i} and {j} should differ");
+                        }
+                    }
                 }
+            }
+            let copied = set;
+            assert_eq!(copied, set);
+        }
+    }
+
+    fn arb_border_type() -> impl Strategy<Value = BorderType> {
+        let ascii_char = (0x20u8..=0x7Eu8).prop_map(|b| b as char);
+        let arb_custom = (
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char.clone(),
+            ascii_char,
+        )
+            .prop_map(|(v, h, tl, tr, bl, br, tu, td, tlft, trgt, cr)| {
+                BorderType::Custom(BorderSet {
+                    vertical: v,
+                    horizontal: h,
+                    top_left: tl,
+                    top_right: tr,
+                    bottom_left: bl,
+                    bottom_right: br,
+                    tee_up: tu,
+                    tee_down: td,
+                    tee_left: tlft,
+                    tee_right: trgt,
+                    cross: cr,
+                })
+            });
+
+        prop_oneof![
+            Just(BorderType::Square),
+            Just(BorderType::Ascii),
+            Just(BorderType::Rounded),
+            Just(BorderType::Double),
+            Just(BorderType::Heavy),
+            Just(BorderType::Dashed),
+            Just(BorderType::HeavyDashed),
+            arb_custom,
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn prop_any_border_type_has_width_one_glyphs(bt in arb_border_type()) {
+            let set = bt.to_border_set();
+            let glyphs = [
+                set.vertical,
+                set.horizontal,
+                set.top_left,
+                set.top_right,
+                set.bottom_left,
+                set.bottom_right,
+                set.tee_up,
+                set.tee_down,
+                set.tee_left,
+                set.tee_right,
+                set.cross,
+            ];
+            for g in glyphs {
+                prop_assert_eq!(
+                    ftui_core::text_width::grapheme_width(&g.to_string()),
+                    1,
+                    "glyph {} has display width != 1", g
+                );
             }
         }
     }

@@ -487,6 +487,7 @@ impl ftui_a11y::Accessible for Block<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::borders::BorderSet;
     use ftui_render::cell::PackedRgba;
     use ftui_render::grapheme_pool::GraphemePool;
 
@@ -559,6 +560,85 @@ mod tests {
         assert_eq!(buf.get(0, 1).unwrap().content.as_char(), Some('┆'));
         assert_eq!(buf.get(0, 2).unwrap().content.as_char(), Some('└'));
         assert_eq!(buf.get(9, 2).unwrap().content.as_char(), Some('┘'));
+    }
+
+    #[test]
+    fn block_dashed_renders_top_row() {
+        let block = Block::bordered().border_type(BorderType::Dashed);
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+        block.render(area, &mut frame);
+
+        let buf = &frame.buffer;
+        let row0: String = (0..10)
+            .map(|x| buf.get(x, 0).unwrap().content.as_char().unwrap_or(' '))
+            .collect();
+        assert_eq!(row0, "┌┄┄┄┄┄┄┄┄┐");
+        assert_eq!(buf.get(0, 1).unwrap().content.as_char(), Some('┆'));
+        assert_eq!(buf.get(9, 1).unwrap().content.as_char(), Some('┆'));
+        let row2: String = (0..10)
+            .map(|x| buf.get(x, 2).unwrap().content.as_char().unwrap_or(' '))
+            .collect();
+        assert_eq!(row2, "└┄┄┄┄┄┄┄┄┘");
+    }
+
+    #[test]
+    fn block_custom_ascii_renders() {
+        let custom = BorderSet {
+            top_left: '#',
+            horizontal: '-',
+            top_right: '#',
+            vertical: '|',
+            bottom_left: '#',
+            bottom_right: '#',
+            tee_up: '+',
+            tee_down: '+',
+            tee_left: '+',
+            tee_right: '+',
+            cross: '+',
+        };
+        let block = Block::bordered().border_type(BorderType::Custom(custom));
+        let area = Rect::new(0, 0, 6, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 3, &mut pool);
+        block.render(area, &mut frame);
+
+        let buf = &frame.buffer;
+        let row0: String = (0..6)
+            .map(|x| buf.get(x, 0).unwrap().content.as_char().unwrap_or(' '))
+            .collect();
+        assert_eq!(row0, "#----#");
+    }
+
+    #[test]
+    fn block_dashed_partial_borders() {
+        let block = Block::new()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_type(BorderType::Dashed);
+        let area = Rect::new(0, 0, 8, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(8, 3, &mut pool);
+        block.render(area, &mut frame);
+
+        let buf = &frame.buffer;
+        for y in 0..3 {
+            for x in 0..8 {
+                assert_ne!(
+                    buf.get(x, y).unwrap().content.as_char(),
+                    Some('┆'),
+                    "cell ({x}, {y}) should not have vertical border"
+                );
+            }
+        }
+        let top: String = (0..8)
+            .map(|x| buf.get(x, 0).unwrap().content.as_char().unwrap_or(' '))
+            .collect();
+        let bottom: String = (0..8)
+            .map(|x| buf.get(x, 2).unwrap().content.as_char().unwrap_or(' '))
+            .collect();
+        assert_eq!(top, "┄┄┄┄┄┄┄┄");
+        assert_eq!(bottom, "┄┄┄┄┄┄┄┄");
     }
 
     #[test]
