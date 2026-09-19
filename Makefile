@@ -50,6 +50,7 @@ reachability:
 # described modules no crate imports, in working present tense.
 claims:
 	@python3 scripts/check_readme_claims.py --schema-check
+	@python3 scripts/check_readme_claims.py --proof-refs
 	@python3 scripts/check_readme_claims.py --experimental-check
 
 # Clean build artifacts
