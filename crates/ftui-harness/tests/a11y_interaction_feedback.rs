@@ -42,7 +42,10 @@ impl Model for InteractionModel {
 
     fn view(&self, frame: &mut Frame) {
         self.views.set(self.views.get() + 1);
-        assert!(self.views.get() <= 32, "accessibility redraw loop did not terminate");
+        assert!(
+            self.views.get() <= 32,
+            "accessibility redraw loop did not terminate"
+        );
 
         // These are application-supplied semantics, pushed through the same
         // public Frame API used by widgets. Do not call tree.diff() here.
@@ -59,8 +62,8 @@ impl Model for InteractionModel {
             choice.live_region = Some(LiveRegion::Assertive);
         }
 
-        let mut level = A11yNodeInfo::new(8, A11yRole::Slider, Rect::new(0, 1, 20, 1))
-            .with_name("Level");
+        let mut level =
+            A11yNodeInfo::new(8, A11yRole::Slider, Rect::new(0, 1, 20, 1)).with_name("Level");
         level.state.value_now = match self.stage {
             0..=4 => Some(10.0),
             5 => Some(20.0),
@@ -84,9 +87,19 @@ impl Model for InteractionModel {
     }
 
     fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Event> {
-        assert_eq!(self.batches.len(), self.stage, "one callback per transition");
-        assert_eq!(a11y.dropped, 0, "duplicate candidates must not consume the cap");
-        assert_eq!(a11y.tree.focused_id(), Some(if self.stage < 5 { 7 } else { 8 }));
+        assert_eq!(
+            self.batches.len(),
+            self.stage,
+            "one callback per transition"
+        );
+        assert_eq!(
+            a11y.dropped, 0,
+            "duplicate candidates must not consume the cap"
+        );
+        assert_eq!(
+            a11y.tree.focused_id(),
+            Some(if self.stage < 5 { 7 } else { 8 })
+        );
         assert_eq!(a11y.order, &[7, 8]);
         self.batches.push(a11y.announcements.to_vec());
         if self.stage == 9 {
@@ -122,7 +135,10 @@ fn exercise_interaction_feedback(max_announcements: usize) {
     .expect("construct runtime");
     program.run().expect("run accessibility feedback sequence");
     let model = program.model();
-    assert!(!model.watchdog_fired, "callback-driven redraw sequence stalled");
+    assert!(
+        !model.watchdog_fired,
+        "callback-driven redraw sequence stalled"
+    );
     assert_eq!(model.batches.len(), 10);
     assert_eq!(model.stage, 9);
 

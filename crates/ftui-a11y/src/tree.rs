@@ -883,7 +883,12 @@ fn changed_control_states(node: &A11yNodeInfo, changes: &[A11yChange]) -> Vec<(b
     let mut states = Vec::new();
     for (field, set, on, off) in [
         ("disabled", node.state.disabled, "disabled", "enabled"),
-        ("readonly", node.state.readonly, "read only", "not read only"),
+        (
+            "readonly",
+            node.state.readonly,
+            "read only",
+            "not read only",
+        ),
         ("required", node.state.required, "required", "not required"),
     ] {
         if state_field_changed(changes, field) {
@@ -1505,20 +1510,86 @@ mod focused_state_tests {
     #[test]
     fn retained_focus_announces_activation_states_and_removed_capabilities() {
         for (field, role, from, to, text) in [
-            ("checked", A11yRole::Checkbox, None, Some(false), "not checked"),
+            (
+                "checked",
+                A11yRole::Checkbox,
+                None,
+                Some(false),
+                "not checked",
+            ),
             ("checked", A11yRole::Checkbox, None, Some(true), "checked"),
-            ("checked", A11yRole::Checkbox, Some(false), Some(true), "checked"),
-            ("checked", A11yRole::Checkbox, Some(true), Some(false), "not checked"),
-            ("checked", A11yRole::Checkbox, Some(false), None, "not checkable"),
-            ("checked", A11yRole::Checkbox, Some(true), None, "not checkable"),
+            (
+                "checked",
+                A11yRole::Checkbox,
+                Some(false),
+                Some(true),
+                "checked",
+            ),
+            (
+                "checked",
+                A11yRole::Checkbox,
+                Some(true),
+                Some(false),
+                "not checked",
+            ),
+            (
+                "checked",
+                A11yRole::Checkbox,
+                Some(false),
+                None,
+                "not checkable",
+            ),
+            (
+                "checked",
+                A11yRole::Checkbox,
+                Some(true),
+                None,
+                "not checkable",
+            ),
             ("expanded", A11yRole::Button, None, Some(false), "collapsed"),
             ("expanded", A11yRole::Button, None, Some(true), "expanded"),
-            ("expanded", A11yRole::Button, Some(false), Some(true), "expanded"),
-            ("expanded", A11yRole::Button, Some(true), Some(false), "collapsed"),
-            ("expanded", A11yRole::Button, Some(false), None, "not expandable"),
-            ("expanded", A11yRole::Button, Some(true), None, "not expandable"),
-            ("selected", A11yRole::Tab, Some(false), Some(true), "selected"),
-            ("selected", A11yRole::Tab, Some(true), Some(false), "not selected"),
+            (
+                "expanded",
+                A11yRole::Button,
+                Some(false),
+                Some(true),
+                "expanded",
+            ),
+            (
+                "expanded",
+                A11yRole::Button,
+                Some(true),
+                Some(false),
+                "collapsed",
+            ),
+            (
+                "expanded",
+                A11yRole::Button,
+                Some(false),
+                None,
+                "not expandable",
+            ),
+            (
+                "expanded",
+                A11yRole::Button,
+                Some(true),
+                None,
+                "not expandable",
+            ),
+            (
+                "selected",
+                A11yRole::Tab,
+                Some(false),
+                Some(true),
+                "selected",
+            ),
+            (
+                "selected",
+                A11yRole::Tab,
+                Some(true),
+                Some(false),
+                "not selected",
+            ),
         ] {
             for region in [None, Some(LiveRegion::Polite), Some(LiveRegion::Assertive)] {
                 let mut old = interaction_node(role, A11yState::default());
@@ -1637,7 +1708,13 @@ mod focused_state_tests {
                         "value Very high",
                     ),
                     (Some(10.0), Some("Low"), Some(20.0), None, "value 20"),
-                    (Some(10.0), Some("Low"), Some(20.0), Some(" \n "), "value 20"),
+                    (
+                        Some(10.0),
+                        Some("Low"),
+                        Some(20.0),
+                        Some(" \n "),
+                        "value 20",
+                    ),
                     (Some(10.0), None, None, None, "value unavailable"),
                     (None, Some("Low"), None, None, "value unavailable"),
                 ] {
@@ -1810,7 +1887,10 @@ mod focused_state_tests {
         );
         assert_eq!(batch.announcements.len(), 1);
         assert_eq!(batch.dropped_count, 0);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::FocusChanged
+        );
         assert_eq!(batch.announcements[0].urgency, LiveRegion::Assertive);
         assert_eq!(
             batch.announcements[0].text,
