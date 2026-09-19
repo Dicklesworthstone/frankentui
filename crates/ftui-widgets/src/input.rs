@@ -2924,6 +2924,36 @@ mod scroll_edge_tests {
         }
 
         #[test]
+        fn whitespace_submit_recorded_as_is() {
+            let mut input = TextInput::new().with_history(10);
+            input.set_value("   ");
+            input.push_history();
+            assert_eq!(input.history().collect::<Vec<_>>(), vec!["   "]);
+        }
+
+        #[test]
+        fn set_value_does_not_touch_history() {
+            let mut input = TextInput::new().with_history(10);
+            typ(&mut input, "first");
+            submit_and_clear(&mut input);
+            input.set_value("zzz");
+            assert_eq!(input.history().collect::<Vec<_>>(), vec!["first"]);
+            // Up still recalls "first" as the newest entry
+            assert!(up(&mut input));
+            assert_eq!(input.value(), "first");
+        }
+
+        #[test]
+        fn no_history_leaves_updown_unconsumed() {
+            let mut input = TextInput::new().with_value("hello");
+            assert!(!input.handle_event(&key(KeyCode::Up)));
+            assert_eq!(input.value(), "hello");
+            assert!(!input.handle_event(&key(KeyCode::Down)));
+            assert_eq!(input.value(), "hello");
+            assert_eq!(input.history_capacity(), None);
+        }
+
+        #[test]
         fn no_history_leaves_arrows_for_the_parent() {
             // Without with_history, Up/Down/Enter are not claimed (return false),
             // so a parent keeps list navigation and submit handling.
@@ -2938,12 +2968,12 @@ mod scroll_edge_tests {
             #![proptest_config(ProptestConfig::with_cases(512))]
 
             /// Arbitrary Up/Down sequences never panic, and pressing Down enough
-            /// times after any run of Ups always lands back on the unsent draft.
+            /// times after any sequence of Ups/Downs always lands back on the unsent draft.
             #[test]
             fn updown_sequences_never_panic_and_end_in_draft(
-                entries in prop::collection::vec("[a-c]{1,3}", 0..8),
+                entries in prop::collection::vec("[a-c]{1,3}", 0..=10),
                 draft in "[a-c]{0,3}",
-                ups in 0usize..12,
+                steps in prop::collection::vec(any::<bool>(), 0..50),
             ) {
                 let mut input = TextInput::new().with_history(16);
                 for entry in &entries {
@@ -2953,11 +2983,23 @@ mod scroll_edge_tests {
                 input.clear();
                 input.set_value(draft.clone());
 
-                for _ in 0..ups {
-                    input.handle_event(&key(KeyCode::Up));
+                let history_entries: Vec<String> = input.history().map(String::from).collect();
+
+                for is_up in steps {
+                    if is_up {
+                        input.handle_event(&key(KeyCode::Up));
+                    } else {
+                        input.handle_event(&key(KeyCode::Down));
+                    }
+                    let current = input.value();
+                    prop_assert!(
+                        current == draft.as_str() || history_entries.iter().any(|e| e == current),
+                        "value {:?} not in history or draft",
+                        current
+                    );
                 }
                 // Exhaust recall in the newer direction.
-                for _ in 0..(ups + entries.len() + 2) {
+                for _ in 0..(history_entries.len() + 2) {
                     input.handle_event(&key(KeyCode::Down));
                 }
                 prop_assert_eq!(input.value(), draft.as_str());
