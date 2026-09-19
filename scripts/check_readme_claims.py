@@ -180,11 +180,19 @@ def experimental_sections(readme_text):
 def check_experimental(readme_path, crates_dir):
     """Every experimental section must say where its module runs, truthfully.
 
-    On 2026-09-19 all eight such sections described modules that no crate
+    On 2026-09-19 all eleven such sections described modules that no crate
     imports, in working present tense ("the runtime can enter safe mode"),
     while the Experimental modules table two thousand lines away correctly
     said "no production consumer". Readers believe the section they are
     reading. This keeps the two from drifting apart again.
+
+    Scoped to experimental sections on purpose. The same detector was run over
+    every other README section that names a module and produced 47 findings,
+    all false: showcase screens are registered through an enum in `app.rs`, and
+    `telemetry` reaches production as the re-exported `TelemetryConfig` rather
+    than as `telemetry::`. Experimental modules are the case where path-based
+    detection is sound, because being feature-gated and un-re-exported is
+    exactly what forces a consumer to name the module path.
     """
     errors = []
     sections = list(experimental_sections(readme_path.read_text(encoding='utf-8')))
