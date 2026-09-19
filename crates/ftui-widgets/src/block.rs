@@ -8,7 +8,7 @@ use ftui_core::geometry::{Rect, Sides, Size};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
-use ftui_style::Style;
+use ftui_style::{Style, StyleSheet};
 use ftui_text::{grapheme_width, graphemes};
 
 /// A widget that draws a block with optional borders, title, and padding.
@@ -46,6 +46,37 @@ impl<'a> Block<'a> {
     #[must_use]
     pub fn bordered() -> Self {
         Self::default().borders(Borders::ALL).padding(Sides::all(1))
+    }
+
+    /// Create a new block styled from a [`StyleSheet`] by name.
+    ///
+    /// Sets the block's inner style to `sheet.get_or_default(name)` and composes
+    /// its border style from `[name, format!("{name}{BLOCK_BORDER_SUFFIX}")]`
+    /// (e.g. `["heading", "heading.border"]`), allowing a border-specific style
+    /// to override base properties.
+    ///
+    /// Subsequent calls to [`.style()`] or [`.border_style()`] will override these values.
+    #[must_use]
+    pub fn styled(sheet: &StyleSheet, name: &str) -> Self {
+        Self::default().with_stylesheet(sheet, name)
+    }
+
+    /// Apply styles from a [`StyleSheet`] to this block.
+    ///
+    /// Sets the block's inner style to `sheet.get_or_default(name)` and composes
+    /// its border style from `[name, format!("{name}{BLOCK_BORDER_SUFFIX}")]`
+    /// (e.g. `["heading", "heading.border"]`), allowing a border-specific style
+    /// to override base properties.
+    ///
+    /// Subsequent calls to [`.style()`] or [`.border_style()`] will override these values.
+    #[must_use]
+    pub fn with_stylesheet(mut self, sheet: &StyleSheet, name: &str) -> Self {
+        self.style = sheet.get_or_default(name);
+        self.border_style = sheet.compose(&[
+            name,
+            &format!("{name}{}", crate::style_names::BLOCK_BORDER_SUFFIX),
+        ]);
+        self
     }
 
     /// Set which borders to render.
@@ -1140,5 +1171,155 @@ mod tests {
         let a = block.measure(Size::new(100, 50));
         let b = block.measure(Size::new(100, 50));
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn block_styled_reads_sheet() {
+        let sheet = StyleSheet::new();
+        let blue = ftui_render::cell::PackedRgba::rgb(0, 100, 255);
+        sheet.define("heading", Style::new().bold().fg(blue));
+
+        let block = Block::styled(&sheet, "heading")
+            .borders(Borders::ALL)
+            .title("T");
+        let area = Rect::new(0, 0, 8, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(8, 3, &mut pool);
+        block.render(area, &mut frame);
+
+        // Title cell at (1, 0) should be bold + blue
+        let title_cell = frame.buffer.get(1, 0).unwrap();
+        assert_eq!(title_cell.fg, blue);
+        assert!(title_cell.attrs.has_flag(ftui_render::cell::StyleFlags::BOLD));
+
+        // Border cell at (0, 0) should carry composed style (blue)
+        let border_cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(border_cell.fg, blue);
+    }
+
+    #[test]
+    fn redefine_style_then_rebuild_propagates() {
+        let sheet = StyleSheet::new();
+        let blue = ftui_render::cell::PackedRgba::rgb(0, 100, 255);
+        let red = ftui_render::cell::PackedRgba::rgb(255, 0, 0);
+
+        sheet.define("heading", Style::new().bold().fg(blue));
+        let block1 = Block::styled(&sheet, "heading").borders(Borders::ALL).title("T");
+        let area = Rect::new(0, 0, 8, 3);
+        let mut pool1 = GraphemePool::new();
+        let mut frame1 = Frame::new(8, 3, &mut pool1);
+        block1.render(area, &mut frame1);
+        assert_eq!(frame1.buffer.get(1, 0).unwrap().fg, blue);
+        assert!(frame1.buffer.get(1, 0).unwrap().attrs.has_flag(ftui_render::cell::StyleFlags::BOLD));
+
+        // Redefine as red without bold
+        sheet.define("heading", Style::new().fg(red));
+        let block2 = Block::styled(&sheet, "heading").borders(Borders::ALL).title("T");
+        let mut pool2 = GraphemePool::new();
+        let mut frame2 = Frame::new(8, 3, &mut pool2);
+        block2.render(area, &mut frame2);
+        assert_eq!(frame2.buffer.get(1, 0).unwrap().fg, red);
+        assert!(!frame2.buffer.get(1, 0).unwrap().attrs.has_flag(ftui_render::cell::StyleFlags::BOLD));
+    }
+
+    #[test]
+    fn missing_name_falls_back_to_default() {
+        let sheet = StyleSheet::new();
+        let block_styled = Block::styled(&sheet, "nope");
+        let block_default = Block::default();
+
+        let area = Rect::new(0, 0, 10, 5);
+        let mut pool1 = GraphemePool::new();
+        let mut frame1 = Frame::new(10, 5, &mut pool1);
+        block_styled.render(area, &mut frame1);
+
+        let mut pool2 = GraphemePool::new();
+        let mut frame2 = Frame::new(10, 5, &mut pool2);
+        block_default.render(area, &mut frame2);
+
+        assert_eq!(frame1.buffer, frame2.buffer);
+    }
+
+    #[test]
+    fn compose_precedence_name_then_border() {
+        let sheet = StyleSheet::new();
+        let blue = ftui_render::cell::PackedRgba::rgb(0, 100, 255);
+        let green = ftui_render::cell::PackedRgba::rgb(0, 255, 100);
+
+        sheet.define("heading", Style::new().fg(blue));
+        sheet.define("heading.border", Style::new().fg(green));
+
+        let block = Block::styled(&sheet, "heading")
+            .borders(Borders::ALL)
+            .title("T");
+        let area = Rect::new(0, 0, 8, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(8, 3, &mut pool);
+        block.render(area, &mut frame);
+
+        // Inner cell uses base style (blue)
+        assert_eq!(frame.buffer.get(1, 1).unwrap().fg, blue);
+        // Border cell uses composed style where border overrides (green)
+        assert_eq!(frame.buffer.get(0, 0).unwrap().fg, green);
+        // Title cell on border also uses border_style (green)
+        assert_eq!(frame.buffer.get(1, 0).unwrap().fg, green);
+    }
+
+    #[test]
+    fn explicit_style_overrides_sheet() {
+        let sheet = StyleSheet::new();
+        let blue = ftui_render::cell::PackedRgba::rgb(0, 100, 255);
+        let red = ftui_render::cell::PackedRgba::rgb(255, 0, 0);
+
+        sheet.define("heading", Style::new().fg(blue));
+        let block = Block::styled(&sheet, "heading")
+            .borders(Borders::ALL)
+            .title("T")
+            .style(Style::new().fg(red));
+
+        let area = Rect::new(0, 0, 8, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(8, 3, &mut pool);
+        block.render(area, &mut frame);
+
+        // Inner area cell gets explicit style (red)
+        assert_eq!(frame.buffer.get(1, 1).unwrap().fg, red);
+        // Border cell still has sheet border_style (blue)
+        assert_eq!(frame.buffer.get(0, 0).unwrap().fg, blue);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn prop_styled_block_equals_manual_block(
+            fg_r in 0u8..255, fg_g in 0u8..255, fg_b in 0u8..255,
+            border_r in 0u8..255, border_g in 0u8..255, border_b in 0u8..255,
+        ) {
+            let s = Style::new().fg(ftui_render::cell::PackedRgba::rgb(fg_r, fg_g, fg_b));
+            let b = Style::new().fg(ftui_render::cell::PackedRgba::rgb(border_r, border_g, border_b));
+
+            let sheet = StyleSheet::new();
+            sheet.define("card", s);
+            sheet.define("card.border", b);
+
+            let styled = Block::styled(&sheet, "card").borders(Borders::ALL).title("Hi");
+            let manual = Block::default()
+                .style(s)
+                .border_style(sheet.compose(&["card", "card.border"]))
+                .borders(Borders::ALL)
+                .title("Hi");
+
+            let area = Rect::new(0, 0, 10, 4);
+            let mut pool1 = GraphemePool::new();
+            let mut frame1 = Frame::new(10, 4, &mut pool1);
+            styled.render(area, &mut frame1);
+
+            let mut pool2 = GraphemePool::new();
+            let mut frame2 = Frame::new(10, 4, &mut pool2);
+            manual.render(area, &mut frame2);
+
+            prop_assert_eq!(frame1.buffer, frame2.buffer);
+        }
     }
 }

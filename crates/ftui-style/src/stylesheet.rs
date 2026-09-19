@@ -382,6 +382,11 @@ mod tests {
     }
 
     #[test]
+    fn compose_later_wins() {
+        compose_later_wins_on_conflict();
+    }
+
+    #[test]
     fn compose_ignores_missing() {
         let sheet = StyleSheet::new();
         sheet.define("exists", Style::new().bold());

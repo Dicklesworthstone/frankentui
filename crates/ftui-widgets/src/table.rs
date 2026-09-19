@@ -12,8 +12,8 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::{
-    Style, TableEffectResolver, TableEffectScope, TableEffectTarget, TablePresetId, TableSection,
-    TableTheme,
+    Style, StyleSheet, TableEffectResolver, TableEffectScope, TableEffectTarget, TablePresetId,
+    TableSection, TableTheme,
 };
 use ftui_text::{Line, Span, Text};
 use std::any::Any;
@@ -226,6 +226,53 @@ impl<'a> Table<'a> {
     #[must_use]
     pub fn theme(mut self, theme: TableTheme) -> Self {
         self.theme = theme;
+        self
+    }
+
+    /// Get a reference to the table theme.
+    #[must_use]
+    pub const fn table_theme(&self) -> &TableTheme {
+        &self.theme
+    }
+
+    /// Apply styles from a [`StyleSheet`] using the default prefix `"table"`.
+    ///
+    /// Looks up styles with names like `"table.border"`, `"table.header"`, `"table.row"`,
+    /// `"table.row_alt"`, `"table.row_selected"`, `"table.row_hover"`, and `"table.divider"`.
+    /// Only roles defined in the stylesheet will override the current theme's styles.
+    #[must_use]
+    pub fn with_stylesheet(self, sheet: &StyleSheet) -> Self {
+        self.with_stylesheet_prefix(sheet, crate::style_names::TABLE_PREFIX)
+    }
+
+    /// Apply styles from a [`StyleSheet`] using a custom prefix.
+    ///
+    /// For each standard role (`border`, `header`, `row`, `row_alt`, `row_selected`,
+    /// `row_hover`, `divider`), if `{prefix}.{role}` is defined in the stylesheet,
+    /// it replaces that style in the table's theme.
+    #[must_use]
+    pub fn with_stylesheet_prefix(mut self, sheet: &StyleSheet, prefix: &str) -> Self {
+        if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_BORDER)) {
+            self.theme.border = s;
+        }
+        if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_HEADER)) {
+            self.theme.header = s;
+        }
+        if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_ROW)) {
+            self.theme.row = s;
+        }
+        if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_ROW_ALT)) {
+            self.theme.row_alt = s;
+        }
+        if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_ROW_SELECTED)) {
+            self.theme.row_selected = s;
+        }
+        if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_ROW_HOVER)) {
+            self.theme.row_hover = s;
+        }
+        if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_DIVIDER)) {
+            self.theme.divider = s;
+        }
         self
     }
 
@@ -3733,5 +3780,82 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn table_with_stylesheet_maps_roles() {
+        let sheet = StyleSheet::new();
+        let yellow = PackedRgba::rgb(255, 255, 0);
+        let grey = PackedRgba::rgb(128, 128, 128);
+
+        sheet.define("table.header", Style::new().bold());
+        sheet.define("table.row_alt", Style::new().fg(yellow));
+        sheet.define("table.divider", Style::new().fg(grey));
+
+        let rows = [Row::new(["A"]), Row::new(["B"]), Row::new(["C"])];
+        let widths = [Constraint::Fixed(10)];
+        let table = Table::new(rows, widths)
+            .header(Row::new(["H"]))
+            .with_stylesheet(&sheet);
+
+        let area = Rect::new(0, 0, 10, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        // Header at y=0 is bold
+        let header_cell = frame.buffer.get(0, 0).unwrap();
+        assert!(header_cell.attrs.has_flag(ftui_render::cell::StyleFlags::BOLD));
+
+        // Row 1 (first body row, y=1) has default row style
+        // Row 2 (second body row, y=2) has yellow fg
+        let row1_cell = frame.buffer.get(0, 2).unwrap();
+        assert_eq!(row1_cell.fg, yellow);
+
+        // Undefined role (e.g. row_selected) equals default theme value
+        assert_eq!(table.table_theme().row_selected, TableTheme::default().row_selected);
+    }
+
+    #[test]
+    fn table_stylesheet_prefix_isolates() {
+        let sheet = StyleSheet::new();
+        let cyan = PackedRgba::rgb(0, 255, 255);
+        let magenta = PackedRgba::rgb(255, 0, 255);
+
+        sheet.define("tools.header", Style::new().fg(cyan));
+        sheet.define("logs.header", Style::new().fg(magenta));
+
+        let rows1 = [Row::new(["A"])];
+        let rows2 = [Row::new(["B"])];
+        let widths = [Constraint::Fixed(10)];
+
+        let t1 = Table::new(rows1, widths)
+            .header(Row::new(["H1"]))
+            .with_stylesheet_prefix(&sheet, "tools");
+
+        let t2 = Table::new(rows2, widths)
+            .header(Row::new(["H2"]))
+            .with_stylesheet_prefix(&sheet, "logs");
+
+        assert_eq!(t1.table_theme().header.fg, Some(cyan));
+        assert_eq!(t2.table_theme().header.fg, Some(magenta));
+    }
+
+    #[test]
+    fn table_stylesheet_missing_roles_keep_theme() {
+        let sheet = StyleSheet::new();
+        sheet.define("table.header", Style::new().bold());
+
+        let rows = [Row::new(["A"])];
+        let widths = [Constraint::Fixed(10)];
+        let table = Table::new(rows, widths).with_stylesheet(&sheet);
+
+        let default_theme = TableTheme::default();
+        assert_eq!(table.table_theme().border, default_theme.border);
+        assert_eq!(table.table_theme().row, default_theme.row);
+        assert_eq!(table.table_theme().row_alt, default_theme.row_alt);
+        assert_eq!(table.table_theme().row_selected, default_theme.row_selected);
+        assert_eq!(table.table_theme().row_hover, default_theme.row_hover);
+        assert_eq!(table.table_theme().divider, default_theme.divider);
     }
 }

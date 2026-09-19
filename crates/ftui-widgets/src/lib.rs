@@ -221,6 +221,31 @@ pub mod validation_error;
 pub mod virtualized;
 pub mod voi_debug_overlay;
 
+/// Standard style names and conventions for [`StyleSheet`] lookups.
+pub mod style_names {
+    /// Suffix appended to a block style name to resolve its border style (e.g. `".border"`).
+    pub const BLOCK_BORDER_SUFFIX: &str = ".border";
+
+    /// Default prefix for table style roles (e.g. `"table"`).
+    pub const TABLE_PREFIX: &str = "table";
+
+    // Standard role names matching TableTheme
+    /// Table border role name (`"border"`).
+    pub const TABLE_BORDER: &str = "border";
+    /// Table header role name (`"header"`).
+    pub const TABLE_HEADER: &str = "header";
+    /// Table row role name (`"row"`).
+    pub const TABLE_ROW: &str = "row";
+    /// Table alternating row role name (`"row_alt"`).
+    pub const TABLE_ROW_ALT: &str = "row_alt";
+    /// Table selected row role name (`"row_selected"`).
+    pub const TABLE_ROW_SELECTED: &str = "row_selected";
+    /// Table hovered row role name (`"row_hover"`).
+    pub const TABLE_ROW_HOVER: &str = "row_hover";
+    /// Table divider role name (`"divider"`).
+    pub const TABLE_DIVIDER: &str = "divider";
+}
+
 #[cfg(all(test, feature = "tracing"))]
 pub(crate) mod tracing_test_support {
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -273,6 +298,7 @@ pub use sparkline::{Sparkline, SparklineMarkers};
 pub use status_line::{StatusItem, StatusLine};
 pub use table::{ColumnSpec, Row, Table, TableState, Truncate};
 pub use tabs::{Tab, Tabs, TabsState};
+pub use ftui_style::StyleSheet;
 pub use virtualized::{
     HeightCache, ItemHeight, RenderItem, Virtualized, VirtualizedList, VirtualizedListState,
     VirtualizedStorage,
