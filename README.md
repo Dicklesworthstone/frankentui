@@ -1130,7 +1130,14 @@ and carries no e-process.
 
 ### Conformal Alerting
 
-Budget and performance alerts use **distribution-free conformal prediction**:
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
+This describes `ftui-runtime`'s `conformal_alert`, whose only consumers are
+other experimental modules (`timeline_aggregator`, `alpha_investing`) and a
+proptest. The conformal path that is on by default is the Mondrian frame-time
+gate above, which has no e-process layer.
+
+Budget and performance alerts in that module use **distribution-free conformal prediction**:
 
 ```
 Nonconformity score:
