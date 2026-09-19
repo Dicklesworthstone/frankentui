@@ -175,13 +175,38 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 make gates
 ```
 
-`make gates` is three checks, each runnable on its own:
+`make gates` is four checks, each runnable on its own:
 
 | Target | Fails when |
 |---|---|
 | `make reachability` | a `pub mod` is reachable from nothing in production; an allowlist entry cites a closed or unknown bead |
 | `make claims` | the ledger is malformed; a proof cites a test or path that does not exist; a README section marked `Status: experimental` has no `Where it runs` line, or a quarantined module gains a production consumer |
 | `make env-docs` | the code reads an environment variable that nothing documents |
+| `make close-audit` | a bead was closed after 2026-09-19T21:10Z without a reason of 80+ characters carrying a `kind:value` reference |
+
+**Closing a bead needs evidence.** `.beads/policy.yaml` makes `br close` reject
+a reason under 80 characters, or one with no typed reference — a `kind:value`
+token from `commit`, `pr`, `reviewer`, `investigation`, `agent-mail`,
+`dashboard`, `bead`, `test`, `path` or `run`. So this is fine:
+
+```bash
+br close bd-minjt --reason "Scroll runs now flush one event per notch instead \
+of collapsing to one; 63 coalescer tests pass. commit:509710e0"
+```
+
+and `--reason "Completed"` is not. The gate exists because 188 of 2,900 closed
+beads carried no reason at all and 859 more carried under 20 characters, which
+is how the previous truth-restoration epic regressed with nothing there to
+notice. AGENTS.md itself taught the habit: its own examples used
+`--reason "Completed"`.
+
+`--bypass-policy` still works and needs `--bypass-reason`, so a bypass is
+recorded rather than silent. `make close-audit` is the half `br` cannot see —
+it reads `.beads/issues.jsonl`, so it catches a bypassed close or a status
+written straight into the file. It enforces only closes after the policy
+landed; the 2,899 older ones are reported as `legacy_failures` so the scale
+stays visible without leaving a gate that can never go green. Widen the window
+with `--epoch` to inspect history.
 
 **Module reachability.** `scripts/check_module_reachability.py` exists because
 "reachable from production" was never part of the definition of done here, and
@@ -572,7 +597,9 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
 
 5. **Complete and release:**
    ```bash
-   br close 123 --reason "Completed"
+   # `.beads/policy.yaml` rejects "Completed": say what changed, and cite it.
+   br close 123 --reason "Routed pane_keymap through KeyMap so the showcase and \
+Help read one source of bindings; 12 tests added. commit:abc1234"
    br sync --flush-only  # Export to JSONL (no git operations)
    ```
    ```
@@ -863,8 +890,8 @@ br list --status=open # All open issues
 br show <id>          # Full issue details with dependencies
 br create --title="..." --type=task --priority=2
 br update <id> --status=in_progress
-br close <id> --reason "Completed"
-br close <id1> <id2>  # Close multiple issues at once
+br close <id> --reason "<what changed, 80+ chars, with a commit:/test:/path: reference>"
+br close <id1> <id2>  # Close multiple issues at once (each still needs a reason)
 br sync --flush-only  # Export to JSONL (NO git operations)
 ```
 
