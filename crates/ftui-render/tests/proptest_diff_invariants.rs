@@ -15,10 +15,14 @@
 //! 10. Full diff captures every cell in the buffer.
 //! 14. `runs()` and `runs_into()` produce identical output (isomorphism).
 //! 15. `runs_into` reuses capacity across calls.
+//! 16. Presenting a diff and replaying the bytes reproduces the target buffer.
 
+use ftui_core::text_width::display_width;
 use ftui_render::buffer::Buffer;
-use ftui_render::cell::Cell;
+use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::diff::BufferDiff;
+use ftui_render::headless::HeadlessTerm;
+use ftui_render::presenter::{Presenter, TerminalCapabilities};
 use proptest::prelude::*;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -464,5 +468,118 @@ proptest! {
         // Capacity should not shrink (Vec::clear preserves capacity).
         prop_assert!(cap_after_second >= cap_after_first.min(reuse_buf.len()),
             "runs_into shrank capacity: {} -> {}", cap_after_first, cap_after_second);
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 16. Presenting a diff and replaying the bytes reproduces the target buffer
+// ═════════════════════════════════════════════════════════════════════════
+//
+// The properties above stop at the diff: they prove it reports the right
+// changes, not that presenting those changes makes a terminal show the right
+// thing. The full pipeline is exercised elsewhere, but only over one fixed
+// scene, so nothing randomised the buffer contents through the ANSI round
+// trip - which is the renderer's core promise.
+
+/// Glyphs worth mixing: single-width, wide (a continuation cell follows each),
+/// and a space so runs break up.
+fn glyph() -> impl Strategy<Value = char> {
+    prop_oneof![
+        Just('a'),
+        Just('Z'),
+        Just('#'),
+        Just(' '),
+        Just('é'),
+        Just('─'),
+        Just('中'),
+        Just('あ'),
+        Just('\u{1F600}'),
+    ]
+}
+
+/// A buffer of random glyphs and colours, with continuation cells placed after
+/// every wide glyph and a wide glyph never straddling the right margin.
+fn painted_buffer(width: u16, height: u16, glyphs: &[char], colours: &[u8]) -> Buffer {
+    let mut buf = Buffer::new(width, height);
+    let mut pick = 0usize;
+    for y in 0..height {
+        let mut x = 0u16;
+        while x < width {
+            let ch = glyphs[pick % glyphs.len()];
+            let tint = colours[pick % colours.len()];
+            pick += 1;
+            let cw = u16::try_from(display_width(&ch.to_string()).max(1)).unwrap_or(1);
+            if x + cw > width {
+                buf.set(x, y, Cell::from_char(' '));
+                x += 1;
+                continue;
+            }
+            let mut cell = Cell::from_char(ch);
+            if tint.is_multiple_of(3) {
+                cell.fg = PackedRgba::rgb(tint, tint.wrapping_mul(3), 0x20);
+            }
+            buf.set(x, y, cell);
+            for k in 1..cw {
+                buf.set(x + k, y, Cell::CONTINUATION);
+            }
+            x += cw;
+        }
+    }
+    buf
+}
+
+/// The text each row should show: a continuation contributes nothing of its
+/// own, because the wide glyph before it already covers that column.
+fn visible_rows(buf: &Buffer) -> Vec<String> {
+    (0..buf.height())
+        .map(|y| {
+            (0..buf.width())
+                .filter_map(|x| {
+                    let cell = buf.get(x, y)?;
+                    if cell.content.is_continuation() {
+                        return None;
+                    }
+                    Some(cell.content.as_char().unwrap_or(' '))
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+proptest! {
+    #[test]
+    fn presented_diff_reproduces_the_target_buffer(
+        (w, h) in (1u16..=30, 1u16..=12),
+        first in proptest::collection::vec(glyph(), 1..40),
+        second in proptest::collection::vec(glyph(), 1..40),
+        colours in proptest::collection::vec(any::<u8>(), 1..16),
+    ) {
+        let prev = painted_buffer(w, h, &first, &colours);
+        let next = painted_buffer(w, h, &second, &colours);
+
+        // Paint `prev` from blank, then apply only the diff to reach `next` -
+        // the same two-step a live frame takes.
+        let mut out = Vec::new();
+        {
+            let blank = Buffer::new(w, h);
+            let initial = BufferDiff::compute(&blank, &prev);
+            let update = BufferDiff::compute(&prev, &next);
+            let mut presenter = Presenter::new(&mut out, TerminalCapabilities::default());
+            presenter.present(&prev, &initial).expect("present initial frame");
+            presenter.present(&next, &update).expect("present update frame");
+        }
+
+        let mut term = HeadlessTerm::new(w, h);
+        term.process(&out);
+
+        let want = visible_rows(&next);
+        let got: Vec<String> = term
+            .screen_text()
+            .iter()
+            .map(|row| row.trim_end().to_string())
+            .collect();
+        prop_assert_eq!(got, want, "presented bytes did not reproduce the buffer at {}x{}", w, h);
     }
 }
