@@ -6,6 +6,8 @@
 use ftui_harness::baseline_capture::{
     FixtureFamily, MetricBaseline, MetricCategory, Percentiles, StabilityClass,
 };
+use ftui_harness::cost_surface::{CostSurfaceAnalyzer, RenderStage};
+use ftui_harness::fixture_runner::FixtureRunner;
 use ftui_harness::fixture_suite::{FixtureRegistry, SuitePartition};
 use ftui_harness::render_gauntlet::{
     FailureCategory, GauntletConfig, GauntletGate, GauntletSuite, compare_tail_latency,
@@ -79,6 +81,47 @@ fn gauntlet_report_is_replay_stable() {
             .collect::<Vec<_>>()
     };
     assert_eq!(verdicts(&first), verdicts(&second));
+}
+
+/// The tail-latency gate reads stage attribution off the cost surface, which is
+/// only meaningful while the parts stay inside the whole. `FixtureRunner` derives
+/// `frame_pipeline_total` by summing the three stage timings, so this holds by
+/// construction — and this test is what notices if that construction ever changes.
+#[test]
+fn cost_surface_stage_costs_stay_within_the_frame_total() {
+    let registry = FixtureRegistry::canonical();
+    let specs: Vec<_> = registry
+        .by_partition(SuitePartition::Canonical)
+        .into_iter()
+        .filter(|spec| spec.family == FixtureFamily::Render)
+        .collect();
+    assert!(!specs.is_empty(), "no canonical render fixtures");
+
+    for spec in specs {
+        let result = FixtureRunner::run(spec);
+        let surface = CostSurfaceAnalyzer::from_baseline(&result.record);
+
+        let total = surface
+            .stage_profile(RenderStage::FramePipeline)
+            .unwrap_or_else(|| panic!("{}: no frame_pipeline_total profile", spec.id));
+        let components: f64 = RenderStage::COMPONENT_STAGES
+            .iter()
+            .filter_map(|stage| surface.stage_profile(*stage))
+            .map(|profile| profile.mean_us)
+            .sum();
+
+        assert!(
+            components <= total.mean_us + 3.0,
+            "{}: stages sum to {components:.3}us against a frame total of {:.3}us",
+            spec.id,
+            total.mean_us
+        );
+        assert!(
+            surface.dominant_stage().is_some(),
+            "{}: no component stage to attribute cost to",
+            spec.id
+        );
+    }
 }
 
 #[test]
