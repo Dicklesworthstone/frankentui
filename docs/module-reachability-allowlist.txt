@@ -14,7 +14,22 @@
 # Bead ids here are the beads that own the *decision*, not always the eventual
 # wiring. Re-point an entry at a more specific bead as soon as one exists.
 #
+# The bead must still be OPEN. The gate reads .beads/issues.jsonl and fails on
+# an entry whose bead is closed or unknown. A closed bead will never wire or
+# quarantine anything, so an entry pointing at one is stranded with no owner and
+# no one looking - which is how .11.3's widgets and .11.5's harness modules both
+# sat here unowned until someone happened to check the bead rather than the line.
+#
 # Format: <crate>::<module>  # <bead id>
+#
+# NOT on this list: modules whose only consumers are tests. The gate reports
+# those as TEST_ONLY, because "nothing uses this" and "only tests use this"
+# are different states and a dead-code list that conflates them is dangerous.
+# On 2026-09-19, 18 of this file's 48 entries turned out to be test
+# infrastructure with real test consumers - ftui_render::headless alone is 843
+# lines of documented CI harness used by two test files. Deleting any of them
+# under the .11.5 permission would have broken tests. Run
+# `make reachability` and read the TEST_ONLY lines before deleting anything.
 
 # ── doctor_frankentui ────────────────────────────────────────────────────
 # .28.1 asks the owner to split or feature-gate doctor_frankentui's three
@@ -27,80 +42,95 @@ doctor_frankentui::archetype_scoreboard  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::artifact_coding_tests  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::backend_capability  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::cli_explain_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::codegen_optimize  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::corpus_integrity_tests  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::governance_validator_tests  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::graveyard_control_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::ir_explainer  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::ir_versioning  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::lowering  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::migration_config  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::module_graph  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::optimization_control_tests  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::optimization_model_tests  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::portfolio_governance_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::sandbox  # bd-g00-root-epic-ewths.28.1
 doctor_frankentui::tier_escalator_tests  # bd-g00-root-epic-ewths.28.1
 
 # ── ftui-web ─────────────────────────────────────────────────────────────
 # .29.1 asks the owner to decide the web host's scope. These are the modules
 # that scope would either wire into a host or drop.
 ftui-web::keyboard  # bd-g00-root-epic-ewths.29.1
-ftui-web::pane_keyboard  # bd-g00-root-epic-ewths.29.1
 ftui-web::pointer  # bd-g00-root-epic-ewths.29.1
+# Encodes the renderer tier order (dom/canvas/webgl/webgpu), browser support
+# matrix and release criteria that the README's front-page browser claim rests
+# on - and nothing calls it, so none of that policy is enforced in-tree. Note
+# ftui-web "does not bind to wasm-bindgen yet" (lib.rs) and the actual
+# WebGPU/canvas2d rendering lives in the out-of-tree frankenterm-web bundle,
+# so this module is the only in-tree statement of that contract.
 ftui-web::release_readiness  # bd-g00-root-epic-ewths.29.1
-ftui-web::runtime_options  # bd-g00-root-epic-ewths.29.1
-ftui-web::sdk_adapter  # bd-g00-root-epic-ewths.29.1
 
 # ── ftui-widgets ─────────────────────────────────────────────────────────
-# Widgets with no gallery entry: .11.3 adds the entries that would reach them.
-ftui-widgets::choreography  # bd-g00-root-epic-ewths.11.3
-ftui-widgets::popover  # bd-g00-root-epic-ewths.11.3
-ftui-widgets::pretty  # bd-g00-root-epic-ewths.11.3
-ftui-widgets::receipt_verifier_panel  # bd-g00-root-epic-ewths.11.3
-# Succinct data structures with no consumer. These are orphan-module
-# candidates rather than unwired widgets, so they sit with the G07 set.
-ftui-widgets::elias_fano  # bd-g00-root-epic-ewths.11.5
-# Duplicate, not merely unused: virtualized.rs carries its own
-# VariableHeightsFenwick (:741) and never touches crate::fenwick::FenwickTree,
-# so this is a second Fenwick implementation with no consumer. Merge or remove
-# rather than wire.
-ftui-widgets::fenwick  # bd-g00-root-epic-ewths.11.5
-ftui-widgets::louds  # bd-g00-root-epic-ewths.11.5
+# popover, pretty and receipt_verifier_panel were here with .11.3 as their
+# owner; that bead closed without covering them, so they had no owner left.
+# Gallery section "J: Verification" now renders all three and
+# widget_gallery_verification_120x40 pins the result, so they are gone from
+# this list rather than re-pointed at another bead.
+#
+# choreography is NOT a widget and never belonged with them: it has no Widget
+# impl at all. It is a protocol/choreography specification verifier (project(),
+# verify_deadlock_free(), completeness_report()) that happens to live in
+# ftui-widgets. Wiring it into a widget gallery would be the wrong fix; it
+# needs the delete-or-wire decision with the rest of the orphan set.
+ftui-widgets::choreography  # bd-gqit2
+# (ftui-widgets::fenwick sat here until the TEST_ONLY verdict landed and its
+# proptest counted as a consumer. It is still a duplicate of virtualized.rs's
+# own VariableHeightsFenwick (:741); that observation moved to bd-gqit2 rather
+# than staying as a comment with no entry under it.)
 
 # ── orphan-module candidates (G07) ───────────────────────────────────────
-# .11.5 is where the owner decides delete-or-wire for unreferenced modules.
-# The owner granted deletion permission for its enumerated set on 2026-09-18;
-# these are the ones this gate found, which is not the same list, so they need
-# their own pass before anything is removed.
-ftui-core::event_coalescer  # bd-g00-root-epic-ewths.11.5
-ftui-core::generic_diff  # bd-g00-root-epic-ewths.11.5
+# .11.5 granted deletion for an enumerated set on 2026-09-18 and then closed.
+# None of the modules below are on that list, so its permission does not reach
+# them and its closure left them ownerless. bd-gqit2 is their owner and carries
+# the per-module analysis.
+# 1401 lines of input coalescing (mouse-move/scroll floods) with zero
+# consumers - not production, not tests. Not a sweep-deletion candidate: it is
+# real working code that nobody connected. bd-tu3l9 carries the analysis,
+# including the constraint that makes it non-trivial (the gesture recognizer
+# needs the raw event stream, and coalescing swallows events by construction).
+ftui-core::event_coalescer  # bd-tu3l9
 # Superseded, not merely unused: this is a second Esc-Esc interpreter (708
 # lines, bd-2vne.2). The one that actually runs is keybinding::SequenceDetector,
 # which KeyDispatcher owns (keybinding.rs:775), constructs (:782) and feeds Esc
 # through (:835) - so the README's "Esc Esc goes through the SequenceDetector
 # window" is true, just not via this module. Merge or remove rather than wire.
-ftui-core::key_sequence  # bd-g00-root-epic-ewths.11.5
-ftui-core::mode_typestate  # bd-g00-root-epic-ewths.11.5
+ftui-core::key_sequence  # bd-gqit2
 # Unreachable by decision, not neglect: benchmarked 2026-09-18 at 4-19x slower
 # than Flex::split on the same constraints, so wiring it in would cost every
 # layout pass. Evidence and reasoning in docs/perf/egraph_vs_flex_2026-09-18.md.
-ftui-layout::egraph  # bd-g00-root-epic-ewths.11.5
-ftui-layout::incremental  # bd-g00-root-epic-ewths.11.5
-ftui-layout::veb_tree  # bd-g00-root-epic-ewths.11.5
-ftui-render::headless  # bd-g00-root-epic-ewths.11.5
-ftui-render::quotient_filter  # bd-g00-root-epic-ewths.11.5
-ftui-render::spatial_hit_index  # bd-g00-root-epic-ewths.11.5
+ftui-layout::egraph  # bd-gqit2
+# Not neglected — filed in the wrong crate for its own use case. Its doc says
+# it pays off for ">1M rows, <1% dirty"; ftui-render tracks dirty rows as
+# Buffer::dirty_rows: Vec<bool> sized to terminal height (buffer.rs:226), which
+# never approaches that. The workload it was written for lives in a virtualized
+# list widget. Its "How It Works" also describes 3-bit slot metadata that its
+# own Implementation Note says it does not use.
+ftui-render::quotient_filter  # bd-gqit2
 
 # ── ftui-harness ─────────────────────────────────────────────────────────
 # Reached by neither production code nor any test, which for a test-support
-# crate means nothing uses them at all.
-ftui-harness::cost_surface  # bd-g00-root-epic-ewths.11.5
-ftui-harness::doctor_topology  # bd-g00-root-epic-ewths.11.5
-ftui-harness::frame_comparison  # bd-g00-root-epic-ewths.11.5
-ftui-harness::hotspot_extraction  # bd-g00-root-epic-ewths.11.5
-ftui-harness::layout_reuse  # bd-g00-root-epic-ewths.11.5
-ftui-harness::optimization_policy  # bd-g00-root-epic-ewths.11.5
-ftui-harness::presenter_equivalence  # bd-g00-root-epic-ewths.11.5
-ftui-harness::proof_oracle  # bd-g00-root-epic-ewths.11.5
-ftui-harness::rollout_runbook  # bd-g00-root-epic-ewths.11.5
+# crate means nothing uses them at all. cost_surface left this list on
+# 2026-09-19 when render_gauntlet started using it for stage attribution.
+#
+# These pointed at .11.5, which is closed and enumerates ftui-render and
+# ftui-runtime files — it never covered ftui-harness, so these had no owner.
+# bd-5h57k is that owner. They divide into two kinds, and the wire-or-retire
+# answer differs for each, which is why one blanket question produced none.
+#
+# Engines — complete, tested analyzers with a callable API, waiting on a caller:
+ftui-harness::doctor_topology  # bd-5h57k
+ftui-harness::frame_comparison  # bd-5h57k
+ftui-harness::hotspot_extraction  # bd-5h57k
+ftui-harness::optimization_policy  # bd-5h57k
+ftui-harness::proof_oracle  # bd-5h57k
+#
+# Reference models — taxonomies encoded as enums, with 0-2 public functions
+# between them. There is nothing here to call, so "wiring" them means writing
+# the checker they describe, not connecting an existing one.
+ftui-harness::layout_reuse  # bd-5h57k
+ftui-harness::presenter_equivalence  # bd-5h57k
+ftui-harness::rollout_runbook  # bd-5h57k

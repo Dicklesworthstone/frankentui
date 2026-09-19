@@ -506,11 +506,21 @@ fn widget_gallery_with_tick_120x40() {
 fn widget_gallery_decision_card_80x24() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Section 8 by index. A single Left means "whatever section is last", so
+    // appending section J silently repointed all four of these at Verification
+    // and left the widgets they are named for with no coverage.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("Diff strategy"),
+        "expected the Diagnostics section: {text}"
+    );
     assert_snapshot!("widget_gallery_decision_card_80x24", &frame.buffer);
 }
 
@@ -518,11 +528,21 @@ fn widget_gallery_decision_card_80x24() {
 fn widget_gallery_drift_visualization_80x24() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Section 8 by index. A single Left means "whatever section is last", so
+    // appending section J silently repointed all four of these at Verification
+    // and left the widgets they are named for with no coverage.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("Drift"),
+        "expected the Diagnostics section: {text}"
+    );
     assert_snapshot!("widget_gallery_drift_visualization_80x24", &frame.buffer);
 }
 
@@ -530,12 +550,22 @@ fn widget_gallery_drift_visualization_80x24() {
 fn widget_gallery_cached_widget_80x24() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Section 8 by index. A single Left means "whatever section is last", so
+    // appending section J silently repointed all four of these at Verification
+    // and left the widgets they are named for with no coverage.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
     screen.view(&mut frame, area);
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("Cached"),
+        "expected the Diagnostics section: {text}"
+    );
     assert_snapshot!("widget_gallery_cached_widget_80x24", &frame.buffer);
 }
 
@@ -543,12 +573,22 @@ fn widget_gallery_cached_widget_80x24() {
 fn widget_gallery_error_boundary_80x24() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Section 8 by index. A single Left means "whatever section is last", so
+    // appending section J silently repointed all four of these at Verification
+    // and left the widgets they are named for with no coverage.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     screen.tick(1);
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("ErrorBoundary"),
+        "expected the Diagnostics section: {text}"
+    );
     assert_snapshot!("widget_gallery_error_boundary_80x24", &frame.buffer);
 }
 
@@ -556,12 +596,43 @@ fn widget_gallery_error_boundary_80x24() {
 fn widget_gallery_diagnostics_120x40() {
     let _caps = stable_caps();
     let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
-    screen.update(&press(KeyCode::Left));
+    // Walk forward to section 8 rather than wrapping backwards from 0. A single
+    // Left used to land here, but it lands on whatever section is last, so
+    // adding section J silently repointed this snapshot at Verification and
+    // left Diagnostics with no coverage at all.
+    for _ in 0..8 {
+        screen.update(&press(KeyCode::Right));
+    }
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);
     let area = Rect::new(0, 0, 120, 40);
     screen.view(&mut frame, area);
     assert_snapshot!("widget_gallery_diagnostics_120x40", &frame.buffer);
+}
+
+/// Section J pins `pretty`, `popover` and `receipt_verifier_panel`, which the
+/// module-reachability gate had listed as reached by nothing in production.
+#[test]
+fn widget_gallery_verification_120x40() {
+    let _caps = stable_caps();
+    let mut screen = ftui_demo_showcase::screens::widget_gallery::WidgetGallery::new();
+    for _ in 0..9 {
+        screen.update(&press(KeyCode::Right));
+    }
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+
+    let text = ftui_harness::buffer_to_text(&frame.buffer);
+    assert!(
+        text.contains("receipt-0f3a91"),
+        "ReceiptVerifierPanel: {text}"
+    );
+    assert!(text.contains("Pretty (Debug)"), "Pretty: {text}");
+    assert!(text.contains("Popover"), "Popover: {text}");
+
+    assert_snapshot!("widget_gallery_verification_120x40", &frame.buffer);
 }
 
 // ============================================================================
@@ -2963,6 +3034,23 @@ fn command_palette_lab_title() {
 // I18n Demo
 // ============================================================================
 
+fn assert_i18n_demo_snapshot(
+    name: &str,
+    screen: &ftui_demo_showcase::screens::i18n_demo::I18nDemo,
+    frame: &Frame,
+) {
+    let loc = screen.locale_ctx.current_locale();
+    let dir = screen.locale_ctx.direction();
+    let ver = screen.locale_ctx.version();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_snapshot!(name, &frame.buffer);
+    }));
+    if let Err(payload) = res {
+        eprintln!("Snapshot failure for {name}: locale={loc}, direction={dir:?}, version={ver}");
+        std::panic::resume_unwind(payload);
+    }
+}
+
 #[test]
 fn i18n_demo_initial_80x24() {
     let screen = ftui_demo_showcase::screens::i18n_demo::I18nDemo::new();
@@ -2970,7 +3058,7 @@ fn i18n_demo_initial_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("i18n_demo_initial_80x24", &frame.buffer);
+    assert_i18n_demo_snapshot("i18n_demo_initial_80x24", &screen, &frame);
 }
 
 #[test]
@@ -2981,7 +3069,7 @@ fn i18n_demo_arabic_rtl_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("i18n_demo_arabic_rtl_80x24", &frame.buffer);
+    assert_i18n_demo_snapshot("i18n_demo_arabic_rtl_80x24", &screen, &frame);
 }
 
 #[test]
@@ -2992,7 +3080,7 @@ fn i18n_demo_german_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("i18n_demo_german_80x24", &frame.buffer);
+    assert_i18n_demo_snapshot("i18n_demo_german_80x24", &screen, &frame);
 }
 
 #[test]
@@ -3004,7 +3092,7 @@ fn i18n_demo_locale_switch_ar_to_en_80x24() {
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
     screen.view(&mut frame, area);
-    assert_snapshot!("i18n_demo_initial_80x24", &frame.buffer);
+    assert_i18n_demo_snapshot("i18n_demo_initial_80x24", &screen, &frame);
 }
 
 #[test]

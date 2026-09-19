@@ -1,0 +1,40 @@
+  A: Inputs │   B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F: Layout │   G: Utility │   H: Advanced 
+╭─────────────────────────────────────────────────────────────────────────────────╮  ┌────────── Pane Studio ──────────┐
+│ VERIFIED  receipt receipt-0f3a91                                                │  │mode:Focus sel:1 tl:0/0 ops:0 sp:│
+│trace=trace-7c21  decision=decision-44  policy=policy-diff-strategy              │  │┃              ││               ││
+│  signature     PASS   error_code=-                                              │  │┃ 16x15  @86,2 ││ 17x15  @102,2 ││
+│  transparency  PASS   error_code=-                                              │  │┃              ││               ││
+│  attestation   PASS   error_code=-                                              │  │┃              ││               ││
+│warnings:                                                                        │  │┃              ││               ││
+│  ! transparency log lag 4s (within tolerance)                                   │  │┃              ││               ││
+│                                                                                 │  │┃              ││               ││
+│                                                                                 │  │┃              ││               ││
+│                                                                                 │  │┃              ││               ││
+│                                                                                 │  │┃              ││               ││
+│                                                                                 │  │┃              ││               ││
+│                                                                                 │  │┃              ││               ││
+│                                                                                 │  │┃              ■│               ││
+│                                                                                 │  │──────■■■──────────────■■■───────│
+│                                                                                 │  │╭───5 pane-3───■╭───7 pane-4────╮│
+│                                                                                 │  ││              ■│               ││
+│                                                                                 │  ││ 16x16  @86,1 ■│ 17x16  @102,1 ││
+│                                                                                 │  ││              ││               ││
+│                                                                                 │  ││              ││               ││
+│                                                                                 │  ││              ││               ││
+╰─────────────────────────────────────────────────────────────────────────────────╯  ││              ││               ││
+╭ Pretty (Debug) ────────────────────────╮                                           ││              ││               ││
+│SampleDecision {                        │                                           ││              ││               ││
+│    strategy: "DirtyRows",              │                                           ││              ││               ││
+│    dirty_rows: 4,                      │                                           ││              ││               ││
+│    total_rows: 40,                     │                                           ││              ││               ││
+│    bayesian: true,                     │                                           ││              ││               ││
+│}                                       │                                           ││              ││               ││
+│                                        │  ┌────────────────────────┐               ││              ││               ││
+│                                        │  │Popover: flipped above  │               │╰──────────────│╰───────────────╯│
+│                                        │  │the anchor automatically│               └─────────────────────────────────┘
+│                                        │  │                        │                                                  
+│                                        │  │                        │               ╭Pane Studio──────────────────────╮
+│                                        │  └────────────────────────┘               │Drag docks | Right click mode | W│
+│                                        │  anchor ▲                                 │                                 │
+╰────────────────────────────────────────╯                                           ╰─────────────────────────────────╯
+.........*                                                                                                              

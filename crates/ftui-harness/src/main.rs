@@ -920,6 +920,8 @@ impl Model for AgentHarness {
                 }
                 if fire_locale_switch {
                     if let Some(target) = self.locale_switch_target.clone() {
+                        self.locale_override = None;
+                        ftui_runtime::locale::set_direction(None);
                         set_locale(target.clone());
                         self.log_viewer.push(format!("Locale switch -> {}", target));
                     }
@@ -1727,10 +1729,16 @@ impl AgentHarness {
         frame.text_direction = ctx.direction().into();
         let current_locale = ctx.current_locale();
 
+        let dir = match ctx.direction() {
+            ftui_runtime::locale::TextDirection::Ltr => "LTR",
+            ftui_runtime::locale::TextDirection::Rtl => "RTL",
+        };
+
         let info_text = format!(
-            "Base locale: {base}\nCurrent locale: {current}\nOverride: {override_label}\nSystem locale: {system}\nLocale version: {version}\nSwitch target: {switch_target}\nSwitch countdown: {switch_ticks}",
+            "Base locale: {base}\nCurrent locale: {current}\nDirection: {dir}\nOverride: {override_label}\nSystem locale: {system}\nLocale version: {version}\nSwitch target: {switch_target}\nSwitch countdown: {switch_ticks}",
             base = base_locale,
             current = current_locale,
+            dir = dir,
             override_label = override_label,
             system = system_locale,
             version = version,
@@ -2508,12 +2516,33 @@ fn main() -> std::io::Result<()> {
         kitty_keyboard: enable_kitty_keyboard,
         ..Default::default()
     };
+    if let Ok(stderr_path) = std::env::var("FTUI_HARNESS_STDERR_FILE") {
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&stderr_path)
+        {
+            let _ = tracing_subscriber::fmt()
+                .with_writer(file)
+                .with_ansi(false)
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .try_init();
+        }
+    } else if std::env::var("RUST_LOG").is_ok() {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
+    }
+
     if let Some(locale) = locale_base {
         config = config.with_locale(locale);
     }
     if let Some(ref override_locale) = locale_override {
         let dir = ftui_runtime::locale::TextDirection::for_locale(override_locale);
-        config.locale_context.set_direction(Some(dir));
         ftui_runtime::locale::set_direction(Some(dir));
     }
     if let Some(enabled) = env_flag("FTUI_HARNESS_DIFF_BAYESIAN") {

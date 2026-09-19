@@ -6,6 +6,8 @@
 use ftui_harness::baseline_capture::{
     FixtureFamily, MetricBaseline, MetricCategory, Percentiles, StabilityClass,
 };
+use ftui_harness::cost_surface::{CostComparison, CostSurfaceAnalyzer, RenderStage};
+use ftui_harness::fixture_runner::FixtureRunner;
 use ftui_harness::fixture_suite::{FixtureRegistry, SuitePartition};
 use ftui_harness::render_gauntlet::{
     FailureCategory, GauntletConfig, GauntletGate, GauntletSuite, compare_tail_latency,
@@ -79,6 +81,81 @@ fn gauntlet_report_is_replay_stable() {
             .collect::<Vec<_>>()
     };
     assert_eq!(verdicts(&first), verdicts(&second));
+}
+
+/// The tail-latency gate reads stage attribution off the cost surface, which is
+/// only meaningful while the parts stay inside the whole. `FixtureRunner` derives
+/// `frame_pipeline_total` by summing the three stage timings, so this holds by
+/// construction — and this test is what notices if that construction ever changes.
+#[test]
+fn cost_surface_stage_costs_stay_within_the_frame_total() {
+    let registry = FixtureRegistry::canonical();
+    let specs: Vec<_> = registry
+        .by_partition(SuitePartition::Canonical)
+        .into_iter()
+        .filter(|spec| spec.family == FixtureFamily::Render)
+        .collect();
+    assert!(!specs.is_empty(), "no canonical render fixtures");
+
+    let mut reports = Vec::new();
+
+    for spec in specs {
+        let result = FixtureRunner::run(spec);
+        let surface = CostSurfaceAnalyzer::from_baseline(&result.record);
+
+        let total = surface
+            .stage_profile(RenderStage::FramePipeline)
+            .unwrap_or_else(|| panic!("{}: no frame_pipeline_total profile", spec.id));
+        let components: f64 = RenderStage::COMPONENT_STAGES
+            .iter()
+            .filter_map(|stage| surface.stage_profile(*stage))
+            .map(|profile| profile.mean_us)
+            .sum();
+
+        assert!(
+            components <= total.mean_us + 3.0,
+            "{}: stages sum to {components:.3}us against a frame total of {:.3}us",
+            spec.id,
+            total.mean_us
+        );
+        assert!(
+            surface.dominant_stage().is_some(),
+            "{}: no component stage to attribute cost to",
+            spec.id
+        );
+
+        // Stage means are hundreds of microseconds against a 1us truncation
+        // floor in FixtureRunner. If a fixture ever lands near that floor its
+        // stages read as 0.0 and the attribution becomes noise, so check the
+        // floor rather than assume it.
+        assert!(
+            total.mean_us > 10.0,
+            "{}: frame total {:.3}us is close to the 1us recording floor; stage \
+             attribution is not meaningful here",
+            spec.id,
+            total.mean_us
+        );
+
+        reports.push(surface.report());
+    }
+
+    // The bottleneck is workload-dependent: cell mutation dominates sparse
+    // updates, presenter emit dominates dense ones. An optimization ranked on
+    // one of these workloads alone is ranked on the wrong one. Measurements in
+    // docs/perf/cost_surface_stage_dominance_2026-09-19.md.
+    let comparison = CostComparison::new(reports);
+    assert!(
+        comparison.has_dominance_shift(),
+        "every canonical render fixture now has the same dominant stage; the \
+         cost surface has stopped distinguishing sparse from dense workloads"
+    );
+    assert!(
+        comparison.diff_dominated_fixtures().is_empty(),
+        "buffer_diff has become the dominant stage in {:?}, which it was not in \
+         any canonical fixture as of 2026-09-19 (it was the cheapest stage \
+         everywhere, at 9-18% of the frame)",
+        comparison.diff_dominated_fixtures()
+    );
 }
 
 #[test]

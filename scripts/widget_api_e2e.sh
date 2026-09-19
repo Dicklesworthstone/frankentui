@@ -588,6 +588,22 @@ jsonl_step_start "feature_combinations"
         exit 1
     fi
 
+    echo "Testing ftui-widgets with bidi feature..."
+    if cargo check -p ftui-widgets --features bidi 2>&1; then
+        echo "  [PASS] bidi"
+    else
+        echo "  [FAIL] bidi"
+        exit 1
+    fi
+
+    echo "Testing ftui-widgets with no-default-features..."
+    if cargo check -p ftui-widgets --no-default-features 2>&1; then
+        echo "  [PASS] no-default-features"
+    else
+        echo "  [FAIL] no-default-features"
+        exit 1
+    fi
+
     echo ""
     echo "All feature combinations passed!"
 

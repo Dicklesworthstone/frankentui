@@ -1,14 +1,36 @@
 //! Incremental View Maintenance (IVM) — delta-propagation DAG for derived
 //! render state (bd-3akdb.1).
 //!
-//! # Overview
+//! # Status: parts, not a pipeline
 //!
-//! IVM maintains computed layouts, styled text, and visibility flags as
-//! **materialized views** updated by deltas only. Instead of full recomputation
-//! each frame, changes propagate through a DAG of view operators that transform
-//! input deltas into output deltas.
+//! **There is no propagation engine.** This module has the delta algebra, a DAG
+//! with topological ordering and cycle detection, a fallback policy predicate,
+//! and two [`IncrementalView`] implementations ([`StyleResolutionView`],
+//! [`FilteredListView`]). Nothing walks the topological order feeding one view's
+//! output into the next — the tests call [`IncrementalView::apply_delta`] one
+//! view at a time and build DAGs separately, because there is no driver to call.
 //!
-//! # Architecture
+//! The sections below describe the design this module is *for*, not behaviour it
+//! *has*. Concretely, as of 2026-09-19:
+//!
+//! - The architecture diagram names `LayoutView` and `RenderView`. Neither
+//!   exists; the only `IncrementalView` impls are the two named above.
+//! - Nothing here imports `Observable`, `DepGraph`, `Buffer` or `Presenter`.
+//!   The module's only dependencies are `std::fmt` and `std::hash`, so no delta
+//!   reaches a buffer and none is "consumed by the presenter".
+//! - There is no `ivm.propagate` tracing span; `tracing` is not imported.
+//! - [`EpochEvidence::to_jsonl`] is never called outside this module's tests,
+//!   so no evidence is emitted.
+//! - [`IvmConfig::from_env`] really does read `FRANKENTUI_FULL_RECOMPUTE`, but
+//!   `force_full` and `emit_evidence` are read by nothing afterwards. Setting
+//!   the variable changes a struct field and no behaviour.
+//!
+//! What is here is real and tested — the delta encoding, the DAG, and the two
+//! views all have unit and e2e coverage. Treat it as the groundwork for an IVM
+//! system rather than one you can turn on. Gated behind the `experimental`
+//! feature. Wiring or retiring it is `bd-lksq7`.
+//!
+//! # Intended architecture (not implemented)
 //!
 //! ```text
 //!   Observable<Theme>   Observable<Content>   Observable<Constraint>
@@ -47,9 +69,11 @@
 //! Yang, "Materialized Views", §3.1). It composes: applying Δ₁ then Δ₂ is
 //! equivalent to applying their union (with cancellation of opposite signs).
 //!
-//! # Processing Model
+//! # Processing model (intended)
 //!
-//! Deltas are processed in **topological micro-batches**:
+//! Deltas would be processed in **topological micro-batches**. Steps 1, 3 and 4
+//! have no implementation; step 2 is [`DagTopology::compute_topo_order`], which
+//! does exist:
 //!
 //! 1. Collect all input changes since last frame (the "epoch").
 //! 2. Sort the DAG topologically (pre-computed at DAG build time).
@@ -59,40 +83,44 @@
 //!    c. Forward output deltas to downstream views.
 //! 4. The final view emits cell-level deltas consumed by the presenter.
 //!
-//! If any view's delta set exceeds a size threshold (heuristic: > 50% of
-//! the materialized view size), the view falls back to full recomputation
-//! via `full_recompute()`. This handles the "big change" case efficiently.
+//! The threshold above which a view should fall back to full recomputation
+//! (heuristic: > 50% of the materialized view size) is decided by
+//! [`FallbackPolicy::should_fallback`], which is a pure predicate. Nothing calls
+//! it during processing, because nothing processes.
 //!
-//! # Evidence Logging
+//! # Evidence logging (intended)
 //!
-//! Each propagation epoch logs an `ivm.propagate` tracing span with:
+//! Each propagation epoch would log an `ivm.propagate` tracing span carrying
+//! `epoch`, `views_processed`, `views_recomputed`, `total_delta_size` and
+//! `duration_us`, alongside an [`EpochEvidence`] JSONL line comparing delta size
+//! against full-recompute cost per view.
 //!
-//! - `epoch`: monotonic epoch counter
-//! - `views_processed`: number of views that received deltas
-//! - `views_recomputed`: number of views that fell back to full recompute
-//! - `total_delta_size`: sum of delta entry counts across all views
-//! - `duration_us`: wall-clock time for the entire propagation
+//! [`EpochEvidence`] and its [`EpochEvidence::to_jsonl`] serializer exist and are
+//! tested. The span does not: `tracing` is not imported here, and nothing calls
+//! `to_jsonl` outside this module's tests.
 //!
-//! An evidence JSONL entry is emitted comparing delta size vs full recompute
-//! cost per view, enabling offline analysis of IVM efficiency.
+//! # Fallback (intended)
 //!
-//! # Fallback
+//! `FRANKENTUI_FULL_RECOMPUTE=1` is meant to disable incremental processing as a
+//! benchmarking baseline and a safety valve. [`IvmConfig::from_env`] does read
+//! it, but nothing reads `force_full` afterwards, so today the variable changes
+//! a struct field and nothing else. The same is true of `emit_evidence`.
 //!
-//! Setting `FRANKENTUI_FULL_RECOMPUTE=1` disables incremental processing
-//! and forces full recomputation on every frame. This serves as a baseline
-//! for benchmarking and a safety fallback if IVM introduces bugs.
+//! # Intended integration with existing infrastructure (none of it wired)
 //!
-//! # Integration with Existing Infrastructure
+//! None of the following is implemented. This module imports `std::fmt` and
+//! `std::hash` and nothing else, so it cannot currently observe or affect any of
+//! these:
 //!
-//! - **DepGraph** (ftui-layout): Used for layout-level dirty tracking.
-//!   IVM wraps DepGraph as the backing store for `LayoutView`.
-//! - **Observable/Computed** (ftui-runtime/reactive): Observable changes
-//!   feed the IVM input layer. Computed values can be replaced by IVM views
-//!   for frequently-updated derivations.
-//! - **Buffer dirty tracking** (ftui-render): RenderView output deltas
-//!   are translated to Buffer dirty_rows/dirty_spans for the presenter.
-//! - **BatchScope** (ftui-runtime/reactive): Batched observable mutations
-//!   naturally align with IVM epochs — one batch = one propagation pass.
+//! - **DepGraph** (ftui-layout): would provide layout-level dirty tracking as
+//!   the backing store for a `LayoutView`. There is no `LayoutView`.
+//! - **Observable/Computed** (ftui-runtime/reactive): would feed the IVM input
+//!   layer, letting IVM views replace frequently-updated `Computed` values.
+//! - **Buffer dirty tracking** (ftui-render): a `RenderView`'s output deltas
+//!   would translate to `Buffer` dirty_rows/dirty_spans for the presenter.
+//!   There is no `RenderView`.
+//! - **BatchScope** (ftui-runtime/reactive): one batch would align with one
+//!   propagation epoch. There are no epochs to align with.
 
 use std::fmt;
 use std::hash::{Hash, Hasher};

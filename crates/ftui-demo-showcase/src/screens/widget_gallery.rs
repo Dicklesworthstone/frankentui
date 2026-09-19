@@ -48,7 +48,12 @@ use ftui_widgets::notification_queue::{
 use ftui_widgets::paginator::{Paginator, PaginatorMode};
 use ftui_widgets::panel::Panel;
 use ftui_widgets::paragraph::Paragraph;
+use ftui_widgets::popover::{Placement, Popover};
+use ftui_widgets::pretty::Pretty;
 use ftui_widgets::progress::{MiniBar, MiniBarColors, ProgressBar};
+use ftui_widgets::receipt_verifier_panel::{
+    CheckEntry, CheckOutcome, LayerVerdict, ReceiptVerdict, ReceiptVerifierPanel,
+};
 use ftui_widgets::rule::Rule;
 use ftui_widgets::scrollbar::{
     SCROLLBAR_PART_TRACK, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -73,7 +78,7 @@ use crate::theme;
 use crate::theme::{BadgeSpec, PriorityBadge, StatusBadge};
 
 /// Number of gallery sections.
-const SECTION_COUNT: usize = 9;
+const SECTION_COUNT: usize = 10;
 
 /// Section names.
 const SECTION_NAMES: [&str; SECTION_COUNT] = [
@@ -86,6 +91,7 @@ const SECTION_NAMES: [&str; SECTION_COUNT] = [
     "G: Utility",
     "H: Advanced",
     "I: Diagnostics",
+    "J: Verification",
 ];
 
 const VIRTUALIZED_SCROLLBAR_HIT_ID: HitId = HitId::new(0x1777);
@@ -484,6 +490,7 @@ impl WidgetGallery {
             6 => self.render_utility_widgets(frame, area),
             7 => self.render_advanced_widgets(frame, area),
             8 => self.render_diagnostics(frame, area),
+            9 => self.render_verification(frame, area),
             _ => {}
         }
     }
@@ -2321,6 +2328,113 @@ impl WidgetGallery {
             boundary.render(bottom_chunks[1], frame, &mut eb_state);
         }
     }
+
+    /// Widgets that were implemented and tested but reached by nothing: the
+    /// module-reachability gate listed `pretty`, `popover` and
+    /// `receipt_verifier_panel` as having no production consumer, which for a
+    /// widget means no proof it renders at all. A gallery entry is the
+    /// cheapest honest fix — it exercises them and gives each a snapshot.
+    fn render_verification(&self, frame: &mut Frame, area: Rect) {
+        tracing::debug!(
+            target: crate::app::TARGET_WIDGET_GALLERY,
+            section = 9,
+            "render_verification"
+        );
+
+        let rows = Flex::vertical()
+            .constraints([Constraint::Percentage(60.0), Constraint::Percentage(40.0)])
+            .split(area);
+        if rows.len() < 2 {
+            return;
+        }
+
+        // ── ReceiptVerifierPanel ────────────────────────────────────────
+        // `skeleton` is the widget's own documented preview constructor.
+        // `skeleton` leaves every layer defaulted to failing, so a verdict of
+        // "passed" renders VERIFIED above three FAIL rows. Fill the layers in
+        // so the sample is internally consistent.
+        let layer = |check: &str, detail: &str| LayerVerdict {
+            passed: true,
+            error_code: None,
+            checks: vec![CheckEntry {
+                check: check.to_owned(),
+                outcome: CheckOutcome::Pass,
+                error_code: None,
+                detail: detail.to_owned(),
+            }],
+        };
+
+        let mut verdict = ReceiptVerdict::skeleton("receipt-0f3a91", true);
+        verdict.trace_id = "trace-7c21".to_owned();
+        verdict.decision_id = "decision-44".to_owned();
+        verdict.policy_id = "policy-diff-strategy".to_owned();
+        verdict.signature = layer("ed25519", "key 4f2b, signed 12s ago");
+        verdict.transparency = layer("inclusion-proof", "log index 918244");
+        verdict.attestation = layer("quote", "measurement matches policy");
+        verdict
+            .warnings
+            .push("transparency log lag 4s (within tolerance)".to_owned());
+        ReceiptVerifierPanel::new(&verdict).render(rows[0], frame);
+
+        let bottom = Flex::horizontal()
+            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+            .split(rows[1]);
+        if bottom.len() < 2 {
+            return;
+        }
+
+        // ── Pretty ──────────────────────────────────────────────────────
+        // Pretty renders any `Debug` value, so give it something whose shape
+        // is worth seeing indented rather than a scalar.
+        let pretty_block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Pretty (Debug) ");
+        let pretty_inner = pretty_block.inner(bottom[0]);
+        pretty_block.render(bottom[0], frame);
+        let sample = SampleDecision {
+            strategy: "DirtyRows",
+            dirty_rows: 4,
+            total_rows: 40,
+            bayesian: true,
+        };
+        Pretty::new(&sample).render(pretty_inner, frame);
+
+        // ── Popover ─────────────────────────────────────────────────────
+        // Popover has no Widget impl: it renders through `render_with`, so the
+        // caller draws the content into the resolved area. Anchored near the
+        // bottom edge on purpose, so auto-flip is what puts it on screen.
+        let anchor = Rect::new(
+            bottom[1].x.saturating_add(2),
+            bottom[1]
+                .y
+                .saturating_add(bottom[1].height.saturating_sub(2)),
+            10,
+            1,
+        );
+        Paragraph::new("anchor ▲")
+            .style(theme::muted())
+            .render(anchor, frame);
+        Popover::new(anchor, Placement::BelowCentered)
+            .width(24)
+            .max_height(4)
+            .with_border(true)
+            .auto_flip(true)
+            .render_with(bottom[1], frame, |area, frame| {
+                Paragraph::new("Popover: flipped above\nthe anchor automatically")
+                    .wrap(WrapMode::Word)
+                    .render(area, frame);
+            });
+    }
+}
+
+/// A small `Debug` value for the gallery's `Pretty` sample.
+#[derive(Debug)]
+struct SampleDecision {
+    strategy: &'static str,
+    dirty_rows: u16,
+    total_rows: u16,
+    bayesian: bool,
 }
 
 #[cfg(test)]

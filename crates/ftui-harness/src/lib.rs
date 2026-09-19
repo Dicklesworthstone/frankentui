@@ -67,6 +67,9 @@ pub mod perf_rollout_drills;
 pub mod presenter_equivalence;
 pub mod promotion_scorecard;
 pub mod proof_oracle;
+/// Shared proptest strategies. Absent on wasm32, where proptest is not a
+/// dependency — see the target-specific block in `Cargo.toml`.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod proptest_support;
 pub mod render_certificate;
 pub mod render_gauntlet;

@@ -898,8 +898,8 @@ fn integration_locale_cycle_wraps() {
 
     let initial = render_lines(&screen, 120, 40);
 
-    // Press Right 6 times (for 6 locales) should wrap back to initial
-    for _ in 0..6 {
+    // Press Right 7 times (for 7 locales) should wrap back to initial
+    for _ in 0..7 {
         let _ = screen.update(&key_press(KeyCode::Right));
     }
     let after_cycle = render_lines(&screen, 120, 40);
@@ -1378,4 +1378,305 @@ fn locale_context_triple_override_stack() {
     assert_eq!(ctx.current_locale(), "en");
 
     log_jsonl("locale_ctx", "triple_stack", true, "");
+}
+
+// =============================================================================
+// 9. Locale-Aware Formatting (Numbers, Currency, Dates) (bd-g00-root-epic-ewths.34.5)
+// =============================================================================
+
+#[test]
+fn formatting_numbers_all_seven_locales() {
+    use ftui_runtime::locale::{LocaleContext, NumberFormat};
+
+    let cases = [
+        ("en", "1,234,567", "1,234.56"),
+        ("de", "1.234.567", "1.234,56"),
+        ("fr", "1\u{202f}234\u{202f}567", "1\u{202f}234,56"),
+        ("es", "1.234.567", "1.234,56"),
+        ("ru", "1\u{00a0}234\u{00a0}567", "1\u{00a0}234,56"),
+        ("ar", "1,234,567", "1,234.56"),
+        ("ja", "1,234,567", "1,234.56"),
+    ];
+
+    let float_cfg = NumberFormat::new().fraction_digits(2, 2);
+
+    for (loc, expected_int, expected_float) in cases {
+        let ctx = LocaleContext::new(loc);
+        let formatted_int = ctx.format_int(1_234_567).expect("int format");
+        assert_eq!(
+            formatted_int, expected_int,
+            "mismatch for locale {loc} integer"
+        );
+
+        let fmt = ctx
+            .number_formatter_with_config(float_cfg)
+            .expect("formatter");
+        let formatted_float = fmt.format_float(1234.56).expect("float format");
+        assert_eq!(
+            formatted_float, expected_float,
+            "mismatch for locale {loc} float"
+        );
+    }
+
+    log_jsonl("formatting", "numbers_7_locales", true, "all 7 passed");
+}
+
+#[test]
+fn formatting_currencies_all_seven_locales() {
+    use ftui_runtime::locale::{LocaleContext, NumberFormat, NumberStyle};
+
+    let cases = [
+        ("en", "$1,234.56"),
+        ("de", "1.234,56 €"),
+        ("fr", "1\u{202f}234,56 €"),
+        ("es", "1.234,56 €"),
+        ("ru", "1\u{00a0}234,56 ₽"),
+        ("ar", "1,234.56 ر.س"),
+        ("ja", "￥1,234.56"),
+    ];
+
+    let cur_cfg = NumberFormat::new()
+        .style(NumberStyle::Currency {
+            code: None,
+            symbol: None,
+        })
+        .fraction_digits(2, 2);
+
+    for (loc, expected_cur) in cases {
+        let ctx = LocaleContext::new(loc);
+        let fmt = ctx.number_formatter_with_config(cur_cfg).expect("cur fmt");
+        let result = fmt.format_float(1234.56).expect("float cur");
+        assert_eq!(result, expected_cur, "mismatch for locale {loc} currency");
+    }
+
+    log_jsonl("formatting", "currencies_7_locales", true, "");
+}
+
+#[test]
+fn formatting_dates_and_times_all_seven_locales() {
+    use ftui_runtime::locale::{
+        Date, DateFormatStyle, DateTime, LocaleContext, Time, TimeFormatStyle,
+    };
+
+    let date = Date::from_ymd(2026, 9, 19).expect("date");
+    let time = Time::from_hms(14, 30, 0).expect("time");
+    let dt = DateTime::new(date, time);
+
+    let cases = [
+        ("en", "09/19/2026", "2:30 PM", "09/19/2026, 2:30 PM"),
+        ("de", "19.09.2026", "14:30", "19.09.2026, 14:30"),
+        ("fr", "19/09/2026", "14:30", "19/09/2026 à 14:30"),
+        ("es", "19/09/2026", "14:30", "19/09/2026, 14:30"),
+        ("ru", "19.09.2026", "14:30", "19.09.2026, 14:30"),
+        ("ar", "19/09/2026", "2:30 م", "19/09/2026 في 2:30 م"),
+        ("ja", "2026/09/19", "14:30", "2026/09/19 14:30"),
+    ];
+
+    for (loc, exp_date, exp_time, exp_dt) in cases {
+        let ctx = LocaleContext::new(loc);
+        let d_str = ctx
+            .format_date(&date, DateFormatStyle::Short)
+            .expect("date");
+        assert_eq!(d_str, exp_date, "date mismatch for {loc}");
+
+        let dt_fmt = ctx.datetime_formatter().expect("dt fmt");
+        let t_str = dt_fmt.format_time(&time, TimeFormatStyle::Short);
+        assert_eq!(t_str, exp_time, "time mismatch for {loc}");
+
+        let dt_str = ctx
+            .format_datetime(&dt, DateFormatStyle::Short, TimeFormatStyle::Short)
+            .expect("datetime");
+        assert_eq!(dt_str, exp_dt, "datetime mismatch for {loc}");
+    }
+
+    log_jsonl("formatting", "dates_times_7_locales", true, "");
+}
+
+#[test]
+fn formatting_dynamic_locale_switch_invalidation() {
+    use ftui_runtime::locale::{Date, DateFormatStyle, LocaleContext};
+
+    let ctx = LocaleContext::new("en");
+    assert_eq!(ctx.format_int(1_234_567).unwrap(), "1,234,567");
+
+    // Switching locale immediately reflects in formatted output
+    ctx.set_locale("de");
+    assert_eq!(ctx.format_int(1_234_567).unwrap(), "1.234.567");
+
+    let date = Date::from_ymd(2026, 9, 19).unwrap();
+    assert_eq!(
+        ctx.format_date(&date, DateFormatStyle::Short).unwrap(),
+        "19.09.2026"
+    );
+
+    // Scoped override switches formatting temporarily
+    {
+        let _guard = ctx.push_override("ja");
+        assert_eq!(
+            ctx.format_date(&date, DateFormatStyle::Short).unwrap(),
+            "2026/09/19"
+        );
+    }
+
+    // Dropping override restores previous locale formatting
+    assert_eq!(
+        ctx.format_date(&date, DateFormatStyle::Short).unwrap(),
+        "19.09.2026"
+    );
+
+    log_jsonl("formatting", "dynamic_switch_invalidation", true, "");
+}
+
+#[test]
+fn formatting_concurrent_independent_contexts() {
+    use ftui_runtime::locale::{Date, DateFormatStyle, LocaleContext};
+
+    let date = Date::from_ymd(2026, 9, 19).unwrap();
+    let ctx_a = LocaleContext::new("en");
+    let ctx_b = LocaleContext::new("ja");
+
+    assert_eq!(
+        ctx_a.format_date(&date, DateFormatStyle::Short).unwrap(),
+        "09/19/2026"
+    );
+    assert_eq!(
+        ctx_b.format_date(&date, DateFormatStyle::Short).unwrap(),
+        "2026/09/19"
+    );
+
+    ctx_a.set_locale("de");
+    assert_eq!(
+        ctx_a.format_date(&date, DateFormatStyle::Short).unwrap(),
+        "19.09.2026"
+    );
+    assert_eq!(
+        ctx_b.format_date(&date, DateFormatStyle::Short).unwrap(),
+        "2026/09/19",
+        "ctx_b unaffected by ctx_a mutation"
+    );
+
+    log_jsonl("formatting", "concurrent_independent_contexts", true, "");
+}
+
+#[test]
+fn formatting_boundary_and_error_handling() {
+    use ftui_runtime::locale::{Date, DateTimeError, FormattingError, LocaleContext, NumberFormat};
+
+    let ctx = LocaleContext::new("en");
+
+    // Non-finite float returns FormattingError::NonFinite
+    assert!(matches!(
+        ctx.format_number(f64::NAN),
+        Err(FormattingError::NonFinite(_))
+    ));
+    assert!(matches!(
+        ctx.format_number(f64::INFINITY),
+        Err(FormattingError::NonFinite(_))
+    ));
+    assert!(matches!(
+        ctx.format_number(f64::NEG_INFINITY),
+        Err(FormattingError::NonFinite(_))
+    ));
+
+    // Permissive config formats non-finite values to symbols
+    let permissive = ctx
+        .number_formatter_with_config(NumberFormat::new().allow_non_finite(true))
+        .unwrap();
+    assert_eq!(permissive.format_float(f64::NAN).unwrap(), "NaN");
+    assert_eq!(permissive.format_float(f64::INFINITY).unwrap(), "∞");
+    assert_eq!(permissive.format_float(f64::NEG_INFINITY).unwrap(), "-∞");
+
+    // Calendar validation: 2024 is leap year, 2023 is not
+    assert!(Date::from_ymd(2024, 2, 29).is_ok());
+    assert_eq!(
+        Date::from_ymd(2023, 2, 29),
+        Err(DateTimeError::InvalidDay {
+            year: 2023,
+            month: 2,
+            day: 29,
+            max_days: 28,
+        })
+    );
+    assert_eq!(
+        Date::from_ymd(2026, 13, 1),
+        Err(DateTimeError::InvalidMonth(13))
+    );
+
+    // Unsupported locale produces explicit error
+    let ctx_bad = LocaleContext::new("xx-unsupported");
+    assert!(matches!(
+        ctx_bad.format_int(123),
+        Err(FormattingError::UnsupportedLocale(_))
+    ));
+
+    log_jsonl("formatting", "boundary_and_error_handling", true, "");
+}
+
+#[test]
+fn formatting_showcase_consumer_path() {
+    use ftui_demo_showcase::screens::i18n_demo::I18nDemo;
+    use ftui_runtime::locale::{Date, DateFormatStyle};
+
+    let mut screen = I18nDemo::new();
+
+    // 1. Consumer path via helper methods
+    let initial_int = screen.format_sample_int(1_234_567).expect("sample int");
+    assert_eq!(initial_int, "1,234,567");
+
+    let initial_cur = screen.format_sample_currency(1234.56).expect("sample cur");
+    assert_eq!(initial_cur, "$1,234.56");
+
+    let date = Date::from_ymd(2026, 9, 19).unwrap();
+    let initial_date = screen
+        .format_sample_date(&date, DateFormatStyle::Long)
+        .expect("sample date");
+    assert_eq!(initial_date, "September 19, 2026");
+
+    // 2. Render at 120x40 to check UI presentation of Locale Formatting card
+    let lines_en = render_lines(&screen, 120, 40);
+    let has_fmt_card = lines_en.iter().any(|l| l.contains("Locale Formatting"));
+    let has_cldr_header = lines_en
+        .iter()
+        .any(|l| l.contains("CLDR v45.0 Pinned Formatting"));
+    let has_fmt_num = lines_en.iter().any(|l| l.contains("1,234,567"));
+    assert!(
+        has_fmt_card,
+        "120x40 overview should render Locale Formatting card"
+    );
+    assert!(has_cldr_header, "overview should render CLDR v45.0 header");
+    assert!(has_fmt_num, "overview should render formatted integer");
+
+    // 3. Cycle locale via keyboard event (Right key)
+    // English -> Spanish
+    let _ = screen.update(&key_press(KeyCode::Right));
+    let es_int = screen.format_sample_int(1_234_567).expect("es int");
+    assert_eq!(es_int, "1.234.567");
+    let es_cur = screen.format_sample_currency(1234.56).expect("es cur");
+    assert_eq!(es_cur, "1.234,56 €");
+
+    let lines_es = render_lines(&screen, 120, 40);
+    let has_es_num = lines_es.iter().any(|l| l.contains("1.234.567"));
+    assert!(
+        has_es_num,
+        "120x40 overview in Spanish should render Spanish formatted integer"
+    );
+
+    // 4. Cycle through all locales and ensure formatting works for each
+    // es -> fr -> ru -> ar -> de -> ja -> en
+    for _ in 0..6 {
+        let _ = screen.update(&key_press(KeyCode::Right));
+        let num = screen.format_sample_int(1000).expect("cycle num");
+        assert!(!num.is_empty());
+    }
+
+    // Now back at English
+    let cycled_int = screen.format_sample_int(1_234_567).expect("cycled int");
+    assert_eq!(cycled_int, "1,234,567");
+
+    log_jsonl(
+        "formatting",
+        "showcase_consumer_path",
+        true,
+        "full journey verified",
+    );
 }

@@ -32,6 +32,7 @@ ftui-harness FTUI_HARNESS_RENDER_TRACE_SEED Render-trace capture fixture seed.
 ftui-harness FTUI_HARNESS_RENDER_TRACE_MODULE Render-trace capture module label.
 ftui-harness FTUI_HARNESS_RENDER_TRACE_FLUSH Flush each trace event for synchronized fixture clocks.
 ftui-harness FTUI_HARNESS_RENDER_TRACE_START_TS_MS Include trace start time in diagnostic metadata.
+ftui-harness FTUI_HARNESS_STDERR_FILE Append tracing output to a file instead of the terminal, so diagnostics do not corrupt the TUI.
 ftui-demo-showcase FTUI_DEMO_VFX_HARNESS Enable the deterministic VFX-only fixture.
 ftui-demo-showcase FTUI_DEMO_VFX_EFFECT Lock the VFX fixture effect.
 ftui-demo-showcase FTUI_DEMO_VFX_TICK_MS Lock VFX fixture tick cadence.

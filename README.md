@@ -1104,7 +1104,7 @@ settings can enable sampling between forced intervals.
 
 ### E-Process: Anytime-Valid Testing
 
-All statistical thresholds use **e-processes** (wealth-based sequential tests):
+Several statistical thresholds use **e-processes** (wealth-based sequential tests):
 
 ```
 Wealth process:
@@ -1119,14 +1119,27 @@ This holds at ANY stopping time, with no peeking penalty.
 ```
 
 **Applications in FrankenTUI:**
-- Budget degradation decisions
+- Budget degradation decisions (`ftui_render::budget`'s `EProcessState`, on the render path)
 - Flake detection in tests (experimental)
 - Allocation budget alerts (experimental)
-- Conformal prediction thresholds
+- Conformal *alert* threshold calibration (experimental `conformal_alert`)
+
+Not the Mondrian conformal frame-time gate described below, which is the
+conformal path that is on by default: it calibrates from residual quantiles
+and carries no e-process.
 
 ### Conformal Alerting
 
-Budget and performance alerts use **distribution-free conformal prediction**:
+**Status: experimental** (see [Experimental modules](#experimental-modules))
+
+**Where it runs: nowhere in production.** This describes `ftui-runtime`'s
+`conformal_alert`, whose only consumers are other experimental modules
+(`timeline_aggregator`, `alpha_investing`, `resize_sla`) and a proptest — a
+quarantined cluster wired to itself, not to the runtime. The conformal path that
+is on by default is the Mondrian frame-time gate above, which has no e-process
+layer.
+
+Budget and performance alerts in that module use **distribution-free conformal prediction**:
 
 ```
 Nonconformity score:
@@ -1541,7 +1554,7 @@ native OSC 52 commands do not grant browser clipboard permissions.
 
 ### BiDi & Shaping
 
-- **BiDi** (`bidi.rs`, 1,100+ lines): Unicode Bidirectional Algorithm for mixed LTR/RTL text
+- **BiDi** (`bidi.rs`, 1,146 lines): Unicode Bidirectional Algorithm for mixed LTR/RTL text (feature `bidi`, used by `Paragraph` and the editors)
 - **Shaping** (`shaping.rs`, 1,500+ lines): script/run segmentation for cluster-aware rendering
 - **Normalization** (`normalization.rs`): NFC/NFD Unicode normalization for consistent comparison
 
@@ -1607,6 +1620,8 @@ Evidence Emission
 
 The `cost_model` module (1,800 lines) provides closed-form cost models for three subsystems:
 
+**Where it runs: nowhere.** No crate imports `ftui_runtime::cost_model`; the formulas below are a library you can call, not a model the runtime consults when sizing caches or scheduling. (`ftui-render/src/presenter.rs` has a private `mod cost_model` for ANSI cursor-move costs — same name, unrelated code.)
+
 ### Cache Cost Model
 
 ```
@@ -1650,7 +1665,7 @@ Applies to: ANSI emission, change run coalescing, event drain bursts
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-E2E timing tests use an **e-process** to detect flaky regressions without inflating false positives across the hundreds of frames tested:
+The design is for E2E timing tests to use an **e-process** to detect flaky regressions without inflating false positives across the hundreds of frames tested:
 
 ```
 Sub-Gaussian e-value:
@@ -1663,6 +1678,8 @@ Reject H₀ when E_t ≥ 1/α, valid at ANY stopping time.
 ```
 
 **Why this matters:** traditional significance tests become unreliable when you check p-values after every frame (the "peeking problem"). E-processes eliminate this entirely.
+
+**Where it runs: nowhere.** No E2E test uses `flake_detector` — no crate imports it, and its only exercisers are a proptest over the module itself and the quarantine compile check. The detector is implemented and tested; nothing feeds it E2E timings.
 
 ### Alpha-Investing (Sequential FDR Control)
 
@@ -1684,7 +1701,9 @@ FDR guarantee:
   E[FDP] ≤ initial_wealth / (initial_wealth + reward_total)
 ```
 
-**Result:** FrankenTUI can safely run dozens of simultaneous statistical monitors (BOCPD, CUSUM, conformal, e-process) without false-alarm inflation.
+**Result:** the wealth process lets dozens of simultaneous statistical monitors run without false-alarm inflation.
+
+**Where it runs: nowhere.** No crate imports `ftui_runtime::alpha_investing`, so the monitors that *are* on by default — BOCPD and the Mondrian conformal frame-time gate — do not spend from a shared alpha budget. They are two monitors, not dozens, which is why this has not bitten; the accounting exists for a future where it would.
 
 ---
 
@@ -1708,10 +1727,12 @@ Truncated at depth K:
 - **Universality**: signatures separate paths; different paths always have different signatures
 - **Efficient computation**: Chen's identity enables O(nK²d²) incremental updates
 
-**Applications in FrankenTUI:**
+**Intended applications in FrankenTUI** — none of these are wired; no crate imports `ftui_runtime::rough_path`:
 - **Workload characterization**: frame time series → signature → anomaly detection
 - **Trace comparison**: compare two execution traces without aligning timestamps
 - **Regression detection**: signature distance between baseline and candidate runs
+
+**Where it runs: nowhere.** The signature computation is implemented and unit-tested; nothing feeds it a frame time series.
 
 ---
 
@@ -2088,10 +2109,14 @@ the scaled gain with cost, subject to its minimum and maximum sampling intervals
 
 ## Experimental modules
 
-These modules compile only with `--features experimental` on the crate that owns them. They are research code with unit tests and no production consumer; APIs may change or be removed without notice.
+These modules compile only with `--features experimental` on the crate that owns them. APIs may change or be removed without notice.
+
+**Read `experimental` here as "quarantined", not "unstable but working".** These are research code with unit tests and **no production consumer**: nothing in the render path, the runtime loop, or the widget library constructs any of them. The workspace's own compile check is named `all_quarantined_modules_are_nameable` (`ftui-runtime/tests/experimental_feature_matrix.rs`) and does exactly what the name says — it binds each type to `None` to prove the module still compiles. Enabling the feature makes the code available to *you*; it does not switch anything on inside FrankenTUI.
+
+Sections below that describe an experimental module each carry a **Where it runs** line, so you do not have to cross-reference this table to find out whether a feature is connected. Checked 2026-09-19 by resolving `use ftui_runtime::<module>` across every crate's `src/`. (One trap if you check this yourself: `ftui-render/src/presenter.rs` declares its own private `mod cost_model` for ANSI cursor-move costs, which is unrelated to `ftui_runtime::cost_model` and makes a bare grep for `cost_model::` look like a hit.)
 
 ```toml
-ftui-runtime = { version = "0.8", features = ["experimental"] }
+ftui-runtime = { version = "0.9", features = ["experimental"] }
 ```
 
 | Crate | Module | What it is | Status |
@@ -2604,12 +2629,13 @@ The `accessibility_panel` demo screen mirrors the live tree (size, leading dump 
 
 The `ftui-i18n` crate provides locale-aware rendering:
 
-- **Locale context** propagated through the runtime (`ProgramConfig::with_locale("fr")`)
-- **Number/date formatting** respecting locale conventions
-- **Text direction** (LTR/RTL) integrated with the BiDi module in `ftui-text`
-- **String table** support for message translation
+- **Locale context** propagated through the runtime (`ProgramConfig::with_locale("fr")`, `LocaleContext::direction()`)
+- **String catalog** with fallback chains and CLDR-style plural rules (`StringCatalog`, `PluralRule`)
+- **Text direction** from locale with per-line UAX#9 reordering in `Paragraph`/`TextInput`/`TextArea` (feature `bidi`, on by default in `ftui`)
 
-The `i18n_demo` screen demonstrates live locale switching between English, French, German, Japanese, and Arabic.
+- **Number & date formatting** backed by pinned Unicode CLDR v45.0 data for 7 declared locales (`NumberFormatter`, `DateTimeFormatter`, `format_number`, `format_date`)
+
+The `i18n_demo` screen switches live between English, Spanish, French, German, Russian, Arabic and Japanese; Arabic renders right-to-left.
 
 ---
 
@@ -2721,26 +2747,17 @@ Scroll-region without synchronized output: the fast path is the same DECSTBM reg
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-Rather than recomputing layouts, styled text, and visibility flags from scratch every frame, FrankenTUI can propagate *deltas* through a DAG of view operators:
+The idea is to stop recomputing layouts, styled text, and visibility flags from scratch every frame, and instead propagate *deltas* through a DAG of view operators — the technique materialized-view databases use (Materialize, Noria), adapted for frame-rate rendering.
 
-```
-Observable<Theme>   Observable<Content>   Observable<Constraint>
-       │                    │                      │
-       ▼                    ▼                      ▼
-   ┌────────┐         ┌─────────┐           ┌───────────┐
-   │StyleMap │         │ TextWrap │           │ FlexSolve │
-   └────┬───┘         └────┬────┘           └─────┬─────┘
-        │                  │                       │
-        └──────────┬───────┘───────────────────────┘
-                   ▼
-            ┌────────────┐
-            │ RenderPlan │  ← only dirty nodes recomputed
-            └────────────┘
-```
+**Where it runs: nowhere. There is no propagation engine.** `ftui_runtime::ivm` has the pieces such an engine would need and not the engine itself, verified 2026-09-19:
 
-When only the theme changes, the style map operator emits deltas that flow to `RenderPlan` without re-running text wrapping or constraint solving. When only a single text cell changes, only that cell's wrapping is recomputed.
+- Nothing walks the DAG feeding one view's output into the next. The module's only `use` statements are `std::fmt` and `std::hash`, so no delta can reach a `Buffer` or the presenter.
+- An earlier version of this section showed a diagram with `StyleMap`, `TextWrap`, `FlexSolve` and `RenderPlan` operators, and said theme-change deltas flow to `RenderPlan` without re-running wrapping or constraint solving. **None of those four types exist**, and neither do the `LayoutView`/`RenderView` that the module's own docs named — the two descriptions did not even agree with each other.
+- `FRANKENTUI_FULL_RECOMPUTE=1` is read by `IvmConfig::from_env`, but nothing reads the resulting flag, so it changes no behaviour.
 
-This is the same technique used by materialized-view databases (e.g., Materialize, Noria), adapted for frame-rate rendering.
+What does exist, and is tested: the signed-tuple delta algebra (`(key, weight, logical_time)` with cancellation), a DAG with topological ordering and cycle detection, a fallback-policy predicate, and two `IncrementalView` implementations (`StyleResolutionView`, `FilteredListView`). Useful groundwork; not something you can turn on.
+
+Before anyone builds the engine, note that the render cost surface measured on 2026-09-19 found `buffer_diff` to be the **cheapest** pipeline stage at 9–18% of the frame, while `cell_mutation` and `presenter_emit` dominate ([docs/perf/cost_surface_stage_dominance_2026-09-19.md](docs/perf/cost_surface_stage_dominance_2026-09-19.md)). An incremental layer that avoids recomputation has to beat simply doing the work — which is the measurement that stopped the e-graph. Tracked in `bd-lksq7`.
 
 ---
 
@@ -2748,26 +2765,26 @@ This is the same technique used by materialized-view databases (e.g., Materializ
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-Frame-budget admissibility is checked using a **sum-of-squares (SOS) polynomial barrier certificate**, precomputed offline via semidefinite programming:
+Frame-budget admissibility is checked against a **polynomial barrier certificate** in the sum-of-squares style:
 
 ```
 State space:
   x₁ = budget_remaining ∈ [0, 1]    (fraction of frame budget left)
-  x₂ = workload_estimate ∈ [0, 1]   (estimated render cost)
+  x₂ = change_rate ∈ [0, 1]         (estimated render cost)
 
 Barrier certificate B(x₁, x₂):
-  B(x₁, x₂) = Σ cᵢⱼ x₁ⁱ x₂ʲ     (polynomial, degree ≤ 6)
+  B(x₁, x₂) = Σ cᵢⱼ x₁ⁱ x₂ʲ     (polynomial, degree 4, 15 terms)
 
 Safety:
-  B(x) ≤ 0  ⟹  state is admissible (safe to render at full fidelity)
-  B(x) > 0  ⟹  state is in degradation region (shed visual fidelity)
-
-Guarantee:
-  B is a valid barrier certificate iff B(x) ≥ 0 on the unsafe set
-  AND dB/dt ≤ 0 on the boundary (Lyapunov-like decrease condition)
+  B(x) > 0   ⟹  state is admissible (safe to render at full fidelity)
+  B(x) ≤ 0   ⟹  state is at or beyond the unsafe boundary
 ```
 
-The polynomial coefficients are solved by `scripts/solve_sos_barrier.py` using SOS/SDP relaxation. The Rust evaluator (`sos_barrier.rs`) is 257 lines and runs in constant time per frame with no allocations.
+**Provenance: the coefficients are hand-chosen, not SDP-solved.** `sos_barrier_coeffs.rs` says so itself — they were written by hand to satisfy eight verification points, and **no `scripts/solve_sos_barrier.py` exists in this repository or its history**. An earlier version of this section claimed an SOS/SDP relaxation produced them and named that script; the 2026-09-01 reality check found that claim false, the source header was corrected, and this section was not. If a solver is ever added, regenerate the coefficients from it and record the solver, its inputs and the run date in that file.
+
+So what the evaluator gives you is a *polynomial admissibility test whose shape was chosen by hand*, not a certificate carrying an SOS proof of the Lyapunov-like decrease condition.
+
+**Where it runs: nowhere.** No crate imports `ftui_runtime::sos_barrier`, so no frame's budget is actually checked against the barrier. An earlier correction of this section said the evaluator "runs in constant time per frame with no allocations" — true of the function's complexity, misleading about its use, since nothing calls it per frame or at all. `sos_barrier.rs` is 257 lines, allocation-free and constant-time *when called*, which is the part worth relying on if you call it yourself.
 
 Why SOS instead of a simple threshold? A polynomial barrier can encode nonlinear safe/unsafe boundaries that accurately reflect the interaction between budget remaining and workload estimate. A flat threshold either triggers too early (wasting visual quality) or too late (missing the deadline).
 
@@ -2818,6 +2835,8 @@ Benefits over a bare `Mutex`:
 - Lock acquisition happens once per batch, not once per operation
 - Natural coalescing: redundant operations (multiple redraws) collapse
 
+**Where it runs: nowhere.** No crate imports `ftui_runtime::flat_combine`, and the runtime's event sources do not post through a combiner. The diagram above describes what the module implements, not how FrankenTUI dispatches operations today.
+
 ---
 
 ## Bidirectional Lenses
@@ -2850,6 +2869,8 @@ assert_eq!(config.brightness, 50); // other fields untouched
 ```
 
 Lenses compose, so `compose(config_lens, volume_lens)` creates a lens from `AppState` directly to `volume` through an intermediate `Config` struct.
+
+**Where it runs: nowhere.** The module is titled "state-widget binding", but no widget binds through a lens — no crate imports `ftui_runtime::lens`. The laws hold and the example above is compiled by `readme_snippets`; what is missing is anything on the widget side that consumes one.
 
 ---
 
@@ -2947,7 +2968,9 @@ slo.yaml  ──parse──▶  SloSchema
                               (continue)            (enter safe mode)
 ```
 
-When an SLO is breached, the runtime can enter safe mode (reduced rendering, aggressive coalescing) until the error budget recovers.
+When an SLO is breached, safe mode (reduced rendering, aggressive coalescing) is meant to hold until the error budget recovers.
+
+**Where it runs: nowhere.** No crate imports `ftui_runtime::slo`, so nothing feeds it observations and nothing acts on a `BreachResult` — the runtime does not enter safe mode from this path, because no code path reaches it. The parser, the breach check and the error-budget accounting are implemented and covered by tests in `ftui-harness`.
 
 ---
 
@@ -2955,7 +2978,7 @@ When an SLO is breached, the runtime can enter safe mode (reduced rendering, agg
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-Individual render pipeline stages have independent conformal monitors:
+The design gives each render pipeline stage an independent conformal monitor:
 
 ```
 view() → [Layout] → Buffer → [Diff] → Changes → [Present] → ANSI
@@ -2964,9 +2987,11 @@ view() → [Layout] → Buffer → [Diff] → Changes → [Present] → ANSI
       (calibration)   (calibration)   (calibration)
 ```
 
-Each stage maintains its own Mondrian-bucketed residual set, so a regression in layout computation is detected independently from diff or presenter regressions. Buckets are keyed by (screen mode, diff strategy, terminal size) and fall back to coarser groupings when data is sparse.
+Each stage would maintain its own Mondrian-bucketed residual set, so a regression in layout computation is detected independently from diff or presenter regressions. Buckets are keyed by (screen mode, diff strategy, terminal size) and fall back to coarser groupings when data is sparse. The point of the granularity is to identify *which* pipeline stage is responsible for a slowdown rather than just flagging "frame was slow."
 
-This granularity means the runtime can identify *which* pipeline stage is responsible for a slowdown, rather than just flagging "frame was slow."
+**Where it runs: nowhere.** `StagedConformalPredictor` is never constructed outside its own unit tests — no crate imports `ftui_runtime::conformal_stages`, and no stage timing is fed to it, so the runtime cannot currently attribute a slowdown to a stage. The bucketing, calibration and alerting logic are implemented and tested.
+
+Not to be confused with `conformal_predictor`, which **is** on by default in the runtime and monitors whole-frame timing. That one is real; this one is the per-stage version that was never connected.
 
 ---
 

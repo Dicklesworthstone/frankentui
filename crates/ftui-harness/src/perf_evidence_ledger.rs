@@ -7,16 +7,21 @@
 //! performance lane (render, runtime, doctor) feeds this ledger; every
 //! rollout decision consumes it.
 //!
-//! This module deliberately **reuses** the existing artifact vocabularies
-//! instead of inventing a second one:
+//! This module reuses the existing vocabularies rather than inventing a
+//! second one, where they are reusable as types:
 //!
-//! - [`crate::validation_matrix`] — lanes ([`PerfLane`]), levels, and the
-//!   per-lane logging contract (required log fields, event vocabulary,
-//!   mismatch categories);
-//! - [`crate::artifact_manifest`] — artifact classes, retention, redaction,
-//!   and manifest-entry validation;
-//! - [`crate::failure_signatures`] — failure classes, canonical reason
-//!   codes, and replay-friendly log-quality validation.
+//! - [`crate::validation_matrix`] — lanes ([`PerfLane`]) are used directly;
+//! - [`crate::failure_signatures`] — [`parse_reason_code`] validates every
+//!   reason code on every entry, so `reason_codes` really is that vocabulary
+//!   and not a free-form string list.
+//!
+//! [`crate::artifact_manifest`] is the exception, and the gap is worth naming:
+//! [`ArtifactRef`] is a path plus a digest, with no [`crate::artifact_manifest::ArtifactClass`],
+//! retention, or redaction. So a ledger artifact is checked for an immutable
+//! digest but not against the manifest's filename patterns or retention rules,
+//! and the two taxonomies can drift apart without anything noticing. Closing
+//! that means a schema change to [`ArtifactRef`] — an owner decision on
+//! `bd-rw97d`, not something to do in passing.
 //!
 //! # Information architecture
 //!
@@ -46,6 +51,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::failure_signatures::parse_reason_code;
 use crate::validation_matrix::PerfLane;
 
 /// Schema version for the unified performance evidence ledger.
@@ -384,6 +390,8 @@ pub enum DefectKind {
     MissingReplayCommand,
     /// A failing entry carries no reason codes.
     SilentFailure,
+    /// A reason code is not in the `failure_signatures` vocabulary.
+    UnknownReasonCode,
     /// The schema version does not match this contract.
     SchemaMismatch,
     /// A failed verdict's navigation trail is incomplete.
@@ -400,6 +408,7 @@ impl DefectKind {
             Self::MalformedArtifactDigest => "malformed-artifact-digest",
             Self::MissingReplayCommand => "missing-replay-command",
             Self::SilentFailure => "silent-failure",
+            Self::UnknownReasonCode => "unknown-reason-code",
             Self::SchemaMismatch => "schema-mismatch",
             Self::BrokenTrail => "broken-trail",
         }
@@ -520,6 +529,21 @@ impl PerfEvidenceLedger {
                     remediation: "failing evidence must carry failure-signature reason codes"
                         .to_string(),
                 });
+            }
+            // "failure_signatures vocabulary only" is the contract this ledger
+            // states for reason_codes; without this check it was only a comment,
+            // and a typo'd code read as a real one forever.
+            for code in &entry.reason_codes {
+                if parse_reason_code(code).is_none() {
+                    defects.push(LedgerDefect {
+                        entry_id: entry.entry_id.clone(),
+                        kind: DefectKind::UnknownReasonCode,
+                        subject: code.clone(),
+                        remediation: "use a canonical FailureClass reason code from \
+                                      failure_signatures, not a free-form string"
+                            .to_string(),
+                    });
+                }
             }
         }
         defects

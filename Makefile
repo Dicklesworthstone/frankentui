@@ -3,7 +3,7 @@
 # This Makefile provides convenient targets for building and developing FrankenTUI.
 # The reference libraries are automatically synchronized before builds.
 
-.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability
+.PHONY: all build check test clean sync-refs setup help clippy fmt-check reachability claims
 
 # Default target
 all: build
@@ -44,6 +44,14 @@ fmt-check:
 reachability:
 	@python3 scripts/check_module_reachability.py --quiet --json target/module-reachability.json
 
+# Fail when a README section marked "Status: experimental" does not say where
+# its module runs, or when a quarantined module gains a production consumer
+# while the README still says it has none. On 2026-09-19 all ten such sections
+# described modules no crate imports, in working present tense.
+claims:
+	@python3 scripts/check_readme_claims.py --schema-check
+	@python3 scripts/check_readme_claims.py --experimental-check
+
 # Clean build artifacts
 clean:
 	@if [ -f Cargo.toml ]; then cargo clean; fi
@@ -60,5 +68,6 @@ help:
 	@echo "  make clippy     - Run clippy lints"
 	@echo "  make fmt-check  - Check formatting"
 	@echo "  make reachability - Fail on pub modules nothing references"
+	@echo "  make claims     - Validate the claims ledger and experimental sections"
 	@echo "  make clean      - Clean build artifacts"
 	@echo "  make help       - Show this help"

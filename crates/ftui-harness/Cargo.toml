@@ -24,8 +24,8 @@ workspace = true
 
 [dependencies]
 ftui-render = { path = "../ftui-render", version = "0.9.0", features = ["tracing"] }
-ftui-core = { path = "../ftui-core", version = "0.9.0", features = ["crossterm"] }
-ftui-runtime = { path = "../ftui-runtime", version = "0.9.0", features = ["crossterm-compat"] }
+ftui-core = { path = "../ftui-core", version = "0.9.0" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.9.0" }
 ftui-widgets = { path = "../ftui-widgets", version = "0.9.0" }
 ftui-style = { path = "../ftui-style", version = "0.9.0" }
 ftui-text = { path = "../ftui-text", version = "0.9.0", features = ["markup"] }
@@ -35,8 +35,27 @@ portable-pty = { version = "0.9.0", optional = true }
 serde_json = "1.0.151"
 blake3 = "1.6"
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["registry"] }
+tracing-subscriber = { version = "0.3.20", features = ["registry", "env-filter", "fmt"] }
+
+# Not for wasm32. proptest's default features include `fork`, which pulls
+# rusty-fork -> wait-timeout, and wait-timeout has no wasm32 implementation:
+# its `imp` module is cfg'd for unix and windows only, so the target fails to
+# build with "cannot find module or crate `imp`". ftui-harness is a normal
+# dependency of ftui-demo-showcase, which ftui-showcase-wasm builds, so that
+# error reaches the browser demo. Property-test strategies mean nothing in a
+# wasm bundle, so the dependency and the module it feeds are simply absent
+# there; native builds are unaffected, features and all.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 proptest = "1.7.0"
+# `crossterm` / `crossterm-compat` move here for the same reason. ftui-core
+# excludes its real `terminal_session` on wasm32 whatever the feature says, and
+# leaves a stub exposing only `terminal_output_lock`, while ftui-runtime gates
+# its `SessionOptions`/`TerminalSession` import on `crossterm-compat` alone.
+# Enabling that feature from here turned the mismatch into a build error the
+# moment ftui-demo-showcase started depending on this crate at runtime, even
+# though ftui-showcase-wasm deliberately avoids both features itself.
+ftui-core = { path = "../ftui-core", version = "0.9.0", features = ["crossterm"] }
+ftui-runtime = { path = "../ftui-runtime", version = "0.9.0", features = ["crossterm-compat"] }
 
 [dev-dependencies]
 # Path-only, deliberately without a `version`: `ftui` depends on `ftui-harness`,

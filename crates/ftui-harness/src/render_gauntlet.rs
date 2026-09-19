@@ -6,11 +6,17 @@
 //! must pass this gauntlet before graduating to production. The gauntlet integrates:
 //!
 //! - **Fixture suite** (`fixture_suite`): canonical, challenge, and negative-control workloads
+//! - **Fixture runner** (`fixture_runner`): the measured execution of each fixture
 //! - **Render certificates** (`render_certificate`): skip-safety verification
-//! - **Presenter equivalence** (`presenter_equivalence`): ANSI output identity checks
-//! - **Layout reuse** (`layout_reuse`): cache correctness verification
-//! - **Cost surface** (`cost_surface`): stage-level regression detection
+//! - **Cost surface** (`cost_surface`): stage attribution for the tail-latency gate
 //! - **Baseline capture** (`baseline_capture`): latency percentile comparison
+//!
+//! `presenter_equivalence` and `layout_reuse` are *not* integrated. They are
+//! reference models — taxonomies of what counts as equivalent output and of
+//! cache-reuse correctness — with no executable checker to call, so no gate can
+//! consume them as they stand. Wiring or retiring them is
+//! `bd-g00-root-epic-ewths.11.5`; until then, do not read this gauntlet as
+//! enforcing either property.
 //!
 //! # Gauntlet structure
 //!
@@ -39,6 +45,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use crate::baseline_capture::{FixtureFamily, MetricBaseline, MetricCategory};
+use crate::cost_surface::{CostSurfaceAnalyzer, RenderStage};
 use crate::fixture_runner::FixtureRunner;
 use crate::fixture_suite::{FixtureRegistry, FixtureSpec, SuitePartition};
 use crate::render_certificate::{CertificateEvaluator, CertificateInputs, CertificateLevel};
@@ -835,6 +842,51 @@ impl GauntletSuite {
                 });
                 continue;
             }
+
+            // Stage attribution for this fixture. `FixtureRunner` derives
+            // `frame_pipeline_total` by summing the same three stage timings it
+            // records individually, and truncation to whole microseconds can only
+            // shrink the parts relative to the whole. So the components summing to
+            // *more* than the pipeline total means a stage is being timed outside
+            // the pipeline timer — at which point every share on the cost surface
+            // is wrong, and so is any optimization decision read off it.
+            let surface = CostSurfaceAnalyzer::from_baseline(&result.record);
+            let component_us: f64 = RenderStage::COMPONENT_STAGES
+                .iter()
+                .filter_map(|stage| surface.stage_profile(*stage))
+                .map(|profile| profile.mean_us)
+                .sum();
+            if let Some(total) = surface.stage_profile(RenderStage::FramePipeline) {
+                // One microsecond of slack per component stage covers the
+                // per-sample truncation; a real miscount is far larger.
+                if component_us > total.mean_us + 3.0 {
+                    failures.push(GateFailure {
+                        fixture_id: spec.id.clone(),
+                        reason: format!(
+                            "stage costs exceed the whole frame: cell_mutation + buffer_diff + \
+                             presenter_emit mean {component_us:.3}us against a \
+                             frame_pipeline_total mean of {:.3}us (a stage is timed outside \
+                             the pipeline timer)",
+                            total.mean_us
+                        ),
+                        category: FailureCategory::ObservabilityGap,
+                        artifacts: artifact_names(GauntletGate::TailLatency),
+                    });
+                }
+            }
+
+            let attribution = surface.dominant_stage().map_or_else(
+                || "no component stage recorded".to_string(),
+                |profile| {
+                    format!(
+                        "{} dominates at {:.0}% of the frame, tail ratio {:.1}x",
+                        profile.stage.label(),
+                        profile.pipeline_fraction * 100.0,
+                        profile.tail_ratio
+                    )
+                },
+            );
+
             for metric in latency_metrics {
                 let p = &metric.percentiles;
                 let ordered = p.min <= p.p50 + f64::EPSILON
@@ -849,7 +901,7 @@ impl GauntletSuite {
                         fixture_id: spec.id.clone(),
                         reason: format!(
                             "corrupt percentile surface for '{}': min={:.3} p50={:.3} \
-                             p95={:.3} p99={:.3} max={:.3}",
+                             p95={:.3} p99={:.3} max={:.3} ({attribution})",
                             metric.metric, p.min, p.p50, p.p95, p.p99, p.max
                         ),
                         category: FailureCategory::TailRegression,
@@ -864,8 +916,9 @@ impl GauntletSuite {
             GateResult::pass(
                 GauntletGate::TailLatency,
                 tested,
-                "tail percentiles captured, finite, and ordered for every stage \
-                 (regression deltas gate via compare_tail_latency against stored baselines)",
+                "tail percentiles captured, finite, and ordered for every stage, and stage \
+                 costs sum within the frame total (regression deltas gate via \
+                 compare_tail_latency against stored baselines, which this gate does not call)",
                 duration,
             )
         } else {

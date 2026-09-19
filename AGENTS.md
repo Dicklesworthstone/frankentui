@@ -172,6 +172,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # Fail when a `pub mod` is reachable from nothing in production code.
 # Pure stdlib Python, about two seconds, no cargo needed.
 make reachability        # or: python3 scripts/check_module_reachability.py
+
+# Fail when a README section marked "Status: experimental" does not say where
+# its module runs, and when a quarantined module gains a production consumer
+# while the README still says it has none. Also validates the claims ledger.
+make claims
 ```
 
 **Module reachability.** `scripts/check_module_reachability.py` exists because
@@ -182,9 +187,30 @@ when it is behind a `#[cfg(feature = ...)]`. Known-dead modules live in
 [`docs/module-reachability-allowlist.txt`](docs/module-reachability-allowlist.txt), **which may only shrink**: each entry
 needs the bead that will wire or quarantine it, and an entry whose module has
 become reachable fails the gate. Do not add a line to silence the gate — that
-is what the bead id is there to prevent.
+is what the bead id is there to prevent. The bead must also still be **open**:
+the gate reads `.beads/issues.jsonl` and fails on an entry whose bead is closed
+or unknown, because a closed bead will never wire or quarantine anything and an
+entry pointed at one is stranded in silence. That happened twice (`.11.3`'s
+widgets, `.11.5`'s harness modules) before the check existed.
 
 - **Definition of done for modules:** A module counts as delivered only when it is reachable from `Program`/`Frame`/`TerminalWriter`/a widget render/the showcase, or gated experimental.
+
+**Experimental means quarantined.** `make claims` enforces the other half of
+that definition. `experimental` in this project does not mean "works but the API
+may change" — it means nothing in the render path, the runtime loop or the
+widget library constructs it. On 2026-09-19 all eleven README sections carrying
+**Status: experimental** described their module in working present tense ("the
+runtime can enter safe mode", "individual render pipeline stages have
+independent conformal monitors") while no crate imported any of them. Each such
+section must now carry a **Where it runs** line. If you wire one up, say so
+there and in the Experimental modules table; the gate fails either way round, so
+the table and the prose cannot drift apart again.
+
+Two traps when checking this by hand, both of which produced a wrong answer
+first: `ftui-render/src/presenter.rs` declares a private `mod cost_model`
+unrelated to `ftui_runtime::cost_model`, so resolve qualified paths rather than
+grepping bare names; and several experimental modules import each other, which
+is a quarantined cluster, not production adoption.
 
 If you see errors, **carefully understand and resolve each issue**. Read sufficient context to fix them the RIGHT way.
 
@@ -374,7 +400,7 @@ frankentui/
 │   ├── ftui-a11y/                     # Accessibility tree infrastructure
 │   ├── ftui-backend/                  # Backend abstraction
 │   ├── ftui-core/                     # Terminal lifecycle, events, capabilities
-│   ├── ftui-demo-showcase/            # Reference app + snapshots (46 screens)
+│   ├── ftui-demo-showcase/            # Reference app + snapshots (45 screens)
 │   ├── ftui-extras/                   # Feature-gated add-ons (VFX, opt-level=3)
 │   ├── ftui-harness/                  # Test utilities + snapshot framework
 │   ├── ftui-i18n/                     # Internationalization support
@@ -556,7 +582,7 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
 
 ## bv — Graph-Aware Triage Engine
 
-bv is a graph-aware triage engine for Beads projects (`.beads/beads.jsonl`). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
+bv is a graph-aware triage engine for Beads projects. It reads the tracker database (`.beads/beads.db`, `source_kind: sqlite`); the git-tracked JSONL export is `.beads/issues.jsonl`. There is no `.beads/beads.jsonl`. It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
 
 **Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use MCP Agent Mail.
 
@@ -623,7 +649,7 @@ bv --robot-triage --robot-triage-by-label    # Group by domain
 ### Understanding Robot Output
 
 **All robot JSON includes:**
-- `data_hash` — Fingerprint of source beads.jsonl
+- `data_hash` — Fingerprint of the loaded source (the beads database; see `source_path`/`source_kind`)
 - `status` — Per-metric state: `computed|approx|timeout|skipped` + elapsed ms
 - `as_of` / `as_of_commit` — Present when using `--as-of`
 
