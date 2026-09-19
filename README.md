@@ -1618,6 +1618,8 @@ Evidence Emission
 
 The `cost_model` module (1,800 lines) provides closed-form cost models for three subsystems:
 
+**Where it runs: nowhere.** No crate imports `ftui_runtime::cost_model`; the formulas below are a library you can call, not a model the runtime consults when sizing caches or scheduling. (`ftui-render/src/presenter.rs` has a private `mod cost_model` for ANSI cursor-move costs — same name, unrelated code.)
+
 ### Cache Cost Model
 
 ```
@@ -1719,10 +1721,12 @@ Truncated at depth K:
 - **Universality**: signatures separate paths; different paths always have different signatures
 - **Efficient computation**: Chen's identity enables O(nK²d²) incremental updates
 
-**Applications in FrankenTUI:**
+**Intended applications in FrankenTUI** — none of these are wired; no crate imports `ftui_runtime::rough_path`:
 - **Workload characterization**: frame time series → signature → anomaly detection
 - **Trace comparison**: compare two execution traces without aligning timestamps
 - **Regression detection**: signature distance between baseline and candidate runs
+
+**Where it runs: nowhere.** The signature computation is implemented and unit-tested; nothing feeds it a frame time series.
 
 ---
 
@@ -2099,7 +2103,11 @@ the scaled gain with cost, subject to its minimum and maximum sampling intervals
 
 ## Experimental modules
 
-These modules compile only with `--features experimental` on the crate that owns them. They are research code with unit tests and no production consumer; APIs may change or be removed without notice.
+These modules compile only with `--features experimental` on the crate that owns them. APIs may change or be removed without notice.
+
+**Read `experimental` here as "quarantined", not "unstable but working".** These are research code with unit tests and **no production consumer**: nothing in the render path, the runtime loop, or the widget library constructs any of them. The workspace's own compile check is named `all_quarantined_modules_are_nameable` (`ftui-runtime/tests/experimental_feature_matrix.rs`) and does exactly what the name says — it binds each type to `None` to prove the module still compiles. Enabling the feature makes the code available to *you*; it does not switch anything on inside FrankenTUI.
+
+Sections below that describe an experimental module each carry a **Where it runs** line, so you do not have to cross-reference this table to find out whether a feature is connected. Checked 2026-09-19 by resolving `use ftui_runtime::<module>` across every crate's `src/`. (One trap if you check this yourself: `ftui-render/src/presenter.rs` declares its own private `mod cost_model` for ANSI cursor-move costs, which is unrelated to `ftui_runtime::cost_model` and makes a bare grep for `cost_model::` look like a hit.)
 
 ```toml
 ftui-runtime = { version = "0.9", features = ["experimental"] }
@@ -2768,7 +2776,9 @@ Safety:
 
 **Provenance: the coefficients are hand-chosen, not SDP-solved.** `sos_barrier_coeffs.rs` says so itself — they were written by hand to satisfy eight verification points, and **no `scripts/solve_sos_barrier.py` exists in this repository or its history**. An earlier version of this section claimed an SOS/SDP relaxation produced them and named that script; the 2026-09-01 reality check found that claim false, the source header was corrected, and this section was not. If a solver is ever added, regenerate the coefficients from it and record the solver, its inputs and the run date in that file.
 
-So what the evaluator gives you is a *polynomial admissibility test whose shape was chosen by hand*, not a certificate carrying an SOS proof of the Lyapunov-like decrease condition. The Rust evaluator (`sos_barrier.rs`) is 257 lines and runs in constant time per frame with no allocations, which is true and is the part worth relying on.
+So what the evaluator gives you is a *polynomial admissibility test whose shape was chosen by hand*, not a certificate carrying an SOS proof of the Lyapunov-like decrease condition.
+
+**Where it runs: nowhere.** No crate imports `ftui_runtime::sos_barrier`, so no frame's budget is actually checked against the barrier. An earlier correction of this section said the evaluator "runs in constant time per frame with no allocations" — true of the function's complexity, misleading about its use, since nothing calls it per frame or at all. `sos_barrier.rs` is 257 lines, allocation-free and constant-time *when called*, which is the part worth relying on if you call it yourself.
 
 Why SOS instead of a simple threshold? A polynomial barrier can encode nonlinear safe/unsafe boundaries that accurately reflect the interaction between budget remaining and workload estimate. A flat threshold either triggers too early (wasting visual quality) or too late (missing the deadline).
 
@@ -2819,6 +2829,8 @@ Benefits over a bare `Mutex`:
 - Lock acquisition happens once per batch, not once per operation
 - Natural coalescing: redundant operations (multiple redraws) collapse
 
+**Where it runs: nowhere.** No crate imports `ftui_runtime::flat_combine`, and the runtime's event sources do not post through a combiner. The diagram above describes what the module implements, not how FrankenTUI dispatches operations today.
+
 ---
 
 ## Bidirectional Lenses
@@ -2851,6 +2863,8 @@ assert_eq!(config.brightness, 50); // other fields untouched
 ```
 
 Lenses compose, so `compose(config_lens, volume_lens)` creates a lens from `AppState` directly to `volume` through an intermediate `Config` struct.
+
+**Where it runs: nowhere.** The module is titled "state-widget binding", but no widget binds through a lens — no crate imports `ftui_runtime::lens`. The laws hold and the example above is compiled by `readme_snippets`; what is missing is anything on the widget side that consumes one.
 
 ---
 
@@ -2948,7 +2962,9 @@ slo.yaml  ──parse──▶  SloSchema
                               (continue)            (enter safe mode)
 ```
 
-When an SLO is breached, the runtime can enter safe mode (reduced rendering, aggressive coalescing) until the error budget recovers.
+When an SLO is breached, safe mode (reduced rendering, aggressive coalescing) is meant to hold until the error budget recovers.
+
+**Where it runs: nowhere.** No crate imports `ftui_runtime::slo`, so nothing feeds it observations and nothing acts on a `BreachResult` — the runtime does not enter safe mode from this path, because no code path reaches it. The parser, the breach check and the error-budget accounting are implemented and covered by tests in `ftui-harness`.
 
 ---
 
@@ -2956,7 +2972,7 @@ When an SLO is breached, the runtime can enter safe mode (reduced rendering, agg
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-Individual render pipeline stages have independent conformal monitors:
+The design gives each render pipeline stage an independent conformal monitor:
 
 ```
 view() → [Layout] → Buffer → [Diff] → Changes → [Present] → ANSI
@@ -2965,9 +2981,11 @@ view() → [Layout] → Buffer → [Diff] → Changes → [Present] → ANSI
       (calibration)   (calibration)   (calibration)
 ```
 
-Each stage maintains its own Mondrian-bucketed residual set, so a regression in layout computation is detected independently from diff or presenter regressions. Buckets are keyed by (screen mode, diff strategy, terminal size) and fall back to coarser groupings when data is sparse.
+Each stage would maintain its own Mondrian-bucketed residual set, so a regression in layout computation is detected independently from diff or presenter regressions. Buckets are keyed by (screen mode, diff strategy, terminal size) and fall back to coarser groupings when data is sparse. The point of the granularity is to identify *which* pipeline stage is responsible for a slowdown rather than just flagging "frame was slow."
 
-This granularity means the runtime can identify *which* pipeline stage is responsible for a slowdown, rather than just flagging "frame was slow."
+**Where it runs: nowhere.** `StagedConformalPredictor` is never constructed outside its own unit tests — no crate imports `ftui_runtime::conformal_stages`, and no stage timing is fed to it, so the runtime cannot currently attribute a slowdown to a stage. The bucketing, calibration and alerting logic are implemented and tested.
+
+Not to be confused with `conformal_predictor`, which **is** on by default in the runtime and monitors whole-frame timing. That one is real; this one is the per-stage version that was never connected.
 
 ---
 
