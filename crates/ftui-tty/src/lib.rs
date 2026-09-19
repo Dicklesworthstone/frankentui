@@ -1579,6 +1579,21 @@ mod tests {
     use super::*;
     use ftui_core::session_teardown::seq::*;
 
+    /// Shared lock for all tests that depend on the process-global `KittyPopLatch`.
+    ///
+    /// `write_cleanup_sequence*` consults `KittyPopLatch::is_claimed()` so that only
+    /// one component emits the kitty keyboard pop per process. Tests that assert on
+    /// that pop must reset the latch first and must not race each other for it.
+    /// Mirrors the `gpu_test_lock` pattern in `ftui-extras`.
+    fn kitty_latch_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static KITTY_LATCH_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        KITTY_LATCH_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn clock_is_monotonic() {
         let clock = TtyClock::new();
@@ -2724,6 +2739,7 @@ mod tests {
 
     #[test]
     fn cleanup_sequence_contains_all_disable() {
+        let _latch_guard = kitty_latch_test_lock();
         let features = BackendFeatures {
             mouse_capture: true,
             bracketed_paste: true,
@@ -2731,6 +2747,7 @@ mod tests {
             kitty_keyboard: true,
         };
         let mut buf = Vec::new();
+        ftui_core::session_teardown::KittyPopLatch::reset_for_tests();
         write_cleanup_sequence(&features, true, &mut buf).unwrap();
 
         // Verify expected cleanup disables are present.
@@ -2812,6 +2829,8 @@ mod tests {
         use ftui_core::terminal_capabilities::TerminalCapabilities;
         use ftui_core::terminal_session::best_effort_cleanup_to;
 
+        let _latch_guard = kitty_latch_test_lock();
+
         for (mouse, paste, focus, kitty) in [
             (true, true, true, true),
             (true, false, true, false),
@@ -2835,7 +2854,11 @@ mod tests {
             KittyPopLatch::reset_for_tests();
             best_effort_cleanup_to(&mut core_buf, &caps);
 
+            // Each backend must be measured from the same starting state: the
+            // latch is one-shot, so without this reset the core call above would
+            // have claimed it and tty would correctly decline to pop again.
             let mut tty_buf = Vec::new();
+            KittyPopLatch::reset_for_tests();
             write_cleanup_sequence_with_sync_end(&features, true, &mut tty_buf).unwrap();
 
             assert_eq!(
@@ -3483,6 +3506,7 @@ mod tests {
 
         #[test]
         fn per_feature_disable_on_drop() {
+            let _latch_guard = super::kitty_latch_test_lock();
             let (mut master, slave) = pty_pair();
             let slave_dup = slave.try_clone().unwrap();
 
@@ -3497,6 +3521,7 @@ mod tests {
                     kitty_keyboard: true,
                 };
                 let mut cleanup = Vec::new();
+                ftui_core::session_teardown::KittyPopLatch::reset_for_tests();
                 write_cleanup_sequence(&all_on, false, &mut cleanup).unwrap();
 
                 let output = write_to_slave_and_read_master(&mut master, &slave_dup, &cleanup);
