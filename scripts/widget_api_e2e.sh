@@ -25,12 +25,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PRESET_E2E_JSONL_FILE="${E2E_JSONL_FILE:-}"
+PRESET_LOG_DIR="${LOG_DIR:-}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-LOG_DIR="${LOG_DIR:-/tmp/widget_api_e2e_${TIMESTAMP}}"
+LOG_DIR="${PRESET_LOG_DIR:-/tmp/widget_api_e2e_${TIMESTAMP}}"
 # Set suite paths before logging.sh supplies its shared defaults.
 E2E_LOG_DIR="${E2E_LOG_DIR:-$LOG_DIR}"
 E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
-E2E_JSONL_FILE="${E2E_JSONL_FILE:-$LOG_DIR/widget_api_e2e.jsonl}"
+E2E_JSONL_FILE="${PRESET_E2E_JSONL_FILE:-$LOG_DIR/widget_api_e2e.jsonl}"
 E2E_LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
 
 VERBOSE=false
@@ -101,7 +103,13 @@ done
 # ----------------------------------------------------------------------------
 
 e2e_fixture_init "widget_api"
-LOG_DIR="${LOG_DIR:-/tmp/widget_api_e2e_${E2E_RUN_ID}_${TIMESTAMP}}"
+if declare -f e2e_log_stamp >/dev/null 2>&1; then
+    TIMESTAMP="$(e2e_log_stamp)"
+fi
+LOG_DIR="${PRESET_LOG_DIR:-/tmp/widget_api_e2e_${E2E_RUN_ID}_${TIMESTAMP}}"
+E2E_LOG_DIR="$LOG_DIR"
+E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
+E2E_JSONL_FILE="${WIDGET_API_E2E_JSONL_FILE:-${PRESET_E2E_JSONL_FILE:-$LOG_DIR/widget_api_e2e.jsonl}}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 export E2E_LOG_DIR E2E_RESULTS_DIR E2E_JSONL_FILE E2E_RUN_CMD E2E_RUN_START_MS
@@ -442,7 +450,7 @@ run_policy_case() {
 # Main Script
 # ============================================================================
 
-TOTAL_STEPS=8
+TOTAL_STEPS=10
 
 echo "=============================================="
 echo "  Widget API E2E Test Suite"
@@ -499,7 +507,7 @@ run_step "Building workspace" "$LOG_DIR/01_build.log" \
 # timeout while preserving the library-only scope of this step.
 e2e_log_cargo_test_hermetic
 run_step "Running unit tests" "$LOG_DIR/02_tests.log" \
-    e2e_cargo_test_env_guard cargo nextest run --workspace --lib \
+    e2e_cargo_test_env_guard env RCH_CARGO_WRAPPER_BYPASS=1 cargo nextest run --workspace --lib \
         --profile default --no-fail-fast --test-threads=4
 
 # Step 3: Clippy
@@ -681,7 +689,7 @@ else
     snap_start_ms="$(e2e_now_ms)"
     jsonl_step_start "snapshot_tests"
     if [ -f "$PROJECT_ROOT/crates/ftui-harness/tests/widget_snapshots.rs" ]; then
-        if e2e_cargo_test_env_guard cargo nextest run -p ftui-harness --test widget_snapshots \
+        if e2e_cargo_test_env_guard env RCH_CARGO_WRAPPER_BYPASS=1 cargo nextest run -p ftui-harness --test widget_snapshots \
             --profile default --no-fail-fast --test-threads=4 > "$LOG_DIR/07_snapshots.log" 2>&1; then
             log_pass "Snapshot tests passed"
             PASS_COUNT=$((PASS_COUNT + 1))
@@ -775,6 +783,344 @@ policy_log="$LOG_DIR/08_policy.log"
     log_fail "Policy toggle matrix failed. See: $policy_log"
     FAIL_COUNT=$((FAIL_COUNT + 1))
     jsonl_step_end "policy_toggle_matrix" "failed" "$(( $(e2e_now_ms) - policy_start_ms ))"
+}
+
+# Step 9: Widget Feature Scenarios (headless, deterministic G17 assertions)
+log_step "Widget feature scenarios"
+widget_scenarios_start_ms="$(e2e_now_ms)"
+jsonl_step_start "widget_feature_scenarios"
+widget_scenarios_log="$LOG_DIR/09_widget_scenarios.log"
+widget_scenarios_jsonl="$LOG_DIR/09_widget_scenarios.jsonl"
+: > "$widget_scenarios_jsonl"
+
+{
+    echo "Widget Feature Scenarios - $(e2e_timestamp)"
+    echo "Target: crates/ftui-harness/tests/widget_feature_scenarios.rs"
+    echo "Output JSONL: $widget_scenarios_jsonl"
+    echo ""
+
+    if e2e_cargo_test_env_guard env \
+        E2E_JSONL_FILE="$widget_scenarios_jsonl" \
+        E2E_RUN_ID="${E2E_RUN_ID:-widget_api}" \
+        E2E_SEED="$SEED" \
+        E2E_TIMESTAMP="$(e2e_timestamp)" \
+        RCH_CARGO_WRAPPER_BYPASS=1 \
+        cargo test -p ftui-harness --test widget_feature_scenarios -- --nocapture --test-threads=1; then
+        echo "Integration test completed successfully."
+    else
+        echo "Integration test failed."
+        exit 1
+    fi
+
+    echo ""
+    echo "Validating JSONL log with schema ($widget_scenarios_jsonl)..."
+    if [[ ! -s "$widget_scenarios_jsonl" ]]; then
+        echo "ERROR: Widget scenarios JSONL file is missing or empty"
+        exit 1
+    fi
+
+    "${E2E_PYTHON:-python3}" "$E2E_LIB_DIR/validate_jsonl.py" "$widget_scenarios_jsonl" \
+        --schema "$E2E_LIB_DIR/e2e_jsonl_schema.json" --strict || {
+        echo "ERROR: Widget scenarios JSONL validation failed"
+        exit 1
+    }
+    echo "JSONL validation passed."
+
+} > "$widget_scenarios_log" 2>&1 && {
+    log_pass "Widget feature scenarios passed and JSONL validated"
+    PASS_COUNT=$((PASS_COUNT + 1))
+    jsonl_step_end "widget_feature_scenarios" "success" "$(( $(e2e_now_ms) - widget_scenarios_start_ms ))"
+    jsonl_assert "widget_scenarios_jsonl_valid" "pass" "file=$widget_scenarios_jsonl"
+} || {
+    log_fail "Widget feature scenarios failed. See: $widget_scenarios_log"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    jsonl_step_end "widget_feature_scenarios" "failed" "$(( $(e2e_now_ms) - widget_scenarios_start_ms ))"
+    jsonl_assert "widget_scenarios_jsonl_valid" "fail" "file=$widget_scenarios_jsonl"
+}
+
+# Step 10: Widget PTY Showcase Scenarios (PTY showcase verification)
+log_step "Widget PTY showcase scenarios"
+widget_pty_start_ms="$(e2e_now_ms)"
+jsonl_step_start "widget_pty_scenarios"
+widget_pty_log="$LOG_DIR/10_widget_pty.log"
+widget_pty_jsonl="$LOG_DIR/10_widget_pty.jsonl"
+: > "$widget_pty_jsonl"
+
+{
+    echo "Widget PTY Showcase Scenarios - $(e2e_timestamp)"
+    echo "Output JSONL: $widget_pty_jsonl"
+    echo ""
+
+    target_dir="$(cargo metadata --format-version=1 --no-deps | jq -er '.target_directory')"
+    demo_bin="$target_dir/debug/ftui-demo-showcase"
+    if [[ ! -x "$demo_bin" ]]; then
+        echo "Building ftui-demo-showcase binary..."
+        cargo build -p ftui-demo-showcase --bin ftui-demo-showcase
+    fi
+    if [[ ! -x "$demo_bin" ]]; then
+        echo "ERROR: ftui-demo-showcase binary not found at $demo_bin"
+        exit 1
+    fi
+
+    # Dynamically resolve screen indices from --list-screens to prevent numeric drift
+    screen_list_json="$("$demo_bin" --list-screens 2>/dev/null || echo '[]')"
+    widget_gallery_screen=$(echo "$screen_list_json" | jq -r 'to_entries[] | select(.value == "widget_gallery") | .key + 1' 2>/dev/null || true)
+    widget_gallery_screen="${widget_gallery_screen:-5}"
+
+    table_theme_screen=$(echo "$screen_list_json" | jq -r 'to_entries[] | select(.value == "table_theme_gallery") | .key + 1' 2>/dev/null || true)
+    table_theme_screen="${table_theme_screen:-11}"
+
+    echo "Resolved screens: WidgetGallery=$widget_gallery_screen TableThemeGallery=$table_theme_screen"
+    echo ""
+
+    pty_failures=0
+
+    # --- Scenario 1: WidgetGallery (100x30, 1500ms) ---
+    echo "--- Running WidgetGallery PTY scenario (screen $widget_gallery_screen) ---"
+    wg_pty="$LOG_DIR/widget_gallery.pty"
+    wg_canon="$LOG_DIR/widget_gallery.canon.txt"
+    wg_start_ms="$(e2e_now_ms)"
+    wg_exit_code=0
+
+    # Step through tabs A -> B (Display / Dashed) -> C (Status / Indeterminate) -> D (Data Viz / Folded JsonView)
+    wg_seq=$(jq -c -n '[
+        {"delay_ms": 200, "text": "j"},
+        {"delay_ms": 500, "text": "j"},
+        {"delay_ms": 800, "text": "j"}
+    ]')
+
+    if PTY_COLS=100 PTY_ROWS=30 PTY_TIMEOUT=8 \
+        PTY_SEND_SEQUENCE="$wg_seq" \
+        pty_run "$wg_pty" env FTUI_DEMO_SCREEN="$widget_gallery_screen" FTUI_DEMO_EXIT_AFTER_MS=1500 "$demo_bin"; then
+        wg_exit_code=0
+    else
+        wg_exit_code=$?
+    fi
+    wg_dur_ms=$(( $(e2e_now_ms) - wg_start_ms ))
+
+    pty_canonicalize_file "$wg_pty" "$wg_canon" 100 30 --quirk windows_no_alt_screen || true
+    wg_canon_hash="$(sha256sum "$wg_canon" 2>/dev/null | awk '{print $1}')"
+    wg_pty_hash="$(sha256sum "$wg_pty" 2>/dev/null | awk '{print $1}')"
+
+    # Assertions on markers
+    wg_assert_count=0
+    # 1. Dashed border marker: ┄
+    if grep -q "┄" "$wg_pty" 2>/dev/null || grep -q "┄" "$wg_canon" 2>/dev/null; then
+        echo "  [PASS] Found Dashed border marker ('┄')"
+        wg_assert_count=$((wg_assert_count + 1))
+        jsonl_assert "pty_widget_gallery_dashed_border" "pass" "marker=┄ screen=widget_gallery"
+    else
+        echo "  [FAIL] Missing Dashed border marker ('┄')"
+        pty_failures=$((pty_failures + 1))
+        jsonl_assert "pty_widget_gallery_dashed_border" "fail" "marker=┄ screen=widget_gallery"
+    fi
+
+    # 2. Indeterminate progress bar marker: "indeterminate"
+    if grep -q "indeterminate" "$wg_pty" 2>/dev/null || grep -q "indeterminate" "$wg_canon" 2>/dev/null; then
+        echo "  [PASS] Found indeterminate progress bar marker ('indeterminate')"
+        wg_assert_count=$((wg_assert_count + 1))
+        jsonl_assert "pty_widget_gallery_indeterminate_progress" "pass" "marker=indeterminate screen=widget_gallery"
+    else
+        echo "  [FAIL] Missing indeterminate progress bar marker ('indeterminate')"
+        pty_failures=$((pty_failures + 1))
+        jsonl_assert "pty_widget_gallery_indeterminate_progress" "fail" "marker=indeterminate screen=widget_gallery"
+    fi
+
+    # 3. Folded JsonView placeholder marker: {…}
+    if grep -q "{…}" "$wg_pty" 2>/dev/null || grep -q "{…}" "$wg_canon" 2>/dev/null; then
+        echo "  [PASS] Found folded JsonView placeholder marker ('{…}')"
+        wg_assert_count=$((wg_assert_count + 1))
+        jsonl_assert "pty_widget_gallery_jsonview_fold" "pass" "marker={…} screen=widget_gallery"
+    else
+        echo "  [FAIL] Missing folded JsonView placeholder marker ('{…}')"
+        pty_failures=$((pty_failures + 1))
+        jsonl_assert "pty_widget_gallery_jsonview_fold" "fail" "marker={…} screen=widget_gallery"
+    fi
+
+    # 4. Clean exit
+    if [[ "$wg_exit_code" -eq 0 ]]; then
+        echo "  [PASS] WidgetGallery clean exit ($wg_exit_code)"
+        wg_assert_count=$((wg_assert_count + 1))
+        jsonl_assert "pty_widget_gallery_exit" "pass" "exit_code=$wg_exit_code"
+    else
+        echo "  [FAIL] WidgetGallery non-zero exit ($wg_exit_code)"
+        pty_failures=$((pty_failures + 1))
+        jsonl_assert "pty_widget_gallery_exit" "fail" "exit_code=$wg_exit_code"
+    fi
+
+    # Compute escape tallies
+    wg_tallies="$("${E2E_PYTHON:-python3}" - "$wg_pty" <<'PY'
+import json, sys
+try:
+    data = open(sys.argv[1], "rb").read()
+    tallies = {
+        "1049h": data.count(b"\x1b[?1049h"),
+        "1049l": data.count(b"\x1b[?1049l"),
+        "2026h": data.count(b"\x1b[?2026h"),
+        "2026l": data.count(b"\x1b[?2026l"),
+    }
+    print(json.dumps(tallies))
+except Exception:
+    print("{}")
+PY
+)"
+
+    # Emit widget_scenario JSONL line for WidgetGallery
+    jq -c -n \
+        --arg schema_version "e2e-jsonl-v1" \
+        --arg type "widget_scenario" \
+        --arg timestamp "$(e2e_timestamp)" \
+        --arg run_id "${E2E_RUN_ID:-widget_api}" \
+        --argjson seed "${SEED:-0}" \
+        --arg scenario "g17_pty_widget_gallery" \
+        --arg screen "widget_gallery" \
+        --arg snapshot_hash "$wg_canon_hash" \
+        --argjson assertions "$wg_assert_count" \
+        --argjson exit_code "$wg_exit_code" \
+        --argjson duration_ms "$wg_dur_ms" \
+        --arg identity "WidgetGallery@100x30" \
+        --argjson escape_tallies "$wg_tallies" \
+        --arg pty_checksum "$wg_pty_hash" \
+        '{schema_version: $schema_version, type: $type, timestamp: $timestamp, run_id: $run_id, seed: $seed, scenario: $scenario, screen: $screen, snapshot_hash: $snapshot_hash, assertions: $assertions, exit_code: $exit_code, duration_ms: $duration_ms, identity: $identity, escape_tallies: $escape_tallies, pty_checksum: $pty_checksum}' >> "$widget_pty_jsonl"
+
+    echo ""
+
+    # --- Scenario 2: TableThemeGallery (100x30, 1500ms) ---
+    echo "--- Running TableThemeGallery PTY scenario (screen $table_theme_screen) ---"
+    tt_pty="$LOG_DIR/table_theme_gallery.pty"
+    tt_canon="$LOG_DIR/table_theme_gallery.canon.txt"
+    tt_report="$LOG_DIR/table_theme_gallery.report.jsonl"
+    tt_start_ms="$(e2e_now_ms)"
+    tt_exit_code=0
+
+    # Send 'vv' to cycle from Markdown preview to Widget to Columns preview (which uses stripe_period(3))
+    if PTY_COLS=100 PTY_ROWS=30 PTY_TIMEOUT=8 \
+        PTY_SEND="vv" PTY_SEND_DELAY_MS=200 \
+        pty_run "$tt_pty" env FTUI_DEMO_SCREEN="$table_theme_screen" \
+            FTUI_TABLE_THEME_REPORT_PATH="$tt_report" \
+            FTUI_DEMO_EXIT_AFTER_MS=1500 "$demo_bin"; then
+        tt_exit_code=0
+    else
+        tt_exit_code=$?
+    fi
+    tt_dur_ms=$(( $(e2e_now_ms) - tt_start_ms ))
+
+    pty_canonicalize_file "$tt_pty" "$tt_canon" 100 30 --quirk windows_no_alt_screen || true
+    tt_canon_hash="$(sha256sum "$tt_canon" 2>/dev/null | awk '{print $1}')"
+    tt_pty_hash="$(sha256sum "$tt_pty" 2>/dev/null | awk '{print $1}')"
+
+    tt_assert_count=0
+    # 1. Stripe-period-3 / Columns preview row pattern: contains CJK column data ("日本語テキスト")
+    if grep -q "日本語テキスト" "$tt_pty" 2>/dev/null || grep -q "日本語テキスト" "$tt_canon" 2>/dev/null; then
+        echo "  [PASS] Found Columns preview table content ('日本語テキスト')"
+        tt_assert_count=$((tt_assert_count + 1))
+        jsonl_assert "pty_table_theme_columns_content" "pass" "marker=日本語テキスト screen=table_theme_gallery"
+    else
+        echo "  [FAIL] Missing Columns preview table content ('日本語テキスト')"
+        pty_failures=$((pty_failures + 1))
+        jsonl_assert "pty_table_theme_columns_content" "fail" "marker=日本語テキスト screen=table_theme_gallery"
+    fi
+
+    # 2. Table theme stripe-period diagnostic in report or Columns preview title
+    if grep -q '"stripe_period":3' "$tt_report" 2>/dev/null || grep -q 'Columns' "$tt_canon" 2>/dev/null; then
+        echo "  [PASS] Found stripe-period-3 evidence (report stripe_period:3 / Columns mode)"
+        tt_assert_count=$((tt_assert_count + 1))
+        jsonl_assert "pty_table_theme_stripe_period_3" "pass" "marker=stripe_period:3 screen=table_theme_gallery"
+    else
+        echo "  [FAIL] Missing stripe-period-3 evidence"
+        pty_failures=$((pty_failures + 1))
+        jsonl_assert "pty_table_theme_stripe_period_3" "fail" "marker=stripe_period:3 screen=table_theme_gallery"
+    fi
+
+    # 3. Clean exit
+    if [[ "$tt_exit_code" -eq 0 ]]; then
+        echo "  [PASS] TableThemeGallery clean exit ($tt_exit_code)"
+        tt_assert_count=$((tt_assert_count + 1))
+        jsonl_assert "pty_table_theme_gallery_exit" "pass" "exit_code=$tt_exit_code"
+    else
+        echo "  [FAIL] TableThemeGallery non-zero exit ($tt_exit_code)"
+        pty_failures=$((pty_failures + 1))
+        jsonl_assert "pty_table_theme_gallery_exit" "fail" "exit_code=$tt_exit_code"
+    fi
+
+    # Compute escape tallies
+    tt_tallies="$("${E2E_PYTHON:-python3}" - "$tt_pty" <<'PY'
+import json, sys
+try:
+    data = open(sys.argv[1], "rb").read()
+    tallies = {
+        "1049h": data.count(b"\x1b[?1049h"),
+        "1049l": data.count(b"\x1b[?1049l"),
+        "2026h": data.count(b"\x1b[?2026h"),
+        "2026l": data.count(b"\x1b[?2026l"),
+    }
+    print(json.dumps(tallies))
+except Exception:
+    print("{}")
+PY
+)"
+
+    # Emit widget_scenario JSONL line for TableThemeGallery
+    jq -c -n \
+        --arg schema_version "e2e-jsonl-v1" \
+        --arg type "widget_scenario" \
+        --arg timestamp "$(e2e_timestamp)" \
+        --arg run_id "${E2E_RUN_ID:-widget_api}" \
+        --argjson seed "${SEED:-0}" \
+        --arg scenario "g17_pty_table_theme_gallery" \
+        --arg screen "table_theme_gallery" \
+        --arg snapshot_hash "$tt_canon_hash" \
+        --argjson assertions "$tt_assert_count" \
+        --argjson exit_code "$tt_exit_code" \
+        --argjson duration_ms "$tt_dur_ms" \
+        --arg identity "TableThemeGallery@100x30" \
+        --argjson escape_tallies "$tt_tallies" \
+        --arg pty_checksum "$tt_pty_hash" \
+        '{schema_version: $schema_version, type: $type, timestamp: $timestamp, run_id: $run_id, seed: $seed, scenario: $scenario, screen: $screen, snapshot_hash: $snapshot_hash, assertions: $assertions, exit_code: $exit_code, duration_ms: $duration_ms, identity: $identity, escape_tallies: $escape_tallies, pty_checksum: $pty_checksum}' >> "$widget_pty_jsonl"
+
+    echo ""
+    echo "Validating PTY JSONL log ($widget_pty_jsonl)..."
+    if [[ ! -s "$widget_pty_jsonl" ]]; then
+        echo "ERROR: Widget PTY JSONL file is missing or empty"
+        exit 1
+    fi
+
+    "${E2E_PYTHON:-python3}" "$E2E_LIB_DIR/validate_jsonl.py" "$widget_pty_jsonl" \
+        --schema "$E2E_LIB_DIR/e2e_jsonl_schema.json" --strict || {
+        echo "ERROR: Widget PTY JSONL validation failed"
+        exit 1
+    }
+    echo "PTY JSONL validation passed."
+
+    echo ""
+    echo "Validating both JSONL scenario files strictly..."
+    "${E2E_PYTHON:-python3}" "$E2E_LIB_DIR/validate_jsonl.py" "$widget_scenarios_jsonl" \
+        --schema "$E2E_LIB_DIR/e2e_jsonl_schema.json" --strict || {
+        echo "ERROR: Widget scenarios re-validation failed"
+        exit 1
+    }
+    "${E2E_PYTHON:-python3}" "$E2E_LIB_DIR/validate_jsonl.py" "$widget_pty_jsonl" \
+        --schema "$E2E_LIB_DIR/e2e_jsonl_schema.json" --strict || {
+        echo "ERROR: Widget PTY re-validation failed"
+        exit 1
+    }
+    echo "Both scenario JSONL logs validated strictly."
+
+    if [[ "$pty_failures" -ne 0 ]]; then
+        echo "ERROR: $pty_failures PTY assertion(s) failed."
+        exit 1
+    fi
+
+} > "$widget_pty_log" 2>&1 && {
+    log_pass "Widget PTY showcase scenarios passed and JSONL validated"
+    PASS_COUNT=$((PASS_COUNT + 1))
+    jsonl_step_end "widget_pty_scenarios" "success" "$(( $(e2e_now_ms) - widget_pty_start_ms ))"
+    jsonl_assert "widget_pty_jsonl_valid" "pass" "file=$widget_pty_jsonl"
+} || {
+    log_fail "Widget PTY showcase scenarios failed. See: $widget_pty_log"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    jsonl_step_end "widget_pty_scenarios" "failed" "$(( $(e2e_now_ms) - widget_pty_start_ms ))"
+    jsonl_assert "widget_pty_jsonl_valid" "fail" "file=$widget_pty_jsonl"
 }
 
 # ============================================================================

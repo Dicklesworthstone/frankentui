@@ -868,6 +868,35 @@
         "detail": "string",
         "ts": "string"
       }
+    },
+    "widget_scenario": {
+      "required": [
+        "scenario",
+        "screen",
+        "snapshot_hash",
+        "assertions",
+        "exit_code",
+        "duration_ms"
+      ],
+      "optional": [
+        "identity",
+        "escape_tallies",
+        "pty_checksum"
+      ],
+      "types": {
+        "scenario": "string",
+        "screen": "string",
+        "snapshot_hash": "string",
+        "assertions": "integer",
+        "exit_code": "integer",
+        "duration_ms": "number",
+        "identity": "string",
+        "escape_tallies": [
+          "object",
+          "string"
+        ],
+        "pty_checksum": "string"
+      }
     }
   }
 }

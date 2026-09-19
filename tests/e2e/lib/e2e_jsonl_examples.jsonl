@@ -15,3 +15,4 @@
 {"schema_version":"e2e-jsonl-v1","type":"artifact","timestamp":"T000005","run_id":"example_run","seed":0,"artifact_type":"log_dir","path":"/tmp/ftui_e2e","status":"present","sha256":"","bytes":0}
 {"schema_version":"e2e-jsonl-v1","type":"step_end","timestamp":"T000006","run_id":"example_run","seed":0,"step":"inline","status":"passed","duration_ms":42,"mode":"inline","hash_key":"inline-80x24-seed0","cols":80,"rows":24}
 {"schema_version":"e2e-jsonl-v1","type":"run_end","timestamp":"T000007","run_id":"example_run","seed":0,"status":"complete","duration_ms":420,"failed_count":0}
+{"schema_version":"e2e-jsonl-v1","type":"widget_scenario","timestamp":"T000008","run_id":"example_run","seed":0,"scenario":"g17_01_progress_indeterminate","screen":"headless","snapshot_hash":"deadbeef","assertions":3,"exit_code":0,"duration_ms":12}
