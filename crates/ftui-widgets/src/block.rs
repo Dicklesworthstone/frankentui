@@ -1190,7 +1190,11 @@ mod tests {
         // Title cell at (1, 0) should be bold + blue
         let title_cell = frame.buffer.get(1, 0).unwrap();
         assert_eq!(title_cell.fg, blue);
-        assert!(title_cell.attrs.has_flag(ftui_render::cell::StyleFlags::BOLD));
+        assert!(
+            title_cell
+                .attrs
+                .has_flag(ftui_render::cell::StyleFlags::BOLD)
+        );
 
         // Border cell at (0, 0) should carry composed style (blue)
         let border_cell = frame.buffer.get(0, 0).unwrap();
@@ -1204,22 +1208,40 @@ mod tests {
         let red = ftui_render::cell::PackedRgba::rgb(255, 0, 0);
 
         sheet.define("heading", Style::new().bold().fg(blue));
-        let block1 = Block::styled(&sheet, "heading").borders(Borders::ALL).title("T");
+        let block1 = Block::styled(&sheet, "heading")
+            .borders(Borders::ALL)
+            .title("T");
         let area = Rect::new(0, 0, 8, 3);
         let mut pool1 = GraphemePool::new();
         let mut frame1 = Frame::new(8, 3, &mut pool1);
         block1.render(area, &mut frame1);
         assert_eq!(frame1.buffer.get(1, 0).unwrap().fg, blue);
-        assert!(frame1.buffer.get(1, 0).unwrap().attrs.has_flag(ftui_render::cell::StyleFlags::BOLD));
+        assert!(
+            frame1
+                .buffer
+                .get(1, 0)
+                .unwrap()
+                .attrs
+                .has_flag(ftui_render::cell::StyleFlags::BOLD)
+        );
 
         // Redefine as red without bold
         sheet.define("heading", Style::new().fg(red));
-        let block2 = Block::styled(&sheet, "heading").borders(Borders::ALL).title("T");
+        let block2 = Block::styled(&sheet, "heading")
+            .borders(Borders::ALL)
+            .title("T");
         let mut pool2 = GraphemePool::new();
         let mut frame2 = Frame::new(8, 3, &mut pool2);
         block2.render(area, &mut frame2);
         assert_eq!(frame2.buffer.get(1, 0).unwrap().fg, red);
-        assert!(!frame2.buffer.get(1, 0).unwrap().attrs.has_flag(ftui_render::cell::StyleFlags::BOLD));
+        assert!(
+            !frame2
+                .buffer
+                .get(1, 0)
+                .unwrap()
+                .attrs
+                .has_flag(ftui_render::cell::StyleFlags::BOLD)
+        );
     }
 
     #[test]

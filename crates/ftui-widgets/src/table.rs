@@ -264,7 +264,10 @@ impl<'a> Table<'a> {
         if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_ROW_ALT)) {
             self.theme.row_alt = s;
         }
-        if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_ROW_SELECTED)) {
+        if let Some(s) = sheet.get(&format!(
+            "{prefix}.{}",
+            crate::style_names::TABLE_ROW_SELECTED
+        )) {
             self.theme.row_selected = s;
         }
         if let Some(s) = sheet.get(&format!("{prefix}.{}", crate::style_names::TABLE_ROW_HOVER)) {
@@ -3805,7 +3808,11 @@ mod tests {
 
         // Header at y=0 is bold
         let header_cell = frame.buffer.get(0, 0).unwrap();
-        assert!(header_cell.attrs.has_flag(ftui_render::cell::StyleFlags::BOLD));
+        assert!(
+            header_cell
+                .attrs
+                .has_flag(ftui_render::cell::StyleFlags::BOLD)
+        );
 
         // Row 1 (first body row, y=1) has default row style
         // Row 2 (second body row, y=2) has yellow fg
@@ -3813,7 +3820,10 @@ mod tests {
         assert_eq!(row1_cell.fg, yellow);
 
         // Undefined role (e.g. row_selected) equals default theme value
-        assert_eq!(table.table_theme().row_selected, TableTheme::default().row_selected);
+        assert_eq!(
+            table.table_theme().row_selected,
+            TableTheme::default().row_selected
+        );
     }
 
     #[test]

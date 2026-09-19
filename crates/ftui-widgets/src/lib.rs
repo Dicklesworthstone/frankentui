@@ -286,6 +286,7 @@ pub use debug_overlay::{
     DebugOverlayStatefulState,
 };
 pub use decision_card::DecisionCard;
+pub use ftui_style::StyleSheet;
 pub use group::Group;
 pub use help_registry::{HelpContent, HelpId, HelpRegistry, Keybinding};
 pub use history_panel::{HistoryEntry, HistoryPanel, HistoryPanelMode};
@@ -298,7 +299,6 @@ pub use sparkline::{Sparkline, SparklineMarkers};
 pub use status_line::{StatusItem, StatusLine};
 pub use table::{ColumnSpec, Row, Table, TableState, Truncate};
 pub use tabs::{Tab, Tabs, TabsState};
-pub use ftui_style::StyleSheet;
 pub use virtualized::{
     HeightCache, ItemHeight, RenderItem, Virtualized, VirtualizedList, VirtualizedListState,
     VirtualizedStorage,

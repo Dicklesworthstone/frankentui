@@ -56,15 +56,9 @@ pub fn stylesheet(theme: &Theme) -> StyleSheet {
     sheet.define("table.border", Style::new().fg(pal.fg_muted));
     sheet.define(
         "table.header",
-        Style::new()
-            .bold()
-            .fg(pal.fg_primary)
-            .bg(pal.bg_surface),
+        Style::new().bold().fg(pal.fg_primary).bg(pal.bg_surface),
     );
-    sheet.define(
-        "table.row",
-        Style::new().fg(pal.fg_primary).bg(pal.bg_base),
-    );
+    sheet.define("table.row", Style::new().fg(pal.fg_primary).bg(pal.bg_base));
     sheet.define(
         "table.row_alt",
         Style::new().fg(pal.fg_primary).bg(pal.bg_surface),

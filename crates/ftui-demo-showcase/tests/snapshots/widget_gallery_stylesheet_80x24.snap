@@ -1,0 +1,24 @@
+  A: Inputs │ ▸ B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F
++ASCII---+┌─Square─┐╭─Rounded╮╔Double══╗╭Text Style Flags──────────────────────╮
+|Border: |│Border: ││Border: │║Border: ║│Bold            Dim                   │
+|Align: L|│Align: C││Align: R│║Align: L║│Italic          Underline             │
+|        |│        ││        │║        ║│DblUnder        CurlyUL               │
++--------+└────────┘╰────────╯╚════════╝│Blink           Reverse               │
+┏━Heavy━━┓┌┄┄Dashed┐┏HeavyDas┓#-Custom-#╰──────────────────────────────────────╯
+┃Border: ┃┆Border: ┆┇Border: ┇|Border: |╭Stylesheet────────────────────────────╮
+┃Align: C┃┆Align: R┆┇Align: L┇|Align: C|│heading         muted                 │
+┃        ┃┆        ┆┇        ┇|        |│error                                 │
+┗━━━━━━━━┛└┄┄┄┄┄┄┄┄┘┗┅┅┅┅┅┅┅┅┛#--------#╰──────────────────────────────────────╯
+╭Paragraph Wrap───────────╮╭Lists───────────────────╮╭Code Block──────────────╮ 
+│Word: The quick brown fox││• Bullet item           ││fn main() {             │ 
+│jumps over the lazy dog. ││• Second item           ││    println!("hello");  │ 
+│                         ││  ◦ Nested item        ↓││}                       │ 
+│Char: The quick brown fox│╰────────────────────────╯│                        │ 
+│ jumps over the lazy dog.│╭Table───────────────────╮│                        │ 
+│                         ││Name      │Type │Size   │╰────────────────────────╯ 
+│None: The quick brown fox││main.rs   │Rust │4.2 KB │╭Blockquote + Rule───────╮ 
+│                         ││README.md │MD   │3.4 KB ││> Deterministic output b│ 
+│                         ││config.tom│TOML │1.1 KB ││                        │ 
+│                         ││                        ││────────────────────────│ 
+╰─────────────────────────╯╰────────────────────────╯╰────────────────────────╯ 
+.*........                                                                      

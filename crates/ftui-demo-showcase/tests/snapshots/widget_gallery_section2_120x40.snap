@@ -8,10 +8,10 @@
 |         |│         ││         │║       ║│Bold+Italic     Bold+Under             │  │┃              ││               ││
 |         |│         ││         │║       ║│Dim+Italic      All Flags              │  │┃              ││               ││
 +---------+└─────────┘╰─────────╯╚═══════╝│                                       │  │┃              ││               ││
-┏━━Heavy━━┓┌┄┄┄Dashed┐┏HeavyDash┓#Custom-#│                                       │  │┃              ││               ││
-┃Border: H┃┆Border: D┆┇Border: H┇|Border:|│                                       │  │┃              ││               ││
-┃Align: Ce┃┆Align: Ri┆┇Align: Le┇|Align: |│                                       │  │┃              ││               ││
-┃         ┃┆         ┆┇         ┇|       |│                                       │  │┃              ││               ││
+┏━━Heavy━━┓┌┄┄┄Dashed┐┏HeavyDash┓#Custom-#╰───────────────────────────────────────╯  │┃              ││               ││
+┃Border: H┃┆Border: D┆┇Border: H┇|Border:|╭Stylesheet─────────────────────────────╮  │┃              ││               ││
+┃Align: Ce┃┆Align: Ri┆┇Align: Le┇|Align: |│heading         muted                  │  │┃              ││               ││
+┃         ┃┆         ┆┇         ┇|       |│error                                  │  │┃              ││               ││
 ┃         ┃┆         ┆┇         ┇|       |│                                       │  │┃              ││               ││
 ┃         ┃┆         ┆┇         ┇|       |│                                       │  │┃              ■│               ││
 ┃         ┃┆         ┆┇         ┇|       |│                                       │  │──────■■■──────────────■■■───────│
