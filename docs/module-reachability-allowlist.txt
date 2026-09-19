@@ -108,8 +108,10 @@ ftui-render::quotient_filter  # bd-gqit2
 
 # ── ftui-harness ─────────────────────────────────────────────────────────
 # Reached by neither production code nor any test, which for a test-support
-# crate means nothing uses them at all. cost_surface left this list on
-# 2026-09-19 when render_gauntlet started using it for stage attribution.
+# crate means nothing uses them at all. Two left this list on 2026-09-19:
+# cost_surface, when render_gauntlet started using it for stage attribution,
+# and frame_comparison, when ftui-layout's golden_incremental test started
+# using it for cell-level divergence reports.
 #
 # These pointed at .11.5, which is closed and enumerates ftui-render and
 # ftui-runtime files — it never covered ftui-harness, so these had no owner.
@@ -118,7 +120,6 @@ ftui-render::quotient_filter  # bd-gqit2
 #
 # Engines — complete, tested analyzers with a callable API, waiting on a caller:
 ftui-harness::doctor_topology  # bd-5h57k
-ftui-harness::frame_comparison  # bd-5h57k
 ftui-harness::hotspot_extraction  # bd-5h57k
 ftui-harness::optimization_policy  # bd-5h57k
 ftui-harness::proof_oracle  # bd-5h57k

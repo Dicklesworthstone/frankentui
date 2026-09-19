@@ -7,6 +7,7 @@
 //! Run with: `cargo test -p ftui-layout --test golden_incremental -- --nocapture`
 
 use ftui_core::geometry::Rect;
+use ftui_harness::frame_comparison::FrameComparator;
 use ftui_harness::golden::compute_buffer_checksum;
 use ftui_layout::dep_graph::{InputKind, NodeId};
 use ftui_layout::incremental::IncrementalLayout;
@@ -157,12 +158,21 @@ fn compute_layout(
 
 /// Run a scenario: compute layout in incremental mode, render to buffer,
 /// then recompute in force-full mode, render to buffer, compare BLAKE3.
+///
+/// Returns `(incremental checksum, full checksum, divergence report)`. The
+/// report is empty when the checksums match.
+///
+/// Two BLAKE3 hashes tell you a scenario diverged and nothing else, which is
+/// the least useful moment to be told nothing: the whole point of the test is
+/// that incremental layout should be indistinguishable from full layout, so
+/// when it is not you want the cells. `ftui_harness::frame_comparison` already
+/// does exactly that and had no caller anywhere in the workspace (bd-5h57k).
 fn verify_scenario(
     inc: &mut IncrementalLayout,
     root: NodeId,
     buf_w: u16,
     buf_h: u16,
-) -> (String, String) {
+) -> (String, String, String) {
     let root_area = area(buf_w, buf_h);
 
     // Incremental pass.
@@ -181,7 +191,27 @@ fn verify_scenario(
     let full_checksum = compute_buffer_checksum(&full_buf);
     inc.set_force_full(false);
 
-    (incr_checksum, full_checksum)
+    let divergence = divergence_report(&full_buf, &incr_buf, incr_checksum == full_checksum);
+
+    (incr_checksum, full_checksum, divergence)
+}
+
+/// Cell-level detail for a checksum mismatch, empty when the checksums agree.
+///
+/// Only pays for the cell walk when something is actually wrong. Full layout is
+/// the reference, incremental is the candidate, so the report reads "expected"
+/// = what full layout produced.
+fn divergence_report(full_buf: &Buffer, incr_buf: &Buffer, matched: bool) -> String {
+    if matched {
+        return String::new();
+    }
+    format!(
+        "\n{}",
+        FrameComparator::new()
+            .with_max_mismatches(12)
+            .compare(full_buf, incr_buf)
+            .detail_report()
+    )
 }
 
 // ============================================================================
@@ -223,7 +253,8 @@ fn golden_fixed_size_scenarios() {
             // Cold-cache pass (warms the cache).
             compute_layout(&mut inc, root, area(buf_w, buf_h));
 
-            let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, buf_w, buf_h);
+            let (incr_cksum, full_cksum, divergence) =
+                verify_scenario(&mut inc, root, buf_w, buf_h);
             let matched = incr_cksum == full_cksum;
 
             log.emit(json!({
@@ -240,7 +271,7 @@ fn golden_fixed_size_scenarios() {
 
             assert_eq!(
                 incr_cksum, full_cksum,
-                "MISMATCH: scenario={scenario}: incremental != full"
+                "MISMATCH: scenario={scenario}: incremental != full{divergence}"
             );
             pass_count += 1;
         }
@@ -284,7 +315,7 @@ fn golden_mutation_single_widget() {
             inc.mark_dirty(gc_ids[gc_idx]);
             inc.propagate();
 
-            let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, 200, 60);
+            let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, 200, 60);
 
             log.emit(json!({
                 "test": "golden_mutation_single_widget",
@@ -294,7 +325,7 @@ fn golden_mutation_single_widget() {
                 "timestamp_ns": elapsed_ns(&start),
             }));
 
-            assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}");
+            assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}{divergence}");
         }
     }
 
@@ -328,7 +359,7 @@ fn golden_mutation_add_remove() {
         inc.propagate();
 
         let scenario = format!("add_remove_{children}x{gc_per}_remove_last");
-        let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, 200, 60);
+        let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, 200, 60);
 
         log.emit(json!({
             "test": "golden_mutation_add_remove",
@@ -338,7 +369,7 @@ fn golden_mutation_add_remove() {
             "timestamp_ns": elapsed_ns(&start),
         }));
 
-        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}");
+        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}{divergence}");
 
         // Add a new child (structural change → mark parent dirty).
         let new_child = inc.add_node(Some(root));
@@ -347,7 +378,7 @@ fn golden_mutation_add_remove() {
         inc.propagate();
 
         let scenario = format!("add_remove_{children}x{gc_per}_add_new");
-        let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, 200, 60);
+        let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, 200, 60);
 
         log.emit(json!({
             "test": "golden_mutation_add_remove",
@@ -357,7 +388,7 @@ fn golden_mutation_add_remove() {
             "timestamp_ns": elapsed_ns(&start),
         }));
 
-        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}");
+        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}{divergence}");
     }
 
     log.flush("golden_mutation_add_remove");
@@ -396,7 +427,7 @@ fn golden_mutation_resize() {
             inc.propagate();
 
             let scenario = format!("resize_seq{seq_idx}_step{step}_{w}x{h}");
-            let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, w, h);
+            let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, w, h);
 
             log.emit(json!({
                 "test": "golden_mutation_resize",
@@ -406,7 +437,7 @@ fn golden_mutation_resize() {
                 "timestamp_ns": elapsed_ns(&start),
             }));
 
-            assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}");
+            assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}{divergence}");
         }
     }
 
@@ -440,7 +471,7 @@ fn golden_mutation_rapid_fire() {
             }
             inc.propagate();
 
-            let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, 200, 60);
+            let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, 200, 60);
 
             if frame % 10 == 0 {
                 log.emit(json!({
@@ -454,7 +485,7 @@ fn golden_mutation_rapid_fire() {
 
             assert_eq!(
                 incr_cksum, full_cksum,
-                "MISMATCH: rapid_{children}x{gc_per} frame {frame}"
+                "MISMATCH: rapid_{children}x{gc_per} frame {frame}{divergence}"
             );
         }
     }
@@ -483,7 +514,7 @@ fn golden_flex_sibling_mutation() {
         inc.propagate();
 
         let scenario = format!("flex_sibling_{children}x{gc_per}");
-        let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, 200, 60);
+        let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, 200, 60);
 
         log.emit(json!({
             "test": "golden_flex_sibling_mutation",
@@ -493,7 +524,7 @@ fn golden_flex_sibling_mutation() {
             "timestamp_ns": elapsed_ns(&start),
         }));
 
-        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}");
+        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}{divergence}");
     }
 
     log.flush("golden_flex_sibling_mutation");
@@ -525,7 +556,7 @@ fn golden_hash_dedup_mutation() {
         inc.propagate();
 
         let scenario = format!("hash_dedup_{children}x{gc_per}");
-        let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, 200, 60);
+        let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, 200, 60);
 
         log.emit(json!({
             "test": "golden_hash_dedup_mutation",
@@ -535,7 +566,7 @@ fn golden_hash_dedup_mutation() {
             "timestamp_ns": elapsed_ns(&start),
         }));
 
-        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}");
+        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}{divergence}");
     }
 
     log.flush("golden_hash_dedup_mutation");
@@ -648,7 +679,7 @@ fn golden_mixed_constraints() {
         }
         inc.propagate();
 
-        let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, 200, 60);
+        let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, 200, 60);
 
         let scenario = format!("mixed_constraint_{name}");
 
@@ -660,7 +691,7 @@ fn golden_mixed_constraints() {
             "timestamp_ns": elapsed_ns(&start),
         }));
 
-        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}");
+        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}{divergence}");
     }
 
     log.flush("golden_mixed_constraints");
@@ -752,6 +783,7 @@ fn golden_deep_tree() {
         inc.set_force_full(false);
 
         let scenario = format!("deep_tree_depth{depth}");
+        let divergence = divergence_report(&full_buf, &incr_buf, incr_cksum == full_cksum);
 
         log.emit(json!({
             "test": "golden_deep_tree",
@@ -761,7 +793,7 @@ fn golden_deep_tree() {
             "timestamp_ns": elapsed_ns(&start),
         }));
 
-        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}");
+        assert_eq!(incr_cksum, full_cksum, "MISMATCH: {scenario}{divergence}");
     }
 
     log.flush("golden_deep_tree");
@@ -795,7 +827,7 @@ fn golden_stress_200_frames() {
         }
         inc.propagate();
 
-        let (incr_cksum, full_cksum) = verify_scenario(&mut inc, root, 200, 60);
+        let (incr_cksum, full_cksum, divergence) = verify_scenario(&mut inc, root, 200, 60);
 
         if incr_cksum != full_cksum {
             mismatches += 1;
@@ -822,7 +854,7 @@ fn golden_stress_200_frames() {
 
         assert_eq!(
             incr_cksum, full_cksum,
-            "MISMATCH at frame {frame}: incremental != full (dirty={num_dirty})"
+            "MISMATCH at frame {frame}: incremental != full (dirty={num_dirty}){divergence}"
         );
     }
 
@@ -876,4 +908,50 @@ fn golden_scenario_count() {
         total_scenarios >= 47,
         "need 47+ scenarios, have {total_scenarios}"
     );
+}
+
+// ============================================================================
+// The divergence report itself
+// ============================================================================
+
+/// Every `MISMATCH:` assertion in this file appends `divergence_report`, so a
+/// failure is only as useful as that string. Until 2026-09-19 those assertions
+/// printed two BLAKE3 hashes and nothing else (bd-5h57k).
+#[test]
+fn divergence_report_names_the_cells_that_differ() {
+    let mut full = Buffer::new(8, 3);
+    let mut incr = Buffer::new(8, 3);
+    for buf in [&mut full, &mut incr] {
+        for y in 0..3 {
+            for x in 0..8 {
+                if let Some(c) = buf.get_mut(x, y) {
+                    *c = Cell::from_char('A');
+                }
+            }
+        }
+    }
+    // Incremental layout "forgets" one cell: exactly the class of bug this
+    // suite exists to catch, and the one a checksum describes least well.
+    if let Some(c) = incr.get_mut(5, 1) {
+        *c = Cell::from_char('B');
+    }
+
+    let matched = compute_buffer_checksum(&full) == compute_buffer_checksum(&incr);
+    assert!(
+        !matched,
+        "the two buffers must differ for this to mean anything"
+    );
+
+    let report = divergence_report(&full, &incr, matched);
+    assert!(
+        report.contains("[5,1]"),
+        "report must name the differing cell, got: {report}"
+    );
+    assert!(
+        report.contains("'A'") && report.contains("'B'"),
+        "report must show expected and actual content, got: {report}"
+    );
+
+    // Matching buffers cost nothing and say nothing.
+    assert_eq!(divergence_report(&full, &full, true), "");
 }
