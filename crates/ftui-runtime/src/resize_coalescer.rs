@@ -2475,7 +2475,8 @@ mod tests {
         // no inter-arrival and falls back to the heuristic, then a burst, then
         // gaps, ending outside the clamp window.
         let mut elapsed = 0u64;
-        for (i, dt) in [0u64, 5, 5, 5, 5, 5, 5, 400, 200, 12_000].iter().enumerate() {
+        let schedule = [0u64, 5, 5, 5, 5, 5, 5, 400, 200, 12_000];
+        for (i, dt) in schedule.iter().enumerate() {
             elapsed += dt;
             c.handle_resize_at(
                 100 + u16::try_from(i).expect("fixture is short"),
@@ -2485,7 +2486,10 @@ mod tests {
         }
 
         let logs = c.logs();
-        assert!(!logs.is_empty(), "logging was enabled but nothing was logged");
+        assert!(
+            !logs.is_empty(),
+            "logging was enabled but nothing was logged"
+        );
         let mut saw_heuristic = false;
         let mut saw_bocpd = false;
         for log in logs {
@@ -2510,7 +2514,10 @@ mod tests {
             saw_heuristic,
             "the first event has no inter-arrival and should fall back to the heuristic"
         );
-        assert!(saw_bocpd, "the burst should have been decided by the posterior");
+        assert!(
+            saw_bocpd,
+            "the burst should have been decided by the posterior"
+        );
 
         // The JSONL the evidence pipeline actually emits carries both fields.
         let jsonl = c.decision_logs_jsonl();
@@ -2520,7 +2527,9 @@ mod tests {
         // The one case where `p_burst` really is absent, per the field's doc:
         // BOCPD off. Without this the `Option` would look decorative.
         let mut off = ResizeCoalescer::new(
-            CoalescerConfig::default().without_bocpd().with_logging(true),
+            CoalescerConfig::default()
+                .without_bocpd()
+                .with_logging(true),
             (80, 24),
         );
         for i in 1..=6u64 {
@@ -2529,7 +2538,10 @@ mod tests {
         assert!(!off.logs().is_empty(), "heuristic-only run logged nothing");
         for log in off.logs() {
             assert_eq!(log.detector, RegimeDetector::Heuristic, "{log:?}");
-            assert!(log.p_burst.is_none(), "bocpd off must mean no posterior: {log:?}");
+            assert!(
+                log.p_burst.is_none(),
+                "bocpd off must mean no posterior: {log:?}"
+            );
         }
     }
 
