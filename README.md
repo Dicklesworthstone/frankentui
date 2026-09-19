@@ -1107,16 +1107,22 @@ settings can enable sampling between forced intervals.
 Several statistical thresholds use **e-processes** (wealth-based sequential tests):
 
 ```
-Wealth process:
-    W_t = W_{t-1} × (1 + λ_t × (X_t - μ₀))
-
-where λ_t is the betting fraction from GRAPA (General Random Adaptive Proportion Algorithm)
+E-process (exponential / sub-Gaussian form, as implemented):
+    E_t = E_{t-1} × exp(λ·r_t − λ²/2)      where r_t is a standardized residual
 
 Key guarantee:
-    P(∃t: W_t ≥ 1/α) ≤ α   under null hypothesis
+    P(∃t: E_t ≥ 1/α) ≤ α   under null hypothesis
 
 This holds at ANY stopping time, with no peeking penalty.
 ```
+
+**λ is fixed on the render path.** `ftui_render::budget`'s `EProcessState` reads
+`λ` straight from its config, so the production e-process is a fixed-betting
+test, not an adaptive one. GRAPA — adapting `λ` by
+`λ ← clamp(λ + η · z/(1 + λ·z))`, with `grapa_eta` defaulting to 0.1 — is
+implemented only in the experimental `conformal_alert`. An earlier version of
+this block wrote the multiplicative-wealth form `W_t = W_{t-1}(1 + λ_t(X_t − μ₀))`
+and attributed `λ_t` to GRAPA, which described neither implementation.
 
 **Applications in FrankenTUI:**
 - Budget degradation decisions (`ftui_render::budget`'s `EProcessState`, on the render path)

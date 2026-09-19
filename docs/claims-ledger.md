@@ -45,8 +45,8 @@ The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
 columns, text anchors and existing owner IDs.
 
-As of 2026-09-19 the distribution across 152 rows is 11 pending-code,
-57 pending-doc, 49 retracted and 35 proven. Regenerate this sentence from
+As of 2026-09-19 the distribution across 152 rows is 6 pending-code,
+57 pending-doc, 50 retracted and 39 proven. Regenerate this sentence from
 `python3 scripts/check_readme_claims.py --schema-check` rather than by hand;
 it had drifted from the table before 2026-09-19.
 
@@ -115,6 +115,15 @@ hazard: the row reads as correct because part of it is.
 - V41 "Widget composition helpers `render_widget`, **`Layout`**" —
   `render_widget` is real and compiled by a snippet; there is no `Layout` type
   in ftui-layout, only `Flex`.
+- V12 "E-process / **GRAPA** anytime-valid monitors" is the fourth and the
+  subtlest. The e-process is genuinely on the render path —
+  `ftui_render::budget`'s `EProcessState` runs `E_t = E_{t-1}·exp(λ·r_t − λ²/2)`
+  every frame and gates degradation on `E_t > 1/α`. But `λ` is read straight
+  from config: the production test bets at a **fixed** fraction. GRAPA, which
+  adapts `λ`, exists only in the experimental `conformal_alert`. The README's
+  formula block compounded it by writing the multiplicative-wealth form
+  `W_t = W_{t-1}(1 + λ_t(X_t − μ₀))`, which matches *neither* implementation;
+  both use the exponential form.
 
 Retracted: C36 and V19 (the SOS barrier coefficients were claimed to be
 SDP-solved by a script that does not exist; the source header says they were
@@ -197,11 +206,11 @@ complete `.5.2`.
 | V05 | Composable crates, add only what you need | README.md :: Composable crates, add only what you need | status | CODE | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-code | - |
 | V06 | 80+ widgets | README.md :: 80+ widgets | status | CODE | bd-g00-root-epic-ewths.23 | count:91 Widget/StatefulWidget impls under crates/ftui-widgets/src >= 80 | proven | 2026-09-19 |
 | V07 | Pane workspaces with drag/dock/snap/throw/undo | README.md :: Pane workspaces with drag/dock/snap/throw/undo | status | DOC | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-doc | - |
-| V08 | Web/WASM backend, runs in browser | README.md :: Web/WASM backend, runs in browser | status | CODE | bd-g00-root-epic-ewths.29 | bead:bd-g00-root-epic-ewths.29 | pending-code | - |
+| V08 | Web/WASM backend, runs in browser | README.md :: Web/WASM backend, runs in browser | status | CODE | bd-g00-root-epic-ewths.29 | test:ftui-showcase-wasm::runner_core::screen_selector_reaches_model_and_preserves_invalid_selection | proven | 2026-09-19 |
 | V09 | Bayesian diff strategy | README.md :: Bayesian diff strategy | status | DOC | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-doc | - |
 | V10 | BOCPD resize coalescing | README.md :: BOCPD resize coalescing | status | CODE | bd-g00-root-epic-ewths.16 | test:ftui-runtime::resize_coalescer::config_default_enables_bocpd_with_heuristic_fallback | proven | 2026-09-19 |
-| V11 | VOI sampling for expensive ops | README.md :: VOI sampling for expensive ops | status | CODE | bd-g00-root-epic-ewths.14 | bead:bd-g00-root-epic-ewths.14 | pending-code | - |
-| V12 | E-process / GRAPA anytime-valid monitors | README.md :: E-process / GRAPA anytime-valid monitors | status | CODE | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-code | - |
+| V11 | VOI sampling for expensive ops | README.md :: VOI sampling for expensive ops | status | CODE | bd-g00-root-epic-ewths.14 | test:ftui::readme_snippets::readme_model_snippets_match | proven | 2026-09-19 |
+| V12 | E-process / GRAPA anytime-valid monitors | README.md :: E-process / GRAPA anytime-valid monitors | status | CODE | bd-g00-root-epic-ewths.17 | test:ftui-render::budget::eprocess_grows_under_overload | retracted | 2026-09-19 |
 | V13 | Conformal frame-time gating (Mondrian) | README.md :: Conformal frame-time gating (Mondrian) | status | CODE | bd-g00-root-epic-ewths.15 | test:ftui-runtime::conformal_predictor::default_config_matches_the_documented_values | proven | 2026-09-19 |
 | V14 | Multi-stage conformal monitors | README.md :: Multi-stage conformal monitors | status | DOC | bd-g00-root-epic-ewths.15 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V15 | CUSUM allocation + hover | README.md :: CUSUM allocation + hover | status | CODE | bd-g00-root-epic-ewths.17 | test:ftui-render::frame_guardrails::guardrails_detect_allocation_drift; test:ftui-core::hover_stabilizer::default_config_values | proven | 2026-09-19 |
@@ -243,10 +252,10 @@ complete `.5.2`.
 | V51 | Evidence sink categories | README.md :: Evidence sink categories | status | CODE | bd-g00-root-epic-ewths.26 | test:ftui::readme_snippets::readme_model_snippets_match | proven | 2026-09-19 |
 | V52 | Runtime lanes + rollout + shadow-run | README.md :: Runtime lanes + rollout + shadow-run | status | CODE | bd-g00-root-epic-ewths.30 | test:ftui::readme_snippets::readme_runtime_lanes_snippet; test:ftui::readme_snippets::readme_shadow_run_snippet; test:ftui::readme_snippets::readme_rollout_scorecard_snippet | proven | 2026-09-19 |
 | V53 | Effect queue telemetry + backpressure | README.md :: Effect queue telemetry + backpressure | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V54 | Telemetry schema targets | README.md :: Telemetry schema targets | status | CODE | bd-g00-root-epic-ewths.26 | bead:bd-g00-root-epic-ewths.26 | pending-code | - |
+| V54 | Telemetry schema targets | README.md :: Telemetry schema targets | status | CODE | bd-g00-root-epic-ewths.26 | test:ftui-runtime::telemetry_schema::schema_events_match_constants | proven | 2026-09-19 |
 | V55 | E-graph layout optimizer before solver | README.md :: E-graph layout optimizer before solver | status | CODE | bd-g00-root-epic-ewths.11 | path:docs/perf/egraph_vs_flex_2026-09-18.md | retracted | 2026-09-19 |
 | V56 | Rope text engine | README.md :: Rope text engine | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V57 | Editor core features | README.md :: Editor core features | status | CODE | bd-g00-root-epic-ewths.21 | bead:bd-g00-root-epic-ewths.21 | pending-code | - |
+| V57 | Editor core features | README.md :: Editor core features | status | CODE | bd-g00-root-epic-ewths.21 | test:ftui-text::editor::undo_groups_virtual_idle_boundary_and_clock_reset; test:ftui-text::editor::paragraph_selection_preserves_anchor_and_exact_text | proven | 2026-09-19 |
 | V58 | Degradation cascade module | README.md :: Degradation cascade module | status | CODE | bd-g00-root-epic-ewths.17 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |
 | V59 | Cost models (cache / M-G-1 / batching) | README.md :: Cost models (cache / M-G-1 / batching) | status | DOC | bd-g00-root-epic-ewths.11 | cmd:python3 scripts/check_readme_claims.py --experimental-check; manual:2026-09-19:CrimsonElk | retracted | 2026-09-19 |
 | V60 | Gesture recognizer | README.md :: Gesture recognizer | status | CODE | bd-g00-root-epic-ewths.24 | test:ftui-core::gesture::default_config_values | proven | 2026-09-19 |
