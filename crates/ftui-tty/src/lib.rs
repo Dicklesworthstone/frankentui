@@ -1410,6 +1410,23 @@ impl TtyBackend {
         })
     }
 
+    /// Give back this backend's slot in [`LIVE_SIGNAL_INTERCEPT_SESSIONS`],
+    /// if it holds one. Idempotent.
+    ///
+    /// Separate from the teardown-sequence path on purpose. That path is
+    /// gated on `TTY_SESSION_ACTIVE`, which answers "have the cleanup bytes
+    /// already gone out?" - and `best_effort_termination_cleanup` answers it
+    /// `false` for us on the way past, from both the panic hook and the
+    /// termination-signal thread. A slot must come back on every drop, not
+    /// only on the drops that still had bytes left to write.
+    #[cfg(unix)]
+    fn release_signal_interception(&mut self) {
+        if self.signal_interception_active {
+            LIVE_SIGNAL_INTERCEPT_SESSIONS.fetch_sub(1, Ordering::SeqCst);
+            self.signal_interception_active = false;
+        }
+    }
+
     /// Whether this backend has an active terminal session (raw mode).
     #[must_use]
     pub fn is_live(&self) -> bool {
@@ -1426,6 +1443,18 @@ impl TtyBackend {
 
 impl Drop for TtyBackend {
     fn drop(&mut self) {
+        // Unconditionally, and before anything that can return early: the
+        // signal-interception slot is this backend's to give back whether or
+        // not the teardown bytes are still owed.
+        //
+        // Leaked above zero, the counter tells the signal thread a live
+        // session still wants to handle SIGINT itself, long after that session
+        // is gone. The thread then records a pending signal nobody will ever
+        // acknowledge and waits out the whole `SIGNAL_SHUTDOWN_GRACE` before
+        // exiting - so one stuck slot costs every later Ctrl-C two seconds.
+        #[cfg(unix)]
+        self.release_signal_interception();
+
         // Only run cleanup if we have an active session.
         #[cfg(unix)]
         if self.raw_mode.is_some() {
@@ -1454,11 +1483,6 @@ impl Drop for TtyBackend {
 
             // Flush everything before RawModeGuard restores termios.
             let _ = stdout.flush();
-
-            if self.signal_interception_active {
-                LIVE_SIGNAL_INTERCEPT_SESSIONS.fetch_sub(1, Ordering::SeqCst);
-                self.signal_interception_active = false;
-            }
 
             // RawModeGuard::drop() runs after this, restoring original termios.
         }
@@ -2973,14 +2997,108 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn signal_intercept_guard_disarm_transfers_ownership() {
+        let _serial = signal_counter_lock();
+        let before = LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst);
         let mut guard = SignalInterceptGuard::new(true);
+        assert_eq!(
+            LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst),
+            before + 1,
+            "arming should take a slot"
+        );
         assert!(
             guard.disarm(),
             "enabled guard should report transferred ownership on disarm"
         );
-        // Exact counter values are process-global and therefore unstable under
-        // parallel test execution. We only restore our borrowed slot here.
+        drop(guard);
+        assert_eq!(
+            LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst),
+            before + 1,
+            "a disarmed guard must not release the slot it handed on"
+        );
+        // Stand in for the owner the slot was handed to.
         LIVE_SIGNAL_INTERCEPT_SESSIONS.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Serialize the tests that read [`LIVE_SIGNAL_INTERCEPT_SESSIONS`].
+    ///
+    /// The counter is process-global. nextest gives each test its own process,
+    /// but `cargo test` does not, and these assertions are on exact values -
+    /// without this they would be flaky under `cargo test` alone, which is the
+    /// worst kind of test to leave behind.
+    #[cfg(unix)]
+    fn signal_counter_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_backend_returns_its_signal_slot_after_teardown_already_ran() {
+        let _serial = signal_counter_lock();
+
+        // The decrement used to live at the bottom of
+        //
+        //     if self.raw_mode.is_some() {
+        //         if !TTY_SESSION_ACTIVE.swap(false, ..) { return; }
+        //         ...emit the teardown sequence...
+        //         <decrement here>
+        //     }
+        //
+        // so *either* condition skipped it. The one this test can reach
+        // without a controlling tty is the outer one - a headless backend
+        // holding a slot - because `TtyBackend::new` leaves `raw_mode` as
+        // `None`. The one the fix is really for is the inner one: after a
+        // panic or a termination signal, `best_effort_termination_cleanup`
+        // has already emitted the bytes and swapped `TTY_SESSION_ACTIVE` to
+        // false, so a live backend dropping afterwards took the early return.
+        // Same nesting, same lost slot; set the flag here to model that state
+        // even though the outer condition is what bites first.
+        TTY_SESSION_ACTIVE.store(false, Ordering::SeqCst);
+
+        let before = LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst);
+        {
+            let mut backend = TtyBackend::new(80, 24);
+            LIVE_SIGNAL_INTERCEPT_SESSIONS.fetch_add(1, Ordering::SeqCst);
+            backend.signal_interception_active = true;
+            assert_eq!(
+                LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst),
+                before + 1
+            );
+        }
+        assert_eq!(
+            LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst),
+            before,
+            "the slot must come back even when the teardown guard is spent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn releasing_signal_interception_twice_only_gives_back_one_slot() {
+        let _serial = signal_counter_lock();
+        let before = LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst);
+
+        let mut backend = TtyBackend::new(80, 24);
+        LIVE_SIGNAL_INTERCEPT_SESSIONS.fetch_add(1, Ordering::SeqCst);
+        backend.signal_interception_active = true;
+
+        backend.release_signal_interception();
+        assert_eq!(
+            LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst),
+            before
+        );
+        backend.release_signal_interception();
+        assert_eq!(
+            LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst),
+            before,
+            "release must be idempotent - the Drop that follows calls it again"
+        );
+        drop(backend);
+        assert_eq!(
+            LIVE_SIGNAL_INTERCEPT_SESSIONS.load(Ordering::SeqCst),
+            before,
+            "and the drop must not take a slot that was already returned"
+        );
     }
 
     #[test]
