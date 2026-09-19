@@ -15098,11 +15098,15 @@ mod tests {
         assert_eq!(program.model.events.len(), 0);
         assert!(program.event_coalescer().unwrap().has_pending());
 
-        // Four notches in, four notches out. The batching win is that the model
-        // is updated once at flush time rather than four times as the events
-        // arrive; it is *not* that the application scrolls a quarter as far as
-        // the user asked, which is what collapsing the run used to do
-        // (`bd-minjt`).
+        // Four notches in, four notches out - which is the point of the fix:
+        // collapsing the run made the application scroll a quarter as far as
+        // the user asked (`bd-minjt`).
+        //
+        // Note what the assertion below therefore says about cost. The model
+        // is updated four times, once per notch, because `MouseEventKind` has
+        // no notch count and a model is entitled to see each notch. Batching
+        // scroll defers those updates to flush time; it does not merge them.
+        // Only mouse-move coalescing removes updates.
         program.flush_coalesced_events().unwrap();
         assert_eq!(program.model.events.len(), 4);
         for event in &program.model.events {

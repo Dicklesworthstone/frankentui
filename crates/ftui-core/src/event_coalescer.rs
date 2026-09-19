@@ -22,12 +22,32 @@
 //! - **Scroll: batched, never dropped.** A scroll event is a *delta*, so
 //!   discarding one discards distance the user asked for. Consecutive notches
 //!   in the same direction accumulate into a run, and flushing a run of `n`
-//!   notches delivers `n` events. The saving is one dispatch-and-render pass
-//!   per batch rather than one per notch — not fewer notches.
+//!   notches delivers `n` events.
 //!
 //! That distinction is the whole point: an earlier version collapsed a run to
 //! a single event, so four notches scrolled a quarter as far as the user asked,
 //! and the faster you scrolled the more was lost (`bd-minjt`).
+//!
+//! # What batching does and does not save
+//!
+//! Only the mouse-move half of this module reduces work: `n` moves become one
+//! `update()` call. Scroll batching does not, and the claim that it does is
+//! worth stating in the negative, because it reads as though it should.
+//!
+//! [`MouseEventKind`] has no notch count, so a run of `n` notches can only be
+//! delivered as `n` events, and a caller that hands each one to its model gets
+//! `n` model updates — exactly what it would get with no coalescer at all. The
+//! renders are not saved either: [`Program`] renders once per drain burst
+//! whether or not it is coalescing, because dispatch only sets a dirty flag.
+//!
+//! So for scroll this is a *reordering*, not a reduction: the notches are held
+//! until the batch ends, then delivered contiguously and all at the pointer
+//! position of the last one. A caller that wants the reduction has to take it
+//! deliberately, by reading [`EventCoalescer::pending_scroll_events`] and
+//! applying the total in one step instead of flushing. [`Program`] does not do
+//! that, and should not: a model is entitled to see each notch.
+//!
+//! [`Program`]: https://docs.rs/ftui-runtime/latest/ftui_runtime/program/struct.Program.html
 //!
 //! Non-coalescable events (key presses, mouse clicks, etc.) pass through
 //! immediately. The caller is responsible for flushing pending events.
@@ -69,7 +89,7 @@ use crate::event::{Event, MouseEvent, MouseEventKind};
 /// # Performance
 ///
 /// [`push`](Self::push) is O(1) and allocation-free in the common path; the
-/// closed-run vector only allocates when scroll direction actually reverses
+/// closed-run vector only allocates when the scroll direction actually changes
 /// between two flushes. [`flush`](Self::flush) is O(total notches), since it
 /// materialises one event per notch.
 #[derive(Debug, Clone, Default)]
@@ -80,10 +100,12 @@ pub struct EventCoalescer {
     /// Scroll run currently accumulating (direction + notch count).
     pending_scroll: Option<ScrollState>,
 
-    /// Runs closed by a direction reversal, oldest first, awaiting flush.
+    /// Runs closed by a direction change, oldest first, awaiting flush.
     ///
-    /// A reversal ends a run but must not discard it, so the run waits here
-    /// instead of being collapsed into the single event `push` can return.
+    /// One run is open at a time, across all four directions, so a horizontal
+    /// notch closes a vertical run just as an opposite one does. The closed run
+    /// must not be discarded, so it waits here instead of being collapsed into
+    /// the single event `push` can return.
     closed_scrolls: Vec<ScrollState>,
 }
 
@@ -169,8 +191,9 @@ impl EventCoalescer {
                     ..pending
                 });
             } else {
-                // Reversal: the old run is finished but keeps its notch count,
-                // so it waits for flush rather than collapsing into one event.
+                // Any direction change, not just an opposite one: the old run
+                // is finished but keeps its notch count, so it waits for flush
+                // rather than collapsing into one event.
                 self.closed_scrolls.push(pending);
                 self.pending_scroll = Some(ScrollState {
                     direction,
@@ -208,14 +231,14 @@ impl EventCoalescer {
     /// Flush all pending coalesced events.
     ///
     /// Returns a vector of events that were pending, in input order:
-    /// 1. Scroll runs closed by a direction reversal, oldest first
+    /// 1. Scroll runs closed by a direction change, oldest first
     /// 2. The scroll run still accumulating
     /// 3. Pending mouse move (latest position)
     ///
     /// **A run of `n` notches yields `n` events.** Scroll is a delta, so
     /// collapsing a run would silently shorten the distance the user asked to
-    /// travel; the batching win is that the whole run is dispatched and
-    /// rendered once, not that notches disappear (`bd-minjt`).
+    /// travel (`bd-minjt`). Flushing therefore costs one model update per
+    /// notch; see the module's "What batching does and does not save".
     ///
     /// After calling `flush()`, the coalescer is empty.
     #[must_use]
@@ -263,7 +286,7 @@ impl EventCoalescer {
     /// Notches accumulated in the scroll run currently in progress.
     ///
     /// Returns 0 if no run is in progress. This counts only the open run, not
-    /// runs already closed by a direction reversal; for the full pending total
+    /// runs already closed by a direction change; for the full pending total
     /// use [`pending_scroll_events`](Self::pending_scroll_events).
     #[must_use]
     pub fn pending_scroll_count(&self) -> u32 {
