@@ -330,6 +330,9 @@ fn benchmark_gate_loads_real_baseline_json() {
         Measurement::new("runtime_first_frame", 5_000_000.0).unit("ns"),
         Measurement::new("runtime_command_roundtrip", 250_000.0).unit("ns"),
         Measurement::new("runtime_effect_queue_drain", 1_000_000.0).unit("ns"),
+        Measurement::new("diff_200x60_sparse", 42_000.0).unit("ns"),
+        Measurement::new("text_width_non_ascii", 15.0).unit("ns"),
+        Measurement::new("text_width_non_ascii_uncached", 65.0).unit("ns"),
     ];
 
     let result = gate.evaluate(&measurements);
@@ -338,13 +341,13 @@ fn benchmark_gate_loads_real_baseline_json() {
         "all under-budget measurements should pass: {}",
         result.summary()
     );
-    assert_eq!(result.pass_count, 14);
+    assert_eq!(result.pass_count, 17);
 
-    // The old ten-metric fixture silently omitted four required runtime
-    // measurements; it must no longer certify the full baseline.
+    // The old ten-metric fixture silently omitted the required runtime, diff and
+    // text-width measurements; it must no longer certify the full baseline.
     let incomplete = gate.evaluate(&measurements[..10]);
     assert!(!incomplete.passed());
-    assert_eq!(incomplete.validation_errors.len(), 4);
+    assert_eq!(incomplete.validation_errors.len(), 7);
 }
 
 // ============================================================================
