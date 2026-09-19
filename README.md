@@ -2748,26 +2748,24 @@ This is the same technique used by materialized-view databases (e.g., Materializ
 
 **Status: experimental** (see [Experimental modules](#experimental-modules))
 
-Frame-budget admissibility is checked using a **sum-of-squares (SOS) polynomial barrier certificate**, precomputed offline via semidefinite programming:
+Frame-budget admissibility is checked against a **polynomial barrier certificate** in the sum-of-squares style:
 
 ```
 State space:
   x₁ = budget_remaining ∈ [0, 1]    (fraction of frame budget left)
-  x₂ = workload_estimate ∈ [0, 1]   (estimated render cost)
+  x₂ = change_rate ∈ [0, 1]         (estimated render cost)
 
 Barrier certificate B(x₁, x₂):
-  B(x₁, x₂) = Σ cᵢⱼ x₁ⁱ x₂ʲ     (polynomial, degree ≤ 6)
+  B(x₁, x₂) = Σ cᵢⱼ x₁ⁱ x₂ʲ     (polynomial, degree 4, 15 terms)
 
 Safety:
-  B(x) ≤ 0  ⟹  state is admissible (safe to render at full fidelity)
-  B(x) > 0  ⟹  state is in degradation region (shed visual fidelity)
-
-Guarantee:
-  B is a valid barrier certificate iff B(x) ≥ 0 on the unsafe set
-  AND dB/dt ≤ 0 on the boundary (Lyapunov-like decrease condition)
+  B(x) > 0   ⟹  state is admissible (safe to render at full fidelity)
+  B(x) ≤ 0   ⟹  state is at or beyond the unsafe boundary
 ```
 
-The polynomial coefficients are solved by `scripts/solve_sos_barrier.py` using SOS/SDP relaxation. The Rust evaluator (`sos_barrier.rs`) is 257 lines and runs in constant time per frame with no allocations.
+**Provenance: the coefficients are hand-chosen, not SDP-solved.** `sos_barrier_coeffs.rs` says so itself — they were written by hand to satisfy eight verification points, and **no `scripts/solve_sos_barrier.py` exists in this repository or its history**. An earlier version of this section claimed an SOS/SDP relaxation produced them and named that script; the 2026-09-01 reality check found that claim false, the source header was corrected, and this section was not. If a solver is ever added, regenerate the coefficients from it and record the solver, its inputs and the run date in that file.
+
+So what the evaluator gives you is a *polynomial admissibility test whose shape was chosen by hand*, not a certificate carrying an SOS proof of the Lyapunov-like decrease condition. The Rust evaluator (`sos_barrier.rs`) is 257 lines and runs in constant time per frame with no allocations, which is true and is the part worth relying on.
 
 Why SOS instead of a simple threshold? A polynomial barrier can encode nonlinear safe/unsafe boundaries that accurately reflect the interaction between budget remaining and workload estimate. A flat threshold either triggers too early (wasting visual quality) or too late (missing the deadline).
 

@@ -43,8 +43,17 @@ replacement proof before a pending row can become proven.
 
 The 2026-09-17 seed contains 147 rows: C01–C37, V01–V71 and S01–S39.
 Source-to-ledger comparison verified exact C/V claim text, unique IDs, nine
-columns, text anchors and existing owner IDs. All rows remain pending:
-49 pending-code and 98 pending-doc; zero are represented as currently proven.
+columns, text anchors and existing owner IDs.
+
+As of 2026-09-18 the distribution is 46 pending-code, 98 pending-doc,
+2 retracted and 1 proven. V64 (Bayesian capability detection) is the first
+proven row: every log-odds weight the README quotes matches `caps_probe.rs`
+and is pinned by `weights_are_unchanged`. C36 and V19 are retracted together:
+the README claimed the SOS barrier coefficients were produced by
+`scripts/solve_sos_barrier.py`, that script exists nowhere in this repository
+or its history, and `sos_barrier_coeffs.rs` says in its own header that the
+constants were hand-chosen.
+
 Historical WORKING labels below are not current test results.
 
 Run `python3 -B scripts/check_readme_claims.py --schema-check` to validate
@@ -95,7 +104,7 @@ complete `.5.2`.
 | C33 | `ftui = "0.5"`; getting-started "only ftui-core, ftui-layout, ftui-i18n are published" | README.md :: `ftui = "0.5"`; getting-started "only ftui-core, ftui-layout, ftui-i18n are published" | api | DOC | bd-g00-root-epic-ewths.1.5 | bead:bd-g00-root-epic-ewths.1.5 | pending-doc | - |
 | C34 | `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | README.md :: `FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase`; `cargo run -p ftui-harness --example minimal` is a hello world | api | DOC | bd-g00-root-epic-ewths.40.3 | bead:bd-g00-root-epic-ewths.40.3 | pending-doc | - |
 | C35 | VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | README.md :: VOI defaults 1 / 9 / 1000 / 100 / 0.08; resize coalescing 200 / 20 ms; gesture 2 cells / 500 ms | api | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| C36 | SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | README.md :: SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | api | CODE | bd-g00-root-epic-ewths.18 | bead:bd-g00-root-epic-ewths.18 | pending-code | - |
+| C36 | SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | README.md :: SOS coefficients "Auto-generated 2026-03-05 by scripts/solve_sos_barrier.py" | api | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | C37 | `no_flicker_proof.rs` | README.md :: `no_flicker_proof.rs` | api | DOC | bd-g00-root-epic-ewths.4.7 | bead:bd-g00-root-epic-ewths.4.7 | pending-doc | - |
 | V01 | Inline mode with scrollback preservation and stable chrome | README.md :: Inline mode with scrollback preservation and stable chrome | status | DOC | bd-g00-root-epic-ewths.4 | bead:bd-g00-root-epic-ewths.4 | pending-doc | - |
 | V02 | Deterministic Buffer -> Diff -> Presenter -> ANSI | README.md :: Deterministic Buffer -> Diff -> Presenter -> ANSI | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
@@ -115,7 +124,7 @@ complete `.5.2`.
 | V16 | Alpha-investing FDR across monitors | README.md :: Alpha-investing FDR across monitors | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
 | V17 | Flake detector for E2E timing | README.md :: Flake detector for E2E timing | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
 | V18 | Rough-path signatures | README.md :: Rough-path signatures | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
-| V19 | SOS barrier certificates (SDP-solved) | README.md :: SOS barrier certificates (SDP-solved) | status | CODE | bd-g00-root-epic-ewths.18 | bead:bd-g00-root-epic-ewths.18 | pending-code | - |
+| V19 | SOS barrier certificates (SDP-solved) | README.md :: SOS barrier certificates (SDP-solved) | status | CODE | bd-g00-root-epic-ewths.18 | ident:PROVENANCE: these constants were written by hand | retracted | 2026-09-18 |
 | V20 | S3-FIFO cache for caps + width | README.md :: S3-FIFO cache for caps + width | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
 | V21 | W-TinyLFU width cache + PAC-Bayes CMS | README.md :: W-TinyLFU width cache + PAC-Bayes CMS | status | CODE | bd-g00-root-epic-ewths.12 | bead:bd-g00-root-epic-ewths.12 | pending-code | - |
 | V22 | Flat combining | README.md :: Flat combining | status | CODE | bd-g00-root-epic-ewths.11 | bead:bd-g00-root-epic-ewths.11 | pending-code | - |
@@ -160,7 +169,7 @@ complete `.5.2`.
 | V61 | Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | README.md :: Input parser (CSI/SS3/DCS/OSC/APC, kitty, paste, mouse) | status | DOC | bd-g00-root-epic-ewths.27 | bead:bd-g00-root-epic-ewths.27 | pending-doc | - |
 | V62 | Keybinding system | README.md :: Keybinding system | status | CODE | bd-g00-root-epic-ewths.20 | bead:bd-g00-root-epic-ewths.20 | pending-code | - |
 | V63 | Animation system | README.md :: Animation system | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
-| V64 | Bayesian capability detection | README.md :: Bayesian capability detection | status | CODE | bd-g00-root-epic-ewths.19 | bead:bd-g00-root-epic-ewths.19 | verified | caps_probe.rs, demo_showcase_e2e.sh |
+| V64 | Bayesian capability detection | README.md :: Bayesian capability detection | status | CODE | bd-g00-root-epic-ewths.19 | test:ftui-core::caps_probe::weights_are_unchanged | proven | 2026-09-18 |
 | V65 | 46 demo screens, gallery table | README.md :: 46 demo screens, gallery table | status | DOC | bd-g00-root-epic-ewths.5 | bead:bd-g00-root-epic-ewths.5 | pending-doc | - |
 | V66 | crates.io: all 17 libraries | README.md :: crates.io: all 17 libraries | status | DOC | bd-g00-root-epic-ewths.1 | bead:bd-g00-root-epic-ewths.1 | pending-doc | - |
 | V67 | Windows support | README.md :: Windows support | status | CODE | bd-g00-root-epic-ewths.36 | bead:bd-g00-root-epic-ewths.36 | pending-code | - |
