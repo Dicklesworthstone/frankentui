@@ -2091,7 +2091,7 @@ the scaled gain with cost, subject to its minimum and maximum sampling intervals
 These modules compile only with `--features experimental` on the crate that owns them. They are research code with unit tests and no production consumer; APIs may change or be removed without notice.
 
 ```toml
-ftui-runtime = { version = "0.8", features = ["experimental"] }
+ftui-runtime = { version = "0.9", features = ["experimental"] }
 ```
 
 | Crate | Module | What it is | Status |

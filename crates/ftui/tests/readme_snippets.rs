@@ -681,3 +681,52 @@ fn readme_frame_arena_snippet() {
     assert_eq!(arena.alloc_str("reused"), "reused");
     assert_in_readme(&["frame_arena_alloc", "frame_arena_reset"]);
 }
+
+/// Every version the README quotes for a workspace crate must be this
+/// workspace's version.
+///
+/// This exists because the drift is real and recent: a 0.8.0 -> 0.9.0 bump
+/// updated all 20 manifests and four of the five README version references,
+/// leaving `ftui-runtime = { version = "0.8" }` in the experimental-modules
+/// snippet. A reader copying that line pins a version that no longer matches
+/// the crate they are reading about, and nothing failed.
+///
+/// Both forms are accepted, since the README legitimately uses each:
+/// a full `0.9.0` pin and a `0.9` minor-series requirement.
+#[test]
+fn readme_versions_match_the_workspace() {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let (major_minor, _) = VERSION
+        .rsplit_once('.')
+        .expect("crate version should be major.minor.patch");
+
+    let mut checked = 0;
+    for (line_no, line) in README.lines().enumerate() {
+        // `ftui... = "=0.9.0"` / `version = "0.9.0"` / `version = "0.9"`
+        for quoted in line.split('"').skip(1).step_by(2) {
+            let candidate = quoted.trim_start_matches('=');
+            let looks_like_version = candidate
+                .split('.')
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+                && candidate.contains('.');
+            if !looks_like_version || !line.contains("ftui") {
+                continue;
+            }
+            assert!(
+                candidate == VERSION || candidate == major_minor,
+                "README.md:{} pins {candidate:?} for a workspace crate, but this \
+                 workspace is {VERSION}. Line: {}",
+                line_no + 1,
+                line.trim()
+            );
+            checked += 1;
+        }
+    }
+
+    // A silent zero would mean the scan stopped matching the README's shape and
+    // this test had quietly stopped guarding anything.
+    assert!(
+        checked >= 2,
+        "expected to find README version pins to check, found {checked}"
+    );
+}
