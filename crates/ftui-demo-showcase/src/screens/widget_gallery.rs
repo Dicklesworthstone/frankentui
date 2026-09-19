@@ -1032,7 +1032,7 @@ impl WidgetGallery {
     fn render_status_activity(&self, frame: &mut Frame, area: Rect) {
         let rows = Flex::vertical()
             .constraints([
-                Constraint::Fixed(7),
+                Constraint::Fixed(8),
                 Constraint::Fixed(3),
                 Constraint::Min(3),
             ])
