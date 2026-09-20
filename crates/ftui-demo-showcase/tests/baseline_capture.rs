@@ -274,9 +274,151 @@ fn capture_layout() -> Value {
     Value::Object(results)
 }
 
+/// Where the baseline cache lives.
+///
+/// `FTUI_BASELINE_PATH` overrides it. Without that override this path is fixed
+/// under `CARGO_MANIFEST_DIR`, which makes the load and strict-mode paths
+/// untestable: exercising them means writing a baseline, and the only baseline
+/// you could write is the developer's real one.
 fn baseline_path() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("FTUI_BASELINE_PATH") {
+        return std::path::PathBuf::from(path);
+    }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     std::path::Path::new(manifest_dir).join("tests/baseline_results.json")
+}
+
+/// Format version of the baseline cache.
+///
+/// Bump when the recorded provenance or the shape of `hot_paths` changes. An
+/// older file is reported as [`IgnoreReason::VersionMismatch`], skipped once,
+/// and rewritten by `capture_baselines` — never compared against.
+const BASELINE_VERSION: &str = "1.1.0";
+
+/// Why a baseline file was not usable for comparison.
+///
+/// Each variant is a decision to *skip*, never to fail. A baseline that cannot
+/// be trusted is worse than no baseline: comparing against one captured on
+/// another machine, at another color depth, or in an older format produces
+/// confident numbers about nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IgnoreReason {
+    /// No file at the path.
+    Missing,
+    /// File exists but is not valid JSON — typically a run killed mid-write,
+    /// which is what the atomic write in [`write_cache`] exists to prevent.
+    InvalidJson,
+    /// No `terminal_color_depth` key at all: a pre-provenance file.
+    MissingProvenance,
+    /// Captured at a different color depth, so the ANSI volume differs.
+    DepthMismatch { found: String },
+    /// Captured by an older format version.
+    VersionMismatch { found: String },
+    /// Captured on a different host. Machine-to-machine comparison is the
+    /// single biggest source of false regressions here.
+    HostMismatch { found: Option<String> },
+}
+
+impl IgnoreReason {
+    /// One line, addressed to whoever is reading a skipped run.
+    fn describe(&self) -> String {
+        match self {
+            Self::Missing => "no baseline file".to_string(),
+            Self::InvalidJson => "baseline is not valid JSON".to_string(),
+            Self::MissingProvenance => {
+                "baseline predates color-depth provenance".to_string()
+            }
+            Self::DepthMismatch { found } => format!(
+                "baseline captured at color depth {found}, running at {}",
+                BASELINE_COLOR_DEPTH.as_str()
+            ),
+            Self::VersionMismatch { found } => {
+                format!("baseline format {found}, expected {BASELINE_VERSION}")
+            }
+            Self::HostMismatch { found } => format!(
+                "baseline captured on {}, running on {}",
+                found.as_deref().unwrap_or("<unknown host>"),
+                current_host().unwrap_or_else(|| "<unknown host>".to_string()),
+            ),
+        }
+    }
+}
+
+/// Host identity for provenance, or `None` when it cannot be determined.
+///
+/// `None` on both sides compares equal: a machine that cannot name itself is
+/// not evidence that two baselines came from different machines.
+fn current_host() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|h| h.trim().to_string())
+                .filter(|h| !h.is_empty())
+        })
+}
+
+/// Load a baseline, classifying every reason it might not be comparable.
+fn load_cache(path: &std::path::Path) -> Result<Value, IgnoreReason> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Err(IgnoreReason::Missing);
+    };
+    let Ok(baseline) = serde_json::from_str::<Value>(&contents) else {
+        return Err(IgnoreReason::InvalidJson);
+    };
+
+    // Version first: an older format may not have the keys checked below, and
+    // reporting "missing provenance" for a file whose format simply predates it
+    // sends the reader looking for the wrong problem.
+    match baseline.get("version").and_then(Value::as_str) {
+        Some(BASELINE_VERSION) => {}
+        Some(found) => {
+            return Err(IgnoreReason::VersionMismatch {
+                found: found.to_string(),
+            });
+        }
+        None => {
+            return Err(IgnoreReason::VersionMismatch {
+                found: "<none>".to_string(),
+            });
+        }
+    }
+
+    match baseline.get("terminal_color_depth").and_then(Value::as_str) {
+        Some(found) if found == BASELINE_COLOR_DEPTH.as_str() => {}
+        Some(found) => {
+            return Err(IgnoreReason::DepthMismatch {
+                found: found.to_string(),
+            });
+        }
+        None => return Err(IgnoreReason::MissingProvenance),
+    }
+
+    let recorded_host = baseline
+        .get("hostname")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if recorded_host != current_host() {
+        return Err(IgnoreReason::HostMismatch {
+            found: recorded_host,
+        });
+    }
+
+    Ok(baseline)
+}
+
+/// Write the baseline so no reader can ever observe a partial file.
+///
+/// Write to a sibling temp path, then rename. `rename` within a directory is
+/// atomic on every platform this runs on, so a killed run leaves either the old
+/// baseline or the new one — never the half-written file that would otherwise
+/// read as [`IgnoreReason::InvalidJson`] forever afterwards.
+fn write_cache(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
 }
 
 fn validate_baseline_color_depth(baseline: &Value) -> Result<(), String> {
@@ -309,9 +451,10 @@ fn capture_baselines() {
     let layout = capture_layout();
 
     let baselines = json!({
-        "version": "1.0.0",
+        "version": BASELINE_VERSION,
         "generated_at": timestamp(),
         "terminal_color_depth": BASELINE_COLOR_DEPTH.as_str(),
+        "hostname": current_host(),
         "warmup_iters": WARMUP_ITERS,
         "measure_iters": MEASURE_ITERS,
         "hot_paths": {
@@ -325,9 +468,17 @@ fn capture_baselines() {
 
     eprintln!("\n=== BASELINE RESULTS ===\n{pretty}\n========================\n");
 
+    // Rewrite when asked, and whenever the file on disk is not comparable —
+    // that is the "ignored once, then rewritten" half of the provenance rule.
+    // Without it a stale-format baseline is skipped by every future run and
+    // never replaced, so the comparison stays silently disabled forever.
     let path = baseline_path();
-    if std::env::var("CAPTURE_BASELINE").is_ok() || !path.exists() {
-        std::fs::write(&path, &pretty).expect("failed to write baseline_results.json");
+    let unusable = load_cache(&path).err();
+    if std::env::var("CAPTURE_BASELINE").is_ok() || unusable.is_some() {
+        if let Some(reason) = &unusable {
+            eprintln!("Replacing baseline ({}).", reason.describe());
+        }
+        write_cache(&path, &pretty).expect("failed to write baseline_results.json");
         eprintln!("Baseline results written to {}", path.display());
     }
 }
@@ -348,31 +499,18 @@ fn capture_baselines() {
 #[test]
 fn verify_no_regression() {
     let path = baseline_path();
-    if !path.exists() {
-        eprintln!("No baseline file; skipping regression check.");
-        return;
-    }
-
-    let baseline_content = std::fs::read_to_string(&path).expect("failed to read baseline");
-    let baseline: Value = match serde_json::from_str(&baseline_content) {
-        Ok(value) => value,
-        Err(err) => {
+    let baseline = match load_cache(&path) {
+        Ok(baseline) => baseline,
+        Err(reason) => {
             eprintln!(
-                "Baseline file {} is not valid JSON ({err}); skipping regression check. \
+                "Skipping regression check: {} ({}). \
                  Regenerate with CAPTURE_BASELINE=1 cargo test -p ftui-demo-showcase --test baseline_capture",
+                reason.describe(),
                 path.display()
             );
             return;
         }
     };
-    if let Err(message) = validate_baseline_color_depth(&baseline) {
-        eprintln!(
-            "Baseline file {} is stale ({message}); skipping regression check. \
-             Regenerate with CAPTURE_BASELINE=1 cargo test -p ftui-demo-showcase --test baseline_capture",
-            path.display()
-        );
-        return;
-    }
 
     let frame = capture_frame_pipeline();
     let diff = capture_diff_engine();
@@ -490,4 +628,158 @@ fn check_regressions(
             }
         }
     }
+}
+
+// ============================================================================
+// Cache provenance (bd-g0k8b; the list bd-g00-root-epic-ewths.9.2 specifies)
+//
+// These write to paths under the crate's own `target/`, never to the real
+// baseline: `load_cache` decisions are the thing under test, and the only
+// baseline an un-overridable path could reach is a developer's. Nothing here
+// deletes what it wrote — each case uses its own filename so runs do not
+// collide, and the files are evidence if a case fails.
+// ============================================================================
+
+/// A distinct path per case, under `target/` so it is already gitignored.
+fn fixture_path(case: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/baseline_fixtures");
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    dir.join(format!("{case}.json"))
+}
+
+/// A baseline that `load_cache` accepts, as the basis for mutating one field.
+fn good_baseline() -> Value {
+    json!({
+        "version": BASELINE_VERSION,
+        "generated_at": timestamp(),
+        "terminal_color_depth": BASELINE_COLOR_DEPTH.as_str(),
+        "hostname": current_host(),
+        "hot_paths": {},
+    })
+}
+
+fn write_fixture(case: &str, value: &Value) -> std::path::PathBuf {
+    let path = fixture_path(case);
+    write_cache(&path, &serde_json::to_string_pretty(value).unwrap()).expect("write fixture");
+    path
+}
+
+#[test]
+fn load_cache_missing_file() {
+    // A name nothing else writes, so this needs no cleanup and cannot race.
+    let path = fixture_path("never_written_by_anything");
+    assert_eq!(load_cache(&path), Err(IgnoreReason::Missing));
+}
+
+#[test]
+fn load_cache_invalid_json() {
+    let path = fixture_path("invalid_json");
+    write_cache(&path, "{").expect("write fixture");
+    assert_eq!(load_cache(&path), Err(IgnoreReason::InvalidJson));
+}
+
+#[test]
+fn load_cache_missing_provenance() {
+    // Version is present and current, so the only thing wrong is the missing
+    // depth key — otherwise this would report VersionMismatch and the test
+    // would pass for the wrong reason.
+    let mut baseline = good_baseline();
+    baseline.as_object_mut().unwrap().remove("terminal_color_depth");
+    let path = write_fixture("missing_provenance", &baseline);
+    assert_eq!(load_cache(&path), Err(IgnoreReason::MissingProvenance));
+}
+
+#[test]
+fn load_cache_depth_mismatch() {
+    let mut baseline = good_baseline();
+    baseline["terminal_color_depth"] = json!("ansi256");
+    let path = write_fixture("depth_mismatch", &baseline);
+    assert_eq!(
+        load_cache(&path),
+        Err(IgnoreReason::DepthMismatch {
+            found: "ansi256".to_string()
+        })
+    );
+}
+
+#[test]
+fn load_cache_version_mismatch() {
+    let mut baseline = good_baseline();
+    baseline["version"] = json!("1.0.0");
+    let path = write_fixture("version_mismatch", &baseline);
+    assert_eq!(
+        load_cache(&path),
+        Err(IgnoreReason::VersionMismatch {
+            found: "1.0.0".to_string()
+        })
+    );
+
+    // A file with no version at all is the same decision, not a different one.
+    let mut unversioned = good_baseline();
+    unversioned.as_object_mut().unwrap().remove("version");
+    let path = write_fixture("version_absent", &unversioned);
+    assert!(matches!(
+        load_cache(&path),
+        Err(IgnoreReason::VersionMismatch { .. })
+    ));
+}
+
+#[test]
+fn load_cache_host_mismatch() {
+    let mut baseline = good_baseline();
+    baseline["hostname"] = json!("some-other-host-that-is-not-this-one");
+    let path = write_fixture("host_mismatch", &baseline);
+    assert_eq!(
+        load_cache(&path),
+        Err(IgnoreReason::HostMismatch {
+            found: Some("some-other-host-that-is-not-this-one".to_string())
+        })
+    );
+}
+
+#[test]
+fn load_cache_accepts_matching_provenance() {
+    // The positive case, so the six negatives above cannot all be passing
+    // because `load_cache` rejects everything.
+    let path = write_fixture("good", &good_baseline());
+    assert!(load_cache(&path).is_ok(), "{:?}", load_cache(&path));
+}
+
+#[test]
+fn write_cache_atomic_leaves_no_tmp() {
+    let path = fixture_path("atomic");
+    write_cache(&path, "{\"version\":\"x\"}").expect("write");
+    assert!(path.exists(), "the baseline must exist after a write");
+    assert!(
+        !path.with_extension("json.tmp").exists(),
+        "the temp file must be renamed away, not left beside the baseline"
+    );
+}
+
+#[test]
+fn write_cache_replaces_previous_contents_wholly() {
+    // Rename-over, not truncate-and-write: a shorter payload must not leave a
+    // tail of the previous one, which would parse as invalid JSON forever.
+    let path = fixture_path("replace");
+    write_cache(&path, &"x".repeat(4096)).expect("write long");
+    write_cache(&path, "{}").expect("write short");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+}
+
+#[test]
+fn baseline_path_defaults_under_the_crate() {
+    // Only the default is asserted. The `FTUI_BASELINE_PATH` override cannot be
+    // tested here: `std::env::set_var` is `unsafe` in Rust 2024 and this
+    // workspace is `#![forbid(unsafe_code)]`, and setting a process-global from
+    // one test would race every other test in this binary regardless. The
+    // override is exercised by callers that set it in the environment — that
+    // is a real limit of this test, not a claim that the override is verified.
+    let path = baseline_path();
+    assert!(
+        std::env::var("FTUI_BASELINE_PATH").is_ok()
+            || path.ends_with("tests/baseline_results.json"),
+        "unexpected default baseline path: {}",
+        path.display()
+    );
 }
