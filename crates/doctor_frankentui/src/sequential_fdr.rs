@@ -466,6 +466,40 @@ impl SequentialFdrConfig {
         self.wealth_floor = wealth_floor;
         self
     }
+
+    /// Clamp the configuration to the ranges its guarantees are stated on.
+    ///
+    /// Both bounds below are documented in this module and neither was
+    /// enforced: the fields are `pub` and the builders store what they are
+    /// given. Both fail *permissively* — certifying dimensions the caller's
+    /// own numbers do not support — which is the one direction this module
+    /// says it never takes.
+    ///
+    /// - **`alpha <= 1`.** FDR is a probability. `alpha` divides every e-BH
+    ///   cutoff `K/(alpha*k)`, so an out-of-range value shrinks all of them
+    ///   at once: on this module's own eight-test corpus, `alpha = 5.0` moves
+    ///   the threshold from 16 to 0.2 and certifies all eight instead of five.
+    /// - **`initial_wealth <= alpha`**, which is what the mFDR guarantee is
+    ///   stated on. Each investment is already capped at `alpha`, so an
+    ///   oversized wealth does not raise any single test's budget — it makes
+    ///   the ledger outlast its budget and keep certifying online long past
+    ///   the point it should have been exhausted.
+    ///
+    /// Clamping is the conservative direction: the result can only certify
+    /// fewer dimensions than the caller asked for, never more. Non-finite and
+    /// non-positive values are left alone — they already certify nothing, and
+    /// `f64::min` returns the non-NaN operand, so clamping a NaN `alpha`
+    /// would turn "certify nothing" into `alpha = 1`.
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        if self.alpha.is_finite() {
+            self.alpha = self.alpha.min(1.0);
+        }
+        if self.initial_wealth.is_finite() && self.alpha.is_finite() && self.alpha >= 0.0 {
+            self.initial_wealth = self.initial_wealth.clamp(0.0, self.alpha);
+        }
+        self
+    }
 }
 
 // ── Ledger ───────────────────────────────────────────────────────────────────
@@ -677,6 +711,11 @@ impl SequentialFdrController {
     /// order.
     #[must_use]
     pub fn new(label: impl Into<String>, config: SequentialFdrConfig, tests: Vec<FdrTest>) -> Self {
+        // Every path into this module builds a controller, so this is the one
+        // place a configuration has to be brought into range. Clamping before
+        // the id seed below is deliberate: the run id must identify the
+        // configuration actually used, not the one that was asked for.
+        let config = config.sanitized();
         let label = label.into();
         let mut tests = tests;
         tests.sort_by(|a, b| {
@@ -1992,6 +2031,72 @@ mod tests {
                 "line missing fields: {line:?}"
             );
         }
+    }
+
+    /// An out-of-range `alpha` must not certify more than `alpha = 1` would.
+    ///
+    /// `alpha` divides every e-BH cutoff, so nothing stops a caller from
+    /// dialling the whole procedure open. Against the default `alpha = 0.10`,
+    /// `alpha = 5.0` takes `K/alpha` from 80 to 1.6 and certifies all eight
+    /// tests instead of five.
+    ///
+    /// The comparison here is against `alpha = 1.0`, the largest meaningful
+    /// value, because that is the bound being enforced. Both certify all eight
+    /// on this corpus, so the count alone would not catch it — the threshold
+    /// is what separates them: 1.0 at `alpha = 1.0`, and 0.2 unclamped.
+    #[test]
+    fn an_out_of_range_alpha_is_clamped_rather_than_widening_the_gate() {
+        let at_one = SequentialFdrController::new(
+            "sequential-fdr/alpha-one",
+            SequentialFdrConfig::default().with_alpha(1.0),
+            default_test_corpus(),
+        )
+        .run(None);
+        let absurd = SequentialFdrController::new(
+            "sequential-fdr/alpha-absurd",
+            SequentialFdrConfig::default().with_alpha(5.0),
+            default_test_corpus(),
+        )
+        .run(None);
+
+        assert_eq!(
+            absurd.summary.ebh_certified,
+            at_one.summary.ebh_certified,
+            "alpha=5.0 certified {} of {} tests; alpha=1.0 certifies {}",
+            absurd.summary.ebh_certified,
+            default_test_corpus().len(),
+            at_one.summary.ebh_certified
+        );
+        assert_eq!(absurd.summary.ebh_threshold, at_one.summary.ebh_threshold);
+    }
+
+    /// `initial_wealth > alpha` voids the mFDR guarantee the ledger is stated
+    /// on. Each investment is already capped at `alpha`, so the damage is not
+    /// a larger per-test budget but a ledger that never exhausts.
+    #[test]
+    fn initial_wealth_cannot_exceed_alpha() {
+        let cfg = SequentialFdrConfig::default()
+            .with_alpha(0.10)
+            .with_initial_wealth(10.0)
+            .sanitized();
+        assert!(
+            cfg.initial_wealth <= cfg.alpha,
+            "initial_wealth {} exceeds alpha {}",
+            cfg.initial_wealth,
+            cfg.alpha
+        );
+    }
+
+    /// Clamping must not rescue a configuration that was already refusing to
+    /// certify. `f64::min` returns the non-NaN operand, so a naive
+    /// `alpha.min(1.0)` would turn a NaN alpha into 1.0 - opening the gate
+    /// wide on exactly the input that should keep it shut.
+    #[test]
+    fn a_non_finite_alpha_stays_non_finite() {
+        let cfg = SequentialFdrConfig::default()
+            .with_alpha(f64::NAN)
+            .sanitized();
+        assert!(cfg.alpha.is_nan(), "alpha became {}", cfg.alpha);
     }
 
     #[test]
