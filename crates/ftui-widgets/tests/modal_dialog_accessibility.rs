@@ -3,7 +3,9 @@
 //! Regressions through actual Dialog rendering, events, and Frame finalization.
 
 use ftui_a11y::node::{A11yNodeInfo, A11yRole, LiveRegion};
-use ftui_a11y::tree::{A11yChange, A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy};
+use ftui_a11y::tree::{
+    A11yChange, A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
+};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -11,9 +13,7 @@ use ftui_core::geometry::Rect;
 use ftui_render::frame::{Frame, HitId};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_widgets::StatefulWidget;
-use ftui_widgets::modal::{
-    DIALOG_HIT_BUTTON, DIALOG_HIT_INPUT, Dialog, DialogResult, DialogState,
-};
+use ftui_widgets::modal::{DIALOG_HIT_BUTTON, DIALOG_HIT_INPUT, Dialog, DialogResult, DialogState};
 
 const AREA: Rect = Rect::new(0, 0, 80, 24);
 
@@ -110,19 +110,44 @@ fn prompt_controls_use_exact_hit_bounds_and_expose_full_value() {
             assert_eq!(node.role, A11yRole::Button);
             (HitId::new(700), DIALOG_HIT_BUTTON, (index - 1) as u64)
         };
-        let mut hit_cells = 0;
+        // Collect first, assert second. A bare `assert!` inside the scan
+        // reports only the expression and the first offending cell, which
+        // says nothing about the shape of the disagreement - and for a
+        // hit-grid/bounds mismatch the shape is the diagnosis.
+        let mut hits = Vec::new();
         for y in 0..24 {
             for x in 0..80 {
                 if frame.hit_test(x, y) == Some(expected) {
-                    hit_cells += 1;
-                    assert!(x >= node.bounds.x && x < node.bounds.right());
-                    assert!(y >= node.bounds.y && y < node.bounds.bottom());
+                    hits.push((x, y));
                 }
             }
         }
+        let stray: Vec<_> = hits
+            .iter()
+            .copied()
+            .filter(|&(x, y)| {
+                !(x >= node.bounds.x
+                    && x < node.bounds.right()
+                    && y >= node.bounds.y
+                    && y < node.bounds.bottom())
+            })
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "child {index} ({:?} {:?}) announces {:?} but hit-tests on \
+             {} cell(s) outside it, e.g. {:?} (total hit cells: {})",
+            node.role,
+            node.name,
+            node.bounds,
+            stray.len(),
+            &stray[..stray.len().min(6)],
+            hits.len(),
+        );
         assert_eq!(
-            hit_cells,
-            usize::from(node.bounds.width) * usize::from(node.bounds.height)
+            hits.len(),
+            usize::from(node.bounds.width) * usize::from(node.bounds.height),
+            "child {index} ({:?}) hit area and announced bounds differ in size",
+            node.role,
         );
     }
 }
@@ -140,8 +165,18 @@ fn prompt_tab_and_both_reverse_tab_encodings_announce_each_destination_once() {
     for (code, modifiers, name, role) in [
         (KeyCode::Tab, Modifiers::empty(), "OK", A11yRole::Button),
         (KeyCode::Tab, Modifiers::empty(), "Cancel", A11yRole::Button),
-        (KeyCode::Tab, Modifiers::empty(), "Profile", A11yRole::TextInput),
-        (KeyCode::BackTab, Modifiers::empty(), "Cancel", A11yRole::Button),
+        (
+            KeyCode::Tab,
+            Modifiers::empty(),
+            "Profile",
+            A11yRole::TextInput,
+        ),
+        (
+            KeyCode::BackTab,
+            Modifiers::empty(),
+            "Cancel",
+            A11yRole::Button,
+        ),
         (KeyCode::BackTab, Modifiers::empty(), "OK", A11yRole::Button),
         (
             KeyCode::BackTab,
@@ -159,7 +194,10 @@ fn prompt_tab_and_both_reverse_tab_encodings_announce_each_destination_once() {
         let batch = current.screen_reader_announcements_since(&previous, policy);
         assert_eq!(batch.announcements.len(), 1);
         assert_eq!(batch.dropped_count, 0);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::FocusChanged
+        );
         assert_eq!(batch.announcements[0].node_id, Some(focused.id));
         assert_eq!(batch.announcements[0].urgency, LiveRegion::Polite);
         let (unchanged, _) = snapshot(&dialog, &mut state, AREA);
@@ -188,13 +226,20 @@ fn retained_prompt_edit_updates_value_without_new_identity_or_full_value_speech(
     press(&dialog, &mut state, KeyCode::Char('x'), Modifiers::empty());
     let (after, _) = snapshot(&dialog, &mut state, AREA);
     assert_eq!(before.focused_id(), after.focused_id());
-    assert_eq!(after.focused().unwrap().state.value_text.as_deref(), Some("x"));
+    assert_eq!(
+        after.focused().unwrap().state.value_text.as_deref(),
+        Some("x")
+    );
     let diff = after.diff(&before);
     assert!(diff.added.is_empty() && diff.removed.is_empty());
     assert!(diff.focus_changed.is_none());
-    assert!(diff.changed.iter().any(|(_, changes)| changes.iter().any(|change| {
-        matches!(change, A11yChange::StateChanged { field, .. } if field == "value_text")
-    })));
+    assert!(
+        diff.changed
+            .iter()
+            .any(|(_, changes)| changes.iter().any(|change| {
+                matches!(change, A11yChange::StateChanged { field, .. } if field == "value_text")
+            }))
+    );
     assert_silent(&after, &before);
 }
 
@@ -238,7 +283,11 @@ fn duplicate_button_keys_and_multiple_dialogs_do_not_collapse_nodes() {
         let mut frame = Frame::new(80, 24, &mut pool);
         frame.set_a11y(&mut builder);
         first.render(Rect::new(0, 0, 40, 12), &mut frame, &mut DialogState::new());
-        second.render(Rect::new(40, 0, 40, 12), &mut frame, &mut DialogState::new());
+        second.render(
+            Rect::new(40, 0, 40, 12),
+            &mut frame,
+            &mut DialogState::new(),
+        );
         frame.finish_a11y();
         assert_eq!(frame.a11y_order().len(), 6);
     }
@@ -266,8 +315,7 @@ fn dialog_scoping_preserves_outer_parent_siblings_and_explicit_focus() {
             dialog.render(AREA, frame, &mut DialogState::new());
         });
         frame.push_a11y(
-            A11yNodeInfo::new(901, A11yRole::Button, Rect::new(0, 0, 1, 1))
-                .with_name("Outside"),
+            A11yNodeInfo::new(901, A11yRole::Button, Rect::new(0, 0, 1, 1)).with_name("Outside"),
         );
         frame.finish_a11y();
     }
@@ -361,10 +409,8 @@ fn prompt_input_focus_wins_over_a_stale_button_focus_flag() {
     let focused: Vec<_> = tree.nodes().filter(|node| node.state.focused).collect();
     assert_eq!(focused.len(), 1);
     assert_eq!(focused[0].role, A11yRole::TextInput);
-    let batch = tree.screen_reader_announcements_since(
-        &A11yTree::empty(),
-        ScreenReaderPolicy::default(),
-    );
+    let batch =
+        tree.screen_reader_announcements_since(&A11yTree::empty(), ScreenReaderPolicy::default());
     assert_eq!(batch.announcements.len(), 1);
     assert_eq!(batch.dropped_count, 0);
 }

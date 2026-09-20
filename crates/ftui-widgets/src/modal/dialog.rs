@@ -45,7 +45,15 @@ use unicode_segmentation::UnicodeSegmentation;
 /// Hit region for dialog buttons.
 pub const DIALOG_HIT_BUTTON: HitRegion = HitRegion::Button;
 /// Hit region for prompt input.
-pub const DIALOG_HIT_INPUT: HitRegion = HitRegion::Custom(1);
+///
+/// `Custom(3)`, not `Custom(1)`: a `Dialog` renders inside a `Modal`, which
+/// registers [`MODAL_HIT_BACKDROP`](super::MODAL_HIT_BACKDROP) over the whole
+/// screen under the *same* `HitId`. While both were `Custom(1)` the two were
+/// indistinguishable to `hit_test`, so a mouse-down anywhere on the backdrop
+/// took the input branch in `handle_event` below: it focused the text field
+/// and cleared button focus instead of being treated as a click outside the
+/// dialog. See the allocation table on `MODAL_HIT_BACKDROP`.
+pub const DIALOG_HIT_INPUT: HitRegion = HitRegion::Custom(3);
 
 /// Result from a dialog interaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
