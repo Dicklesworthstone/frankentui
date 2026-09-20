@@ -905,3 +905,113 @@ fn check_regressions_threshold_is_honoured_not_hardcoded() {
     assert!(regressions_between(&base, &metric(120.0), 0.50).is_empty());
     assert_eq!(regressions_between(&base, &metric(120.0), 0.05).len(), 1);
 }
+
+// ============================================================================
+// Determinism under parallelism (bd-g00-root-epic-ewths.9.2 item 4)
+// ============================================================================
+
+/// A reader must never observe a partially written baseline.
+///
+/// This is the property that makes the rest of this file safe. `cargo test`
+/// runs these in parallel, and `capture_baselines` now rewrites whenever the
+/// on-disk file is not comparable, so it writes while `verify_no_regression`
+/// reads the same path in the same binary. That is only benign because
+/// [`write_cache`] renames into place: a reader sees the whole old file or the
+/// whole new one.
+///
+/// The two payloads differ greatly in length on purpose. A truncate-then-write
+/// implementation — which is what this file did before `bd-g0k8b` — leaves the
+/// tail of the longer payload behind when the shorter one lands, and the result
+/// does not parse. So the assertion is specifically that no read ever comes
+/// back [`IgnoreReason::InvalidJson`]: every other outcome is a real
+/// classification of a complete file and is fine.
+#[test]
+fn write_cache_never_exposes_a_partial_file_to_a_concurrent_reader() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let path = fixture_path("concurrent_reader");
+    let short = serde_json::to_string(&good_baseline()).expect("serialize");
+    let mut padded = good_baseline();
+    padded["padding"] = json!("x".repeat(64 * 1024));
+    let long = serde_json::to_string(&padded).expect("serialize");
+    assert!(
+        long.len() > short.len() * 8,
+        "the payloads must differ enough that a torn write is detectable"
+    );
+    write_cache(&path, &short).expect("seed the fixture");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer_stop = Arc::clone(&stop);
+    let writer_path = path.clone();
+    let writer = std::thread::spawn(move || {
+        let mut long_turn = true;
+        while !writer_stop.load(Ordering::Relaxed) {
+            let payload = if long_turn { &long } else { &short };
+            // A failed write here is a test infrastructure problem, not a
+            // property violation; let it surface by panicking the thread.
+            write_cache(&writer_path, payload).expect("concurrent write");
+            long_turn = !long_turn;
+        }
+    });
+
+    // Both payloads must actually be observed, or the reader may simply have
+    // finished before the writer got going and the run proves nothing.
+    let mut reads = 0u32;
+    let mut saw_short = false;
+    let mut saw_long = false;
+    for _ in 0..3_000 {
+        match load_cache(&path) {
+            Err(IgnoreReason::InvalidJson) => {
+                stop.store(true, Ordering::Relaxed);
+                let _ = writer.join();
+                panic!(
+                    "read a partially written baseline after {reads} clean reads: \
+                     write_cache is not atomic"
+                );
+            }
+            Ok(value) => {
+                if value.get("padding").is_some() {
+                    saw_long = true;
+                } else {
+                    saw_short = true;
+                }
+                reads += 1;
+            }
+            Err(_) => reads += 1,
+        }
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    writer.join().expect("writer thread");
+    assert_eq!(reads, 3_000);
+    assert!(
+        saw_short && saw_long,
+        "the reader never overlapped the writer (short={saw_short}, long={saw_long}), \
+         so this run did not exercise the property"
+    );
+}
+
+/// Repeated loads of an unchanging file agree with each other.
+///
+/// Cheap, and it pins the half of "deterministic" that is not about
+/// concurrency: classification must be a function of the file's contents, not
+/// of how many times it has been read or what was read before it.
+#[test]
+fn load_cache_is_a_pure_function_of_the_file() {
+    let good = write_fixture("determinism_good", &good_baseline());
+    let mut wrong_depth = good_baseline();
+    wrong_depth["terminal_color_depth"] = json!("ansi256");
+    let bad = write_fixture("determinism_bad", &wrong_depth);
+
+    // Interleaved, so a stateful classifier would disagree with itself.
+    for _ in 0..50 {
+        assert!(load_cache(&good).is_ok());
+        assert_eq!(
+            load_cache(&bad),
+            Err(IgnoreReason::DepthMismatch {
+                found: "ansi256".to_string()
+            })
+        );
+    }
+}
