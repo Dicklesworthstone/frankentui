@@ -81,6 +81,7 @@ live = ["console"]
 logging = ["console", "dep:tracing", "dep:tracing-subscriber"]
 syntax = ["dep:ftui-render", "dep:ftui-style", "dep:ftui-text"]
 filepicker = [
+  "dep:ftui-a11y",
   "dep:ftui-core",
   "dep:ftui-render",
   "dep:ftui-style",

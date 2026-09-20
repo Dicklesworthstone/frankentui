@@ -144,6 +144,7 @@ impl FileBrowser {
     pub fn new() -> Self {
         let entries = simulated_entries();
         let mut picker = FilePicker::new(entries.clone());
+        picker.set_accessibility_id(Some(0xF11E_BA55_0000_0001));
         picker.set_path("/home/user/projects/my-app");
         picker.set_style(Self::picker_style());
         picker.set_filter(FilePickerFilter {
@@ -445,6 +446,13 @@ impl FileBrowser {
             inner.y.saturating_add(2),
             inner.width,
             inner.height.saturating_sub(2),
+        );
+
+        self.picker.push_accessibility_window(
+            list_area,
+            frame,
+            self.focus == Panel::FilePicker,
+            scroll,
         );
 
         let mut rendered_rows = 0u16;

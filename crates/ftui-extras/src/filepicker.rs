@@ -19,6 +19,7 @@
 //! assert_eq!(picker.selected_entry().unwrap().name, "src");
 //! ```
 
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, CellContent};
 use ftui_render::frame::Frame;
@@ -154,6 +155,10 @@ pub struct FilePicker {
     style: FilePickerStyle,
     /// Visible height (set during render or manually).
     visible_height: usize,
+    /// Whether this picker currently owns keyboard focus.
+    focused: bool,
+    /// Optional stable accessibility identity for this picker.
+    accessibility_id: Option<u64>,
 }
 
 impl Default for FilePicker {
@@ -175,6 +180,8 @@ impl FilePicker {
             filtered_indices: Vec::new(),
             style: FilePickerStyle::default(),
             visible_height: 20,
+            focused: false,
+            accessibility_id: None,
         };
         picker.rebuild_filter();
         picker
@@ -208,6 +215,23 @@ impl FilePicker {
     /// Set styles.
     pub fn set_style(&mut self, style: FilePickerStyle) {
         self.style = style;
+    }
+
+    /// Set whether this picker currently owns keyboard focus.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// Set a stable accessibility identity, or clear the override.
+    pub fn set_accessibility_id(&mut self, id: Option<u64>) {
+        self.accessibility_id = id;
+    }
+
+    /// Builder for a stable accessibility identity.
+    #[must_use]
+    pub fn accessibility_id(mut self, id: u64) -> Self {
+        self.accessibility_id = Some(id);
+        self
     }
 
     /// Number of filtered entries.
@@ -303,6 +327,99 @@ impl FilePicker {
         }
     }
 
+    fn accessibility_root_id(&self, area: Rect) -> u64 {
+        self.accessibility_id
+            .unwrap_or_else(|| A11yNodeInfo::stable_id_for(A11yRole::List, area))
+    }
+
+    fn accessibility_entry_id(&self, parent: u64, entry: &FileEntry) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.extras.filepicker.entry", parent, &self.current_path, &entry.name, entry.kind)
+            .hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Push semantic nodes for a specific visible entry window.
+    ///
+    /// This is public because callers such as composite screens may render
+    /// richer visual columns themselves while still reusing the picker's
+    /// authoritative filtering, selection, identity, and focus semantics.
+    pub fn push_accessibility_window(
+        &self,
+        area: Rect,
+        frame: &mut Frame,
+        focused: bool,
+        scroll_offset: usize,
+    ) {
+        if !frame.a11y_enabled() || area.is_empty() {
+            return;
+        }
+        let bounds = area.intersection(&frame.buffer.current_scissor());
+        if bounds.is_empty() {
+            return;
+        }
+        let root_id = self.accessibility_root_id(area);
+        let root = A11yNodeInfo::new(root_id, A11yRole::List, bounds)
+            .with_name(format!("Files in {}", self.current_path))
+            .with_description(format!("{} entries", self.filtered_indices.len()));
+        frame.with_a11y_scope(root, |frame| {
+            if self.filtered_indices.is_empty() {
+                let empty_bounds = Rect::new(area.x, area.y, area.width, 1)
+                    .intersection(&frame.buffer.current_scissor());
+                if !empty_bounds.is_empty() {
+                    frame.push_a11y(
+                        A11yNodeInfo::new(
+                            self.accessibility_entry_id(
+                                root_id,
+                                &FileEntry::new("(empty directory)", FileKind::File),
+                            ),
+                            A11yRole::Label,
+                            empty_bounds,
+                        )
+                        .with_name("Empty directory"),
+                    );
+                }
+                return;
+            }
+
+            let end = (scroll_offset + area.height as usize).min(self.filtered_indices.len());
+            for (row, filtered_index) in (scroll_offset..end).enumerate() {
+                let Some(&entry_index) = self.filtered_indices.get(filtered_index) else {
+                    continue;
+                };
+                let Some(entry) = self.entries.get(entry_index) else {
+                    continue;
+                };
+                let y = area.y.saturating_add(row as u16);
+                let item_bounds = Rect::new(area.x, y, area.width, 1)
+                    .intersection(&frame.buffer.current_scissor());
+                if item_bounds.is_empty() {
+                    continue;
+                }
+                let kind = match entry.kind {
+                    FileKind::Directory => "Directory",
+                    FileKind::Symlink => "Symbolic link",
+                    FileKind::File => "File",
+                };
+                let description = entry.size.map_or_else(
+                    || kind.to_owned(),
+                    |size| format!("{kind}. {size} bytes"),
+                );
+                let mut node = A11yNodeInfo::new(
+                    self.accessibility_entry_id(root_id, entry),
+                    A11yRole::ListItem,
+                    item_bounds,
+                )
+                .with_name(&entry.name)
+                .with_description(description);
+                node.state.selected = filtered_index == self.selected;
+                node.state.focused = focused && filtered_index == self.selected;
+                frame.push_a11y(node);
+            }
+        });
+    }
+
     /// Render the file picker into the given area.
     pub fn render(&mut self, area: Rect, frame: &mut Frame) {
         if area.height == 0 || area.width == 0 {
@@ -319,6 +436,19 @@ impl FilePicker {
         let entry_area_height = (area.height as usize).saturating_sub(1);
         self.visible_height = entry_area_height;
         self.ensure_visible();
+
+        let entries_area = Rect::new(
+            area.x,
+            area.y.saturating_add(1),
+            area.width,
+            area.height.saturating_sub(1),
+        );
+        self.push_accessibility_window(
+            entries_area,
+            frame,
+            self.focused,
+            self.scroll_offset,
+        );
 
         for row in 0..entry_area_height {
             let idx = self.scroll_offset + row;
@@ -445,6 +575,9 @@ fn apply_style(cell: &mut Cell, style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_a11y::tree::{
+        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
+    };
     use ftui_render::grapheme_pool::GraphemePool;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -504,6 +637,90 @@ mod tests {
             .collect();
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         entries
+    }
+
+    fn render_picker_a11y(
+        picker: &mut FilePicker,
+        area: Rect,
+    ) -> A11yTree {
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            picker.render(area, &mut frame);
+            frame.finish_a11y();
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn extras_file_picker_accessibility_tracks_focus_selection_and_kind() {
+        let mut picker = FilePicker::new(sample_entries()).accessibility_id(7200);
+        picker.set_path("/project");
+        picker.set_focused(true);
+        let tree = render_picker_a11y(&mut picker, Rect::new(0, 0, 40, 6));
+        assert_eq!(tree.root_id(), Some(7200));
+        let root = tree.root().unwrap();
+        assert_eq!(root.role, A11yRole::List);
+        assert!(root.name.as_deref().unwrap().contains("/project"));
+        let focused = tree.focused().expect("selected file entry");
+        assert_eq!(focused.role, A11yRole::ListItem);
+        assert_eq!(focused.name.as_deref(), Some(".."));
+        assert_eq!(focused.description.as_deref(), Some("Directory"));
+        assert!(focused.state.selected);
+    }
+
+    #[test]
+    fn extras_file_picker_cursor_feedback_depends_on_focus_ownership() {
+        let mut picker = FilePicker::new(sample_entries()).accessibility_id(7201);
+        picker.set_focused(true);
+        let before = render_picker_a11y(&mut picker, Rect::new(0, 0, 40, 6));
+        picker.move_down();
+        let after = render_picker_a11y(&mut picker, Rect::new(0, 0, 40, 6));
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert!(batch.announcements[0].text.contains("src"));
+
+        picker.set_focused(false);
+        let unfocused = render_picker_a11y(&mut picker, Rect::new(0, 0, 40, 6));
+        picker.move_down();
+        let moved = render_picker_a11y(&mut picker, Rect::new(0, 0, 40, 6));
+        assert!(moved.focused().is_none());
+        assert!(
+            moved
+                .screen_reader_announcements_since(&unfocused, ScreenReaderPolicy::default())
+                .announcements
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn extras_file_picker_explicit_identity_survives_resize_and_manual_windowing() {
+        let picker = FilePicker::new(sample_entries()).accessibility_id(7202);
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            picker.push_accessibility_window(Rect::new(5, 4, 40, 2), &mut frame, true, 0);
+            frame.finish_a11y();
+        }
+        let before = builder.build();
+        let focused_id = before.focused_id();
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(100, 30, &mut pool);
+            frame.set_a11y(&mut builder);
+            picker.push_accessibility_window(Rect::new(1, 1, 60, 3), &mut frame, true, 0);
+            frame.finish_a11y();
+        }
+        let after = builder.build();
+        assert_eq!(before.root_id(), after.root_id());
+        assert_eq!(focused_id, after.focused_id());
     }
 
     fn sample_entries() -> Vec<FileEntry> {
