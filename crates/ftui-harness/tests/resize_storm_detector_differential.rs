@@ -337,6 +337,12 @@ fn bocpd_is_not_worse_than_the_heuristic_on_resize_storms() {
     );
     fs::write(dir.join("summary.json"), &summary).expect("write summary");
 
+    // Also on stdout, because builds here are offloaded to a worker by `rch`
+    // and files written under `target/` stay on that worker. The aggregator
+    // reads this line, so the evidence travels with the test output rather
+    // than depending on artifact retrieval.
+    println!("RESIZE_DIFFERENTIAL_SUMMARY {}", summary.trim_end());
+
     assert!(
         failures.is_empty(),
         "BOCPD lost on {} check(s). The plan says flip the default back rather than lower the bar:\n  {}\nTraces in {}",

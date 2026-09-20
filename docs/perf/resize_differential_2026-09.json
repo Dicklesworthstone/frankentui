@@ -1,0 +1,185 @@
+{
+  "generated": "2026-09-20",
+  "commit": "e4348fd0",
+  "seed": 104372001701892,
+  "budget_ms": 40,
+  "cases": [
+    {
+      "case": "burst_50",
+      "verdict": "REGRESSION",
+      "frames_during_drag": {
+        "heuristic": 6,
+        "bocpd": 7
+      },
+      "total_applies": {
+        "heuristic": 7,
+        "bocpd": 8
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 33,
+        "bocpd": 49
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 2
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 49
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 50,
+        "bocpd": 1
+      }
+    },
+    {
+      "case": "burst_200",
+      "verdict": "REGRESSION",
+      "frames_during_drag": {
+        "heuristic": 26,
+        "bocpd": 27
+      },
+      "total_applies": {
+        "heuristic": 27,
+        "bocpd": 27
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 24,
+        "bocpd": 0
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 2
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 199
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 200,
+        "bocpd": 1
+      }
+    },
+    {
+      "case": "sweep_80x24_to_200x60",
+      "verdict": "REGRESSION",
+      "frames_during_drag": {
+        "heuristic": 10,
+        "bocpd": 12
+      },
+      "total_applies": {
+        "heuristic": 11,
+        "bocpd": 13
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 40,
+        "bocpd": 24
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 2
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 39
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 40,
+        "bocpd": 1
+      }
+    },
+    {
+      "case": "oscillate_10",
+      "verdict": "REGRESSION",
+      "frames_during_drag": {
+        "heuristic": 4,
+        "bocpd": 7
+      },
+      "total_applies": {
+        "heuristic": 5,
+        "bocpd": 8
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 52,
+        "bocpd": 52
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 2
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 19
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 20,
+        "bocpd": 1
+      }
+    },
+    {
+      "case": "mixed_100",
+      "verdict": "REGRESSION",
+      "frames_during_drag": {
+        "heuristic": 25,
+        "bocpd": 33
+      },
+      "total_applies": {
+        "heuristic": 26,
+        "bocpd": 34
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 45,
+        "bocpd": 45
+      },
+      "regime_transitions": {
+        "heuristic": 1,
+        "bocpd": 13
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 88
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 100,
+        "bocpd": 12
+      }
+    },
+    {
+      "case": "pathological_50",
+      "verdict": "REGRESSION",
+      "frames_during_drag": {
+        "heuristic": 20,
+        "bocpd": 22
+      },
+      "total_applies": {
+        "heuristic": 21,
+        "bocpd": 23
+      },
+      "final_apply_latency_ms": {
+        "heuristic": 51,
+        "bocpd": 19
+      },
+      "regime_transitions": {
+        "heuristic": 4,
+        "bocpd": 22
+      },
+      "detector_decisions_bocpd": {
+        "heuristic": 0,
+        "bocpd": 30
+      },
+      "detector_decisions_heuristic": {
+        "heuristic": 50,
+        "bocpd": 20
+      }
+    }
+  ],
+  "regressions": [
+    "burst_50",
+    "burst_200",
+    "sweep_80x24_to_200x60",
+    "oscillate_10",
+    "mixed_100",
+    "pathological_50"
+  ],
+  "test_status": 101
+}

@@ -41,17 +41,29 @@ if ! git -C "${ROOT_DIR}" diff --quiet 2>/dev/null; then
   DIRTY=" (working tree dirty)"
 fi
 
+RUN_LOG="${OUT_DIR}/replay.log"
+
 echo "==> replaying both detectors over the storm patterns"
 set +e
 RESIZE_DIFFERENTIAL_DIR="${OUT_DIR}" cargo test -p ftui-harness \
-  --test resize_storm_detector_differential -- --ignored --nocapture
-TEST_STATUS=$?
+  --test resize_storm_detector_differential -- --ignored --nocapture 2>&1 \
+  | sed 's/\x1b\[[0-9;]*m//g' | tee "${RUN_LOG}"
+TEST_STATUS=${PIPESTATUS[0]}
 set -e
 
-if [[ ! -f "${OUT_DIR}/summary.json" ]]; then
-  echo "no summary.json in ${OUT_DIR}; the replay did not get far enough to measure" >&2
+# The summary comes off stdout, not out of ${OUT_DIR}. Builds here are offloaded
+# to a worker by `rch`, so anything the test writes under `target/` stays on that
+# worker and never reaches this checkout. The test prints the same JSON it
+# writes, prefixed, precisely so this step does not depend on artifact
+# retrieval.
+if ! grep -q '^RESIZE_DIFFERENTIAL_SUMMARY ' "${RUN_LOG}"; then
+  echo "the replay printed no summary line; it did not get far enough to measure." >&2
+  echo "last 20 lines of ${RUN_LOG}:" >&2
+  tail -20 "${RUN_LOG}" >&2
   exit 1
 fi
+grep '^RESIZE_DIFFERENTIAL_SUMMARY ' "${RUN_LOG}" | tail -1 \
+  | cut -d' ' -f2- > "${OUT_DIR}/summary.json"
 
 echo "==> aggregating into ${REPORT_MD}"
 python3 - "${OUT_DIR}/summary.json" "${REPORT_MD}" "${REPORT_JSON}" "${COMMIT}${DIRTY}" "${TEST_STATUS}" <<'PY'
@@ -122,13 +134,39 @@ else:
     lines.append("")
 lines.append("## Verdict")
 lines.append("")
+budget = data["budget_ms"]
+over_heur = [c["case"] for c in cases
+             if cell(c, "final_apply_latency_ms", "heuristic") > budget]
+over_bocpd = [c["case"] for c in cases
+              if cell(c, "final_apply_latency_ms", "bocpd") > budget]
 if regressions:
-    lines.append(f"**BOCPD loses on {len(regressions)} of {len(cases)} patterns.** "
-                 "The plan's rule for this case is to flip `enable_bocpd` back to "
-                 "`false` rather than relax the bar:")
+    lines.append(f"**On the frames criterion, BOCPD loses on {len(regressions)} of "
+                 f"{len(cases)} patterns.** The plan's rule for that case is to flip "
+                 "`enable_bocpd` back to `false` rather than relax the bar:")
     lines.append("")
     for c in regressions:
         lines.append(f"- `{c['case']}`: {c['verdict']}")
+    lines.append("")
+    lines.append("**But the plan states two criteria, and they disagree here.** The "
+                 f"second is that the final size lands within {budget} ms of the last "
+                 "event:")
+    lines.append("")
+    lines.append(f"- heuristic is over budget on **{len(over_heur)} of {len(cases)}**"
+                 + (f": {', '.join(f'`{c}`' for c in over_heur)}" if over_heur else ""))
+    lines.append(f"- bocpd is over budget on **{len(over_bocpd)} of {len(cases)}**"
+                 + (f": {', '.join(f'`{c}`' for c in over_bocpd)}" if over_bocpd else ""))
+    lines.append("")
+    if len(over_bocpd) < len(over_heur):
+        lines.append("So reverting the default would trade a small mid-drag frame "
+                     "regression for a settling regression on more patterns than it "
+                     "fixes. That is a trade-off rather than a verdict, and which side "
+                     "to take is a product decision about whether a drag should look "
+                     "smoother or settle sooner. **This report does not flip the "
+                     "default**; it hands the owner both columns.")
+    else:
+        lines.append("BOCPD is no better on the settling criterion either, so the two "
+                     "criteria agree and the plan's rule applies without a judgement "
+                     "call.")
 else:
     lines.append(f"**BOCPD is not worse on any of the {len(cases)} patterns.** "
                  f"Better on {len(better)}, equal on {len(equal)}, and every "
