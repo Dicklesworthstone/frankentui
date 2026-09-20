@@ -94,9 +94,8 @@ What is **not** done:
   a screen reader still needs a host bridge. The packaged browser text bridge
   described below uses DOM live regions instead.
 - Generic `Modal<C>` content, Tabs content panes, and pane workspaces do not
-  automatically gain a semantic container. Built-in `Dialog` presets do
-  contribute their own scoped nodes. `Form` still does not contribute its
-  fields, so Tab moves inside a form are invisible to the tree.
+  automatically gain a semantic container. Built-in `Dialog` presets and
+  `ftui-extras::Form` contribute scoped controls from their stateful render paths.
 - Focus is derived from `A11yState::focused` on the pushed nodes (first in
   reading order) unless the view sets a focused ID on the builder; integrating
   application-wide focus ownership with the accessibility tree is future work.
@@ -247,6 +246,7 @@ manual assistive-technology testing and a full semantic control bridge remain.
 | `Scrollbar` | ScrollBar | orientation (vertical/horizontal) |
 | `Spinner` | ProgressBar | label, busy state |
 | `Dialog` | Dialog + TextInput/Button children | title, message description, visible controls, input value, state-owned focus |
+| `ftui-extras::Form` | Group + field controls | labels, values/options, required/disabled/checked state, validation descriptions, internal focus |
 
 ### Built-in dialogs
 
@@ -390,8 +390,9 @@ Most interactive widgets respond to standard terminal key conventions:
    screen-reader interoperability testing remains necessary.
 
 3. **Widget coverage and container scoping are incomplete.** Generic
-   `Modal<C>` content and `Form` fields still need render-path semantics.
-   Built-in `Dialog` presets and `TextArea` already contribute metadata.
+   `Modal<C>` content still needs render-path semantics, and specialized
+   widgets require continued auditing. Built-in `Dialog`, `Form`, and
+   `TextArea` paths contribute metadata.
 
 4. **Focus feedback is not yet delivered to a native screen reader.**
    Tree focus changes produce bounded announcements in the local callback;
@@ -428,8 +429,8 @@ Most interactive widgets respond to standard terminal key conventions:
 
 ### Phase 5: Remaining widget coverage
 
-- Add render-path metadata for generic Modal content and Form fields, and
-  audit specialized widgets such as Toast, CommandPalette, FilePicker, and Tree
+- Add render-path metadata for generic Modal content and continue auditing
+  specialized widgets such as Toast, CommandPalette, FilePicker, and Tree
   for names, state, focus and hierarchy coverage. Extend the role vocabulary
   where needed. Built-in Dialog presets and multiline TextArea have metadata.
 

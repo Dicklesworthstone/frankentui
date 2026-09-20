@@ -8,6 +8,7 @@
 //!
 //! Feature-gated under `forms`.
 
+use ftui_a11y::node::{A11yNodeInfo, A11yRole, LiveRegion};
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
@@ -202,6 +203,11 @@ pub struct Form {
     label_width: u16,
     required: Vec<bool>,
     disabled: Vec<bool>,
+    /// Optional stable accessibility identity for the form container.
+    ///
+    /// Set this when the same logical form can move or resize between frames.
+    /// Without it the fallback identity is derived from the rendered area.
+    accessibility_id: Option<u64>,
 }
 
 impl Form {
@@ -221,6 +227,7 @@ impl Form {
             label_width: 0, // auto-detect
             required: vec![false; count],
             disabled: vec![false; count],
+            accessibility_id: None,
         }
     }
 
@@ -344,6 +351,22 @@ impl Form {
     /// Check if a field is disabled.
     pub fn is_disabled(&self, field_index: usize) -> bool {
         self.disabled.get(field_index).copied().unwrap_or(false)
+    }
+
+    /// Give this form a stable accessibility identity.
+    ///
+    /// Child field identities are derived from this value and their field
+    /// index, so values, validation messages, scrolling, and geometry changes
+    /// do not replace the focused accessibility node.
+    #[must_use]
+    pub fn accessibility_id(mut self, id: u64) -> Self {
+        self.accessibility_id = Some(id);
+        self
+    }
+
+    /// Update the stable accessibility identity in place.
+    pub fn set_accessibility_id(&mut self, id: Option<u64>) {
+        self.accessibility_id = id;
     }
 
     /// Set fixed label width (0 = auto-detect from longest label).
@@ -488,6 +511,44 @@ impl FormState {
     pub fn focus_prev(&mut self, field_count: usize) {
         if field_count > 0 {
             self.focused = self.focused.checked_sub(1).unwrap_or(field_count - 1);
+        }
+    }
+
+    /// Move forward to the next enabled field, wrapping once.
+    fn focus_next_enabled(&mut self, form: &Form) {
+        let count = form.field_count();
+        if count == 0 { return; }
+        self.focused = self.focused.min(count - 1);
+        for offset in 1..=count {
+            let candidate = (self.focused + offset) % count;
+            if !form.is_disabled(candidate) { self.focused = candidate; return; }
+        }
+    }
+
+    /// Move backward to the previous enabled field, wrapping once.
+    fn focus_prev_enabled(&mut self, form: &Form) {
+        let count = form.field_count();
+        if count == 0 { return; }
+        self.focused = self.focused.min(count - 1);
+        for offset in 1..=count {
+            let candidate = (self.focused + count - (offset % count)) % count;
+            if !form.is_disabled(candidate) { self.focused = candidate; return; }
+        }
+    }
+
+    /// Repair externally retained focus before rendering.
+    ///
+    /// Disabled fields are not keyboard focus stops. If every field is disabled
+    /// the numeric state remains clamped but no accessibility child is focused.
+    fn normalize_focus(&mut self, form: &Form) {
+        let count = form.field_count();
+        if count == 0 { self.focused = 0; return; }
+        self.focused = self.focused.min(count - 1);
+        if form.is_disabled(self.focused) {
+            for offset in 1..=count {
+                let candidate = (self.focused + offset) % count;
+                if !form.is_disabled(candidate) { self.focused = candidate; break; }
+            }
         }
     }
 
@@ -658,22 +719,22 @@ impl FormState {
         if form.is_disabled(self.focused) {
             match key.code {
                 KeyCode::Tab => {
-                    self.focus_next(form.field_count());
+                    self.focus_next_enabled(form);
                     self.sync_text_cursor(form);
                     return true;
                 }
                 KeyCode::BackTab => {
-                    self.focus_prev(form.field_count());
+                    self.focus_prev_enabled(form);
                     self.sync_text_cursor(form);
                     return true;
                 }
                 KeyCode::Up => {
-                    self.focus_prev(form.field_count());
+                    self.focus_prev_enabled(form);
                     self.sync_text_cursor(form);
                     return true;
                 }
                 KeyCode::Down => {
-                    self.focus_next(form.field_count());
+                    self.focus_next_enabled(form);
                     self.sync_text_cursor(form);
                     return true;
                 }
@@ -684,16 +745,16 @@ impl FormState {
         match key.code {
             // Tab / Shift+Tab: navigate fields
             KeyCode::Tab => {
-                // Mark current field as touched before moving focus
+                // Mark current field as touched before moving focus.
                 self.mark_touched(self.focused);
-                self.focus_next(form.field_count());
+                self.focus_next_enabled(form);
                 self.sync_text_cursor(form);
                 true
             }
             KeyCode::BackTab => {
-                // Mark current field as touched before moving focus
+                // Mark current field as touched before moving focus.
                 self.mark_touched(self.focused);
-                self.focus_prev(form.field_count());
+                self.focus_prev_enabled(form);
                 self.sync_text_cursor(form);
                 true
             }
@@ -768,9 +829,9 @@ impl FormState {
                 _ => {}
             }
         }
-        // Default: move focus up (mark touched before moving)
+        // Default: move focus up (mark touched before moving).
         self.mark_touched(self.focused);
-        self.focus_prev(form.field_count());
+        self.focus_prev_enabled(form);
         self.sync_text_cursor(form);
         true
     }
@@ -807,9 +868,9 @@ impl FormState {
                 _ => {}
             }
         }
-        // Default: move focus down (mark touched before moving)
+        // Default: move focus down (mark touched before moving).
         self.mark_touched(self.focused);
-        self.focus_next(form.field_count());
+        self.focus_next_enabled(form);
         self.sync_text_cursor(form);
         true
     }
@@ -997,6 +1058,23 @@ impl StatefulWidget for Form {
 
         let visible_rows = area.height as usize;
         state.ensure_error_states(self.fields.len());
+        state.normalize_focus(self);
+
+        let a11y_root = if frame.a11y_enabled() {
+            let bounds = area.intersection(&frame.buffer.current_scissor());
+            if bounds.is_empty() {
+                None
+            } else {
+                let id = self.accessibility_root_id(area);
+                let root = A11yNodeInfo::new(id, A11yRole::Group, bounds)
+                    .with_name("Form")
+                    .with_description(format!("{} fields", self.fields.len()));
+                frame.push_a11y(root);
+                Some(id)
+            }
+        } else {
+            None
+        };
 
         // Compute row heights (1 line for field + optional error line).
         let mut row_heights = Vec::with_capacity(self.fields.len());
@@ -1137,6 +1215,16 @@ impl StatefulWidget for Form {
                     focus_for_field,
                     state,
                 );
+
+                if let Some(parent) = a11y_root {
+                    let bounds = Rect::new(area.x, y, area.width, 1)
+                        .intersection(&frame.buffer.current_scissor());
+                    if !bounds.is_empty() {
+                        frame.push_a11y(self.accessibility_field_node(
+                            parent, i, field, bounds, focus_for_field, error_msg,
+                        ));
+                    }
+                }
             }
 
             // Draw error on the line below if visible
@@ -1159,6 +1247,76 @@ impl StatefulWidget for Form {
 }
 
 impl Form {
+    fn accessibility_root_id(&self, area: Rect) -> u64 {
+        self.accessibility_id
+            .unwrap_or_else(|| A11yNodeInfo::stable_id_for(A11yRole::Group, area))
+    }
+
+    fn accessibility_field_id(parent: u64, index: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.form.field", parent, index).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn accessibility_field_node(
+        &self,
+        parent: u64,
+        index: usize,
+        field: &FormField,
+        bounds: Rect,
+        focused: bool,
+        error: Option<&str>,
+    ) -> A11yNodeInfo {
+        let role = match field {
+            FormField::Text { .. } => A11yRole::TextInput,
+            FormField::Checkbox { .. } => A11yRole::Checkbox,
+            FormField::Radio { .. } => A11yRole::RadioButton,
+            FormField::Select { .. } => A11yRole::MenuItem,
+            FormField::Number { .. } => A11yRole::Slider,
+        };
+        let mut node = A11yNodeInfo::new(Self::accessibility_field_id(parent, index), role, bounds)
+            .with_parent(parent)
+            .with_name(field.label());
+        node.state.focused = focused;
+        node.state.disabled = self.is_disabled(index);
+        node.state.required = self.is_required(index);
+        match field {
+            FormField::Text { value, placeholder, .. } => {
+                node.state.value_text = Some(value.clone());
+                if error.is_none() && value.is_empty() {
+                    node.description = placeholder.as_deref().filter(|text| !text.trim().is_empty())
+                        .map(|text| format!("Placeholder: {text}"));
+                }
+            }
+            FormField::Checkbox { checked, .. } => node.state.checked = Some(*checked),
+            FormField::Radio { options, selected, .. } => {
+                node.state.checked = Some(true);
+                node.state.value_now = Some(*selected as f64);
+                node.state.value_min = Some(0.0);
+                node.state.value_max = options.len().checked_sub(1).map(|last| last as f64);
+                node.state.value_text = options.get(*selected).cloned();
+            }
+            FormField::Select { options, selected, .. } => {
+                node.state.selected = true;
+                node.state.value_now = Some(*selected as f64);
+                node.state.value_min = Some(0.0);
+                node.state.value_max = options.len().checked_sub(1).map(|last| last as f64);
+                node.state.value_text = options.get(*selected).cloned();
+            }
+            FormField::Number { value, min, max, .. } => {
+                node.state.value_now = Some(*value as f64);
+                node.state.value_min = min.map(|value| value as f64);
+                node.state.value_max = max.map(|value| value as f64);
+            }
+        }
+        if let Some(error) = error {
+            node.description = Some(format!("Error: {error}"));
+            if focused { node.live_region = Some(LiveRegion::Polite); }
+        }
+        node
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_field(
         &self,
@@ -1603,6 +1761,7 @@ fn grapheme_byte_offset(s: &str, grapheme_idx: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy};
     use ftui_core::event::{KeyEvent, KeyEventKind};
     use ftui_render::cell::PackedRgba;
     use ftui_render::grapheme_pool::GraphemePool;
@@ -1625,6 +1784,18 @@ mod tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         })
+    }
+
+    fn render_form_a11y(form: &Form, state: &mut FormState, area: Rect) -> A11yTree {
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            StatefulWidget::render(form, area, &mut frame, state);
+            frame.finish_a11y();
+        }
+        builder.build()
     }
 
     #[allow(dead_code)]
@@ -3264,5 +3435,114 @@ mod tests {
         let form = Form::new(vec![FormField::text("AB")]).required(0, true);
         // "AB" = 2, + " *" = 2, + ": " = 2 → 6
         assert_eq!(form.effective_label_width(), 6);
+    }
+
+    #[test]
+    fn form_accessibility_exposes_real_field_semantics_and_states() {
+        let form = Form::new(vec![
+            FormField::text_with_placeholder("Name", "Enter name"),
+            FormField::checkbox("Agree", true),
+            FormField::radio("Color", vec!["Red".into(), "Blue".into()]),
+            FormField::select("Size", vec!["Small".into(), "Large".into()]),
+            FormField::number_bounded("Count", 4, 1, 9),
+        ]).required(0, true).disabled(1, true).accessibility_id(77);
+        let mut state = FormState::default();
+        let tree = render_form_a11y(&form, &mut state, Rect::new(2, 3, 50, 8));
+        assert_eq!(tree.root_id(), Some(77));
+        let root = tree.root().unwrap();
+        assert_eq!(root.children.len(), 5);
+        let fields: Vec<_> = root.children.iter().map(|id| tree.node(*id).unwrap()).collect();
+        assert_eq!(fields.iter().map(|node| node.role).collect::<Vec<_>>(), vec![
+            A11yRole::TextInput, A11yRole::Checkbox, A11yRole::RadioButton,
+            A11yRole::MenuItem, A11yRole::Slider,
+        ]);
+        assert!(fields[0].state.focused && fields[0].state.required);
+        assert_eq!(fields[0].description.as_deref(), Some("Placeholder: Enter name"));
+        assert!(fields[1].state.disabled && !fields[1].state.focused);
+        assert_eq!(fields[1].state.checked, Some(true));
+        assert_eq!(fields[2].state.value_text.as_deref(), Some("Red"));
+        assert_eq!(fields[3].state.value_text.as_deref(), Some("Small"));
+        assert_eq!(fields[4].state.value_now, Some(4.0));
+        assert_eq!(tree.focused_id(), Some(fields[0].id));
+    }
+
+    #[test]
+    fn form_keyboard_focus_skips_disabled_fields_and_announces_one_destination() {
+        let mut form = Form::new(vec![FormField::text("A"), FormField::text("Disabled"), FormField::text("C")])
+            .disabled(1, true).accessibility_id(88);
+        let mut state = FormState::default();
+        let before = render_form_a11y(&form, &mut state, Rect::new(0, 0, 30, 3));
+        assert!(state.handle_event(&mut form, &press(KeyCode::Tab)));
+        assert_eq!(state.focused, 2);
+        let after = render_form_a11y(&form, &mut state, Rect::new(0, 0, 30, 3));
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.dropped_count, 0);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(after.focused().and_then(|node| node.name.as_deref()), Some("C"));
+        assert!(state.handle_event(&mut form, &press(KeyCode::BackTab)));
+        assert_eq!(state.focused, 0);
+    }
+
+    #[test]
+    fn all_disabled_form_has_no_phantom_accessibility_focus() {
+        let form = Form::new(vec![FormField::text("A"), FormField::checkbox("B", false)])
+            .disabled(0, true).disabled(1, true).accessibility_id(89);
+        let mut state = FormState { focused: usize::MAX, ..Default::default() };
+        let tree = render_form_a11y(&form, &mut state, Rect::new(0, 0, 30, 2));
+        assert!(tree.focused().is_none());
+        assert!(!tree.nodes().any(|node| node.state.focused));
+    }
+
+    #[test]
+    fn form_choice_value_changes_announce_without_live_region_opt_in() {
+        for mut form in [
+            Form::new(vec![FormField::radio("Color", vec!["Red".into(), "Blue".into()])]).accessibility_id(90),
+            Form::new(vec![FormField::select("Size", vec!["Small".into(), "Large".into()])]).accessibility_id(91),
+        ] {
+            let mut state = FormState::default();
+            let before = render_form_a11y(&form, &mut state, Rect::new(0, 0, 30, 1));
+            let code = if matches!(form.field(0), Some(FormField::Radio { .. })) { KeyCode::Down } else { KeyCode::Right };
+            assert!(state.handle_event(&mut form, &press(code)));
+            let after = render_form_a11y(&form, &mut state, Rect::new(0, 0, 30, 1));
+            let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+            assert_eq!(batch.announcements.len(), 1);
+            assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusedStateChanged);
+            assert!(batch.announcements[0].text.contains("value "));
+        }
+    }
+
+    #[test]
+    fn validation_announces_only_the_focused_new_error() {
+        let mut form = Form::new(vec![FormField::text("Name"), FormField::text("Email")])
+            .validate(0, Box::new(|_| Some("Name is required".into())))
+            .validate(1, Box::new(|_| Some("Email is required".into())))
+            .accessibility_id(92);
+        let mut state = FormState::default();
+        let before = render_form_a11y(&form, &mut state, Rect::new(0, 0, 40, 4));
+        assert!(state.handle_event(&mut form, &press(KeyCode::Enter)));
+        let after = render_form_a11y(&form, &mut state, Rect::new(0, 0, 40, 4));
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::LiveRegionChanged);
+        assert!(batch.announcements[0].text.contains("Name is required"));
+        assert!(!batch.announcements[0].text.contains("Email is required"));
+        let root = after.root().unwrap();
+        assert_eq!(after.node(root.children[0]).unwrap().live_region, Some(LiveRegion::Polite));
+        assert_eq!(after.node(root.children[1]).unwrap().live_region, None);
+    }
+
+    #[test]
+    fn explicit_form_accessibility_id_survives_geometry_and_validation_layout_changes() {
+        let form = Form::new(vec![FormField::text("Name"), FormField::text("Email")]).accessibility_id(93);
+        let mut state = FormState::default();
+        let before = render_form_a11y(&form, &mut state, Rect::new(0, 0, 40, 2));
+        let mut before_ids: Vec<_> = before.nodes().map(|node| node.id).collect();
+        state.errors.push(ValidationError { field: 0, message: "Bad name".into() });
+        let after = render_form_a11y(&form, &mut state, Rect::new(5, 4, 40, 4));
+        let mut after_ids: Vec<_> = after.nodes().map(|node| node.id).collect();
+        before_ids.sort_unstable(); after_ids.sort_unstable();
+        assert_eq!(before_ids, after_ids);
+        assert_eq!(before.focused_id(), after.focused_id());
     }
 }
