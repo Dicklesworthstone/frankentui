@@ -1116,17 +1116,19 @@ impl TerminalSession {
         let mut stdout = io::stdout();
         let caps = TerminalCapabilities::with_overrides();
 
-        // `self.kitty_keyboard_enabled` is already the exact question - did
-        // *this* session push? - and the `TERMINAL_SESSION_ACTIVE` swap above
-        // means a best-effort path has not popped for this session, because if
-        // it had, that swap would have returned false and this returned early.
+        // Two conditions, and the latch is the weaker one.
+        // `kitty_keyboard_enabled` is the exact question - did *this* session
+        // push? - and the `TERMINAL_SESSION_ACTIVE` swap above already rules
+        // out a best-effort path having popped for this session, because if it
+        // had, that swap would have returned false and we would have returned.
         //
-        // So consulting the latch here could never protect against a double
-        // pop; the only way it could read `claimed` is from an *earlier*
-        // session, where it suppressed a pop this session genuinely owed.
+        // The latch therefore only ever reads `claimed` here from an *earlier*
+        // session, which is why `enable_kitty_keyboard` releases it: without
+        // that, the first best-effort teardown in the process suppressed this
+        // pop for every session that followed.
         let pop_kitty = if self.kitty_keyboard_enabled {
             self.kitty_keyboard_enabled = false;
-            true
+            !KittyPopLatch::is_claimed()
         } else {
             false
         };
