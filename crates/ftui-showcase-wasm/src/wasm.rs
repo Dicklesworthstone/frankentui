@@ -589,6 +589,26 @@ impl ShowcaseRunner {
         }
     }
 
+    /// Enable or disable bounded accessibility collection for a host bridge.
+    ///
+    /// Enable before init for first-frame feedback. In the packaged browser
+    /// adapter an explicit call selects manual delivery and detaches automatic
+    /// DOM speech, preventing the callback and host from speaking twice.
+    #[wasm_bindgen(js_name = setAccessibilityEnabled)]
+    pub fn set_accessibility_enabled(&mut self, enabled: bool) {
+        self.inner.set_accessibility_enabled(enabled);
+    }
+
+    /// Read the bounded mirror and drain the latest frame's announcements.
+    ///
+    /// Returns schema-v1 JSON with lossless string frame/node IDs. Read after
+    /// init and each rendered step; a second drain has no speech. This local
+    /// channel is independent of patch/log output and never logs its content.
+    #[wasm_bindgen(js_name = takeAccessibilityUpdateJson)]
+    pub fn take_accessibility_update_json(&mut self) -> String {
+        self.inner.take_accessibility_update_json()
+    }
+
     /// Provide the Shakespeare text blob for the `Shakespeare` screen.
     ///
     /// For WASM builds we avoid embedding multi-megabyte strings in the module.

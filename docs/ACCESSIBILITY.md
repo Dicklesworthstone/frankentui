@@ -88,10 +88,11 @@ runs the showcase under a PTY and requires `FocusChanged` rows.
 
 What is **not** done:
 
-- No operating-system bridge (AT-SPI, UIA, NSAccessibility). Announcements
-  reach the local callback/accessors; telemetry carries metadata and an
-  explicitly opted-in evidence sink can carry text. Nothing reaches a
-  screen reader on its own.
+- No operating-system bridge (AT-SPI, UIA, NSAccessibility). Native terminal
+  announcements reach the local callback/accessors; telemetry carries metadata
+  and an explicitly opted-in evidence sink can carry text. Native delivery to
+  a screen reader still needs a host bridge. The packaged browser text bridge
+  described below uses DOM live regions instead.
 - Generic `Modal<C>` content, Tabs content panes, and pane workspaces do not
   automatically gain a semantic container. Built-in `Dialog` presets do
   contribute their own scoped nodes. `Form` still does not contribute its
@@ -152,13 +153,84 @@ policy changes, and callback-triggered mutations and quit. The second constructs
 screen navigation and resize. These added tests require pinned-toolchain DSR
 execution; source review alone is not a passing Rust or browser test run.
 
-**This does not yet connect the shipped browser showcase to a screen reader.**
-The `RunnerCore` constructor still creates `StepProgram` without this opt-in,
-and the HTML semantic proxy remains static. Enabling collection in that host,
-exporting its bounded data across the WASM boundary, and updating a DOM or native
-accessibility bridge remain separate integration work. The core runner now
-provides the missing collection/callback/data path without claiming that final
-delivery is already implemented.
+### Packaged browser text bridge
+
+`RunnerCore::set_accessibility_enabled` enables this collection path, and
+`take_accessibility_update_json` exports a bounded mirror plus that frame's
+announcement drain. `ShowcaseRunner` exposes them to JavaScript as
+`setAccessibilityEnabled` and `takeAccessibilityUpdateJson`. The schema-v1
+packet contains `enabled`, `frame_id`, `focus_id`, `lines`, `omitted_nodes`,
+`announcements` (node ID, reason, urgency, text), and `dropped_count`.
+Frame and node IDs are decimal strings, so adjacent IDs above JavaScript's
+safe-integer range are not rounded into duplicates. A pre-init frame ID is null.
+
+The complete site produced by `build-wasm.sh` includes `accessibility.mjs`
+inside the generated runner JavaScript, before calculating package checksums.
+The import-free adapter subclasses the generated `ShowcaseRunner` and replaces
+its live export without rewriting generated methods or changing the native
+runner's default. Its source hash is included in `source-inputs.json` as well.
+This is intentional: the integrity loader imports verified bytes through a Blob
+URL, where relative snippet imports would neither resolve nor be independently
+verified. Do not copy raw wasm-bindgen output over the packaged runner glue.
+
+In the existing showcase page, the adapter detects the reserved `#a11y-proxy`
+before `init`, enables collection, and replaces the static placeholder. It
+drains the initial frame before another step can replace its announcements,
+then publishes after every rendered step. Idle steps and repeated `init` calls
+do not drain or replay old speech. A worker or host without the reserved proxy
+stays default-off and receives no unsolicited DOM insertion.
+
+The proxy is a browseable text document, **not a synthetic interactive control
+tree**. Its mirror uses `aria-live="off"`; polite and assertive `role="log"`
+children use non-atomic, additions-only live updates. Nodes with unchanged text
+are retained. No `.focus()` calls or `aria-activedescendant` updates compete
+with the canvas input path. All application content is assigned with
+`textContent`, never interpreted as HTML. The packet is validated before any
+DOM update, including schema, IDs, counts, text lengths, and allowed reasons.
+Malformed payloads are rejected without logging their content.
+
+Replay prevention uses frame identity, not text equality: the same or an older
+frame is rejected, but identical text from different nodes or later real
+transitions is still delivered. Empty live regions are installed before queued
+additions run in the next task. A quiet follow-up frame does not erase pending
+first-frame speech. Each packet is bounded to 128 mirror lines, eight
+announcements, and 240 Unicode scalar values per text item. The browser queue
+holds at most 32 entries, dropping older polite entries before urgent ones;
+each live log retains at most 16 entries. DOM delivery is best-effort, not an
+acknowledged record of speech spoken by assistive technology. Policy drops and
+queue-overflow drops are separate metadata attributes on the proxy.
+
+Hidden tabs clear pending speech and live histories. Background updates refresh
+the mirror but do not replay when visibility returns. Replacing a runner's
+proxy ownership disposes the old bridge. Call `destroy()` or `free()` when the
+host retires a runner: both cancel pending tasks and clear DOM content; the
+original WASM cleanup still runs. Do not rely on JavaScript garbage collection
+to perform deterministic DOM cleanup.
+
+A host that supplies another accessibility consumer should explicitly call
+`runner.setAccessibilityEnabled(true)` before initialization. In the packaged
+adapter, an explicit call selects **manual** delivery and detaches automatic
+DOM speech, avoiding two consumers. Read `takeAccessibilityUpdateJson()` after
+initialization and every rendered step. Calling the setter with false disables
+collection and clears the automatic DOM bridge. Raw wasm-bindgen users receive
+these explicit APIs but not the packaged automatic adapter.
+
+Verification has three distinct layers. Four `RunnerCore` tests exercise the
+real transport; `build-wasm.sh` includes a compiled-WASM smoke check for its
+exports, init, bounded mirror, drain, and cleanup. Those require the pinned
+DSR environment. The separate real-DOM suite can run without a WASM build:
+
+```bash
+python3 crates/ftui-showcase-wasm/tests/accessibility_dom.py --chromium /path/to/chromium
+```
+
+It requires the verification environment's Python Playwright and Chromium,
+performs no installation or network access, and exercises the actual bridge
+module and adapter with a runner-contract fixture. Its 18 cases cover literal
+text safety, initial-frame delivery, replay suppression, 64-bit IDs, caps,
+visibility, manual delivery, ownership, and disposal. Passing DOM tests does
+not establish compiled-WASM correctness or NVDA/JAWS/VoiceOver interoperability;
+manual assistive-technology testing and a full semantic control bridge remain.
 
 ### Widgets contributing accessibility metadata
 
@@ -247,15 +319,14 @@ FrankenTUI has a focus management subsystem (`ftui-widgets::focus`):
 - **Tab-order** -- `tab_index` on focus nodes, with ascending-order
   traversal.
 
-### Web rendering (canvas + semantic proxy)
+### Web rendering (canvas + text proxy)
 
-The web showcase (`crates/ftui-showcase-wasm/frankentui_showcase_demo.html`) renders via HTML
-`<canvas>` with WebGPU. The canvas element now carries:
-
-- `role="application"` and `aria-label` for screen-reader identification.
-- An `#a11y-proxy` div (visually hidden, screen-reader-visible) that
-  provides a semantic description of the TUI state. The WASM runtime
-  should update this div on each render pass to mirror the `A11yTree`.
+The web showcase (`crates/ftui-showcase-wasm/frankentui_showcase_demo.html`)
+renders via HTML `<canvas>` with WebGPU. The canvas carries `role="application"`
+and an accessible label. The packaged runner updates the existing visually
+hidden `#a11y-proxy` with the bounded text mirror and separate live logs described
+above. The source HTML placeholder remains useful before module initialization;
+it is no longer the only description available after the packaged runner starts.
 
 ---
 
@@ -309,15 +380,14 @@ Most interactive widgets respond to standard terminal key conventions:
 
 ## Known Limitations
 
-1. **No platform accessibility bridge yet.** The `A11yTree` and
-   `A11yTreeDiff` are generated but not yet consumed by a platform
-   bridge (AccessKit, AT-SPI, etc.). Screen readers cannot yet read
-   the terminal TUI through FrankenTUI's semantic tree on their own.
+1. **No native platform accessibility bridge yet.** The `A11yTree` and
+   `A11yTreeDiff` are not consumed by a native platform adapter such as
+   AccessKit/AT-SPI. The browser text bridge is not that native integration.
 
-2. **Web semantic proxy is static.** The `#a11y-proxy` div in the HTML
-   showcase contains a static description. It needs to be dynamically
-   updated by the WASM runtime on each render pass to reflect the
-   current `A11yTree` snapshot.
+2. **The browser proxy is text, not a full semantic widget tree.** It exposes
+   a dynamic browseable mirror and bounded live announcements, not HTML
+   controls with native actions or a synchronized DOM focus model. Real
+   screen-reader interoperability testing remains necessary.
 
 3. **Widget coverage and container scoping are incomplete.** Generic
    `Modal<C>` content and `Form` fields still need render-path semantics.
@@ -347,14 +417,14 @@ Most interactive widgets respond to standard terminal key conventions:
 - The runtime already builds and diffs the tree after rendering; add
   delivery to the platform adapter without replaying duplicate synthetic speech.
 
-### Phase 4: Web semantic proxy (dynamic)
+### Phase 4: Full web semantic controls
 
-- After each WASM render pass, serialize the `A11yTree` snapshot into
-  semantic HTML and inject it into the `#a11y-proxy` div.
-- Each `A11yNodeInfo` maps to an HTML element: `<button>`,
-  `<input>`, `<table>`, `<ul>/<li>`, `<div role="...">`, etc.
-- Focus changes update `aria-activedescendant` on the proxy container.
-- Live-region nodes emit `aria-live` announcements.
+- The dynamic text mirror and live-announcement delivery are implemented in
+  the packaged browser runner. Extend this to semantic controls and actions,
+  with roles and state synchronized to the canvas application.
+- Decide how native DOM focus and action events replace synthetic text feedback
+  for those controls, rather than replaying both channels for one interaction.
+- Validate with assistive technology, not only DOM assertions.
 
 ### Phase 5: Remaining widget coverage
 
@@ -378,8 +448,8 @@ Accessibility improvements are welcome. Key areas where help is needed:
 
 - **AccessKit integration** -- Rust experience with AccessKit's tree
   update API.
-- **Web proxy layer** -- JavaScript/WASM experience for dynamic DOM
-  manipulation.
+- **Web proxy layer** -- semantic controls, actions, and assistive-technology
+  interoperability beyond the delivered text bridge.
 - **Widget metadata** -- add `Accessible` or stateful render-path metadata
   to remaining widgets; see `input.rs`, `list.rs`, and `modal/dialog.rs`.
 - **Testing** -- screen reader testing on Windows (NVDA/JAWS), macOS

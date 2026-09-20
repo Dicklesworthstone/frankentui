@@ -111,6 +111,7 @@ for tool in cargo rustc wasm-bindgen python3 curl tar node; do
 done
 [[ -f Cargo.lock ]] || fail 'Cargo.lock is required; retain the DSR candidate lock'
 [[ -f crates/ftui-showcase-wasm/renderer.lock ]] || fail 'renderer dependency lock is missing'
+[[ -f crates/ftui-showcase-wasm/accessibility.mjs ]] || fail 'browser accessibility bridge is missing'
 
 # The current repository pin governs BOTH builds, including the archived tree.
 export RUSTUP_TOOLCHAIN
@@ -178,6 +179,17 @@ build_package() {
 }
 build_package "$output/renderer-source" frankenterm-web FrankenTerm
 build_package "$SCRIPT_DIR" ftui-showcase-wasm ftui_showcase_wasm
+
+# Package the import-free bridge inside the same verified module as the runner.
+# The host imports checked bytes through a Blob URL: a relative snippet import
+# would both fail resolution and escape the existing per-file integrity check.
+# Append only to newly generated output, never rewrite generated methods or
+# source files. The subclass preserves the exported constructor's API.
+printf '\n' >> "$output/site/pkg/ftui_showcase_wasm.js"
+cat crates/ftui-showcase-wasm/accessibility.mjs >> "$output/site/pkg/ftui_showcase_wasm.js"
+printf '\nShowcaseRunner = withShowcaseAccessibility(ShowcaseRunner);\n' \
+  >> "$output/site/pkg/ftui_showcase_wasm.js"
+
 # Run the native binary with its own default feature graph, separately from
 # the WASM graph. Compare names AND order, not a hard-coded expected count.
 cargo -Zchecksum-freshness run --locked -p ftui-demo-showcase -- --list-screens \
@@ -198,6 +210,24 @@ assert.equal(new Set(expected).size, expected.length, 'native slugs must be uniq
 assert.deepEqual(actual, expected, 'native/WASM ordered screen registries differ');
 await writeFile(`${root}/wasm-screen-slugs.json`, JSON.stringify(actual) + '\n', {flag: 'wx'});
 console.log(`native/WASM registry parity: ${actual.length} ordered screen slugs match`);
+// Exercise the real compiled exports, not only the JavaScript adapter. Node
+// has no reserved DOM proxy, so explicit configuration chooses manual delivery.
+runner.setAccessibilityEnabled(true);
+runner.init();
+const first = JSON.parse(runner.takeAccessibilityUpdateJson());
+assert.equal(first.schema_version, 1);
+assert.equal(first.enabled, true);
+assert.equal(first.frame_id, '0');
+assert.ok(first.lines.length > 0 && first.lines.length <= 128);
+assert.ok(first.announcements.length <= 8);
+const drained = JSON.parse(runner.takeAccessibilityUpdateJson());
+assert.deepEqual(drained.lines, first.lines);
+assert.equal(drained.announcements.length, 0);
+assert.equal(drained.dropped_count, 0);
+runner.destroy();
+assert.equal(JSON.parse(runner.takeAccessibilityUpdateJson()).enabled, false);
+runner.free();
+console.log('compiled browser accessibility transport: init, bounded mirror, drain, cleanup passed');
 JS
 cp crates/ftui-showcase-wasm/frankentui_showcase_demo.html "$output/site/index.html"
 cp crates/ftui-demo-showcase/data/shakespeare.txt crates/ftui-demo-showcase/data/sqlite3.c \
@@ -217,6 +247,7 @@ inputs = {p.as_posix(): digest(p) for p in sorted(pathlib.Path('crates').rglob('
           if p.is_file() and p.suffix in ('.rs', '.toml')}
 for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-wasm.sh',
              'crates/ftui-showcase-wasm/frankentui_showcase_demo.html',
+             'crates/ftui-showcase-wasm/accessibility.mjs',
              'crates/ftui-showcase-wasm/renderer.lock', 'fonts/pragmasevka-nf-subset.woff2',
              'crates/ftui-demo-showcase/data/shakespeare.txt', 'crates/ftui-demo-showcase/data/sqlite3.c',
              'crates/ftui-demo-showcase/data/evidence.jsonl'):
