@@ -196,6 +196,62 @@ impl RunnerCore {
         }
     }
 
+    /// Enable bounded accessibility collection for a browser or other host.
+    ///
+    /// Enable before initialization to retain the first focus announcement.
+    /// Enabling later schedules a new render. Disabling releases local content;
+    /// the host must also clear any DOM or other copies it retained.
+    pub fn set_accessibility_enabled(&mut self, enabled: bool) {
+        self.inner
+            .set_accessibility_policy(enabled.then(Default::default));
+    }
+
+    /// Export the latest bounded text mirror and drain that frame's speech.
+    ///
+    /// This is the local text-bridge channel, not telemetry or a full native
+    /// semantic tree. Read after init and each rendered step, independently of
+    /// patch/log drains. A second read preserves the mirror but has no speech.
+    /// Frame and node IDs are decimal strings, never lossy JavaScript numbers.
+    /// Hosts must insert text as text, not HTML, and choose one speech consumer.
+    pub fn take_accessibility_update_json(&mut self) -> String {
+        let enabled = self.inner.accessibility_policy().is_some();
+        let frame_id = self.inner.frame_idx().checked_sub(1).map(|id| id.to_string());
+        let focus_id = self
+            .inner
+            .accessibility_tree()
+            .and_then(|tree| tree.focused_id())
+            .map(|id| id.to_string());
+        let (lines, omitted_nodes) = self
+            .inner
+            .accessibility_mirror()
+            .map(|mirror| (mirror.lines, mirror.omitted_nodes))
+            .unwrap_or_default();
+        let batch = self.inner.take_accessibility_announcements();
+        let announcements: Vec<_> = batch
+            .announcements
+            .into_iter()
+            .map(|announcement| {
+                serde_json::json!({
+                    "node_id": announcement.node_id.map(|id| id.to_string()),
+                    "urgency": announcement.urgency.to_string(),
+                    "reason": format!("{:?}", announcement.reason),
+                    "text": announcement.text,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "schema_version": 1,
+            "enabled": enabled,
+            "frame_id": frame_id,
+            "focus_id": focus_id,
+            "lines": lines,
+            "omitted_nodes": omitted_nodes,
+            "announcements": announcements,
+            "dropped_count": batch.dropped_count,
+        })
+        .to_string()
+    }
+
     /// Initialize the model and render the first frame. Call exactly once.
     pub fn init(&mut self) {
         if self.inner.is_initialized() {
@@ -1357,6 +1413,95 @@ mod tests {
         edge_fling_projection,
     };
     use ftui_layout::{PaneDockPreview, PaneDockZone, PaneResizeGrip, PaneRetentionPolicy};
+
+    fn accessibility_update(runner: &mut RunnerCore) -> serde_json::Value {
+        serde_json::from_str(&runner.take_accessibility_update_json()).expect("valid bridge JSON")
+    }
+
+    #[test]
+    fn accessibility_transport_is_opt_in_and_empty_before_the_first_frame() {
+        let mut runner = RunnerCore::new(80, 24);
+        let disabled = accessibility_update(&mut runner);
+        assert_eq!(disabled["schema_version"], 1);
+        assert_eq!(disabled["enabled"], false);
+        assert!(disabled["frame_id"].is_null());
+        assert!(disabled["lines"].as_array().unwrap().is_empty());
+        runner.set_accessibility_enabled(true);
+        let pending = accessibility_update(&mut runner);
+        assert_eq!(pending["enabled"], true);
+        assert!(pending["frame_id"].is_null());
+        assert!(pending["announcements"].as_array().unwrap().is_empty());
+        runner.init();
+        let first = accessibility_update(&mut runner);
+        assert_eq!(first["frame_id"], "0");
+        assert!(!first["lines"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn accessibility_transport_preserves_mirror_and_does_not_replay_speech() {
+        let mut runner = RunnerCore::new(80, 24);
+        runner.set_accessibility_enabled(true);
+        runner.init();
+        let expected = runner.inner.accessibility_announcements().len();
+        let first = accessibility_update(&mut runner);
+        assert_eq!(first["announcements"].as_array().unwrap().len(), expected);
+        assert!(first["lines"].as_array().unwrap().len() <= 128);
+        for line in first["lines"].as_array().unwrap() {
+            assert!(line.as_str().unwrap().chars().count() <= 240);
+        }
+        for announcement in first["announcements"].as_array().unwrap() {
+            assert!(announcement["text"].as_str().unwrap().chars().count() <= 240);
+            assert!(announcement["node_id"].is_null() || announcement["node_id"].is_string());
+        }
+        let second = accessibility_update(&mut runner);
+        assert_eq!(second["lines"], first["lines"]);
+        assert_eq!(second["frame_id"], first["frame_id"]);
+        assert!(second["announcements"].as_array().unwrap().is_empty());
+        assert_eq!(second["dropped_count"], 0);
+        assert!(runner.inner.outputs().last_buffer.is_some());
+    }
+
+    #[test]
+    fn accessibility_transport_is_independent_of_patch_and_log_consumption() {
+        for prepare in [false, true] {
+            let mut runner = RunnerCore::new(80, 24);
+            runner.set_accessibility_enabled(true);
+            runner.init();
+            let expected = runner.inner.accessibility_mirror().unwrap().lines;
+            let announcements = runner.inner.accessibility_announcements().len();
+            if prepare {
+                runner.prepare_flat_patches();
+            } else {
+                runner.take_flat_patches();
+            }
+            assert!(runner.take_logs().is_empty());
+            let update = accessibility_update(&mut runner);
+            assert_eq!(update["lines"], serde_json::json!(expected));
+            assert_eq!(update["announcements"].as_array().unwrap().len(), announcements);
+            assert!(runner.take_logs().is_empty());
+        }
+    }
+
+    #[test]
+    fn accessibility_transport_disable_clears_content_and_reenable_refreshes() {
+        let mut runner = RunnerCore::new(80, 24);
+        runner.set_accessibility_enabled(true);
+        runner.init();
+        let initial = accessibility_update(&mut runner);
+        runner.set_accessibility_enabled(false);
+        let disabled = accessibility_update(&mut runner);
+        assert_eq!(disabled["enabled"], false);
+        assert!(disabled["focus_id"].is_null());
+        assert!(disabled["lines"].as_array().unwrap().is_empty());
+        assert!(disabled["announcements"].as_array().unwrap().is_empty());
+        assert_eq!(disabled["omitted_nodes"], 0);
+        assert_eq!(disabled["dropped_count"], 0);
+        runner.set_accessibility_enabled(true);
+        assert!(runner.step().rendered);
+        let fresh = accessibility_update(&mut runner);
+        assert_ne!(fresh["frame_id"], initial["frame_id"]);
+        assert!(!fresh["lines"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     fn screen_selector_reaches_model_and_preserves_invalid_selection() {
