@@ -952,7 +952,8 @@ impl StatefulWidget for Dialog {
             .config
             .modal_config
             .clone()
-            .size(self.effective_size_constraints(content_height));
+            .size(self.effective_size_constraints(content_height))
+            .accessibility_container(false);
 
         // Create a wrapper widget for the dialog content
         let content = DialogContent {

@@ -11,6 +11,7 @@
 
 use crate::Widget;
 use crate::set_style_area;
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -220,6 +221,15 @@ pub struct ModalConfig {
     pub close_on_backdrop: bool,
     pub close_on_escape: bool,
     pub hit_id: Option<HitId>,
+    /// Optional accessible name for the semantic dialog container.
+    pub accessibility_name: Option<String>,
+    /// Optional stable identity for the semantic dialog container.
+    pub accessibility_id: Option<u64>,
+    /// Whether this generic modal should contribute its own Dialog container.
+    ///
+    /// Composite widgets such as the built-in Dialog disable this because they
+    /// already provide a richer named dialog node from their stateful render path.
+    pub accessibility_container: bool,
 }
 
 impl Default for ModalConfig {
@@ -231,6 +241,9 @@ impl Default for ModalConfig {
             close_on_backdrop: true,
             close_on_escape: true,
             hit_id: None,
+            accessibility_name: None,
+            accessibility_id: None,
+            accessibility_container: true,
         }
     }
 }
@@ -269,6 +282,27 @@ impl ModalConfig {
     #[must_use]
     pub fn hit_id(mut self, id: HitId) -> Self {
         self.hit_id = Some(id);
+        self
+    }
+
+    /// Set the accessible name of the generic modal container.
+    #[must_use]
+    pub fn accessibility_name(mut self, name: impl Into<String>) -> Self {
+        self.accessibility_name = Some(name.into());
+        self
+    }
+
+    /// Set a stable accessibility identity independent of modal geometry.
+    #[must_use]
+    pub fn accessibility_id(mut self, id: u64) -> Self {
+        self.accessibility_id = Some(id);
+        self
+    }
+
+    /// Enable or suppress the generic semantic Dialog wrapper.
+    #[must_use]
+    pub fn accessibility_container(mut self, enabled: bool) -> Self {
+        self.accessibility_container = enabled;
         self
     }
 }
@@ -416,6 +450,27 @@ impl<C> Modal<C> {
         self
     }
 
+    /// Set the accessible name of the generic modal container.
+    #[must_use]
+    pub fn accessibility_name(mut self, name: impl Into<String>) -> Self {
+        self.config.accessibility_name = Some(name.into());
+        self
+    }
+
+    /// Set a stable accessibility identity independent of modal geometry.
+    #[must_use]
+    pub fn accessibility_id(mut self, id: u64) -> Self {
+        self.config.accessibility_id = Some(id);
+        self
+    }
+
+    /// Enable or suppress the generic semantic Dialog wrapper.
+    #[must_use]
+    pub fn accessibility_container(mut self, enabled: bool) -> Self {
+        self.config.accessibility_container = enabled;
+        self
+    }
+
     /// Compute the content rectangle for the given area.
     pub fn content_rect(&self, area: Rect) -> Rect {
         let available = Size::new(area.width, area.height);
@@ -451,7 +506,25 @@ impl<C: Widget> Widget for Modal<C> {
         }
 
         if !content_area.is_empty() {
-            self.content.render(content_area, frame);
+            let bounds = content_area.intersection(&frame.buffer.current_scissor());
+            if self.config.accessibility_container && frame.a11y_enabled() && !bounds.is_empty() {
+                let id = self.config.accessibility_id.unwrap_or_else(|| {
+                    self.config.hit_id.map_or_else(
+                        || A11yNodeInfo::stable_id_for(A11yRole::Dialog, content_area),
+                        |hit| u64::from(hit.id()),
+                    )
+                });
+                let node = A11yNodeInfo::new(id, A11yRole::Dialog, bounds)
+                    .with_name(
+                        self.config
+                            .accessibility_name
+                            .as_deref()
+                            .unwrap_or("Modal"),
+                    );
+                frame.with_a11y_scope(node, |frame| self.content.render(content_area, frame));
+            } else {
+                self.content.render(content_area, frame);
+            }
         }
     }
 }
@@ -459,6 +532,8 @@ impl<C: Widget> Widget for Modal<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_a11y::node::{A11yNodeInfo, A11yRole};
+    use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, ScreenReaderPolicy};
     use ftui_render::frame::Frame;
     use ftui_render::grapheme_pool::GraphemePool;
 
@@ -467,6 +542,91 @@ mod tests {
 
     impl Widget for Stub {
         fn render(&self, _area: Rect, _frame: &mut Frame) {}
+    }
+
+    #[derive(Debug, Clone)]
+    struct AccessibleStub;
+
+    impl Widget for AccessibleStub {
+        fn render(&self, area: Rect, frame: &mut Frame) {
+            let mut node = A11yNodeInfo::new(9001, A11yRole::Button, area)
+                .with_name("Continue");
+            node.state.focused = true;
+            frame.push_a11y(node);
+        }
+    }
+
+    fn render_modal_a11y(modal: &Modal<AccessibleStub>, area: Rect) -> A11yTree {
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            modal.render(area, &mut frame);
+            frame.finish_a11y();
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn generic_modal_scopes_accessible_content_under_a_dialog() {
+        let modal = Modal::new(AccessibleStub)
+            .size(
+                ModalSizeConstraints::new()
+                    .min_width(20)
+                    .max_width(20)
+                    .min_height(6)
+                    .max_height(6),
+            )
+            .accessibility_name("Preferences")
+            .accessibility_id(8001);
+        let tree = render_modal_a11y(&modal, Rect::new(0, 0, 60, 20));
+        assert_eq!(tree.root_id(), Some(8001));
+        let root = tree.root().unwrap();
+        assert_eq!(root.role, A11yRole::Dialog);
+        assert_eq!(root.name.as_deref(), Some("Preferences"));
+        assert_eq!(root.children, vec![9001]);
+        assert_eq!(tree.node(9001).unwrap().parent, Some(8001));
+        assert_eq!(tree.focused_id(), Some(9001));
+
+        let first = tree.screen_reader_announcements_since(
+            &A11yTree::empty(),
+            ScreenReaderPolicy::default(),
+        );
+        assert_eq!(first.announcements.len(), 1);
+    }
+
+    #[test]
+    fn modal_hit_id_stabilizes_semantic_identity_across_geometry_changes() {
+        let modal = Modal::new(AccessibleStub)
+            .size(
+                ModalSizeConstraints::new()
+                    .min_width(12)
+                    .max_width(12)
+                    .min_height(4)
+                    .max_height(4),
+            )
+            .hit_id(HitId::new(77))
+            .accessibility_name("Stable");
+        let before = render_modal_a11y(&modal, Rect::new(0, 0, 40, 12));
+        let after = render_modal_a11y(&modal, Rect::new(5, 3, 50, 18));
+        assert_eq!(before.root_id(), Some(77));
+        assert_eq!(before.root_id(), after.root_id());
+        assert_eq!(before.focused_id(), after.focused_id());
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert!(batch.announcements.is_empty());
+    }
+
+    #[test]
+    fn modal_semantic_wrapper_can_be_suppressed_for_richer_composites() {
+        let modal = Modal::new(AccessibleStub)
+            .accessibility_container(false)
+            .accessibility_name("Ignored");
+        let tree = render_modal_a11y(&modal, Rect::new(0, 0, 20, 6));
+        assert_eq!(tree.node_count(), 1);
+        assert_eq!(tree.root_id(), Some(9001));
+        assert_eq!(tree.root().unwrap().role, A11yRole::Button);
     }
 
     #[test]
