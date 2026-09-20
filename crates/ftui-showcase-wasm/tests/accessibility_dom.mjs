@@ -264,3 +264,267 @@ export function browserCases(api) {
     return results;
   })();
 }
+
+// Review controls are native HTML, not fabricated counterparts of TUI widgets.
+export async function browserReviewCases(api) {
+  const results = [];
+  const check = (condition, message) => { if (!condition) throw new Error(message); };
+  const tick = () => new Promise(resolve => setTimeout(resolve, 10));
+  const speech = text => ({ node_id: '1', urgency: 'polite', reason: 'FocusedStateChanged', text });
+  const packet = (frame, overrides = {}) => JSON.stringify({
+    schema_version: 1, enabled: true, frame_id: String(frame), focus_id: '1',
+    lines: ['textInput: Email. focused', 'checkbox: Agree. not checked'],
+    omitted_nodes: 0, announcements: [], dropped_count: 0, ...overrides,
+  });
+  async function run(name, body) {
+    const fixture = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    canvas.id = 'terminal-canvas';
+    canvas.tabIndex = 0;
+    canvas.setAttribute('aria-describedby', 'existing-help');
+    const root = document.createElement('div');
+    root.id = 'a11y-proxy';
+    root.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)';
+    const keyboardProxy = document.createElement('textarea');
+    keyboardProxy.id = 'mobile-kb-proxy';
+    const outside = document.createElement('input');
+    outside.setAttribute('aria-label', 'Outside input');
+    fixture.append(canvas, root, keyboardProxy, outside);
+    document.body.append(fixture);
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    const bridge = api.attachShowcaseAccessibility();
+    const context = { bridge, review: bridge.review, root, canvas, keyboardProxy, outside, fixture };
+    try {
+      await body(context);
+      results.push({ name, passed: true });
+    } catch (error) {
+      results.push({ name, passed: false, error: String(error) });
+    } finally {
+      api.disposeShowcaseAccessibility(bridge);
+      fixture.remove();
+    }
+  }
+
+  await run('review is discoverable outside the clipped proxy and waits for a snapshot', async ({ bridge, review, root, canvas }) => {
+    check(review !== null, 'terminal review not attached');
+    check(!root.contains(review.controls) && !root.contains(review.panel), 'controls inherit proxy clipping');
+    check(review.panel.hidden && review.openButton.disabled, 'review offered before a frame');
+    check(!review.open(), 'opened before a snapshot');
+    check(review.openButton.getAttribute('aria-keyshortcuts') === 'Alt+Shift+R', 'shortcut missing');
+    check(review.openButton.getAttribute('aria-controls') === review.panel.id, 'broken controls relation');
+    check(canvas.getAttribute('aria-describedby').includes(review.hint.id), 'terminal exit hint missing');
+    check(canvas.getAttribute('aria-describedby').includes('existing-help'), 'host description replaced');
+    bridge.update(packet(0));
+    check(!review.openButton.disabled, 'first frame did not enable review');
+    check(review.panel.hidden && document.activeElement !== review.text, 'frame stole focus');
+  });
+
+  await run('review opens a literal bounded snapshot and announces its native readonly semantics', async ({ bridge, review, canvas, root }) => {
+    const literal = '<img src=x onerror="window.reviewInjected=true"> é界🦀';
+    bridge.update(packet(0, { lines: [literal], omitted_nodes: 7 }));
+    canvas.focus();
+    review.openButton.click();
+    check(document.activeElement === review.text, 'review did not focus the native text control');
+    check(review.text.readOnly && review.text.tagName === 'TEXTAREA', 'not native readonly text');
+    check(review.text.value === `${literal}\n7 additional items omitted.`, 'snapshot changed or truncation hidden');
+    check(review.openButton.getAttribute('aria-expanded') === 'true', 'open state not exposed');
+    check(!review.panel.hasAttribute('aria-modal'), 'review incorrectly traps the page as a modal');
+    check(!review.panel.querySelector('img') && !root.querySelector('img'), 'markup parsed');
+    check(!window.reviewInjected, 'untrusted script ran');
+    review.closeButton.click();
+    check(document.activeElement === canvas && review.panel.hidden, 'return failed');
+    check(review.text.value === '', 'closed snapshot retained');
+  });
+
+  await run('review freezes selection and content until an explicit refresh', async ({ bridge, review, canvas }) => {
+    bridge.update(packet(0, { lines: ['original snapshot'] }));
+    canvas.focus();
+    review.open();
+    review.text.setSelectionRange(2, 6, 'backward');
+    bridge.update(packet(1, { lines: ['replacement snapshot'] }));
+    check(review.text.value === 'original snapshot', 'background frame overwrote reading');
+    check(review.text.selectionStart === 2 && review.text.selectionEnd === 6, 'selection reset');
+    check(review.status.textContent.includes('New terminal content'), 'new content not discoverable');
+    review.refreshButton.click();
+    check(review.text.value === 'replacement snapshot', 'refresh not applied');
+    check(review.text.selectionStart === 2 && review.text.selectionEnd === 6, 'refresh discarded selection');
+    check(review.text.selectionDirection === 'backward', 'selection direction discarded');
+    check(document.activeElement === review.text, 'refresh not returned to reading');
+    check(review.status.textContent === 'Snapshot is up to date.', 'stale freshness status');
+    review.refresh();
+    check(review.text.selectionStart === 2 && review.text.selectionEnd === 6, 'unchanged refresh reset selection');
+  });
+
+  await run('review suppresses concurrent speech without replaying it on return', async ({ bridge, review, canvas }) => {
+    bridge.update(packet(0, { announcements: [speech('before review')] }));
+    canvas.focus();
+    review.open();
+    check(bridge.pending.length === 0, 'opening did not cancel pending speech');
+    check(bridge.polite.getAttribute('aria-live') === 'off', 'speech competes with reading');
+    bridge.update(packet(1, { announcements: [speech('while reviewing')] }));
+    await tick();
+    check(bridge.pending.length === 0 && bridge.polite.children.length === 0, 'reading queued speech');
+    review.close(true);
+    await tick();
+    check(bridge.polite.getAttribute('aria-live') === 'polite', 'speech policy not restored');
+    check(bridge.polite.children.length === 0, 'reading backlog replayed');
+    bridge.update(packet(2, { announcements: [speech('after review')] }));
+    await tick();
+    check(bridge.polite.textContent === 'after review', 'new foreground transition was lost');
+  });
+
+  await run('review isolates input from host handlers without canceling native defaults', async ({ bridge, review, canvas, outside }) => {
+    bridge.update(packet(0));
+    canvas.focus();
+    const seen = [];
+    const host = event => seen.push(event.type);
+    const types = ['keydown', 'keyup', 'beforeinput', 'input', 'copy', 'cut', 'paste',
+      'compositionstart', 'compositionupdate', 'compositionend'];
+    for (const type of types) window.addEventListener(type, host, true);
+    try {
+      const open = new KeyboardEvent('keydown', {
+        key: 'R', code: 'KeyR', altKey: true, shiftKey: true, bubbles: true, cancelable: true,
+      });
+      canvas.dispatchEvent(open);
+      check(open.defaultPrevented && review.opened, 'shortcut not captured');
+      for (const type of types) {
+        const event = type.startsWith('key')
+          ? new KeyboardEvent(type, { key: 'a', code: 'KeyA', bubbles: true, cancelable: true })
+          : new Event(type, { bubbles: true, cancelable: true });
+        review.text.dispatchEvent(event);
+        check(!event.defaultPrevented, `${type} browser default canceled`);
+      }
+      check(seen.length === 0, 'review leaked keys or clipboard/IME events to host');
+      outside.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', bubbles: true }));
+      check(seen.length === 1, 'unrelated host input was swallowed');
+    } finally {
+      for (const type of types) window.removeEventListener(type, host, true);
+    }
+  });
+
+  await run('Escape returns focus and consumes its release on the terminal', async ({ bridge, review, canvas }) => {
+    bridge.update(packet(0));
+    canvas.focus();
+    review.open();
+    const seen = [];
+    const host = event => seen.push(event.type);
+    window.addEventListener('keydown', host, true);
+    window.addEventListener('keyup', host, true);
+    try {
+      review.text.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
+      }));
+      check(review.panel.hidden && document.activeElement === canvas, 'Escape did not return to canvas');
+      canvas.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+      check(seen.length === 0, 'Escape release reached terminal');
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', bubbles: true }));
+      check(seen.length === 1, 'normal terminal input not restored');
+    } finally {
+      window.removeEventListener('keydown', host, true);
+      window.removeEventListener('keyup', host, true);
+    }
+  });
+
+  await run('review respects IME, repeat, unrelated input and mobile focus ownership', async ({ bridge, review, keyboardProxy, outside, canvas }) => {
+    bridge.update(packet(0));
+    const chord = extra => new KeyboardEvent('keydown', {
+      key: 'R', code: 'KeyR', altKey: true, shiftKey: true, bubbles: true, cancelable: true, ...extra,
+    });
+    outside.focus();
+    outside.dispatchEvent(chord());
+    check(!review.opened, 'shortcut hijacked unrelated control');
+    canvas.focus();
+    canvas.dispatchEvent(chord({ isComposing: true }));
+    canvas.dispatchEvent(chord({ repeat: true }));
+    check(!review.opened, 'IME/repeat opened review');
+    keyboardProxy.focus();
+    keyboardProxy.dispatchEvent(chord());
+    check(review.opened && document.activeElement === review.text, 'mobile input cannot enter review');
+    review.close(true);
+    check(document.activeElement === keyboardProxy, 'mobile focus not restored');
+    canvas.focus();
+    review.open();
+    outside.focus();
+    review.close(true);
+    check(document.activeElement === outside, 'close stole unrelated focus');
+  });
+
+  await run('disable erases review copies and reenable starts with a fresh snapshot', async ({ bridge, review, canvas }) => {
+    bridge.update(packet(0, { lines: ['private original'] }));
+    canvas.focus();
+    review.open();
+    bridge.update(packet(0, { enabled: false, lines: [], announcements: [] }));
+    check(review.panel.hidden && review.text.value === '' && review.latest === null, 'disable retained private snapshot');
+    check(review.openButton.disabled && document.activeElement === canvas, 'disable left focus hidden');
+    check(!review.open(), 'disabled review reopened');
+    bridge.update(packet(1, { lines: ['fresh'] }));
+    check(review.open(), 'fresh frame not reviewable');
+    check(review.text.value === 'fresh', 'stale disabled content revived');
+  });
+
+  await run('replacing a runner removes old review controls, listeners and descriptions', async ({ bridge: old, review, canvas, root }) => {
+    old.update(packet(0));
+    canvas.focus();
+    review.open();
+    const oldHint = review.hint.id;
+    canvas.setAttribute('aria-describedby', `${canvas.getAttribute('aria-describedby')} concurrent-help`);
+    const fresh = api.attachShowcaseAccessibility();
+    try {
+      check(document.activeElement === canvas, 'owner replacement lost focus');
+      check(!review.panel.isConnected && !review.controls.isConnected, 'old controls survived');
+      check(document.querySelectorAll('[data-ftui-review]').length === 1, 'two review panels');
+      check(!canvas.getAttribute('aria-describedby').split(/\s+/).includes(oldHint), 'old hint survived');
+      check(canvas.getAttribute('aria-describedby').includes('concurrent-help'), 'host hint lost');
+      old.dispose();
+      fresh.update(packet(0, { lines: ['new owner'] }));
+      fresh.review.open();
+      check(fresh.review.text.value === 'new owner', 'old disposal damaged new owner');
+    } finally { fresh.dispose(); }
+    check(root.textContent === '', 'disposed mirror retained');
+    check(canvas.getAttribute('aria-describedby') === 'existing-help concurrent-help', 'description cleanup changed host tokens');
+  });
+
+  await run('disposal returns owned focus without stealing unrelated focus and cancels all UI', async ({ bridge, review, canvas, outside }) => {
+    bridge.update(packet(0));
+    canvas.focus();
+    review.open();
+    bridge.dispose();
+    check(document.activeElement === canvas, 'dispose lost owned text focus');
+    check(!review.panel.isConnected && !review.controls.isConnected, 'review UI retained');
+    check(review.latest === null && review.text.value === '', 'disposed review retains content');
+    outside.focus();
+    bridge.dispose();
+    check(document.activeElement === outside, 'idempotent dispose stole focus');
+    const event = new KeyboardEvent('keydown', {
+      key: 'R', code: 'KeyR', altKey: true, shiftKey: true, bubbles: true, cancelable: true,
+    });
+    canvas.dispatchEvent(event);
+    check(!event.defaultPrevented, 'disposed keyboard listener survived');
+  });
+
+  await run('returning directly to canvas closes review without replay or hidden focus', async ({ bridge, review, canvas }) => {
+    bridge.update(packet(0));
+    canvas.focus();
+    review.open();
+    bridge.update(packet(1, { announcements: [speech('during review')] }));
+    canvas.focus();
+    check(!review.opened && review.panel.hidden, 'direct return left review active');
+    check(document.activeElement === canvas, 'direct return changed focus again');
+    check(review.text.value === '', 'direct return retained frozen content');
+    await tick();
+    check(bridge.polite.children.length === 0, 'direct return replayed suppressed speech');
+  });
+
+  await run('disabling or removing the focused review opener does not strand focus on body', async ({ bridge, review, canvas }) => {
+    bridge.update(packet(0));
+    review.openButton.focus();
+    bridge.update(packet(0, { enabled: false, lines: [] }));
+    check(document.activeElement === canvas, 'disabling the opener stranded focus');
+    bridge.update(packet(1));
+    review.openButton.focus();
+    bridge.dispose();
+    check(document.activeElement === canvas, 'removing the opener stranded focus');
+  });
+
+  return results;
+}
