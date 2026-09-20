@@ -1116,9 +1116,17 @@ impl TerminalSession {
         let mut stdout = io::stdout();
         let caps = TerminalCapabilities::with_overrides();
 
+        // `self.kitty_keyboard_enabled` is already the exact question - did
+        // *this* session push? - and the `TERMINAL_SESSION_ACTIVE` swap above
+        // means a best-effort path has not popped for this session, because if
+        // it had, that swap would have returned false and this returned early.
+        //
+        // So consulting the latch here could never protect against a double
+        // pop; the only way it could read `claimed` is from an *earlier*
+        // session, where it suppressed a pop this session genuinely owed.
         let pop_kitty = if self.kitty_keyboard_enabled {
             self.kitty_keyboard_enabled = false;
-            !KittyPopLatch::is_claimed()
+            true
         } else {
             false
         };
@@ -1157,6 +1165,12 @@ impl TerminalSession {
     }
 
     fn enable_kitty_keyboard(writer: &mut impl Write) -> io::Result<()> {
+        // This push owes a pop, whoever ends up emitting it. The latch is
+        // about one outstanding push, not one per process: leaving it claimed
+        // from an earlier session's teardown suppressed the pop for every
+        // session after it, which is how a terminal ends up still in
+        // enhanced-key mode once the program is gone.
+        KittyPopLatch::release();
         writer.write_all(KITTY_KEYBOARD_ENABLE)?;
         writer.flush()
     }
@@ -1401,16 +1415,20 @@ mod tests {
         assert_eq!(KITTY_KEYBOARD_ENABLE, b"\x1b[>15u");
         assert_eq!(KITTY_KEYBOARD_DISABLE, b"\x1b[<u");
     }
+
     /// CONTRACT (bd-kdn7n): the stack-based kitty-keyboard pop is emitted by
-    /// exactly ONE best-effort teardown invocation per process. Later
-    /// invocations (panic hook → Drop cleanup → best_effort_cleanup_for_exit)
-    /// must not pop again, or an enclosing tty context's kitty entry is lost.
+    /// exactly ONE best-effort teardown invocation per outstanding push.
+    /// Later invocations (panic hook → Drop cleanup →
+    /// best_effort_cleanup_for_exit) must not pop again, or an enclosing tty
+    /// context's kitty entry is lost.
     ///
-    /// Note: consumes the process-global pop budget; run-order independent
-    /// because no other test asserts on emitted `CSI < u` bytes.
+    /// "Per outstanding push", not per process: a session that enables kitty
+    /// keyboard pushes again and releases the latch, which
+    /// `enabling_kitty_keyboard_releases_the_pop_latch` covers.
     #[test]
     fn best_effort_cleanup_emits_kitty_pop_once() {
-        KittyPopLatch::reset_for_tests();
+        let _serial = crate::session_teardown::kitty_latch_test_lock();
+        KittyPopLatch::release();
         let caps = TerminalCapabilities::modern();
         assert!(caps.kitty_keyboard);
 
@@ -1431,6 +1449,38 @@ mod tests {
                 .any(|w| w == KITTY_KEYBOARD_DISABLE),
             "repeat best-effort teardown must NOT emit a second stack pop"
         );
+    }
+
+    /// A session that enables kitty keyboard pushes onto the stack, so it owes
+    /// a pop even if an earlier session's teardown already claimed the latch.
+    /// Enabling therefore releases it.
+    #[test]
+    fn enabling_kitty_keyboard_releases_the_pop_latch() {
+        let _serial = crate::session_teardown::kitty_latch_test_lock();
+
+        // Stand in for an earlier session whose best-effort teardown popped.
+        KittyPopLatch::release();
+        assert!(KittyPopLatch::try_claim());
+        assert!(KittyPopLatch::is_claimed());
+
+        let mut pushed = Vec::new();
+        TerminalSession::enable_kitty_keyboard(&mut pushed).expect("write push");
+        assert_eq!(pushed, KITTY_KEYBOARD_ENABLE);
+        assert!(
+            !KittyPopLatch::is_claimed(),
+            "a fresh push owes a fresh pop, so enabling must release the latch"
+        );
+
+        // And that pop is now emittable again.
+        let caps = TerminalCapabilities::modern();
+        let mut out = Vec::new();
+        best_effort_cleanup_to(&mut out, &caps);
+        assert!(
+            out.windows(KITTY_KEYBOARD_DISABLE.len())
+                .any(|w| w == KITTY_KEYBOARD_DISABLE),
+            "the second session's push must still be popped"
+        );
+        KittyPopLatch::release();
     }
 
     /// CONTRACT (bd-kdn7n): once deliberate teardown has begun, a late
