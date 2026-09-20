@@ -33,8 +33,8 @@ check: sync-refs gates
 
 # Every non-cargo correctness gate, about six seconds total. No compilation,
 # no network, stdlib only, so this is safe to run constantly.
-gates: reachability claims env-docs close-audit
-	@echo "gates: reachability, claims, env-docs and close-audit all green"
+gates: reachability claims env-docs close-audit baseline-benches
+	@echo "gates: reachability, claims, env-docs, close-audit and baseline-benches all green"
 
 # Fail when an environment variable is read by the code but undocumented.
 env-docs:
@@ -77,6 +77,15 @@ claims:
 #   python3 scripts/check_close_evidence.py --epoch 2026-09-01
 close-audit:
 	@python3 scripts/check_close_evidence.py --quiet
+
+# Fail when a tests/baseline.json row binds an SLO budget to a criterion id no
+# benchmark emits. `scripts/perf_regression_gate.sh` is fail-closed, so one such
+# row makes the whole perf gate permanently INCOMPLETE (exit 3) whatever the
+# real performance is — this catches it at edit time instead of after a full
+# bench run. Known-unresolved ids live in docs/baseline-bench-exceptions.txt,
+# each against the bead that will fix it.
+baseline-benches:
+	@python3 scripts/check_baseline_benches.py --quiet
 
 # Clean build artifacts
 clean:

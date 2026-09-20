@@ -1,0 +1,14 @@
+# Baseline rows whose criterion_name does not resolve to a real benchmark.
+#
+# Format: <criterion_name> <bead-id>
+#
+# Same contract as docs/module-reachability-allowlist.txt: an entry names the
+# bead that will fix it. It is not a way to make `make baseline-benches` quiet.
+# This list may only shrink.
+#
+# Why an exception rather than a fix: rebinding a perf budget to a different
+# benchmark changes what an SLO measures. Getting that wrong is the exact
+# failure the checker exists to prevent, so the id belongs to whoever owns the
+# perf budgets, not to the person who noticed.
+
+diff/sparse_5pct/200x60 bd-kfv6f
