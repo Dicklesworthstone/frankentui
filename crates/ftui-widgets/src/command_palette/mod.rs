@@ -1081,7 +1081,13 @@ impl CommandPalette {
     fn accessibility_child_id(&self, kind: &str, key: usize) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        ("ftui.command_palette.child", self.accessibility_id, kind, key).hash(&mut hasher);
+        (
+            "ftui.command_palette.child",
+            self.accessibility_id,
+            kind,
+            key,
+        )
+            .hash(&mut hasher);
         hasher.finish()
     }
 
@@ -1100,8 +1106,13 @@ impl CommandPalette {
             return;
         }
         let name = self.title.trim();
-        let root = A11yNodeInfo::new(self.accessibility_id, A11yRole::Dialog, bounds)
-            .with_name(if name.is_empty() { "Command Palette" } else { name });
+        let root = A11yNodeInfo::new(self.accessibility_id, A11yRole::Dialog, bounds).with_name(
+            if name.is_empty() {
+                "Command Palette"
+            } else {
+                name
+            },
+        );
 
         frame.with_a11y_scope(root, |frame| {
             let query_bounds = input_area.intersection(&frame.buffer.current_scissor());
@@ -1125,8 +1136,8 @@ impl CommandPalette {
                     .with_name("Command results")
                     .with_description(format!("{} results", self.filtered.len()));
                 frame.with_a11y_scope(menu, |frame| {
-                    let visible_end =
-                        (self.scroll_offset + results_area.height as usize).min(self.filtered.len());
+                    let visible_end = (self.scroll_offset + results_area.height as usize)
+                        .min(self.filtered.len());
                     for (row_idx, scored) in self.filtered[self.scroll_offset..visible_end]
                         .iter()
                         .enumerate()
@@ -1620,9 +1631,7 @@ impl CommandPalette {
 #[cfg(test)]
 mod widget_tests {
     use super::*;
-    use ftui_a11y::tree::{
-        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
-    };
+    use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy};
     use ftui_render::grapheme_pool::GraphemePool;
 
     fn render_palette_a11y(palette: &CommandPalette, area: Rect) -> A11yTree {
@@ -1685,8 +1694,7 @@ mod widget_tests {
         palette.set_query("O");
         let after = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
         assert_eq!(after.focused_id(), before.focused_id());
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert!(
             batch.announcements.is_empty(),
             "query edits should not reread the palette when the selected command is unchanged"
@@ -1701,18 +1709,25 @@ mod widget_tests {
         palette.open();
         let before = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
 
-        palette.handle_event(&Event::Key(KeyEvent {
-            code: KeyCode::Down,
-            modifiers: Modifiers::empty(),
-            kind: KeyEventKind::Press,
-        }));
+        assert!(
+            palette
+                .handle_event(&Event::Key(KeyEvent {
+                    code: KeyCode::Down,
+                    modifiers: Modifiers::empty(),
+                    kind: KeyEventKind::Press,
+                }))
+                .is_none(),
+            "arrow navigation moves the selection without emitting an action"
+        );
         let after = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
         assert_eq!(after.focused_id(), before.focused_id());
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
         assert_eq!(batch.dropped_count, 0);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::LiveContentChanged);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::LiveContentChanged
+        );
         assert_eq!(batch.announcements[0].urgency, LiveRegion::Polite);
         assert!(batch.announcements[0].text.contains("Beta. Result 2"));
         assert!(batch.announcements[0].text.contains("Second command"));
@@ -1726,8 +1741,7 @@ mod widget_tests {
         let before = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
         palette.set_query("zzz");
         let empty = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
-        let batch =
-            empty.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = empty.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
         assert!(batch.announcements[0].text.contains("No matching commands"));
 
@@ -1753,15 +1767,23 @@ mod widget_tests {
         palette.open();
         let before = render_palette_a11y(&palette, Rect::new(0, 0, 80, 20));
 
-        palette.handle_event(&Event::Key(KeyEvent {
-            code: KeyCode::End,
-            modifiers: Modifiers::empty(),
-            kind: KeyEventKind::Press,
-        }));
+        assert!(
+            palette
+                .handle_event(&Event::Key(KeyEvent {
+                    code: KeyCode::End,
+                    modifiers: Modifiers::empty(),
+                    kind: KeyEventKind::Press,
+                }))
+                .is_none(),
+            "jumping to the last entry moves the selection without emitting an action"
+        );
         let after = render_palette_a11y(&palette, Rect::new(4, 3, 90, 30));
         assert_eq!(before.root_id(), after.root_id());
         assert_eq!(before.focused_id(), after.focused_id());
-        assert_eq!(after.focused().unwrap().name.as_deref(), Some("Search commands"));
+        assert_eq!(
+            after.focused().unwrap().name.as_deref(),
+            Some("Search commands")
+        );
     }
 
     #[test]

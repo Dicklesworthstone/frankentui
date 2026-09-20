@@ -620,9 +620,7 @@ impl StatefulWidget for FilePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_a11y::tree::{
-        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
-    };
+    use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy};
     use ftui_render::grapheme_pool::GraphemePool;
 
     fn buf_to_lines(buf: &ftui_render::buffer::Buffer) -> Vec<String> {
@@ -696,11 +694,13 @@ mod tests {
         let before = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
         state.cursor_down();
         let after = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
         assert_eq!(batch.dropped_count, 0);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::FocusChanged
+        );
         assert!(batch.announcements[0].text.contains("src"));
     }
 
@@ -752,8 +752,7 @@ mod tests {
         state.offset = 0;
         let after = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
         assert_ne!(before.focused_id(), after.focused_id());
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
         assert!(batch.announcements[0].text.contains("different.txt"));
     }

@@ -1699,17 +1699,31 @@ mod focused_state_tests {
     #[test]
     fn retained_focus_choice_value_text_changes_announce_without_live_regions() {
         for role in [A11yRole::RadioButton, A11yRole::MenuItem] {
-            let old = interaction_node(role, A11yState { value_now: Some(0.0), value_text: Some("First".to_owned()), ..A11yState::default() });
+            let old = interaction_node(
+                role,
+                A11yState {
+                    value_now: Some(0.0),
+                    value_text: Some("First".to_owned()),
+                    ..A11yState::default()
+                },
+            );
             let mut new = old.clone();
             new.state.value_now = Some(1.0);
             new.state.value_text = Some("Second".to_owned());
             let before = snapshot(vec![old], Some(7));
             let after = snapshot(vec![new], Some(7));
-            let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+            let batch =
+                after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
             assert_eq!(batch.announcements.len(), 1);
             assert_eq!(batch.dropped_count, 0);
-            assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusedStateChanged);
-            assert_eq!(batch.announcements[0].text, format!("{role}: Control. value Second"));
+            assert_eq!(
+                batch.announcements[0].reason,
+                AnnouncementReason::FocusedStateChanged
+            );
+            assert_eq!(
+                batch.announcements[0].text,
+                format!("{role}: Control. value Second")
+            );
         }
     }
 

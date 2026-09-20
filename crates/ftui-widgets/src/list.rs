@@ -217,13 +217,10 @@ impl<'a> List<'a> {
         } else {
             format!("{} matching items", filtered.len())
         };
-        let root = ftui_a11y::node::A11yNodeInfo::new(
-            root_id,
-            ftui_a11y::node::A11yRole::List,
-            bounds,
-        )
-        .with_name(title)
-        .with_description(description);
+        let root =
+            ftui_a11y::node::A11yNodeInfo::new(root_id, ftui_a11y::node::A11yRole::List, bounds)
+                .with_name(title)
+                .with_description(description);
         frame.with_a11y_scope(root, |frame| {
             let visible_end = (state.offset + list_area.height as usize).min(filtered.len());
             for (row, item_index) in filtered[state.offset.min(filtered.len())..visible_end]
@@ -252,8 +249,7 @@ impl<'a> List<'a> {
                     node.name = Some(item_text);
                 }
                 node.state.selected = state.selected == Some(*item_index)
-                    || (state.multi_select_enabled
-                        && state.multi_selected.contains(item_index));
+                    || (state.multi_select_enabled && state.multi_selected.contains(item_index));
                 node.state.focused = state.focused && state.selected == Some(*item_index);
                 frame.push_a11y(node);
             }
@@ -1002,12 +998,7 @@ impl<'a> StatefulWidget for List<'a> {
                         state.scroll_into_view_requested = false;
                     }
 
-                    self.push_stateful_accessibility(
-                        list_area,
-                        frame,
-                        state,
-                        &filtered_indices,
-                    );
+                    self.push_stateful_accessibility(list_area, frame, state, &filtered_indices);
 
                     for (row, item_index) in filtered_indices
                         .iter()
@@ -1344,9 +1335,7 @@ impl ListState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_a11y::tree::{
-        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
-    };
+    use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy};
     use ftui_core::event::{KeyCode, KeyEvent};
     use ftui_render::cell::Cell;
     use ftui_render::grapheme_pool::GraphemePool;
@@ -1373,11 +1362,7 @@ mod tests {
         actual.trim().to_string()
     }
 
-    fn render_list_a11y(
-        list: &List<'_>,
-        state: &mut ListState,
-        area: Rect,
-    ) -> A11yTree {
+    fn render_list_a11y(list: &List<'_>, state: &mut ListState, area: Rect) -> A11yTree {
         let mut builder = A11yTreeBuilder::new();
         {
             let mut pool = GraphemePool::new();
@@ -1391,8 +1376,7 @@ mod tests {
 
     #[test]
     fn stateful_list_accessibility_reflects_selection_focus_and_visible_rows() {
-        let list = List::new(["Alpha", "Beta", "Gamma", "Delta"])
-            .accessibility_id(7300);
+        let list = List::new(["Alpha", "Beta", "Gamma", "Delta"]).accessibility_id(7300);
         let mut state = ListState::default().with_focused(true);
         state.select(Some(2));
         let tree = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 2));
@@ -1403,7 +1387,10 @@ mod tests {
         assert_eq!(tree.focused().unwrap().name.as_deref(), Some("Gamma"));
         assert!(tree.focused().unwrap().state.selected);
         assert_eq!(state.offset, 1);
-        assert_eq!(tree.node(root.children[0]).unwrap().name.as_deref(), Some("Beta"));
+        assert_eq!(
+            tree.node(root.children[0]).unwrap().name.as_deref(),
+            Some("Beta")
+        );
     }
 
     #[test]
@@ -1414,11 +1401,13 @@ mod tests {
         let before = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
         state.select_next(3);
         let after = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
         assert_eq!(batch.dropped_count, 0);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::FocusChanged
+        );
         assert!(batch.announcements[0].text.contains("Beta"));
 
         state.set_focused(false);
@@ -1436,8 +1425,7 @@ mod tests {
 
     #[test]
     fn stateful_list_filter_semantics_match_visible_filtered_items_without_query_chatter() {
-        let list = List::new(["apple", "apricot", "banana", "berry"])
-            .accessibility_id(7302);
+        let list = List::new(["apple", "apricot", "banana", "berry"]).accessibility_id(7302);
         let mut state = ListState::default().with_focused(true);
         state.select(Some(0));
         let before = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
@@ -1446,8 +1434,14 @@ mod tests {
         let root = filtered.root().unwrap();
         assert_eq!(root.description.as_deref(), Some("2 matching items"));
         assert_eq!(root.children.len(), 2);
-        assert_eq!(filtered.node(root.children[0]).unwrap().name.as_deref(), Some("apple"));
-        assert_eq!(filtered.node(root.children[1]).unwrap().name.as_deref(), Some("apricot"));
+        assert_eq!(
+            filtered.node(root.children[0]).unwrap().name.as_deref(),
+            Some("apple")
+        );
+        assert_eq!(
+            filtered.node(root.children[1]).unwrap().name.as_deref(),
+            Some("apricot")
+        );
         assert_eq!(filtered.focused_id(), before.focused_id());
         assert!(
             filtered
@@ -1467,7 +1461,11 @@ mod tests {
         assert_eq!(tree.root_id(), Some(7303));
         assert_eq!(tree.root().unwrap().name.as_deref(), Some("Choices"));
         assert_eq!(tree.node_count(), 3);
-        assert!(!tree.nodes().any(|node| node.role == ftui_a11y::node::A11yRole::Group));
+        assert!(
+            !tree
+                .nodes()
+                .any(|node| node.role == ftui_a11y::node::A11yRole::Group)
+        );
     }
 
     fn raw_row_text(frame: &Frame, y: u16) -> String {

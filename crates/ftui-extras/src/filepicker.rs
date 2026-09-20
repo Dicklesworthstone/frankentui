@@ -335,7 +335,13 @@ impl FilePicker {
     fn accessibility_entry_id(&self, parent: u64, entry: &FileEntry) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        ("ftui.extras.filepicker.entry", parent, &self.current_path, &entry.name, entry.kind)
+        (
+            "ftui.extras.filepicker.entry",
+            parent,
+            &self.current_path,
+            &entry.name,
+            entry.kind,
+        )
             .hash(&mut hasher);
         hasher.finish()
     }
@@ -402,10 +408,9 @@ impl FilePicker {
                     FileKind::Symlink => "Symbolic link",
                     FileKind::File => "File",
                 };
-                let description = entry.size.map_or_else(
-                    || kind.to_owned(),
-                    |size| format!("{kind}. {size} bytes"),
-                );
+                let description = entry
+                    .size
+                    .map_or_else(|| kind.to_owned(), |size| format!("{kind}. {size} bytes"));
                 let mut node = A11yNodeInfo::new(
                     self.accessibility_entry_id(root_id, entry),
                     A11yRole::ListItem,
@@ -443,12 +448,7 @@ impl FilePicker {
             area.width,
             area.height.saturating_sub(1),
         );
-        self.push_accessibility_window(
-            entries_area,
-            frame,
-            self.focused,
-            self.scroll_offset,
-        );
+        self.push_accessibility_window(entries_area, frame, self.focused, self.scroll_offset);
 
         for row in 0..entry_area_height {
             let idx = self.scroll_offset + row;
@@ -575,9 +575,7 @@ fn apply_style(cell: &mut Cell, style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_a11y::tree::{
-        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
-    };
+    use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy};
     use ftui_render::grapheme_pool::GraphemePool;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -639,10 +637,7 @@ mod tests {
         entries
     }
 
-    fn render_picker_a11y(
-        picker: &mut FilePicker,
-        area: Rect,
-    ) -> A11yTree {
+    fn render_picker_a11y(picker: &mut FilePicker, area: Rect) -> A11yTree {
         let mut builder = A11yTreeBuilder::new();
         {
             let mut pool = GraphemePool::new();
@@ -678,10 +673,12 @@ mod tests {
         let before = render_picker_a11y(&mut picker, Rect::new(0, 0, 40, 6));
         picker.move_down();
         let after = render_picker_a11y(&mut picker, Rect::new(0, 0, 40, 6));
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::FocusChanged
+        );
         assert!(batch.announcements[0].text.contains("src"));
 
         picker.set_focused(false);
