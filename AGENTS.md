@@ -175,6 +175,29 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 make gates
 ```
 
+**The default test run does not see every module.** Most crates declare
+`default = []` and gate modules behind features, and `--workspace` only enables
+what some member happens to turn on. Measured on 2026-09-19:
+`cargo nextest run --workspace` runs 26,009 tests and
+`--workspace --all-features` runs 28,315 — about **2,300 tests the ordinary
+gate never builds**, including every test in `ftui-runtime`'s `stdio_capture`,
+`ivm`, `lens`, `flat_combine`, `slo`, `cost_model`, `countmin_sketch`,
+`eprocess_throttle` and nine more.
+
+Things really do rot in there. That sweep found `fx-gpu` shipping without a
+wgpu backend for macOS (ten tests panicking inside wgpu), a runbook test
+asserting one build's lane fallback as if it were universal, and two rustdoc
+link failures in modules the workspace doc gate never compiles. So after
+touching a feature-gated module, or periodically:
+
+```bash
+cargo nextest run --workspace --all-features --no-fail-fast
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+```
+
+Expect a handful of wall-clock budget failures under host load; see
+`.config/nextest.toml` for which ones and how to tell them from a regression.
+
 `make gates` is four checks, each runnable on its own:
 
 | Target | Fails when |

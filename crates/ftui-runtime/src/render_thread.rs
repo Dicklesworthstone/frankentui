@@ -15,7 +15,7 @@
 //! - **Render** messages are coalesced: if multiple buffers arrive before the
 //!   thread processes them, only the latest buffer is presented.
 //! - **Log** messages are never dropped, but are chunked to avoid starving
-//!   the UI (at most [`LOG_CHUNK_LIMIT`] log messages per iteration).
+//!   the UI (at most `LOG_CHUNK_LIMIT` log messages per iteration).
 //! - **Resize** and **SetMode** are applied immediately on the render thread.
 //!
 //! # Error Propagation

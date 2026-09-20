@@ -83,6 +83,12 @@ fail-fast = false
 # microseconds is still unknown, because the test prints its latency only when
 # it fails; `editor_perf`'s `log_perf` is the pattern to copy if that becomes
 # worth knowing.
+#
+# The last two entries are only reachable under `--all-features`, which is why
+# they took until 2026-09-19 to appear: both live in modules the default
+# `--workspace` run never builds. They missed in a 28,315-test all-features run
+# at a 1-min average of 56 and passed run alone at 26-55, the usual signature.
+# Serialising them costs nothing in the default run, where they do not exist.
 [[profile.default.overrides]]
 filter = '''
     test(=e2e_focus_change_storm_performance)
@@ -120,6 +126,8 @@ filter = '''
     | test(=large_buffer_10k_delete_char)
     | test(=seed_demo_deadline_expires_mid_run_after_readiness)
     | test(=bloodstream_roundtrip::bloodstream_database_to_terminal_roundtrip_is_delta_only)
+    | test(=benchmark_1m_evaluations_under_30ms)
+    | test(=program::tests::headless_a11y_privacy_through_real_otlp_http_exporter)
 '''
 threads-required = "num-test-threads"
 

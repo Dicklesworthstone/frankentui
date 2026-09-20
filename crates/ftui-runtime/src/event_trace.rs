@@ -9,7 +9,7 @@
 //! trace back and feeds events in exact order with timing information.
 //!
 //! Evidence capture (bd-3mjjt.4): During recording, [`EventTraceWriter::record_evidence`]
-//! captures [`EvidenceEntry`](crate::unified_evidence::EvidenceEntry) decisions.
+//! captures [`crate::unified_evidence::EvidenceEntry`] decisions.
 //! During replay, [`EvidenceVerifier`] compares replayed evidence against the
 //! recording to validate that all Bayesian decisions are deterministic given
 //! the same input sequence.
@@ -298,7 +298,7 @@ pub struct SerEvidenceTerm {
 
 /// Serializable evidence entry for event traces.
 ///
-/// Mirrors [`EvidenceEntry`](crate::unified_evidence::EvidenceEntry) with
+/// Mirrors [`crate::unified_evidence::EvidenceEntry`] with
 /// owned strings instead of `&'static str`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SerEvidenceEntry {
@@ -312,7 +312,7 @@ pub struct SerEvidenceEntry {
 }
 
 impl SerEvidenceEntry {
-    /// Convert from a runtime [`EvidenceEntry`](crate::unified_evidence::EvidenceEntry).
+    /// Convert from a runtime [`crate::unified_evidence::EvidenceEntry`].
     pub fn from_entry(e: &EvidenceEntry) -> Self {
         let evidence = e
             .top_evidence
