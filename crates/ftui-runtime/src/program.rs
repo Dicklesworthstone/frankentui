@@ -3070,10 +3070,25 @@ pub enum RuntimeLane {
 }
 
 impl RuntimeLane {
+    /// Whether [`Self::Asupersync`] is backed by a real executor in this
+    /// build, rather than falling back to [`Self::Structured`].
+    ///
+    /// Exposed because a feature flag is invisible to downstream crates:
+    /// `#[cfg(feature = "asupersync-executor")]` in a crate that merely
+    /// *depends* on `ftui-runtime` tests that crate's own features, not
+    /// these. Without this, such a crate can only hard-code one of the two
+    /// behaviours and be wrong in the other build - which is exactly what
+    /// `ftui-harness`'s `runbook_step4_promote_to_enabled` did.
+    #[must_use]
+    pub const fn asupersync_available() -> bool {
+        cfg!(feature = "asupersync-executor")
+    }
+
     /// Resolve the effective lane, applying fallback rules.
     ///
-    /// Asupersync is available when `asupersync-executor` is compiled in.
-    /// Otherwise, its tasks use Structured's default executor.
+    /// Asupersync is available when `asupersync-executor` is compiled in -
+    /// see [`Self::asupersync_available`]. Otherwise, its tasks use
+    /// Structured's default executor.
     #[must_use]
     pub fn resolve(self) -> Self {
         #[cfg(not(feature = "asupersync-executor"))]

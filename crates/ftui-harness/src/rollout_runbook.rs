@@ -174,9 +174,12 @@ mod tests {
 
     /// Verify the enable transition and fallback behavior.
     ///
-    /// When shadow evidence is good, operators promote to Enabled.
-    /// Note: Asupersync lane currently resolves to Structured (fallback)
-    /// until the Asupersync executor is fully implemented.
+    /// When shadow evidence is good, operators promote to Enabled. Whether the
+    /// Asupersync lane then survives `resolve()` depends on whether
+    /// `ftui-runtime` was built with `asupersync-executor`, so ask it rather
+    /// than hard-coding one build's answer: this assertion used to read
+    /// `assert_eq!(resolved, Structured)` unconditionally, which is right only
+    /// without the feature and fails under `--all-features`.
     #[test]
     fn runbook_step4_promote_to_enabled() {
         let config = ProgramConfig::default()
@@ -186,12 +189,18 @@ mod tests {
         assert_eq!(config.rollout_policy, RolloutPolicy::Enabled);
         assert_eq!(config.runtime_lane, RuntimeLane::Asupersync);
 
-        // Asupersync resolves to Structured until fully implemented
         let resolved = config.runtime_lane.resolve();
+        let expected = if RuntimeLane::asupersync_available() {
+            RuntimeLane::Asupersync
+        } else {
+            RuntimeLane::Structured
+        };
         assert_eq!(
             resolved,
-            RuntimeLane::Structured,
-            "Asupersync must fall back to Structured until fully implemented"
+            expected,
+            "the promoted lane must match what this build can actually run \
+             (asupersync_available = {})",
+            RuntimeLane::asupersync_available(),
         );
     }
 
