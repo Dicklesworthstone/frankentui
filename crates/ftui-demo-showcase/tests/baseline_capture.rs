@@ -23,13 +23,17 @@
 //! 2. With a baseline present, a detected regression is printed and the test
 //!    still passes.
 //!
-//! Both are defensible — the numbers are machine-specific and a 10% p99 delta
-//! on a shared box measures the box (`bd-lbugy`) — but together they mean a
-//! passing `verify_no_regression` says nothing at all, which the name does not
-//! suggest.
+//! Both are deliberate, and `verify_no_regression`'s own doc comment has always
+//! said so: the numbers are machine-specific, a 10% p99 delta on a shared box
+//! measures the box (`bd-lbugy`), and **the enforced performance gate is
+//! `scripts/perf_regression_gate.sh` against `tests/baseline.json`**, not this
+//! test. This module doc exists because that explanation sits below the
+//! function while the reassuring name sits in the test output, and a passing
+//! `verify_no_regression` line is what most people will actually see.
 //!
-//! `FTUI_BASELINE_STRICT=1` makes a regression fail. Use it on a quiet host
-//! whose baseline was captured on that same host; anywhere else it will flake.
+//! `FTUI_BASELINE_STRICT=1` makes a regression here fail too. It is a
+//! convenience for a quiet host whose baseline was captured on that same host,
+//! not a replacement for the real gate; anywhere else it will flake.
 
 use ftui_core::geometry::Rect;
 use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
