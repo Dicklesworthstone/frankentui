@@ -12,6 +12,24 @@
 //!
 //! Regenerate:
 //!   CAPTURE_BASELINE=1 cargo test -p ftui-demo-showcase --test baseline_capture -- --nocapture
+//!
+//! # `verify_no_regression` is advisory unless you ask otherwise
+//!
+//! Read this before treating a green run as evidence of no regression. By
+//! default the check is **inert in two separate ways**:
+//!
+//! 1. `baseline_results.json` is gitignored, so on a fresh checkout there is no
+//!    baseline and the test returns before measuring anything.
+//! 2. With a baseline present, a detected regression is printed and the test
+//!    still passes.
+//!
+//! Both are defensible — the numbers are machine-specific and a 10% p99 delta
+//! on a shared box measures the box (`bd-lbugy`) — but together they mean a
+//! passing `verify_no_regression` says nothing at all, which the name does not
+//! suggest.
+//!
+//! `FTUI_BASELINE_STRICT=1` makes a regression fail. Use it on a quiet host
+//! whose baseline was captured on that same host; anywhere else it will flake.
 
 use ftui_core::geometry::Rect;
 use ftui_core::terminal_capabilities::{ColorDepth, TerminalCapabilities};
@@ -373,9 +391,37 @@ fn verify_no_regression() {
         eprintln!(
             "\nTo update: CAPTURE_BASELINE=1 cargo test -p ftui-demo-showcase --test baseline_capture"
         );
+        assert!(
+            !strict_baselines(),
+            "{} performance regression(s) against {}:\n  {}\n\
+             Set FTUI_BASELINE_STRICT=0 to make this advisory again, or regenerate the \
+             baseline with CAPTURE_BASELINE=1 if the change is intended.",
+            regressions.len(),
+            path.display(),
+            regressions.join("\n  "),
+        );
     } else {
         eprintln!("No regressions detected.");
     }
+}
+
+/// Whether a detected regression should fail the test.
+///
+/// **Advisory by default, and that is deliberate.** `baseline_results.json` is
+/// gitignored and machine-specific, so on a shared or loaded box a 10% p99
+/// delta measures the box as often as the code — the same trap that made
+/// `perf_catalog_lookup_latency` a flake in the mandatory suite (`bd-lbugy`).
+/// A gate that fails under this project's normal working conditions is not a
+/// gate; it teaches people to re-run and shrug.
+///
+/// `FTUI_BASELINE_STRICT=1` turns the comparison into a real assertion, for a
+/// perf lane on a quiet host where the baseline was captured on that same
+/// host. That is the only configuration in which these numbers mean anything.
+fn strict_baselines() -> bool {
+    matches!(
+        std::env::var("FTUI_BASELINE_STRICT").as_deref(),
+        Ok("1") | Ok("true")
+    )
 }
 
 #[test]
