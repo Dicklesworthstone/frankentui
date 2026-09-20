@@ -42,6 +42,7 @@ pub use scorer::{
     MatchType, RankConfidence, RankStability, RankedItem, RankedResults, RankingSummary,
 };
 
+use ftui_a11y::node::{A11yNodeInfo, A11yRole, LiveRegion};
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, CellAttrs, CellContent, PackedRgba, StyleFlags as CellStyleFlags};
@@ -377,6 +378,8 @@ pub struct CommandPalette {
     /// When true, use the full `Rect` passed to `render()` instead of
     /// computing a centered sub-area.
     fill_area: bool,
+    /// Stable identity for this palette's semantic dialog tree.
+    accessibility_id: u64,
     /// Telemetry timing anchor (only when tracing feature is enabled).
     #[cfg(feature = "tracing")]
     opened_at: Option<Instant>,
@@ -389,6 +392,15 @@ impl Default for CommandPalette {
 }
 
 impl CommandPalette {
+    fn next_accessibility_id() -> u64 {
+        use std::hash::{Hash, Hasher};
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let sequence = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.command_palette", sequence).hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Create a new empty command palette.
     pub fn new() -> Self {
         Self {
@@ -410,6 +422,7 @@ impl CommandPalette {
             max_visible: 10,
             title: " Command Palette ".to_string(),
             fill_area: false,
+            accessibility_id: Self::next_accessibility_id(),
             #[cfg(feature = "tracing")]
             opened_at: None,
         }
@@ -465,6 +478,18 @@ impl CommandPalette {
     /// Set whether the palette should fill the entire render area.
     pub fn set_fill_area(&mut self, fill: bool) {
         self.fill_area = fill;
+    }
+
+    /// Override the stable accessibility identity for this palette instance.
+    #[must_use]
+    pub fn with_accessibility_id(mut self, id: u64) -> Self {
+        self.accessibility_id = id;
+        self
+    }
+
+    /// Update the stable accessibility identity in place.
+    pub fn set_accessibility_id(&mut self, id: u64) {
+        self.accessibility_id = id;
     }
 
     /// Enable or disable evidence tracking for match results.
@@ -1036,6 +1061,8 @@ impl Widget for CommandPalette {
         );
         self.draw_results(results_area, frame);
 
+        self.emit_accessibility(palette_area, input_area, results_area, frame);
+
         // Position cursor in query input.
         // Calculate visual cursor position from byte offset by computing display width
         // of the text up to the cursor position.
@@ -1051,6 +1078,125 @@ impl Widget for CommandPalette {
 }
 
 impl CommandPalette {
+    fn accessibility_child_id(&self, kind: &str, key: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.command_palette.child", self.accessibility_id, kind, key).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn emit_accessibility(
+        &self,
+        palette_area: Rect,
+        input_area: Rect,
+        results_area: Rect,
+        frame: &mut Frame,
+    ) {
+        if !frame.a11y_enabled() {
+            return;
+        }
+        let bounds = palette_area.intersection(&frame.buffer.current_scissor());
+        if bounds.is_empty() {
+            return;
+        }
+        let name = self.title.trim();
+        let root = A11yNodeInfo::new(self.accessibility_id, A11yRole::Dialog, bounds)
+            .with_name(if name.is_empty() { "Command Palette" } else { name });
+
+        frame.with_a11y_scope(root, |frame| {
+            let query_bounds = input_area.intersection(&frame.buffer.current_scissor());
+            if !query_bounds.is_empty() {
+                let mut query = A11yNodeInfo::new(
+                    self.accessibility_child_id("query", 0),
+                    A11yRole::TextInput,
+                    query_bounds,
+                )
+                .with_name("Search commands")
+                .with_description("Type to filter commands");
+                query.state.focused = true;
+                query.state.value_text = Some(self.query.clone());
+                frame.push_a11y(query);
+            }
+
+            let menu_bounds = results_area.intersection(&frame.buffer.current_scissor());
+            if !menu_bounds.is_empty() {
+                let menu_id = self.accessibility_child_id("results", 0);
+                let menu = A11yNodeInfo::new(menu_id, A11yRole::Menu, menu_bounds)
+                    .with_name("Command results")
+                    .with_description(format!("{} results", self.filtered.len()));
+                frame.with_a11y_scope(menu, |frame| {
+                    let visible_end =
+                        (self.scroll_offset + results_area.height as usize).min(self.filtered.len());
+                    for (row_idx, scored) in self.filtered[self.scroll_offset..visible_end]
+                        .iter()
+                        .enumerate()
+                    {
+                        let y = results_area.y.saturating_add(row_idx as u16);
+                        let item_bounds = Rect::new(results_area.x, y, results_area.width, 1)
+                            .intersection(&frame.buffer.current_scissor());
+                        if item_bounds.is_empty() {
+                            continue;
+                        }
+                        let action = &self.actions[scored.action_index];
+                        let mut item = A11yNodeInfo::new(
+                            self.accessibility_child_id("item", scored.action_index),
+                            A11yRole::MenuItem,
+                            item_bounds,
+                        )
+                        .with_name(&action.title);
+                        item.state.selected =
+                            self.scroll_offset.saturating_add(row_idx) == self.selected;
+                        let mut details = Vec::new();
+                        if let Some(category) = action.category.as_deref() {
+                            details.push(category.to_owned());
+                        }
+                        if let Some(description) = action.description.as_deref() {
+                            details.push(description.to_owned());
+                        }
+                        if !details.is_empty() {
+                            item.description = Some(details.join(". "));
+                        }
+                        frame.push_a11y(item);
+                    }
+                });
+            }
+
+            let status_bounds = input_area.intersection(&frame.buffer.current_scissor());
+            if !status_bounds.is_empty() {
+                let status_name = self.selected_action().map_or_else(
+                    || {
+                        if self.query.is_empty() {
+                            "No actions registered".to_owned()
+                        } else {
+                            "No matching commands".to_owned()
+                        }
+                    },
+                    |action| {
+                        format!(
+                            "{}. Result {}",
+                            action.title,
+                            self.selected.saturating_add(1)
+                        )
+                    },
+                );
+                let mut status = A11yNodeInfo::new(
+                    self.accessibility_child_id("selection", 0),
+                    A11yRole::Label,
+                    status_bounds,
+                )
+                .with_name(status_name)
+                .with_live_region(LiveRegion::Polite);
+                if let Some(description) = self
+                    .selected_action()
+                    .and_then(|action| action.description.as_deref())
+                {
+                    status.description = Some(description.to_owned());
+                }
+                frame.push_a11y(status);
+            }
+        });
+    }
+
     /// Resolve the palette surface background.
     ///
     /// Prefer explicit style backgrounds when provided so host apps can
@@ -1474,6 +1620,149 @@ impl CommandPalette {
 #[cfg(test)]
 mod widget_tests {
     use super::*;
+    use ftui_a11y::tree::{
+        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
+    };
+    use ftui_render::grapheme_pool::GraphemePool;
+
+    fn render_palette_a11y(palette: &CommandPalette, area: Rect) -> A11yTree {
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(100, 40, &mut pool);
+            frame.set_a11y(&mut builder);
+            palette.render(area, &mut frame);
+            frame.finish_a11y();
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn palette_accessibility_exposes_dialog_query_menu_and_selection() {
+        let mut palette = CommandPalette::new().with_accessibility_id(6001);
+        palette.register_action(
+            ActionItem::new("open", "Open File")
+                .with_description("Open a file from disk")
+                .with_category("File"),
+        );
+        palette.register_action(ActionItem::new("save", "Save File"));
+        palette.open();
+
+        let tree = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
+        assert_eq!(tree.root_id(), Some(6001));
+        let root = tree.root().unwrap();
+        assert_eq!(root.role, A11yRole::Dialog);
+        assert_eq!(root.name.as_deref(), Some("Command Palette"));
+        assert_eq!(root.children.len(), 3);
+
+        let query = tree.focused().expect("query focus");
+        assert_eq!(query.role, A11yRole::TextInput);
+        assert_eq!(query.name.as_deref(), Some("Search commands"));
+        assert_eq!(query.state.value_text.as_deref(), Some(""));
+
+        let menu = root
+            .children
+            .iter()
+            .filter_map(|id| tree.node(*id))
+            .find(|node| node.role == A11yRole::Menu)
+            .unwrap();
+        assert_eq!(menu.children.len(), 2);
+        assert!(tree.node(menu.children[0]).unwrap().state.selected);
+        assert_eq!(
+            tree.node(menu.children[0]).unwrap().description.as_deref(),
+            Some("File. Open a file from disk")
+        );
+    }
+
+    #[test]
+    fn palette_typing_stays_quiet_when_selected_command_does_not_change() {
+        let mut palette = CommandPalette::new().with_accessibility_id(6002);
+        palette.register("Open File", None, &["file"]);
+        palette.register("Save File", None, &["file"]);
+        palette.open();
+        let before = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
+
+        palette.set_query("O");
+        let after = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
+        assert_eq!(after.focused_id(), before.focused_id());
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert!(
+            batch.announcements.is_empty(),
+            "query edits should not reread the palette when the selected command is unchanged"
+        );
+    }
+
+    #[test]
+    fn palette_arrow_selection_announces_one_polite_status_update() {
+        let mut palette = CommandPalette::new().with_accessibility_id(6003);
+        palette.register("Alpha", Some("First command"), &[]);
+        palette.register("Beta", Some("Second command"), &[]);
+        palette.open();
+        let before = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
+
+        palette.handle_event(&Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        }));
+        let after = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
+        assert_eq!(after.focused_id(), before.focused_id());
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.dropped_count, 0);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::LiveContentChanged);
+        assert_eq!(batch.announcements[0].urgency, LiveRegion::Polite);
+        assert!(batch.announcements[0].text.contains("Beta. Result 2"));
+        assert!(batch.announcements[0].text.contains("Second command"));
+    }
+
+    #[test]
+    fn palette_no_results_announces_once_and_closing_removes_semantics_silently() {
+        let mut palette = CommandPalette::new().with_accessibility_id(6004);
+        palette.register("Alpha", None, &[]);
+        palette.open();
+        let before = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
+        palette.set_query("zzz");
+        let empty = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
+        let batch =
+            empty.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert!(batch.announcements[0].text.contains("No matching commands"));
+
+        palette.close();
+        let closed = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
+        assert!(closed.is_empty());
+        assert!(
+            closed
+                .screen_reader_announcements_since(&empty, ScreenReaderPolicy::default())
+                .announcements
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn palette_accessibility_ids_survive_resize_and_scrolling() {
+        let mut palette = CommandPalette::new()
+            .with_accessibility_id(6005)
+            .with_max_visible(2);
+        for title in ["Alpha", "Beta", "Gamma", "Delta"] {
+            palette.register(title, None, &[]);
+        }
+        palette.open();
+        let before = render_palette_a11y(&palette, Rect::new(0, 0, 80, 20));
+
+        palette.handle_event(&Event::Key(KeyEvent {
+            code: KeyCode::End,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        }));
+        let after = render_palette_a11y(&palette, Rect::new(4, 3, 90, 30));
+        assert_eq!(before.root_id(), after.root_id());
+        assert_eq!(before.focused_id(), after.focused_id());
+        assert_eq!(after.focused().unwrap().name.as_deref(), Some("Search commands"));
+    }
 
     #[test]
     fn new_palette_is_hidden() {
