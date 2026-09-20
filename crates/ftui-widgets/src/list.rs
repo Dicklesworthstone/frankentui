@@ -86,6 +86,8 @@ pub struct List<'a> {
     hit_id: Option<HitId>,
     /// Optional data hash to enable caching of filtered indices.
     data_hash: Option<u64>,
+    /// Optional stable accessibility identity for this list.
+    accessibility_id: Option<u64>,
 }
 
 impl<'a> List<'a> {
@@ -101,7 +103,15 @@ impl<'a> List<'a> {
             highlight_symbol: None,
             hit_id: None,
             data_hash: None,
+            accessibility_id: None,
         }
+    }
+
+    /// Give this list a stable accessibility identity.
+    #[must_use]
+    pub fn accessibility_id(mut self, id: u64) -> Self {
+        self.accessibility_id = Some(id);
+        self
     }
 
     /// Set an explicit data hash to enable caching of filtered indices.
@@ -159,6 +169,95 @@ impl<'a> List<'a> {
     pub fn hit_id(mut self, id: HitId) -> Self {
         self.hit_id = Some(id);
         self
+    }
+
+    fn accessibility_root_id(&self, area: Rect) -> u64 {
+        if let Some(id) = self.accessibility_id {
+            return id;
+        }
+        if let Some(hit) = self.hit_id {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            ("ftui.list.hit", hit.id()).hash(&mut hasher);
+            return hasher.finish();
+        }
+        crate::a11y_node_id(area)
+    }
+
+    fn accessibility_item_id(parent: u64, index: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.list.item", parent, index).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn push_stateful_accessibility(
+        &self,
+        list_area: Rect,
+        frame: &mut Frame,
+        state: &ListState,
+        filtered: &[usize],
+    ) {
+        if !frame.a11y_enabled() || list_area.is_empty() {
+            return;
+        }
+        let bounds = list_area.intersection(&frame.buffer.current_scissor());
+        if bounds.is_empty() {
+            return;
+        }
+        let root_id = self.accessibility_root_id(list_area);
+        let title = self
+            .block
+            .as_ref()
+            .and_then(|block| block.title_text())
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or("List");
+        let description = if state.filter_query.trim().is_empty() {
+            format!("{} items", filtered.len())
+        } else {
+            format!("{} matching items", filtered.len())
+        };
+        let root = ftui_a11y::node::A11yNodeInfo::new(
+            root_id,
+            ftui_a11y::node::A11yRole::List,
+            bounds,
+        )
+        .with_name(title)
+        .with_description(description);
+        frame.with_a11y_scope(root, |frame| {
+            let visible_end = (state.offset + list_area.height as usize).min(filtered.len());
+            for (row, item_index) in filtered[state.offset.min(filtered.len())..visible_end]
+                .iter()
+                .enumerate()
+            {
+                let item = &self.items[*item_index];
+                let y = list_area.y.saturating_add(row as u16);
+                let item_bounds = Rect::new(list_area.x, y, list_area.width, 1)
+                    .intersection(&frame.buffer.current_scissor());
+                if item_bounds.is_empty() {
+                    continue;
+                }
+                let item_text = item
+                    .content
+                    .lines()
+                    .first()
+                    .map(|line| line.to_plain_text())
+                    .unwrap_or_default();
+                let mut node = ftui_a11y::node::A11yNodeInfo::new(
+                    Self::accessibility_item_id(root_id, *item_index),
+                    ftui_a11y::node::A11yRole::ListItem,
+                    item_bounds,
+                );
+                if !item_text.is_empty() {
+                    node.name = Some(item_text);
+                }
+                node.state.selected = state.selected == Some(*item_index)
+                    || (state.multi_select_enabled
+                        && state.multi_selected.contains(item_index));
+                node.state.focused = state.focused && state.selected == Some(*item_index);
+                frame.push_a11y(node);
+            }
+        });
     }
 
     fn filtered_indices(&self, state: &mut ListState) -> std::sync::Arc<[usize]> {
@@ -399,6 +498,8 @@ pub struct ListState {
     /// Cached display indices (data_hash, filter_query, indices)
     #[doc(hidden)]
     pub cached_display_indices: Option<(u64, String, std::sync::Arc<[usize]>)>,
+    /// Whether this list currently owns keyboard focus.
+    pub focused: bool,
 }
 
 impl Default for ListState {
@@ -415,6 +516,7 @@ impl Default for ListState {
             multi_select_enabled: false,
             multi_selected: BTreeSet::new(),
             cached_display_indices: None,
+            focused: false,
         }
     }
 }
@@ -442,6 +544,24 @@ impl ListState {
     #[must_use = "use the selected index (if any)"]
     pub fn selected(&self) -> Option<usize> {
         self.selected
+    }
+
+    /// Mark whether this list currently owns keyboard focus.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// Builder for keyboard focus ownership.
+    #[must_use]
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Whether this list currently owns keyboard focus.
+    #[must_use]
+    pub const fn is_focused(&self) -> bool {
+        self.focused
     }
 
     /// Create a new ListState with a persistence ID for state saving.
@@ -759,9 +879,6 @@ impl<'a> StatefulWidget for List<'a> {
     type State = ListState;
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
-        if frame.a11y_enabled() {
-            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
-        }
         #[cfg(feature = "tracing")]
         let _widget_span = tracing::debug_span!(
             "widget_render",
@@ -793,9 +910,21 @@ impl<'a> StatefulWidget for List<'a> {
         let _render_guard = render_span.enter();
 
         let list_area = match &self.block {
-            Some(b) => {
-                b.render(area, frame);
-                b.inner(area)
+            Some(block) => {
+                let inner = block.inner(area);
+                if frame.a11y_enabled() {
+                    let builder = frame.a11y.take();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        block.render(area, frame);
+                    }));
+                    frame.a11y = builder;
+                    if let Err(payload) = result {
+                        std::panic::resume_unwind(payload);
+                    }
+                } else {
+                    block.render(area, frame);
+                }
+                inner
             }
             None => area,
         };
@@ -812,6 +941,7 @@ impl<'a> StatefulWidget for List<'a> {
                 state.hovered = None;
                 state.offset = 0;
                 state.multi_selected.clear();
+                self.push_stateful_accessibility(list_area, frame, state, &[]);
                 draw_text_span(
                     frame,
                     list_area.x,
@@ -837,6 +967,7 @@ impl<'a> StatefulWidget for List<'a> {
                 self.apply_filtered_selection_guard(state, &filtered_indices, filter_active);
 
                 if filtered_indices.is_empty() {
+                    self.push_stateful_accessibility(list_area, frame, state, &filtered_indices);
                     draw_text_span(
                         frame,
                         list_area.x,
@@ -870,6 +1001,13 @@ impl<'a> StatefulWidget for List<'a> {
                         }
                         state.scroll_into_view_requested = false;
                     }
+
+                    self.push_stateful_accessibility(
+                        list_area,
+                        frame,
+                        state,
+                        &filtered_indices,
+                    );
 
                     for (row, item_index) in filtered_indices
                         .iter()
@@ -1206,6 +1344,9 @@ impl ListState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_a11y::tree::{
+        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
+    };
     use ftui_core::event::{KeyCode, KeyEvent};
     use ftui_render::cell::Cell;
     use ftui_render::grapheme_pool::GraphemePool;
@@ -1230,6 +1371,103 @@ mod tests {
             actual.push(ch);
         }
         actual.trim().to_string()
+    }
+
+    fn render_list_a11y(
+        list: &List<'_>,
+        state: &mut ListState,
+        area: Rect,
+    ) -> A11yTree {
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            StatefulWidget::render(list, area, &mut frame, state);
+            frame.finish_a11y();
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn stateful_list_accessibility_reflects_selection_focus_and_visible_rows() {
+        let list = List::new(["Alpha", "Beta", "Gamma", "Delta"])
+            .accessibility_id(7300);
+        let mut state = ListState::default().with_focused(true);
+        state.select(Some(2));
+        let tree = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 2));
+        assert_eq!(tree.root_id(), Some(7300));
+        let root = tree.root().unwrap();
+        assert_eq!(root.role, ftui_a11y::node::A11yRole::List);
+        assert_eq!(root.children.len(), 2);
+        assert_eq!(tree.focused().unwrap().name.as_deref(), Some("Gamma"));
+        assert!(tree.focused().unwrap().state.selected);
+        assert_eq!(state.offset, 1);
+        assert_eq!(tree.node(root.children[0]).unwrap().name.as_deref(), Some("Beta"));
+    }
+
+    #[test]
+    fn stateful_list_selection_change_announces_once_only_when_focused() {
+        let list = List::new(["Alpha", "Beta", "Gamma"]).accessibility_id(7301);
+        let mut state = ListState::default().with_focused(true);
+        state.select(Some(0));
+        let before = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
+        state.select_next(3);
+        let after = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.dropped_count, 0);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert!(batch.announcements[0].text.contains("Beta"));
+
+        state.set_focused(false);
+        let unfocused = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
+        state.select_next(3);
+        let moved = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
+        assert!(moved.focused().is_none());
+        assert!(
+            moved
+                .screen_reader_announcements_since(&unfocused, ScreenReaderPolicy::default())
+                .announcements
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn stateful_list_filter_semantics_match_visible_filtered_items_without_query_chatter() {
+        let list = List::new(["apple", "apricot", "banana", "berry"])
+            .accessibility_id(7302);
+        let mut state = ListState::default().with_focused(true);
+        state.select(Some(0));
+        let before = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
+        state.set_filter_query("ap");
+        let filtered = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 3));
+        let root = filtered.root().unwrap();
+        assert_eq!(root.description.as_deref(), Some("2 matching items"));
+        assert_eq!(root.children.len(), 2);
+        assert_eq!(filtered.node(root.children[0]).unwrap().name.as_deref(), Some("apple"));
+        assert_eq!(filtered.node(root.children[1]).unwrap().name.as_deref(), Some("apricot"));
+        assert_eq!(filtered.focused_id(), before.focused_id());
+        assert!(
+            filtered
+                .screen_reader_announcements_since(&before, ScreenReaderPolicy::default())
+                .announcements
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn stateful_list_block_title_is_single_semantic_root_not_duplicate_group() {
+        let list = List::new(["One", "Two"])
+            .block(Block::bordered().title("Choices"))
+            .accessibility_id(7303);
+        let mut state = ListState::default();
+        let tree = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 5));
+        assert_eq!(tree.root_id(), Some(7303));
+        assert_eq!(tree.root().unwrap().name.as_deref(), Some("Choices"));
+        assert_eq!(tree.node_count(), 3);
+        assert!(!tree.nodes().any(|node| node.role == ftui_a11y::node::A11yRole::Group));
     }
 
     fn raw_row_text(frame: &Frame, y: u16) -> String {

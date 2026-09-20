@@ -237,7 +237,7 @@ manual assistive-technology testing and a full semantic control bridge remain.
 |---|---|---|
 | `TextInput` | TextInput | value/placeholder, focus, mask state |
 | `TextArea` | TextInput | full multiline value or placeholder, focus, multiline description |
-| `List` | List + ListItem children | block title, item text, item count |
+| `List` | List + visible ListItem children | block title, filtered count, stateful selection/focus, multi-selection |
 | `Table` | Table | block title, row/column counts |
 | `Tabs` | Group + Tab children | tab titles, selected index |
 | `ProgressBar` | ProgressBar | ratio, label, value text |
