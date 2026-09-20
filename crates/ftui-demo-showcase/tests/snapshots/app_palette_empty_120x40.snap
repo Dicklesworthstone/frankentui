@@ -11,13 +11,13 @@
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Core] Advanced  Advanced widget patterns and composite layouts.    │       ││            │││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Text] Markdown  Markdown rendering with styling and layout.        │       ││            │││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Tour] Dashboard  Cinematic overview of key features and live tiles.│       ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Text] Log Search  Search and filter logs with live updates.        │       ││            │││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Interaction] Layout Lab  Constraint lab + interactive pane studio …│       ││            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Text] Shakespeare  Live search over Shakespeare with animated high…│       ■│            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Systems] Performance  Render performance metrics and budgets.      │■■───────────■■■──────││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Systems] Async Tasks  Async tasks and job queue visualization.     │ane-3──■╭──7 pane-4──╮││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Systems] VOI Overlay  Value-of-information overlay and evidence.   │       ■│            │││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Tour] Inline Mode  Inline mode story and scrollback preservation.  │4  @90 ■│ 14x14  @10 │││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Text] Log Search  Search and filter logs with live updates.        │       ││            │││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Tour] Guided Tour  Cinematic auto-play tour across key screens.    │       ■│            │││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Text] Shakespeare  Live search over Shakespeare with animated high…│■■───────────■■■──────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Systems] Performance  Render performance metrics and budgets.      │ane-3──■╭──7 pane-4──╮││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Systems] Async Tasks  Async tasks and job queue visualization.     │       ■│            │││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││     │  [Systems] VOI Overlay  Value-of-information overlay and evidence.   │4  @90 ■│ 14x14  @10 │││
 ││Click → Visual ││Click╰──────────────────────────────────────────────────────────────────────╯       ││            │││
 │╰───────────────╯╰────────────────────────╯╰────────────────────────╯╰───────────────╯  ││            ││            │││
 │╭Text FX · 3-Up (1/2│╭────────────Activity────────────│╭─Markdown · Streaming… 0%──╮    ││            ││            │││

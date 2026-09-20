@@ -9,13 +9,13 @@
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Core] Advanced  Advanced widget patterns a…│e Explorer    ││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Text] Markdown  Markdown rendering with st…│──────────────╯│
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Dashboard  Cinematic overview of key…│nfo───────────╮│
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Text] Log Search  Search and filter logs w…│NAL FPS:0     ││
-││Click → Visual│  [Interaction] Layout Lab  Constraint lab + …│formance      ││
-│╰──────────────│  [Text] Shakespeare  Live search over Shakes…│──────────────╯│
-│╭Text FX · 2-Up│  [Systems] Performance  Render performance m…│treaming… 0%─╮ │
-││Sample 1 of 3 │  [Systems] Async Tasks  Async tasks and job …│             │ │
-││1 · None · S1 │  [Systems] VOI Overlay  Value-of-information…│             │ │
-││2 · FadeIn · S│  [Tour] Inline Mode  Inline mode story and s…│             │ │
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Interaction] Layout Lab  Constraint lab + …│NAL FPS:0     ││
+││Click → Visual│  [Text] Log Search  Search and filter logs w…│formance      ││
+│╰──────────────│  [Tour] Guided Tour  Cinematic auto-play tou…│──────────────╯│
+│╭Text FX · 2-Up│  [Text] Shakespeare  Live search over Shakes…│treaming… 0%─╮ │
+││Sample 1 of 3 │  [Systems] Performance  Render performance m…│             │ │
+││1 · None · S1 │  [Systems] Async Tasks  Async tasks and job …│             │ │
+││2 · FadeIn · S│  [Systems] VOI Overlay  Value-of-information…│             │ │
 ││              ╰──────────────────────────────────────────────╯             │ │
 ││drag panes in das││Click → Action Timeline      ││Click → Markdown         │ │
 │╰─────────────────│╰─────────────────────────────│╰─────────────────────────╯ │
