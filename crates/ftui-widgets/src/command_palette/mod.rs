@@ -1719,6 +1719,15 @@ mod widget_tests {
                 .is_none(),
             "arrow navigation moves the selection without emitting an action"
         );
+        assert_eq!(palette.selected_index(), 1, "Down should move to index 1");
+        // Not "Beta". An empty query is scored purely by title length -
+        // `FuzzyScorer::score_empty_query` prefers shorter titles - so the
+        // open palette lists "Beta" (4) above "Alpha" (5) regardless of
+        // registration order, and result 2 is "Alpha".
+        assert_eq!(
+            palette.selected_action().map(|a| a.title.as_str()),
+            Some("Alpha")
+        );
         let after = render_palette_a11y(&palette, Rect::new(0, 0, 80, 24));
         assert_eq!(after.focused_id(), before.focused_id());
         let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
@@ -1729,8 +1738,9 @@ mod widget_tests {
             AnnouncementReason::LiveContentChanged
         );
         assert_eq!(batch.announcements[0].urgency, LiveRegion::Polite);
-        assert!(batch.announcements[0].text.contains("Beta. Result 2"));
-        assert!(batch.announcements[0].text.contains("Second command"));
+        let spoken = &batch.announcements[0].text;
+        assert!(spoken.contains("Alpha. Result 2"), "announced: {spoken:?}");
+        assert!(spoken.contains("First command"), "announced: {spoken:?}");
     }
 
     #[test]

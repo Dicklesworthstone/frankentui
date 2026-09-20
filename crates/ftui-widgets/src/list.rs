@@ -1457,10 +1457,23 @@ mod tests {
             .block(Block::bordered().title("Choices"))
             .accessibility_id(7303);
         let mut state = ListState::default();
-        let tree = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 5));
+        // Height 7, not 5: `Block::bordered()` is `borders(ALL)` *and*
+        // `padding(Sides::all(1))`, so it insets two rows at each end. A
+        // 5-row area leaves exactly one visible row, one item node, and a
+        // `node_count` of 2 - which says nothing about whether the title
+        // produced a duplicate Group, the thing this test is named for.
+        let tree = render_list_a11y(&list, &mut state, Rect::new(0, 0, 30, 7));
         assert_eq!(tree.root_id(), Some(7303));
         assert_eq!(tree.root().unwrap().name.as_deref(), Some("Choices"));
-        assert_eq!(tree.node_count(), 3);
+        let inventory: Vec<_> = tree
+            .nodes()
+            .map(|n| (n.id, n.role, n.name.clone(), n.bounds))
+            .collect();
+        assert_eq!(
+            tree.node_count(),
+            3,
+            "expected the list root and both items; tree was {inventory:#?}"
+        );
         assert!(
             !tree
                 .nodes()

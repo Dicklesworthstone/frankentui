@@ -98,6 +98,22 @@ impl MatchType {
     }
 }
 
+/// Rank by score, then match type, then corpus order.
+///
+/// Every caller sorts with `sort_unstable_by`, which does not preserve input
+/// order for elements that compare `Equal` - so without the final tiebreaker
+/// the relative order of equally-scored items was whatever pattern-defeating
+/// quicksort happened to produce, and it changed with the number of items.
+///
+/// Ties are ordinary, not hypothetical. [`FuzzyScorer::score_empty_query`]
+/// ranks an empty query purely by title length, so any two commands with
+/// equal-length titles score identically and match identically - and a
+/// freshly opened palette listed them in whatever order the sort produced.
+/// Genuine fuzzy scores collide too.
+///
+/// Corpus index ascending, because it is registration order and that is what a
+/// caller controls. Score and match type stay descending (`right.cmp(left)`):
+/// higher is better for those, earlier is better for this.
 fn compare_ranked_match_results(
     left: &(usize, MatchResult),
     right: &(usize, MatchResult),
@@ -1714,6 +1730,47 @@ impl Default for IncrementalScorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Equally-scored entries must come back in registration order.
+    ///
+    /// Every ranking path sorts with `sort_unstable_by`, which leaves the
+    /// relative order of `Equal` elements unspecified, so without the corpus
+    /// index tiebreaker in `compare_ranked_match_results` the result was
+    /// whatever pattern-defeating quicksort produced - stable within one run,
+    /// and free to change with the number of entries.
+    ///
+    /// Equal-length titles under an empty query are the easy way to construct
+    /// a tie, because `score_empty_query` ranks on title length alone.
+    #[test]
+    fn equally_scored_entries_keep_registration_order() {
+        // Forty entries, not a handful: `sort_unstable` runs insertion sort on
+        // short slices, which happens to preserve order, so a small fixture
+        // passes with or without the tiebreaker and proves nothing. This is
+        // past that threshold, and it does fail without it.
+        let titles: Vec<String> = (0..40).map(|i| format!("Cmd{i:02}")).collect();
+        let lowered: Vec<String> = titles.iter().map(|t| t.to_lowercase()).collect();
+        let word_starts: Vec<Vec<usize>> = titles.iter().map(|_| vec![0usize]).collect();
+
+        let mut scorer = IncrementalScorer::new();
+        let ranked =
+            scorer.score_corpus_with_lowered_and_words("", &titles, &lowered, &word_starts, None);
+
+        // All six titles are five characters, so every score ties.
+        let scores: Vec<f64> = ranked.iter().map(|(_, r)| r.score).collect();
+        assert!(
+            scores
+                .windows(2)
+                .all(|w| (w[0] - w[1]).abs() < f64::EPSILON),
+            "fixture should tie on score, got {scores:?}"
+        );
+
+        let order: Vec<usize> = ranked.iter().map(|(idx, _)| *idx).collect();
+        assert_eq!(
+            order,
+            (0..titles.len()).collect::<Vec<_>>(),
+            "ties must fall back to corpus order"
+        );
+    }
 
     // --- Match Type Tests ---
 
