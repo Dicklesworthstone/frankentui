@@ -284,8 +284,15 @@ pub struct SpatialHitIndex {
 
 impl SpatialHitIndex {
     /// Create a new spatial hit index for the given screen dimensions.
-    pub fn new(width: u16, height: u16, config: SpatialHitConfig) -> Self {
-        let cell_size = config.cell_size.max(1);
+    pub fn new(width: u16, height: u16, mut config: SpatialHitConfig) -> Self {
+        // Clamp into the *stored* config, not just into a local. `cell_size`
+        // is a public field on a public struct, so zero is reachable, and
+        // `bucket_index` and `bucket_range` both divide by
+        // `self.config.cell_size` - a clamp that only sized the grid left the
+        // whole query path dividing by zero, so `register` and `hit_test`
+        // panicked on an index that had constructed successfully.
+        config.cell_size = config.cell_size.max(1);
+        let cell_size = config.cell_size;
         // Ceiling division in u32: the previous `saturating_add(cell-1)`
         // destroyed the ceiling for width/height >= 65529, producing a grid
         // one column/row short and out-of-bounds bucket indices.
@@ -1457,11 +1464,23 @@ mod tests {
             cell_size: 0,
             ..Default::default()
         };
-        let idx = SpatialHitIndex::new(80, 24, config);
+        let mut idx = SpatialHitIndex::new(80, 24, config);
         // cell_size=0 clamped to 1, grid = 80x24 buckets
         assert_eq!(idx.grid_width, 80);
         assert_eq!(idx.grid_height, 24);
         assert!(idx.is_empty());
+
+        // The clamp has to reach the query path too. `bucket_index` and
+        // `bucket_range` divide by `self.config.cell_size`, so a clamp that
+        // only sized the grid left both dividing by zero - and asserting on
+        // the grid alone could not see it.
+        assert_eq!(idx.config.cell_size, 1, "the stored config must be clamped");
+        idx.register_simple(HitId::new(1), Rect::new(2, 3, 4, 2), HitRegion::Button, 7);
+        assert_eq!(
+            idx.hit_test(3, 4),
+            Some((HitId::new(1), HitRegion::Button, 7))
+        );
+        assert_eq!(idx.hit_test(70, 20), None);
     }
 
     #[test]
