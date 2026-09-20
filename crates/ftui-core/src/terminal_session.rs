@@ -337,6 +337,14 @@ impl SessionLock {
         {
             return Err(io::Error::other("TerminalSession already active"));
         }
+        // This session has not begun tearing down. `EXPLICIT_TEARDOWN_STARTED`
+        // answers exactly that for `wait_for_shutdown_ack`, but `cleanup()`
+        // only ever sets it - so once any session had torn down, every later
+        // termination signal in the process was treated as already
+        // acknowledged, and the force-exit that bounds the grace period was
+        // skipped. A stuck app then ignored SIGTERM outright.
+        #[cfg(unix)]
+        EXPLICIT_TEARDOWN_STARTED.store(false, Ordering::SeqCst);
         Ok(Self)
     }
 }
@@ -1510,6 +1518,32 @@ mod tests {
             );
 
             EXPLICIT_TEARDOWN_STARTED.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// The flag above answers "has *this* session begun tearing down", and
+    /// `cleanup()` only ever sets it. Starting a session must clear it, or the
+    /// first teardown in a process permanently converts every later
+    /// termination signal into an immediate ack - which skips the force-exit
+    /// that bounds the grace period, so a wedged app ignores SIGTERM.
+    #[cfg(unix)]
+    #[test]
+    fn starting_a_session_clears_the_explicit_teardown_flag() {
+        crate::shutdown_signal::with_test_signal_serialization(|| {
+            // Stand in for a previous session having torn down.
+            EXPLICIT_TEARDOWN_STARTED.store(true, Ordering::SeqCst);
+
+            let lock = SessionLock::acquire().expect("no session should be active");
+            assert!(
+                !EXPLICIT_TEARDOWN_STARTED.load(Ordering::SeqCst),
+                "a new session has not begun tearing down"
+            );
+            drop(lock);
+
+            // The flag-to-ack linkage itself is
+            // `wait_for_shutdown_ack_immediate_after_explicit_teardown`; what
+            // this adds is that the flag starts each session cleared, so that
+            // ack is earned rather than inherited.
         });
     }
 
