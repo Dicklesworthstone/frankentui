@@ -443,7 +443,10 @@ fn callback_quit_keeps_the_completed_frame_without_more_rendering() {
     assert_eq!(runner.frame_idx(), 1);
     assert!(runner.take_outputs().last_buffer.is_some());
     assert_eq!(
-        runner.take_accessibility_announcements().announcements.len(),
+        runner
+            .take_accessibility_announcements()
+            .announcements
+            .len(),
         1
     );
     assert!(!runner.step().unwrap().rendered);
@@ -469,7 +472,11 @@ fn visual_output_and_geometry_logs_do_not_capture_accessibility_text() {
     accessible.init().unwrap();
     let mirror = accessible.accessibility_mirror().unwrap();
     assert!(mirror.text().contains(PRIVATE_TEXT));
-    assert!(accessible.model().frames[0].announcements[0].text.contains(PRIVATE_TEXT));
+    assert!(
+        accessible.model().frames[0].announcements[0]
+            .text
+            .contains(PRIVATE_TEXT)
+    );
     for code in ['d', 'm', 'e'] {
         plain.push_event(event(code)).unwrap();
         accessible.push_event(event(code)).unwrap();

@@ -17,7 +17,10 @@ fn assert_current_tree(runner: &StepProgram<AppModel>) {
     assert!(tree.root().is_some());
     assert!(!runner.accessibility_order().is_empty());
     for id in runner.accessibility_order() {
-        assert!(tree.node(*id).is_some(), "reading order references a missing node");
+        assert!(
+            tree.node(*id).is_some(),
+            "reading order references a missing node"
+        );
     }
     let has_name = tree.nodes().any(|node| {
         node.name
@@ -76,7 +79,13 @@ fn real_showcase_navigation_and_resize_refresh_the_semantic_snapshot() {
         .unwrap();
     assert!(runner.step().unwrap().rendered);
     assert_current_tree(&runner);
-    assert!(!runner.accessibility_tree().unwrap().diff(&before).is_empty());
+    assert!(
+        !runner
+            .accessibility_tree()
+            .unwrap()
+            .diff(&before)
+            .is_empty()
+    );
     let output = runner.take_outputs();
     let buffer = output.last_buffer.expect("resized visual frame");
     assert_eq!(buffer.width(), 100);

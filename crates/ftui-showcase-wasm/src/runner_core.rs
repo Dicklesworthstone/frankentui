@@ -215,7 +215,11 @@ impl RunnerCore {
     /// Hosts must insert text as text, not HTML, and choose one speech consumer.
     pub fn take_accessibility_update_json(&mut self) -> String {
         let enabled = self.inner.accessibility_policy().is_some();
-        let frame_id = self.inner.frame_idx().checked_sub(1).map(|id| id.to_string());
+        let frame_id = self
+            .inner
+            .frame_idx()
+            .checked_sub(1)
+            .map(|id| id.to_string());
         let focus_id = self
             .inner
             .accessibility_tree()
@@ -1477,7 +1481,10 @@ mod tests {
             assert!(runner.take_logs().is_empty());
             let update = accessibility_update(&mut runner);
             assert_eq!(update["lines"], serde_json::json!(expected));
-            assert_eq!(update["announcements"].as_array().unwrap().len(), announcements);
+            assert_eq!(
+                update["announcements"].as_array().unwrap().len(),
+                announcements
+            );
             assert!(runner.take_logs().is_empty());
         }
     }
