@@ -784,3 +784,124 @@ fn baseline_path_defaults_under_the_crate() {
         path.display()
     );
 }
+
+// ============================================================================
+// Regression comparison (bd-g00-root-epic-ewths.9.2 item 3)
+//
+// `check_regressions` walks nested JSON comparing p99 ratios and is what turns
+// two baselines into a verdict, yet nothing exercised it with known numbers —
+// every existing test fed it whatever the machine happened to measure. These
+// drive it with synthetic values so the comparison logic is pinned independent
+// of any timing.
+// ============================================================================
+
+/// A leaf metric node as `measure()` emits one, with only p99 significant here.
+fn metric(p99_us: f64) -> Value {
+    json!({ "p50_us": 1.0, "p95_us": 1.0, "p99_us": p99_us, "max_us": p99_us })
+}
+
+fn regressions_between(baseline: &Value, current: &Value, threshold: f64) -> Vec<String> {
+    let mut found = Vec::new();
+    check_regressions(baseline, current, "", threshold, &mut found);
+    found
+}
+
+#[test]
+fn check_regressions_flags_only_beyond_the_threshold() {
+    let base = metric(100.0);
+
+    // Strictly greater: exactly at the threshold is not a regression, which is
+    // the boundary a "10% slower" report hinges on.
+    assert!(regressions_between(&base, &metric(110.0), 0.10).is_empty());
+    assert_eq!(regressions_between(&base, &metric(110.01), 0.10).len(), 1);
+
+    // Faster is never a regression.
+    assert!(regressions_between(&base, &metric(50.0), 0.10).is_empty());
+    // Unchanged is never a regression.
+    assert!(regressions_between(&base, &metric(100.0), 0.10).is_empty());
+}
+
+#[test]
+fn check_regressions_reports_percentage_and_both_values() {
+    let found = regressions_between(&metric(100.0), &metric(150.0), 0.10);
+    assert_eq!(found.len(), 1);
+    let message = &found[0];
+    assert!(message.contains("50.0%"), "{message}");
+    assert!(message.contains("100.0us"), "{message}");
+    assert!(message.contains("150.0us"), "{message}");
+}
+
+#[test]
+fn check_regressions_names_the_nested_path() {
+    let baseline = json!({ "diff_engine": { "80x24": { "full_diff": metric(10.0) } } });
+    let current = json!({ "diff_engine": { "80x24": { "full_diff": metric(20.0) } } });
+
+    let found = regressions_between(&baseline, &current, 0.10);
+    assert_eq!(found.len(), 1);
+    assert!(
+        found[0].starts_with("diff_engine/80x24/full_diff:"),
+        "a report has to say which hot path moved: {}",
+        found[0]
+    );
+}
+
+#[test]
+fn check_regressions_finds_every_regressed_leaf() {
+    let baseline = json!({ "a": metric(10.0), "b": metric(10.0), "c": metric(10.0) });
+    let current = json!({ "a": metric(30.0), "b": metric(10.0), "c": metric(30.0) });
+
+    let found = regressions_between(&baseline, &current, 0.10);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found.iter().any(|r| r.starts_with("a:")), "{found:?}");
+    assert!(found.iter().any(|r| r.starts_with("c:")), "{found:?}");
+}
+
+#[test]
+fn check_regressions_ignores_a_zero_baseline() {
+    // `b_p99 > 0.0` guards the division. A zero baseline therefore disables the
+    // comparison for that node **silently** — pinned here because it is a blind
+    // spot, not a feature: a capture that recorded 0us for a hot path is itself
+    // broken, and this makes that node permanently uncomparable rather than
+    // loud.
+    assert!(regressions_between(&metric(0.0), &metric(1000.0), 0.10).is_empty());
+}
+
+#[test]
+fn check_regressions_skips_a_metric_missing_from_the_current_run() {
+    // The walk iterates the *baseline's* keys and needs a matching key in
+    // `current`, so a hot path present in the baseline and absent now is passed
+    // over without a word. That is the right call for a renamed benchmark and
+    // the wrong one for a benchmark that stopped running; either way it is
+    // silent, which is worth knowing when reading a clean report.
+    let baseline = json!({ "kept": metric(10.0), "vanished": metric(10.0) });
+    let current = json!({ "kept": metric(10.0) });
+
+    assert!(regressions_between(&baseline, &current, 0.10).is_empty());
+}
+
+#[test]
+fn check_regressions_does_not_descend_past_a_metric_node() {
+    // A node carrying `p99_us` returns immediately, so nested keys underneath a
+    // leaf are never visited. This keeps `max_us` and friends from being read
+    // as child metrics.
+    let baseline = json!({
+        "leaf": { "p99_us": 10.0, "nested": metric(10.0) }
+    });
+    let current = json!({
+        "leaf": { "p99_us": 10.0, "nested": metric(1000.0) }
+    });
+
+    assert!(
+        regressions_between(&baseline, &current, 0.10).is_empty(),
+        "a regression below a leaf must not be reported, because it is not visited"
+    );
+}
+
+#[test]
+fn check_regressions_threshold_is_honoured_not_hardcoded() {
+    let base = metric(100.0);
+    // The caller passes 0.10; prove the parameter is what decides, so a future
+    // perf lane can tighten it without discovering the value was baked in.
+    assert!(regressions_between(&base, &metric(120.0), 0.50).is_empty());
+    assert_eq!(regressions_between(&base, &metric(120.0), 0.05).len(), 1);
+}
