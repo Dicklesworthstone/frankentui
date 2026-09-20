@@ -8,7 +8,7 @@ Tracking issue: [#44](https://github.com/Dicklesworthstone/frankentui/issues/44)
 
 ---
 
-## Current Status (Phase 2 complete)
+## Current Status
 
 ### Accessibility tree infrastructure (`ftui-a11y` crate)
 
@@ -31,32 +31,38 @@ ARIA-like accessibility tree for TUI widgets:
   with granular change detection (name, role, state, bounds, children,
   live region changes, and focus transitions).
 - **`Accessible` trait** -- opt-in trait for widgets to provide
-  accessibility metadata. Widgets that do not implement it are invisible
-  to screen readers (treated as presentational/decorative).
+  accessibility metadata. Stateful widgets can also contribute nodes
+  directly during rendering, as `Dialog` does using its `DialogState`.
+  Widgets that contribute no nodes are absent from the accessibility tree.
 
 ### Runtime wiring (per-frame tree, diff, announcements)
 
-The tree is not a side project any more: `Frame` carries an optional
-`A11yTreeBuilder`, and every widget below pushes its nodes into it while
-rendering (`frame.push_a11y_nodes(Accessible::accessibility_nodes(..))`;
-`Block` wraps its children with `frame.with_a11y_scope`). Enable collection
+`Frame` carries an optional `A11yTreeBuilder`. Widgets contribute metadata
+while rendering through `frame.push_a11y_nodes`, `frame.push_a11y`, or
+`frame.with_a11y_scope` for a container and its descendants. Enable collection
 with `ProgramConfig::with_accessibility(ScreenReaderPolicy)`; the default
-config collects nothing and the render path is unchanged.
+config collects nothing.
 
 Per rendered frame the runtime then:
 
 1. builds the `A11yTree` (the first parentless node becomes the root
    unless the view set one; the first node whose state reports `focused`
-   becomes the tree focus unless set explicitly) and records the reading
-   order (push order);
+   becomes the tree focus unless a focused ID was set explicitly) and
+   records the reading order (push order);
 2. diffs it against the previous frame's tree;
 3. derives bounded screen-reader announcements (`ScreenReaderPolicy`
-   caps count and text length): focus changes, live-region additions and
-   live-content changes;
+   caps count and text length): focus changes, retained-focus control
+   state changes, live-region additions and live-content changes;
 4. exports `a11y_tree` and `a11y_announcement` metadata to the evidence sink,
    logs metadata on the `ftui.a11y` tracing target, and calls
    `Model::on_accessibility(AccessibilityFrame)` when the tree changed
    (one extra frame is scheduled so state changed there is rendered).
+
+Retained-focus feedback covers `disabled`, `readonly`, `required`, `checked`,
+`expanded`, and `selected`, plus slider/scrollbar values. It does not require
+making the control a live region. Standalone changes are polite; same-node
+focus/state/live updates coalesce before the batch cap. Ordinary text editing
+remains in the raw tree diff without repeatedly reading the whole input.
 
 Announcement text remains available to the local `Model::on_accessibility`
 callback and the accessors below. Ordinary tracing, including OpenTelemetry
@@ -69,11 +75,11 @@ receive that content. It does not enable text in ordinary tracing.
 
 `Program::accessibility_tree()`, `accessibility_order()`,
 `accessibility_announcements()` and `accessibility_dump()` expose the same
-data for tests and tooling. The demo showcase enables this and its
+data for tests and tooling. The native demo showcase enables this and its
 `accessibility_panel` screen mirrors the tree size, the leading lines of
 the dump and the latest announcements.
 
-Proofs: `headless_accessibility_builds_tree_and_exports_announcements`
+Existing runtime coverage includes `headless_accessibility_builds_tree_and_exports_announcements`
 (ftui-runtime), `finish_a11y_derives_focus_from_node_state` (ftui-render),
 `rendering_accessible_widgets_pushes_their_nodes_into_the_frame`
 (ftui-widgets), `a11y_tree_dump_dashboard_80x24` (showcase), and the
@@ -83,18 +89,78 @@ runs the showcase under a PTY and requires `FocusChanged` rows.
 What is **not** done:
 
 - No operating-system bridge (AT-SPI, UIA, NSAccessibility). Announcements
-  are evidence rows, tracing events and `Model::on_accessibility` calls
-  that a host or an app can forward; nothing reaches a screen reader on
-  its own.
-- Containers other than `Block` (Modal, Tabs content panes, pane
-  workspaces) do not scope their children yet, and `Form` does not
-  implement `Accessible`, so Tab moves inside a form are invisible to the
-  tree (the showcase's Forms screen only announces panel switches).
+  reach the local callback/accessors; telemetry carries metadata and an
+  explicitly opted-in evidence sink can carry text. Nothing reaches a
+  screen reader on its own.
+- Generic `Modal<C>` content, Tabs content panes, and pane workspaces do not
+  automatically gain a semantic container. Built-in `Dialog` presets do
+  contribute their own scoped nodes. `Form` still does not contribute its
+  fields, so Tab moves inside a form are invisible to the tree.
 - Focus is derived from `A11yState::focused` on the pushed nodes (first in
-  reading order) unless the view sets it on the builder; a focus manager
-  that owns the tree focus is future work.
+  reading order) unless the view sets a focused ID on the builder; integrating
+  application-wide focus ownership with the accessibility tree is future work.
 
-### Widgets implementing `Accessible`
+### Host-driven web runner (`StepProgram`)
+
+`ftui_web::step_program::StepProgram` now has its own opt-in collection path.
+It attaches the builder before `Model::view`, calls `Frame::finish_a11y`, and
+uses the same tree diff and bounded announcement generator as native `Program`.
+A changed tree invokes `Model::on_accessibility` after visual presentation,
+including changes that intentionally produce no speech. The callback receives
+the completed frame's tree, reading order, zero-based frame index, announcement
+batch, and cap-drop count. Its state mutations and returned commands schedule
+one subsequent host-driven render; an unchanged tree does not call it again.
+
+For an existing model, configure the runner before initialization:
+
+```rust,ignore
+let mut runner = ftui_web::step_program::StepProgram::new(model, 80, 24)
+    .with_accessibility(Default::default());
+runner.init()?;
+let initial_speech = runner.take_accessibility_announcements();
+// Deliver initial_speech once through the host's chosen accessibility bridge.
+```
+
+After each rendered `step`, the host can read `accessibility_tree()` and
+`accessibility_order()`, obtain a policy-bounded `accessibility_mirror()`, and
+consume `take_accessibility_announcements()`. The visual `take_outputs()` and
+speech drain are independent. Reading the mirror or draining speech does not
+consume the current tree. Accessibility content is not implicitly copied into
+`WebOutputs::logs`, geometry markers, or tracing.
+
+The speech drain holds **one rendered frame**, not an unbounded history queue.
+Drain after initialization and after every rendered step, before rendering
+another frame. A later render replaces an undrained batch; an idle step that
+does not render leaves it alone. `dropped_count` counts that frame's policy-cap
+drops, not missed host reads. A second drain returns no announcements and zero
+drops. The model callback and host drain expose the same transition: choose one
+for speech delivery rather than forwarding both. The mirror is for navigation,
+not a second live region that rereads the whole interface on every update.
+
+`set_accessibility_policy(Some(policy))` enables or changes collection while
+running. Changing limits preserves the tree baseline, avoiding fabricated focus
+arrivals; changing the policy clears the previous undrained batch. Passing the
+same policy is a no-op. Passing `None` immediately releases the runner's tree,
+order, and undrained speech; re-enabling starts from an empty baseline. Copies
+that application callbacks or hosts deliberately retained remain theirs.
+
+Coverage lives in `crates/ftui-web/tests/step_program_accessibility.rs` and
+`crates/ftui-showcase-wasm/tests/step_accessibility.rs`. The first exercises
+render/callback/drain behavior, caps, duplicate suppression, privacy, geometry,
+policy changes, and callback-triggered mutations and quit. The second constructs
+`StepProgram<AppModel>` with the actual showcase and widget rendering, including
+screen navigation and resize. These added tests require pinned-toolchain DSR
+execution; source review alone is not a passing Rust or browser test run.
+
+**This does not yet connect the shipped browser showcase to a screen reader.**
+The `RunnerCore` constructor still creates `StepProgram` without this opt-in,
+and the HTML semantic proxy remains static. Enabling collection in that host,
+exporting its bounded data across the WASM boundary, and updating a DOM or native
+accessibility bridge remain separate integration work. The core runner now
+provides the missing collection/callback/data path without claiming that final
+delivery is already implemented.
+
+### Widgets contributing accessibility metadata
 
 | Widget | Role | Key properties exposed |
 |---|---|---|
@@ -108,11 +174,65 @@ What is **not** done:
 | `Block` | Group | title text |
 | `Scrollbar` | ScrollBar | orientation (vertical/horizontal) |
 | `Spinner` | ProgressBar | label, busy state |
+| `Dialog` | Dialog + TextInput/Button children | title, message description, visible controls, input value, state-owned focus |
+
+### Built-in dialogs
+
+`Dialog::alert`, `confirm`, `prompt`, and custom dialogs contribute semantics
+from their real `StatefulWidget::render` path when accessibility is enabled.
+The dialog node covers the content, not its backdrop. Prompt inputs and buttons
+are its children in reading order, with bounds clipped to the same scissor used
+for hit testing. Closed, empty, or fully clipped dialogs contribute no nodes;
+clipped-out controls cannot become phantom accessibility focus targets.
+
+Use a distinct `.hit_id(HitId::new(...))` for each concurrently rendered dialog.
+The same ID keeps the dialog and its logical controls stable across moves,
+resizes, button-label changes, and input edits. Without a hit ID, the dialog uses
+a bounds-derived fallback, so moving or resizing it changes its identity.
+Button child IDs use the application button key, with an occurrence index to
+keep duplicate keys distinct. The `DIALOG_HIT_INPUT` and `DIALOG_HIT_BUTTON`
+tags are both available from `ftui_widgets::modal` for host mouse routing.
+
+Focus follows `DialogState`: prompt input takes precedence over a stale button
+index, and otherwise the selected button index supplies visual and semantic
+focus. Tab moves forward; both Shift+Tab representations (`Tab` with SHIFT and
+`BackTab`) move backward. Invalid retained button indices recover during keyboard
+navigation rather than overflowing index arithmetic.
+
+The dialog is not itself focused and is not a live region. Its decorative border
+does not add a duplicate named Group. Focus announcements therefore use the
+existing bounded diff channel, and typing changes the input value without
+reannouncing the whole field. Full labels, descriptions, and input values remain
+in the local tree even when visually truncated.
+
+**Application responsibilities remain explicit.** `DialogState::new()` starts
+prompt input focus; an alert/confirm/custom-dialog owner chooses the initial
+button using `focused_button` (and clears `input_focused` for non-prompts). The
+owner must stop routing input to background controls, clear their focus flags,
+and restore focus when the dialog closes. Rendering dialog metadata neither
+makes background content inert nor connects an operating-system accessibility
+bridge. A native-event bridge should not also replay equivalent synthetic speech.
+
+Added regression coverage:
+
+- `crates/ftui-widgets/tests/modal_dialog_accessibility.rs` exercises actual
+  rendering and events: presets, scopes, exact hit bounds, both reverse-Tab
+  encodings, clipping, stable IDs, duplicate button keys, input edits, explicit
+  focus ownership, and unchanged cells/hits/cursor with collection enabled.
+- `dialog_runtime::runtime_dialog_events_reach_accessibility_and_restore_caller_focus`
+  and `dialog_runtime::runtime_dialog_focus_feedback_does_not_duplicate_under_one_message_cap`
+  in `crates/ftui-harness/tests/a11y_interaction_feedback.rs` exercise the real
+  `Program` command/update/render/callback path. They open a prompt from a real
+  `TextInput`, edit it, navigate buttons, submit, and restore caller focus.
+
+These are executable regression specifications, not a claim of completed
+screen-reader interoperability testing. Run their Cargo targets through the
+repository's pinned-toolchain DSR verification path, along with the normal
+compiler, formatting, Clippy, and documentation gates.
 
 ### Focus management system
 
-FrankenTUI has a complete focus management subsystem
-(`ftui-widgets::focus`):
+FrankenTUI has a focus management subsystem (`ftui-widgets::focus`):
 
 - **`FocusGraph`** -- directed graph encoding focus navigation
   relationships (up/down/left/right/next/prev). O(1) navigation.
@@ -192,22 +312,24 @@ Most interactive widgets respond to standard terminal key conventions:
 1. **No platform accessibility bridge yet.** The `A11yTree` and
    `A11yTreeDiff` are generated but not yet consumed by a platform
    bridge (AccessKit, AT-SPI, etc.). Screen readers cannot yet read
-   the terminal TUI.
+   the terminal TUI through FrankenTUI's semantic tree on their own.
 
 2. **Web semantic proxy is static.** The `#a11y-proxy` div in the HTML
    showcase contains a static description. It needs to be dynamically
    updated by the WASM runtime on each render pass to reflect the
    current `A11yTree` snapshot.
 
-3. **Not all widgets implement `Accessible`.** Complex widgets like
-   `Modal`, `Toast`, `CommandPalette`, `FilePicker`, `Tree`, and
-   `TextArea` do not yet expose accessibility metadata.
+3. **Widget coverage and container scoping are incomplete.** Generic
+   `Modal<C>` content and `Form` fields still need render-path semantics.
+   Built-in `Dialog` presets and `TextArea` already contribute metadata.
 
-4. **Focus indicators are visual only.** Focus changes are not announced
-   to screen readers because the platform bridge is not yet connected.
+4. **Focus feedback is not yet delivered to a native screen reader.**
+   Tree focus changes produce bounded announcements in the local callback;
+   the platform bridge is still absent.
 
-5. **Live regions not wired.** The `LiveRegion` type exists but toasts
-   and notifications do not yet emit live-region announcements.
+5. **Notification live regions are not wired.** The tree announcement
+   machinery handles explicitly designated live regions, but toasts and
+   notifications do not yet contribute their own live-region metadata.
 
 6. **Color contrast not enforced.** The accessibility panel provides a
    high-contrast toggle, but widget styles do not automatically enforce
@@ -222,10 +344,8 @@ Most interactive widgets respond to standard terminal key conventions:
 - Integrate [AccessKit](https://github.com/AccessKit/accesskit) to
   translate `A11yTreeDiff` into platform accessibility events
   (Windows UIA, macOS Accessibility, Linux AT-SPI).
-- The runtime render loop would call `A11yTree::diff()` each frame and
-  push changes through the AccessKit adapter.
-- Estimated integration point: `ftui-runtime` render thread, after
-  `Frame` is finalized but before presentation.
+- The runtime already builds and diffs the tree after rendering; add
+  delivery to the platform adapter without replaying duplicate synthetic speech.
 
 ### Phase 4: Web semantic proxy (dynamic)
 
@@ -238,17 +358,16 @@ Most interactive widgets respond to standard terminal key conventions:
 
 ### Phase 5: Remaining widget coverage
 
-- Implement `Accessible` for: Modal (Dialog role), Toast (Alert role
-  with live region), CommandPalette (Combobox role), TextArea
-  (TextInput role, multiline), FilePicker (Tree role), Tree (Tree +
-  TreeItem roles).
+- Add render-path metadata for generic Modal content and Form fields, and
+  audit specialized widgets such as Toast, CommandPalette, FilePicker, and Tree
+  for names, state, focus and hierarchy coverage. Extend the role vocabulary
+  where needed. Built-in Dialog presets and multiline TextArea have metadata.
 
 ### Phase 6: Automated accessibility testing
 
-- Add tests that build an `A11yTree` from rendered widget output and
-  assert: every interactive widget has a non-empty accessible name,
-  focus changes produce correct `A11yTreeDiff` entries, WCAG contrast
-  ratios are met in high-contrast mode.
+- Extend rendered-widget and runtime coverage to every interactive widget,
+  checking names, focus ownership, diffs, duplicate suppression, and color
+  contrast in high-contrast mode.
 - Collaborate with @AutoSponge on WCAG/ATAG/WCAG2ICT validation.
 
 ---
@@ -261,9 +380,8 @@ Accessibility improvements are welcome. Key areas where help is needed:
   update API.
 - **Web proxy layer** -- JavaScript/WASM experience for dynamic DOM
   manipulation.
-- **Widget `Accessible` implementations** -- adding the trait to
-  remaining widgets is straightforward (see `input.rs` or `list.rs`
-  for examples).
+- **Widget metadata** -- add `Accessible` or stateful render-path metadata
+  to remaining widgets; see `input.rs`, `list.rs`, and `modal/dialog.rs`.
 - **Testing** -- screen reader testing on Windows (NVDA/JAWS), macOS
   (VoiceOver), and Linux (Orca).
 

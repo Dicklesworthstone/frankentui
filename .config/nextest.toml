@@ -59,6 +59,30 @@ fail-fast = false
 # the tightest budget here, but not a marginal one. Measured outside the repo,
 # because the test neither logs on success nor takes a budget override, so only
 # its failures are otherwise visible. Tracked as bd-eoi5v.
+#
+# The last three entries were added on 2026-09-19. Each already had a sibling
+# from the same file on this list, which is what made them worth adding rather
+# than watching: `large_buffer_10k_delete_char` sits beside the three
+# `editor_perf` cases below, and
+# `seed_demo_deadline_expires_mid_run_after_readiness` beside
+# `seed_demo_times_out_when_health_check_never_returns_result`. Partial
+# coverage of one file's budgets is how a list like this starts looking
+# unreliable.
+#
+# All three failed in a 26,009-test workspace run at a 1-min average of 35-64
+# and passed run alone at 27 - the signature above.
+#
+# `bloodstream_..._is_delta_only` is the one that looked like it might not
+# belong: it missed by 1066us against a 1000us budget, about 1.07x, thinner
+# than anything else here, and a budget with no headroom is not a budget
+# contention can be blamed for. So it was measured the same way
+# `perf_full_navigation_sequence_100_nodes` was: 30 of 30 pass run alone at a
+# 1-min average of 26-58, which spans the same load the workspace run missed
+# at. Comparable load, opposite outcome - the difference is the concurrent
+# nextest processes, not the host. It belongs here. Its uncontended floor in
+# microseconds is still unknown, because the test prints its latency only when
+# it fails; `editor_perf`'s `log_perf` is the pattern to copy if that becomes
+# worth knowing.
 [[profile.default.overrides]]
 filter = '''
     test(=e2e_focus_change_storm_performance)
@@ -93,6 +117,9 @@ filter = '''
     | test(=stress_many_insertions)
     | test(=stress_cursor_movements)
     | test(=focus::graph::tests::perf_insert_1000_nodes)
+    | test(=large_buffer_10k_delete_char)
+    | test(=seed_demo_deadline_expires_mid_run_after_readiness)
+    | test(=bloodstream_roundtrip::bloodstream_database_to_terminal_roundtrip_is_delta_only)
 '''
 threads-required = "num-test-threads"
 

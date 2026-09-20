@@ -11,7 +11,9 @@
 //! # How It Works
 //!
 //! 1. Call [`StdioCapture::install()`] to create a global capture channel.
-//! 2. Use the [`ftui_println!`] / [`ftui_eprintln!`] macros instead of `println!` / `eprintln!`.
+//! 2. Use the [`ftui_println!`](crate::ftui_println) /
+//!    [`ftui_eprintln!`](crate::ftui_eprintln) macros instead of `println!` /
+//!    `eprintln!`.
 //! 3. In the event loop, call [`StdioCapture::drain()`] to flush captured bytes
 //!    through the terminal writer's log path.
 //!
@@ -86,7 +88,8 @@ impl std::error::Error for StdioCaptureError {}
 
 /// Guard that owns the receiving end of the capture channel.
 ///
-/// While this guard exists, calls to [`ftui_println!`] and [`ftui_eprintln!`]
+/// While this guard exists, calls to [`ftui_println!`](crate::ftui_println)
+/// and [`ftui_eprintln!`](crate::ftui_eprintln)
 /// route their output through the capture channel instead of stdout/stderr.
 ///
 /// Call [`drain()`](Self::drain) periodically (e.g., each event-loop iteration)
@@ -133,7 +136,10 @@ impl StdioCapture {
 
     /// Check whether a capture is currently installed.
     pub fn is_installed() -> bool {
-        CAPTURE_TX.lock().map(|g| g.is_some()).unwrap_or(false)
+        CAPTURE_TX
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_some()
     }
 
     /// Drain all pending captured output into the given sink.
@@ -166,7 +172,15 @@ impl StdioCapture {
 impl Drop for StdioCapture {
     fn drop(&mut self) {
         // Remove the global sender so macros fall back to stdout/stderr.
-        if let Ok(mut guard) = CAPTURE_TX.lock() {
+        //
+        // Poison recovery rather than `if let Ok`: the guarded value is an
+        // `Option<Sender>`, so a panic cannot leave it half-updated, and
+        // skipping this leaves the sender installed with its receiver already
+        // destroyed - the exact state `try_capture` has to clean up after.
+        {
+            let mut guard = CAPTURE_TX
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             *guard = None;
         }
         // Drain any remaining messages to prevent channel leak.
@@ -176,21 +190,39 @@ impl Drop for StdioCapture {
 
 /// Try to send bytes through the capture channel.
 ///
-/// Returns `true` if the bytes were captured, `false` if no capture is installed
-/// (or the lock is poisoned). Callers should fall back to direct stdout/stderr
-/// when this returns `false`.
+/// Returns `true` only if the bytes actually reached a live receiver, and
+/// `false` when no capture is installed or the installed sender has no
+/// receiver left. Callers must fall back to direct stdout/stderr on `false`.
 ///
-/// This function is designed to be called from the [`ftui_println!`] and
-/// [`ftui_eprintln!`] macros.
+/// This function is designed to be called from the
+/// [`ftui_println!`](crate::ftui_println) and
+/// [`ftui_eprintln!`](crate::ftui_eprintln) macros.
 pub fn try_capture(bytes: &[u8]) -> bool {
-    let Ok(guard) = CAPTURE_TX.lock() else {
+    // Poison recovery: the guarded value is an `Option<Sender>` with no
+    // invariant a panic could break, and this is the output path. Degrading
+    // to "no capture" is a correct answer for one call; staying that way
+    // forever because some unrelated thread panicked is not.
+    let mut guard = CAPTURE_TX
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+
+    let Some(tx) = guard.as_ref() else {
         return false;
     };
-    if let Some(ref tx) = *guard {
-        // Best-effort: if the receiver is dropped, we silently discard.
-        let _ = tx.send(bytes.to_vec());
+    if tx.send(bytes.to_vec()).is_ok() {
         return true;
     }
+
+    // The send failed, which for an `mpsc::Sender` means one thing: the
+    // receiver is gone. That happens when a `StdioCapture` was dropped
+    // without this sender being cleared.
+    //
+    // Returning `true` here - as this used to - told the caller the bytes had
+    // been captured when they had in fact been thrown away, so `ftui_println!`
+    // skipped its stdout fallback and the line vanished with no trace.
+    // Report the truth, and drop the dead sender so `is_installed` stops
+    // claiming a capture is running and later writes take the fast path.
+    *guard = None;
     false
 }
 
@@ -246,7 +278,8 @@ macro_rules! ftui_println {
 
 /// Like `eprintln!` but routes output through ftui's stdio capture system.
 ///
-/// Behaves identically to [`ftui_println!`] when capture is installed.
+/// Behaves identically to [`ftui_println!`](crate::ftui_println) when capture
+/// is installed.
 /// Falls back to `eprintln!` (stderr) when capture is not installed.
 #[macro_export]
 macro_rules! ftui_eprintln {
@@ -272,11 +305,68 @@ mod tests {
     /// Helper: acquire the serialization lock and ensure no leftover capture.
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Clean up any leftover capture from a previous panicked test.
-        if let Ok(mut g) = CAPTURE_TX.lock() {
-            *g = None;
-        }
+        // Clean up any leftover capture from a previous panicked test. Poison
+        // recovery here too: under `cargo test` these share a process, so
+        // `a_poisoned_lock_does_not_disable_an_installed_capture` would otherwise
+        // leave every later test without its cleanup.
+        CAPTURE_TX.clear_poison();
+        *CAPTURE_TX.lock().unwrap_or_else(|e| e.into_inner()) = None;
         guard
+    }
+
+    #[test]
+    fn try_capture_reports_failure_when_the_receiver_is_gone() {
+        let _g = serial();
+
+        // A sender installed with no receiver behind it: the state a
+        // `StdioCapture` leaves if its `Drop` could not clear the global slot.
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        drop(rx);
+        *CAPTURE_TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+
+        assert!(
+            !try_capture(b"vanished\n"),
+            "bytes that reached no receiver were not captured, and saying \
+             otherwise makes ftui_println! skip its stdout fallback"
+        );
+        assert!(
+            !StdioCapture::is_installed(),
+            "the dead sender should have been cleared, not left to claim a \
+             capture is running"
+        );
+    }
+
+    #[test]
+    fn a_poisoned_lock_does_not_disable_an_installed_capture() {
+        let _g = serial();
+        let capture = StdioCapture::install().expect("install");
+
+        let _ = std::thread::spawn(|| {
+            let _held = CAPTURE_TX.lock().unwrap_or_else(|e| e.into_inner());
+            panic!("poison CAPTURE_TX on purpose");
+        })
+        .join();
+        assert!(
+            CAPTURE_TX.is_poisoned(),
+            "the panic should have poisoned it"
+        );
+
+        // The guarded value is an `Option<Sender>`, which a panic cannot leave
+        // half-written, so poison here says nothing about the capture's health.
+        // Treating it as fatal rerouted every later line to raw stdout - in
+        // inline mode, which is the corruption this module exists to prevent -
+        // and left the capture unusable for the rest of the process.
+        assert!(StdioCapture::is_installed());
+        assert!(try_capture(b"still captured\n"));
+        assert_eq!(capture.drain_to_string(), "still captured\n");
+
+        // And teardown still reaches the global slot.
+        drop(capture);
+        assert!(
+            !StdioCapture::is_installed(),
+            "Drop must clear the sender even when the lock is poisoned"
+        );
+        CAPTURE_TX.clear_poison();
     }
 
     #[test]

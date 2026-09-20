@@ -1140,6 +1140,13 @@ impl TtyEventSource {
         }
         if new.kitty_keyboard != current.kitty_keyboard {
             writer.write_all(if new.kitty_keyboard {
+                // This push owes a pop, so release the one-outstanding-push
+                // latch. It is not one pop per process: leaving it claimed
+                // from an earlier session's best-effort teardown suppressed
+                // the pop in `write_cleanup_sequence_policy_with_mouse` for
+                // every session after it, leaving the terminal in
+                // enhanced-key mode once the program was gone.
+                KittyPopLatch::release();
                 KITTY_KEYBOARD_ENABLE
             } else {
                 KITTY_KEYBOARD_DISABLE
@@ -2614,6 +2621,55 @@ mod tests {
         );
     }
 
+    /// A session that enables kitty keyboard pushes onto the stack, so it owes
+    /// a pop even if an earlier session's best-effort teardown already claimed
+    /// the latch. Enabling therefore releases it; without that, the first
+    /// claim in the process suppressed the pop for every session after it.
+    #[test]
+    fn enabling_kitty_keyboard_releases_the_pop_latch() {
+        let _serial = kitty_latch_test_lock();
+        use ftui_core::session_teardown::KittyPopLatch;
+
+        // Stand in for an earlier session whose best-effort teardown popped.
+        KittyPopLatch::release();
+        assert!(KittyPopLatch::try_claim());
+        assert!(KittyPopLatch::is_claimed());
+
+        let current = BackendFeatures::default();
+        let new = BackendFeatures {
+            kitty_keyboard: true,
+            ..BackendFeatures::default()
+        };
+        let mut buf = Vec::new();
+        TtyEventSource::write_feature_delta(
+            &current,
+            &new,
+            TerminalCapabilities::modern(),
+            &mut buf,
+        )
+        .unwrap();
+        assert!(
+            buf.windows(KITTY_KEYBOARD_ENABLE.len())
+                .any(|w| w == KITTY_KEYBOARD_ENABLE),
+            "the delta should have pushed"
+        );
+        assert!(
+            !KittyPopLatch::is_claimed(),
+            "a fresh push owes a fresh pop, so enabling must release the latch"
+        );
+
+        // And the teardown for that push is emittable again.
+        let mut cleanup = Vec::new();
+        write_cleanup_sequence(&new, false, &mut cleanup).unwrap();
+        assert!(
+            cleanup
+                .windows(KITTY_KEYBOARD_DISABLE.len())
+                .any(|w| w == KITTY_KEYBOARD_DISABLE),
+            "the second session's push must still be popped"
+        );
+        KittyPopLatch::release();
+    }
+
     #[test]
     fn mouse_enable_sequence_for_mux_capabilities_is_safe() {
         let mux_caps = TerminalCapabilities::builder()
@@ -2771,7 +2827,7 @@ mod tests {
             kitty_keyboard: true,
         };
         let mut buf = Vec::new();
-        ftui_core::session_teardown::KittyPopLatch::reset_for_tests();
+        ftui_core::session_teardown::KittyPopLatch::release();
         write_cleanup_sequence(&features, true, &mut buf).unwrap();
 
         // Verify expected cleanup disables are present.
@@ -2875,14 +2931,14 @@ mod tests {
             };
 
             let mut core_buf = Vec::new();
-            KittyPopLatch::reset_for_tests();
+            KittyPopLatch::release();
             best_effort_cleanup_to(&mut core_buf, &caps);
 
             // Each backend must be measured from the same starting state: the
             // latch is one-shot, so without this reset the core call above would
             // have claimed it and tty would correctly decline to pop again.
             let mut tty_buf = Vec::new();
-            KittyPopLatch::reset_for_tests();
+            KittyPopLatch::release();
             write_cleanup_sequence_with_sync_end(&features, true, &mut tty_buf).unwrap();
 
             assert_eq!(
@@ -3639,7 +3695,7 @@ mod tests {
                     kitty_keyboard: true,
                 };
                 let mut cleanup = Vec::new();
-                ftui_core::session_teardown::KittyPopLatch::reset_for_tests();
+                ftui_core::session_teardown::KittyPopLatch::release();
                 write_cleanup_sequence(&all_on, false, &mut cleanup).unwrap();
 
                 let output = write_to_slave_and_read_master(&mut master, &slave_dup, &cleanup);

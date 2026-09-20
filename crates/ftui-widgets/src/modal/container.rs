@@ -20,8 +20,27 @@ use ftui_render::frame::{Frame, HitData, HitId, HitRegion};
 use ftui_style::Style;
 
 /// Hit region tag for the modal backdrop.
+///
+/// # `Custom` discriminant allocation
+///
+/// `HitRegion::Custom(n)` is a single namespace *per `HitId`*, and a
+/// [`Dialog`](super::Dialog) renders inside a `Modal` under the **same** id -
+/// the container registers the backdrop and content first, then the dialog
+/// overlays its own regions on top. So these and `dialog`'s must not collide.
+/// Every value in use across this module:
+///
+/// | value | constant |
+/// |---|---|
+/// | 1 | [`MODAL_HIT_BACKDROP`] |
+/// | 2 | [`MODAL_HIT_CONTENT`] |
+/// | 3 | [`DIALOG_HIT_INPUT`](super::DIALOG_HIT_INPUT) |
+///
+/// `hit_regions_do_not_collide_across_the_modal_module` holds this table to
+/// its word.
 pub const MODAL_HIT_BACKDROP: HitRegion = HitRegion::Custom(1);
 /// Hit region tag for the modal content.
+///
+/// See the allocation table on [`MODAL_HIT_BACKDROP`].
 pub const MODAL_HIT_CONTENT: HitRegion = HitRegion::Custom(2);
 
 /// Modal action emitted by `ModalState::handle_event`.

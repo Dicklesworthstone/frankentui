@@ -92,18 +92,30 @@ pub mod seq {
 
 static KITTY_POP_LATCH: AtomicBool = AtomicBool::new(false);
 
-/// Process-wide latch for stack-based Kitty keyboard pop emission.
+/// Latch guarding stack-based Kitty keyboard pop emission.
 ///
-/// Because Kitty keyboard mode is stack-based, popping it more than once per
-/// process can pop an enclosing terminal or multiplexer's keyboard state.
-/// This latch ensures that best-effort teardown paths emit at most one pop.
+/// Kitty keyboard mode is a *stack*: `CSI > flags u` pushes, `CSI < u` pops,
+/// and popping more times than you pushed pops an enclosing terminal or
+/// multiplexer's entry. The latch exists so the best-effort teardown paths -
+/// the panic hook, the signal thread, [`best_effort_cleanup_for_exit`] - emit
+/// at most one pop for the push they are cleaning up after.
+///
+/// It tracks **one outstanding push, not one per process.** A session that
+/// enables kitty keyboard pushes again and therefore owes another pop, so it
+/// must call [`release`](Self::release) - see
+/// `TerminalSession::enable_kitty_keyboard`. Without that, the latch stayed
+/// claimed from the first cleanup onwards and every later session's push was
+/// never popped, leaving the terminal in enhanced-key mode after exit: the
+/// precise failure this module exists to prevent.
+///
+/// [`best_effort_cleanup_for_exit`]: crate::terminal_session::best_effort_cleanup_for_exit
 #[derive(Debug, Clone, Copy, Default)]
 pub struct KittyPopLatch;
 
 impl KittyPopLatch {
-    /// Attempt to claim the one-shot kitty keyboard pop emission.
+    /// Attempt to claim the pop for the outstanding push.
     ///
-    /// Returns `true` if this caller claimed it (first caller), `false` if already claimed.
+    /// Returns `true` if this caller claimed it, `false` if already claimed.
     #[inline]
     pub fn try_claim() -> bool {
         !KITTY_POP_LATCH.swap(true, Ordering::SeqCst)
@@ -115,11 +127,25 @@ impl KittyPopLatch {
         KITTY_POP_LATCH.load(Ordering::SeqCst)
     }
 
-    /// Reset the latch for testing purposes.
+    /// Release the latch, because a new push now owes a new pop.
+    ///
+    /// Called when a session enables kitty keyboard mode. Tests also use it to
+    /// start from a known state.
     #[inline]
-    pub fn reset_for_tests() {
+    pub fn release() {
         KITTY_POP_LATCH.store(false, Ordering::SeqCst);
     }
+}
+
+/// Serialize the tests that read [`KITTY_POP_LATCH`], across modules.
+///
+/// nextest gives each test its own process, but `cargo test` does not, and the
+/// latch is process-global - so without this these assertions are exact values
+/// read from shared state.
+#[cfg(test)]
+pub(crate) fn kitty_latch_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// Declarative plan describing terminal restore escape sequences.
@@ -311,15 +337,43 @@ mod tests {
 
     #[test]
     fn latch_claims_once() {
-        KittyPopLatch::reset_for_tests();
+        let _serial = kitty_latch_test_lock();
+        KittyPopLatch::release();
         assert!(!KittyPopLatch::is_claimed());
         assert!(KittyPopLatch::try_claim());
         assert!(KittyPopLatch::is_claimed());
         assert!(!KittyPopLatch::try_claim());
         assert!(!KittyPopLatch::try_claim());
-        KittyPopLatch::reset_for_tests();
+        KittyPopLatch::release();
         assert!(!KittyPopLatch::is_claimed());
         assert!(KittyPopLatch::try_claim());
+        KittyPopLatch::release();
+    }
+
+    #[test]
+    fn a_released_latch_lets_a_second_teardown_pop_again() {
+        let _serial = kitty_latch_test_lock();
+        let caps = TerminalCapabilities::modern();
+        let plan_for = || {
+            let mut plan = TeardownPlan::from_capabilities(&caps, true, true);
+            if !KittyPopLatch::try_claim() {
+                plan.pop_kitty_keyboard = false;
+            }
+            plan.pop_kitty_keyboard
+        };
+
+        // One session's push, one pop, and no second pop for the same push.
+        KittyPopLatch::release();
+        assert!(plan_for(), "the outstanding push must be popped");
+        assert!(!plan_for(), "and popped only once");
+
+        // A new session pushes again, so the pop it owes must be emitted. The
+        // release is explicit here because this test is about the latch's
+        // semantics; that production actually performs it on enable is what
+        // `enabling_kitty_keyboard_releases_the_pop_latch` covers.
+        KittyPopLatch::release();
+        assert!(plan_for(), "a fresh push owes a fresh pop");
+        KittyPopLatch::release();
     }
 
     #[test]

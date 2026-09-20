@@ -11,6 +11,21 @@
 //! 3. Call [`StepProgram::step`] to process one batch of events and render.
 //! 4. Read the rendered buffer via [`StepProgram::take_outputs`].
 //!
+//! # Accessibility
+//!
+//! Opt in with [`StepProgram::with_accessibility`]. Each rendered frame then
+//! collects the widgets' accessibility nodes, finalizes hierarchy and focus,
+//! and uses the same diff/announcement policy as the native runtime. A changed
+//! tree invokes [`Model::on_accessibility`] after presentation. Mutations and
+//! commands from that hook are rendered on a subsequent host step, never by
+//! recursively rendering inside the callback.
+//!
+//! Hosts can read the current tree or bounded text mirror and drain the latest
+//! frame's announcements. This local channel is separate from renderer logs:
+//! labels, descriptions and input values are never implicitly logged. A host
+//! must forward announcements to its accessibility bridge; this runner does
+//! not itself create DOM nodes or deliver operating-system accessibility events.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -34,13 +49,17 @@
 
 use core::time::Duration;
 
+use ftui_a11y::tree::{
+    A11yTree, A11yTreeBuilder, ScreenReaderAnnouncement, ScreenReaderAnnouncements,
+    ScreenReaderMirror, ScreenReaderPolicy,
+};
 use ftui_backend::{BackendClock, BackendEventSource, BackendPresenter};
 use ftui_core::event::Event;
 use ftui_render::buffer::{Buffer, DoubleBuffer};
 use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
-use ftui_runtime::program::{Cmd, Model};
+use ftui_runtime::program::{AccessibilityFrame, Cmd, Model};
 
 use crate::{WebBackend, WebBackendError, WebOutputs};
 
@@ -118,6 +137,12 @@ pub struct StepProgram<M: Model> {
     /// Pending geometry transition that must force a baseline reset + full repaint marker.
     pending_geometry_transition: Option<GeometryTransition>,
     clipboard_requests: Vec<ftui_runtime::program::ClipboardRequest>,
+    /// Opt-in, local accessibility channel. No builder is allocated when off.
+    accessibility: Option<ScreenReaderPolicy>,
+    a11y_tree: A11yTree,
+    a11y_order: Vec<u64>,
+    a11y_announcements: Vec<ScreenReaderAnnouncement>,
+    a11y_dropped: usize,
 }
 
 impl<M: Model> StepProgram<M> {
@@ -140,6 +165,11 @@ impl<M: Model> StepProgram<M> {
             dbl_buf: None,
             pending_geometry_transition: None,
             clipboard_requests: Vec::new(),
+            accessibility: None,
+            a11y_tree: A11yTree::empty(),
+            a11y_order: Vec::new(),
+            a11y_announcements: Vec::new(),
+            a11y_dropped: 0,
         }
     }
 
@@ -164,7 +194,98 @@ impl<M: Model> StepProgram<M> {
             dbl_buf: None,
             pending_geometry_transition: None,
             clipboard_requests: Vec::new(),
+            accessibility: None,
+            a11y_tree: A11yTree::empty(),
+            a11y_order: Vec::new(),
+            a11y_announcements: Vec::new(),
+            a11y_dropped: 0,
         }
+    }
+
+    /// Enable the local accessibility channel, normally before [`init`](Self::init).
+    ///
+    /// A host should choose either its model callback or the drain accessor
+    /// for speech delivery, not forward both copies of the same transition.
+    #[must_use]
+    pub fn with_accessibility(mut self, policy: ScreenReaderPolicy) -> Self {
+        self.set_accessibility_policy(Some(policy));
+        self
+    }
+
+    /// Enable, update, or disable accessibility collection at runtime.
+    ///
+    /// Disabling immediately releases the previous tree, reading order and
+    /// undrained announcements. Re-enabling builds a fresh baseline on the
+    /// next rendered step. Changing limits while enabled preserves the tree
+    /// baseline so it does not fabricate another focus arrival. Passing the
+    /// unchanged policy is a no-op, including for undrained announcements.
+    pub fn set_accessibility_policy(&mut self, policy: Option<ScreenReaderPolicy>) {
+        if self.accessibility == policy {
+            return;
+        }
+        self.accessibility = policy;
+        self.a11y_announcements.clear();
+        self.a11y_dropped = 0;
+        if policy.is_none() {
+            self.a11y_tree = A11yTree::empty();
+            self.a11y_order = Vec::new();
+            self.a11y_announcements = Vec::new();
+        }
+        self.dirty = true;
+    }
+
+    /// The active accessibility policy, or `None` when collection is disabled.
+    #[must_use]
+    pub fn accessibility_policy(&self) -> Option<ScreenReaderPolicy> {
+        self.accessibility
+    }
+
+    /// Latest finalized tree (empty until rendering), absent when disabled.
+    #[must_use]
+    pub fn accessibility_tree(&self) -> Option<&A11yTree> {
+        self.accessibility.map(|_| &self.a11y_tree)
+    }
+
+    /// Reading order from the latest render, independent of hash-map order.
+    #[must_use]
+    pub fn accessibility_order(&self) -> &[u64] {
+        &self.a11y_order
+    }
+
+    /// Announcements from the latest rendered frame, unless already drained.
+    ///
+    /// Rendering an unchanged tree clears this batch. An idle step that does
+    /// not render leaves it alone. Use the drain accessor for at-most-once
+    /// forwarding rather than replaying this slice on every animation tick.
+    #[must_use]
+    pub fn accessibility_announcements(&self) -> &[ScreenReaderAnnouncement] {
+        &self.a11y_announcements
+    }
+
+    /// Drain the latest frame's bounded batch without consuming visual output.
+    ///
+    /// Call after `init` and after each rendered `step`. This is a per-frame
+    /// channel, not an unbounded queue of old speech: a subsequent render
+    /// replaces any undrained batch. `dropped_count` reports the current
+    /// frame's policy-cap drops, not missed host reads. A second drain returns
+    /// an empty batch with zero drops. The model callback sees the batch before
+    /// the host can drain it; hosts must avoid forwarding both channels.
+    pub fn take_accessibility_announcements(&mut self) -> ScreenReaderAnnouncements {
+        ScreenReaderAnnouncements {
+            announcements: std::mem::take(&mut self.a11y_announcements),
+            dropped_count: std::mem::take(&mut self.a11y_dropped),
+        }
+    }
+
+    /// A bounded, deterministic mirror of the latest tree for a host bridge.
+    ///
+    /// Mirror text is not a live-region announcement. Hosts should expose it
+    /// for navigation without automatically speaking the entire tree on every
+    /// update. Native semantic bridges should not replay equivalent text too.
+    #[must_use]
+    pub fn accessibility_mirror(&self) -> Option<ScreenReaderMirror> {
+        self.accessibility
+            .map(|policy| self.a11y_tree.screen_reader_mirror(policy))
     }
 
     /// Initialize the model and render the first frame.
@@ -445,11 +566,21 @@ impl<M: Model> StepProgram<M> {
             self.dbl_buf.as_mut().unwrap().current_mut(),
             Buffer::new(1, 1),
         );
-        let mut frame = Frame::from_buffer(render_buf, &mut self.pool);
-        self.model.view(&mut frame);
+        let mut a11y_builder = self.accessibility.map(|_| A11yTreeBuilder::new());
+        let (rendered_buffer, a11y_order) = {
+            let mut frame = Frame::from_buffer(render_buf, &mut self.pool);
+            if let Some(builder) = a11y_builder.as_mut() {
+                frame.set_a11y(builder);
+            }
+            self.model.view(&mut frame);
+            frame.finish_a11y();
+            let order = frame.take_a11y_order();
+            (frame.buffer, order)
+        };
+        let a11y_tree = a11y_builder.map(A11yTreeBuilder::build);
 
         // Move rendered buffer back into the double buffer's current slot.
-        *self.dbl_buf.as_mut().unwrap().current_mut() = frame.buffer;
+        *self.dbl_buf.as_mut().unwrap().current_mut() = rendered_buffer;
 
         // Compute diff and present.
         let dbl = self.dbl_buf.as_ref().unwrap();
@@ -469,6 +600,7 @@ impl<M: Model> StepProgram<M> {
         }
 
         self.dirty = false;
+        let rendered_frame_idx = self.frame_idx;
         self.frame_idx += 1;
 
         // Periodic grapheme-pool GC. Destructure to satisfy the borrow
@@ -477,6 +609,30 @@ impl<M: Model> StepProgram<M> {
             let Self { dbl_buf, pool, .. } = self;
             let dbl = dbl_buf.as_ref().unwrap();
             pool.gc(&[dbl.current(), dbl.previous()]);
+        }
+
+        if let (Some(tree), Some(policy)) = (a11y_tree, self.accessibility) {
+            let diff = tree.diff(&self.a11y_tree);
+            let changed = !diff.is_empty();
+            let batch = diff.screen_reader_announcements(&tree, policy);
+            self.a11y_tree = tree;
+            self.a11y_order = a11y_order;
+            self.a11y_announcements = batch.announcements;
+            self.a11y_dropped = batch.dropped_count;
+            if changed {
+                // The hook may mutate model state even when it returns None.
+                // Match native Program's one-follow-up-frame contract. An
+                // identical subsequent tree does not invoke the hook again.
+                self.dirty = true;
+                let cmd = self.model.on_accessibility(AccessibilityFrame {
+                    frame_idx: rendered_frame_idx,
+                    tree: &self.a11y_tree,
+                    order: &self.a11y_order,
+                    announcements: &self.a11y_announcements,
+                    dropped: self.a11y_dropped,
+                });
+                self.execute_cmd(cmd);
+            }
         }
         Ok(())
     }

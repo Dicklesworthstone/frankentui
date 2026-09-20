@@ -61,10 +61,44 @@ pub use container::{
     ModalPosition, ModalSizeConstraints, ModalState,
 };
 pub use dialog::{
-    DIALOG_HIT_BUTTON, Dialog, DialogBuilder, DialogButton, DialogConfig, DialogKind, DialogResult,
-    DialogState,
+    DIALOG_HIT_BUTTON, DIALOG_HIT_INPUT, Dialog, DialogBuilder, DialogButton, DialogConfig,
+    DialogKind, DialogResult, DialogState,
 };
 pub use focus_integration::FocusAwareModalStack;
 pub use stack::{
     ModalFocusId, ModalId, ModalResult, ModalResultData, ModalStack, StackModal, WidgetModalEntry,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `HitRegion::Custom(n)` is one namespace per `HitId`, and a `Dialog`
+    /// renders inside a `Modal` under the same id - the container registers
+    /// the backdrop over the whole screen, then the dialog overlays its own
+    /// regions. Two constants sharing a discriminant are therefore not a
+    /// naming nuisance but the same region to `hit_test`, which is how
+    /// `DIALOG_HIT_INPUT` and `MODAL_HIT_BACKDROP` both being `Custom(1)`
+    /// turned every backdrop click into a click on the prompt's text field.
+    ///
+    /// These constants live in three files, so nothing but this test stops
+    /// the next one from reusing a number.
+    #[test]
+    fn hit_regions_do_not_collide_across_the_modal_module() {
+        let allocated = [
+            ("MODAL_HIT_BACKDROP", MODAL_HIT_BACKDROP),
+            ("MODAL_HIT_CONTENT", MODAL_HIT_CONTENT),
+            ("DIALOG_HIT_INPUT", DIALOG_HIT_INPUT),
+            ("DIALOG_HIT_BUTTON", DIALOG_HIT_BUTTON),
+        ];
+        for (i, (left_name, left)) in allocated.iter().enumerate() {
+            for (right_name, right) in &allocated[i + 1..] {
+                assert_ne!(
+                    left, right,
+                    "{left_name} and {right_name} are the same hit region, so \
+                     `hit_test` cannot tell them apart under one HitId"
+                );
+            }
+        }
+    }
+}
