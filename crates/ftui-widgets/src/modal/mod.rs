@@ -61,8 +61,8 @@ pub use container::{
     ModalPosition, ModalSizeConstraints, ModalState,
 };
 pub use dialog::{
-    DIALOG_HIT_BUTTON, Dialog, DialogBuilder, DialogButton, DialogConfig, DialogKind, DialogResult,
-    DialogState,
+    DIALOG_HIT_BUTTON, DIALOG_HIT_INPUT, Dialog, DialogBuilder, DialogButton, DialogConfig, DialogKind,
+    DialogResult, DialogState,
 };
 pub use focus_integration::FocusAwareModalStack;
 pub use stack::{

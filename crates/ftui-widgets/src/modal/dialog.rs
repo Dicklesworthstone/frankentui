@@ -15,11 +15,23 @@
 //! let dialog = Dialog::confirm("Delete file?", "This action cannot be undone.");
 //! let dialog = Dialog::prompt("Enter name", "Please enter your username:");
 //! ```
+//!
+//! With accessibility collection enabled, rendering contributes a named dialog
+//! and its visible input/buttons, with focus taken from [`DialogState`]. A hit
+//! ID also supplies stable accessibility identity across moves and resizes;
+//! without one, identity falls back to the dialog's rendered area. Control IDs
+//! do not depend on labels, input values, focus, or control bounds.
+//!
+//! Dialogs are not live regions: focus feedback uses the existing tree-diff
+//! channel, without a second announcement of the same interaction. The owning
+//! application still manages initial focus, background input routing, and focus
+//! restoration on close. This metadata does not implement a platform AT bridge.
 
 use crate::block::{Alignment, Block};
 use crate::borders::Borders;
 use crate::modal::{Modal, ModalConfig, ModalPosition, ModalSizeConstraints};
 use crate::{StatefulWidget, Widget, draw_text_span, set_style_area};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -280,6 +292,9 @@ impl Dialog {
     }
 
     /// Set the hit ID for mouse interaction.
+    ///
+    /// Also provides stable accessibility identity when the dialog moves or
+    /// resizes. Use distinct IDs for simultaneously rendered dialogs.
     #[must_use]
     pub fn hit_id(mut self, id: HitId) -> Self {
         self.hit_id = Some(id);
@@ -351,6 +366,15 @@ impl Dialog {
             }) => {
                 let shift = modifiers.contains(Modifiers::SHIFT);
                 self.cycle_focus(state, shift);
+            }
+
+            // Native terminal backends may encode Shift+Tab as BackTab.
+            Event::Key(KeyEvent {
+                code: KeyCode::BackTab,
+                kind: KeyEventKind::Press,
+                ..
+            }) => {
+                self.cycle_focus(state, true);
             }
 
             // Enter activates focused button
@@ -446,6 +470,9 @@ impl Dialog {
         let has_input = self.config.kind == DialogKind::Prompt;
         let button_count = self.buttons.len();
         state.pressed_button = None;
+        // Public state may have been retained while a custom dialog's button
+        // set changed. Recover before doing index arithmetic (including MAX).
+        state.focused_button = state.focused_button.filter(|&idx| idx < button_count);
 
         if has_input {
             // Cycle: input -> button 0 -> button 1 -> ... -> input
@@ -500,6 +527,7 @@ impl Dialog {
             return;
         }
         state.pressed_button = None;
+        state.focused_button = state.focused_button.filter(|&idx| idx < count);
         state.focused_button = if forward {
             Some(match state.focused_button {
                 Some(current) => (current + 1) % count,
@@ -614,18 +642,62 @@ impl Dialog {
         size
     }
 
-    /// Render the dialog content.
+    /// Render a semantic dialog around the actual content, not the backdrop.
     fn render_content(&self, area: Rect, frame: &mut Frame, state: &DialogState) {
         if area.is_empty() {
             return;
         }
+        let bounds = area.intersection(&frame.buffer.current_scissor());
+        if !frame.a11y_enabled() || bounds.is_empty() {
+            self.render_content_inner(area, frame, state, None);
+            return;
+        }
 
-        // Draw border
+        let id = self.hit_id.map_or_else(
+            || A11yNodeInfo::stable_id_for(A11yRole::Dialog, area),
+            |hit| u64::from(hit.id()),
+        );
+        let mut node = A11yNodeInfo::new(id, A11yRole::Dialog, bounds).with_name(
+            if self.title.trim().is_empty() {
+                "Dialog"
+            } else {
+                &self.title
+            },
+        );
+        if !self.message.trim().is_empty() {
+            node.description = Some(self.message.clone());
+        }
+        frame.with_a11y_scope(node, |frame| {
+            self.render_content_inner(area, frame, state, Some(id));
+        });
+    }
+
+    fn render_content_inner(
+        &self,
+        area: Rect,
+        frame: &mut Frame,
+        state: &DialogState,
+        a11y_parent: Option<u64>,
+    ) {
+        // The border title is already the dialog's accessible name. Render
+        // this decorative Block without a second Group/name in the tree.
+        // Restore the borrowed builder even if rendering unwinds.
         let block = Block::default()
             .borders(Borders::ALL)
             .title(&self.title)
             .title_alignment(Alignment::Center);
-        block.render(area, frame);
+        if frame.a11y_enabled() {
+            let builder = frame.a11y.take();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                block.render(area, frame);
+            }));
+            frame.a11y = builder;
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
+        } else {
+            block.render(area, frame);
+        }
 
         let inner = block.inner(area);
         if inner.is_empty() {
@@ -664,13 +736,13 @@ impl Dialog {
 
         // Input field (for Prompt)
         if self.config.kind == DialogKind::Prompt && y < inner.bottom() {
-            self.render_input(frame, inner.x, y, inner.width, state);
+            self.render_input(frame, inner.x, y, inner.width, state, a11y_parent);
             y += 2; // Input + spacing
         }
 
         // Buttons
         if y < inner.bottom() {
-            self.render_buttons(frame, inner.x, y, inner.width, state);
+            self.render_buttons(frame, inner.x, y, inner.width, state, a11y_parent);
         }
     }
 
@@ -689,9 +761,17 @@ impl Dialog {
         draw_text_span(frame, start_x, y, text, style, x.saturating_add(width));
     }
 
-    fn render_input(&self, frame: &mut Frame, x: u16, y: u16, width: u16, state: &DialogState) {
+    fn render_input(
+        &self,
+        frame: &mut Frame,
+        x: u16,
+        y: u16,
+        width: u16,
+        state: &DialogState,
+        a11y_parent: Option<u64>,
+    ) {
         // Draw input background
-        let input_area = Rect::new(x + 1, y, width.saturating_sub(2), 1);
+        let input_area = Rect::new(x.saturating_add(1), y, width.saturating_sub(2), 1);
         let input_style = self.config.input_style;
         set_style_area(&mut frame.buffer, input_area, input_style);
 
@@ -699,6 +779,26 @@ impl Dialog {
             && !input_area.is_empty()
         {
             frame.register_hit(input_area, hit_id, DIALOG_HIT_INPUT, 0);
+        }
+
+        if let Some(parent) = a11y_parent {
+            let bounds = input_area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let id = Self::a11y_child_id(parent, "input", "", 0);
+                let mut node = A11yNodeInfo::new(id, A11yRole::TextInput, bounds)
+                    .with_parent(parent)
+                    .with_name(if self.title.trim().is_empty() {
+                        "Input"
+                    } else {
+                        &self.title
+                    });
+                if !self.message.trim().is_empty() {
+                    node.description = Some(self.message.clone());
+                }
+                node.state.focused = state.input_focused;
+                node.state.value_text = Some(state.input_value.clone());
+                frame.push_a11y(node);
+            }
         }
 
         // Draw input value or placeholder
@@ -728,7 +828,15 @@ impl Dialog {
         }
     }
 
-    fn render_buttons(&self, frame: &mut Frame, x: u16, y: u16, width: u16, state: &DialogState) {
+    fn render_buttons(
+        &self,
+        frame: &mut Frame,
+        x: u16,
+        y: u16,
+        width: u16,
+        state: &DialogState,
+        a11y_parent: Option<u64>,
+    ) {
         if self.buttons.is_empty() {
             return;
         }
@@ -746,7 +854,10 @@ impl Dialog {
         let mut bx = start_x;
 
         for (i, button) in self.buttons.iter().enumerate() {
-            let is_focused = state.focused_button == Some(i);
+            // Input owns focus in a prompt even if public state contains a
+            // stale button index. Visual and semantic focus must agree.
+            let is_focused = !(self.config.kind == DialogKind::Prompt && state.input_focused)
+                && state.focused_button == Some(i);
 
             // Select style
             let mut style = if is_focused {
@@ -770,18 +881,52 @@ impl Dialog {
             let btn_width = display_width(btn_text.as_str());
             draw_text_span(frame, bx, y, &btn_text, style, x.saturating_add(width));
 
-            // Register hit region for button
-            if let Some(hit_id) = self.hit_id {
-                let max_btn_width = width.saturating_sub(bx.saturating_sub(x));
-                let btn_area_width = btn_width.min(max_btn_width as usize) as u16;
-                if btn_area_width > 0 {
-                    let btn_area = Rect::new(bx, y, btn_area_width, 1);
+            // Share the same bounds between hit testing and accessibility.
+            let max_btn_width = width.saturating_sub(bx.saturating_sub(x));
+            let btn_area_width = btn_width.min(max_btn_width as usize) as u16;
+            if btn_area_width > 0 {
+                let btn_area = Rect::new(bx, y, btn_area_width, 1);
+                if let Some(hit_id) = self.hit_id {
                     frame.register_hit(btn_area, hit_id, DIALOG_HIT_BUTTON, i as u64);
+                }
+                if let Some(parent) = a11y_parent {
+                    let bounds = btn_area.intersection(&frame.buffer.current_scissor());
+                    if !bounds.is_empty() {
+                        // IDs are semantic, not labels or layout coordinates.
+                        // Duplicate application IDs must not collapse siblings.
+                        let occurrence = self.buttons[..i]
+                            .iter()
+                            .filter(|previous| previous.id == button.id)
+                            .count();
+                        let id = Self::a11y_child_id(parent, "button", &button.id, occurrence);
+                        let mut node = A11yNodeInfo::new(id, A11yRole::Button, bounds)
+                            .with_parent(parent)
+                            .with_name(if button.label.trim().is_empty() {
+                                if button.id.trim().is_empty() {
+                                    "Button"
+                                } else {
+                                    &button.id
+                                }
+                            } else {
+                                &button.label
+                            });
+                        node.state.focused = is_focused;
+                        frame.push_a11y(node);
+                    }
                 }
             }
 
-            bx = bx.saturating_add(btn_width as u16 + 2); // Button + spacing
+            bx = bx
+                .saturating_add(u16::try_from(btn_width).unwrap_or(u16::MAX))
+                .saturating_add(2); // Button + spacing
         }
+    }
+
+    fn a11y_child_id(parent: u64, kind: &str, key: &str, occurrence: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.dialog", parent, kind, key, occurrence).hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -1439,6 +1584,7 @@ mod tests {
         assert!(state.result.is_none());
         assert!(state.input_value.is_empty());
         assert_eq!(state.focused_button, None);
+        assert_eq!(state.pressed_button, None);
         assert!(state.input_focused);
     }
 
