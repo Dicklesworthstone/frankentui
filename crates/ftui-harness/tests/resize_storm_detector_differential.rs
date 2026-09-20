@@ -45,7 +45,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ftui_harness::resize_storm::{StormConfig, StormPattern, ResizeStorm};
+use ftui_harness::resize_storm::{ResizeStorm, StormConfig, StormPattern};
 use ftui_runtime::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 
 /// Frame cadence the runtime ticks at; the coalescer's delays are in these units.
@@ -68,6 +68,41 @@ struct Outcome {
     bocpd_decisions: u64,
     heuristic_decisions: u64,
     trace: String,
+}
+
+/// Record an [`CoalesceAction::ApplyResize`] into the replay's trace and
+/// apply list; do nothing for [`CoalesceAction::None`].
+///
+/// Both counters this test reports are derived from `applies` alone -
+/// `frames_during_drag` filters it by timestamp, `final_apply_latency_ms`
+/// searches it backwards for the expected final size - so this is the single
+/// point where an action becomes evidence.
+///
+/// `forced_by_deadline` goes into the trace because it separates the two ways
+/// a resize lands: coalescing decided it was time, or the 100 ms hard deadline
+/// ran out. A detector that only ever settles by deadline is not coalescing,
+/// and the summary counters cannot show that.
+fn record_apply(
+    trace: &mut String,
+    applies: &mut Vec<(u64, u16, u16)>,
+    t_ms: u64,
+    action: &CoalesceAction,
+) {
+    let CoalesceAction::ApplyResize {
+        width,
+        height,
+        coalesce_time,
+        forced_by_deadline,
+    } = *action
+    else {
+        return;
+    };
+    applies.push((t_ms, width, height));
+    trace.push_str(&format!(
+        r#"{{"event":"apply_resize","t_ms":{t_ms},"width":{width},"height":{height},"coalesce_ms":{},"forced_by_deadline":{forced_by_deadline}}}"#,
+        coalesce_time.as_millis(),
+    ));
+    trace.push('\n');
 }
 
 /// Drive one detector over one storm on a virtual clock.
@@ -113,8 +148,11 @@ fn replay(pattern: &StormPattern, case: &str, detector: &str, config: CoalescerC
             event.width, event.height, event.index
         ));
         trace.push('\n');
-        let action =
-            coalescer.handle_resize_at(event.width, event.height, base + Duration::from_millis(now_ms));
+        let action = coalescer.handle_resize_at(
+            event.width,
+            event.height,
+            base + Duration::from_millis(now_ms),
+        );
         record_apply(&mut trace, &mut applies, now_ms, &action);
     }
 
@@ -128,7 +166,10 @@ fn replay(pattern: &StormPattern, case: &str, detector: &str, config: CoalescerC
         next_tick_ms += TICK_MS;
     }
 
-    let frames_during_drag = applies.iter().filter(|(t, _, _)| *t < last_event_ms).count();
+    let frames_during_drag = applies
+        .iter()
+        .filter(|(t, _, _)| *t < last_event_ms)
+        .count();
     let final_apply = applies
         .iter()
         .rev()
@@ -165,8 +206,10 @@ fn replay(pattern: &StormPattern, case: &str, detector: &str, config: CoalescerC
 }
 
 fn out_dir() -> PathBuf {
-    let dir = std::env::var("RESIZE_DIFFERENTIAL_DIR")
-        .map_or_else(|_| PathBuf::from("target/resize_differential"), PathBuf::from);
+    let dir = std::env::var("RESIZE_DIFFERENTIAL_DIR").map_or_else(
+        |_| PathBuf::from("target/resize_differential"),
+        PathBuf::from,
+    );
     fs::create_dir_all(&dir).expect("create the differential output directory");
     dir
 }
@@ -208,7 +251,9 @@ fn bocpd_is_not_worse_than_the_heuristic_on_resize_storms() {
             pattern,
             case,
             "heuristic",
-            CoalescerConfig::default().without_bocpd().with_logging(true),
+            CoalescerConfig::default()
+                .without_bocpd()
+                .with_logging(true),
         );
         let bocpd = replay(
             pattern,
@@ -286,7 +331,10 @@ fn bocpd_is_not_worse_than_the_heuristic_on_resize_storms() {
         );
     }
 
-    let summary = format!("{{\"seed\":{SEED},\"budget_ms\":{FINAL_APPLY_BUDGET_MS},\"cases\":[{}]}}\n", rows.join(","));
+    let summary = format!(
+        "{{\"seed\":{SEED},\"budget_ms\":{FINAL_APPLY_BUDGET_MS},\"cases\":[{}]}}\n",
+        rows.join(",")
+    );
     fs::write(dir.join("summary.json"), &summary).expect("write summary");
 
     assert!(
