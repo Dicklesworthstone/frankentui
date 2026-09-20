@@ -22,6 +22,7 @@
 use web_time::{Duration, Instant};
 
 use crate::{Widget, clear_text_area};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole, LiveRegion};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
@@ -1229,6 +1230,44 @@ impl Toast {
         paused
     }
 
+    fn accessibility_root_id(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.toast", self.id.0).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn accessibility_action_id(&self, parent: u64, index: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let action = &self.actions[index];
+        let occurrence = self.actions[..index]
+            .iter()
+            .filter(|previous| previous.id == action.id)
+            .count();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.toast.action", parent, &action.id, occurrence).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn accessibility_name(&self) -> &str {
+        self.content.title.as_deref().unwrap_or(match self.config.style_variant {
+            ToastStyle::Success => "Success notification",
+            ToastStyle::Error => "Error notification",
+            ToastStyle::Warning => "Warning notification",
+            ToastStyle::Info => "Information notification",
+            ToastStyle::Neutral => "Notification",
+        })
+    }
+
+    fn accessibility_urgency(&self) -> LiveRegion {
+        match self.config.style_variant {
+            ToastStyle::Error => LiveRegion::Assertive,
+            ToastStyle::Success | ToastStyle::Warning | ToastStyle::Info | ToastStyle::Neutral => {
+                LiveRegion::Polite
+            }
+        }
+    }
+
     /// Calculate the toast dimensions based on content.
     pub fn calculate_dimensions(&self) -> (u16, u16) {
         let max_width = self.config.max_width as usize;
@@ -1309,6 +1348,27 @@ impl Widget for Toast {
             clear_text_area(frame, render_area, Style::default());
             return;
         }
+
+        // A visible toast is a live region independent of visual degradation:
+        // reduced rendering must not make an error or notification disappear
+        // from assistive output. Stable ToastId-derived IDs keep animation and
+        // geometry changes from replaying the same notification.
+        let a11y_root = if frame.a11y_enabled() {
+            let bounds = render_area.intersection(&frame.buffer.current_scissor());
+            if bounds.is_empty() {
+                None
+            } else {
+                let id = self.accessibility_root_id();
+                let node = A11yNodeInfo::new(id, A11yRole::Group, bounds)
+                    .with_name(self.accessibility_name())
+                    .with_description(self.content.message.clone())
+                    .with_live_region(self.accessibility_urgency());
+                frame.push_a11y(node);
+                Some(id)
+            }
+        } else {
+            None
+        };
 
         let deg = frame.buffer.degradation;
         if !deg.render_content() {
@@ -1493,7 +1553,26 @@ impl Widget for Toast {
 
                 let max_x = content_x + content_width;
                 let label = format!("[{}]", action.label);
+                let button_x = btn_x;
                 btn_x = crate::draw_text_span(frame, btn_x, content_y, &label, btn_style, max_x);
+
+                if let Some(parent) = a11y_root {
+                    let button_width = display_width(&label)
+                        .min(max_x.saturating_sub(button_x) as usize) as u16;
+                    let bounds = Rect::new(button_x, content_y, button_width, 1)
+                        .intersection(&frame.buffer.current_scissor());
+                    if !bounds.is_empty() {
+                        let mut node = A11yNodeInfo::new(
+                            self.accessibility_action_id(parent, idx),
+                            A11yRole::Button,
+                            bounds,
+                        )
+                        .with_parent(parent)
+                        .with_name(&action.label);
+                        node.state.focused = is_focused;
+                        frame.push_a11y(node);
+                    }
+                }
 
                 // Space between buttons
                 if idx + 1 < self.actions.len() {
@@ -1519,6 +1598,9 @@ impl Widget for Toast {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_a11y::tree::{
+        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
+    };
     use ftui_render::budget::DegradationLevel;
     use ftui_render::grapheme_pool::GraphemePool;
 
@@ -1552,6 +1634,116 @@ mod tests {
 
     fn unwrap_remaining(remaining: Option<Duration>) -> Duration {
         remaining.expect("remaining duration should exist")
+    }
+
+    fn render_toast_a11y(toast: &Toast, area: Rect) -> A11yTree {
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            toast.render(area, &mut frame);
+            frame.finish_a11y();
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn toast_accessibility_announces_once_and_maps_error_urgency() {
+        for (style, urgency) in [
+            (ToastStyle::Info, LiveRegion::Polite),
+            (ToastStyle::Error, LiveRegion::Assertive),
+        ] {
+            let toast = Toast::with_id(ToastId::new(700), "Disk status")
+                .style_variant(style)
+                .title("Storage");
+            let tree = render_toast_a11y(&toast, Rect::new(2, 2, 30, 6));
+            let root = tree.root().expect("toast root");
+            assert_eq!(root.role, A11yRole::Group);
+            assert_eq!(root.name.as_deref(), Some("Storage"));
+            assert_eq!(root.description.as_deref(), Some("Disk status"));
+            assert_eq!(root.live_region, Some(urgency));
+            assert!(tree.focused().is_none());
+
+            let first = tree.screen_reader_announcements_since(
+                &A11yTree::empty(),
+                ScreenReaderPolicy::default(),
+            );
+            assert_eq!(first.announcements.len(), 1);
+            assert_eq!(first.announcements[0].reason, AnnouncementReason::LiveRegionAdded);
+            assert_eq!(first.announcements[0].urgency, urgency);
+            let repeat =
+                tree.screen_reader_announcements_since(&tree, ScreenReaderPolicy::default());
+            assert!(repeat.announcements.is_empty());
+        }
+    }
+
+    #[test]
+    fn toast_accessibility_identity_survives_geometry_and_content_changes_announce_once() {
+        let before_toast = Toast::with_id(ToastId::new(701), "Uploading").style_variant(ToastStyle::Info);
+        let after_toast = Toast::with_id(ToastId::new(701), "Upload complete").style_variant(ToastStyle::Info);
+        let before = render_toast_a11y(&before_toast, Rect::new(0, 0, 30, 5));
+        let after = render_toast_a11y(&after_toast, Rect::new(20, 10, 30, 5));
+        assert_eq!(before.root_id(), after.root_id());
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.dropped_count, 0);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::LiveContentChanged);
+        assert!(batch.announcements[0].text.contains("Upload complete"));
+    }
+
+    #[test]
+    fn separate_toast_ids_with_equal_text_are_distinct_notifications() {
+        let first = Toast::with_id(ToastId::new(702), "Saved");
+        let second = Toast::with_id(ToastId::new(703), "Saved");
+        let first_tree = render_toast_a11y(&first, Rect::new(0, 0, 20, 5));
+        let second_tree = render_toast_a11y(&second, Rect::new(0, 0, 20, 5));
+        assert_ne!(first_tree.root_id(), second_tree.root_id());
+        let batch = second_tree
+            .screen_reader_announcements_since(&first_tree, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::LiveRegionAdded);
+    }
+
+    #[test]
+    fn toast_action_focus_is_a_child_and_does_not_reannounce_the_live_region() {
+        let mut toast = Toast::with_id(ToastId::new(704), "Connection failed")
+            .style_variant(ToastStyle::Error)
+            .action(ToastAction::new("Retry", "retry"))
+            .action(ToastAction::new("Dismiss", "dismiss"));
+        let before = render_toast_a11y(&toast, Rect::new(0, 0, 40, 6));
+        assert_eq!(before.root().unwrap().children.len(), 2);
+        assert_eq!(toast.handle_key(KeyEvent::Tab), ToastEvent::FocusChanged);
+        let after = render_toast_a11y(&toast, Rect::new(0, 0, 40, 6));
+        let focused = after.focused().expect("focused action");
+        assert_eq!(focused.role, A11yRole::Button);
+        assert_eq!(focused.name.as_deref(), Some("Retry"));
+        assert_eq!(focused.parent, after.root_id());
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(batch.announcements[0].node_id, Some(focused.id));
+    }
+
+    #[test]
+    fn hidden_or_fully_clipped_toast_contributes_no_accessibility_nodes() {
+        let mut hidden = Toast::with_id(ToastId::new(705), "Private");
+        hidden.dismiss_immediately();
+        assert!(render_toast_a11y(&hidden, Rect::new(0, 0, 20, 5)).is_empty());
+
+        let toast = Toast::with_id(ToastId::new(706), "Clipped");
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(20, 5, &mut pool);
+            frame.set_a11y(&mut builder);
+            frame.buffer.push_scissor(Rect::new(19, 4, 1, 1));
+            toast.render(Rect::new(0, 0, 10, 3), &mut frame);
+            frame.finish_a11y();
+        }
+        assert!(builder.build().is_empty());
     }
 
     #[test]

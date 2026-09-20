@@ -247,6 +247,7 @@ manual assistive-technology testing and a full semantic control bridge remain.
 | `Spinner` | ProgressBar | label, busy state |
 | `Dialog` | Dialog + TextInput/Button children | title, message description, visible controls, input value, state-owned focus |
 | `ftui-extras::Form` | Group + field controls | labels, values/options, required/disabled/checked state, validation descriptions, internal focus |
+| `Toast` / `NotificationStack` | live Group + Button children | title/message, severity urgency, stable notification identity, action focus |
 
 ### Built-in dialogs
 
@@ -398,11 +399,7 @@ Most interactive widgets respond to standard terminal key conventions:
    Tree focus changes produce bounded announcements in the local callback;
    the platform bridge is still absent.
 
-5. **Notification live regions are not wired.** The tree announcement
-   machinery handles explicitly designated live regions, but toasts and
-   notifications do not yet contribute their own live-region metadata.
-
-6. **Color contrast not enforced.** The accessibility panel provides a
+5. **Color contrast not enforced.** The accessibility panel provides a
    high-contrast toggle, but widget styles do not automatically enforce
    WCAG AA/AAA contrast ratios.
 
@@ -430,7 +427,7 @@ Most interactive widgets respond to standard terminal key conventions:
 ### Phase 5: Remaining widget coverage
 
 - Add render-path metadata for generic Modal content and continue auditing
-  specialized widgets such as Toast, CommandPalette, FilePicker, and Tree
+  specialized widgets such as CommandPalette, FilePicker, and Tree
   for names, state, focus and hierarchy coverage. Extend the role vocabulary
   where needed. Built-in Dialog presets and multiline TextArea have metadata.
 
