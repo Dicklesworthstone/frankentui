@@ -30,6 +30,10 @@ pub(crate) enum GpuDisableReason {
 #[derive(Debug)]
 #[allow(dead_code)]
 enum GpuInitError {
+    /// No wgpu backend is compiled in for this target, so there is nothing to
+    /// ask for an adapter. Distinct from [`Self::AdapterNotFound`], which
+    /// means a backend looked and found no device.
+    NoBackendCompiledIn,
     AdapterNotFound(wgpu::RequestAdapterError),
     RequestDevice(wgpu::RequestDeviceError),
 }
@@ -253,6 +257,15 @@ impl std::fmt::Debug for GpuContext {
 
 impl GpuContext {
     fn new() -> Result<Self, GpuInitError> {
+        // `wgpu::Instance::default()` panics - it does not return an error -
+        // when the build has no backend feature implemented for this target.
+        // This module documents a silent CPU fallback, and a panic is not one,
+        // so check before constructing rather than after. `fx-gpu` names a
+        // backend for every platform it supports, so reaching this is a
+        // packaging mistake; degrade instead of taking the process down.
+        if wgpu::Instance::enabled_backend_features().is_empty() {
+            return Err(GpuInitError::NoBackendCompiledIn);
+        }
         let instance = wgpu::Instance::default();
         let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .map_err(GpuInitError::AdapterNotFound)?;
@@ -564,6 +577,23 @@ mod tests {
 
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         super::gpu_test_lock()
+    }
+
+    /// `fx-gpu` lists wgpu's backends explicitly in `Cargo.toml`, so omitting
+    /// the one a platform implements is a silent packaging mistake - and the
+    /// symptom is not a missing feature but a panic, because
+    /// `wgpu::Instance::default()` aborts rather than erroring when no backend
+    /// is compiled in. `metal` was missing, which is every Apple target: ten
+    /// metaballs tests panicked inside wgpu on the platform this project is
+    /// developed on.
+    #[test]
+    fn a_wgpu_backend_is_compiled_in_for_this_target() {
+        assert!(
+            !wgpu::Instance::enabled_backend_features().is_empty(),
+            "fx-gpu is built with no wgpu backend implemented for {}; add it \
+             to the wgpu feature list in crates/ftui-extras/Cargo.toml",
+            std::env::consts::OS,
+        );
     }
 
     // --- packed_to_vec4 tests ---
