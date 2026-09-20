@@ -408,8 +408,12 @@ Required fields:
   whose inter-arrival lies outside the BOCPD observation range are
   `heuristic`; everything else is `bocpd`. `without_bocpd()` yields
   `heuristic` only.
-- `p_burst` (float or `null`): BOCPD posterior at decision time (`null` when
-  BOCPD is off)
+- `p_burst` (float or `null`): BOCPD posterior at decision time. `null` only
+  when BOCPD is off or the posterior is not finite — **not** when the
+  heuristic made the decision. A `heuristic` row still reports what the
+  posterior thought, which is what lets a reader ask whether BOCPD should have
+  taken that one. The emitter is
+  `self.bocpd_p_burst().filter(|p| p.is_finite())`.
 
 #### Event: `regime_transition` (resize coalescer)
 
@@ -419,7 +423,8 @@ Required fields:
 - `from_regime`, `to_regime` (`steady` | `burst`)
 - `reason_code` (`heuristic_enter_burst_rate` | `heuristic_exit_burst_cooldown` | `heuristic_exit_burst_rate` | `bocpd_posterior_burst` | `bocpd_posterior_steady` | `bocpd_idle_exit`); `bocpd_idle_exit` is the tick-side Burst exit in BOCPD mode, taken once no event has arrived for `mu_steady_ms` (the posterior itself only moves on events)
 - `confidence` (0..1), `event_rate`
-- `p_burst` (float or `null`)
+- `p_burst` (float or `null`): same rule as on `decision` above — present
+  whenever the posterior is finite, whichever detector decided
 - `detector` (`bocpd` | `heuristic`)
 - `cooldown_remaining`
 
