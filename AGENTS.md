@@ -204,8 +204,19 @@ Expect a handful of wall-clock budget failures under host load; see
 |---|---|
 | `make reachability` | a `pub mod` is reachable from nothing in production; an allowlist entry cites a closed or unknown bead |
 | `make claims` | the ledger is malformed; a proof cites a test or path that does not exist; a README section marked `Status: experimental` has no `Where it runs` line, or a quarantined module gains a production consumer |
-| `make env-docs` | the code reads an environment variable that nothing documents |
+| `make env-docs` | `ftui-harness` or `ftui-demo-showcase` reads an environment variable the README does not attribute to it, the README attributes one neither reads, or an allowlist entry names a variable no longer read. **Scoped to those two binaries only** — see below |
 | `make close-audit` | a bead was closed after 2026-09-19T21:10Z without a reason of 80+ characters carrying a `kind:value` reference |
+
+**`env-docs` sees two crates, not the workspace.** `check_env_docs.py` hardcodes
+`BINARIES = ("ftui-harness", "ftui-demo-showcase")` and walks only those two
+`src/` trees — its docstring says so ("deliberately scoped to harness
+main/showcase CLI"), but the row above used to promise the whole codebase.
+Measured on 2026-09-20: **91 distinct environment variables are read elsewhere
+in `crates/`** and this gate does not see any of them, including user-facing
+ones like `FTUI_CAPS_PROBE`, `FTUI_DEBUG_OVERLAY` and
+`FTUI_CTRL_C_IDLE_ACTION`. Adding a variable to a library crate cannot fail
+`make gates`; document it because it should be documented, not because
+something will catch you.
 
 **Closing a bead needs evidence.** `.beads/policy.yaml` makes `br close` reject
 a reason under 80 characters, or one with no typed reference — a `kind:value`
