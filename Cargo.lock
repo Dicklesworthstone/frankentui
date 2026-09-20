@@ -1484,9 +1484,9 @@ name = "ftui-extras"
 version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
- "ftui-a11y",
  "bytemuck",
  "criterion",
+ "ftui-a11y",
  "ftui-core",
  "ftui-layout",
  "ftui-pty",
