@@ -515,12 +515,7 @@ impl<C: Widget> Widget for Modal<C> {
                     )
                 });
                 let node = A11yNodeInfo::new(id, A11yRole::Dialog, bounds)
-                    .with_name(
-                        self.config
-                            .accessibility_name
-                            .as_deref()
-                            .unwrap_or("Modal"),
-                    );
+                    .with_name(self.config.accessibility_name.as_deref().unwrap_or("Modal"));
                 frame.with_a11y_scope(node, |frame| self.content.render(content_area, frame));
             } else {
                 self.content.render(content_area, frame);
@@ -549,8 +544,7 @@ mod tests {
 
     impl Widget for AccessibleStub {
         fn render(&self, area: Rect, frame: &mut Frame) {
-            let mut node = A11yNodeInfo::new(9001, A11yRole::Button, area)
-                .with_name("Continue");
+            let mut node = A11yNodeInfo::new(9001, A11yRole::Button, area).with_name("Continue");
             node.state.focused = true;
             frame.push_a11y(node);
         }
@@ -589,10 +583,8 @@ mod tests {
         assert_eq!(tree.node(9001).unwrap().parent, Some(8001));
         assert_eq!(tree.focused_id(), Some(9001));
 
-        let first = tree.screen_reader_announcements_since(
-            &A11yTree::empty(),
-            ScreenReaderPolicy::default(),
-        );
+        let first = tree
+            .screen_reader_announcements_since(&A11yTree::empty(), ScreenReaderPolicy::default());
         assert_eq!(first.announcements.len(), 1);
     }
 
@@ -613,8 +605,7 @@ mod tests {
         assert_eq!(before.root_id(), Some(77));
         assert_eq!(before.root_id(), after.root_id());
         assert_eq!(before.focused_id(), after.focused_id());
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert!(batch.announcements.is_empty());
     }
 

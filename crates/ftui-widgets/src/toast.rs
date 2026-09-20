@@ -1250,13 +1250,16 @@ impl Toast {
     }
 
     fn accessibility_name(&self) -> &str {
-        self.content.title.as_deref().unwrap_or(match self.config.style_variant {
-            ToastStyle::Success => "Success notification",
-            ToastStyle::Error => "Error notification",
-            ToastStyle::Warning => "Warning notification",
-            ToastStyle::Info => "Information notification",
-            ToastStyle::Neutral => "Notification",
-        })
+        self.content
+            .title
+            .as_deref()
+            .unwrap_or(match self.config.style_variant {
+                ToastStyle::Success => "Success notification",
+                ToastStyle::Error => "Error notification",
+                ToastStyle::Warning => "Warning notification",
+                ToastStyle::Info => "Information notification",
+                ToastStyle::Neutral => "Notification",
+            })
     }
 
     fn accessibility_urgency(&self) -> LiveRegion {
@@ -1557,8 +1560,8 @@ impl Widget for Toast {
                 btn_x = crate::draw_text_span(frame, btn_x, content_y, &label, btn_style, max_x);
 
                 if let Some(parent) = a11y_root {
-                    let button_width = display_width(&label)
-                        .min(max_x.saturating_sub(button_x) as usize) as u16;
+                    let button_width =
+                        display_width(&label).min(max_x.saturating_sub(button_x) as usize) as u16;
                     let bounds = Rect::new(button_x, content_y, button_width, 1)
                         .intersection(&frame.buffer.current_scissor());
                     if !bounds.is_empty() {
@@ -1598,9 +1601,7 @@ impl Widget for Toast {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_a11y::tree::{
-        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
-    };
+    use ftui_a11y::tree::{A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy};
     use ftui_render::budget::DegradationLevel;
     use ftui_render::grapheme_pool::GraphemePool;
 
@@ -1670,7 +1671,10 @@ mod tests {
                 ScreenReaderPolicy::default(),
             );
             assert_eq!(first.announcements.len(), 1);
-            assert_eq!(first.announcements[0].reason, AnnouncementReason::LiveRegionAdded);
+            assert_eq!(
+                first.announcements[0].reason,
+                AnnouncementReason::LiveRegionAdded
+            );
             assert_eq!(first.announcements[0].urgency, urgency);
             let repeat =
                 tree.screen_reader_announcements_since(&tree, ScreenReaderPolicy::default());
@@ -1680,16 +1684,20 @@ mod tests {
 
     #[test]
     fn toast_accessibility_identity_survives_geometry_and_content_changes_announce_once() {
-        let before_toast = Toast::with_id(ToastId::new(701), "Uploading").style_variant(ToastStyle::Info);
-        let after_toast = Toast::with_id(ToastId::new(701), "Upload complete").style_variant(ToastStyle::Info);
+        let before_toast =
+            Toast::with_id(ToastId::new(701), "Uploading").style_variant(ToastStyle::Info);
+        let after_toast =
+            Toast::with_id(ToastId::new(701), "Upload complete").style_variant(ToastStyle::Info);
         let before = render_toast_a11y(&before_toast, Rect::new(0, 0, 30, 5));
         let after = render_toast_a11y(&after_toast, Rect::new(20, 10, 30, 5));
         assert_eq!(before.root_id(), after.root_id());
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
         assert_eq!(batch.dropped_count, 0);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::LiveContentChanged);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::LiveContentChanged
+        );
         assert!(batch.announcements[0].text.contains("Upload complete"));
     }
 
@@ -1703,7 +1711,10 @@ mod tests {
         let batch = second_tree
             .screen_reader_announcements_since(&first_tree, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::LiveRegionAdded);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::LiveRegionAdded
+        );
     }
 
     #[test]
@@ -1720,10 +1731,12 @@ mod tests {
         assert_eq!(focused.role, A11yRole::Button);
         assert_eq!(focused.name.as_deref(), Some("Retry"));
         assert_eq!(focused.parent, after.root_id());
-        let batch =
-            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        let batch = after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
         assert_eq!(batch.announcements.len(), 1);
-        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert_eq!(
+            batch.announcements[0].reason,
+            AnnouncementReason::FocusChanged
+        );
         assert_eq!(batch.announcements[0].node_id, Some(focused.id));
     }
 
