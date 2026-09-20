@@ -20,9 +20,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-BASELINE_FILE="${PROJECT_ROOT}/tests/baseline.json"
-SLO_FILE="${PROJECT_ROOT}/slo.yaml"
-RESULTS_DIR="${PROJECT_ROOT}/target/regression-gate"
+# Overridable so the gate's own decisions can be tested on fixture inputs
+# (bd-g00-root-epic-ewths.31.5 item 2). With the paths fixed, the only baseline
+# and SLO file a test could exercise are the real ones, which makes the
+# pass/fail/incomplete logic — the thing standing between a regression and a
+# green run — impossible to check without editing production data. Defaults are
+# unchanged, so an ordinary invocation behaves exactly as before.
+BASELINE_FILE="${PERF_GATE_BASELINE_FILE:-${PROJECT_ROOT}/tests/baseline.json}"
+SLO_FILE="${PERF_GATE_SLO_FILE:-${PROJECT_ROOT}/slo.yaml}"
+RESULTS_DIR="${PERF_GATE_RESULTS_DIR:-${PROJECT_ROOT}/target/regression-gate}"
 REPORT_FILE="${RESULTS_DIR}/regression_report.jsonl"
 RUN_ID="$(date +%Y%m%dT%H%M%S)-$$"
 
