@@ -54,13 +54,20 @@ def baseline_rows(baseline):
 
 
 def declared(crates_dir):
-    """Map declared group -> bench file, and (bench file, function) -> True."""
+    """Map declared group -> {bench files}, and (bench file, function) -> True.
+
+    A group maps to a *set* of files because six group names here are declared
+    in two bench files each (`buffer/new` in both `buffer_bench` and
+    `diff_bench`, and five more). Keeping only the first file visited would
+    make resolution depend on `glob` order and reject a row whose function
+    lives in the other file.
+    """
     groups, functions = {}, set()
     for source in sorted(crates_dir.glob("*/benches/*.rs")):
         text = source.read_text(encoding="utf-8", errors="replace")
         stem = source.stem
         for name in GROUP.findall(text):
-            groups.setdefault(name, stem)
+            groups.setdefault(name, set()).add(stem)
         for pattern in (BENCH_ID, BENCH_FN):
             for name in pattern.findall(text):
                 functions.add((stem, name))
@@ -68,18 +75,26 @@ def declared(crates_dir):
 
 
 def resolve(criterion_name, groups, functions):
-    """Return None when the id resolves, else why it does not."""
+    """Return None when the id resolves, else why it does not.
+
+    Every declared group that prefixes the id is tried, not only the longest.
+    The split between group and function is ambiguous - group names contain
+    slashes - so a single guess can pick a parse that fails while another
+    would have resolved. This gate is fail-closed, and a false
+    `no_such_bench_function` blocks a build over a correct baseline row.
+    """
     candidates = [g for g in groups
                   if criterion_name == g or criterion_name.startswith(g + "/")]
     if not candidates:
         return "no_such_group"
-    group = max(candidates, key=len)
-    remainder = criterion_name[len(group):].lstrip("/")
-    if not remainder:
-        return None
-    function = remainder.split("/")[0]
-    if (groups[group], function) in functions:
-        return None
+    # Longest first: only so the reported parse is the most specific one.
+    for group in sorted(candidates, key=len, reverse=True):
+        remainder = criterion_name[len(group):].lstrip("/")
+        if not remainder:
+            return None
+        function = remainder.split("/")[0]
+        if any((stem, function) in functions for stem in groups[group]):
+            return None
     return "no_such_bench_function"
 
 
@@ -131,7 +146,7 @@ def check(root):
 
 
 def self_test():
-    groups = {"diff/sparse_5pct": "diff_bench", "diff/sparse_5pct_rows": "diff_bench"}
+    groups = {"diff/sparse_5pct": {"diff_bench"}, "diff/sparse_5pct_rows": {"diff_bench"}}
     functions = {("diff_bench", "compute"), ("diff_bench", "compute_dirty")}
 
     # Resolves: longest group wins, then a declared function.
@@ -148,7 +163,23 @@ def self_test():
         == "diff/sparse_5pct_rows"
     # A bare group with no function segment is a complete id.
     assert resolve("diff/sparse_5pct", groups, functions) is None
-    print(json.dumps(dict(kind="self-test", status="passed", checks=6)))
+
+    # One group name, two bench files. `buffer/new` really is declared in both
+    # `buffer_bench` and `diff_bench` here, and the function may live in
+    # either, so resolution must not depend on which file was read first.
+    shared = {"buffer/new": {"buffer_bench", "diff_bench"}}
+    shared_fns = {("diff_bench", "from_diff")}
+    assert resolve("buffer/new/from_diff/80x24", shared, shared_fns) is None
+    assert resolve("buffer/new/absent/80x24", shared, shared_fns) \
+        == "no_such_bench_function"
+
+    # Ambiguous split: the longest prefix is a dead end, a shorter one is not.
+    # Trying only the longest would reject an id that resolves.
+    nested = {"a/b": {"x"}, "a": {"x"}}
+    nested_fns = {("x", "b")}
+    assert resolve("a/b/c", nested, nested_fns) is None
+
+    print(json.dumps(dict(kind="self-test", status="passed", checks=10)))
 
 
 def main():
