@@ -4279,3 +4279,101 @@ fn every_screen_renders_at_degenerate_sizes() {
         failures.join("\n  ")
     );
 }
+
+/// Every screen must survive *input* at those sizes, not just a render.
+///
+/// `every_screen_renders_at_degenerate_sizes` proves the initial layout holds.
+/// It says nothing about what happens once a screen has to map a keystroke or
+/// a click onto a viewport with one visible row - scroll offsets, selection
+/// clamping and hit-testing all derive from the geometry, and all of them
+/// index.
+///
+/// A fresh model per screen and size, so a screen is exercised on its own
+/// state rather than on whatever the previous event left behind. Quit and
+/// screen-switching keys are left out deliberately: they would navigate away
+/// and turn the rest of the battery into a test of some other screen.
+#[test]
+fn every_screen_survives_input_at_degenerate_sizes() {
+    // Three sizes and eleven events, not four and seventeen: the full cross
+    // product took 19s, which is inside nextest's 60s slow threshold on an
+    // idle machine and outside it on the loaded one this repo is developed
+    // on. Trimmed to the inputs whose handling derives from the geometry -
+    // scroll offsets, selection clamping, hit-testing - and dropped the ones
+    // that only move a cursor within a line.
+    const SIZES: &[(u16, u16)] = &[(80, 24), (10, 3), (1, 1)];
+
+    let battery: Vec<Event> = vec![
+        press(KeyCode::Down),
+        press(KeyCode::Up),
+        press(KeyCode::PageDown),
+        press(KeyCode::PageUp),
+        press(KeyCode::End),
+        press(KeyCode::Tab),
+        press(KeyCode::Enter),
+        Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(ftui_core::event::MouseButton::Left),
+            0,
+            0,
+        )),
+        Event::Mouse(MouseEvent::new(
+            MouseEventKind::Up(ftui_core::event::MouseButton::Left),
+            0,
+            0,
+        )),
+        Event::Mouse(MouseEvent::new(MouseEventKind::ScrollDown, 0, 0)),
+        Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)),
+    ];
+
+    let _caps = stable_caps();
+    let mut failures: Vec<String> = Vec::new();
+    let mut responsive = 0usize;
+
+    for meta in ftui_demo_showcase::screens::SCREEN_REGISTRY {
+        for &(width, height) in SIZES {
+            let mut app = AppModel::new();
+            app.current_screen = meta.id;
+            app.terminal_width = width;
+            app.terminal_height = height;
+            let mut pool = GraphemePool::new();
+            let before = {
+                let mut frame = Frame::new(width, height, &mut pool);
+                app.view(&mut frame);
+                buffer_to_text(&frame.buffer)
+            };
+            for event in &battery {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = app.update(AppMsg::from(event.clone()));
+                    let mut frame = Frame::new(width, height, &mut pool);
+                    app.view(&mut frame);
+                }));
+                if outcome.is_err() {
+                    failures.push(format!("{} at {width}x{height} on {event:?}", meta.slug));
+                }
+            }
+            if (width, height) == (80, 24) {
+                let mut frame = Frame::new(width, height, &mut pool);
+                app.view(&mut frame);
+                if buffer_to_text(&frame.buffer) != before {
+                    responsive += 1;
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} screen/size/event combinations panicked:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+    // Guards against a vacuous sweep. If `update` stopped routing to the
+    // active screen, every iteration would still render fine and report
+    // nothing. Not every screen reacts to this battery - a static one
+    // legitimately does not - so this asserts that a good share do.
+    let screens = ftui_demo_showcase::screens::SCREEN_REGISTRY.len();
+    assert!(
+        responsive * 3 > screens,
+        "only {responsive} of {screens} screens changed anything in response to \
+         the battery - input is not reaching them and this proves nothing"
+    );
+}
