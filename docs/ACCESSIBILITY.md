@@ -75,7 +75,7 @@ receive that content. It does not enable text in ordinary tracing.
 
 `Program::accessibility_tree()`, `accessibility_order()`,
 `accessibility_announcements()` and `accessibility_dump()` expose the same
-data for tests and tooling. The demo showcase enables this and its
+data for tests and tooling. The native demo showcase enables this and its
 `accessibility_panel` screen mirrors the tree size, the leading lines of
 the dump and the latest announcements.
 
@@ -99,6 +99,66 @@ What is **not** done:
 - Focus is derived from `A11yState::focused` on the pushed nodes (first in
   reading order) unless the view sets a focused ID on the builder; integrating
   application-wide focus ownership with the accessibility tree is future work.
+
+### Host-driven web runner (`StepProgram`)
+
+`ftui_web::step_program::StepProgram` now has its own opt-in collection path.
+It attaches the builder before `Model::view`, calls `Frame::finish_a11y`, and
+uses the same tree diff and bounded announcement generator as native `Program`.
+A changed tree invokes `Model::on_accessibility` after visual presentation,
+including changes that intentionally produce no speech. The callback receives
+the completed frame's tree, reading order, zero-based frame index, announcement
+batch, and cap-drop count. Its state mutations and returned commands schedule
+one subsequent host-driven render; an unchanged tree does not call it again.
+
+For an existing model, configure the runner before initialization:
+
+```rust,ignore
+let mut runner = ftui_web::step_program::StepProgram::new(model, 80, 24)
+    .with_accessibility(Default::default());
+runner.init()?;
+let initial_speech = runner.take_accessibility_announcements();
+// Deliver initial_speech once through the host's chosen accessibility bridge.
+```
+
+After each rendered `step`, the host can read `accessibility_tree()` and
+`accessibility_order()`, obtain a policy-bounded `accessibility_mirror()`, and
+consume `take_accessibility_announcements()`. The visual `take_outputs()` and
+speech drain are independent. Reading the mirror or draining speech does not
+consume the current tree. Accessibility content is not implicitly copied into
+`WebOutputs::logs`, geometry markers, or tracing.
+
+The speech drain holds **one rendered frame**, not an unbounded history queue.
+Drain after initialization and after every rendered step, before rendering
+another frame. A later render replaces an undrained batch; an idle step that
+does not render leaves it alone. `dropped_count` counts that frame's policy-cap
+drops, not missed host reads. A second drain returns no announcements and zero
+drops. The model callback and host drain expose the same transition: choose one
+for speech delivery rather than forwarding both. The mirror is for navigation,
+not a second live region that rereads the whole interface on every update.
+
+`set_accessibility_policy(Some(policy))` enables or changes collection while
+running. Changing limits preserves the tree baseline, avoiding fabricated focus
+arrivals; changing the policy clears the previous undrained batch. Passing the
+same policy is a no-op. Passing `None` immediately releases the runner's tree,
+order, and undrained speech; re-enabling starts from an empty baseline. Copies
+that application callbacks or hosts deliberately retained remain theirs.
+
+Coverage lives in `crates/ftui-web/tests/step_program_accessibility.rs` and
+`crates/ftui-showcase-wasm/tests/step_accessibility.rs`. The first exercises
+render/callback/drain behavior, caps, duplicate suppression, privacy, geometry,
+policy changes, and callback-triggered mutations and quit. The second constructs
+`StepProgram<AppModel>` with the actual showcase and widget rendering, including
+screen navigation and resize. These added tests require pinned-toolchain DSR
+execution; source review alone is not a passing Rust or browser test run.
+
+**This does not yet connect the shipped browser showcase to a screen reader.**
+The `RunnerCore` constructor still creates `StepProgram` without this opt-in,
+and the HTML semantic proxy remains static. Enabling collection in that host,
+exporting its bounded data across the WASM boundary, and updating a DOM or native
+accessibility bridge remain separate integration work. The core runner now
+provides the missing collection/callback/data path without claiming that final
+delivery is already implemented.
 
 ### Widgets contributing accessibility metadata
 
