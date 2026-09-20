@@ -131,14 +131,57 @@ pub mod shutdown_signal {
     pub fn with_test_signal_serialization<R>(f: impl FnOnce() -> R) -> R {
         static SIGNAL_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+        // Recover from poison rather than propagating it. The guarded value is
+        // `()`, so there is no invariant a panic could have broken - and a
+        // test that fails inside `f` would otherwise turn every later signal
+        // test in the process into "shutdown signal test lock poisoned",
+        // burying the one real failure under a cascade of fake ones.
         let _guard = SIGNAL_TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("shutdown signal test lock poisoned");
+            .unwrap_or_else(|poison| poison.into_inner());
+
+        // Clear on the way out even if `f` unwinds. Declared after `_guard`,
+        // so it runs first and the slot is clean before the lock is released;
+        // a plain statement after `f()` was skipped on panic and left a
+        // pending signal for whoever ran next.
+        struct ClearOnDrop;
+        impl Drop for ClearOnDrop {
+            fn drop(&mut self) {
+                clear_pending_termination_signal();
+            }
+        }
+
         clear_pending_termination_signal();
-        let result = f();
-        clear_pending_termination_signal();
-        result
+        let _clear_on_exit = ClearOnDrop;
+        f()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn serialization_clears_and_stays_usable_when_the_body_panics() {
+            let caught = std::panic::catch_unwind(|| {
+                with_test_signal_serialization(|| {
+                    // Any non-zero signal number; `signal_hook`'s constants are
+                    // Unix-gated and this behaviour is not platform-specific.
+                    record_pending_termination_signal(15);
+                    panic!("a signal test failing inside the critical section");
+                })
+            });
+            assert!(caught.is_err(), "the panic should propagate to the caller");
+            assert!(
+                pending_termination_signal().is_none(),
+                "a panicking body must not leave a pending signal behind"
+            );
+
+            // And the next test is not punished for the previous one's failure.
+            with_test_signal_serialization(|| {
+                assert!(pending_termination_signal().is_none());
+            });
+        }
     }
 }
 
