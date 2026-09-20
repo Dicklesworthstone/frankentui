@@ -4202,3 +4202,80 @@ fn mega_showcase_sequence_dense_120x40() {
     mega_showcase_goto_sample(&mut screen, "sequence-dense");
     mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_sequence_dense_120x40");
 }
+
+// ============================================================================
+// Degenerate terminal sizes
+// ============================================================================
+
+/// Every screen must survive a terminal small enough to break layout maths.
+///
+/// The rest of this file renders at 80x24 and 120x40, and `a11y_snapshots`
+/// adds one 40x10 case. Nothing exercises a one-cell terminal, a single row or
+/// a single column - which is where subtract-with-overflow, divide-by-zero and
+/// out-of-range slicing live. A user dragging a window edge passes through all
+/// of them, and the runtime clamps to 1x1 rather than declining to render, so
+/// these sizes reach `view()` in production.
+///
+/// Renders shrinking sizes against one `AppModel` per screen, because that is
+/// what a resize does: caches and scroll offsets carry over from the larger
+/// layout. Failures are collected rather than raised, so one run reports every
+/// broken screen instead of the first.
+#[test]
+fn every_screen_renders_at_degenerate_sizes() {
+    const SIZES: &[(u16, u16)] = &[
+        (80, 24),
+        (40, 10),
+        (20, 6),
+        (10, 3),
+        (80, 1),
+        (1, 24),
+        (3, 3),
+        (2, 1),
+        (1, 1),
+    ];
+
+    let _caps = stable_caps();
+    let mut failures: Vec<String> = Vec::new();
+    // Guards against the sweep being vacuous: if `view()` ignored
+    // `current_screen` this would render one screen 45 times and still pass.
+    let mut distinct_renders: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for meta in ftui_demo_showcase::screens::SCREEN_REGISTRY {
+        let mut app = AppModel::new();
+        app.current_screen = meta.id;
+        for &(width, height) in SIZES {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                app.terminal_width = width;
+                app.terminal_height = height;
+                let mut pool = GraphemePool::new();
+                let mut frame = Frame::new(width, height, &mut pool);
+                app.view(&mut frame);
+            }));
+            if outcome.is_err() {
+                failures.push(format!("{} at {width}x{height}", meta.slug));
+            } else if (width, height) == (80, 24) {
+                let mut pool = GraphemePool::new();
+                let mut frame = Frame::new(80, 24, &mut pool);
+                app.terminal_width = 80;
+                app.terminal_height = 24;
+                app.view(&mut frame);
+                distinct_renders.insert(buffer_to_text(&frame.buffer));
+            }
+        }
+    }
+
+    let screens = ftui_demo_showcase::screens::SCREEN_REGISTRY.len();
+    assert!(
+        distinct_renders.len() * 2 > screens,
+        "only {} distinct 80x24 renders across {screens} screens - the sweep is \
+         not selecting screens and proves nothing",
+        distinct_renders.len()
+    );
+
+    assert!(
+        failures.is_empty(),
+        "{} screen/size combinations panicked:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}
