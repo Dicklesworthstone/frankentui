@@ -325,9 +325,7 @@ impl IgnoreReason {
         match self {
             Self::Missing => "no baseline file".to_string(),
             Self::InvalidJson => "baseline is not valid JSON".to_string(),
-            Self::MissingProvenance => {
-                "baseline predates color-depth provenance".to_string()
-            }
+            Self::MissingProvenance => "baseline predates color-depth provenance".to_string(),
             Self::DepthMismatch { found } => format!(
                 "baseline captured at color depth {found}, running at {}",
                 BASELINE_COLOR_DEPTH.as_str()
@@ -642,8 +640,8 @@ fn check_regressions(
 
 /// A distinct path per case, under `target/` so it is already gitignored.
 fn fixture_path(case: &str) -> std::path::PathBuf {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/baseline_fixtures");
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/baseline_fixtures");
     std::fs::create_dir_all(&dir).expect("create fixture dir");
     dir.join(format!("{case}.json"))
 }
@@ -685,7 +683,10 @@ fn load_cache_missing_provenance() {
     // depth key — otherwise this would report VersionMismatch and the test
     // would pass for the wrong reason.
     let mut baseline = good_baseline();
-    baseline.as_object_mut().unwrap().remove("terminal_color_depth");
+    baseline
+        .as_object_mut()
+        .unwrap()
+        .remove("terminal_color_depth");
     let path = write_fixture("missing_provenance", &baseline);
     assert_eq!(load_cache(&path), Err(IgnoreReason::MissingProvenance));
 }
