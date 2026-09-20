@@ -250,6 +250,7 @@ manual assistive-technology testing and a full semantic control bridge remain.
 | `ftui-extras::Form` | Group + field controls | labels, values/options, required/disabled/checked state, validation descriptions, internal focus |
 | `Toast` / `NotificationStack` | live Group + Button children | title/message, severity urgency, stable notification identity, action focus |
 | `CommandPalette` | Dialog + TextInput + Menu/MenuItem | quiet query focus, selected command, descriptions/categories, polite selection status |
+| `ftui-widgets::FilePicker` | List + ListItem | current directory, file/directory kind, selected item, explicit focus ownership |
 
 ### Built-in dialogs
 
@@ -428,8 +429,8 @@ Most interactive widgets respond to standard terminal key conventions:
 
 ### Phase 5: Remaining widget coverage
 
-- Continue auditing specialized widgets such as FilePicker and Tree, plus
-  tab-panel and pane-workspace hierarchy
+- Continue auditing the feature-gated extras FilePicker and Tree, plus tab-panel
+  and pane-workspace hierarchy
   for names, state, focus and hierarchy coverage. Extend the role vocabulary
   where needed. Built-in Dialog presets and multiline TextArea have metadata.
 

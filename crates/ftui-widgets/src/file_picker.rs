@@ -16,6 +16,7 @@
 //! and can read the selected path.
 
 use crate::{StatefulWidget, clear_text_area, clear_text_row, draw_text_span};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -70,6 +71,8 @@ pub struct FilePickerState {
     pub offset: usize,
     /// The selected/confirmed path (set when user presses enter on a file).
     pub selected: Option<PathBuf>,
+    /// Whether this picker currently owns keyboard focus.
+    pub focused: bool,
     /// Navigation history for going back.
     history: Vec<(PathBuf, usize)>,
 }
@@ -84,8 +87,21 @@ impl FilePickerState {
             cursor: 0,
             offset: 0,
             selected: None,
+            focused: false,
             history: Vec::new(),
         }
+    }
+
+    /// Mark whether this picker currently owns keyboard focus.
+    #[must_use]
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Update keyboard focus ownership.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
     }
 
     /// Set a root directory to confine navigation.
@@ -345,6 +361,8 @@ pub struct FilePicker {
     pub dir_prefix: &'static str,
     /// Prefix for file entries.
     pub file_prefix: &'static str,
+    /// Optional stable accessibility identity for this picker.
+    pub accessibility_id: Option<u64>,
 }
 
 impl Default for FilePicker {
@@ -357,6 +375,7 @@ impl Default for FilePicker {
             show_header: true,
             dir_prefix: "📁 ",
             file_prefix: "  ",
+            accessibility_id: None,
         }
     }
 }
@@ -401,6 +420,87 @@ impl FilePicker {
         self.show_header = show;
         self
     }
+
+    /// Give this picker a stable accessibility identity.
+    #[must_use]
+    pub fn accessibility_id(mut self, id: u64) -> Self {
+        self.accessibility_id = Some(id);
+        self
+    }
+
+    fn accessibility_root_id(&self, area: Rect) -> u64 {
+        self.accessibility_id
+            .unwrap_or_else(|| A11yNodeInfo::stable_id_for(A11yRole::List, area))
+    }
+
+    fn accessibility_entry_id(parent: u64, entry: &DirEntry) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.file_picker.entry", parent, &entry.path).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn emit_accessibility(
+        &self,
+        area: Rect,
+        entries_y: u16,
+        visible_rows: usize,
+        frame: &mut Frame,
+        state: &FilePickerState,
+    ) {
+        if !frame.a11y_enabled() {
+            return;
+        }
+        let bounds = area.intersection(&frame.buffer.current_scissor());
+        if bounds.is_empty() {
+            return;
+        }
+        let root_id = self.accessibility_root_id(area);
+        let root = A11yNodeInfo::new(root_id, A11yRole::List, bounds)
+            .with_name(format!("Files in {}", state.current_dir.display()))
+            .with_description(format!("{} entries", state.entries.len()));
+        frame.with_a11y_scope(root, |frame| {
+            if state.entries.is_empty() {
+                let empty_bounds = Rect::new(area.x, entries_y, area.width, 1)
+                    .intersection(&frame.buffer.current_scissor());
+                if !empty_bounds.is_empty() {
+                    frame.push_a11y(
+                        A11yNodeInfo::new(
+                            Self::accessibility_entry_id(
+                                root_id,
+                                &DirEntry::file("(empty directory)", state.current_dir.clone()),
+                            ),
+                            A11yRole::Label,
+                            empty_bounds,
+                        )
+                        .with_name("Empty directory"),
+                    );
+                }
+                return;
+            }
+
+            let end_idx = (state.offset + visible_rows).min(state.entries.len());
+            for (row, entry) in state.entries[state.offset..end_idx].iter().enumerate() {
+                let actual_idx = state.offset + row;
+                let y = entries_y.saturating_add(row as u16);
+                let item_bounds = Rect::new(area.x, y, area.width, 1)
+                    .intersection(&frame.buffer.current_scissor());
+                if item_bounds.is_empty() {
+                    continue;
+                }
+                let mut node = A11yNodeInfo::new(
+                    Self::accessibility_entry_id(root_id, entry),
+                    A11yRole::ListItem,
+                    item_bounds,
+                )
+                .with_name(&entry.name)
+                .with_description(if entry.is_dir { "Directory" } else { "File" });
+                node.state.selected = actual_idx == state.cursor;
+                node.state.focused = state.focused && actual_idx == state.cursor;
+                frame.push_a11y(node);
+            }
+        });
+    }
 }
 
 impl StatefulWidget for FilePicker {
@@ -410,6 +510,11 @@ impl StatefulWidget for FilePicker {
         if area.is_empty() {
             return;
         }
+
+        let entries_y = area.y.saturating_add(if self.show_header { 1 } else { 0 });
+        let visible_rows = area.bottom().saturating_sub(entries_y) as usize;
+        state.adjust_scroll(visible_rows);
+        self.emit_accessibility(area, entries_y, visible_rows, frame, state);
 
         let deg = frame.buffer.degradation;
         if !deg.render_content() {
@@ -455,7 +560,6 @@ impl StatefulWidget for FilePicker {
         }
 
         let visible_rows = (max_y - y) as usize;
-        state.adjust_scroll(visible_rows);
 
         if state.entries.is_empty() {
             clear_text_row(frame, Rect::new(area.x, y, area.width, 1), file_style);
@@ -516,6 +620,9 @@ impl StatefulWidget for FilePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_a11y::tree::{
+        A11yTree, A11yTreeBuilder, AnnouncementReason, ScreenReaderPolicy,
+    };
     use ftui_render::grapheme_pool::GraphemePool;
 
     fn buf_to_lines(buf: &ftui_render::buffer::Buffer) -> Vec<String> {
@@ -545,6 +652,110 @@ mod tests {
 
     fn make_state() -> FilePickerState {
         FilePickerState::new(PathBuf::from("/tmp"), make_entries())
+    }
+
+    fn render_picker_a11y(
+        picker: &FilePicker,
+        state: &mut FilePickerState,
+        area: Rect,
+    ) -> A11yTree {
+        let mut builder = A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            picker.render(area, &mut frame, state);
+            frame.finish_a11y();
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn file_picker_accessibility_exposes_list_and_entry_kinds() {
+        let picker = FilePicker::new().accessibility_id(7100);
+        let mut state = make_state().with_focused(true);
+        let tree = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 6));
+        assert_eq!(tree.root_id(), Some(7100));
+        let root = tree.root().unwrap();
+        assert_eq!(root.role, A11yRole::List);
+        assert!(root.name.as_deref().unwrap().contains("/tmp"));
+        assert_eq!(root.children.len(), 4);
+        let first = tree.node(root.children[0]).unwrap();
+        assert_eq!(first.name.as_deref(), Some("docs"));
+        assert_eq!(first.description.as_deref(), Some("Directory"));
+        assert!(first.state.selected && first.state.focused);
+        let file = tree.node(root.children[2]).unwrap();
+        assert_eq!(file.description.as_deref(), Some("File"));
+        assert_eq!(tree.focused_id(), Some(first.id));
+    }
+
+    #[test]
+    fn file_picker_cursor_focus_announces_once_when_focused() {
+        let picker = FilePicker::new().show_header(false).accessibility_id(7101);
+        let mut state = make_state().with_focused(true);
+        let before = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
+        state.cursor_down();
+        let after = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert_eq!(batch.dropped_count, 0);
+        assert_eq!(batch.announcements[0].reason, AnnouncementReason::FocusChanged);
+        assert!(batch.announcements[0].text.contains("src"));
+    }
+
+    #[test]
+    fn file_picker_selection_is_silent_when_widget_does_not_own_focus() {
+        let picker = FilePicker::new().show_header(false).accessibility_id(7102);
+        let mut state = make_state();
+        let before = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
+        assert!(before.focused().is_none());
+        state.cursor_down();
+        let after = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
+        assert!(after.focused().is_none());
+        assert!(
+            after
+                .screen_reader_announcements_since(&before, ScreenReaderPolicy::default())
+                .announcements
+                .is_empty()
+        );
+        let root = after.root().unwrap();
+        assert!(after.node(root.children[1]).unwrap().state.selected);
+    }
+
+    #[test]
+    fn file_picker_entry_ids_survive_resize_and_scroll() {
+        let picker = FilePicker::new().show_header(false).accessibility_id(7103);
+        let mut state = make_state().with_focused(true);
+        let before = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 2));
+        let docs_id = before.focused_id().unwrap();
+        let before_root = before.root_id();
+        state.cursor_down();
+        state.cursor_down();
+        let after = render_picker_a11y(&picker, &mut state, Rect::new(4, 3, 50, 2));
+        assert_eq!(before_root, after.root_id());
+        // Scroll changes which entries are present, but a logical path keeps
+        // the same ID whenever it is rendered again.
+        state.cursor_home();
+        let again = render_picker_a11y(&picker, &mut state, Rect::new(1, 1, 60, 3));
+        assert_eq!(again.focused_id(), Some(docs_id));
+    }
+
+    #[test]
+    fn file_picker_directory_change_replaces_focused_entry_identity() {
+        let picker = FilePicker::new().show_header(false).accessibility_id(7104);
+        let mut state = make_state().with_focused(true);
+        let before = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
+        state.current_dir = PathBuf::from("/other");
+        state.entries = vec![DirEntry::file("different.txt", "/other/different.txt")];
+        state.cursor = 0;
+        state.offset = 0;
+        let after = render_picker_a11y(&picker, &mut state, Rect::new(0, 0, 40, 4));
+        assert_ne!(before.focused_id(), after.focused_id());
+        let batch =
+            after.screen_reader_announcements_since(&before, ScreenReaderPolicy::default());
+        assert_eq!(batch.announcements.len(), 1);
+        assert!(batch.announcements[0].text.contains("different.txt"));
     }
 
     #[test]
