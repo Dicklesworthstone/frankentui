@@ -45,6 +45,23 @@ tools:
       # leave the audit green while every close sailed through. Builds a
       # throwaway beads project under the run root and never deletes it.
       - bash scripts/check_close_policy_e2e.sh "${DSR_CLOSE_POLICY_RUN_ROOT:-${TMPDIR:-/tmp}/ftui_close_policy/dsr}"
+  # The baseline cache's provenance, atomicity and comparison logic
+  # (bd-g00-root-epic-ewths.9.2 item 5). 24 tests, ~3 s, no timing assertions:
+  # what is gated here is the *logic* that decides whether two baselines are
+  # comparable and what counts as a regression, never the measured numbers.
+  #
+  # Deliberately not `FTUI_BASELINE_STRICT=1`. On a fresh DSR checkout the
+  # baseline is absent (gitignored), so `capture_baselines` writes one and
+  # `verify_no_regression` would then compare the host against itself seconds
+  # earlier — two measurements of identical code that can easily differ by more
+  # than the 10% threshold on a busy box. That is a flake generator, and the
+  # enforced performance gate is `scripts/perf_regression_gate.sh` against
+  # `tests/baseline.json`, not this suite.
+  frankentui-baseline-cache:
+    repo: Dicklesworthstone/frankentui
+    language: rust
+    required_checks:
+      - cargo test -p ftui-demo-showcase --test baseline_capture
   frankentui-examples:
     repo: Dicklesworthstone/frankentui
     language: rust
