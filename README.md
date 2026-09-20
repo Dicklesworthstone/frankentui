@@ -1066,6 +1066,30 @@ cannot be coalesced indefinitely.
 `steady_regime_delay_is_16ms_and_burst_is_40ms` (`resize_coalescer.rs`) fail if
 any number above stops matching the code.
 
+**Does it beat the rate heuristic it replaced? Measured 2026-09-19: no.** Both
+detectors were driven over identical resize-storm schedules on a virtual clock
+([`docs/perf/resize_differential_2026-09.md`](docs/perf/resize_differential_2026-09.md)):
+
+| Pattern | repaints during drag (heuristic → BOCPD) | final apply ms |
+|---|---|---|
+| `burst_50` | 6 → 7 | 33 → 49 |
+| `burst_200` | 26 → 27 | 24 → 0 |
+| `sweep_80x24_to_200x60` | 10 → 12 | 40 → 24 |
+| `oscillate_10` | 4 → 7 | 52 → 52 |
+| `mixed_100` | 25 → 33 | 45 → 45 |
+| `pathological_50` | 20 → 22 | 51 → 19 |
+
+BOCPD draws more repaints during the drag on every pattern, and both detectors
+land outside the 40 ms settling budget on three of six, so it is worse on one
+criterion and no better on the other. The likely cause is that
+`recommended_delay` interpolates between 16 ms and 40 ms while `p_burst` is in
+the transitional band, and 5–50 ms inter-arrivals keep it there rather than
+committing to the burst delay.
+
+The default is still `enable_bocpd = true` while that is decided (`bd-h8l3d`).
+Use `CoalescerConfig::default().without_bocpd()` for the rate heuristic alone;
+on these patterns it coalesces more aggressively.
+
 **Where it runs:** on by default. `CoalescerConfig::default()` carries `enable_bocpd = true` and `heuristic_fallback = true`; `ResizeCoalescer` feeds every resize event's inter‑arrival to the posterior and reads the regime and the recommended delay from it. The 10/5 events‑per‑second rate heuristic decides only when the posterior is undefined: the first event of a session, an inter‑arrival outside `[min_observation_ms, max_observation_ms]` (1 ms to 10 s by default, which the posterior would otherwise see clamped), or a non‑finite posterior. While the heuristic decides it also owns the Burst exit (cooldown on ticks, rate check on the immediate path). The posterior itself only moves on events, so in BOCPD mode a Burst regime returns to Steady on a frame tick once the silence reaches `mu_steady_ms` (200 ms; reason code `bocpd_idle_exit`, confidence `1 − exp(−idle/μ_burst)`). Every `decision` and `regime_transition` evidence row carries `detector` (`bocpd` or `heuristic`) and `p_burst`, the `config` row carries both flags, `budget_decision` carries `resize_detector`, and `CoalescerStats::detector_decisions` counts decisions per detector. `CoalescerConfig::without_bocpd()` returns to the heuristic alone; `with_heuristic_fallback(false)` hands even the first event to the posterior.
 
 ### Bayes-Factor Evidence Ledger (Resize Coalescer)
