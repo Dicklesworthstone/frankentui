@@ -124,6 +124,7 @@ fn compare_ranked_match_results(
         .partial_cmp(&left.1.score)
         .unwrap_or(Ordering::Equal)
         .then_with(|| right.1.match_type.cmp(&left.1.match_type))
+        .then_with(|| left.0.cmp(&right.0))
 }
 
 // ---------------------------------------------------------------------------
@@ -1743,11 +1744,23 @@ mod tests {
     /// a tie, because `score_empty_query` ranks on title length alone.
     #[test]
     fn equally_scored_entries_keep_registration_order() {
-        // Forty entries, not a handful: `sort_unstable` runs insertion sort on
-        // short slices, which happens to preserve order, so a small fixture
-        // passes with or without the tiebreaker and proves nothing. This is
-        // past that threshold, and it does fail without it.
-        let titles: Vec<String> = (0..40).map(|i| format!("Cmd{i:02}")).collect();
+        // The fixture has to make the sort actually move things. A slice of
+        // uniformly-tied entries proves nothing: short slices go through
+        // insertion sort, and pattern-defeating quicksort short-circuits an
+        // all-equal input, so both preserve order without any tiebreaker.
+        //
+        // Interleaving two title lengths gives two large tied groups that the
+        // partitioning has to separate, which is what scrambles the order
+        // within each group. Removing the tiebreaker fails this.
+        let titles: Vec<String> = (0..64)
+            .map(|i| {
+                if i % 2 == 0 {
+                    format!("Short{i:02}") // 7 chars
+                } else {
+                    format!("Longer{i:02}") // 8 chars
+                }
+            })
+            .collect();
         let lowered: Vec<String> = titles.iter().map(|t| t.to_lowercase()).collect();
         let word_starts: Vec<Vec<usize>> = titles.iter().map(|_| vec![0usize]).collect();
 
@@ -1755,20 +1768,23 @@ mod tests {
         let ranked =
             scorer.score_corpus_with_lowered_and_words("", &titles, &lowered, &word_starts, None);
 
-        // All six titles are five characters, so every score ties.
-        let scores: Vec<f64> = ranked.iter().map(|(_, r)| r.score).collect();
-        assert!(
-            scores
-                .windows(2)
-                .all(|w| (w[0] - w[1]).abs() < f64::EPSILON),
-            "fixture should tie on score, got {scores:?}"
-        );
-
+        assert_eq!(ranked.len(), titles.len(), "an empty query matches all");
         let order: Vec<usize> = ranked.iter().map(|(idx, _)| *idx).collect();
+
+        // Shorter titles outrank longer ones, so the two groups separate; what
+        // matters is that *within* each group - where every score is identical
+        // - the corpus order survives.
+        let shorter: Vec<usize> = order.iter().copied().filter(|i| i % 2 == 0).collect();
+        let longer: Vec<usize> = order.iter().copied().filter(|i| i % 2 == 1).collect();
         assert_eq!(
-            order,
-            (0..titles.len()).collect::<Vec<_>>(),
-            "ties must fall back to corpus order"
+            shorter,
+            (0..titles.len()).filter(|i| i % 2 == 0).collect::<Vec<_>>(),
+            "equally-scored entries must keep corpus order"
+        );
+        assert_eq!(
+            longer,
+            (0..titles.len()).filter(|i| i % 2 == 1).collect::<Vec<_>>(),
+            "equally-scored entries must keep corpus order"
         );
     }
 
