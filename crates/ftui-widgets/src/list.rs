@@ -908,18 +908,7 @@ impl<'a> StatefulWidget for List<'a> {
         let list_area = match &self.block {
             Some(block) => {
                 let inner = block.inner(area);
-                if frame.a11y_enabled() {
-                    let builder = frame.a11y.take();
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        block.render(area, frame);
-                    }));
-                    frame.a11y = builder;
-                    if let Err(payload) = result {
-                        std::panic::resume_unwind(payload);
-                    }
-                } else {
-                    block.render(area, frame);
-                }
+                crate::render_block_without_a11y(block, area, frame);
                 inner
             }
             None => area,

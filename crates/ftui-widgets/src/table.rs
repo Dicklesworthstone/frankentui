@@ -805,7 +805,7 @@ impl<'a> StatefulWidget for Table<'a> {
                 if apply_styling {
                     block = block.border_style(theme.border);
                 }
-                block.render(area, frame);
+                crate::render_block_without_a11y(&block, area, frame);
                 block.inner(area)
             }
             None => area,

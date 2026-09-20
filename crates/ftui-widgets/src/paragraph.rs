@@ -350,7 +350,7 @@ impl Widget for Paragraph<'_> {
 
         let text_area = match self.block {
             Some(ref b) => {
-                b.render(area, frame);
+                crate::render_block_without_a11y(b, area, frame);
                 b.inner(area)
             }
             None => area,
@@ -1563,6 +1563,48 @@ mod tests {
         let a = para.measure(Size::new(100, 50));
         let b = para.measure(Size::new(100, 50));
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_blocks_group_does_not_overwrite_the_paragraph_node() {
+        use ftui_a11y::tree::A11yTreeBuilder;
+
+        // `Paragraph` folds the block title into its own node, so the block's
+        // `Group` is redundant - and both derive their id from
+        // `a11y_node_id(area)` at the *same* rect, with the block rendering
+        // second. Before `render_block_without_a11y`, the `Group` replaced the
+        // paragraph outright: the tree held one node, role `Group`, and the
+        // paragraph's text was simply absent.
+        let mut builder = A11yTreeBuilder::new();
+        let area = Rect::new(0, 0, 40, 6);
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(40, 6, &mut pool);
+            frame.set_a11y(&mut builder);
+            Paragraph::new("hello world")
+                .block(Block::bordered().title("Notes"))
+                .render(area, &mut frame);
+            frame.finish_a11y();
+        }
+        let tree = builder.build();
+
+        let inventory: Vec<_> = tree
+            .nodes()
+            .map(|n| (n.role, n.name.clone(), n.description.clone()))
+            .collect();
+        assert_eq!(tree.node_count(), 1, "tree was {inventory:#?}");
+        let node = tree.nodes().next().expect("one node");
+        assert_ne!(
+            node.role,
+            ftui_a11y::node::A11yRole::Group,
+            "the block's Group must not be what survived: {inventory:#?}"
+        );
+        assert_eq!(node.name.as_deref(), Some("Notes"));
+        assert_eq!(
+            node.description.as_deref(),
+            Some("hello world"),
+            "the paragraph's text must reach the tree: {inventory:#?}"
+        );
     }
 
     #[test]

@@ -384,10 +384,50 @@ use ftui_render::frame::{Frame, WidgetSignal};
 use ftui_style::Style;
 use ftui_text::grapheme_width;
 
+/// Render a widget's own [`Block`](block::Block) without letting it contribute
+/// an accessibility node.
+///
+/// A widget that owns a block folds the block's title into its *own* node -
+/// `Paragraph`, `Table`, `List` and `Progress` all do - so the block's `Group`
+/// is redundant semantics. It is worse than redundant. `Block`'s node and the
+/// widget's both take their id from [`a11y_node_id`], which is a function of
+/// the rect alone, and the widget renders its block at the very rect it just
+/// pushed its own node for. `A11yTreeBuilder::add_node` replaces on a
+/// duplicate id, and the block renders second - so the `Group` silently
+/// overwrote the widget. A `Paragraph::new("hello").block(..)` reached the
+/// screen reader as an empty group with its text gone.
+///
+/// Lifting the builder out for the duration is how `List` already handled
+/// this; this is that, in one place. `catch_unwind` because a panic mid-render
+/// must not leave the frame without its builder.
+///
+/// This does not make [`a11y_node_id`] collision-proof - two *sibling* widgets
+/// at the same rect would still land on one id. It removes the case that is
+/// structural rather than accidental: a widget and the block it draws around
+/// itself always share a rect.
+pub(crate) fn render_block_without_a11y(block: &block::Block<'_>, area: Rect, frame: &mut Frame) {
+    if !frame.a11y_enabled() {
+        block.render(area, frame);
+        return;
+    }
+    let builder = frame.a11y.take();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block.render(area, frame);
+    }));
+    frame.a11y = builder;
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 /// Generate a deterministic accessibility node ID from a widget's bounding rect.
 ///
 /// Uses FNV-1a to hash the area coordinates. Stable across frames for widgets
 /// rendered at the same position, enabling efficient A11yTree diffing.
+///
+/// The id depends on the rect and nothing else, so two nodes pushed for the
+/// same rect in one frame collide and the later one wins - see
+/// [`render_block_without_a11y`].
 #[must_use]
 pub(crate) fn a11y_node_id(area: Rect) -> u64 {
     // FNV-1a 64-bit

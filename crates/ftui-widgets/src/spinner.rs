@@ -144,7 +144,7 @@ impl<'a> StatefulWidget for Spinner<'a> {
 
         let spinner_area = match &self.block {
             Some(b) => {
-                b.render(area, frame);
+                crate::render_block_without_a11y(b, area, frame);
                 b.inner(area)
             }
             None => area,
