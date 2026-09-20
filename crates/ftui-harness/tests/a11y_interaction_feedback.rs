@@ -306,18 +306,18 @@ mod dialog_runtime {
 
         fn view(&self, frame: &mut Frame) {
             self.views.set(self.views.get() + 1);
-            assert!(self.views.get() <= 32, "dialog redraw loop did not terminate");
+            assert!(
+                self.views.get() <= 32,
+                "dialog redraw loop did not terminate"
+            );
             // The application owns focus transfer and restoration. Both tree
             // metadata and focus come from real widgets, never synthetic nodes
             // or direct mutations of the accessibility builder in this test.
             let mut launcher = TextInput::new().with_focused(self.stage == 0 || self.stage == 7);
             launcher.set_value("Launcher");
             launcher.render(Rect::new(0, 0, 20, 1), frame);
-            self.dialog.render(
-                Rect::new(0, 1, 80, 23),
-                frame,
-                &mut self.state.borrow_mut(),
-            );
+            self.dialog
+                .render(Rect::new(0, 1, 80, 23), frame, &mut self.state.borrow_mut());
         }
 
         fn on_accessibility(&mut self, a11y: AccessibilityFrame<'_>) -> Cmd<Message> {
@@ -330,7 +330,10 @@ mod dialog_runtime {
             );
             if matches!(self.stage, 1..=6) {
                 assert_eq!(a11y.tree.node_count(), 5); // caller + dialog + three controls
-                let dialog = a11y.tree.node(700).expect("dialog semantics reached runtime");
+                let dialog = a11y
+                    .tree
+                    .node(700)
+                    .expect("dialog semantics reached runtime");
                 assert_eq!(dialog.role, A11yRole::Dialog);
                 assert_eq!(dialog.children.len(), 3);
                 assert_eq!(focused.parent, Some(700));
@@ -385,7 +388,9 @@ mod dialog_runtime {
             config,
         )
         .expect("construct dialog runtime");
-        program.run().expect("run actual dialog interaction sequence");
+        program
+            .run()
+            .expect("run actual dialog interaction sequence");
         let model = program.model();
         assert!(!model.watchdog_fired, "dialog callback sequence stalled");
         assert_eq!(model.stage, 7);
