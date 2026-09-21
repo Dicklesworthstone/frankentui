@@ -685,7 +685,10 @@ impl MeasurableWidget for MiniBar {
         let total_width = self.width.saturating_add(percent_width);
 
         SizeConstraints {
-            min: Size::new(1, 1), // At least show something
+            // At least show something - unless the bar was sized to nothing,
+            // where a 1-cell minimum would exceed its own 0-cell preferred
+            // and maximum and break `min <= preferred <= max`.
+            min: Size::new(total_width.min(1), 1),
             preferred: Size::new(total_width, 1),
             max: Some(Size::new(total_width, 1)), // Fixed size
         }

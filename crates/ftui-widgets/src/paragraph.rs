@@ -22,7 +22,12 @@ const PARAGRAPH_WRAP_CACHE_CAPACITY: usize = 256;
 struct CachedParagraphMetrics {
     text_width: usize,
     text_height: usize,
+    /// Widest unbreakable word: the narrowest width for wrap modes that keep
+    /// words whole.
     min_width: usize,
+    /// Widest single grapheme: the narrowest width for wrap modes that break
+    /// a word that does not fit. Computed alongside `min_width`.
+    widest_grapheme: usize,
     min_width_computed: bool,
     line_widths: Arc<[usize]>,
 }
@@ -137,6 +142,16 @@ fn line_min_width(line: &Line<'_>) -> usize {
     max_word_width.max(current_word_width)
 }
 
+fn line_widest_grapheme(line: &Line<'_>) -> usize {
+    line.spans()
+        .iter()
+        .flat_map(|span| graphemes(span.content.as_ref()))
+        .filter(|grapheme| !grapheme.chars().all(char::is_whitespace))
+        .map(display_width)
+        .max()
+        .unwrap_or(0)
+}
+
 impl<'a> Paragraph<'a> {
     fn with_static_text(text: FtuiText<'static>) -> Self {
         Self {
@@ -226,6 +241,13 @@ impl<'a> Paragraph<'a> {
                     } else {
                         min_width
                     };
+                    metrics.widest_grapheme = self
+                        .text
+                        .lines()
+                        .iter()
+                        .map(line_widest_grapheme)
+                        .max()
+                        .unwrap_or(0);
                     metrics.min_width_computed = true;
                 }
                 return metrics.clone();
@@ -233,6 +255,7 @@ impl<'a> Paragraph<'a> {
 
             let mut text_width = 0usize;
             let mut min_width = 0usize;
+            let mut widest_grapheme = 0usize;
             let mut line_widths = Vec::with_capacity(self.text.lines().len());
 
             for line in self.text.lines() {
@@ -240,6 +263,7 @@ impl<'a> Paragraph<'a> {
                 text_width = text_width.max(width);
                 if include_min_width {
                     min_width = min_width.max(line_min_width(line));
+                    widest_grapheme = widest_grapheme.max(line_widest_grapheme(line));
                 }
                 line_widths.push(width);
             }
@@ -252,6 +276,7 @@ impl<'a> Paragraph<'a> {
                 } else {
                     min_width
                 },
+                widest_grapheme,
                 min_width_computed: include_min_width,
                 line_widths: Arc::from(line_widths),
             };
@@ -595,7 +620,16 @@ impl MeasurableWidget for Paragraph<'_> {
         let metrics = self.cached_metrics(true);
         let text_width = metrics.text_width;
         let text_height = metrics.text_height;
-        let min_width = metrics.min_width;
+        // The narrowest usable width depends on whether wrapping may break a
+        // word. `Char` and `WordChar` break one that does not fit, so they
+        // need only the widest single grapheme; `Word` and `Optimal` keep
+        // words whole (an overlong one overflows intact), and so does no
+        // wrapping. Using the longest word for every mode made a Char-wrapped
+        // URL demand its full length as a minimum.
+        let min_width = match self.wrap {
+            Some(WrapMode::Char | WrapMode::WordChar) => metrics.widest_grapheme,
+            _ => metrics.min_width,
+        };
 
         // Get block chrome if present
         let (chrome_width, chrome_height) = self
@@ -638,9 +672,16 @@ impl MeasurableWidget for Paragraph<'_> {
             chrome_height
         };
 
+        // Never below the minimum. When wrapping, `preferred_width` follows the
+        // available width down, but `min_w` is the widest unbreakable word
+        // plus chrome, and a width narrower than that is not one the
+        // paragraph can prefer - `MeasurableWidget` requires
+        // `min <= preferred`. Measured at 5 columns, bordered text whose
+        // longest word is six wide reported min 8 and preferred 5.
         let pref_w = u16::try_from(preferred_width)
             .unwrap_or(u16::MAX)
-            .saturating_add(chrome_width);
+            .saturating_add(chrome_width)
+            .max(min_w);
         let pref_h = u16::try_from(preferred_height)
             .unwrap_or(u16::MAX)
             .saturating_add(chrome_height);
@@ -1175,12 +1216,18 @@ mod tests {
     fn intrinsic_wrapped_height_saturates_at_terminal_dimension_limit() {
         let paragraph = Paragraph::new("x".repeat(65_536)).wrap(WrapMode::Char);
         let measured = paragraph.measure(Size::new(1, 24));
-        assert_eq!(measured.min, Size::new(u16::MAX, 1));
+        // Char wrap breaks the 65,536-wide word anywhere, so one column is
+        // enough. This used to pin the minimum at the word's (saturated)
+        // width, u16::MAX - above the preferred width of 1, which is exactly
+        // the `min <= preferred` breach `MeasurableWidget` rules out.
+        assert_eq!(measured.min, Size::new(1, 1));
         assert_eq!(measured.preferred, Size::new(1, u16::MAX));
 
+        // `Block::bordered()` is a border plus one cell of padding a side:
+        // 4 columns and 4 rows of chrome around the 1x1 minimum.
         let bordered = paragraph.block(Block::bordered());
         let measured = bordered.measure(Size::new(5, 24));
-        assert_eq!(measured.min, Size::new(u16::MAX, 5));
+        assert_eq!(measured.min, Size::new(5, 5));
         assert_eq!(measured.preferred, Size::new(5, u16::MAX));
     }
 
