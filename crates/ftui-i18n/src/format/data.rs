@@ -479,3 +479,143 @@ pub fn lookup_locale_data(locale_tag: &str) -> Option<&'static LocaleData> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::datetime::Date;
+    use crate::plural::PluralRule;
+
+    /// The set of supported locales is written down four times: this
+    /// `SUPPORTED_LOCALES` const, the `match` in [`lookup_locale_data`], the
+    /// `match` in `PluralRule::for_locale`, and the per-locale arms of
+    /// `DateTimeFormatter::format_date`. Nothing makes them agree, and every
+    /// way they can disagree fails silently rather than loudly: a tag in the
+    /// const but missing from `lookup_locale_data` resolves to `None` and the
+    /// caller formats a supposedly supported locale as English.
+    #[test]
+    fn every_advertised_locale_resolves_to_data_tagged_with_itself() {
+        for tag in SUPPORTED_LOCALES {
+            let data = lookup_locale_data(tag).unwrap_or_else(|| {
+                panic!("{tag} is in SUPPORTED_LOCALES but lookup_locale_data returns None")
+            });
+            assert_eq!(
+                data.tag, *tag,
+                "lookup of {tag:?} returned data tagged {:?}",
+                data.tag
+            );
+        }
+    }
+
+    /// Russian has four plural categories and Arabic six. Falling through to
+    /// the English rule for either is not a near-miss, it selects the wrong
+    /// message form outright, so the mapping is pinned per locale rather than
+    /// merely asserted to exist.
+    #[test]
+    fn every_advertised_locale_has_the_plural_rule_cldr_gives_it() {
+        let expected: &[(&str, PluralRule)] = &[
+            ("en", PluralRule::English),
+            ("es", PluralRule::English),
+            ("de", PluralRule::English),
+            ("fr", PluralRule::French),
+            ("ru", PluralRule::Russian),
+            ("ar", PluralRule::Arabic),
+            ("ja", PluralRule::CJK),
+        ];
+        assert_eq!(
+            expected.len(),
+            SUPPORTED_LOCALES.len(),
+            "a locale was added to SUPPORTED_LOCALES without a plural rule here"
+        );
+        for (tag, rule) in expected {
+            assert!(
+                SUPPORTED_LOCALES.contains(tag),
+                "{tag} is pinned here but not advertised"
+            );
+            assert_eq!(
+                format!("{:?}", PluralRule::for_locale(tag)),
+                format!("{rule:?}"),
+                "plural rule for {tag}"
+            );
+        }
+    }
+
+    /// `days_full` and `days_abbr` are documented as `Mon = index 0 .. Sun =
+    /// index 6`, and `format_date` indexes them with `Date::day_of_week`,
+    /// which returns an ISO index. The weekday arithmetic is tested on its
+    /// own and the arrays are only ever read through it, so the two
+    /// conventions can drift apart with almost nothing noticing. Only English
+    /// was protected, and only incidentally, by `test_date_formatting_styles`
+    /// comparing a rendered `Full` date: with the Russian table reordered
+    /// Sunday-first, 83 of the crate's 84 tests still passed while every
+    /// Russian weekday name came out wrong.
+    #[test]
+    fn weekday_tables_are_ordered_the_way_day_of_week_indexes_them() {
+        // 2024-01-01 was a Monday and 2024-01-07 the Sunday that ended that
+        // week, which pins both ends of every table.
+        let monday = Date::from_ymd(2024, 1, 1).expect("2024-01-01");
+        let sunday = Date::from_ymd(2024, 1, 7).expect("2024-01-07");
+        assert_eq!(monday.day_of_week(), 0, "ISO index for Monday");
+        assert_eq!(sunday.day_of_week(), 6, "ISO index for Sunday");
+
+        let names: &[(&str, &str, &str)] = &[
+            ("en", "Monday", "Sunday"),
+            ("de", "Montag", "Sonntag"),
+            ("fr", "lundi", "dimanche"),
+            ("es", "lunes", "domingo"),
+            ("ru", "понедельник", "воскресенье"),
+            ("ar", "الاثنين", "الأحد"),
+            ("ja", "月曜日", "日曜日"),
+        ];
+        assert_eq!(
+            names.len(),
+            SUPPORTED_LOCALES.len(),
+            "a locale was added to SUPPORTED_LOCALES without weekday names here"
+        );
+
+        for (tag, monday_name, sunday_name) in names {
+            let date = lookup_locale_data(tag).expect("advertised locale").date;
+            assert_eq!(
+                date.days_full[monday.day_of_week() as usize],
+                *monday_name,
+                "{tag}: Monday"
+            );
+            assert_eq!(
+                date.days_full[sunday.day_of_week() as usize],
+                *sunday_name,
+                "{tag}: Sunday"
+            );
+            // Abbreviations must follow the same order as the full names.
+            assert!(
+                date.days_abbr.len() == 7 && date.months_abbr.len() == 12,
+                "{tag}: table lengths"
+            );
+            let distinct: std::collections::BTreeSet<&str> =
+                date.days_full.iter().copied().collect();
+            assert_eq!(distinct.len(), 7, "{tag}: duplicate weekday name");
+        }
+    }
+
+    /// `lookup_locale_data` documents a base-language fallback. Region
+    /// subtags and case must not change the answer, and an unsupported
+    /// language must stay `None` rather than resolving to English.
+    #[test]
+    fn lookup_takes_the_base_language_and_rejects_everything_else() {
+        for (input, want) in [
+            ("en-US", Some("en")),
+            ("en_GB", Some("en")),
+            ("DE", Some("de")),
+            ("ja-JP-u-ca-japanese", Some("ja")),
+            ("pt-BR", None),
+            ("zz", None),
+            ("", None),
+            ("   ", None),
+        ] {
+            assert_eq!(
+                lookup_locale_data(input).map(|d| d.tag),
+                want,
+                "lookup_locale_data({input:?})"
+            );
+        }
+    }
+}
