@@ -311,7 +311,11 @@ impl<'a> Paragraph<'a> {
 
 impl Widget for Paragraph<'_> {
     fn render(&self, area: Rect, frame: &mut Frame) {
-        if frame.a11y_enabled() {
+        // Not for an empty area: nothing lands on screen for one, so a node
+        // would describe a widget that was never drawn, and every such node
+        // collides on the id of the same empty rect
+        // (bd-a11y-sibling-id-collision-6zqd2).
+        if frame.a11y_enabled() && !area.is_empty() {
             frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
         }
         #[cfg(feature = "tracing")]

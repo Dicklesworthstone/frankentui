@@ -728,18 +728,21 @@ fn every_screen_gives_each_a11y_node_a_unique_id() {
     const SIZES: &[(u16, u16)] = &[(80, 24), (120, 40), (40, 12)];
 
     /// Screens that drop at least one node to a colliding id today, all owned
-    /// by bd-a11y-sibling-id-collision-6zqd2. Three of these are the degenerate
-    /// sub-case worth fixing first: the surviving node has zero area
-    /// (`21x0`, `0x0`, `23x0`), and a node with no area cannot be focused or
-    /// read, so the widget should not be emitting one at all.
+    /// by bd-a11y-sibling-id-collision-6zqd2.
+    ///
+    /// The degenerate sub-case is already gone: seven widgets pushed their
+    /// accessibility node *before* their own emptiness check, so a widget laid
+    /// out into an empty area announced a node for something it never drew,
+    /// and all of them hashed to the id of the same empty rect. Fixing the
+    /// ordering retired `form_validation` and `macro_recorder` from this list
+    /// entirely. What is left is the real sibling case - two widgets drawn at
+    /// the same non-empty rect - which needs the id redesign.
     const KNOWN_COLLIDING: &[&str] = &[
         "dashboard",
-        "form_validation",
         "inline_mode_story",
         "intrinsic_sizing",
         "layout_inspector",
         "layout_lab",
-        "macro_recorder",
         "widget_gallery",
     ];
 
