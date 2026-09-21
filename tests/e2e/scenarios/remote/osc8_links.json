@@ -4,37 +4,12 @@
   "initial_cols": 80,
   "initial_rows": 24,
   "steps": [
-    {
-      "type": "send",
-      "data": "printf '\\033]8;;https://example.com\\033\\\\Click Here\\033]8;;\\033\\\\\\n'\n",
-      "delay_ms": 200,
-      "comment": "Basic OSC8 link"
-    },
-    {
-      "type": "send",
-      "data": "printf '\\033]8;id=link1;https://rust-lang.org\\033\\\\Rust\\033]8;;\\033\\\\ is great\\n'\n",
-      "delay_ms": 200,
-      "comment": "OSC8 with id param"
-    },
-    {
-      "type": "send",
-      "data": "printf 'Before \\033]8;;file:///tmp/test.txt\\033\\\\local file\\033]8;;\\033\\\\ after\\n'\n",
-      "delay_ms": 200,
-      "comment": "File URI link"
-    },
-    {
-      "type": "send",
-      "data": "printf '\\033]8;;https://a.com\\033\\\\Link A\\033]8;;\\033\\\\ \\033]8;;https://b.com\\033\\\\Link B\\033]8;;\\033\\\\\\n'\n",
-      "delay_ms": 200,
-      "comment": "Adjacent links"
-    },
-    {
-      "type": "send",
-      "data": "printf '\\033]8;;https://long-url.example.com/path/to/resource?query=value&other=param#fragment\\033\\\\Long URL\\033]8;;\\033\\\\\\n'\n",
-      "delay_ms": 200,
-      "comment": "Long URL"
-    },
-    { "type": "drain" }
+    {"type": "send", "data": "printf '\\033]8;;https://example.com\\033\\\\Click Here\\033]8;;\\033\\\\\\n'\n", "delay_ms": 200, "comment": "Basic OSC8 link"},
+    {"type": "send", "data": "printf '\\033]8;id=link1;https://rust-lang.org\\033\\\\Rust\\033]8;;\\033\\\\ is great\\n'\n", "delay_ms": 200, "comment": "OSC8 with id param"},
+    {"type": "send", "data": "printf 'Before \\033]8;;file:///tmp/test.txt\\033\\\\local file\\033]8;;\\033\\\\ after\\n'\n", "delay_ms": 200, "comment": "File URI link"},
+    {"type": "send", "data": "printf '\\033]8;;https://a.com\\033\\\\Link A\\033]8;;\\033\\\\ \\033]8;;https://b.com\\033\\\\Link B\\033]8;;\\033\\\\\\n'\n", "delay_ms": 200, "comment": "Adjacent links"},
+    {"type": "send", "data": "printf '\\033]8;;https://long-url.example.com/path/to/resource?query=value&other=param#fragment\\033\\\\Long URL\\033]8;;\\033\\\\\\n'\n", "delay_ms": 200, "comment": "Long URL"},
+    {"type": "drain"}
   ],
   "timeout_s": 15
 }

@@ -3,41 +3,18 @@
   "description": "Intentional assertion miss to validate ligature E2E failure diagnostics",
   "initial_cols": 90,
   "initial_rows": 24,
-  "fixture_categories": ["failure_injection"],
+  "fixture_categories": [
+    "failure_injection"
+  ],
   "steps": [
-    {
-      "type": "send",
-      "data": "printf 'LIGATURE_FAILURE_INJECTION_START\\n'\n",
-      "delay_ms": 120,
-      "comment": "Failure fixture sentinel"
-    },
-    {
-      "type": "send",
-      "data": "printf 'KNOWN_LIGATURE_MARKER: fallback deterministic\\n'\n",
-      "delay_ms": 120,
-      "comment": "Known marker"
-    },
-    {
-      "type": "send",
-      "data": "printf 'LIGATURE_FAILURE_INJECTION_END\\n'\n",
-      "delay_ms": 120,
-      "comment": "Failure fixture sentinel"
-    },
-    { "type": "drain" }
+    {"type": "send", "data": "printf 'LIGATURE_FAILURE_INJECTION_START\\n'\n", "delay_ms": 120, "comment": "Failure fixture sentinel"},
+    {"type": "send", "data": "printf 'KNOWN_LIGATURE_MARKER: fallback deterministic\\n'\n", "delay_ms": 120, "comment": "Known marker"},
+    {"type": "send", "data": "printf 'LIGATURE_FAILURE_INJECTION_END\\n'\n", "delay_ms": 120, "comment": "Failure fixture sentinel"},
+    {"type": "drain"}
   ],
   "assertions": [
-    {
-      "id": "ligature_failure_known_marker_present",
-      "category": "failure_injection",
-      "kind": "contains",
-      "pattern": "KNOWN_LIGATURE_MARKER:"
-    },
-    {
-      "id": "ligature_failure_intentional_missing_marker",
-      "category": "failure_injection",
-      "kind": "contains",
-      "pattern": "THIS_LIGATURE_MARKER_SHOULD_NEVER_EXIST"
-    }
+    {"id": "ligature_failure_known_marker_present", "category": "failure_injection", "kind": "contains", "pattern": "KNOWN_LIGATURE_MARKER:"},
+    {"id": "ligature_failure_intentional_missing_marker", "category": "failure_injection", "kind": "contains", "pattern": "THIS_LIGATURE_MARKER_SHOULD_NEVER_EXIST"}
   ],
   "timeout_s": 12
 }

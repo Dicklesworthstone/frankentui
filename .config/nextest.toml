@@ -107,6 +107,16 @@ fail-fast = false
 # include a threshold the test actually asserts. The ftui-harness twin of that
 # same collector, `widget_accessibility_content_stays_out_of_real_otlp_exports`,
 # was never listed and went on failing, which is what exposed the real cause.
+#
+# `large_buffer_100k_insert_char` was added on 2026-09-21 and meets both halves
+# of that test: it asserts `assert_within_budget` on an elapsed duration, and
+# it is the fourth `editor_perf` budget - `large_buffer_10k_delete_char` and
+# the three above it were already here, so leaving it off was the partial
+# coverage warned about earlier. It missed in a 28,387-test all-features run,
+# then passed 3 of 3 run alone while the host sat at a 1-min average of 92-114.
+# That contrast is sharper than the usual one: at that load the six budgets it
+# was re-run beside failed 17 of their 18 runs even alone, so what separates it
+# is the concurrent nextest processes, not the host.
 [[profile.default.overrides]]
 filter = '''
     test(=e2e_focus_change_storm_performance)
@@ -142,6 +152,7 @@ filter = '''
     | test(=stress_cursor_movements)
     | test(=focus::graph::tests::perf_insert_1000_nodes)
     | test(=large_buffer_10k_delete_char)
+    | test(=large_buffer_100k_insert_char)
     | test(=seed_demo_deadline_expires_mid_run_after_readiness)
     | test(=bloodstream_roundtrip::bloodstream_database_to_terminal_roundtrip_is_delta_only)
     | test(=benchmark_1m_evaluations_under_30ms)

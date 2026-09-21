@@ -1,7 +1,10 @@
 {
   "name": "cnl_with_count",
   "description": "CNL moves cursor down by count and to column 0",
-  "initial_size": [10, 5],
+  "initial_size": [
+    10,
+    5
+  ],
   "input_bytes_hex": "4142431b5b324544",
   "expected": {
     "cursor": {

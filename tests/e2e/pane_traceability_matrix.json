@@ -1,7 +1,13 @@
 {
   "schema_version": "pane-traceability-v1",
   "root_bead": "bd-gajnk",
-  "status_values": ["planned", "implemented", "passing", "flaky", "blocked"],
+  "status_values": [
+    "planned",
+    "implemented",
+    "passing",
+    "flaky",
+    "blocked"
+  ],
   "default_evidence_status_by_bead_status": {
     "open": {
       "unit": "planned",
@@ -22,8 +28,12 @@
   "profiles": {
     "program": {
       "description": "Program-level planning and gate visibility for the pane epic.",
-      "required_evidence": ["logging"],
-      "scripts": ["tests/e2e/check_pane_traceability.sh"],
+      "required_evidence": [
+        "logging"
+      ],
+      "scripts": [
+        "tests/e2e/check_pane_traceability.sh"
+      ],
       "artifact_assertions": [
         "artifact_pane_traceability_matrix",
         "artifact_pane_traceability_status"
@@ -31,7 +41,11 @@
     },
     "implementation": {
       "description": "Implementation beads require unit/e2e/logging evidence tied to canonical pane runners.",
-      "required_evidence": ["unit", "e2e", "logging"],
+      "required_evidence": [
+        "unit",
+        "e2e",
+        "logging"
+      ],
       "scripts": [
         "scripts/pane_e2e.sh",
         "tests/e2e/scripts/test_layout_composer_resize.sh",
@@ -45,7 +59,11 @@
     },
     "validation": {
       "description": "Validation beads must map to deterministic replay, E2E coverage, and structured diagnostics.",
-      "required_evidence": ["unit", "e2e", "logging"],
+      "required_evidence": [
+        "unit",
+        "e2e",
+        "logging"
+      ],
       "scripts": [
         "scripts/pane_e2e.sh",
         "tests/e2e/check_pane_traceability.sh",
@@ -61,8 +79,14 @@
     },
     "rollout": {
       "description": "Rollout beads require evidence that release gates and traceability summaries are wired.",
-      "required_evidence": ["e2e", "logging"],
-      "scripts": ["scripts/pane_e2e.sh", "tests/e2e/check_pane_traceability.sh"],
+      "required_evidence": [
+        "e2e",
+        "logging"
+      ],
+      "scripts": [
+        "scripts/pane_e2e.sh",
+        "tests/e2e/check_pane_traceability.sh"
+      ],
       "artifact_assertions": [
         "artifact_jsonl",
         "artifact_pane_e2e_summary",

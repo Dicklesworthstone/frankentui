@@ -6,6 +6,8 @@
   "comment": "CUP(999,999) clamps to (2,4) in 5x3 grid, print Z at bottom-right; cursor at (2,4) with pending_wrap",
   "expected": {
     "cursor": { "row": 2, "col": 4 },
-    "cells": [{ "row": 2, "col": 4, "char": "Z" }]
+    "cells": [
+      { "row": 2, "col": 4, "char": "Z" }
+    ]
   }
 }

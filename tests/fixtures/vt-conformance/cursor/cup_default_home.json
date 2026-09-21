@@ -6,6 +6,9 @@
   "comment": "CUP(3,3) to (2,2), print X, CUP with no params -> (0,0), print Y; cursor at (0,1)",
   "expected": {
     "cursor": { "row": 0, "col": 1 },
-    "cells": [{ "row": 0, "col": 0, "char": "Y" }, { "row": 2, "col": 2, "char": "X" }]
+    "cells": [
+      { "row": 0, "col": 0, "char": "Y" },
+      { "row": 2, "col": 2, "char": "X" }
+    ]
   }
 }

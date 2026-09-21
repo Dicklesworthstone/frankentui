@@ -12,143 +12,45 @@
     "extreme_resize"
   ],
   "steps": [
-    { "type": "send", "data": "echo 'RESIZE_STORM_START'\n", "delay_ms": 200 },
-    { "type": "send", "data": "echo 'SIGNAL:DPR_SHIFT:1.00->1.25'\n", "delay_ms": 80 },
-    { "type": "drain" },
-    { "type": "resize", "cols": 80, "rows": 24, "delay_ms": 40 },
-    {
-      "type": "send",
-      "data": "printf 'GEOM_PROBE:%sx%s|signal=dpr_shift\\n' \"$(tput cols)\" \"$(tput lines)\"\n",
-      "delay_ms": 120
-    },
-    { "type": "send", "data": "echo 'SIGNAL:ZOOM_CHANGE:1.00->1.10'\n", "delay_ms": 80 },
-    { "type": "resize", "cols": 160, "rows": 50, "delay_ms": 30 },
-    { "type": "resize", "cols": 40, "rows": 10, "delay_ms": 30 },
-    {
-      "type": "send",
-      "data": "printf 'GEOM_PROBE:%sx%s|signal=zoom_change\\n' \"$(tput cols)\" \"$(tput lines)\"\n",
-      "delay_ms": 120
-    },
-    {
-      "type": "send",
-      "data": "echo 'SIGNAL:FONT_RELOAD:JetBrainsMono->Iosevka'\n",
-      "delay_ms": 80
-    },
-    { "type": "resize", "cols": 200, "rows": 60, "delay_ms": 30 },
-    { "type": "resize", "cols": 80, "rows": 24, "delay_ms": 30 },
-    { "type": "resize", "cols": 120, "rows": 40, "delay_ms": 30 },
-    {
-      "type": "send",
-      "data": "printf 'GEOM_PROBE:%sx%s|signal=font_reload\\n' \"$(tput cols)\" \"$(tput lines)\"\n",
-      "delay_ms": 120
-    },
-    { "type": "resize", "cols": 120, "rows": 40, "delay_ms": 40 },
-    {
-      "type": "send",
-      "data": "printf 'GEOM_PROBE:%sx%s|signal=same_size\\n' \"$(tput cols)\" \"$(tput lines)\"\n",
-      "delay_ms": 120
-    },
-    { "type": "resize", "cols": 1, "rows": 1, "delay_ms": 50 },
-    {
-      "type": "send",
-      "data": "printf 'GEOM_PROBE:%sx%s|signal=extreme_min\\n' \"$(tput cols)\" \"$(tput lines)\"\n",
-      "delay_ms": 120
-    },
-    { "type": "resize", "cols": 300, "rows": 100, "delay_ms": 50 },
-    {
-      "type": "send",
-      "data": "printf 'GEOM_PROBE:%sx%s|signal=extreme_max\\n' \"$(tput cols)\" \"$(tput lines)\"\n",
-      "delay_ms": 120
-    },
-    { "type": "resize", "cols": 80, "rows": 24, "delay_ms": 50 },
-    {
-      "type": "send",
-      "data": "printf 'GEOM_PROBE:%sx%s|signal=final\\n' \"$(tput cols)\" \"$(tput lines)\"\n",
-      "delay_ms": 120
-    },
-    { "type": "send", "data": "echo 'RESIZE_STORM_END'\n", "delay_ms": 200 },
-    { "type": "drain" }
+    {"type": "send", "data": "echo 'RESIZE_STORM_START'\n", "delay_ms": 200},
+    {"type": "send", "data": "echo 'SIGNAL:DPR_SHIFT:1.00->1.25'\n", "delay_ms": 80},
+    {"type": "drain"},
+    {"type": "resize", "cols": 80, "rows": 24, "delay_ms": 40},
+    {"type": "send", "data": "printf 'GEOM_PROBE:%sx%s|signal=dpr_shift\\n' \"$(tput cols)\" \"$(tput lines)\"\n", "delay_ms": 120},
+    {"type": "send", "data": "echo 'SIGNAL:ZOOM_CHANGE:1.00->1.10'\n", "delay_ms": 80},
+    {"type": "resize", "cols": 160, "rows": 50, "delay_ms": 30},
+    {"type": "resize", "cols": 40, "rows": 10, "delay_ms": 30},
+    {"type": "send", "data": "printf 'GEOM_PROBE:%sx%s|signal=zoom_change\\n' \"$(tput cols)\" \"$(tput lines)\"\n", "delay_ms": 120},
+    {"type": "send", "data": "echo 'SIGNAL:FONT_RELOAD:JetBrainsMono->Iosevka'\n", "delay_ms": 80},
+    {"type": "resize", "cols": 200, "rows": 60, "delay_ms": 30},
+    {"type": "resize", "cols": 80, "rows": 24, "delay_ms": 30},
+    {"type": "resize", "cols": 120, "rows": 40, "delay_ms": 30},
+    {"type": "send", "data": "printf 'GEOM_PROBE:%sx%s|signal=font_reload\\n' \"$(tput cols)\" \"$(tput lines)\"\n", "delay_ms": 120},
+    {"type": "resize", "cols": 120, "rows": 40, "delay_ms": 40},
+    {"type": "send", "data": "printf 'GEOM_PROBE:%sx%s|signal=same_size\\n' \"$(tput cols)\" \"$(tput lines)\"\n", "delay_ms": 120},
+    {"type": "resize", "cols": 1, "rows": 1, "delay_ms": 50},
+    {"type": "send", "data": "printf 'GEOM_PROBE:%sx%s|signal=extreme_min\\n' \"$(tput cols)\" \"$(tput lines)\"\n", "delay_ms": 120},
+    {"type": "resize", "cols": 300, "rows": 100, "delay_ms": 50},
+    {"type": "send", "data": "printf 'GEOM_PROBE:%sx%s|signal=extreme_max\\n' \"$(tput cols)\" \"$(tput lines)\"\n", "delay_ms": 120},
+    {"type": "resize", "cols": 80, "rows": 24, "delay_ms": 50},
+    {"type": "send", "data": "printf 'GEOM_PROBE:%sx%s|signal=final\\n' \"$(tput cols)\" \"$(tput lines)\"\n", "delay_ms": 120},
+    {"type": "send", "data": "echo 'RESIZE_STORM_END'\n", "delay_ms": 200},
+    {"type": "drain"}
   ],
   "assertions": [
-    {
-      "id": "resize_start_marker",
-      "category": "resize",
-      "kind": "contains",
-      "pattern": "RESIZE_STORM_START"
-    },
-    {
-      "id": "resize_end_marker",
-      "category": "resize",
-      "kind": "contains",
-      "pattern": "RESIZE_STORM_END"
-    },
-    {
-      "id": "resize_signal_dpr",
-      "category": "dpr_shift",
-      "kind": "contains",
-      "pattern": "SIGNAL:DPR_SHIFT:1.00->1.25"
-    },
-    {
-      "id": "resize_signal_zoom",
-      "category": "zoom_change",
-      "kind": "contains",
-      "pattern": "SIGNAL:ZOOM_CHANGE:1.00->1.10"
-    },
-    {
-      "id": "resize_signal_font",
-      "category": "font_reload",
-      "kind": "contains",
-      "pattern": "SIGNAL:FONT_RELOAD:JetBrainsMono->Iosevka"
-    },
-    {
-      "id": "resize_geom_probe_count",
-      "category": "resize",
-      "kind": "regex",
-      "pattern": "GEOM_PROBE:[0-9]+x[0-9]+\\|signal=[a-z_]+",
-      "min_count": 6
-    },
-    {
-      "id": "resize_probe_dpr",
-      "category": "dpr_shift",
-      "kind": "contains",
-      "pattern": "GEOM_PROBE:80x24|signal=dpr_shift"
-    },
-    {
-      "id": "resize_probe_zoom",
-      "category": "zoom_change",
-      "kind": "contains",
-      "pattern": "GEOM_PROBE:40x10|signal=zoom_change"
-    },
-    {
-      "id": "resize_probe_font",
-      "category": "font_reload",
-      "kind": "contains",
-      "pattern": "GEOM_PROBE:120x40|signal=font_reload"
-    },
-    {
-      "id": "resize_probe_same_size",
-      "category": "same_size_resize",
-      "kind": "contains",
-      "pattern": "GEOM_PROBE:120x40|signal=same_size"
-    },
-    {
-      "id": "resize_probe_extreme_min",
-      "category": "extreme_resize",
-      "kind": "contains",
-      "pattern": "GEOM_PROBE:1x1|signal=extreme_min"
-    },
-    {
-      "id": "resize_probe_extreme_max",
-      "category": "extreme_resize",
-      "kind": "contains",
-      "pattern": "GEOM_PROBE:300x100|signal=extreme_max"
-    },
-    {
-      "id": "resize_probe_final",
-      "category": "resize",
-      "kind": "contains",
-      "pattern": "GEOM_PROBE:80x24|signal=final"
-    }
+    {"id": "resize_start_marker", "category": "resize", "kind": "contains", "pattern": "RESIZE_STORM_START"},
+    {"id": "resize_end_marker", "category": "resize", "kind": "contains", "pattern": "RESIZE_STORM_END"},
+    {"id": "resize_signal_dpr", "category": "dpr_shift", "kind": "contains", "pattern": "SIGNAL:DPR_SHIFT:1.00->1.25"},
+    {"id": "resize_signal_zoom", "category": "zoom_change", "kind": "contains", "pattern": "SIGNAL:ZOOM_CHANGE:1.00->1.10"},
+    {"id": "resize_signal_font", "category": "font_reload", "kind": "contains", "pattern": "SIGNAL:FONT_RELOAD:JetBrainsMono->Iosevka"},
+    {"id": "resize_geom_probe_count", "category": "resize", "kind": "regex", "pattern": "GEOM_PROBE:[0-9]+x[0-9]+\\|signal=[a-z_]+", "min_count": 6},
+    {"id": "resize_probe_dpr", "category": "dpr_shift", "kind": "contains", "pattern": "GEOM_PROBE:80x24|signal=dpr_shift"},
+    {"id": "resize_probe_zoom", "category": "zoom_change", "kind": "contains", "pattern": "GEOM_PROBE:40x10|signal=zoom_change"},
+    {"id": "resize_probe_font", "category": "font_reload", "kind": "contains", "pattern": "GEOM_PROBE:120x40|signal=font_reload"},
+    {"id": "resize_probe_same_size", "category": "same_size_resize", "kind": "contains", "pattern": "GEOM_PROBE:120x40|signal=same_size"},
+    {"id": "resize_probe_extreme_min", "category": "extreme_resize", "kind": "contains", "pattern": "GEOM_PROBE:1x1|signal=extreme_min"},
+    {"id": "resize_probe_extreme_max", "category": "extreme_resize", "kind": "contains", "pattern": "GEOM_PROBE:300x100|signal=extreme_max"},
+    {"id": "resize_probe_final", "category": "resize", "kind": "contains", "pattern": "GEOM_PROBE:80x24|signal=final"}
   ],
   "timeout_s": 30
 }

@@ -6,6 +6,8 @@
   "comment": "CSI 2;5 r (region rows 1-4, 0-based), CSI ? 6 h (DECOM on), CSI 4 G (CHA col 3), CSI 2 d (VPA row=1 relative → abs row 2), print Y at (2,3); cursor at (2,4)",
   "expected": {
     "cursor": { "row": 2, "col": 4 },
-    "cells": [{ "row": 2, "col": 3, "char": "Y" }]
+    "cells": [
+      { "row": 2, "col": 3, "char": "Y" }
+    ]
   }
 }

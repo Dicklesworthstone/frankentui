@@ -5,49 +5,20 @@
   "initial_cols": 80,
   "initial_rows": 24,
   "steps": [
-    { "type": "send", "data": "cat\n", "delay_ms": 300 },
-    {
-      "type": "send",
-      "data_hex": "1b5b3230307e",
-      "delay_ms": 50,
-      "comment": "Paste start: ESC[200~"
-    },
-    { "type": "send", "data": "Hello, \u4e16\u754c! \ud83c\udf0d\n", "delay_ms": 100 },
-    { "type": "send", "data": "Caf\u00e9 \u2603 Snowman \u2764 Heart\n", "delay_ms": 100 },
-    {
-      "type": "send",
-      "data": "\u0e01\u0e02\u0e03 Thai \u3042\u3044\u3046 Japanese\n",
-      "delay_ms": 100
-    },
-    {
-      "type": "send",
-      "data_hex": "1b5b3230317e",
-      "delay_ms": 50,
-      "comment": "Paste end: ESC[201~"
-    },
-    { "type": "wait", "ms": 200 },
-    { "type": "send", "data_hex": "04", "delay_ms": 100, "comment": "Ctrl-D to exit cat" },
-    { "type": "drain" }
+    {"type": "send", "data": "cat\n", "delay_ms": 300},
+    {"type": "send", "data_hex": "1b5b3230307e", "delay_ms": 50, "comment": "Paste start: ESC[200~"},
+    {"type": "send", "data": "Hello, \u4e16\u754c! \ud83c\udf0d\n", "delay_ms": 100},
+    {"type": "send", "data": "Caf\u00e9 \u2603 Snowman \u2764 Heart\n", "delay_ms": 100},
+    {"type": "send", "data": "\u0e01\u0e02\u0e03 Thai \u3042\u3044\u3046 Japanese\n", "delay_ms": 100},
+    {"type": "send", "data_hex": "1b5b3230317e", "delay_ms": 50, "comment": "Paste end: ESC[201~"},
+    {"type": "wait", "ms": 200},
+    {"type": "send", "data_hex": "04", "delay_ms": 100, "comment": "Ctrl-D to exit cat"},
+    {"type": "drain"}
   ],
   "assertions": [
-    {
-      "id": "paste_unicode_line_1",
-      "kind": "contains",
-      "pattern": "Hello, 世界! 🌍",
-      "category": "unicode"
-    },
-    {
-      "id": "paste_unicode_line_2",
-      "kind": "contains",
-      "pattern": "Café ☃ Snowman ❤ Heart",
-      "category": "unicode"
-    },
-    {
-      "id": "paste_unicode_line_3",
-      "kind": "contains",
-      "pattern": "กขฃ Thai あいう Japanese",
-      "category": "unicode"
-    }
+    {"id": "paste_unicode_line_1", "kind": "contains", "pattern": "Hello, 世界! 🌍", "category": "unicode"},
+    {"id": "paste_unicode_line_2", "kind": "contains", "pattern": "Café ☃ Snowman ❤ Heart", "category": "unicode"},
+    {"id": "paste_unicode_line_3", "kind": "contains", "pattern": "กขฃ Thai あいう Japanese", "category": "unicode"}
   ],
   "timeout_s": 15
 }

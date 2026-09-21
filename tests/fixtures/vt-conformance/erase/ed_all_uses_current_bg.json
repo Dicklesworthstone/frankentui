@@ -1,7 +1,10 @@
 {
   "name": "ed_all_uses_current_bg",
   "description": "ED 2 erases entire display using current background color",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "1b5b34316d48656c6c6f1b5b34346d1b5b324a",
   "expected": {
     "cursor": {

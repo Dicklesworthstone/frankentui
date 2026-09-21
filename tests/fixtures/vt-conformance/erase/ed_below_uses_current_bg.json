@@ -1,7 +1,10 @@
 {
   "name": "ed_below_uses_current_bg",
   "description": "ED 0 erases using current background color for blank cells",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "41424344451b5b34366d1b5b313b33481b5b304a",
   "expected": {
     "cursor": {

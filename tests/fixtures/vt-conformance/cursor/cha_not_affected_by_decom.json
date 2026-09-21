@@ -1,7 +1,10 @@
 {
   "name": "cha_not_affected_by_decom",
   "description": "CHA moves cursor to absolute column on current row regardless of origin mode",
-  "initial_size": [10, 6],
+  "initial_size": [
+    10,
+    6
+  ],
   "input_bytes_hex": "1b5b333b35721b5b3f36681b5b364758",
   "comment": "DECSTBM(3,5) → region rows 2-4. DECOM on homes cursor to (2,0). CHA(6) → col 5 (absolute, unaffected by DECOM). Print X at (2,5). Cursor at (2,6).",
   "expected": {

@@ -6,6 +6,8 @@
   "comment": "DECSTBM(2,4) -> rows 1..3. DECOM on homes to row 1, col 0. CHA(4) sets col 3. VPA(10) under DECOM maps beyond region and clamps row to 3. Print Q at (3,3).",
   "expected": {
     "cursor": { "row": 3, "col": 4 },
-    "cells": [{ "row": 3, "col": 3, "char": "Q" }]
+    "cells": [
+      { "row": 3, "col": 3, "char": "Q" }
+    ]
   }
 }

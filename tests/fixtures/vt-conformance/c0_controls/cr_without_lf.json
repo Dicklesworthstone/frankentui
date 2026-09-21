@@ -1,7 +1,10 @@
 {
   "name": "cr_without_lf",
   "description": "Carriage return alone moves cursor to column 0, overwriting subsequent chars",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "48454c4c4f0d5859",
   "expected": {
     "cursor": {

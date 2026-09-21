@@ -12,157 +12,34 @@
     "erasure"
   ],
   "steps": [
-    {
-      "type": "send",
-      "data": "printf 'UNICODE_FIXTURE_START\\n'\n",
-      "delay_ms": 120,
-      "comment": "Fixture sentinel"
-    },
-    {
-      "type": "send",
-      "data": "printf 'BOX: ┌───┐\\n'\n",
-      "delay_ms": 120,
-      "comment": "Box drawing: top"
-    },
-    {
-      "type": "send",
-      "data": "printf 'BOX: │ A │\\n'\n",
-      "delay_ms": 90,
-      "comment": "Box drawing: middle"
-    },
-    {
-      "type": "send",
-      "data": "printf 'BOX: └───┘\\n'\n",
-      "delay_ms": 90,
-      "comment": "Box drawing: bottom"
-    },
-    {
-      "type": "send",
-      "data": "printf 'CJK: 中文测试\\n'\n",
-      "delay_ms": 120,
-      "comment": "Wide CJK glyphs"
-    },
-    {
-      "type": "send",
-      "data": "printf 'FULLWIDTH: ＡＢＣ\\n'\n",
-      "delay_ms": 120,
-      "comment": "Fullwidth ASCII forms"
-    },
-    {
-      "type": "send",
-      "data": "printf 'AMBIGUOUS: · Ω ß ¡\\n'\n",
-      "delay_ms": 120,
-      "comment": "Ambiguous width fixtures"
-    },
-    {
-      "type": "send",
-      "data": "printf 'ZWJ: 👨‍🚀 👩‍🔬\\n'\n",
-      "delay_ms": 120,
-      "comment": "Emoji ZWJ clusters"
-    },
-    {
-      "type": "send",
-      "data": "printf 'COMBINING: é ñ\\n'\n",
-      "delay_ms": 120,
-      "comment": "Combining marks"
-    },
-    {
-      "type": "send",
-      "data": "printf 'NORMALIZATION: é | é\\n'\n",
-      "delay_ms": 120,
-      "comment": "NFC vs NFD"
-    },
-    {
-      "type": "send",
-      "data": "printf 'CURSOR: A😀B\\rCURSOR: A#B\\n'\n",
-      "delay_ms": 120,
-      "comment": "Cursor return overwrite case"
-    },
-    {
-      "type": "send",
-      "data": "printf 'ERASE: 12345\\rERASE: 12\\033[K\\n'\n",
-      "delay_ms": 120,
-      "comment": "Erasure to end of line"
-    },
-    {
-      "type": "send",
-      "data": "printf 'UNICODE_FIXTURE_END\\n'\n",
-      "delay_ms": 120,
-      "comment": "Fixture sentinel"
-    },
-    { "type": "drain" }
+    {"type": "send", "data": "printf 'UNICODE_FIXTURE_START\\n'\n", "delay_ms": 120, "comment": "Fixture sentinel"},
+    {"type": "send", "data": "printf 'BOX: ┌───┐\\n'\n", "delay_ms": 120, "comment": "Box drawing: top"},
+    {"type": "send", "data": "printf 'BOX: │ A │\\n'\n", "delay_ms": 90, "comment": "Box drawing: middle"},
+    {"type": "send", "data": "printf 'BOX: └───┘\\n'\n", "delay_ms": 90, "comment": "Box drawing: bottom"},
+    {"type": "send", "data": "printf 'CJK: 中文测试\\n'\n", "delay_ms": 120, "comment": "Wide CJK glyphs"},
+    {"type": "send", "data": "printf 'FULLWIDTH: ＡＢＣ\\n'\n", "delay_ms": 120, "comment": "Fullwidth ASCII forms"},
+    {"type": "send", "data": "printf 'AMBIGUOUS: · Ω ß ¡\\n'\n", "delay_ms": 120, "comment": "Ambiguous width fixtures"},
+    {"type": "send", "data": "printf 'ZWJ: 👨‍🚀 👩‍🔬\\n'\n", "delay_ms": 120, "comment": "Emoji ZWJ clusters"},
+    {"type": "send", "data": "printf 'COMBINING: é ñ\\n'\n", "delay_ms": 120, "comment": "Combining marks"},
+    {"type": "send", "data": "printf 'NORMALIZATION: é | é\\n'\n", "delay_ms": 120, "comment": "NFC vs NFD"},
+    {"type": "send", "data": "printf 'CURSOR: A😀B\\rCURSOR: A#B\\n'\n", "delay_ms": 120, "comment": "Cursor return overwrite case"},
+    {"type": "send", "data": "printf 'ERASE: 12345\\rERASE: 12\\033[K\\n'\n", "delay_ms": 120, "comment": "Erasure to end of line"},
+    {"type": "send", "data": "printf 'UNICODE_FIXTURE_END\\n'\n", "delay_ms": 120, "comment": "Fixture sentinel"},
+    {"type": "drain"}
   ],
   "assertions": [
-    {
-      "id": "unicode_start_marker",
-      "category": "fixture",
-      "kind": "contains",
-      "pattern": "UNICODE_FIXTURE_START"
-    },
-    {
-      "id": "unicode_end_marker",
-      "category": "fixture",
-      "kind": "contains",
-      "pattern": "UNICODE_FIXTURE_END"
-    },
-    {
-      "id": "unicode_box_rows",
-      "category": "box_drawing",
-      "kind": "regex",
-      "pattern": "BOX:\\s+.*",
-      "min_count": 3
-    },
-    { "id": "unicode_cjk", "category": "wide", "kind": "contains", "pattern": "CJK: 中文测试" },
-    {
-      "id": "unicode_fullwidth",
-      "category": "wide",
-      "kind": "contains",
-      "pattern": "FULLWIDTH: ＡＢＣ"
-    },
-    {
-      "id": "unicode_ambiguous",
-      "category": "ambiguous_width",
-      "kind": "contains",
-      "pattern": "AMBIGUOUS: · Ω ß ¡"
-    },
-    {
-      "id": "unicode_zwj",
-      "category": "emoji_zwj",
-      "kind": "contains",
-      "pattern": "ZWJ: 👨‍🚀 👩‍🔬"
-    },
-    {
-      "id": "unicode_combining_nfc",
-      "category": "combining_marks",
-      "kind": "contains",
-      "pattern": "COMBINING: é ñ",
-      "normalization": "nfc"
-    },
-    {
-      "id": "unicode_normalization_marker",
-      "category": "normalization",
-      "kind": "contains",
-      "pattern": "NORMALIZATION:"
-    },
-    {
-      "id": "unicode_normalization_equivalence_nfc",
-      "category": "normalization",
-      "kind": "contains",
-      "pattern": "NORMALIZATION: é | é",
-      "normalization": "nfc"
-    },
-    {
-      "id": "unicode_cursor_overwrite",
-      "category": "cursor_movement",
-      "kind": "regex",
-      "pattern": "CURSOR:\\s+A#B"
-    },
-    {
-      "id": "unicode_erase_escape",
-      "category": "erasure",
-      "kind": "regex",
-      "pattern": "ERASE:\\s+12\u001b\\[K"
-    }
+    {"id": "unicode_start_marker", "category": "fixture", "kind": "contains", "pattern": "UNICODE_FIXTURE_START"},
+    {"id": "unicode_end_marker", "category": "fixture", "kind": "contains", "pattern": "UNICODE_FIXTURE_END"},
+    {"id": "unicode_box_rows", "category": "box_drawing", "kind": "regex", "pattern": "BOX:\\s+.*", "min_count": 3},
+    {"id": "unicode_cjk", "category": "wide", "kind": "contains", "pattern": "CJK: 中文测试"},
+    {"id": "unicode_fullwidth", "category": "wide", "kind": "contains", "pattern": "FULLWIDTH: ＡＢＣ"},
+    {"id": "unicode_ambiguous", "category": "ambiguous_width", "kind": "contains", "pattern": "AMBIGUOUS: · Ω ß ¡"},
+    {"id": "unicode_zwj", "category": "emoji_zwj", "kind": "contains", "pattern": "ZWJ: 👨‍🚀 👩‍🔬"},
+    {"id": "unicode_combining_nfc", "category": "combining_marks", "kind": "contains", "pattern": "COMBINING: é ñ", "normalization": "nfc"},
+    {"id": "unicode_normalization_marker", "category": "normalization", "kind": "contains", "pattern": "NORMALIZATION:"},
+    {"id": "unicode_normalization_equivalence_nfc", "category": "normalization", "kind": "contains", "pattern": "NORMALIZATION: é | é", "normalization": "nfc"},
+    {"id": "unicode_cursor_overwrite", "category": "cursor_movement", "kind": "regex", "pattern": "CURSOR:\\s+A#B"},
+    {"id": "unicode_erase_escape", "category": "erasure", "kind": "regex", "pattern": "ERASE:\\s+12\u001b\\[K"}
   ],
   "timeout_s": 20
 }

@@ -6,6 +6,9 @@
   "comment": "A at (0,0), CUP(2,0) B, CUP(3,0) C, CUP(1,1) then IL(1). Line 0 becomes blank, A moves to line 1, B to line 2. C falls off.",
   "expected": {
     "cursor": { "row": 0, "col": 0 },
-    "cells": [{ "row": 1, "col": 0, "char": "A" }, { "row": 2, "col": 0, "char": "B" }]
+    "cells": [
+      { "row": 1, "col": 0, "char": "A" },
+      { "row": 2, "col": 0, "char": "B" }
+    ]
   }
 }

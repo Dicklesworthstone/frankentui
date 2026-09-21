@@ -1,7 +1,10 @@
 {
   "name": "sgr_color_persistence",
   "description": "Named colors persist across characters until changed by another SGR",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "1b5b33316d41421b5b33326d4344",
   "expected": {
     "cursor": {

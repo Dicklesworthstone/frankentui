@@ -6,6 +6,8 @@
   "comment": "CUP(2,3) to 0-indexed (1,2), print ABCD, ESC c full reset (clears grid, cursor to 0,0), print X at (0,0).",
   "expected": {
     "cursor": { "row": 0, "col": 1 },
-    "cells": [{ "row": 0, "col": 0, "char": "X" }]
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" }
+    ]
   }
 }

@@ -1,7 +1,10 @@
 {
   "name": "cpl_with_count",
   "description": "CPL moves cursor up by count and to column 0",
-  "initial_size": [10, 5],
+  "initial_size": [
+    10,
+    5
+  ],
   "input_bytes_hex": "1b5b343b344841421b5b324658",
   "expected": {
     "cursor": {

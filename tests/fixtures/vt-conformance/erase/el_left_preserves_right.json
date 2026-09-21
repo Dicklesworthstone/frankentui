@@ -1,7 +1,10 @@
 {
   "name": "el_left_preserves_right",
   "description": "EL 1 erases from cursor to beginning of line, preserving content after cursor",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "41424344454647481b5b313b34481b5b314b",
   "expected": {
     "cursor": {

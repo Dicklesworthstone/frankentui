@@ -1,7 +1,10 @@
 {
   "name": "sgr_named_fg",
   "description": "SGR 31 sets foreground to named red (Named(1)), SGR 0 resets",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "411b5b33316d421b5b306d43",
   "expected": {
     "cursor": {

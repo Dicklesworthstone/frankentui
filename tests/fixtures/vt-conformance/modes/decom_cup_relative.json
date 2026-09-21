@@ -6,6 +6,9 @@
   "comment": "CSI 2;4 r (region rows 1-3), CSI ? 6 h (DECOM on), CUP(H) → top of region (1,0), print A, CUP(2,1) → region-relative row 2 = abs row 2 col 0, print B; cursor at (2,1)",
   "expected": {
     "cursor": { "row": 2, "col": 1 },
-    "cells": [{ "row": 1, "col": 0, "char": "A" }, { "row": 2, "col": 0, "char": "B" }]
+    "cells": [
+      { "row": 1, "col": 0, "char": "A" },
+      { "row": 2, "col": 0, "char": "B" }
+    ]
   }
 }

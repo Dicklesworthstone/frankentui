@@ -6,6 +6,8 @@
   "comment": "Backspace at (0,0) stays at (0,0). Another backspace still at (0,0). Print A at (0,0).",
   "expected": {
     "cursor": { "row": 0, "col": 1 },
-    "cells": [{ "row": 0, "col": 0, "char": "A" }]
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" }
+    ]
   }
 }

@@ -6,6 +6,8 @@
   "comment": "Print ABCDE at (0,0)-(0,4), CUP(1,4) to (0,3), EL(1) erases cols 0..3 inclusive. Only E remains.",
   "expected": {
     "cursor": { "row": 0, "col": 3 },
-    "cells": [{ "row": 0, "col": 4, "char": "E" }]
+    "cells": [
+      { "row": 0, "col": 4, "char": "E" }
+    ]
   }
 }

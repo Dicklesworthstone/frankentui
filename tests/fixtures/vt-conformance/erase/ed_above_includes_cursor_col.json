@@ -1,7 +1,10 @@
 {
   "name": "ed_above_includes_cursor_col",
   "description": "ED 1 erases everything above cursor row and left of cursor col inclusive",
-  "initial_size": [8, 3],
+  "initial_size": [
+    8,
+    3
+  ],
   "input_bytes_hex": "41424344454647481b5b323b314831323334353637381b5b333b314858595a57565554531b5b323b34481b5b314a",
   "expected": {
     "cursor": {

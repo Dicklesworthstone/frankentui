@@ -1,7 +1,10 @@
 {
   "name": "ech_overflow_clamps",
   "description": "ECH count exceeding remaining columns clamps to end of line",
-  "initial_size": [8, 3],
+  "initial_size": [
+    8,
+    3
+  ],
   "input_bytes_hex": "41424344454647481b5b313b36481b5b31303058",
   "expected": {
     "cursor": {

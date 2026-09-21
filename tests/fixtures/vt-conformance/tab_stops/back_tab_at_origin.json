@@ -6,6 +6,8 @@
   "comment": "CBT(1) from col 0 → stays at col 0 (no prior tab stop); print A at (0,0); cursor at (0,1)",
   "expected": {
     "cursor": { "row": 0, "col": 1 },
-    "cells": [{ "row": 0, "col": 0, "char": "A" }]
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" }
+    ]
   }
 }

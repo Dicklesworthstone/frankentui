@@ -6,6 +6,8 @@
   "comment": "VPA(3) → row 2; CHA(4) → col 3; print X at (2,3); cursor at (2,4)",
   "expected": {
     "cursor": { "row": 2, "col": 4 },
-    "cells": [{ "row": 2, "col": 3, "char": "X" }]
+    "cells": [
+      { "row": 2, "col": 3, "char": "X" }
+    ]
   }
 }

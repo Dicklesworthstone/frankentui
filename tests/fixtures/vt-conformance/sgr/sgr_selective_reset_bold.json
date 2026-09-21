@@ -1,7 +1,10 @@
 {
   "name": "sgr_selective_reset_bold",
   "description": "SGR 22 resets bold and dim without affecting italic or underline",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "1b5b313b333b346d411b5b32326d42",
   "expected": {
     "cursor": {

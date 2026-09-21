@@ -6,6 +6,8 @@
   "comment": "DECSTBM(2,4), DECOM on, CUP(2,3) → abs row 2 col 2, print A at (2,2). DECOM off → homes to (0,0). Cursor at (0,0), A visible at (2,2).",
   "expected": {
     "cursor": { "row": 0, "col": 0 },
-    "cells": [{ "row": 2, "col": 2, "char": "A" }]
+    "cells": [
+      { "row": 2, "col": 2, "char": "A" }
+    ]
   }
 }

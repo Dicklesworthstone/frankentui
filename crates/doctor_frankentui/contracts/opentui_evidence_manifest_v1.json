@@ -35,7 +35,10 @@
       "status": "ok",
       "input_hash": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
       "output_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-      "artifact_paths": ["snapshot/", "intake_meta.json"],
+      "artifact_paths": [
+        "snapshot/",
+        "intake_meta.json"
+      ],
       "error": null
     },
     {
@@ -51,7 +54,10 @@
       "status": "ok",
       "input_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "output_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "artifact_paths": ["extraction/facts.jsonl", "extraction/component_graph.json"],
+      "artifact_paths": [
+        "extraction/facts.jsonl",
+        "extraction/component_graph.json"
+      ],
       "error": null
     },
     {
@@ -67,7 +73,9 @@
       "status": "ok",
       "input_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
       "output_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-      "artifact_paths": ["ir/canonical_ir.json"],
+      "artifact_paths": [
+        "ir/canonical_ir.json"
+      ],
       "error": null
     },
     {
@@ -83,7 +91,10 @@
       "status": "ok",
       "input_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
       "output_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-      "artifact_paths": ["generated/src/", "generated/Cargo.toml"],
+      "artifact_paths": [
+        "generated/src/",
+        "generated/Cargo.toml"
+      ],
       "error": null
     },
     {
@@ -99,7 +110,9 @@
       "status": "ok",
       "input_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
       "output_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-      "artifact_paths": ["generated/src/"],
+      "artifact_paths": [
+        "generated/src/"
+      ],
       "error": null
     },
     {
@@ -135,8 +148,21 @@
     "test_fail_count": 0,
     "test_skip_count": 2,
     "semantic_clause_coverage": {
-      "covered": ["ST-001", "ST-002", "EO-001", "SE-001", "VT-001", "VT-002"],
-      "uncovered": ["EO-002", "IE-001", "IE-002", "TB-001", "TB-002"]
+      "covered": [
+        "ST-001",
+        "ST-002",
+        "EO-001",
+        "SE-001",
+        "VT-001",
+        "VT-002"
+      ],
+      "uncovered": [
+        "EO-002",
+        "IE-001",
+        "IE-002",
+        "TB-001",
+        "TB-002"
+      ]
     },
     "benchmark_summary": {
       "latency_p50_ms": 12.5,

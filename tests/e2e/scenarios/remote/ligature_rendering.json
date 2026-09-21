@@ -3,108 +3,32 @@
   "description": "Ligature-mode remote rendering fixture with normalization and deterministic fallback markers",
   "initial_cols": 110,
   "initial_rows": 28,
-  "fixture_categories": ["ligature_mode", "fallback_determinism", "normalization", "font_profiles"],
+  "fixture_categories": [
+    "ligature_mode",
+    "fallback_determinism",
+    "normalization",
+    "font_profiles"
+  ],
   "steps": [
-    {
-      "type": "send",
-      "data": "printf 'LIGATURE_FIXTURE_START\\n'\n",
-      "delay_ms": 120,
-      "comment": "Fixture sentinel"
-    },
-    {
-      "type": "send",
-      "data": "printf 'FONT_PROFILE: JetBrainsMono,FiraCode,Iosevka\\n'\n",
-      "delay_ms": 120,
-      "comment": "Representative font profiles"
-    },
-    {
-      "type": "send",
-      "data": "printf 'LIGATURE_MODE: AUTO\\n'\n",
-      "delay_ms": 120,
-      "comment": "Mode marker"
-    },
-    {
-      "type": "send",
-      "data": "printf 'RAW_SEQ: office affine offline\\n'\n",
-      "delay_ms": 120,
-      "comment": "Canonical raw sequences"
-    },
-    {
-      "type": "send",
-      "data": "printf 'LIGATURE_CHAR: ﬁ ﬂ\\n'\n",
-      "delay_ms": 120,
-      "comment": "Compatibility ligature characters"
-    },
-    {
-      "type": "send",
-      "data": "printf 'NFKC_EXPECTED: ﬁ ﬂ\\n'\n",
-      "delay_ms": 120,
-      "comment": "Should normalize to fi/fl under NFKC"
-    },
-    {
-      "type": "send",
-      "data": "printf 'FALLBACK_POLICY: ligatures_disabled_when_unsupported\\n'\n",
-      "delay_ms": 120,
-      "comment": "Deterministic fallback contract marker"
-    },
-    {
-      "type": "send",
-      "data": "printf 'LIGATURE_FIXTURE_END\\n'\n",
-      "delay_ms": 120,
-      "comment": "Fixture sentinel"
-    },
-    { "type": "drain" }
+    {"type": "send", "data": "printf 'LIGATURE_FIXTURE_START\\n'\n", "delay_ms": 120, "comment": "Fixture sentinel"},
+    {"type": "send", "data": "printf 'FONT_PROFILE: JetBrainsMono,FiraCode,Iosevka\\n'\n", "delay_ms": 120, "comment": "Representative font profiles"},
+    {"type": "send", "data": "printf 'LIGATURE_MODE: AUTO\\n'\n", "delay_ms": 120, "comment": "Mode marker"},
+    {"type": "send", "data": "printf 'RAW_SEQ: office affine offline\\n'\n", "delay_ms": 120, "comment": "Canonical raw sequences"},
+    {"type": "send", "data": "printf 'LIGATURE_CHAR: ﬁ ﬂ\\n'\n", "delay_ms": 120, "comment": "Compatibility ligature characters"},
+    {"type": "send", "data": "printf 'NFKC_EXPECTED: ﬁ ﬂ\\n'\n", "delay_ms": 120, "comment": "Should normalize to fi/fl under NFKC"},
+    {"type": "send", "data": "printf 'FALLBACK_POLICY: ligatures_disabled_when_unsupported\\n'\n", "delay_ms": 120, "comment": "Deterministic fallback contract marker"},
+    {"type": "send", "data": "printf 'LIGATURE_FIXTURE_END\\n'\n", "delay_ms": 120, "comment": "Fixture sentinel"},
+    {"type": "drain"}
   ],
   "assertions": [
-    {
-      "id": "ligature_start_marker",
-      "category": "fixture",
-      "kind": "contains",
-      "pattern": "LIGATURE_FIXTURE_START"
-    },
-    {
-      "id": "ligature_end_marker",
-      "category": "fixture",
-      "kind": "contains",
-      "pattern": "LIGATURE_FIXTURE_END"
-    },
-    {
-      "id": "ligature_font_profiles",
-      "category": "font_profiles",
-      "kind": "contains",
-      "pattern": "FONT_PROFILE: JetBrainsMono,FiraCode,Iosevka"
-    },
-    {
-      "id": "ligature_mode_marker",
-      "category": "ligature_mode",
-      "kind": "contains",
-      "pattern": "LIGATURE_MODE: AUTO"
-    },
-    {
-      "id": "ligature_raw_sequence",
-      "category": "ligature_mode",
-      "kind": "contains",
-      "pattern": "RAW_SEQ: office affine offline"
-    },
-    {
-      "id": "ligature_compatibility_chars",
-      "category": "ligature_mode",
-      "kind": "contains",
-      "pattern": "LIGATURE_CHAR: ﬁ ﬂ"
-    },
-    {
-      "id": "ligature_nfkc_normalization",
-      "category": "normalization",
-      "kind": "contains",
-      "pattern": "NFKC_EXPECTED: fi fl",
-      "normalization": "nfkc"
-    },
-    {
-      "id": "ligature_fallback_policy",
-      "category": "fallback_determinism",
-      "kind": "contains",
-      "pattern": "FALLBACK_POLICY: ligatures_disabled_when_unsupported"
-    }
+    {"id": "ligature_start_marker", "category": "fixture", "kind": "contains", "pattern": "LIGATURE_FIXTURE_START"},
+    {"id": "ligature_end_marker", "category": "fixture", "kind": "contains", "pattern": "LIGATURE_FIXTURE_END"},
+    {"id": "ligature_font_profiles", "category": "font_profiles", "kind": "contains", "pattern": "FONT_PROFILE: JetBrainsMono,FiraCode,Iosevka"},
+    {"id": "ligature_mode_marker", "category": "ligature_mode", "kind": "contains", "pattern": "LIGATURE_MODE: AUTO"},
+    {"id": "ligature_raw_sequence", "category": "ligature_mode", "kind": "contains", "pattern": "RAW_SEQ: office affine offline"},
+    {"id": "ligature_compatibility_chars", "category": "ligature_mode", "kind": "contains", "pattern": "LIGATURE_CHAR: ﬁ ﬂ"},
+    {"id": "ligature_nfkc_normalization", "category": "normalization", "kind": "contains", "pattern": "NFKC_EXPECTED: fi fl", "normalization": "nfkc"},
+    {"id": "ligature_fallback_policy", "category": "fallback_determinism", "kind": "contains", "pattern": "FALLBACK_POLICY: ligatures_disabled_when_unsupported"}
   ],
   "timeout_s": 20
 }

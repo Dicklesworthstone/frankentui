@@ -1,7 +1,10 @@
 {
   "name": "dec_graphics_symbols",
   "description": "DEC Special Graphics symbol characters: diamond, checker, degree, plus-minus",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "1b283060616667",
   "expected": {
     "cursor": {

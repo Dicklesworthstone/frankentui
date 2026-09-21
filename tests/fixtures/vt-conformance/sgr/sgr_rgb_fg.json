@@ -1,7 +1,10 @@
 {
   "name": "sgr_rgb_fg",
   "description": "SGR 38;2;255;128;0 sets foreground to RGB(255,128,0), SGR 39 resets",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "411b5b33383b323b3235353b3132383b306d421b5b33396d43",
   "expected": {
     "cursor": {
@@ -23,7 +26,11 @@
         "char": "B",
         "attrs": {
           "fg_color": {
-            "rgb": [255, 128, 0]
+            "rgb": [
+              255,
+              128,
+              0
+            ]
           }
         }
       },

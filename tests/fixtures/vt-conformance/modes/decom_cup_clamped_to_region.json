@@ -1,7 +1,10 @@
 {
   "name": "decom_cup_clamped_to_region",
   "description": "In DECOM mode, CUP row is relative to scroll region and clamped within it",
-  "initial_size": [10, 6],
+  "initial_size": [
+    10,
+    6
+  ],
   "input_bytes_hex": "1b5b333b35721b5b3f36681b5b313b3148411b5b31303b314842",
   "expected": {
     "cursor": {

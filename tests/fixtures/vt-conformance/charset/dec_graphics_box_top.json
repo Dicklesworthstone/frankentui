@@ -1,7 +1,10 @@
 {
   "name": "dec_graphics_box_top",
   "description": "DEC Special Graphics charset draws box-drawing top edge: lqqqk -> \u250c\u2500\u2500\u2500\u2510",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "1b28306c7171716b",
   "expected": {
     "cursor": {

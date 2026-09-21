@@ -1,7 +1,10 @@
 {
   "name": "soft_reset_clears_charset",
   "description": "DECSTR (CSI ! p) resets charset back to ASCII, preserves screen content",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "1b28306c1b5b21706c",
   "expected": {
     "cursor": {

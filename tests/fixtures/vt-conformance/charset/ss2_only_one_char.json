@@ -6,6 +6,9 @@
   "comment": "Designate G2=DEC Graphics. SS2. Print 'j' → via G2: U+2518 (┘). Print 'j' again → via G0 ASCII: literal 'j'. Verifies single-shift consumed after one char.",
   "expected": {
     "cursor": { "row": 0, "col": 2 },
-    "cells": [{ "row": 0, "col": 0, "char": "\u2518" }, { "row": 0, "col": 1, "char": "j" }]
+    "cells": [
+      { "row": 0, "col": 0, "char": "\u2518" },
+      { "row": 0, "col": 1, "char": "j" }
+    ]
   }
 }

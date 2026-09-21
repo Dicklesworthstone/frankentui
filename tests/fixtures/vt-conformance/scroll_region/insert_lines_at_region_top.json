@@ -1,7 +1,10 @@
 {
   "name": "insert_lines_at_region_top",
   "description": "IL at top of scroll region pushes content down, bottom line falls off",
-  "initial_size": [8, 5],
+  "initial_size": [
+    8,
+    5
+  ],
   "input_bytes_hex": "1b5b323b34721b5b323b3148524f57311b5b333b3148524f57321b5b343b3148524f57331b5b323b31481b5b314c",
   "expected": {
     "cursor": {

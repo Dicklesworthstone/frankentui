@@ -40,14 +40,8 @@
     },
     "effect_queue_select": {
       "required": [
-        "current_time",
-        "selected_job_id",
-        "queue_length",
-        "mean_wait_time",
-        "max_wait_time",
-        "reason",
-        "tie_break_reason",
-        "jobs"
+        "current_time", "selected_job_id", "queue_length", "mean_wait_time",
+        "max_wait_time", "reason", "tie_break_reason", "jobs"
       ],
       "optional": [],
       "types": {
@@ -68,21 +62,9 @@
     },
     "voi_decision": {
       "required": [
-        "idx",
-        "should_sample",
-        "forced",
-        "blocked",
-        "voi_gain",
-        "score",
-        "cost",
-        "log_bayes_factor",
-        "posterior_mean",
-        "posterior_variance",
-        "e_value",
-        "e_threshold",
-        "boundary_score",
-        "events_since_sample",
-        "time_since_sample_ms",
+        "idx", "should_sample", "forced", "blocked", "voi_gain", "score", "cost",
+        "log_bayes_factor", "posterior_mean", "posterior_variance", "e_value",
+        "e_threshold", "boundary_score", "events_since_sample", "time_since_sample_ms",
         "reason"
       ],
       "optional": [],
@@ -107,49 +89,17 @@
     },
     "budget_decision": {
       "required": [
-        "frame_idx",
-        "decision",
-        "decision_controller",
-        "decision_controller_reason",
-        "degradation_before",
-        "degradation_after",
-        "frame_time_us",
-        "budget_us",
-        "pid_output",
-        "pid_p",
-        "pid_i",
-        "pid_d",
-        "e_value",
-        "frames_observed",
-        "frames_since_change",
-        "in_warmup",
-        "runtime_mode",
-        "runtime_mode_before",
-        "pressure_class",
-        "work_disposition",
-        "governor_reason",
-        "governor_transition",
-        "strict_semantics_preserved",
-        "queue_in_flight",
-        "queue_max_depth",
-        "queue_dropped_delta",
-        "resize_coalescing_active",
-        "resize_detector",
-        "recovery_intervals_observed",
-        "recovery_intervals_required",
-        "deferred_work_total",
-        "coalesced_work_total",
-        "dropped_work_total",
-        "bucket_key",
-        "n_b",
-        "alpha",
-        "q_b",
-        "y_hat",
-        "upper_us",
-        "risk",
-        "fallback_level",
-        "window_size",
-        "reset_count"
+        "frame_idx", "decision", "decision_controller", "decision_controller_reason",
+        "degradation_before", "degradation_after", "frame_time_us", "budget_us",
+        "pid_output", "pid_p", "pid_i", "pid_d", "e_value", "frames_observed",
+        "frames_since_change", "in_warmup", "runtime_mode", "runtime_mode_before",
+        "pressure_class", "work_disposition", "governor_reason", "governor_transition",
+        "strict_semantics_preserved", "queue_in_flight", "queue_max_depth",
+        "queue_dropped_delta", "resize_coalescing_active", "resize_detector",
+        "recovery_intervals_observed", "recovery_intervals_required",
+        "deferred_work_total", "coalesced_work_total", "dropped_work_total",
+        "bucket_key", "n_b", "alpha", "q_b", "y_hat", "upper_us", "risk",
+        "fallback_level", "window_size", "reset_count"
       ],
       "optional": [],
       "types": {
@@ -200,18 +150,9 @@
     },
     "widget_refresh": {
       "required": [
-        "frame_idx",
-        "budget_us",
-        "degradation",
-        "essentials_cost_us",
-        "selected_cost_us",
-        "selected_value",
-        "selected_count",
-        "skipped_count",
-        "starved_selected",
-        "starved_skipped",
-        "over_budget",
-        "selected"
+        "frame_idx", "budget_us", "degradation", "essentials_cost_us", "selected_cost_us",
+        "selected_value", "selected_count", "skipped_count", "starved_selected",
+        "starved_skipped", "over_budget", "selected"
       ],
       "optional": [],
       "types": {
@@ -230,16 +171,7 @@
       }
     },
     "a11y_tree": {
-      "required": [
-        "frame_idx",
-        "nodes",
-        "added",
-        "removed",
-        "changed",
-        "focus",
-        "announcements",
-        "dropped"
-      ],
+      "required": ["frame_idx", "nodes", "added", "removed", "changed", "focus", "announcements", "dropped"],
       "optional": [],
       "types": {
         "frame_idx": "integer",
@@ -264,12 +196,7 @@
       }
     },
     "fairness_config": {
-      "required": [
-        "enabled",
-        "input_priority_threshold_ms",
-        "dominance_threshold",
-        "fairness_threshold"
-      ],
+      "required": ["enabled", "input_priority_threshold_ms", "dominance_threshold", "fairness_threshold"],
       "optional": [],
       "types": {
         "enabled": "boolean",
@@ -280,14 +207,8 @@
     },
     "fairness_decision": {
       "required": [
-        "frame_idx",
-        "decision",
-        "reason",
-        "pending_input_latency_ms",
-        "jain_index",
-        "resize_dominance_count",
-        "dominance_threshold",
-        "fairness_threshold",
+        "frame_idx", "decision", "reason", "pending_input_latency_ms", "jain_index",
+        "resize_dominance_count", "dominance_threshold", "fairness_threshold",
         "input_priority_threshold_ms"
       ],
       "optional": [],
@@ -305,15 +226,8 @@
     },
     "capability_decision": {
       "required": [
-        "capability",
-        "env_detected",
-        "probe",
-        "operator_override",
-        "in_mux",
-        "final",
-        "log_odds",
-        "probability",
-        "evidence"
+        "capability", "env_detected", "probe", "operator_override", "in_mux", "final",
+        "log_odds", "probability", "evidence"
       ],
       "optional": [],
       "types": {
@@ -342,13 +256,7 @@
       }
     },
     "inline_strategy": {
-      "required": [
-        "strategy",
-        "use_scroll_region",
-        "use_sync_output",
-        "in_mux",
-        "scroll_region_verified"
-      ],
+      "required": ["strategy", "use_scroll_region", "use_sync_output", "in_mux", "scroll_region_verified"],
       "optional": [],
       "types": {
         "strategy": "string",
@@ -360,52 +268,16 @@
     },
     "diff_decision": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "strategy",
-        "cost_full",
-        "cost_dirty",
-        "cost_redraw",
-        "posterior_mean",
-        "posterior_variance",
-        "alpha",
-        "beta",
-        "guard_reason",
-        "hysteresis_applied",
-        "hysteresis_ratio",
-        "dirty_rows",
-        "total_rows",
-        "total_cells",
-        "span_count",
-        "span_coverage_pct",
-        "max_span_len",
-        "fallback_reason",
-        "scan_cost_estimate",
-        "tile_used",
-        "tile_fallback",
-        "tile_w",
-        "tile_h",
-        "tile_size",
-        "tiles_x",
-        "tiles_y",
-        "dirty_tiles",
-        "dirty_tile_count",
-        "dirty_cells",
-        "dirty_tile_ratio",
-        "dirty_cell_ratio",
-        "scanned_tiles",
-        "skipped_tiles",
-        "skipped_tile_count",
-        "tile_scan_cells_estimate",
-        "sat_build_cost_est",
-        "skipped_tile_rows",
-        "sat_queries",
-        "bayesian_enabled",
-        "dirty_rows_enabled"
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "strategy", "cost_full", "cost_dirty", "cost_redraw", "posterior_mean",
+        "posterior_variance", "alpha", "beta", "guard_reason", "hysteresis_applied",
+        "hysteresis_ratio", "dirty_rows", "total_rows", "total_cells", "span_count",
+        "span_coverage_pct", "max_span_len", "fallback_reason", "scan_cost_estimate",
+        "tile_used", "tile_fallback", "tile_w", "tile_h", "tile_size", "tiles_x",
+        "tiles_y", "dirty_tiles", "dirty_tile_count", "dirty_cells", "dirty_tile_ratio",
+        "dirty_cell_ratio", "scanned_tiles", "skipped_tiles", "skipped_tile_count",
+        "tile_scan_cells_estimate", "sat_build_cost_est", "skipped_tile_rows",
+        "sat_queries", "bayesian_enabled", "dirty_rows_enabled"
       ],
       "optional": ["regime"],
       "types": {
@@ -454,14 +326,8 @@
     },
     "diff_regime_transition": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "from",
-        "to",
-        "frames_in_previous",
-        "strategy",
-        "dirty_cell_ratio"
+        "schema_version", "run_id", "event_idx", "from", "to",
+        "frames_in_previous", "strategy", "dirty_cell_ratio"
       ],
       "optional": [],
       "types": {
@@ -479,22 +345,10 @@
     },
     "config": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "steady_delay_ms",
-        "burst_delay_ms",
-        "hard_deadline_ms",
-        "burst_enter_rate",
-        "burst_exit_rate",
-        "cooldown_frames",
-        "rate_window_size",
-        "logging_enabled",
-        "enable_bocpd",
-        "heuristic_fallback"
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "steady_delay_ms", "burst_delay_ms", "hard_deadline_ms", "burst_enter_rate",
+        "burst_exit_rate", "cooldown_frames", "rate_window_size", "logging_enabled",
+        "enable_bocpd", "heuristic_fallback"
       ],
       "optional": [],
       "types": {
@@ -512,29 +366,10 @@
     },
     "decision": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "idx",
-        "elapsed_ms",
-        "dt_ms",
-        "event_rate",
-        "regime",
-        "action",
-        "pending_w",
-        "pending_h",
-        "applied_w",
-        "applied_h",
-        "time_since_render_ms",
-        "coalesce_ms",
-        "forced",
-        "transition_reason_code",
-        "transition_confidence",
-        "detector",
-        "p_burst"
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "idx", "elapsed_ms", "dt_ms", "event_rate", "regime", "action", "pending_w",
+        "pending_h", "applied_w", "applied_h", "time_since_render_ms", "coalesce_ms",
+        "forced", "transition_reason_code", "transition_confidence", "detector", "p_burst"
       ],
       "optional": [],
       "types": {
@@ -560,21 +395,9 @@
     "bocpd": {
       "schema_version": "bocpd-v1",
       "required": [
-        "schema_version",
-        "p_burst",
-        "log_bf",
-        "obs_ms",
-        "regime",
-        "ll_steady",
-        "ll_burst",
-        "runlen_mean",
-        "runlen_var",
-        "runlen_mode",
-        "runlen_p95",
-        "runlen_tail",
-        "delay_ms",
-        "forced_deadline",
-        "n_obs"
+        "schema_version", "p_burst", "log_bf", "obs_ms", "regime", "ll_steady", "ll_burst",
+        "runlen_mean", "runlen_var", "runlen_mode", "runlen_p95", "runlen_tail",
+        "delay_ms", "forced_deadline", "n_obs"
       ],
       "optional": [],
       "types": {
@@ -596,20 +419,9 @@
     },
     "regime_transition": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "from_regime",
-        "to_regime",
-        "reason_code",
-        "confidence",
-        "event_rate",
-        "p_burst",
-        "detector",
-        "cooldown_remaining"
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "from_regime", "to_regime", "reason_code", "confidence", "event_rate", "p_burst",
+        "detector", "cooldown_remaining"
       ],
       "optional": [],
       "types": {
@@ -625,17 +437,9 @@
     },
     "decision_evidence": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "log_bayes_factor",
-        "regime_contribution",
-        "timing_contribution",
-        "rate_contribution",
-        "explanation"
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "log_bayes_factor", "regime_contribution", "timing_contribution",
+        "rate_contribution", "explanation"
       ],
       "optional": [],
       "types": {
@@ -648,21 +452,9 @@
     },
     "summary": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "decisions",
-        "applies",
-        "forced_applies",
-        "coalesces",
-        "skips",
-        "regime",
-        "last_w",
-        "last_h",
-        "checksum"
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "decisions", "applies", "forced_applies", "coalesces", "skips", "regime",
+        "last_w", "last_h", "checksum"
       ],
       "optional": [],
       "types": {
@@ -690,15 +482,8 @@
     },
     "voi_observe": {
       "required": [
-        "idx",
-        "sample_idx",
-        "violated",
-        "posterior_mean",
-        "posterior_variance",
-        "alpha",
-        "beta",
-        "e_value",
-        "e_threshold"
+        "idx", "sample_idx", "violated", "posterior_mean", "posterior_variance",
+        "alpha", "beta", "e_value", "e_threshold"
       ],
       "optional": [],
       "types": {
@@ -715,19 +500,8 @@
     },
     "allocation_budget_config": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "alpha",
-        "mu_0",
-        "sigma_sq",
-        "cusum_k",
-        "cusum_h",
-        "lambda",
-        "window_size"
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "alpha", "mu_0", "sigma_sq", "cusum_k", "cusum_h", "lambda", "window_size"
       ],
       "optional": [],
       "types": {
@@ -742,19 +516,8 @@
     },
     "allocation_budget_evidence": {
       "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "frame",
-        "x",
-        "residual",
-        "cusum_plus",
-        "cusum_minus",
-        "e_value",
-        "alert"
+        "schema_version", "run_id", "event_idx", "screen_mode", "cols", "rows",
+        "frame", "x", "residual", "cusum_plus", "cusum_minus", "e_value", "alert"
       ],
       "optional": [],
       "types": {

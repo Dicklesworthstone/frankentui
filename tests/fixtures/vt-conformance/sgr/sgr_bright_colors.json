@@ -8,12 +8,7 @@
     "cursor": { "row": 0, "col": 3 },
     "cells": [
       { "row": 0, "col": 0, "char": "J", "attrs": { "fg_color": { "named": 9 } } },
-      {
-        "row": 0,
-        "col": 1,
-        "char": "K",
-        "attrs": { "fg_color": { "named": 9 }, "bg_color": { "named": 12 } }
-      },
+      { "row": 0, "col": 1, "char": "K", "attrs": { "fg_color": { "named": 9 }, "bg_color": { "named": 12 } } },
       { "row": 0, "col": 2, "char": "L" }
     ]
   }

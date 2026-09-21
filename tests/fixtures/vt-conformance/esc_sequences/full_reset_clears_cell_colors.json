@@ -1,7 +1,10 @@
 {
   "name": "full_reset_clears_cell_colors",
   "description": "RIS (ESC c) clears grid and resets SGR colors to default",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "1b5b33313b34346d4142431b6344",
   "expected": {
     "cursor": {

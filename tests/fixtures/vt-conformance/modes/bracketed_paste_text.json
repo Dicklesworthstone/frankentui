@@ -6,6 +6,9 @@
   "comment": "CSI 200 ~ (paste start), print Hi, CSI 201 ~ (paste end). Paste markers are no-ops for grid. Cursor at (0,2).",
   "expected": {
     "cursor": { "row": 0, "col": 2 },
-    "cells": [{ "row": 0, "col": 0, "char": "H" }, { "row": 0, "col": 1, "char": "i" }]
+    "cells": [
+      { "row": 0, "col": 0, "char": "H" },
+      { "row": 0, "col": 1, "char": "i" }
+    ]
   }
 }

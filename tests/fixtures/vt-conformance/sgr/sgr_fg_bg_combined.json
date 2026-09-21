@@ -1,7 +1,10 @@
 {
   "name": "sgr_fg_bg_combined",
   "description": "SGR 1;31;44 sets bold + named red fg + named blue bg simultaneously",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "1b5b313b33313b34346d581b5b306d59",
   "expected": {
     "cursor": {

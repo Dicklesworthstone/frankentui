@@ -1,7 +1,10 @@
 {
   "name": "irm_insert_before_wide",
   "description": "Insert mode: inserting a narrow char shifts a wide char right correctly",
-  "initial_size": [8, 3],
+  "initial_size": [
+    8,
+    3
+  ],
   "input_bytes_hex": "e4b896411b5b313b31481b5b346858",
   "expected": {
     "cursor": {

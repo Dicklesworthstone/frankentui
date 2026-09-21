@@ -1,7 +1,10 @@
 {
   "name": "cjk_basic",
   "description": "CJK wide characters occupy 2 columns each",
-  "initial_size": [10, 3],
+  "initial_size": [
+    10,
+    3
+  ],
   "input_bytes_hex": "41e4b896e7958c42",
   "expected": {
     "cursor": {
