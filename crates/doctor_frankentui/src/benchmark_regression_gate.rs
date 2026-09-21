@@ -486,6 +486,9 @@ pub enum BenchmarkGateFailureKind {
     PeakRssBudget,
     MissingHotspotScore,
     TrendAnomaly,
+    /// A profile the gate holds thresholds for had no baseline records, or the
+    /// gate compared no records at all. See `BenchmarkRegressionGate::evaluate`.
+    MissingBaselineRecords,
 }
 
 /// Triage-oriented failure payload.
@@ -622,6 +625,12 @@ impl BenchmarkRegressionGate {
         let baseline_id_matched = baseline.baseline_report.baseline_id == candidate.baseline_id;
         let mut profile_decisions = Vec::new();
         let mut failures = Vec::new();
+
+        let baseline_profiles: BTreeSet<BenchmarkProfileKey> = baseline
+            .normalized_records
+            .iter()
+            .map(BenchmarkProfileKey::from_record)
+            .collect();
 
         for (profile, baseline_records) in records_by_profile(&baseline.normalized_records) {
             let profile_thresholds = thresholds.get(&profile).cloned();
@@ -789,6 +798,45 @@ impl BenchmarkRegressionGate {
                     message: anomaly.message.clone(),
                 });
             }
+        }
+
+        // Profiles are discovered from the baseline's records, not from the
+        // configured thresholds, so a profile the gate is told to guard but
+        // the baseline never measured is simply never visited - and a
+        // baseline with no records visits nothing. Both used to pass: an
+        // empty baseline against a candidate ten times slower returned
+        // `passed: true` with zero profiles evaluated and zero records
+        // compared. `ftui_harness::benchmark_gate::GateResult::passed`
+        // already requires a nonempty set of passing metrics for the same
+        // reason.
+        for profile in thresholds.keys() {
+            if !baseline_profiles.contains(profile) {
+                failures.push(missing_baseline_failure(
+                    profile.clone(),
+                    format!(
+                        "profile {} has regression thresholds but the baseline has no records for it, so it was never compared",
+                        profile.profile_id()
+                    ),
+                ));
+            }
+        }
+        if failures.is_empty()
+            && profile_decisions
+                .iter()
+                .all(|decision| decision.compared_scenarios.is_empty())
+        {
+            let profile = candidate
+                .records
+                .first()
+                .map(BenchmarkCandidateRecord::profile)
+                .unwrap_or_else(|| BenchmarkProfileKey::new("unknown", "unknown"));
+            failures.push(missing_baseline_failure(
+                profile,
+                format!(
+                    "gate {} compared no benchmark records, so it has no evidence that nothing regressed",
+                    self.config.gate_id
+                ),
+            ));
         }
 
         if !baseline_id_matched {
@@ -1017,6 +1065,33 @@ fn failure_kind_for_metric(result: &BenchmarkMetricGateResult) -> BenchmarkGateF
                 BenchmarkGateFailureKind::PeakRssRegression
             }
         }
+    }
+}
+
+fn missing_baseline_failure(profile: BenchmarkProfileKey, message: String) -> BenchmarkGateFailure {
+    let score_context = BenchmarkScoreGateContext {
+        profile_id: profile.profile_id(),
+        min_required_score: DEFAULT_OPPORTUNITY_SCORE,
+        observed_best_score: None,
+        passed: false,
+        linked_hotspot_ids: Vec::new(),
+        evidence_artifacts: Vec::new(),
+    };
+    BenchmarkGateFailure {
+        failure_kind: BenchmarkGateFailureKind::MissingBaselineRecords,
+        profile_id: profile.profile_id(),
+        stage_id: profile.stage_id,
+        fixture_id: profile.fixture_id,
+        scenario_id: None,
+        metric: None,
+        baseline_value: None,
+        candidate_value: None,
+        relative_regression: None,
+        threshold: None,
+        culprit_stage_hint: "capture a baseline covering every profile the gate guards".to_string(),
+        linked_hotspot_ids: Vec::new(),
+        score_gate_context: score_context,
+        message,
     }
 }
 
@@ -1600,6 +1675,120 @@ mod tests {
         memory_scale: f64,
     ) -> BenchmarkCandidateScale {
         BenchmarkCandidateScale::new(latency_scale, throughput_scale, memory_scale)
+    }
+
+    /// Profiles are discovered from the baseline's records, so an empty
+    /// baseline evaluated nothing and passed - even against a candidate ten
+    /// times slower, which fails with five findings against the real one.
+    #[test]
+    fn gate_does_not_pass_on_a_baseline_with_no_records() {
+        let report = harness_report();
+        let candidate = BenchmarkCandidateSnapshot::from_scaled_baseline(
+            &report,
+            "candidate-slow",
+            "rev-slow",
+            10,
+            scale(10.0, 0.1, 10.0),
+            vec![hotspot(&report, 3.0, "hot-render")],
+        );
+        assert!(
+            !gate(&report)
+                .evaluate(&report, &candidate, Vec::new())
+                .passed
+        );
+
+        let mut empty = report.clone();
+        empty.normalized_records.clear();
+        let decision = gate(&report).evaluate(&empty, &candidate, Vec::new());
+
+        assert!(
+            !decision.passed,
+            "an empty baseline certified a 10x regression"
+        );
+        assert_eq!(decision.compared_record_count, 0);
+        assert_eq!(decision.failures.len(), 1);
+        assert_eq!(
+            decision.failures[0].failure_kind,
+            BenchmarkGateFailureKind::MissingBaselineRecords
+        );
+        assert_eq!(
+            decision.failures[0].profile_id,
+            profile(&report).profile_id()
+        );
+    }
+
+    /// A profile the gate is configured to guard, absent from the baseline,
+    /// was never visited even while other profiles were compared normally.
+    #[test]
+    fn gate_reports_a_configured_profile_the_baseline_never_measured() {
+        let report = harness_report();
+        let unmeasured = BenchmarkProfileKey::new("stage-never-run", "fixture-never-run");
+        let gate = BenchmarkRegressionGate::new(
+            BenchmarkRegressionGateConfig::new(
+                "gate-opentui",
+                vec![
+                    thresholds(&report),
+                    BenchmarkProfileThresholds::strict(unmeasured.clone()),
+                ],
+            )
+            .with_trend_window_size(3),
+        );
+        let candidate = BenchmarkCandidateSnapshot::from_scaled_baseline(
+            &report,
+            "candidate-fast",
+            "rev-fast",
+            10,
+            scale(1.01, 1.02, 1.01),
+            vec![hotspot(&report, 3.0, "hot-render")],
+        );
+
+        let decision = gate.evaluate(&report, &candidate, Vec::new());
+
+        assert!(
+            decision.compared_record_count > 0,
+            "the measured profile still compares"
+        );
+        assert!(!decision.passed);
+        assert_eq!(decision.failures.len(), 1);
+        assert_eq!(
+            decision.failures[0].failure_kind,
+            BenchmarkGateFailureKind::MissingBaselineRecords
+        );
+        assert_eq!(decision.failures[0].profile_id, unmeasured.profile_id());
+    }
+
+    /// With no thresholds configured and none required, the baseline's
+    /// profiles are visited but nothing is compared against a budget. That is
+    /// still no evidence, and says so once rather than passing.
+    #[test]
+    fn gate_does_not_pass_when_it_compared_nothing() {
+        let report = harness_report();
+        let mut config = BenchmarkRegressionGateConfig::new("gate-opentui", Vec::new())
+            .with_trend_window_size(3);
+        config.require_profile_thresholds = false;
+        let candidate = BenchmarkCandidateSnapshot::from_scaled_baseline(
+            &report,
+            "candidate-fast",
+            "rev-fast",
+            10,
+            scale(1.0, 1.0, 1.0),
+            vec![hotspot(&report, 3.0, "hot-render")],
+        );
+
+        let decision =
+            BenchmarkRegressionGate::new(config).evaluate(&report, &candidate, Vec::new());
+
+        assert_eq!(decision.compared_record_count, 0);
+        assert!(!decision.passed);
+        assert!(
+            decision
+                .failures
+                .iter()
+                .any(|failure| failure.failure_kind
+                    == BenchmarkGateFailureKind::MissingBaselineRecords),
+            "{:?}",
+            decision.failures
+        );
     }
 
     #[test]
