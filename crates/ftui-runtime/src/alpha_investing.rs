@@ -300,6 +300,19 @@ pub fn bonferroni_test(p_values: &[f64], alpha: f64) -> Vec<bool> {
 ///
 /// Returns indices of rejected hypotheses (sorted ascending).
 /// Controls FDR at level α under independence.
+///
+/// A NaN p-value is read as 1.0 - no evidence. `f64::clamp` passes NaN
+/// through, and the step-up below rejects the first `max_k` entries *in sorted
+/// order* rather than re-testing them, so an unhandled NaN is both rejected
+/// itself (`NaN <= threshold` is false, so it never sets `max_k`, but it can
+/// sit below one that does) and, by occupying a rank, inflates the threshold
+/// of every real p-value after it. Both fail permissively: with α = 0.05,
+/// `[0.02, 0.9, 0.95]` rejects nothing, while `[NaN, 0.02, 0.9, 0.95]`
+/// rejected the NaN *and* manufactured a discovery at 0.02.
+///
+/// Reading it as 1.0 rather than dropping it keeps `m` equal to the number of
+/// hypotheses tested, which is the denominator FDR control is defined over,
+/// and sorts it last so the real p-values keep their ranks among themselves.
 pub fn benjamini_hochberg(p_values: &[f64], alpha: f64) -> Vec<usize> {
     if p_values.is_empty() {
         return Vec::new();
@@ -309,9 +322,11 @@ pub fn benjamini_hochberg(p_values: &[f64], alpha: f64) -> Vec<usize> {
     let mut indexed: Vec<(usize, f64)> = p_values
         .iter()
         .enumerate()
-        .map(|(i, &p)| (i, p.clamp(0.0, 1.0)))
+        .map(|(i, &p)| (i, if p.is_nan() { 1.0 } else { p.clamp(0.0, 1.0) }))
         .collect();
-    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    // `total_cmp`, not `partial_cmp().unwrap_or(Equal)`: the latter is an
+    // intransitive comparator, which std's sort is documented to panic on.
+    indexed.sort_by(|a, b| a.1.total_cmp(&b.1));
 
     // Find largest k where p_(k) ≤ k/m * α.
     let mut max_k = 0;
@@ -508,6 +523,45 @@ mod tests {
     #[test]
     fn benjamini_hochberg_empty() {
         assert!(benjamini_hochberg(&[], 0.05).is_empty());
+    }
+
+    #[test]
+    fn benjamini_hochberg_never_rejects_a_nan_hypothesis() {
+        // A NaN carries no evidence, so it must never come back as a discovery.
+        assert_eq!(benjamini_hochberg(&[f64::NAN, 0.001], 0.05), vec![1]);
+        assert_eq!(benjamini_hochberg(&[0.001, f64::NAN], 0.05), vec![0]);
+        assert!(benjamini_hochberg(&[f64::NAN, f64::NAN], 0.05).is_empty());
+        assert_eq!(
+            benjamini_hochberg(&[f64::NAN, f64::NAN, 0.001], 0.05),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn benjamini_hochberg_nan_does_not_manufacture_a_discovery() {
+        // These three are correctly rejected by nobody at alpha = 0.05.
+        let real = [0.02, 0.9, 0.95];
+        assert!(benjamini_hochberg(&real, 0.05).is_empty());
+
+        // Adding a NaN must not change that. Read as 1.0 it sorts last, so the
+        // real p-values keep their ranks relative to each other; only `m` grows,
+        // which can shrink the thresholds but never widen them.
+        let poisoned = [f64::NAN, 0.02, 0.9, 0.95];
+        assert!(
+            benjamini_hochberg(&poisoned, 0.05).is_empty(),
+            "a NaN must not promote 0.02 into a rejection"
+        );
+    }
+
+    #[test]
+    fn benjamini_hochberg_clamps_out_of_range_p_values() {
+        // +/-inf are ordinary out-of-range values and clamp to the boundaries.
+        assert_eq!(
+            benjamini_hochberg(&[f64::NEG_INFINITY, 0.9, 0.95], 0.05),
+            vec![0],
+            "p <= 0 is maximally significant"
+        );
+        assert!(benjamini_hochberg(&[f64::INFINITY, 0.9, 0.95], 0.05).is_empty());
     }
 
     #[test]
