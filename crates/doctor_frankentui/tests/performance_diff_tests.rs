@@ -728,3 +728,43 @@ fn zero_baseline_is_judged_like_a_baseline_just_above_it() {
         assert!(!report.certification_passed, "baseline {baseline}");
     }
 }
+
+/// Two runs with no samples compare nothing. Every other shape of missing
+/// evidence already fails - a metric on one side only is a
+/// `MissingScenarioMetric`, too few samples is `InsufficientSamples` - but
+/// with nothing on either side none of those checks fires, and both-empty runs
+/// used to certify as `Equivalent`, which `certification_report` maps to a
+/// passing performance stage.
+#[test]
+fn runs_with_no_samples_do_not_certify() {
+    let config = PerformanceDiffConfig::certification_default();
+    let empty = |run_id: &str| PerformanceRun::new(run_id, Vec::new(), Vec::new());
+
+    let report = compare_performance_runs(&empty("source-run"), &empty("translated-run"), &config);
+    assert!(report.comparisons.is_empty() && report.differences.is_empty());
+    assert_eq!(report.verdict, PerformanceDiffVerdict::NeedsMoreEvidence);
+    assert!(!report.certification_passed, "nothing was compared");
+
+    // A workload declared with no samples is still nothing to compare.
+    let declared =
+        |run_id: &str| PerformanceRun::new(run_id, vec![workload("idle", 1)], Vec::new());
+    let report = compare_performance_runs(
+        &declared("source-run"),
+        &declared("translated-run"),
+        &config,
+    );
+    assert_eq!(report.verdict, PerformanceDiffVerdict::NeedsMoreEvidence);
+    assert!(!report.certification_passed);
+
+    // One side empty was already caught, and still is.
+    let populated = run(
+        "source-run",
+        "idle",
+        1,
+        PerformanceMetricKind::LatencyP99Ms,
+        &[10.0; 8],
+    );
+    let report = compare_performance_runs(&populated, &empty("translated-run"), &config);
+    assert_eq!(report.verdict, PerformanceDiffVerdict::PolicyRegression);
+    assert!(!report.certification_passed);
+}

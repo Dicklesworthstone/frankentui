@@ -609,7 +609,16 @@ pub fn compare_performance_runs(
     }
 
     let verdict = overall_verdict(&comparisons, &differences);
-    let certification_passed = differences.is_empty()
+    // Two runs with no samples compare nothing, and "no metric differed" is
+    // not evidence that no metric regressed. Every other shape of missing
+    // evidence already fails here - a metric on one side only is a
+    // `MissingScenarioMetric`, too few samples is `InsufficientSamples` - but
+    // with nothing on either side none of those checks has anything to fire
+    // on, and both-empty runs used to certify as `Equivalent`: a benchmark
+    // filter that matched nothing, or a harness that emitted no samples,
+    // passed the performance stage.
+    let certification_passed = !comparisons.is_empty()
+        && differences.is_empty()
         && !comparisons
             .iter()
             .any(|comparison| comparison.verdict == MetricComparisonVerdict::Inconclusive);
@@ -1115,6 +1124,10 @@ fn overall_verdict(
     comparisons: &[MetricComparison],
     differences: &[PerformanceDifference],
 ) -> PerformanceDiffVerdict {
+    // Nothing was compared; see `certification_passed` in the caller.
+    if comparisons.is_empty() && differences.is_empty() {
+        return PerformanceDiffVerdict::NeedsMoreEvidence;
+    }
     if differences
         .iter()
         .any(|diff| diff.difference_kind == PerformanceDifferenceKind::PolicyRegression)
