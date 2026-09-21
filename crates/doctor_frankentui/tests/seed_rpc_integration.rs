@@ -112,6 +112,13 @@ fn parse_request(
     let mut content_length = 0_usize;
     let mut header_end = None;
 
+    // On BSD/Darwin the accepted socket inherits O_NONBLOCK from the listener
+    // (Linux does not), and SO_RCVTIMEO is ignored on a non-blocking socket.
+    // Left non-blocking, the first read returns EAGAIN before the client's
+    // bytes arrive, the WouldBlock arm below breaks with no headers, and this
+    // returns None - dropping the request with no transcript entry and no HTTP
+    // response, which surfaces as an unrelated assertion further down the test.
+    stream.set_nonblocking(false).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
 
     loop {

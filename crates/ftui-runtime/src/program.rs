@@ -14610,6 +14610,17 @@ mod tests {
                     }
                     Err(error) => panic!("collector accept failed: {error}"),
                 };
+                // On BSD/Darwin the accepted socket inherits O_NONBLOCK from
+                // the listener (Linux does not), and SO_RCVTIMEO is ignored on
+                // a non-blocking socket. Without this the read timeout below
+                // is a no-op and `read_exact` fails with EAGAIN whenever
+                // `accept` wins the race against the client's first bytes -
+                // which it does under load. `read_exact` cannot be resumed
+                // after WouldBlock, so the socket has to be blocking rather
+                // than the read retried.
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking reads, so the timeout below applies");
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(3)))
                     .expect("bounded request read");
