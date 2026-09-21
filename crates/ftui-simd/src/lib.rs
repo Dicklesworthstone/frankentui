@@ -388,4 +388,51 @@ mod tests {
             assert_eq!(ascii_width(&bytes), ascii_width_scalar(&bytes), "len {len}");
         }
     }
+
+    /// The sweep above draws bytes uniformly from `0..=255`, so a run of
+    /// `BYTES_PER_CHUNK` bytes is entirely ASCII with probability 2^-64. Every
+    /// chunk it ever evaluates therefore takes the rejecting branch on its
+    /// first iteration: the accepting path through the chunk loop - advancing
+    /// `offset`, and the tail that is measured from wherever it stopped - is
+    /// never reached for any input long enough to have a chunk at all.
+    ///
+    /// These runs are printable ASCII by construction, then poisoned one byte
+    /// at a time so the rejecting branch is exercised at every position rather
+    /// than only near the front.
+    #[test]
+    fn ascii_kernels_agree_with_their_twins_on_runs_that_reach_the_chunk_loop() {
+        // Past two full chunks, so a bad byte can land in the first chunk, a
+        // later chunk, or the tail.
+        for len in 0..=(2 * BYTES_PER_CHUNK + 5) {
+            // 0x20..=0x7e, cycled: printable, and not a single repeated byte.
+            let mut run: Vec<u8> = (0..len).map(|i| 0x20 + (i % 0x5f) as u8).collect();
+
+            assert!(all_ascii(&run), "len {len}");
+            assert_eq!(all_ascii(&run), all_ascii_scalar(&run), "len {len}");
+            assert_eq!(ascii_width(&run), Some(len), "len {len}");
+            assert_eq!(ascii_width(&run), ascii_width_scalar(&run), "len {len}");
+
+            for pos in 0..len {
+                // NUL and 0x1f are ASCII but not printable, so the two kernels
+                // disagree with each other by design - each is compared only
+                // against its own twin. 0x7f is the byte the wrapping subtract
+                // in `ascii_width` folds to the top of the accepted range.
+                for bad in [0x00_u8, 0x1f, 0x7f, 0x80, 0xff] {
+                    let saved = run[pos];
+                    run[pos] = bad;
+                    assert_eq!(
+                        all_ascii(&run),
+                        all_ascii_scalar(&run),
+                        "all_ascii len {len} pos {pos} byte {bad:#04x}"
+                    );
+                    assert_eq!(
+                        ascii_width(&run),
+                        ascii_width_scalar(&run),
+                        "ascii_width len {len} pos {pos} byte {bad:#04x}"
+                    );
+                    run[pos] = saved;
+                }
+            }
+        }
+    }
 }
