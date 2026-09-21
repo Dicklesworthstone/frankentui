@@ -415,6 +415,12 @@ impl BayesianScorer {
     /// Score a query with both query and title already lowercased.
     ///
     /// This avoids per-title lowercasing in hot loops.
+    ///
+    /// `title_lower` must be exactly `title.to_lowercase()` and `query_lower`
+    /// exactly `query.to_lowercase()`. Matching runs over the lowercased pair
+    /// while [`MatchResult::match_positions`] indexes `title`, so an unrelated
+    /// pair does not merely score oddly - it returns positions that point into
+    /// the wrong string.
     pub fn score_with_lowered_title(
         &self,
         query: &str,
@@ -542,9 +548,25 @@ impl BayesianScorer {
             return self.detect_match_type_ascii(query_lower, title_lower, word_starts);
         }
 
+        let (match_type, mut positions) = self.detect_match_type_unicode(query_lower, title_lower);
+        remap_lower_positions_to_original(title, title_lower, &mut positions);
+        (match_type, positions)
+    }
+
+    /// Match detection over the two lowercased strings.
+    ///
+    /// Every position returned is a char index into `title_lower`, never into
+    /// the original title. The two differ whenever lowercasing is not
+    /// length-preserving, so the caller remaps them with
+    /// [`remap_lower_positions_to_original`] before anything renders.
+    fn detect_match_type_unicode(
+        &self,
+        query_lower: &str,
+        title_lower: &str,
+    ) -> (MatchType, Vec<usize>) {
         // Check exact match
         if query_lower == title_lower {
-            let positions: Vec<usize> = (0..title.chars().count()).collect();
+            let positions: Vec<usize> = (0..title_lower.chars().count()).collect();
             return (MatchType::Exact, positions);
         }
 
@@ -866,6 +888,39 @@ impl BayesianScorer {
             total += window[1].saturating_sub(window[0]).saturating_sub(1);
         }
         total
+    }
+}
+
+/// Translate char indices in `title_lower` into char indices in `title`.
+///
+/// `str::to_lowercase` is not length-preserving. U+0130 LATIN CAPITAL LETTER I
+/// WITH DOT ABOVE lowercases to the *two* chars U+0069 U+0307, so `"İstanbul"`
+/// has eight chars and its lowercase has nine. Matches are found in the
+/// lowercased title, but the renderer walks the original title's graphemes and
+/// counts its chars, so an index from one applied to the other is off by the
+/// expansion: searching `stan` in `İstanbul` highlighted `TANB`.
+///
+/// Only the expanding case costs anything. When both strings have the same
+/// number of chars - every title that is not Turkish dotted-I, in practice -
+/// this compares two counts and returns.
+fn remap_lower_positions_to_original(title: &str, title_lower: &str, positions: &mut [usize]) {
+    let original_len = title.chars().count();
+    if positions.is_empty() || original_len == title_lower.chars().count() {
+        return;
+    }
+    // One entry per char of `title_lower`, holding the index of the original
+    // char that produced it. Non-decreasing, so remapping keeps `positions`
+    // sorted; an expansion simply repeats an index, and the renderer already
+    // tolerates repeats.
+    let mut lower_to_original = Vec::with_capacity(title_lower.chars().count());
+    for (original_index, ch) in title.chars().enumerate() {
+        for _ in 0..ch.to_lowercase().count() {
+            lower_to_original.push(original_index);
+        }
+    }
+    let last = original_len.saturating_sub(1);
+    for position in positions {
+        *position = lower_to_original.get(*position).copied().unwrap_or(last);
     }
 }
 
@@ -1947,6 +2002,74 @@ mod tests {
         // s(0), t(3), g(6)
         assert_eq!(result.match_positions.len(), 3);
         assert_eq!(result.match_positions[0], 0); // 's'
+    }
+
+    /// Resolve `match_positions` the way the renderer does: as char indices
+    /// into the original, unmodified title.
+    fn highlighted(title: &str, positions: &[usize]) -> String {
+        title
+            .chars()
+            .enumerate()
+            .filter(|(index, _)| positions.contains(index))
+            .map(|(_, ch)| ch)
+            .collect()
+    }
+
+    #[test]
+    fn match_positions_index_the_original_title_not_its_lowercase() {
+        let scorer = BayesianScorer::new();
+        // `İ` lowercases to two chars (U+0069 U+0307), so `title.to_lowercase()`
+        // is one char longer than the title. Positions found in the lowercase
+        // are shifted by that expansion until they are mapped back.
+        let title = "İstanbul";
+        assert_eq!(
+            title.chars().count() + 1,
+            title.to_lowercase().chars().count()
+        );
+
+        let substring = scorer.score("stan", title);
+        assert_eq!(
+            highlighted(title, &substring.match_positions),
+            "stan",
+            "substring highlight must land on the original chars"
+        );
+
+        let prefix = scorer.score("İst", title);
+        assert_eq!(highlighted(title, &prefix.match_positions), "İst");
+
+        let exact = scorer.score(title, title);
+        assert_eq!(highlighted(title, &exact.match_positions), title);
+
+        // Every position must be addressable in the original title, or the
+        // renderer silently drops the highlight off the end.
+        for result in [&substring, &prefix, &exact] {
+            assert!(
+                result
+                    .match_positions
+                    .iter()
+                    .all(|position| *position < title.chars().count()),
+                "position out of range for {:?}",
+                result.match_positions
+            );
+        }
+    }
+
+    #[test]
+    fn match_positions_are_unaffected_when_lowercasing_preserves_length() {
+        let scorer = BayesianScorer::new();
+        for (query, title, expected) in [
+            ("caf", "Café", "Caf"),
+            ("fé", "Café", "fé"),
+            ("οφο", "ΣΟΦΟΣ", "ΟΦΟ"),
+            ("set", "Settings", "Set"),
+        ] {
+            let result = scorer.score(query, title);
+            assert_eq!(
+                highlighted(title, &result.match_positions),
+                expected,
+                "{query:?} in {title:?}"
+            );
+        }
     }
 
     // --- Empty Query ---
