@@ -375,9 +375,22 @@ pub struct ColorGradient {
 impl ColorGradient {
     /// Create a new gradient with color stops.
     /// Stops should be tuples of (position, color) where position is 0.0 to 1.0.
+    ///
+    /// Stops at a non-finite position are discarded. There is no ordering that
+    /// would place one, and keeping it corrupts every sample: [`Self::sample`]
+    /// skips it when scanning (`NaN >= t` is false) but still carries it into
+    /// the next interpolation, so `local_t` comes out NaN and the channels with
+    /// it. [`Self::sample`] already guards its own `t` through `clamp_f64`;
+    /// this is that same guard on the construction side. Discarding every stop
+    /// is allowed - both samplers return white for an empty gradient.
     pub fn new(stops: Vec<(f64, PackedRgba)>) -> Self {
         let mut stops = stops;
-        stops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        stops.retain(|(position, _)| position.is_finite());
+        // `total_cmp`, not `partial_cmp().unwrap_or(Equal)`: mapping an
+        // incomparable pair to `Equal` yields an intransitive comparator, which
+        // std's sort is documented to panic on and which silently misorders the
+        // rest when it does not. Finite floats compare identically either way.
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
         Self { stops }
     }
 
@@ -555,7 +568,7 @@ impl ColorGradient {
         // Binary search for the right segment
         let idx = self
             .stops
-            .binary_search_by(|stop| stop.0.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal))
+            .binary_search_by(|stop| stop.0.total_cmp(&t))
             .unwrap_or_else(|i| i);
 
         if idx == 0 {
@@ -631,7 +644,7 @@ impl ColorGradient {
         // Binary search for the right segment
         let idx = self
             .stops
-            .binary_search_by(|stop| stop.0.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal))
+            .binary_search_by(|stop| stop.0.total_cmp(&t))
             .unwrap_or_else(|i| i);
 
         if idx == 0 {
@@ -5285,6 +5298,58 @@ mod tests {
 
         let mid = gradient.sample(0.5);
         assert!(mid.g() > 200); // Should be greenish
+    }
+
+    #[test]
+    fn gradient_discards_non_finite_stops() {
+        let clean = ColorGradient::new(vec![
+            (0.0, PackedRgba::rgb(0, 0, 0)),
+            (0.5, PackedRgba::rgb(10, 120, 200)),
+            (1.0, PackedRgba::rgb(255, 255, 255)),
+        ]);
+        let poisoned = ColorGradient::new(vec![
+            (0.0, PackedRgba::rgb(0, 0, 0)),
+            (f64::NAN, PackedRgba::rgb(255, 0, 0)),
+            (0.5, PackedRgba::rgb(10, 120, 200)),
+            (f64::INFINITY, PackedRgba::rgb(0, 255, 0)),
+            (1.0, PackedRgba::rgb(255, 255, 255)),
+            (f64::NEG_INFINITY, PackedRgba::rgb(0, 0, 255)),
+        ]);
+        assert_eq!(
+            clean, poisoned,
+            "a non-finite stop has no position in the ordering and must not survive construction"
+        );
+
+        // A surviving NaN stop is not inert: `sample` scans past it because
+        // `NaN >= t` is false, but still carries it into the next segment's
+        // `local_t`, so every sampler downstream of it goes NaN.
+        for step in 0..=20 {
+            let t = f64::from(step) / 20.0;
+            assert_eq!(poisoned.sample(t), clean.sample(t), "sample({t})");
+            assert_eq!(
+                poisoned.sample_fast(t),
+                clean.sample_fast(t),
+                "sample_fast({t})"
+            );
+            assert_eq!(
+                poisoned.sample_oklab(t),
+                clean.sample_oklab(t),
+                "sample_oklab({t})"
+            );
+            assert_eq!(
+                poisoned.sample_fast_oklab(t),
+                clean.sample_fast_oklab(t),
+                "sample_fast_oklab({t})"
+            );
+        }
+
+        // Every stop non-finite is allowed: both samplers answer white.
+        let empty = ColorGradient::new(vec![
+            (f64::NAN, PackedRgba::rgb(1, 2, 3)),
+            (f64::INFINITY, PackedRgba::rgb(4, 5, 6)),
+        ]);
+        assert_eq!(empty.sample(0.5), PackedRgba::rgb(255, 255, 255));
+        assert_eq!(empty.sample_fast(0.5), PackedRgba::rgb(255, 255, 255));
     }
 
     // =========================================================================
