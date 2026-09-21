@@ -2,8 +2,8 @@ Match Mode: 0 All  1 Exact  2 Prefix  3 WordStart  4 Substring  5 Fuzzy
 Type to filter · ↑/↓ navigate · Enter execute · b bench · m cycle               
                                              ╭─────────Evidence Ledger─────────╮
                                              │Selected: Go to Log Search       │
-                                             │Match: Substring  P=74.3%  BF=   │
-      ╭───── Command Palette ──────╮         │2.89                             │
+                                             │Match: Substring  P=89.7%  BF=   │
+      ╭───── Command Palette ──────╮         │8.67                             │
       │>log                        │         │Why this won: Go to Log Search · │
       │> [Navigation] Go to Log Se…│         │                                 │
       │                            │         │MatchType: BF=2.00 (supports) -  │

@@ -114,6 +114,18 @@ impl MatchType {
 /// Corpus index ascending, because it is registration order and that is what a
 /// caller controls. Score and match type stay descending (`right.cmp(left)`):
 /// higher is better for those, earlier is better for this.
+/// Whether a lowercased query appears in any tag, ignoring case.
+///
+/// An empty query matches nothing here, although `contains_ignore_case`
+/// reports an empty needle as found in every string: with no query there is
+/// nothing for a tag to be relevant to.
+fn query_matches_a_tag<T: AsRef<str>>(query_lower: &str, tags: &[T]) -> bool {
+    !query_lower.is_empty()
+        && tags
+            .iter()
+            .any(|tag| crate::contains_ignore_case(tag.as_ref(), query_lower))
+}
+
 fn compare_ranked_match_results(
     left: &(usize, MatchResult),
     right: &(usize, MatchResult),
@@ -463,32 +475,64 @@ impl BayesianScorer {
     }
 
     /// Score a query against a title with tags.
+    ///
+    /// A tag only boosts a title that already matched; it never creates a
+    /// match. An empty query matches no tag, so it cannot reorder the
+    /// unfiltered list by which items happen to carry tags.
     pub fn score_with_tags(&self, query: &str, title: &str, tags: &[&str]) -> MatchResult {
         let mut result = self.score(query, title);
+        if result.match_type != MatchType::NoMatch
+            && query_matches_a_tag(&query.to_lowercase(), tags)
+        {
+            self.apply_tag_boost(&mut result);
+        }
+        result
+    }
 
-        // Check if query matches any tag
+    /// Apply [`Self::score_with_tags`]'s tag boost to results that were
+    /// scored against titles alone, then restore ranking order.
+    ///
+    /// `tags_of` returns the tags of the item at a corpus index. The corpus
+    /// scorers take titles only, so a caller holding tags - the command
+    /// palette - applies them here. A tag never turns a non-match into a
+    /// match, so the match set, and any incremental cache built from it, is
+    /// unchanged; only scores and order move.
+    pub fn apply_tag_boosts<'t, T: AsRef<str> + 't>(
+        &self,
+        query: &str,
+        results: &mut [(usize, MatchResult)],
+        tags_of: impl Fn(usize) -> &'t [T],
+    ) {
         let query_lower = query.to_lowercase();
-        let tag_match = tags
-            .iter()
-            .any(|tag| crate::contains_ignore_case(tag, &query_lower));
-
-        if tag_match && result.match_type != MatchType::NoMatch {
-            // Strong positive evidence
-            if self.track_evidence {
-                result.evidence.add(
-                    EvidenceKind::TagMatch,
-                    3.0, // 3:1 in favor
-                    EvidenceDescription::Static("query matches tag"),
-                );
-                result.score = result.evidence.posterior_probability();
-            } else if (0.0..1.0).contains(&result.score) {
-                let odds = result.score / (1.0 - result.score);
-                let boosted = odds * 3.0;
-                result.score = boosted / (1.0 + boosted);
+        let mut boosted = false;
+        for (index, result) in results.iter_mut() {
+            if result.match_type != MatchType::NoMatch
+                && query_matches_a_tag(&query_lower, tags_of(*index))
+            {
+                self.apply_tag_boost(result);
+                boosted = true;
             }
         }
+        if boosted {
+            results.sort_by(compare_ranked_match_results);
+        }
+    }
 
-        result
+    /// Multiply the match odds by 3, as strong evidence that the item is the
+    /// one the query is after.
+    fn apply_tag_boost(&self, result: &mut MatchResult) {
+        if self.track_evidence {
+            result.evidence.add(
+                EvidenceKind::TagMatch,
+                3.0, // 3:1 in favor
+                EvidenceDescription::Static("query matches tag"),
+            );
+            result.score = result.evidence.posterior_probability();
+        } else if (0.0..1.0).contains(&result.score) {
+            let odds = result.score / (1.0 - result.score);
+            let boosted = odds * 3.0;
+            result.score = boosted / (1.0 + boosted);
+        }
     }
 
     /// Score when query is empty (returns all items with neutral score).
@@ -1341,6 +1385,18 @@ impl IncrementalScorer {
     /// Get diagnostic statistics.
     pub fn stats(&self) -> &IncrementalStats {
         &self.stats
+    }
+
+    /// Apply the tag boost to results this scorer ranked by title; see
+    /// [`BayesianScorer::apply_tag_boosts`]. The incremental cache stays
+    /// valid because a tag never changes which items match.
+    pub fn apply_tag_boosts<'t, T: AsRef<str> + 't>(
+        &self,
+        query: &str,
+        results: &mut [(usize, MatchResult)],
+        tags_of: impl Fn(usize) -> &'t [T],
+    ) {
+        self.scorer.apply_tag_boosts(query, results, tags_of);
     }
 
     /// Score a query against a corpus, using cached results when possible.

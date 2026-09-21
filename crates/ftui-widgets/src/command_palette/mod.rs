@@ -931,7 +931,7 @@ impl CommandPalette {
             self.rebuild_search_cache();
         }
 
-        let results = if self.match_filter == MatchFilter::Prefix && !self.query.is_empty() {
+        let mut results = if self.match_filter == MatchFilter::Prefix && !self.query.is_empty() {
             let query_lower = self.query.to_lowercase();
             let candidate_indices: Vec<usize> = self
                 .prefix_index
@@ -956,6 +956,13 @@ impl CommandPalette {
                 Some(self.generation),
             )
         };
+        // `ActionItem::tags` is documented as "for boosting search relevance",
+        // but the corpus scorers take titles only and nothing passed the tags
+        // on: every action ranked by its title alone, however it was tagged.
+        self.scorer
+            .apply_tag_boosts(&self.query, &mut results, |index| {
+                self.actions[index].tags.as_slice()
+            });
 
         self.filtered = results
             .into_iter()
@@ -3588,6 +3595,54 @@ mod widget_tests {
         // Should render without panic even when scrolled
         palette.render(area, &mut frame);
         assert!(frame.cursor_position.is_some());
+    }
+
+    /// `register(title, description, tags)` and `ActionItem::with_tags` both
+    /// take tags "for boosting search relevance", and the scorer implements
+    /// that boost, but the palette never passed tags to it: search ranked by
+    /// title alone. "Open Alpha" and "Open Bravo" score identically for
+    /// "open", so without tags registration order puts Alpha first; Bravo's
+    /// tag must lift it.
+    #[test]
+    fn tags_boost_an_action_whose_title_already_matches() {
+        for filter in [MatchFilter::All, MatchFilter::Prefix] {
+            let mut palette = CommandPalette::new();
+            palette.register("Open Alpha", None, &[]);
+            palette.register("Open Bravo", None, &["opener"]);
+            palette.set_match_filter(filter);
+            palette.open();
+            palette.set_query("open");
+
+            let ranked: Vec<&str> = palette
+                .results()
+                .map(|found| found.action.title.as_str())
+                .collect();
+            assert_eq!(ranked, ["Open Bravo", "Open Alpha"], "{filter:?}");
+        }
+    }
+
+    /// A tag never creates a match on its own, and an empty query - the
+    /// unfiltered list - is not reordered by which actions carry tags.
+    #[test]
+    fn tags_neither_create_matches_nor_reorder_the_empty_query() {
+        let mut palette = CommandPalette::new();
+        palette.register("Save File", None, &[]);
+        palette.register("Close Tab", None, &["save"]);
+        palette.open();
+
+        palette.set_query("save");
+        let ranked: Vec<&str> = palette
+            .results()
+            .map(|found| found.action.title.as_str())
+            .collect();
+        assert_eq!(ranked, ["Save File"], "a tag alone must not match");
+
+        palette.set_query("");
+        let ranked: Vec<&str> = palette
+            .results()
+            .map(|found| found.action.title.as_str())
+            .collect();
+        assert_eq!(ranked, ["Save File", "Close Tab"], "registration order");
     }
 }
 mod property_tests;
