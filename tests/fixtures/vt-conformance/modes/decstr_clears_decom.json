@@ -6,8 +6,6 @@
   "comment": "DECSTBM(2,4), DECOM on homes cursor to (1,0), CSI ! p (soft reset: clears DECOM, resets region, cursor stays at (1,0)), print A at (1,0). Cursor at (1,1).",
   "expected": {
     "cursor": { "row": 1, "col": 1 },
-    "cells": [
-      { "row": 1, "col": 0, "char": "A" }
-    ]
+    "cells": [{ "row": 1, "col": 0, "char": "A" }]
   }
 }

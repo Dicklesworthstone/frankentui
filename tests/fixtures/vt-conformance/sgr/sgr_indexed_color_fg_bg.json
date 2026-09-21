@@ -8,7 +8,12 @@
     "cursor": { "row": 0, "col": 3 },
     "cells": [
       { "row": 0, "col": 0, "char": "A", "attrs": { "fg_color": { "indexed": 196 } } },
-      { "row": 0, "col": 1, "char": "B", "attrs": { "fg_color": { "indexed": 196 }, "bg_color": { "indexed": 22 } } },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "B",
+        "attrs": { "fg_color": { "indexed": 196 }, "bg_color": { "indexed": 22 } }
+      },
       { "row": 0, "col": 2, "char": "C" }
     ]
   }

@@ -1,10 +1,7 @@
 {
   "name": "index_scrolls_at_bottom",
   "description": "IND at bottom row scrolls entire screen up by one line",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "524f57301b5b333b314841421b444344",
   "expected": {
     "cursor": {

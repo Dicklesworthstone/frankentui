@@ -1,10 +1,7 @@
 {
   "name": "sgr_selective_reset_iu",
   "description": "SGR 23 resets italic, SGR 24 resets underline independently",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "1b5b333b343b356d411b5b32336d421b5b32346d43",
   "expected": {
     "cursor": {

@@ -1,10 +1,7 @@
 {
   "name": "sgr_named_bg",
   "description": "SGR 44 sets background to named blue (Named(4)), SGR 49 resets bg only",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "411b5b34346d421b5b34396d43",
   "expected": {
     "cursor": {

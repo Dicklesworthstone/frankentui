@@ -36,30 +36,30 @@
     },
     {
       "source_id": "performance_delta",
-      "weight": 0.20,
+      "weight": 0.2,
       "description": "Performance regression relative to source baseline"
     },
     {
       "source_id": "unsupported_features",
-      "weight": 0.10,
+      "weight": 0.1,
       "description": "Penalty for unresolved unsupported features"
     },
     {
       "source_id": "accessibility_delta",
-      "weight": 0.10,
+      "weight": 0.1,
       "description": "Accessibility compliance delta"
     }
   ],
   "decision_boundaries": {
     "auto_approve_threshold": 0.95,
-    "human_review_lower": 0.70,
+    "human_review_lower": 0.7,
     "human_review_upper": 0.95,
-    "reject_threshold": 0.40,
-    "hard_reject_threshold": 0.20,
+    "reject_threshold": 0.4,
+    "hard_reject_threshold": 0.2,
     "rollback_trigger": 0.15
   },
   "calibration": {
-    "credible_interval_width": 0.90,
+    "credible_interval_width": 0.9,
     "conformal_coverage_target": 0.95,
     "min_calibration_samples": 10,
     "recalibration_trigger_drift": 0.05

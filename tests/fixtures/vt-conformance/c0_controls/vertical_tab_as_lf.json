@@ -1,10 +1,7 @@
 {
   "name": "vertical_tab_as_lf",
   "description": "Vertical tab (0x0B) behaves as line feed - moves cursor down one line",
-  "initial_size": [
-    10,
-    5
-  ],
+  "initial_size": [10, 5],
   "input_bytes_hex": "58590b5a",
   "expected": {
     "cursor": {

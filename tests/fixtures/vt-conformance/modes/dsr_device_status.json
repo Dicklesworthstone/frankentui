@@ -6,9 +6,6 @@
   "comment": "Print H at (0,0). CSI 5 n (DSR) and CSI 6 n (CPR) are query actions with no grid side effect. Print i at (0,1). Cursor at (0,2).",
   "expected": {
     "cursor": { "row": 0, "col": 2 },
-    "cells": [
-      { "row": 0, "col": 0, "char": "H" },
-      { "row": 0, "col": 1, "char": "i" }
-    ]
+    "cells": [{ "row": 0, "col": 0, "char": "H" }, { "row": 0, "col": 1, "char": "i" }]
   }
 }

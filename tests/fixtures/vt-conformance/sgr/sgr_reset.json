@@ -7,10 +7,30 @@
   "expected": {
     "cursor": { "row": 0, "col": 6 },
     "cells": [
-      { "row": 0, "col": 0, "char": "A", "attrs": { "bold": true, "italic": true, "underline": true } },
-      { "row": 0, "col": 1, "char": "B", "attrs": { "bold": true, "italic": true, "underline": true } },
-      { "row": 0, "col": 2, "char": "C", "attrs": { "bold": true, "italic": true, "underline": true } },
-      { "row": 0, "col": 3, "char": "D", "attrs": { "bold": true, "italic": true, "underline": true } },
+      {
+        "row": 0,
+        "col": 0,
+        "char": "A",
+        "attrs": { "bold": true, "italic": true, "underline": true }
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "B",
+        "attrs": { "bold": true, "italic": true, "underline": true }
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "char": "C",
+        "attrs": { "bold": true, "italic": true, "underline": true }
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "D",
+        "attrs": { "bold": true, "italic": true, "underline": true }
+      },
       { "row": 0, "col": 4, "char": "E", "attrs": {} },
       { "row": 0, "col": 5, "char": "F", "attrs": {} }
     ]

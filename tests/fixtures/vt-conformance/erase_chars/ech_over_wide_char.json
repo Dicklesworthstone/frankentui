@@ -1,10 +1,7 @@
 {
   "name": "ech_over_wide_char",
   "description": "ECH erasing over a wide char clears both cells of the wide char",
-  "initial_size": [
-    8,
-    3
-  ],
+  "initial_size": [8, 3],
   "input_bytes_hex": "41e4b896421b5b313b32481b5b3158",
   "expected": {
     "cursor": {

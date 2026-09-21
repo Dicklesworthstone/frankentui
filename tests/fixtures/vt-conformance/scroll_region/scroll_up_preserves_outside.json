@@ -1,10 +1,7 @@
 {
   "name": "scroll_up_preserves_outside",
   "description": "SU within scroll region preserves content outside the region",
-  "initial_size": [
-    6,
-    5
-  ],
+  "initial_size": [6, 5],
   "input_bytes_hex": "484541440a0d4141410a0d4242420a0d4343430a0d5441494c1b5b323b34721b5b3153",
   "expected": {
     "cursor": {

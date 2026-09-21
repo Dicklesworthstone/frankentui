@@ -1,10 +1,7 @@
 {
   "name": "rep_with_attrs",
   "description": "REP repeats last char with current SGR attributes applied",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "1b5b316d411b5b3362",
   "expected": {
     "cursor": {
