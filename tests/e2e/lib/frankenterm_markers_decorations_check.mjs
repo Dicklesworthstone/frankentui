@@ -113,9 +113,7 @@ function markerById(markersState, markerId) {
 }
 
 function decorationById(decorationsState, decorationId) {
-  return asArray(decorationsState).find(
-    (decoration) => Number(decoration?.id) === decorationId,
-  );
+  return asArray(decorationsState).find((decoration) => Number(decoration?.id) === decorationId);
 }
 
 async function main() {
@@ -132,9 +130,7 @@ async function main() {
 
   function emit(eventType, payload = {}) {
     seq += 1;
-    const timestamp = args.deterministic
-      ? deterministicTimestamp(seq, args.timeStepMs)
-      : isoNow();
+    const timestamp = args.deterministic ? deterministicTimestamp(seq, args.timeStepMs) : isoNow();
     jsonlEvents.push({
       schema_version: "e2e-jsonl-v1",
       type: "marker_contract_event",
@@ -174,7 +170,11 @@ async function main() {
   const markersAfterBurst = term.markersState();
   const initialMarker = markerById(markersAfterBurst, initialMarkerId);
   expect(Boolean(initialMarker), errors, "initial marker should exist after burst");
-  expect(Boolean(initialMarker?.stale), errors, "initial marker should become stale after compaction");
+  expect(
+    Boolean(initialMarker?.stale),
+    errors,
+    "initial marker should become stale after compaction",
+  );
   expect(
     String(initialMarker?.staleReason ?? "") === "compacted_out",
     errors,
@@ -191,7 +191,11 @@ async function main() {
 
   const lineDecoration = Number(term.createDecoration("line", markerA, -1, 0, 0));
   const rangeDecoration = Number(term.createDecoration("range", markerA, markerB, 2, 8));
-  expect(lineDecoration > 0 && rangeDecoration > 0, errors, "decoration creation should return ids");
+  expect(
+    lineDecoration > 0 && rangeDecoration > 0,
+    errors,
+    "decoration creation should return ids",
+  );
 
   let decorations = term.decorationsState();
   const lineSnap = decorationById(decorations, lineDecoration);
@@ -226,7 +230,11 @@ async function main() {
   );
 
   const diagLines = Array.from(
-    term.drainMarkerDecorationJsonl(runId, args.seed, deterministicTimestamp(seq + 1, args.timeStepMs)),
+    term.drainMarkerDecorationJsonl(
+      runId,
+      args.seed,
+      deterministicTimestamp(seq + 1, args.timeStepMs),
+    ),
   );
   const diagnostics = diagLines.map((line) => JSON.parse(String(line)));
   emit("diagnostics.drain", { count: diagnostics.length });
