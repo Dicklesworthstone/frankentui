@@ -2589,6 +2589,92 @@ mod tests {
 }
 
 #[cfg(test)]
+mod grapheme_integrity {
+    use super::*;
+
+    /// Wrapping may move graphemes between lines and may drop whitespace, but
+    /// it must never split a grapheme cluster and must never lose one.
+    ///
+    /// Nothing covered this. `wrapped_lines_never_exceed_width` and
+    /// `wrapped_content_preserved` draw from `[a-zA-Z ]`, where every grapheme
+    /// is one byte and one column, so neither can observe a split cluster;
+    /// `fuzz_width_no_panic`'s siblings bind the three `wrap_text` results to
+    /// `_word`/`_char`/`_wordchar` and assert only that the call returns. The
+    /// hand-written CJK and emoji cases pin three specific strings.
+    ///
+    /// The pieces below are the shapes that make wrapping hard: a two-column
+    /// CJK glyph, a two-column emoji, a ZWJ cluster that is one grapheme over
+    /// eleven bytes, and a combining mark that must stay with its base.
+    #[test]
+    fn wrapping_never_splits_a_grapheme_cluster() {
+        const PIECES: &[&str] = &[
+            "a",
+            "bc",
+            " ",
+            "\u{4f60}",
+            "\u{1f600}",
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+            "e\u{301}",
+        ];
+
+        // A cheap xorshift keeps this reproducible without a dev-dependency.
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for case in 0..300 {
+            let piece_count = (next() % 12) as usize + 1;
+            let text: String = (0..piece_count)
+                .map(|_| PIECES[(next() as usize) % PIECES.len()])
+                .collect();
+            let expected: Vec<&str> = graphemes(&text)
+                .filter(|g| !g.chars().all(char::is_whitespace))
+                .collect();
+            let widest = graphemes(&text).map(grapheme_width).max().unwrap_or(1);
+
+            for width in 1..=12_usize {
+                for mode in [WrapMode::Char, WrapMode::Word, WrapMode::WordChar] {
+                    let lines = wrap_text(&text, width, mode);
+
+                    // Each line is re-segmented on its own. Concatenating the
+                    // lines first would hide a split cluster, because the two
+                    // halves rejoin into the original grapheme.
+                    let actual: Vec<&str> = lines
+                        .iter()
+                        .flat_map(|line| graphemes(line))
+                        .filter(|g| !g.chars().all(char::is_whitespace))
+                        .collect();
+                    assert_eq!(
+                        actual, expected,
+                        "case {case}: {mode:?} at width {width} altered the graphemes of \
+                         {text:?} -> {lines:?}"
+                    );
+
+                    // Char and WordChar break wherever they can, so the only
+                    // thing they may fail to fit is a single grapheme wider
+                    // than the line. Word mode keeps whole words together and
+                    // is allowed to overflow, which is what WordChar is for.
+                    if mode != WrapMode::Word {
+                        for line in &lines {
+                            assert!(
+                                display_width(line) <= width.max(widest),
+                                "case {case}: {mode:?} produced {line:?} at {} columns for \
+                                 width {width}, widest grapheme {widest}",
+                                display_width(line)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod proptests {
     use super::TestWidth;
     use super::*;
