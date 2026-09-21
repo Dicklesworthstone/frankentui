@@ -581,6 +581,15 @@ mod tests {
                         .block(bordered().title("Title")),
                 ),
             ),
+            (
+                // Char wrap's minimum is the widest grapheme (2 here), and at
+                // one column the preferred width must be floored up to it.
+                "Paragraph char-wrapped wide glyphs",
+                Box::new(
+                    Paragraph::new(Text::raw("\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}"))
+                        .wrap(WrapMode::Char),
+                ),
+            ),
             ("ProgressBar", Box::new(ProgressBar::new())),
             (
                 "ProgressBar labelled",
