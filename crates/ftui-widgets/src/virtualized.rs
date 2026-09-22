@@ -619,8 +619,10 @@ impl<T> Virtualized<T> {
     pub fn clear(&mut self) {
         if let VirtualizedStorage::Owned(items) = &mut self.storage {
             items.clear();
-            if let ItemHeight::VariableFenwick(tracker) = &mut self.item_height {
-                tracker.clear();
+            match &mut self.item_height {
+                ItemHeight::Fixed(_) => {}
+                ItemHeight::Variable(cache) => cache.clear(),
+                ItemHeight::VariableFenwick(tracker) => tracker.clear(),
             }
         }
         self.scroll_offset = 0;
@@ -635,8 +637,13 @@ impl<T> Virtualized<T> {
         {
             let to_remove = items.len() - max;
             items.drain(..to_remove);
-            if let ItemHeight::VariableFenwick(tracker) = &mut self.item_height {
-                tracker.drop_front(to_remove);
+            // Every surviving item moved down by `to_remove`, so a height
+            // tracker that keeps its old indices now reports each measurement
+            // against a different item.
+            match &mut self.item_height {
+                ItemHeight::Fixed(_) => {}
+                ItemHeight::Variable(cache) => cache.drop_front(to_remove),
+                ItemHeight::VariableFenwick(tracker) => tracker.drop_front(to_remove),
             }
             // Adjust scroll_offset if it was pointing beyond the new start
             self.scroll_offset = self.scroll_offset.saturating_sub(to_remove);
@@ -727,6 +734,29 @@ impl HeightCache {
             self.cache.drain(0..to_remove);
             self.base_offset += to_remove;
         }
+    }
+
+    /// Drop the first `count` items, shifting every remaining measurement down
+    /// by `count` so it still names the item it was taken from.
+    ///
+    /// The counterpart to [`VariableHeightsFenwick::drop_front`], for callers
+    /// that trim a sliding window with [`Virtualized::trim_front`].
+    pub fn drop_front(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if let Some(base) = self.base_offset.checked_sub(count) {
+            // The whole window sits past the trimmed prefix: renumber it.
+            self.base_offset = base;
+            return;
+        }
+        let dropped = count - self.base_offset;
+        if dropped >= self.cache.len() {
+            self.cache.clear();
+        } else {
+            self.cache.drain(0..dropped);
+        }
+        self.base_offset = 0;
     }
 
     /// Clear cached heights.
@@ -4519,6 +4549,65 @@ mod tests {
         };
         assert_eq!(tracker.len(), 0);
         assert_eq!(tracker.total_height(), 0);
+    }
+
+    /// The legacy cache follows the same trims. Its indices are absolute, so
+    /// without a shift a `trim_front` hands every measurement to the item
+    /// three places later — the sliding window this strategy exists for.
+    #[test]
+    fn legacy_height_cache_follows_owned_storage() {
+        let mut v: Virtualized<String> =
+            Virtualized::new(8).with_item_height(ItemHeight::Variable(HeightCache::new(1, 64)));
+        for i in 0..6 {
+            v.push(format!("row {i}"));
+        }
+        v.observe_height(0, 9);
+        v.observe_height(4, 4);
+        assert_eq!(v.trim_front(3), 3);
+
+        let ItemHeight::Variable(cache) = v.item_height() else {
+            unreachable!()
+        };
+        // Old item 0 went with the trim; old item 4 (height 4) is now item 1.
+        assert_eq!(cache.get(0), 1);
+        assert_eq!(cache.get(1), 4);
+        // So the first item no longer claims the nine lines of a trimmed one.
+        assert_eq!(v.visible_range(4), 0..2);
+
+        v.clear();
+        for i in 0..3 {
+            v.push(format!("fresh {i}"));
+        }
+        let ItemHeight::Variable(cache) = v.item_height() else {
+            unreachable!()
+        };
+        assert_eq!(cache.get(0), 1);
+        assert_eq!(cache.get(1), 1);
+        assert_eq!(v.visible_range(4), 0..3);
+    }
+
+    /// `drop_front` renumbers a window that starts past the trimmed prefix
+    /// instead of discarding it.
+    #[test]
+    fn height_cache_drop_front_shifts_a_window_past_the_prefix() {
+        let mut cache = HeightCache::new(1, 4);
+        for idx in 10..14 {
+            cache.set(idx, idx as u16);
+        }
+        cache.drop_front(10);
+        for idx in 0..4 {
+            assert_eq!(cache.get(idx), 10 + idx as u16);
+        }
+
+        // A trim that reaches into the window drops only what it covers.
+        cache.drop_front(2);
+        assert_eq!(cache.get(0), 12);
+        assert_eq!(cache.get(1), 13);
+        assert_eq!(cache.get(2), 1);
+
+        // A trim past the end leaves nothing behind.
+        cache.drop_front(9);
+        assert_eq!(cache.get(0), 1);
     }
 
     #[test]
