@@ -137,9 +137,11 @@ SPACE=' '
 # Left/Right arrow keys (escape sequences)
 LEFT=$'\x1b[D'
 RIGHT=$'\x1b[C'
-# Home/End keys
-HOME=$'\x1b[H'
-END=$'\x1b[F'
+# Home/End keys. Not HOME: that is the exported home directory, and every
+# child process saw an escape sequence there; a rustup proxy created
+# "\e[H/.rustup" in the working directory.
+KEY_HOME=$'\x1b[H'
+KEY_END=$'\x1b[F'
 
 # Test 1: Smoke test (render Snapshot Player screen)
 # Verifies the screen renders and shows playback UI elements
@@ -217,7 +219,7 @@ snapshot_jump_bounds() {
     PTY_COLS=120 \
     PTY_ROWS=40 \
     PTY_SEND_DELAY_MS=300 \
-    PTY_SEND="${END}${HOME}" \
+    PTY_SEND="${KEY_END}${KEY_HOME}" \
     FTUI_DEMO_EXIT_AFTER_MS=1800 \
     PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN"
