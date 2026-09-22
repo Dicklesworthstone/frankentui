@@ -2,7 +2,7 @@
 
 //! Locale-aware date and time representation and formatting.
 
-use super::data::{DateSymbols, LocaleData, lookup_locale_data};
+use super::data::{DateSymbols, DateTimeOrder, LocaleData, lookup_locale_data};
 use super::error::{DateTimeError, FormattingError};
 
 /// Date formatting style.
@@ -494,10 +494,11 @@ impl DateTimeFormatter {
             time_str.push_str(&format_tz_offset(offset));
         }
 
-        format!(
-            "{}{}{}",
-            date_str, self.symbols.datetime_separator, time_str
-        )
+        let separator = self.symbols.datetime_separator;
+        match self.symbols.datetime_order {
+            DateTimeOrder::DateThenTime => format!("{date_str}{separator}{time_str}"),
+            DateTimeOrder::TimeThenDate => format!("{time_str}{separator}{date_str}"),
+        }
     }
 }
 
@@ -770,6 +771,29 @@ mod tests {
         assert_eq!(
             fmt_de.format_datetime(&dt, DateFormatStyle::Short, TimeFormatStyle::Short),
             "19.09.2026, 14:30"
+        );
+    }
+
+    #[test]
+    fn combined_datetime_follows_the_locale_order() {
+        // `DateSymbols::datetime_order` is public data that `from_data`
+        // accepts, and it was ignored: time-first data still put date first.
+        let en = lookup_locale_data("en").unwrap();
+        let time_first: &'static LocaleData = Box::leak(Box::new(LocaleData {
+            date: DateSymbols {
+                datetime_order: DateTimeOrder::TimeThenDate,
+                ..en.date
+            },
+            ..*en
+        }));
+        let dt = DateTime::from_ymd_hms(2026, 9, 19, 14, 30, 0).unwrap();
+        assert_eq!(
+            DateTimeFormatter::from_data(time_first).format_datetime(
+                &dt,
+                DateFormatStyle::Short,
+                TimeFormatStyle::Short
+            ),
+            "2:30 PM, 09/19/2026"
         );
     }
 
