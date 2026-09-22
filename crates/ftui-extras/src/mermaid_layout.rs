@@ -2018,22 +2018,27 @@ fn layout_packet_diagram(
     let max_bit = ir
         .packet_fields
         .iter()
-        .map(|f| f.bit_end)
+        .map(|f| f.bit_span().1)
         .max()
         .unwrap_or(0);
     let num_rows = (max_bit / bits_per_row) + 1;
 
     let mut nodes = Vec::new();
     for (i, field) in ir.packet_fields.iter().enumerate() {
-        let start_row = field.bit_start / bits_per_row;
-        let end_row = field.bit_end / bits_per_row;
+        // The parser accepts any `<start>-<end>` and `IrPacketField` is public,
+        // so the range may arrive reversed. `10-5` put `end_col` below
+        // `start_col` in one row, and `end_col - start_col + 1` below
+        // underflowed: a panic in debug, a four-billion-bit width in release.
+        let (bit_start, bit_end) = field.bit_span();
+        let start_row = bit_start / bits_per_row;
+        let end_row = bit_end / bits_per_row;
 
         // For simplicity, use the first row the field appears in.
         // Multi-row fields get a single node spanning the first row segment.
         let row = start_row;
-        let start_col = field.bit_start % bits_per_row;
+        let start_col = bit_start % bits_per_row;
         let end_col = if start_row == end_row {
-            field.bit_end % bits_per_row
+            bit_end % bits_per_row
         } else {
             bits_per_row - 1
         };

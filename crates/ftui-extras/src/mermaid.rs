@@ -6253,6 +6253,22 @@ pub struct IrPacketField {
     pub bit_end: u32,
 }
 
+impl IrPacketField {
+    /// The field's bits as `(lowest, highest)`.
+    ///
+    /// `bit_start` and `bit_end` are stored as written, and nothing orders
+    /// them: the parser takes any `<start>-<end>` and these fields are public.
+    /// Layout and rendering read the span through here so a reversed range
+    /// such as `10-5` covers bits 5..=10 instead of underflowing a width.
+    #[must_use]
+    pub fn bit_span(&self) -> (u32, u32) {
+        (
+            self.bit_start.min(self.bit_end),
+            self.bit_start.max(self.bit_end),
+        )
+    }
+}
+
 /// Node shape as determined by the bracket syntax in Mermaid source.
 ///
 /// Maps to visual representations in the terminal renderer:
