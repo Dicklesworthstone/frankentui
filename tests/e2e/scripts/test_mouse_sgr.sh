@@ -244,7 +244,11 @@ mouse_large_coords() {
     PTY_TEST_NAME="mouse_large_coords"
 
     # SGR supports coords > 223 (unlike legacy X10 protocol)
-    # Send click at (300, 150) in 1-based → expect (299, 149) in 0-based
+    # Send click at (300, 150) in 1-based → expect (299, 149) in 0-based.
+    # The PTY must be that large: the tty backend clamps a click outside the
+    # grid to its edge, so at the default 80x24 this reported 79,23.
+    PTY_COLS=320 \
+    PTY_ROWS=160 \
     PTY_SEND=$'\x1b[<0;300;150M' \
     PTY_SEND_DELAY_MS=300 \
     FTUI_HARNESS_ENABLE_MOUSE=1 \
