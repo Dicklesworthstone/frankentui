@@ -3931,33 +3931,31 @@ mod tests {
         let output = presenter.into_inner().unwrap();
         model.process(&output);
 
-        // Verify a sampling of cells match the final buffer
+        // Every cell matches the final buffer. This accepted 80% of the
+        // non-empty cells, blaming "cursor positioning sequences"; nothing
+        // overwrites them, and a random multi-frame probe (wide characters,
+        // truecolor, style flags) matched every cell of every frame.
         let mut checked = 0;
+        let mut total_nonempty = 0;
         for y in 0..height {
             for x in 0..width {
                 let buf_cell = prev_buffer.get_unchecked(x, y);
                 if !buf_cell.is_empty()
                     && let Some(model_cell) = model.cell(x as usize, y as usize)
                 {
+                    total_nonempty += 1;
                     let expected = buf_cell.content.as_char().unwrap_or(' ');
                     let mut buf = [0u8; 4];
                     let expected_str = expected.encode_utf8(&mut buf);
-                    if model_cell.text.as_str() == expected_str {
+                    if model_cell.text.as_str() == expected_str && model_cell.fg == buf_cell.fg {
                         checked += 1;
                     }
                 }
             }
         }
 
-        // At least 80% of non-empty cells should match (some may be
-        // overwritten by cursor positioning sequences in the model)
-        let total_nonempty = (0..height)
-            .flat_map(|y| (0..width).map(move |x| (x, y)))
-            .filter(|&(x, y)| !prev_buffer.get_unchecked(x, y).is_empty())
-            .count();
-
         assert!(
-            checked > total_nonempty * 80 / 100,
+            total_nonempty > 0 && checked == total_nonempty,
             "Frame {num_frames}: only {checked}/{total_nonempty} cells match final buffer"
         );
     }
