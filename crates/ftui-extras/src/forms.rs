@@ -732,6 +732,11 @@ impl FormState {
     }
 
     fn handle_key(&mut self, form: &mut Form, key: &KeyEvent) -> bool {
+        // `focused`, `text_cursor`, `focus_next`/`focus_prev` and the field
+        // values are all public, so focus can move or a value shrink without
+        // passing through the handlers below. A cursor left past the end made
+        // Backspace delete nothing and every typed character push it further.
+        self.sync_text_cursor(form);
         if form.is_disabled(self.focused) {
             match key.code {
                 KeyCode::Tab => {
@@ -790,15 +795,17 @@ impl FormState {
                 self.cancelled = true;
                 true
             }
-            // Space: toggle checkbox / radio
-            KeyCode::Char(' ') if !key.modifiers.contains(Modifiers::CTRL) => {
+            // Space: toggle checkbox / radio. Ctrl and Command/Windows-key
+            // chords belong to the host, not the field: Cmd+V used to type a
+            // literal "v" next to the paste.
+            KeyCode::Char(' ') if !key.modifiers.intersects(Modifiers::CTRL | Modifiers::SUPER) => {
                 self.handle_space(form)
             }
             // Left/Right for number fields and select
             KeyCode::Left => self.handle_left(form),
             KeyCode::Right => self.handle_right(form),
             // Character input for text fields
-            KeyCode::Char(c) if !key.modifiers.contains(Modifiers::CTRL) => {
+            KeyCode::Char(c) if !key.modifiers.intersects(Modifiers::CTRL | Modifiers::SUPER) => {
                 self.handle_text_char(form, c)
             }
             KeyCode::Backspace => self.handle_text_backspace(form),
@@ -2254,6 +2261,53 @@ mod tests {
         state.handle_event(&mut form, &press(KeyCode::Delete));
         if let FormField::Text { value, .. } = &form.fields[0] {
             assert_eq!(value, "abc");
+        }
+    }
+
+    #[test]
+    fn backspace_after_focus_moved_from_outside_deletes() {
+        // A mouse-wheel handler moves focus by writing `focused` directly, so
+        // the cursor still points past the end of the shorter field.
+        let mut form = Form::new(vec![
+            FormField::text_with_value("Name", "abcdef"),
+            FormField::text_with_value("City", "xy"),
+        ]);
+        let mut state = FormState {
+            focused: 1,
+            text_cursor: 6,
+            ..Default::default()
+        };
+
+        assert!(state.handle_event(&mut form, &press(KeyCode::Backspace)));
+        if let FormField::Text { value, .. } = &form.fields[1] {
+            assert_eq!(value, "x");
+        }
+        assert_eq!(state.text_cursor, 1);
+    }
+
+    #[test]
+    fn command_chords_do_not_type_or_toggle() {
+        let mut form = Form::new(vec![
+            FormField::text("Name"),
+            FormField::checkbox("Agree", false),
+        ]);
+        let mut state = FormState::default();
+        let cmd = |c| {
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: Modifiers::SUPER,
+                kind: KeyEventKind::Press,
+            })
+        };
+
+        assert!(!state.handle_event(&mut form, &cmd('v')));
+        if let FormField::Text { value, .. } = &form.fields[0] {
+            assert_eq!(value, "");
+        }
+        state.focused = 1;
+        assert!(!state.handle_event(&mut form, &cmd(' ')));
+        if let FormField::Checkbox { checked, .. } = &form.fields[1] {
+            assert!(!checked);
         }
     }
 
