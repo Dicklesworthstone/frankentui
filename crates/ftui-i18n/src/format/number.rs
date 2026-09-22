@@ -306,23 +306,25 @@ impl NumberFormatter {
             };
         }
 
-        let is_percent = matches!(self.config.style, NumberStyle::Percent);
-        let actual_val = if is_percent { value * 100.0 } else { value };
-        let is_negative = actual_val.is_sign_negative() && actual_val != 0.0;
-        let abs_val = actual_val.abs();
+        // Percent moves the decimal point two places rather than computing
+        // `value * 100.0`, which rounds in binary (0.29 became
+        // 28.999999999999996) and overflows to infinity near `f64::MAX`.
+        let shift = if matches!(self.config.style, NumberStyle::Percent) {
+            2
+        } else {
+            0
+        };
+        let is_negative = value.is_sign_negative() && value != 0.0;
 
-        let max_frac = self.config.max_fraction_digits;
-        let min_frac = self.config.min_fraction_digits;
-
-        let (int_part, frac_str) = round_float_parts(
-            abs_val,
-            max_frac,
-            min_frac,
+        let (int_str, frac_str) = round_float_parts(
+            value.abs(),
+            shift,
+            self.config.max_fraction_digits,
+            self.config.min_fraction_digits,
             self.config.rounding_mode,
             is_negative,
         );
 
-        let int_str = int_part.to_string();
         let padded_int = if int_str.len() < self.config.min_integer_digits {
             format!(
                 "{:0>width$}",
@@ -430,7 +432,22 @@ fn group_digits(digits: &str, group_sep: &str, group_size: usize) -> String {
     result
 }
 
-/// Round a float's *magnitude* into integer part and formatted fractional digits.
+/// Round a float's *magnitude* into integer digits and fraction digits.
+///
+/// Rounding works on the shortest decimal that round-trips to `val`, which is
+/// what `Display` prints and what ICU rounds. It used to scale by
+/// `10^max_frac` in `f64` and cast to `u128`. That saturated from about 3.4e38,
+/// so `1e36` printed `u128::MAX` under the default three fraction digits and 40
+/// fraction digits turned `0.5` into `1`. It also moved values that were not
+/// ties: `(x + 0.5).floor()` took `0.49999999999999994` to 1 and `2^52 + 1` to
+/// `2^52 + 2`, and a `1e-9` tie tolerance sent `2.5000000001` to 2 under
+/// `HalfEven`. And it rounded the binary value rather than the decimal one the
+/// caller wrote: `Ceil` gave `1.1` as `1.11` and `Truncate` gave `0.29` as
+/// `0.28`.
+///
+/// `shift` moves the decimal point right before rounding, which is how percent
+/// scales by 100 exactly. A `min_frac` above `max_frac` wins, as it does in
+/// [`NumberFormatter::format_int`].
 ///
 /// `val` is always non-negative: [`NumberFormatter::format_float`] splits the
 /// sign off before calling and re-attaches it afterwards. That split is only
@@ -444,11 +461,12 @@ fn group_digits(digits: &str, group_sep: &str, group_size: usize) -> String {
 /// them here, which is the last point where the sign is still known.
 fn round_float_parts(
     val: f64,
+    shift: usize,
     max_frac: usize,
     min_frac: usize,
     mode: RoundingMode,
     is_negative: bool,
-) -> (u128, String) {
+) -> (String, String) {
     let mode = if is_negative {
         match mode {
             // Toward -inf is away from zero; toward +inf is toward zero.
@@ -460,63 +478,69 @@ fn round_float_parts(
         mode
     };
 
-    if max_frac == 0 {
-        let rounded = match mode {
-            RoundingMode::HalfUp => (val + 0.5).floor() as u128,
-            RoundingMode::HalfEven => {
-                let floor = val.floor();
-                let diff = val - floor;
-                if (diff - 0.5).abs() < 1e-9 {
-                    if (floor as u128).is_multiple_of(2) {
-                        floor as u128
-                    } else {
-                        (floor + 1.0) as u128
-                    }
-                } else {
-                    val.round() as u128
-                }
-            }
-            RoundingMode::Truncate | RoundingMode::Floor => val.floor() as u128,
-            RoundingMode::Ceil => val.ceil() as u128,
-        };
-        return (rounded, String::new());
+    // ASCII digits with the decimal point removed; `point` digits are integer.
+    // `Display` never uses an exponent, so the integer part is never empty.
+    let shortest = val.to_string();
+    let (int_digits, frac_digits) = shortest.split_once('.').unwrap_or((&shortest, ""));
+    let mut digits: Vec<u8> = int_digits.bytes().chain(frac_digits.bytes()).collect();
+    let mut point = int_digits.len() + shift;
+    if digits.len() < point {
+        digits.resize(point, b'0');
     }
 
-    let factor = 10_f64.powi(max_frac as i32);
-    let scaled = val * factor;
-
-    let rounded_scaled: f64 = match mode {
-        RoundingMode::HalfUp => (scaled + 0.5).floor(),
-        RoundingMode::HalfEven => {
-            let floor = scaled.floor();
-            let diff = scaled - floor;
-            if (diff - 0.5).abs() < 1e-9 {
-                if (floor as u128).is_multiple_of(2) {
-                    floor
-                } else {
-                    floor + 1.0
-                }
-            } else {
-                scaled.round()
-            }
-        }
-        RoundingMode::Truncate | RoundingMode::Floor => scaled.floor(),
-        RoundingMode::Ceil => scaled.ceil(),
+    let keep = point.saturating_add(max_frac.max(min_frac));
+    let dropped = if digits.len() > keep {
+        digits.split_off(keep)
+    } else {
+        Vec::new()
     };
+    let round_up = match mode {
+        RoundingMode::Truncate | RoundingMode::Floor => false,
+        RoundingMode::Ceil => dropped.iter().any(|&d| d != b'0'),
+        RoundingMode::HalfUp => dropped.first().is_some_and(|&d| d >= b'5'),
+        RoundingMode::HalfEven => match dropped.split_first() {
+            // An exact tie goes to the even neighbour.
+            Some((&b'5', rest)) if rest.iter().all(|&d| d == b'0') => {
+                digits.last().is_some_and(|&d| (d - b'0') % 2 == 1)
+            }
+            Some((&first, _)) => first >= b'5',
+            None => false,
+        },
+    };
+    if round_up {
+        // Trailing 9s carry: they become 0s and the digit before them takes 1.
+        if let Some(at) = digits.iter().rposition(|&d| d != b'9') {
+            digits[at] += 1;
+            digits[at + 1..].fill(b'0');
+        } else {
+            digits.fill(b'0');
+            digits.insert(0, b'1');
+            point += 1;
+        }
+    }
 
-    let total_int = rounded_scaled as u128;
-    let factor_int = factor as u128;
-    let int_part = total_int / factor_int;
-    let frac_int = total_int % factor_int;
+    let frac_digits = digits.split_off(point);
+    let leading_zeros = digits
+        .iter()
+        .take_while(|&&d| d == b'0')
+        .count()
+        .min(digits.len() - 1);
+    let int_str = digits[leading_zeros..]
+        .iter()
+        .map(|&d| char::from(d))
+        .collect();
 
-    let mut frac_str = format!("{:0>width$}", frac_int, width = max_frac);
-
-    // Strip trailing zeros down to min_frac
+    let mut frac_str: String = frac_digits.iter().map(|&d| char::from(d)).collect();
+    // Strip trailing zeros down to min_frac, then pad back up to it.
     while frac_str.len() > min_frac && frac_str.ends_with('0') {
         frac_str.pop();
     }
+    frac_str.extend(std::iter::repeat_n(
+        '0',
+        min_frac.saturating_sub(frac_str.len()),
+    ));
 
-    (int_part, frac_str)
+    (int_str, frac_str)
 }
 
 /// Convert ASCII digits in a string to Eastern Arabic numerals.
@@ -719,6 +743,96 @@ mod tests {
             with(RoundingMode::Ceil).format_float(1.234).unwrap(),
             "1.24"
         );
+    }
+
+    fn format_with(min: usize, max: usize, mode: RoundingMode, value: f64) -> String {
+        NumberFormatter::with_config(
+            "en",
+            NumberFormat::new()
+                .fraction_digits(min, max)
+                .rounding_mode(mode),
+        )
+        .unwrap()
+        .format_float(value)
+        .unwrap()
+    }
+
+    // Expected strings are what ICU prints (Node's `Intl.NumberFormat`).
+
+    #[test]
+    fn large_values_and_long_fractions_keep_their_digits() {
+        // Scaling by 10^max_frac into a u128 saturated: both of these printed
+        // u128::MAX's digits, and forty fraction digits turned 0.5 into 1.
+        let default = NumberFormatter::for_locale("en").unwrap();
+        assert_eq!(
+            default.format_float(1e36).unwrap(),
+            "1,000,000,000,000,000,000,000,000,000,000,000,000"
+        );
+        assert!(
+            default
+                .format_float(f64::MAX)
+                .unwrap()
+                .starts_with("179,769,313,486,231,570,000,")
+        );
+        assert_eq!(format_with(0, 40, RoundingMode::HalfUp, 0.5), "0.5");
+    }
+
+    #[test]
+    fn rounding_reads_the_decimal_the_caller_wrote() {
+        // Each of these came out one unit off when rounded in binary.
+        assert_eq!(format_with(2, 2, RoundingMode::Ceil, 1.1), "1.10");
+        assert_eq!(format_with(2, 2, RoundingMode::Truncate, 0.29), "0.29");
+        assert_eq!(format_with(2, 2, RoundingMode::HalfUp, 1.005), "1.01");
+        // `(x + 0.5).floor()` rounds these up although neither is a tie.
+        assert_eq!(
+            format_with(0, 0, RoundingMode::HalfUp, 0.499_999_999_999_999_94),
+            "0"
+        );
+        assert_eq!(
+            format_with(0, 0, RoundingMode::HalfUp, 4_503_599_627_370_497.0),
+            "4,503,599,627,370,497"
+        );
+        // Only an exact tie goes to the even neighbour.
+        assert_eq!(
+            format_with(0, 0, RoundingMode::HalfEven, 2.500_000_000_1),
+            "3"
+        );
+        assert_eq!(format_with(0, 0, RoundingMode::HalfEven, 2.5), "2");
+        assert_eq!(format_with(1, 1, RoundingMode::HalfEven, 0.25), "0.2");
+    }
+
+    #[test]
+    fn percent_moves_the_decimal_point_instead_of_multiplying() {
+        let fmt = |mode| {
+            NumberFormatter::with_config(
+                "en",
+                NumberFormat::new()
+                    .style(NumberStyle::Percent)
+                    .rounding_mode(mode),
+            )
+            .unwrap()
+        };
+        // `0.29 * 100.0` is 28.999999999999996, which truncated to "28.999%".
+        assert_eq!(
+            fmt(RoundingMode::Truncate).format_float(0.29).unwrap(),
+            "29%"
+        );
+        // `1e307 * 100.0` overflowed to infinity.
+        assert!(
+            fmt(RoundingMode::HalfUp)
+                .format_float(1e307)
+                .unwrap()
+                .starts_with("1,000,000,")
+        );
+    }
+
+    #[test]
+    fn a_minimum_above_the_maximum_fraction_digits_wins_for_floats_too() {
+        let fmt =
+            NumberFormatter::with_config("en", NumberFormat::new().fraction_digits(3, 1)).unwrap();
+        assert_eq!(fmt.format_int(1), "1.000");
+        assert_eq!(fmt.format_float(1.0).unwrap(), "1.000");
+        assert_eq!(fmt.format_float(1.25).unwrap(), "1.250");
     }
 
     #[test]
