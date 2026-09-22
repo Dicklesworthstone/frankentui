@@ -368,8 +368,11 @@ impl JsonView {
                     chars.next();
                     depth = depth.saturating_sub(1);
                     lines.push(current_line);
+                    // Capped like every other line. Uncapped, a closing line
+                    // at depth d took d * indent spaces: misaligned past 32
+                    // levels, and quadratic memory for deeply nested input.
                     current_line = vec![
-                        JsonToken::Whitespace(make_indent(depth, self.indent)),
+                        JsonToken::Whitespace(make_indent(depth.min(32), self.indent)),
                         JsonToken::Punctuation(ch.to_string()),
                     ];
                     // Check for comma
@@ -922,6 +925,23 @@ mod tests {
     fn empty_source() {
         let view = JsonView::new("");
         assert!(view.formatted_lines().is_empty());
+    }
+
+    #[test]
+    fn deep_nesting_caps_every_indent() {
+        let depth = 2_000;
+        let source = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+        let view = JsonView::new(source);
+        let lines = view.formatted_lines();
+        let widest = lines
+            .iter()
+            .flatten()
+            .filter_map(|token| match token {
+                JsonToken::Whitespace(indent) => Some(indent.len()),
+                _ => None,
+            })
+            .max();
+        assert_eq!(widest, Some(32 * 2));
     }
 
     #[test]
