@@ -29,6 +29,7 @@ use crate::migration_ir::{
     DerivedState, EventKind, EventTransition, IrNodeId, MigrationIr, Provenance, StateScope,
     StateVariable,
 };
+use crate::util::rust_comment_text;
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -317,10 +318,11 @@ pub fn translate_state_events(
     let (fields, shared_fields) = build_model_fields(ir, &mut diagnostics);
 
     // Step 2: Build message variants from events.
-    let variants = build_message_variants(ir, effects);
+    let event_variants = event_variant_names(ir);
+    let variants = build_message_variants(ir, effects, &event_variants);
 
     // Step 3: Build update arms from event transitions.
-    let update_arms = build_update_arms(ir, effects, &mut diagnostics);
+    let update_arms = build_update_arms(ir, effects, &event_variants, &mut diagnostics);
 
     // Step 4: Build init commands from lifecycle effects.
     let init_commands = build_init_commands(effects);
@@ -452,9 +454,32 @@ fn model_field_from_derived(id: &IrNodeId, derived: &DerivedState) -> ModelField
 
 // ── Message Variant Construction ───────────────────────────────────────
 
+/// The message variant of each event: its name in PascalCase, numbered when
+/// events share one.
+///
+/// Two elements with an `onChange` handler are two events named `onChange`.
+/// Each used to get an `OnChange` variant and arm, and the duplicate variant
+/// did not compile.
+fn event_variant_names(ir: &MigrationIr) -> BTreeMap<IrNodeId, String> {
+    let mut taken = BTreeSet::from(["TerminalEvent".to_string()]);
+    let mut names = BTreeMap::new();
+    for (id, event) in &ir.event_catalog.events {
+        let base = to_pascal_case(&event.name);
+        let mut name = base.clone();
+        let mut suffix = 2;
+        while !taken.insert(name.clone()) {
+            name = format!("{base}{suffix}");
+            suffix += 1;
+        }
+        names.insert(id.clone(), name);
+    }
+    names
+}
+
 fn build_message_variants(
     ir: &MigrationIr,
     effects: Option<&CanonicalEffectModel>,
+    event_variants: &BTreeMap<IrNodeId, String>,
 ) -> Vec<MessageVariant> {
     let mut variants = Vec::new();
 
@@ -464,7 +489,7 @@ fn build_message_variants(
 
     for (id, event) in sorted_events {
         variants.push(MessageVariant {
-            name: to_pascal_case(&event.name),
+            name: event_variants[id].clone(),
             payload: event
                 .payload_type
                 .as_deref()
@@ -511,6 +536,7 @@ fn build_message_variants(
 fn build_update_arms(
     ir: &MigrationIr,
     effects: Option<&CanonicalEffectModel>,
+    event_variants: &BTreeMap<IrNodeId, String>,
     diagnostics: &mut Vec<TranslationDiagnostic>,
 ) -> Vec<UpdateArm> {
     let mut arms = Vec::new();
@@ -520,9 +546,9 @@ fn build_update_arms(
     sorted_transitions.sort_by(|a, b| a.event_id.cmp(&b.event_id));
 
     for transition in &sorted_transitions {
-        let event = ir.event_catalog.events.get(&transition.event_id);
-        let variant_name = event
-            .map(|e| to_pascal_case(&e.name))
+        let variant_name = event_variants
+            .get(&transition.event_id)
+            .cloned()
             .unwrap_or_else(|| format!("Unknown_{}", transition.event_id.0));
 
         let mutations = build_mutations_from_transition(ir, transition);
@@ -565,13 +591,10 @@ fn build_mutations_from_transition(
 
     // If the transition targets a state variable, emit a mutation.
     if let Some(var) = ir.state_graph.variables.get(&transition.target_state) {
+        let field = to_snake_case(&var.name);
         mutations.push(StateMutation {
-            field: to_snake_case(&var.name),
-            expression: if transition.action_snippet.is_empty() {
-                format!("/* TODO: translate action for {} */", var.name)
-            } else {
-                translate_action_snippet(&transition.action_snippet, &var.name)
-            },
+            expression: translate_action_snippet(&transition.action_snippet, &field),
+            field,
             target_id: transition.target_state.clone(),
         });
     }
@@ -737,37 +760,51 @@ fn derive_model_name(source_project: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
         .collect();
-    let pascal = to_pascal_case(&cleaned);
-    if pascal.is_empty() {
-        "AppModel".to_string()
+    if cleaned.chars().any(is_ident_char) {
+        format!("{}Model", to_pascal_case(&cleaned))
     } else {
-        format!("{pascal}Model")
+        "AppModel".to_string()
     }
 }
 
+/// Whether `ch` may appear in a generated identifier.
+fn is_ident_char(ch: char) -> bool {
+    ch.is_alphabetic() || ch.is_ascii_digit()
+}
+
+/// `s` as a snake_case Rust identifier: `setCount` → `set_count`, `type` →
+/// `r#type`.
+///
+/// Names come from the analysed source, so they may hold characters Rust
+/// identifiers cannot, such as `$` or the `/`, `.`, `::` and `#` of a
+/// qualified effect name, or be keywords. Those used to reach the generated
+/// code verbatim, which then did not compile.
 fn to_snake_case(s: &str) -> String {
     let mut result = String::with_capacity(s.len() + 4);
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_uppercase() && i > 0 {
-            let prev = s.as_bytes().get(i - 1).copied().unwrap_or(b'_');
-            if prev != b'_' && prev != b'-' {
+    for ch in s.chars() {
+        if ch == '_' {
+            result.push('_');
+        } else if !is_ident_char(ch) {
+            if !result.is_empty() && !result.ends_with('_') {
                 result.push('_');
             }
-        }
-        if ch == '-' || ch == ' ' {
-            result.push('_');
         } else {
-            result.push(ch.to_lowercase().next().unwrap_or(ch));
+            if ch.is_uppercase() && !result.is_empty() && !result.ends_with('_') {
+                result.push('_');
+            }
+            result.extend(ch.to_lowercase());
         }
     }
-    result
+    valid_ident(result)
 }
 
+/// `s` as a PascalCase Rust identifier: `on_click` → `OnClick`. See
+/// [`to_snake_case`] for why every character is checked.
 fn to_pascal_case(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut capitalize_next = true;
     for ch in s.chars() {
-        if ch == '_' || ch == '-' || ch == ' ' {
+        if !is_ident_char(ch) {
             capitalize_next = true;
         } else if capitalize_next {
             result.extend(ch.to_uppercase());
@@ -776,7 +813,30 @@ fn to_pascal_case(s: &str) -> String {
             result.push(ch);
         }
     }
-    result
+    valid_ident(result)
+}
+
+/// `ident` made usable as a Rust identifier: not empty, not starting with a
+/// digit, and a keyword written raw.
+fn valid_ident(mut ident: String) -> String {
+    if ident.chars().all(|c| c == '_') {
+        ident.push_str("unnamed");
+    }
+    if ident.starts_with(|c: char| c.is_ascii_digit()) {
+        ident.insert(0, '_');
+    }
+    match ident.as_str() {
+        // These cannot be raw identifiers.
+        "crate" | "self" | "super" | "Self" => ident.push('_'),
+        "as" | "async" | "await" | "break" | "const" | "continue" | "dyn" | "else" | "enum"
+        | "extern" | "false" | "fn" | "for" | "gen" | "if" | "impl" | "in" | "let" | "loop"
+        | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "static" | "struct"
+        | "trait" | "true" | "try" | "type" | "unsafe" | "use" | "where" | "while" | "abstract"
+        | "become" | "box" | "do" | "final" | "macro" | "override" | "priv" | "typeof"
+        | "unsized" | "virtual" | "yield" => ident.insert_str(0, "r#"),
+        _ => {}
+    }
+    ident
 }
 
 fn ir_type_to_rust(type_annotation: Option<&str>) -> String {
@@ -800,18 +860,103 @@ fn ir_value_to_rust(value: &str) -> String {
         "\"\"" | "''" => "String::new()".to_string(),
         "[]" => "Vec::new()".to_string(),
         "{}" => "BTreeMap::new()".to_string(),
-        _ => {
-            // Try to detect string literals.
-            if (value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\''))
-            {
-                let inner = &value[1..value.len() - 1];
-                format!("\"{inner}\".to_string()")
-            } else {
-                value.to_string()
+        // `{:?}` writes a Rust literal whatever the text holds.
+        _ => match js_string_literal(value) {
+            Some(text) => format!("{text:?}.to_string()"),
+            None => value.to_string(),
+        },
+    }
+}
+
+/// The text of `value` if it is a single JavaScript string literal such as
+/// `'it\'s'`, with its escapes decoded.
+///
+/// Values are cut from source, so they may be truncated: `useState(')')`
+/// yields a lone `'`, which used to panic when sliced. The body used to be
+/// copied between Rust quotes, so a single-quoted `'say "hi"'` emitted code
+/// that did not compile.
+fn js_string_literal(value: &str) -> Option<String> {
+    let quote = value
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '\'' | '"' | '`'))?;
+    if value.len() < 2 || !value.ends_with(quote) {
+        return None;
+    }
+    let body = &value[1..value.len() - 1];
+    if quote == '`' && body.contains("${") {
+        return None;
+    }
+    let mut text = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c == quote {
+            // `'a' + 'b'` is an expression, not one literal.
+            return None;
+        }
+        if c != '\\' {
+            text.push(c);
+            continue;
+        }
+        // A trailing backslash escaped the closing quote.
+        match chars.next()? {
+            'n' => text.push('\n'),
+            'r' => text.push('\r'),
+            't' => text.push('\t'),
+            'b' => text.push('\u{8}'),
+            'f' => text.push('\u{c}'),
+            'v' => text.push('\u{b}'),
+            '0' => text.push('\0'),
+            'x' => text.push(char::from_u32(js_hex_escape(&mut chars, 2)?)?),
+            'u' => {
+                let mut code = js_unicode_escape(&mut chars)?;
+                if (0xD800..0xDC00).contains(&code) {
+                    // A surrogate pair is spelled as two escapes.
+                    let mut ahead = chars.clone();
+                    if ahead.next() == Some('\\')
+                        && ahead.next() == Some('u')
+                        && let Some(low) = js_unicode_escape(&mut ahead)
+                        && (0xDC00..0xE000).contains(&low)
+                    {
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                        chars = ahead;
+                    }
+                }
+                text.push(char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER));
             }
+            // A line continuation.
+            '\n' => {}
+            '\r' => {
+                if chars.clone().next() == Some('\n') {
+                    chars.next();
+                }
+            }
+            other => text.push(other),
         }
     }
+    Some(text)
+}
+
+/// The value of the `\uXXXX` or `\u{X...}` escape after its `\u`.
+fn js_unicode_escape(chars: &mut std::str::Chars<'_>) -> Option<u32> {
+    if chars.clone().next() != Some('{') {
+        return js_hex_escape(chars, 4);
+    }
+    chars.next();
+    let digits: String = chars.by_ref().take_while(|&c| c != '}').collect();
+    if digits.is_empty() || digits.len() > 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(&digits, 16).ok()
+}
+
+/// The value of the next `len` hex digits.
+fn js_hex_escape(chars: &mut std::str::Chars<'_>, len: usize) -> Option<u32> {
+    let digits: String = chars.by_ref().take(len).collect();
+    if digits.len() != len || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(&digits, 16).ok()
 }
 
 fn default_for_type(rust_type: &str) -> String {
@@ -827,16 +972,40 @@ fn default_for_type(rust_type: &str) -> String {
     }
 }
 
-fn translate_action_snippet(snippet: &str, _field_name: &str) -> String {
-    // Simple translation of common patterns.
+/// The value assigned to `model.<field>` for a transition's action snippet.
+///
+/// A setter call or dispatch has no value to assign, so its placeholder keeps
+/// the field as it is. The placeholder used to be the TODO comment alone, which
+/// left `model.x = /* TODO */;`. Setters such as `setCount(...)`, the form
+/// lowering records, were not recognised and were emitted as calls to an
+/// undefined function. Either kept the generated project from compiling.
+fn translate_action_snippet(snippet: &str, field: &str) -> String {
     let trimmed = snippet.trim();
-    if trimmed.contains("setState") || trimmed.contains("set_") {
-        format!("/* TODO: translate setState call: {trimmed} */")
+    let todo = |what: &str| {
+        format!(
+            "model.{field}.clone() /* TODO: translate {} */",
+            rust_comment_text(what)
+        )
+    };
+    if trimmed.is_empty() {
+        todo(&format!("action for {field}"))
+    } else if is_setter_call(trimmed) {
+        todo(&format!("setState call: {trimmed}"))
     } else if trimmed.contains("dispatch") {
-        format!("/* TODO: translate dispatch: {trimmed} */")
+        todo(&format!("dispatch: {trimmed}"))
     } else {
         trimmed.to_string()
     }
+}
+
+/// Whether `snippet` calls a state setter: `setState`, `setCount` or `set_count`,
+/// but not `offsetX` or `reset_all`.
+fn is_setter_call(snippet: &str) -> bool {
+    snippet.match_indices("set").any(|(at, _)| {
+        let starts_word = !snippet[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_');
+        let next = snippet[at + 3..].chars().next();
+        starts_word && next.is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+    })
 }
 
 fn count_diagnostics(diagnostics: &[TranslationDiagnostic]) -> BTreeMap<String, usize> {
@@ -1153,6 +1322,32 @@ mod tests {
     }
 
     #[test]
+    fn source_names_become_rust_identifiers() {
+        // Lowering names effects by file, component and index.
+        assert_eq!(
+            to_pascal_case("src/App.tsx::App::effect#0"),
+            "SrcAppTsxAppEffect0"
+        );
+        assert_eq!(
+            to_snake_case("src/App.tsx::App::effect#0"),
+            "src_app_tsx_app_effect_0"
+        );
+        assert_eq!(to_snake_case("$value"), "value");
+        assert_eq!(to_snake_case("café"), "café");
+        assert_eq!(to_snake_case("ÉtatX"), "état_x");
+        assert_eq!(to_snake_case("type"), "r#type");
+        assert_eq!(to_snake_case("match"), "r#match");
+        assert_eq!(to_snake_case("self"), "self_");
+        assert_eq!(to_snake_case("2fa"), "_2fa");
+        assert_eq!(to_snake_case("$"), "unnamed");
+        assert_eq!(to_pascal_case("self"), "Self_");
+        assert_eq!(to_pascal_case("404-page"), "_404Page");
+        assert_eq!(to_pascal_case("on:click"), "OnClick");
+        assert_eq!(derive_model_name("!!!"), "AppModel");
+        assert_eq!(derive_model_name("my-app"), "MyAppModel");
+    }
+
+    #[test]
     fn ir_type_to_rust_mappings() {
         assert_eq!(ir_type_to_rust(Some("number")), "i64");
         assert_eq!(ir_type_to_rust(Some("string")), "String");
@@ -1169,6 +1364,59 @@ mod tests {
         assert_eq!(ir_value_to_rust("\"\""), "String::new()");
         assert_eq!(ir_value_to_rust("[]"), "Vec::new()");
         assert_eq!(ir_value_to_rust("\"hello\""), "\"hello\".to_string()");
+    }
+
+    #[test]
+    fn ir_value_to_rust_emits_valid_string_literals() {
+        // `useState(')')` is cut at the first `)`, leaving a lone quote.
+        assert_eq!(ir_value_to_rust("'"), "'");
+        assert_eq!(ir_value_to_rust("\""), "\"");
+        assert_eq!(
+            ir_value_to_rust(r#"'say "hi"'"#),
+            r#""say \"hi\"".to_string()"#
+        );
+        assert_eq!(ir_value_to_rust(r"'it\'s'"), r#""it's".to_string()"#);
+        assert_eq!(ir_value_to_rust(r#""a\nb\\c""#), r#""a\nb\\c".to_string()"#);
+        assert_eq!(ir_value_to_rust("`plain`"), r#""plain".to_string()"#);
+        assert_eq!(ir_value_to_rust(r"'\x41B\u{43}'"), r#""ABC".to_string()"#);
+        assert_eq!(ir_value_to_rust(r"'😀'"), "\"\u{1F600}\".to_string()");
+        assert_eq!(ir_value_to_rust(r"'\uD83D'"), "\"\u{FFFD}\".to_string()");
+        // Not one literal: left as the expression it is.
+        assert_eq!(ir_value_to_rust("'a' + 'b'"), "'a' + 'b'");
+        assert_eq!(ir_value_to_rust(r"'a\'"), r"'a\'");
+        assert_eq!(ir_value_to_rust("`${a}`"), "`${a}`");
+        assert_eq!(ir_value_to_rust(r"'\xZZ'"), r"'\xZZ'");
+    }
+
+    #[test]
+    fn setter_actions_become_placeholders_that_compile() {
+        assert_eq!(
+            translate_action_snippet("setSelected(setSelected)", "selected"),
+            "model.selected.clone() /* TODO: translate setState call: setSelected(setSelected) */"
+        );
+        assert_eq!(
+            translate_action_snippet("this.setState({ a: 1 })", "a"),
+            "model.a.clone() /* TODO: translate setState call: this.setState({ a: 1 }) */"
+        );
+        assert_eq!(
+            translate_action_snippet("", "count"),
+            "model.count.clone() /* TODO: translate action for count */"
+        );
+        assert_eq!(
+            translate_action_snippet("dispatch({ type: 'inc' })", "count"),
+            "model.count.clone() /* TODO: translate dispatch: dispatch({ type: 'inc' }) */"
+        );
+        assert_eq!(
+            translate_action_snippet("set_x(1) /* x */ \n y", "x"),
+            "model.x.clone() /* TODO: translate setState call: set_x(1) / * x * /   y */"
+        );
+        // Not setters.
+        assert_eq!(translate_action_snippet("offsetX + 1", "x"), "offsetX + 1");
+        assert_eq!(translate_action_snippet("reset_all()", "x"), "reset_all()");
+        assert_eq!(
+            translate_action_snippet(" count + 1 ", "count"),
+            "count + 1"
+        );
     }
 
     #[test]

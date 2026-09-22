@@ -24,6 +24,7 @@ use crate::migration_ir::{MigrationIr, Provenance};
 use crate::state_event_translator::TranslatedRuntime;
 use crate::style_translator::TranslatedStyle;
 use crate::translation_planner::TranslationPlan;
+use crate::util::rust_comment_text;
 use crate::view_layout_translator::TranslatedView;
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -659,7 +660,7 @@ fn emit_update_module(
             lines.push(format!(
                 "            {} // {}",
                 emit_cmd_expression(cmd),
-                cmd.description
+                rust_comment_text(&cmd.description)
             ));
         } else {
             lines.push("            ftui_runtime::Cmd::Batch(vec![".into());
@@ -667,7 +668,7 @@ fn emit_update_module(
                 lines.push(format!(
                     "                {}, // {}",
                     emit_cmd_expression(cmd),
-                    cmd.description
+                    rust_comment_text(&cmd.description)
                 ));
             }
             lines.push("            ])".into());
@@ -719,19 +720,31 @@ fn message_variant_pattern(
     }
 }
 
+/// A placeholder that type-checks for a command whose code needs a message
+/// variant or closure the translation does not know.
+///
+/// This used to emit `Cmd::task("<description>")`, but `Cmd::task` takes a
+/// closure, and `Cmd::Msg(Msg::<description>)`, where the description is
+/// prose such as "Fire-and-forget message for 'save'". Either one kept the
+/// generated project from compiling, and the raw description could inject
+/// code.
+fn todo_cmd(kind: &str, description: &str) -> String {
+    format!(
+        "ftui_runtime::Cmd::None /* TODO({kind}): {} */",
+        rust_comment_text(description)
+    )
+}
+
 fn emit_cmd_expression(cmd: &crate::state_event_translator::CommandEmission) -> String {
     use crate::state_event_translator::CommandKind;
     match cmd.kind {
-        CommandKind::Task => format!("ftui_runtime::Cmd::task(\"{}\")", cmd.description),
+        CommandKind::Task => todo_cmd("task", &cmd.description),
         CommandKind::Log => format!("ftui_runtime::Cmd::log({:?})", cmd.description),
         CommandKind::Quit => "ftui_runtime::Cmd::Quit".into(),
         CommandKind::Tick => {
             "ftui_runtime::Cmd::Tick(std::time::Duration::from_millis(100))".into()
         }
-        CommandKind::Msg => format!(
-            "ftui_runtime::Cmd::Msg(Msg::{}) /* TODO */",
-            cmd.description
-        ),
+        CommandKind::Msg => todo_cmd("msg", &cmd.description),
         CommandKind::Batch => "ftui_runtime::Cmd::Batch(vec![]) /* TODO */".into(),
         CommandKind::Sequence => "ftui_runtime::Cmd::Sequence(vec![]) /* TODO */".into(),
         CommandKind::SaveState => "ftui_runtime::Cmd::SaveState".into(),
@@ -812,9 +825,16 @@ fn emit_widget_tree(
     let indent = "    ".repeat(depth);
     let widget_expr = widget_type_to_constructor(&widget.widget_type, &widget.props);
 
-    // Conditional rendering
+    // Conditional rendering. Conditions are source snippets such as
+    // `handler:setOpen`, `effect(() => ..., [count])` or a Suspense fallback,
+    // not Rust, and pasting one in as the `if` condition kept the generated
+    // project from compiling. The widget renders until one is translated.
     if let Some(cond) = &widget.condition {
-        lines.push(format!("{indent}if {} {{", cond.expression));
+        lines.push(format!(
+            "{indent}if true /* TODO({}): {} */ {{",
+            rust_comment_text(&cond.kind),
+            rust_comment_text(&cond.expression)
+        ));
         lines.push(format!("{indent}    let widget = {widget_expr};"));
         lines.push(format!("{indent}    Widget::render(&widget, area, frame);"));
         lines.push(format!("{indent}}}"));
@@ -856,9 +876,22 @@ fn widget_type_to_constructor(
         }
     };
 
-    // Apply title prop if present
+    // Apply title prop if present. Only `Block` and `Rule` take one; a `title`
+    // attribute on a paragraph or input used to emit a call to a method that
+    // does not exist.
+    let takes_title = matches!(
+        wt,
+        WidgetType::Block
+            | WidgetType::List
+            | WidgetType::Table
+            | WidgetType::Tabs
+            | WidgetType::LayoutContainer
+            | WidgetType::Fragment
+            | WidgetType::Custom
+            | WidgetType::Rule
+    );
     let title_prop = props.iter().find(|p| p.name == "title");
-    if let Some(tp) = title_prop {
+    if let Some(tp) = title_prop.filter(|_| takes_title) {
         format!("{base}.title({:?})", tp.value)
     } else {
         base.to_string()
@@ -889,10 +922,10 @@ fn emit_style_module(
             } else {
                 ""
             };
-            lines.push(format!(
-                "pub const COLOR_{}: ftui_style::Color = {};{comment}",
-                token.to_uppercase().replace('-', "_"),
-                mapping.ftui_repr
+            lines.push(color_const_line(
+                &format!("COLOR_{}", const_ident(token)),
+                mapping,
+                comment,
             ));
         }
         lines.push(String::new());
@@ -905,15 +938,16 @@ fn emit_style_module(
 
         for (token, rule) in &inputs.style.typography_rules {
             min_confidence = min_confidence.min(rule.confidence);
-            let flags = rule.flags.join(" | ");
-            let modifier = if flags.is_empty() {
-                "ftui_style::Modifier::empty()".into()
-            } else {
-                format!("ftui_style::Modifier::{flags}")
-            };
+            // `|` is not const on `StyleFlags`; `union` is.
+            let flags = rule
+                .flags
+                .iter()
+                .map(|flag| format!("ftui_style::StyleFlags::{flag}"))
+                .reduce(|acc, flag| format!("{acc}.union({flag})"))
+                .unwrap_or_else(|| "ftui_style::StyleFlags::NONE".into());
             lines.push(format!(
-                "pub const TYPO_{}: ftui_style::Modifier = {modifier};",
-                token.to_uppercase().replace('-', "_")
+                "pub const TYPO_{}: ftui_style::StyleFlags = {flags};",
+                const_ident(token)
             ));
         }
         lines.push(String::new());
@@ -926,11 +960,17 @@ fn emit_style_module(
 
         for (token, rule) in &inputs.style.border_rules {
             min_confidence = min_confidence.min(rule.confidence);
-            lines.push(format!(
-                "pub const BORDER_{}: ftui_widgets::BorderType = ftui_widgets::BorderType::{};",
-                token.to_uppercase().replace('-', "_"),
-                rule.border_type
-            ));
+            let name = const_ident(token);
+            lines.push(match ftui_border_type(&rule.border_type) {
+                Some(variant) => format!(
+                    "pub const BORDER_{name}: ftui_widgets::borders::BorderType = \
+                     ftui_widgets::borders::BorderType::{variant};"
+                ),
+                None => format!(
+                    "// BORDER_{name}: no ftui border for {}",
+                    rust_comment_text(&rule.border_type)
+                ),
+            });
         }
         lines.push(String::new());
     }
@@ -947,9 +987,8 @@ fn emit_style_module(
             lines.push(format!("impl {struct_name}Theme {{"));
             for (key, color) in &theme.color_overrides {
                 lines.push(format!(
-                    "    pub const {}: ftui_style::Color = {};",
-                    key.to_uppercase().replace('-', "_"),
-                    color.ftui_repr
+                    "    {}",
+                    color_const_line(&const_ident(key), color, "")
                 ));
             }
             lines.push("}".into());
@@ -961,10 +1000,10 @@ fn emit_style_module(
     if !inputs.style.accessibility_upgrades.is_empty() {
         lines.push("// ── Accessibility Upgrades Applied ──".into());
         for upgrade in &inputs.style.accessibility_upgrades {
-            lines.push(format!(
+            lines.push(rust_comment_text(&format!(
                 "// {}: {} → {} ({})",
                 upgrade.token_name, upgrade.original, upgrade.upgraded, upgrade.rationale
-            ));
+            )));
         }
         lines.push(String::new());
     }
@@ -977,6 +1016,71 @@ fn emit_style_module(
         kind: FileKind::RustSource,
         confidence: min_confidence,
         provenance_links: Vec::new(),
+    }
+}
+
+/// `pub const <name>: ftui_style::Color = ...;`, or a comment for a color that
+/// did not parse.
+///
+/// This used to paste the mapping's `ftui_repr`, `Color::Rgb(r, g, b)`, which
+/// named no imported type and passed three values to a variant that holds an
+/// `Rgb`. An unparsed color left the constant with only a comment for a value.
+fn color_const_line(
+    name: &str,
+    mapping: &crate::style_translator::ColorMapping,
+    comment: &str,
+) -> String {
+    match mapping.rgb {
+        Some((r, g, b)) => format!(
+            "pub const {name}: ftui_style::Color = ftui_style::Color::rgb({r}, {g}, {b});{comment}"
+        ),
+        None => format!(
+            "// {name}: unparsed color {}",
+            rust_comment_text(&mapping.original_value)
+        ),
+    }
+}
+
+/// `token` as an UPPER_SNAKE_CASE constant name: `--brand.500` → `__BRAND_500`.
+///
+/// This used to replace only `-`, so a token with `.`, `/` or `:`, or one
+/// that starts with a digit, did not make an identifier.
+fn const_ident(token: &str) -> String {
+    let mut name: String = token
+        .chars()
+        .map(|c| {
+            if c.is_alphabetic() || c.is_ascii_digit() {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .to_uppercase();
+    if name.chars().all(|c| c == '_') {
+        name.push_str("UNNAMED");
+    }
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        name.insert(0, '_');
+    }
+    name
+}
+
+/// The `ftui_widgets::borders::BorderType` variant for a translated border
+/// type, or `None` when there is none, as for `None`.
+///
+/// This used to emit `ftui_widgets::BorderType::<name>`: that path is not
+/// exported, and `Plain` and `Thick` are not variants.
+fn ftui_border_type(border_type: &str) -> Option<&'static str> {
+    match border_type {
+        "Plain" | "Square" => Some("Square"),
+        "Thick" | "Heavy" => Some("Heavy"),
+        "Rounded" => Some("Rounded"),
+        "Double" => Some("Double"),
+        "Ascii" => Some("Ascii"),
+        "Dashed" => Some("Dashed"),
+        "HeavyDashed" => Some("HeavyDashed"),
+        _ => None,
     }
 }
 
@@ -1007,7 +1111,11 @@ fn emit_effects_module(
         lines.push("    vec![".into());
 
         for sub in &inputs.runtime.subscriptions {
-            lines.push(format!("        // {}: {}", sub.name, sub.description));
+            lines.push(format!(
+                "        // {}: {}",
+                rust_comment_text(&sub.name),
+                rust_comment_text(&sub.description)
+            ));
             if sub.is_timer {
                 lines.push(format!(
                     "        // Timer subscription → {msg_name}::{}",
@@ -1042,7 +1150,11 @@ fn emit_effects_module(
                 }
             };
 
-            lines.push(format!("// Effect '{}' ({id}):", orch.name));
+            lines.push(format!(
+                "// Effect '{}' ({}):",
+                rust_comment_text(&orch.name),
+                rust_comment_text(id)
+            ));
             lines.push(format!("//   Runtime: {construct}"));
             lines.push(format!("//   Timeout: {}ms", orch.timeout_ms));
             lines.push(format!("//   Async: {}", orch.async_boundary));
@@ -1071,7 +1183,7 @@ fn emit_effects_module(
             lines.push(format!(
                 "    {} // {}",
                 emit_init_cmd_expression(cmd),
-                cmd.description
+                rust_comment_text(&cmd.description)
             ));
         } else {
             lines.push("    ftui_runtime::Cmd::Batch(vec![".into());
@@ -1079,7 +1191,7 @@ fn emit_effects_module(
                 lines.push(format!(
                     "        {}, // {}",
                     emit_init_cmd_expression(cmd),
-                    cmd.description
+                    rust_comment_text(&cmd.description)
                 ));
             }
             lines.push("    ])".into());
@@ -1115,12 +1227,12 @@ fn emit_effects_module(
 fn emit_init_cmd_expression(cmd: &crate::state_event_translator::InitCommand) -> String {
     use crate::state_event_translator::CommandKind;
     match cmd.kind {
-        CommandKind::Task => format!("ftui_runtime::Cmd::task(\"{}\")", cmd.description),
+        CommandKind::Task => todo_cmd("task", &cmd.description),
         CommandKind::Tick => {
             "ftui_runtime::Cmd::Tick(std::time::Duration::from_millis(100))".into()
         }
         CommandKind::Log => format!("ftui_runtime::Cmd::log({:?})", cmd.description),
-        _ => format!("ftui_runtime::Cmd::None /* TODO: {} */", cmd.description),
+        _ => todo_cmd("init", &cmd.description),
     }
 }
 
@@ -1310,8 +1422,11 @@ fn update_stats(file: &EmittedFile, stats: &mut EmissionStats) {
     }
 }
 
+/// `s` as a PascalCase identifier prefix: `high.contrast` → `HighContrast`.
+/// Every character that cannot be in an identifier separates words.
 fn to_pascal_case(s: &str) -> String {
-    s.split(['_', '-', ' '])
+    let pascal: String = s
+        .split(|c: char| !(c.is_alphabetic() || c.is_ascii_digit()))
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
@@ -1323,7 +1438,12 @@ fn to_pascal_case(s: &str) -> String {
                 None => String::new(),
             }
         })
-        .collect()
+        .collect();
+    if pascal.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("_{pascal}")
+    } else {
+        pascal
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -1861,8 +1981,96 @@ mod tests {
         let emission = emit_project(&inputs);
         let style_file = &emission.files["src/style.rs"];
 
-        assert!(style_file.content.contains("COLOR_PRIMARY"));
-        assert!(style_file.content.contains("Color::Rgb(0, 128, 255)"));
+        assert!(style_file.content.contains(
+            "pub const COLOR_PRIMARY: ftui_style::Color = ftui_style::Color::rgb(0, 128, 255);"
+        ));
+    }
+
+    #[test]
+    fn style_module_names_real_ftui_items() {
+        let ir = make_ir();
+        let runtime = make_runtime();
+        let view = make_view();
+        let mut style = make_style();
+        let color = |name: &str, rgb| ColorMapping {
+            token_name: name.into(),
+            rgb,
+            ftui_repr: String::new(),
+            confidence: 0.9,
+            a11y_adjusted: false,
+            original_value: "var(--x) */".into(),
+            provenance: None,
+        };
+        style
+            .color_mappings
+            .insert("brand.500".into(), color("brand.500", Some((1, 2, 3))));
+        style
+            .color_mappings
+            .insert("accent".into(), color("accent", None));
+        style.typography_rules.insert(
+            "heading".into(),
+            TypographyRule {
+                token_name: "heading".into(),
+                flags: vec!["BOLD".into(), "ITALIC".into()],
+                lost_properties: vec![],
+                confidence: 0.9,
+                provenance: None,
+            },
+        );
+        for (token, border_type) in [("card", "Plain"), ("panel", "Thick"), ("bare", "None")] {
+            style.border_rules.insert(
+                token.into(),
+                BorderRule {
+                    token_name: token.into(),
+                    border_type: border_type.into(),
+                    color_preserved: false,
+                    confidence: 0.9,
+                    provenance: None,
+                },
+            );
+        }
+        style.themes.push(TranslatedTheme {
+            name: "high.contrast".into(),
+            is_default: false,
+            color_overrides: BTreeMap::from([("50".into(), color("50", Some((4, 5, 6))))]),
+            unresolved_tokens: 0,
+            source_tokens: BTreeSet::new(),
+        });
+        let effects = make_effects();
+        let plan = make_plan();
+        let inputs = make_inputs(&ir, &runtime, &view, &style, &effects, &plan);
+
+        let emission = emit_project(&inputs);
+        let style_rs = &emission.files["src/style.rs"].content;
+
+        for expected in [
+            "pub const COLOR_BRAND_500: ftui_style::Color = ftui_style::Color::rgb(1, 2, 3);",
+            "// COLOR_ACCENT: unparsed color var(--x) * /",
+            "pub const TYPO_HEADING: ftui_style::StyleFlags = \
+             ftui_style::StyleFlags::BOLD.union(ftui_style::StyleFlags::ITALIC);",
+            "pub const BORDER_CARD: ftui_widgets::borders::BorderType = \
+             ftui_widgets::borders::BorderType::Square;",
+            "pub const BORDER_PANEL: ftui_widgets::borders::BorderType = \
+             ftui_widgets::borders::BorderType::Heavy;",
+            "// BORDER_BARE: no ftui border for None",
+            "pub struct HighContrastTheme;",
+            "    pub const _50: ftui_style::Color = ftui_style::Color::rgb(4, 5, 6);",
+        ] {
+            assert!(
+                style_rs.contains(expected),
+                "missing {expected:?} in\n{style_rs}"
+            );
+        }
+        assert!(!style_rs.contains("Modifier"), "{style_rs}");
+    }
+
+    #[test]
+    fn const_ident_makes_identifiers() {
+        assert_eq!(const_ident("primary-color"), "PRIMARY_COLOR");
+        assert_eq!(const_ident("--brand.500"), "__BRAND_500");
+        assert_eq!(const_ident("500"), "_500");
+        assert_eq!(const_ident("--"), "__UNNAMED");
+        assert_eq!(to_pascal_case("2024 dark"), "_2024Dark");
     }
 
     #[test]
@@ -1935,7 +2143,60 @@ mod tests {
         let emission = emit_project(&inputs);
         let view_file = &emission.files["src/view.rs"];
 
-        assert!(view_file.content.contains("if model.count > 0"));
+        assert!(
+            view_file
+                .content
+                .contains("if true /* TODO(guard): model.count > 0 */ {"),
+            "{}",
+            view_file.content
+        );
+    }
+
+    #[test]
+    fn title_is_applied_only_to_widgets_that_take_one() {
+        let title = [WidgetProp {
+            name: "title".into(),
+            value: "Tip".into(),
+        }];
+        assert_eq!(
+            widget_type_to_constructor(&WidgetType::Paragraph, &title),
+            "ftui_widgets::paragraph::Paragraph::new(\"\")"
+        );
+        assert_eq!(
+            widget_type_to_constructor(&WidgetType::Rule, &title),
+            "ftui_widgets::rule::Rule::new().title(\"Tip\")"
+        );
+        assert_eq!(
+            widget_type_to_constructor(&WidgetType::Custom, &title),
+            "ftui_widgets::block::Block::default().title(\"Tip\")"
+        );
+    }
+
+    #[test]
+    fn source_conditions_do_not_become_rust_code() {
+        let ir = make_ir();
+        let runtime = make_runtime();
+        let mut view = make_view();
+        let root = view.roots[0].clone();
+        let widget = view.widgets.get_mut(&root).expect("root widget");
+        widget.condition = Some(RenderConditionDecl {
+            kind: "guard".into(),
+            expression: "effect(() => { a(); /* x */ }, [count])".into(),
+            state_deps: vec![],
+        });
+        let style = make_style();
+        let effects = make_effects();
+        let plan = make_plan();
+        let inputs = make_inputs(&ir, &runtime, &view, &style, &effects, &plan);
+
+        let emission = emit_project(&inputs);
+        let view_file = &emission.files["src/view.rs"].content;
+
+        assert!(
+            view_file
+                .contains("if true /* TODO(guard): effect(() => { a(); / * x * / }, [count]) */ {"),
+            "{view_file}"
+        );
     }
 
     #[test]
@@ -1964,6 +2225,106 @@ mod tests {
 
         assert!(update.content.contains("Msg::SetCount"));
         assert!(update.content.contains("Cmd::log("));
+    }
+
+    #[test]
+    fn task_and_msg_commands_emit_placeholders_that_compile() {
+        let ir = make_ir();
+        let mut runtime = make_runtime();
+        let command = |kind, description: &str| CommandEmission {
+            kind,
+            description: description.into(),
+            source_effect_id: None,
+        };
+        runtime.update_arms.push(UpdateArm {
+            message_variant: "SetCount".into(),
+            guards: vec![],
+            mutations: vec![],
+            commands: vec![
+                command(CommandKind::Task, "Cmd::Task for 'load' (data_fetch)"),
+                command(CommandKind::Msg, "Fire-and-forget message for 'save'"),
+            ],
+            source_transition: None,
+        });
+        runtime.init_commands.push(InitCommand {
+            kind: CommandKind::Task,
+            description: "Init: fetch 'load' via Cmd::Task".into(),
+            source_effect_id: None,
+        });
+        let view = make_view();
+        let style = make_style();
+        let effects = make_effects();
+        let plan = make_plan();
+        let inputs = make_inputs(&ir, &runtime, &view, &style, &effects, &plan);
+
+        let emission = emit_project(&inputs);
+        let update = &emission.files["src/update.rs"].content;
+        let effects_rs = &emission.files["src/effects.rs"].content;
+
+        // `Cmd::task` takes a closure and the description is not a variant.
+        assert!(!update.contains("Cmd::task("), "{update}");
+        assert!(!update.contains("Cmd::Msg("), "{update}");
+        assert!(!effects_rs.contains("Cmd::task("), "{effects_rs}");
+        assert!(update.contains("ftui_runtime::Cmd::None /* TODO(task): Cmd::Task for 'load'"));
+        assert!(update.contains("ftui_runtime::Cmd::None /* TODO(msg): Fire-and-forget"));
+        assert!(effects_rs.contains("ftui_runtime::Cmd::None /* TODO(task): Init: fetch 'load'"));
+    }
+
+    #[test]
+    fn descriptions_cannot_escape_emitted_comments() {
+        let ir = make_ir();
+        let mut runtime = make_runtime();
+        let hostile = "x */ injected_block(); /*\ninjected_line();";
+        runtime.update_arms.push(UpdateArm {
+            message_variant: "SetCount".into(),
+            guards: vec![],
+            mutations: vec![],
+            commands: vec![CommandEmission {
+                kind: CommandKind::Task,
+                description: hostile.into(),
+                source_effect_id: None,
+            }],
+            source_transition: None,
+        });
+        runtime.init_commands.push(InitCommand {
+            kind: CommandKind::Task,
+            description: hostile.into(),
+            source_effect_id: None,
+        });
+        runtime.subscriptions.push(SubscriptionDecl {
+            name: "tick".into(),
+            description: hostile.into(),
+            message_variant: "Tick".into(),
+            is_timer: true,
+            source_effect_id: IrNodeId("eff-timer".into()),
+        });
+        let view = make_view();
+        let style = make_style();
+        let effects = make_effects();
+        let plan = make_plan();
+        let inputs = make_inputs(&ir, &runtime, &view, &style, &effects, &plan);
+
+        let emission = emit_project(&inputs);
+        for path in ["src/update.rs", "src/effects.rs"] {
+            let content = &emission.files[path].content;
+            assert!(content.contains("injected_block"), "{path}: {content}");
+            for line in content.lines() {
+                assert!(
+                    !line.trim_start().starts_with("injected_line"),
+                    "{path}: a newline ended the comment: {line}"
+                );
+                assert!(
+                    !line.contains("*/ injected_block"),
+                    "{path}: `*/` ended the comment: {line}"
+                );
+                // Block comments nest, so an extra `/*` leaves one open.
+                assert_eq!(
+                    line.matches("/*").count(),
+                    line.matches("*/").count(),
+                    "{path}: unbalanced block comment: {line}"
+                );
+            }
+        }
     }
 
     #[test]
