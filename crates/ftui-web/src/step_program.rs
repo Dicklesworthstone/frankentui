@@ -912,7 +912,7 @@ mod tests {
                         Plan::Msg(*id)
                     }
                     3 => {
-                        if rng() % 6 == 0 {
+                        if rng().is_multiple_of(6) {
                             Plan::Quit
                         } else {
                             Plan::Log(format!("log{}", rng() % 100))
