@@ -74,7 +74,8 @@ const DEMO_PATTERNS: &[&str] = &[
 pub struct SnapshotPlayerConfig {
     /// Maximum frames to record.
     pub max_frames: usize,
-    /// Playback speed (frames per tick when playing).
+    /// Frames advanced per playback step, where a step happens every other
+    /// tick. `0` is treated as `1`.
     pub playback_speed: usize,
     /// Whether to auto-generate demo frames on init.
     pub auto_generate_demo: bool,
@@ -1701,10 +1702,11 @@ impl Screen for SnapshotPlayer {
         self.tick_count = tick_count;
 
         if self.playback_state == PlaybackState::Playing {
-            // Advance frame during playback (every N ticks based on speed)
-            if tick_count.is_multiple_of(2) {
-                // Advance every 2 ticks (~5 fps)
-                if !self.time_travel.is_empty() {
+            // A playback step every 2 ticks (~5 fps), advancing
+            // `playback_speed` frames each time. Zero would freeze playback
+            // with no way to tell it from a stall, so it means one frame.
+            if tick_count.is_multiple_of(2) && !self.time_travel.is_empty() {
+                for _ in 0..self.config.playback_speed.max(1) {
                     if self.current_frame + 1 < self.time_travel.len() {
                         self.inspector.step_forward(&self.time_travel);
                     } else {
@@ -1961,6 +1963,36 @@ mod tests {
         player.tick(2);
         // Should advance after tick
         assert!(player.current_frame > initial || player.current_frame == 0);
+    }
+
+    /// `playback_speed` was documented as frames per tick and read by
+    /// nothing: playback always moved one frame per step, whatever it said.
+    #[test]
+    fn playback_speed_is_the_frames_a_step_advances() {
+        let config = |speed| SnapshotPlayerConfig {
+            playback_speed: speed,
+            ..SnapshotPlayerConfig::default()
+        };
+        let advance_after_one_step = |speed| {
+            let mut player = SnapshotPlayer::with_config(config(speed));
+            player.toggle_playback();
+            let before = player.current_frame;
+            player.tick(2);
+            player.current_frame - before
+        };
+
+        assert_eq!(advance_after_one_step(1), 1, "the default is unchanged");
+        assert_eq!(advance_after_one_step(3), 3);
+        // Zero would stall playback with nothing to distinguish it from a
+        // hang, so it advances one frame.
+        assert_eq!(advance_after_one_step(0), 1);
+
+        // A step still happens only every other tick.
+        let mut player = SnapshotPlayer::with_config(config(3));
+        player.toggle_playback();
+        let before = player.current_frame;
+        player.tick(1);
+        assert_eq!(player.current_frame, before, "odd ticks do not advance");
     }
 
     #[test]
