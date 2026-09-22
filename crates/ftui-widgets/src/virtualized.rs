@@ -3533,8 +3533,12 @@ mod tests {
             offset_seed in 0usize..64,
         ) {
             let len = heights.len();
-            let mut cache: Virtualized<usize> =
-                Virtualized::new(len).with_variable_heights(default_height);
+            // `with_variable_heights` has built a Fenwick tracker since
+            // 4c697f8c, so naming it as the cache side compared one
+            // implementation against itself. The capacity holds every item,
+            // so nothing is evicted and the two must agree exactly.
+            let mut cache: Virtualized<usize> = Virtualized::new(len)
+                .with_item_height(ItemHeight::Variable(HeightCache::new(default_height, len)));
             let mut fenwick: Virtualized<usize> =
                 Virtualized::new(len).with_variable_heights_fenwick(default_height, len);
             for i in 0..len {
@@ -3570,6 +3574,31 @@ mod tests {
                 bottom_cache,
                 len
             );
+
+            // A trim renumbers every surviving item. A tracker that keeps the
+            // old indices then reports each measurement against an item it was
+            // not taken from, which is what the legacy cache did.
+            let keep = 1 + offset_seed % len;
+            if keep < len {
+                prop_assert_eq!(cache.trim_front(keep), fenwick.trim_front(keep));
+                let len = cache.len();
+                cache.scroll_to_bottom();
+                fenwick.scroll_to_bottom();
+                let trimmed_cache = cache.visible_range(viewport);
+                let trimmed_fenwick = fenwick.visible_range(viewport);
+                prop_assert_eq!(
+                    &trimmed_cache,
+                    &trimmed_fenwick,
+                    "implementations disagree after trimming to {} items",
+                    keep
+                );
+                prop_assert!(
+                    trimmed_cache.contains(&(len - 1)),
+                    "last item unreachable after a trim: range {:?} of {} items",
+                    trimmed_cache,
+                    len
+                );
+            }
         }
     }
 
