@@ -1026,7 +1026,11 @@ impl QueueingScheduler {
                 self.config.w_min
             };
         }
-        weight.clamp(self.config.w_min, self.config.w_max)
+        // Not `f64::clamp`, which panics when the bounds are inverted or NaN:
+        // `SchedulerConfig`'s fields are public and unchecked, so a
+        // `w_min > w_max` made every submit panic. Here the upper bound wins
+        // and a NaN bound is ignored.
+        weight.max(self.config.w_min).min(self.config.w_max)
     }
 
     /// Normalize a processing-time estimate into the configured clamp range.
@@ -1041,7 +1045,10 @@ impl QueueingScheduler {
                 self.config.p_min_ms
             };
         }
-        estimate_ms.clamp(self.config.p_min_ms, self.config.p_max_ms)
+        // As in `normalize_weight`: `clamp` panics on inverted or NaN bounds.
+        estimate_ms
+            .max(self.config.p_min_ms)
+            .min(self.config.p_max_ms)
     }
 
     /// Resolve a weight based on its declared source, then clamp to config limits.
@@ -1997,6 +2004,22 @@ mod tests {
 
         let next = scheduler.peek_next().unwrap();
         assert!((next.remaining_time - 50_000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn inverted_or_nan_config_bounds_do_not_panic_on_submit() {
+        // Normalization used `f64::clamp`, which panics on min > max or a
+        // NaN bound, so a config like this made every submit panic.
+        let mut config = test_config();
+        config.w_min = 10.0;
+        config.w_max = 1.0;
+        config.p_min_ms = f64::NAN;
+        config.p_max_ms = 2.0;
+        let mut scheduler = QueueingScheduler::new(config);
+        assert!(scheduler.submit(5.0, 50.0).is_some());
+        let next = scheduler.peek_next().unwrap();
+        assert!((next.weight - 1.0).abs() < f64::EPSILON);
+        assert!((next.remaining_time - 2.0).abs() < f64::EPSILON);
     }
 
     // =========================================================================
