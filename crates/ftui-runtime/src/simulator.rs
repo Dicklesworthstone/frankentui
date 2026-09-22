@@ -439,10 +439,48 @@ impl<M: Model> ProgramSimulator<M> {
 
     /// Execute a command without IO.
     ///
-    /// Cmd::Msg recurses through update; Cmd::Log records the text;
+    /// Cmd::Msg runs update and then its result; Cmd::Log records the text;
     /// IO-dependent operations are simulated (no real terminal writes).
     /// Save/Restore use the configured registry when present.
+    ///
+    /// Like `Program`, commands run depth-first from an explicit stack of
+    /// batch iterators. Running each `update` result recursively overflowed
+    /// the stack for a model that takes one step per `Cmd::Msg`.
     fn execute_cmd(&mut self, cmd: Cmd<M::Message>) {
+        let mut batches: Vec<std::vec::IntoIter<Cmd<M::Message>>> = Vec::new();
+        let mut next = Some(cmd);
+        loop {
+            let cmd = match next.take() {
+                Some(cmd) => cmd,
+                None => {
+                    // Resume the innermost batch. A batch stops after any
+                    // command that ends the program.
+                    let Some(rest) = batches.last_mut() else {
+                        return;
+                    };
+                    if !self.running {
+                        return;
+                    }
+                    match rest.next() {
+                        Some(cmd) => cmd,
+                        None => {
+                            batches.pop();
+                            continue;
+                        }
+                    }
+                }
+            };
+            next = self.execute_one_cmd(cmd, &mut batches);
+        }
+    }
+
+    /// Execute `cmd` for [`Self::execute_cmd`], returning the command to run
+    /// next and pushing the rest of a batch onto `batches`.
+    fn execute_one_cmd(
+        &mut self,
+        cmd: Cmd<M::Message>,
+        batches: &mut Vec<std::vec::IntoIter<Cmd<M::Message>>>,
+    ) -> Option<Cmd<M::Message>> {
         match cmd {
             Cmd::None => {
                 self.command_log.push(CmdRecord::None);
@@ -453,28 +491,21 @@ impl<M: Model> ProgramSimulator<M> {
             }
             Cmd::Msg(m) => {
                 self.command_log.push(CmdRecord::Msg);
-                let cmd = self.model.update(m);
-                self.execute_cmd(cmd);
+                return Some(self.model.update(m));
             }
             Cmd::Batch(cmds) => {
-                let count = cmds.len();
-                self.command_log.push(CmdRecord::Batch(count));
-                for c in cmds {
-                    self.execute_cmd(c);
-                    if !self.running {
-                        break;
-                    }
-                }
+                self.command_log.push(CmdRecord::Batch(cmds.len()));
+                let mut rest = cmds.into_iter();
+                let first = rest.next();
+                batches.push(rest);
+                return first;
             }
             Cmd::Sequence(cmds) => {
-                let count = cmds.len();
-                self.command_log.push(CmdRecord::Sequence(count));
-                for c in cmds {
-                    self.execute_cmd(c);
-                    if !self.running {
-                        break;
-                    }
-                }
+                self.command_log.push(CmdRecord::Sequence(cmds.len()));
+                let mut rest = cmds.into_iter();
+                let first = rest.next();
+                batches.push(rest);
+                return first;
             }
             Cmd::Tick(duration) => {
                 self.tick_rate = Some(duration);
@@ -510,8 +541,7 @@ impl<M: Model> ProgramSimulator<M> {
                 self.command_log.push(CmdRecord::Task);
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
                     Ok(msg) => {
-                        let cmd = self.model.update(msg);
-                        self.execute_cmd(cmd);
+                        return Some(self.model.update(msg));
                     }
                     Err(payload) => {
                         let error = if let Some(message) = payload.downcast_ref::<&str>() {
@@ -549,6 +579,7 @@ impl<M: Model> ProgramSimulator<M> {
                 // No-op in simulator mode for now.
             }
         }
+        None
     }
 }
 
@@ -1309,6 +1340,50 @@ mod tests {
         fn view(&self, _frame: &mut Frame) {
             self.trace.borrow_mut().push("view");
         }
+    }
+
+    #[test]
+    fn long_msg_and_task_chains_run_without_recursion() {
+        // One step per `Cmd::Msg` or inline task. Running each `update`
+        // result recursively overflowed the stack at about 10k steps.
+        struct Walker {
+            steps: u32,
+        }
+
+        enum WalkMsg {
+            Step(u32),
+            Event,
+        }
+
+        impl From<Event> for WalkMsg {
+            fn from(_: Event) -> Self {
+                WalkMsg::Event
+            }
+        }
+
+        impl Model for Walker {
+            type Message = WalkMsg;
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    WalkMsg::Step(0) | WalkMsg::Event => Cmd::none(),
+                    WalkMsg::Step(n) if n % 2 == 0 => {
+                        self.steps += 1;
+                        Cmd::msg(WalkMsg::Step(n - 1))
+                    }
+                    WalkMsg::Step(n) => {
+                        self.steps += 1;
+                        Cmd::task(move || WalkMsg::Step(n - 1))
+                    }
+                }
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let mut sim = ProgramSimulator::new(Walker { steps: 0 });
+        sim.send(WalkMsg::Step(200_000));
+        assert_eq!(sim.model().steps, 200_000);
     }
 
     #[test]
