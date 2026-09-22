@@ -22,7 +22,7 @@ use crate::mouse::MouseResult;
 use crate::stateful::Stateful;
 use crate::undo_support::{TreeUndoExt, UndoSupport, UndoWidgetId};
 use crate::{Widget, clear_text_area, draw_text_span};
-use ftui_core::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
@@ -946,7 +946,14 @@ impl Tree {
     /// - **Left**: Collapse the selected node (if expanded).
     ///
     /// Returns `true` when an expand/collapse action was applied.
+    ///
+    /// Acts on press and repeat, never release. Terminals with the kitty
+    /// keyboard protocol's event types, and the web backend, report a release
+    /// for every key, so Enter toggled a node open and straight back shut.
     pub fn handle_key(&mut self, key: &KeyEvent, selected_visible_index: usize) -> bool {
+        if key.kind == KeyEventKind::Release {
+            return false;
+        }
         match key.code {
             KeyCode::Enter | KeyCode::Char(' ') => {
                 self.toggle_node_at_visible_index(selected_visible_index, "keyboard")
@@ -2039,6 +2046,21 @@ mod tests {
         assert!(!tree.root().children()[0].is_expanded());
         assert!(tree.handle_key(&KeyEvent::new(KeyCode::Char(' ')), 1));
         assert!(tree.root().children()[0].is_expanded());
+    }
+
+    #[test]
+    fn tree_handle_key_ignores_key_release() {
+        // With release events reported, Enter collapsed the node on press
+        // and expanded it again on release.
+        let mut tree = Tree::new(
+            TreeNode::new("root")
+                .child(TreeNode::new("a").child(TreeNode::new("a1")))
+                .child(TreeNode::new("b")),
+        );
+        let enter = KeyEvent::new(KeyCode::Enter);
+        assert!(tree.handle_key(&enter, 1));
+        assert!(!tree.handle_key(&enter.with_kind(KeyEventKind::Release), 1));
+        assert!(!tree.root().children()[0].is_expanded());
     }
 
     // =========================================================================
