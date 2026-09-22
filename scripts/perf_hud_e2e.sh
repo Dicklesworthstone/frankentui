@@ -99,6 +99,10 @@ if [[ ! -x "$DEMO_BIN" ]]; then
     exit 1
 fi
 
+# The tier labels live on the Performance HUD screen. A hardcoded 30 had
+# drifted onto Theme Studio as screens were added.
+PERF_HUD_SCREEN="$(e2e_demo_screen "$DEMO_BIN" performance_hud)"
+
 MODES=("alt" "inline")
 SIZES=("80x24" "120x40")
 INLINE_UI_HEIGHT="${INLINE_UI_HEIGHT:-12}"
@@ -220,7 +224,7 @@ run_case() {
     if FTUI_DEMO_DETERMINISTIC=1 \
         FTUI_DEMO_SEED="${E2E_SEED:-0}" \
         FTUI_DEMO_RUN_ID="${E2E_RUN_ID}_${case_id}" \
-        FTUI_DEMO_SCREEN="30" \
+        FTUI_DEMO_SCREEN="$PERF_HUD_SCREEN" \
         FTUI_DEMO_SCREEN_MODE="$mode" \
         FTUI_DEMO_UI_HEIGHT="$ui_height" \
         FTUI_DEMO_TICK_MS="$tick_ms" \
