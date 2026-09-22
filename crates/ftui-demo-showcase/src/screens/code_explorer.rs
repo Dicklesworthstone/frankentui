@@ -1093,6 +1093,11 @@ impl Screen for CodeExplorer {
         ]
     }
 
+    fn consumes_text_input(&self) -> bool {
+        // The search prompt takes text, `q` and `m` included.
+        self.search_active
+    }
+
     fn title(&self) -> &'static str {
         "Code Explorer"
     }

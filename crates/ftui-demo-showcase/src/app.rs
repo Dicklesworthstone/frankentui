@@ -4294,7 +4294,13 @@ impl AppModel {
                         }
                     }
 
-                    if self.a11y_panel_visible {
+                    // Shifted letters are text too. Web and kitty terminals
+                    // report capital A as ('A', SHIFT), so the Shift+letter
+                    // shortcuts below used to fire while typing a capital
+                    // into a focused field, like `q` and `m` would.
+                    let text_input_active = self.screens.consumes_text_input(self.display_screen());
+
+                    if self.a11y_panel_visible && !text_input_active {
                         match (*code, *modifiers) {
                             (KeyCode::Char('A'), Modifiers::SHIFT) => {
                                 return self.handle_msg(AppMsg::ToggleA11yPanel, source);
@@ -4326,8 +4332,6 @@ impl AppModel {
                             _ => {}
                         }
                     }
-
-                    let text_input_active = self.screens.consumes_text_input(self.display_screen());
 
                     match (*code, *modifiers) {
                         // Quit (suppressed when a text field has focus)
@@ -4403,7 +4407,7 @@ impl AppModel {
                             return Cmd::None;
                         }
                         // A11y panel
-                        (KeyCode::Char('A'), Modifiers::SHIFT) => {
+                        (KeyCode::Char('A'), Modifiers::SHIFT) if !text_input_active => {
                             return self.handle_msg(AppMsg::ToggleA11yPanel, source);
                         }
                         // Theme cycling
@@ -4441,7 +4445,7 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        (KeyCode::Char('L'), Modifiers::SHIFT) => {
+                        (KeyCode::Char('L'), Modifiers::SHIFT) if !text_input_active => {
                             let target = self.display_screen().next();
                             if self.tour.is_active() {
                                 self.stop_tour(false, "shift_l");
@@ -4449,7 +4453,7 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        (KeyCode::Char('H'), Modifiers::SHIFT) => {
+                        (KeyCode::Char('H'), Modifiers::SHIFT) if !text_input_active => {
                             let target = self.display_screen().prev();
                             if self.tour.is_active() {
                                 self.stop_tour(false, "shift_h");
@@ -7060,6 +7064,51 @@ mod tests {
             app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char(key)))));
             assert_eq!(app.current_screen, ScreenId::I18nDemo);
             assert!(rendered_app_text(&app).contains(&format!("panels ({panel})")));
+        }
+    }
+
+    #[test]
+    fn search_fields_keep_single_key_global_shortcuts_out() {
+        // These screens did not report their search fields as text input,
+        // so typing `q` quit the demo, `m` toggled mouse capture and a
+        // capital from a web or kitty terminal ran a Shift shortcut.
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c)));
+        let shift =
+            |c| Event::Key(KeyEvent::new(KeyCode::Char(c)).with_modifiers(Modifiers::SHIFT));
+        for screen in [
+            ScreenId::LogSearch,
+            ScreenId::VirtualizedSearch,
+            ScreenId::CodeExplorer,
+            ScreenId::MermaidShowcase,
+            ScreenId::Shakespeare,
+        ] {
+            let mut app = AppModel::new();
+            app.current_screen = screen;
+            app.update(AppMsg::from(key('/')));
+            assert!(
+                app.screens.consumes_text_input(screen),
+                "{screen:?} did not open its search field"
+            );
+            let mouse = app.mouse_capture_enabled;
+            for event in [
+                key('q'),
+                key('m'),
+                key('3'),
+                shift('A'),
+                shift('L'),
+                shift('H'),
+            ] {
+                let cmd = app.update(AppMsg::from(event));
+                let quits = match cmd {
+                    Cmd::Quit => true,
+                    Cmd::Batch(cmds) => cmds.iter().any(|cmd| matches!(cmd, Cmd::Quit)),
+                    _ => false,
+                };
+                assert!(!quits, "{screen:?} quit while typing");
+            }
+            assert_eq!(app.current_screen, screen);
+            assert_eq!(app.mouse_capture_enabled, mouse, "{screen:?}");
+            assert!(!app.a11y_panel_visible, "{screen:?}");
         }
     }
 

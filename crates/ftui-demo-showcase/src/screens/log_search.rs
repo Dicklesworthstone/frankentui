@@ -1326,6 +1326,12 @@ impl Screen for LogSearch {
         ]
     }
 
+    fn consumes_text_input(&self) -> bool {
+        // The search and filter bars take text: without this, typing `q`
+        // into a query quit the demo and `m` toggled mouse capture.
+        self.mode != UiMode::Normal
+    }
+
     fn title(&self) -> &'static str {
         "Log Search"
     }

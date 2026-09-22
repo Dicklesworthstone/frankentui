@@ -4514,6 +4514,11 @@ impl Screen for MermaidShowcaseScreen {
         ]
     }
 
+    fn consumes_text_input(&self) -> bool {
+        // Search mode takes every character as query text.
+        self.state.mode == ShowcaseMode::Search
+    }
+
     fn title(&self) -> &'static str {
         "Mermaid Showcase"
     }

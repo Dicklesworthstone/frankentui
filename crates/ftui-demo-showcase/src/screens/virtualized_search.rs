@@ -1435,6 +1435,11 @@ impl Screen for VirtualizedSearch {
         self.tick_count = tick_count;
     }
 
+    fn consumes_text_input(&self) -> bool {
+        // A focused search box takes text, `q` and `m` included.
+        self.is_search_focused()
+    }
+
     fn title(&self) -> &'static str {
         "Virtualized Search"
     }

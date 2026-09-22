@@ -818,6 +818,11 @@ impl Screen for Shakespeare {
         self.time = tick_count as f64 * 0.1;
     }
 
+    fn consumes_text_input(&self) -> bool {
+        // The search box takes text, `q` and `m` included.
+        self.search_active
+    }
+
     fn title(&self) -> &'static str {
         "Shakespeare Library"
     }
