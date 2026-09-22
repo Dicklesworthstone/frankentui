@@ -830,6 +830,151 @@ mod tests {
         assert_eq!(program.model.steps, 200_000);
     }
 
+    /// The runtime keeps several command executors — `ProgramSimulator`,
+    /// this `StepProgram`, `Program` and the experimental `WasmRunner` — and a
+    /// fix to one has repeatedly had to be made in all of them. Nothing held
+    /// them to the same answer, so this walks random command trees through two
+    /// of them and compares what the model saw.
+    #[test]
+    fn the_simulator_and_the_step_program_run_a_command_tree_the_same_way() {
+        use ftui_runtime::ProgramSimulator;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        /// A command tree in a form that can be replayed into both runtimes:
+        /// `Cmd` holds closures and cannot be cloned.
+        #[derive(Clone, Debug)]
+        enum Plan {
+            None,
+            Msg(u32),
+            Quit,
+            Log(String),
+            Batch(Vec<Plan>),
+            Sequence(Vec<Plan>),
+        }
+
+        fn build(plan: &Plan) -> Cmd<Step> {
+            match plan {
+                Plan::None => Cmd::none(),
+                Plan::Msg(n) => Cmd::msg(Step::Seen(*n)),
+                Plan::Quit => Cmd::quit(),
+                Plan::Log(text) => Cmd::log(text.clone()),
+                Plan::Batch(children) => Cmd::batch(children.iter().map(build).collect::<Vec<_>>()),
+                Plan::Sequence(children) => {
+                    Cmd::sequence(children.iter().map(build).collect::<Vec<_>>())
+                }
+            }
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Step {
+            Seen(u32),
+            Ignored,
+        }
+        impl From<Event> for Step {
+            fn from(_: Event) -> Self {
+                Step::Ignored
+            }
+        }
+
+        struct Recorder {
+            plan: Plan,
+            seen: Rc<RefCell<Vec<u32>>>,
+        }
+        impl Model for Recorder {
+            type Message = Step;
+            fn init(&mut self) -> Cmd<Step> {
+                build(&self.plan)
+            }
+            fn update(&mut self, msg: Step) -> Cmd<Step> {
+                if let Step::Seen(n) = msg {
+                    self.seen.borrow_mut().push(n);
+                }
+                Cmd::none()
+            }
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        // Deterministic: the same trees on every machine and every run.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let plan = |depth: u32, id: &mut u32, rng: &mut dyn FnMut() -> u64| -> Plan {
+            fn go(depth: u32, id: &mut u32, rng: &mut dyn FnMut() -> u64) -> Plan {
+                match rng() % if depth == 0 { 4 } else { 6 } {
+                    0 => Plan::None,
+                    1 | 2 => {
+                        *id += 1;
+                        Plan::Msg(*id)
+                    }
+                    3 => {
+                        if rng() % 6 == 0 {
+                            Plan::Quit
+                        } else {
+                            Plan::Log(format!("log{}", rng() % 100))
+                        }
+                    }
+                    4 => Plan::Batch((0..rng() % 4).map(|_| go(depth - 1, id, rng)).collect()),
+                    _ => Plan::Sequence((0..rng() % 4).map(|_| go(depth - 1, id, rng)).collect()),
+                }
+            }
+            go(depth, id, rng)
+        };
+
+        let (mut with_messages, mut that_quit) = (0u32, 0u32);
+        for trial in 0..2_000 {
+            let mut id = 0;
+            let tree = plan(3, &mut id, &mut next);
+
+            let simulator_seen = Rc::new(RefCell::new(Vec::new()));
+            let mut simulator = ProgramSimulator::new(Recorder {
+                plan: tree.clone(),
+                seen: Rc::clone(&simulator_seen),
+            });
+            simulator.init();
+
+            let step_seen = Rc::new(RefCell::new(Vec::new()));
+            let mut program = StepProgram::new(
+                Recorder {
+                    plan: tree.clone(),
+                    seen: Rc::clone(&step_seen),
+                },
+                80,
+                24,
+            );
+            program.init().expect("init the step program");
+
+            let (from_simulator, from_step) =
+                (simulator_seen.borrow().clone(), step_seen.borrow().clone());
+            if !from_simulator.is_empty() {
+                with_messages += 1;
+            }
+            if !simulator.is_running() {
+                that_quit += 1;
+            }
+            assert_eq!(
+                from_simulator, from_step,
+                "trial {trial}: the two runtimes delivered different messages for {tree:?}"
+            );
+            assert_eq!(
+                simulator.is_running(),
+                program.is_running(),
+                "trial {trial}: the two runtimes disagreed about quitting for {tree:?}"
+            );
+        }
+
+        // An equal pair of empty vectors would prove nothing.
+        assert!(
+            with_messages > 500 && that_quit > 50,
+            "the trees were too dull to compare: {with_messages} delivered a message \
+             and {that_quit} quit"
+        );
+    }
+
     struct Counter {
         value: i32,
         initialized: bool,
