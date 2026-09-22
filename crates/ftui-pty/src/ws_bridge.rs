@@ -5,8 +5,29 @@
 //! - spawns a PTY child process,
 //! - forwards websocket binary input to the PTY,
 //! - forwards PTY output back to websocket binary frames,
-//! - supports resize control messages over websocket text frames, and
+//! - supports control messages over websocket text frames, and
 //! - emits JSONL telemetry for session/debug analysis.
+//!
+//! # Control messages
+//!
+//! Binary frames are PTY bytes in both directions. Text frames carry JSON
+//! control messages, a simpler dialect than the binary envelope in
+//! `docs/spec/frankenterm-websocket-protocol.md` but with the same semantics:
+//!
+//! | Message | Direction | Payload |
+//! |---|---|---|
+//! | `resize` | client → bridge | `cols`, `rows` (both > 0) |
+//! | `ping` | client → bridge | none; answered with a websocket Pong |
+//! | `close` | client → bridge | none; ends the session |
+//! | `flow_control` | client → bridge | `output_consumed`: bytes consumed since the last report |
+//! | `flow_control` | bridge → client | `input_consumed`, `input_window` |
+//! | `warning` | bridge → client | `message`, for an unrecognized control type |
+//! | `session_end` | bridge → client | `exit_code`, `exit_signal` |
+//!
+//! Flow control only runs when [`WsPtyBridgeConfig::flow_control`] is set. It
+//! is credit-based: the bridge sends at most `output_window` bytes before the
+//! client reports consuming some of them, so a client that never reports
+//! receives one window and then nothing until the child exits.
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
@@ -371,6 +392,19 @@ fn run_single_session(
                         "input_window": fc.input_window,
                     }),
                 )?;
+                // The mirror of the client's credit message: it only bounds
+                // the client's sending if the client is told about it.
+                send_ws_message(
+                    &mut websocket,
+                    Message::text(
+                        json!({
+                            "type": "flow_control",
+                            "input_consumed": fc.input_consumed,
+                            "input_window": fc.input_window,
+                        })
+                        .to_string(),
+                    ),
+                )?;
                 fc.record_replenish_sent();
             }
         }
@@ -494,6 +528,22 @@ fn handle_ws_message(
                 Ok(false)
             }
             Some(ControlMessage::Close) => Ok(true),
+            Some(ControlMessage::FlowControl { output_consumed }) => {
+                // Without flow control there is no window to return credit to,
+                // and a client that reports anyway is simply ahead of the
+                // configuration rather than in error.
+                if let Some(ref mut fc) = *fc_state {
+                    fc.process_flow_control_msg(output_consumed);
+                    telemetry.write(
+                        "flow_control_credit",
+                        json!({
+                            "output_consumed": output_consumed,
+                            "outstanding_bytes": fc.output_consumed,
+                        }),
+                    )?;
+                }
+                Ok(false)
+            }
             None => {
                 send_ws_message(
                     websocket,
@@ -576,9 +626,17 @@ fn accept_websocket(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlMessage {
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     Ping,
     Close,
+    /// The client reports how many output bytes it has consumed since its last
+    /// report, returning that much of the output credit window.
+    FlowControl {
+        output_consumed: u32,
+    },
 }
 
 fn parse_control_message(text: &str) -> io::Result<Option<ControlMessage>> {
@@ -607,8 +665,26 @@ fn parse_control_message(text: &str) -> io::Result<Option<ControlMessage>> {
         }
         "ping" => Ok(Some(ControlMessage::Ping)),
         "close" => Ok(Some(ControlMessage::Close)),
+        "flow_control" => Ok(Some(ControlMessage::FlowControl {
+            output_consumed: read_u32_field(&value, "output_consumed")?,
+        })),
         _ => Ok(None),
     }
+}
+
+fn read_u32_field(value: &Value, key: &str) -> io::Result<u32> {
+    let raw = value.get(key).and_then(Value::as_u64).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("control message missing numeric `{key}`"),
+        )
+    })?;
+    u32::try_from(raw).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("`{key}` out of range for u32"),
+        )
+    })
 }
 
 fn read_u16_field(value: &Value, key: &str) -> io::Result<u16> {
@@ -1063,10 +1139,11 @@ impl FlowControlBridgeState {
             self.fc_counters.replenishments_sent.saturating_add(1);
     }
 
-    /// Process an inbound FlowControl message from the client.
-    /// Currently unused until binary envelope message routing is added;
-    /// kept for downstream integration (bd-2vr05.2.4+).
-    #[allow(dead_code)]
+    /// Return output credit the client reports having consumed.
+    ///
+    /// `output_consumed` counts the bytes that left the bridge and have not
+    /// been acknowledged. Nothing else lowers it, so a client that never
+    /// reports stops receiving output once it has spent `output_window`.
     fn process_flow_control_msg(&mut self, output_consumed: u32) {
         self.output_consumed = self.output_consumed.saturating_sub(output_consumed);
     }
@@ -2123,6 +2200,132 @@ mod tests {
         }
         let _ = handle.join().expect("bridge thread join");
         (xs, ended)
+    }
+
+    /// Run `total` bytes of output through a flow-controlled session whose
+    /// child stays alive until the client unblocks it, so what arrives while
+    /// it runs is separable from the flush at exit.
+    ///
+    /// Returns the bytes received before the child was unblocked, and whether
+    /// the session ended cleanly.
+    #[cfg(unix)]
+    fn bytes_streamed_under_flow_control(total: usize, return_credit: bool) -> (usize, bool) {
+        let listener =
+            TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind ephemeral port");
+        let bind_addr = listener.local_addr().expect("local addr");
+        drop(listener);
+
+        let config = WsPtyBridgeConfig {
+            bind_addr,
+            accept_once: true,
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                // The child writes, then waits for a line, so the session is
+                // still live while the client decides whether to grant credit.
+                format!("head -c {total} /dev/zero | tr '\\0' x; read line"),
+            ],
+            idle_sleep: Duration::from_millis(1),
+            flow_control: Some(FlowControlBridgeConfig::default()),
+            ..WsPtyBridgeConfig::default()
+        };
+
+        let handle = thread::spawn(move || run_ws_pty_bridge(config));
+        thread::sleep(Duration::from_millis(75));
+
+        let url = format!("ws://{bind_addr}/ws");
+        let (mut client, _response) = connect(url).expect("connect websocket");
+        if let MaybeTlsStream::Plain(stream) = client.get_mut() {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .expect("set read timeout");
+        }
+
+        // Without credit the client plateaus, so this budget only bounds how
+        // long the failing shape takes; the passing one finishes far inside
+        // it however loaded the machine is.
+        let streaming_deadline = Instant::now()
+            + if return_credit {
+                Duration::from_secs(30)
+            } else {
+                Duration::from_secs(2)
+            };
+        let mut streamed = 0usize;
+        let mut unacked = 0u32;
+        while Instant::now() < streaming_deadline && streamed < total {
+            match client.read() {
+                Ok(Message::Binary(bytes)) => {
+                    streamed += bytes.iter().filter(|&&b| b == b'x').count();
+                    unacked =
+                        unacked.saturating_add(u32::try_from(bytes.len()).unwrap_or(u32::MAX));
+                    if return_credit && unacked > 0 {
+                        client
+                            .send(Message::text(
+                                json!({ "type": "flow_control", "output_consumed": unacked })
+                                    .to_string(),
+                            ))
+                            .expect("send credit");
+                        unacked = 0;
+                    }
+                }
+                Ok(_) => {}
+                Err(WsError::Io(error))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => break,
+            }
+        }
+
+        // Unblock the child's `read` so the session can finish.
+        let _ = client.send(Message::binary(b"\n".to_vec()));
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut ended = false;
+        while Instant::now() < deadline && !ended {
+            match client.read() {
+                Ok(Message::Text(text)) => ended = text.contains("session_end"),
+                Ok(_) => {}
+                Err(WsError::Io(error))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => break,
+            }
+        }
+        let _ = handle.join().expect("bridge thread join");
+        (streamed, ended)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_client_that_returns_credit_keeps_receiving_output() {
+        // `output_consumed` rose with every drained batch and nothing lowered
+        // it: no control message carried credit, so a flow-controlled session
+        // sent one window and then nothing until the child exited.
+        const TOTAL: usize = 300_000;
+        let (streamed, ended) = bytes_streamed_under_flow_control(TOTAL, true);
+        assert!(ended, "no session_end after {streamed} of {TOTAL} bytes");
+        assert_eq!(
+            streamed, TOTAL,
+            "output stopped at {streamed} bytes while the child was still running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_client_that_returns_no_credit_gets_one_window() {
+        // The other half of the contract: the window is real, and returning
+        // credit is what lifts it.
+        const TOTAL: usize = 300_000;
+        let window = FlowControlBridgeConfig::default().output_window as usize;
+        let (streamed, _ended) = bytes_streamed_under_flow_control(TOTAL, false);
+        assert!(
+            streamed <= window,
+            "{streamed} bytes passed a {window}-byte window without any credit"
+        );
     }
 
     #[cfg(unix)]
