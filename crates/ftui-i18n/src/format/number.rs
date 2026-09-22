@@ -33,9 +33,11 @@ pub enum NumberStyle {
     Percent,
     /// Currency format with symbol/code (e.g. `$1,234.56` or `1.234,56 €`).
     Currency {
-        /// Optional custom currency code (e.g. "USD", "EUR").
+        /// ISO 4217 code of the amount's currency (e.g. "USD", "EUR"), if not
+        /// the locale's own. Without a `symbol` it prints as the code, so `en`
+        /// shows EUR as `EUR 1,234.56`.
         code: Option<&'static str>,
-        /// Optional custom currency symbol (e.g. "$", "€").
+        /// Symbol to print instead (e.g. "$", "€"). Takes precedence over `code`.
         symbol: Option<&'static str>,
     },
 }
@@ -214,7 +216,7 @@ impl NumberFormatter {
             raw_digits
         };
 
-        let grouped = if self.config.use_grouping {
+        let mut grouped = if self.config.use_grouping {
             group_digits(
                 &padded_digits,
                 self.symbols.group_sep,
@@ -223,6 +225,12 @@ impl NumberFormatter {
         } else {
             padded_digits
         };
+        // Every style, as in `format_float`: only Decimal padded, so a
+        // two-digit currency format printed `5` as `$5` here and `$5.00` there.
+        if self.config.min_fraction_digits > 0 {
+            grouped.push_str(self.symbols.decimal_sep);
+            grouped.extend(std::iter::repeat_n('0', self.config.min_fraction_digits));
+        }
 
         let mut out = String::with_capacity(grouped.len() + 8);
         if is_negative {
@@ -232,12 +240,6 @@ impl NumberFormatter {
         match self.config.style {
             NumberStyle::Decimal => {
                 out.push_str(&grouped);
-                if self.config.min_fraction_digits > 0 {
-                    out.push_str(self.symbols.decimal_sep);
-                    for _ in 0..self.config.min_fraction_digits {
-                        out.push('0');
-                    }
-                }
             }
             NumberStyle::Percent => match self.symbols.percent_placement {
                 PercentPlacement::Prefix => {
@@ -254,28 +256,8 @@ impl NumberFormatter {
                     out.push_str(self.symbols.percent_sign);
                 }
             },
-            NumberStyle::Currency { symbol, .. } => {
-                let sym = symbol.unwrap_or(self.symbols.default_currency_symbol);
-                match self.symbols.currency_placement {
-                    CurrencyPlacement::Prefix => {
-                        out.push_str(sym);
-                        out.push_str(&grouped);
-                    }
-                    CurrencyPlacement::PrefixWithSpace => {
-                        out.push_str(sym);
-                        out.push(' ');
-                        out.push_str(&grouped);
-                    }
-                    CurrencyPlacement::Suffix => {
-                        out.push_str(&grouped);
-                        out.push_str(sym);
-                    }
-                    CurrencyPlacement::SuffixWithSpace => {
-                        out.push_str(&grouped);
-                        out.push(' ');
-                        out.push_str(sym);
-                    }
-                }
+            NumberStyle::Currency { code, symbol } => {
+                self.push_currency(&mut out, &grouped, code, symbol);
             }
         }
 
@@ -372,28 +354,8 @@ impl NumberFormatter {
                     out.push_str(self.symbols.percent_sign);
                 }
             },
-            NumberStyle::Currency { symbol, .. } => {
-                let sym = symbol.unwrap_or(self.symbols.default_currency_symbol);
-                match self.symbols.currency_placement {
-                    CurrencyPlacement::Prefix => {
-                        out.push_str(sym);
-                        out.push_str(&num_str);
-                    }
-                    CurrencyPlacement::PrefixWithSpace => {
-                        out.push_str(sym);
-                        out.push(' ');
-                        out.push_str(&num_str);
-                    }
-                    CurrencyPlacement::Suffix => {
-                        out.push_str(&num_str);
-                        out.push_str(sym);
-                    }
-                    CurrencyPlacement::SuffixWithSpace => {
-                        out.push_str(&num_str);
-                        out.push(' ');
-                        out.push_str(sym);
-                    }
-                }
+            NumberStyle::Currency { code, symbol } => {
+                self.push_currency(&mut out, &num_str, code, symbol);
             }
         }
 
@@ -401,6 +363,58 @@ impl NumberFormatter {
             Ok(convert_to_arab_digits(&out))
         } else {
             Ok(out)
+        }
+    }
+
+    /// Append `number` marked as the currency the style names.
+    ///
+    /// `symbol` wins. Otherwise a `code` other than the locale's own currency
+    /// is shown as the code: this data has no symbols for other currencies,
+    /// and the locale's symbol would state the wrong one - `code: "EUR"`
+    /// used to print `$1,234.56` under `en`. A marker that meets the digits
+    /// with a letter (`EUR`, `CHF`) is set off by a no-break space, as CLDR's
+    /// currency spacing and ICU's `EUR 1,234.56` do.
+    fn push_currency(
+        &self,
+        out: &mut String,
+        number: &str,
+        code: Option<&'static str>,
+        symbol: Option<&'static str>,
+    ) {
+        let marker = match (symbol, code) {
+            (Some(symbol), _) => symbol,
+            (None, Some(code))
+                if !code.eq_ignore_ascii_case(self.symbols.default_currency_code) =>
+            {
+                code
+            }
+            (None, _) => self.symbols.default_currency_symbol,
+        };
+        match self.symbols.currency_placement {
+            CurrencyPlacement::Prefix => {
+                out.push_str(marker);
+                if marker.ends_with(char::is_alphabetic) {
+                    out.push('\u{a0}');
+                }
+                out.push_str(number);
+            }
+            CurrencyPlacement::PrefixWithSpace => {
+                out.push_str(marker);
+                out.push(' ');
+                out.push_str(number);
+            }
+            CurrencyPlacement::Suffix => {
+                out.push_str(number);
+                if marker.starts_with(char::is_alphabetic) {
+                    out.push('\u{a0}');
+                }
+                out.push_str(marker);
+            }
+            CurrencyPlacement::SuffixWithSpace => {
+                out.push_str(number);
+                out.push(' ');
+                out.push_str(marker);
+            }
         }
     }
 }
@@ -895,6 +909,58 @@ mod tests {
             .format_float(1234.56)
             .unwrap();
         assert_eq!(ar, "1,234.56 ر.س");
+    }
+
+    #[test]
+    fn currency_code_names_the_currency_shown() {
+        let currency = |locale, code, symbol| {
+            NumberFormatter::with_config(
+                locale,
+                NumberFormat::new()
+                    .style(NumberStyle::Currency { code, symbol })
+                    .fraction_digits(2, 2),
+            )
+            .unwrap()
+        };
+        // The code was ignored, so euros came out as dollars under `en`.
+        // Expected strings are ICU's `currencyDisplay: "code"` output, except
+        // that this crate spaces a trailing marker with a plain space.
+        assert_eq!(
+            currency("en", Some("EUR"), None)
+                .format_float(-1234.56)
+                .unwrap(),
+            "-EUR\u{a0}1,234.56"
+        );
+        assert_eq!(
+            currency("de", Some("USD"), None)
+                .format_float(-1234.56)
+                .unwrap(),
+            "-1.234,56 USD"
+        );
+        assert_eq!(
+            currency("ja", Some("USD"), None).format_int(-5),
+            "-USD\u{a0}5.00"
+        );
+        // The locale's own currency keeps its symbol.
+        assert_eq!(
+            currency("en", Some("usd"), None)
+                .format_float(1234.56)
+                .unwrap(),
+            "$1,234.56"
+        );
+        // A symbol wins over the code; one ending in a letter is spaced.
+        assert_eq!(
+            currency("en", Some("EUR"), Some("€"))
+                .format_float(1234.56)
+                .unwrap(),
+            "€1,234.56"
+        );
+        assert_eq!(
+            currency("en", None, Some("CHF"))
+                .format_float(1234.56)
+                .unwrap(),
+            "CHF\u{a0}1,234.56"
+        );
     }
 
     #[test]
