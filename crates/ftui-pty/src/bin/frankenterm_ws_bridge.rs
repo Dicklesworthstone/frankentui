@@ -16,6 +16,7 @@ where
     I: IntoIterator<Item = String>,
 {
     let mut config = WsPtyBridgeConfig::default();
+    let mut no_auth = false;
     let mut iter = args.into_iter();
 
     while let Some(arg) = iter.next() {
@@ -58,6 +59,9 @@ where
             "--token" => {
                 config.auth_token = Some(next_value(&mut iter, "--token")?);
             }
+            "--no-auth" => {
+                no_auth = true;
+            }
             "--telemetry" => {
                 config.telemetry_path = Some(PathBuf::from(next_value(&mut iter, "--telemetry")?));
             }
@@ -88,6 +92,21 @@ where
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cols/rows must be > 0",
+        ));
+    }
+
+    // With neither check, any page open in the operator's browser could drive
+    // the shell (see Security in --help). Running that way has to be asked for.
+    let checked = !config.allowed_origins.is_empty() || config.auth_token.is_some();
+    if checked == no_auth {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            if no_auth {
+                "--no-auth contradicts --origin and --token"
+            } else {
+                "refusing to serve a shell to any client: pass --origin, --token, \
+                 or --no-auth to accept every connection"
+            },
         ));
     }
 
@@ -179,6 +198,7 @@ Options:
   --origin <url>               Allowed Origin header value (repeatable)
   --token <secret>             Require ?token=<secret> on websocket URI
                                (compared undecoded; use only A-Z a-z 0-9 - . _ ~)
+  --no-auth                    Accept every connection (see Security)
   --telemetry <path>           Append JSONL telemetry at path
   --max-message-bytes <n>      Max websocket frame/message size
   --idle-ms <n>                Idle loop sleep (default: 5 ms)
@@ -187,12 +207,38 @@ Options:
   -h, --help                   Show this help
 
 Security:
-  With neither --origin nor --token, every connection is accepted. This
-  bridge hands a client the stdin and stdout of a real shell, and a
-  websocket handshake is not subject to the same-origin policy, so any page
-  visited in a browser can open ws://127.0.0.1:9231/ and drive that shell.
-  Binding loopback does not prevent it - the browser is already inside it.
-  Pass --origin, --token, or both for anything but a throwaway session.
+  The bridge refuses to start without --origin, --token, or --no-auth.
+  It hands a client the stdin and stdout of a real shell, and a websocket
+  handshake is not subject to the same-origin policy, so with no checks any
+  page visited in a browser can open ws://127.0.0.1:9231/ and drive that
+  shell. Binding loopback does not prevent it - the browser is already
+  inside it. Use --no-auth only for a throwaway session.
+  A --token value is visible to other local users in the process list.
 "
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args;
+
+    fn parse(args: &[&str]) -> std::io::Result<ftui_pty::ws_bridge::WsPtyBridgeConfig> {
+        parse_args(args.iter().map(|arg| (*arg).to_string()))
+    }
+
+    #[test]
+    fn an_open_bridge_has_to_be_asked_for() {
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--cmd", "cat"]).is_err());
+        let open = parse(&["--no-auth"]).unwrap();
+        assert!(open.allowed_origins.is_empty() && open.auth_token.is_none());
+    }
+
+    #[test]
+    fn either_check_is_enough_and_contradicts_no_auth() {
+        assert!(parse(&["--token", "t0k3n"]).is_ok());
+        assert!(parse(&["--origin", "http://localhost:3000"]).is_ok());
+        assert!(parse(&["--no-auth", "--token", "t0k3n"]).is_err());
+        assert!(parse(&["--origin", "http://localhost:3000", "--no-auth"]).is_err());
+    }
 }

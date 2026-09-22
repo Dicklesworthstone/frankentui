@@ -125,6 +125,8 @@ remote_start() {
     local bridge_bin
     bridge_bin="$(remote_bridge_path)"
 
+    # The test clients send neither an Origin nor a token, and the bridge
+    # refuses to run without a check unless told to.
     "$bridge_bin" \
         --bind "127.0.0.1:${port}" \
         --cols "$cols" \
@@ -132,6 +134,7 @@ remote_start() {
         --cmd "$cmd" \
         --term "$REMOTE_TERM" \
         --telemetry "$REMOTE_TELEMETRY_FILE" \
+        --no-auth \
         --accept-once &
     REMOTE_BRIDGE_PID=$!
 
