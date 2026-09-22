@@ -867,7 +867,9 @@ impl LogSearch {
                         .with_query(&self.last_search);
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('N'), Modifiers::NONE) if !self.last_search.is_empty() => {
+            (KeyCode::Char('N'), Modifiers::NONE | Modifiers::SHIFT)
+                if !self.last_search.is_empty() =>
+            {
                 self.viewer.prev_match();
 
                 let (pos, total) = self.viewer.search_info().unwrap_or((0, 0));
@@ -879,7 +881,7 @@ impl LogSearch {
                         .with_query(&self.last_search);
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('F'), Modifiers::NONE) => {
+            (KeyCode::Char('F'), Modifiers::NONE | Modifiers::SHIFT) => {
                 self.viewer.set_filter(None);
                 self.filter_active = false;
                 self.filter_query.clear();
@@ -905,7 +907,7 @@ impl LogSearch {
                         .with_direction("top");
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char('G'), Modifiers::NONE) => {
+            (KeyCode::Char('G'), Modifiers::NONE | Modifiers::SHIFT) => {
                 self.viewer.scroll_to_bottom();
 
                 let diag =

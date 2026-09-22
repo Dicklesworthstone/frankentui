@@ -577,7 +577,8 @@ impl Screen for Shakespeare {
                     self.set_focus(next);
                 }
                 (KeyCode::Char('n'), Modifiers::NONE) => self.next_match(),
-                (KeyCode::Char('N'), Modifiers::NONE) | (KeyCode::Char('n'), Modifiers::SHIFT) => {
+                (KeyCode::Char('N'), Modifiers::NONE | Modifiers::SHIFT)
+                | (KeyCode::Char('n'), Modifiers::SHIFT) => {
                     self.prev_match();
                 }
                 (KeyCode::Char('m'), Modifiers::NONE) => {
@@ -627,7 +628,7 @@ impl Screen for Shakespeare {
                 (KeyCode::Home, _) | (KeyCode::Char('g'), Modifiers::NONE) => {
                     self.scroll_to(0);
                 }
-                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE) => {
+                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE | Modifiers::SHIFT) => {
                     self.scroll_to(self.total_lines());
                 }
                 (KeyCode::Enter, Modifiers::NONE) => {

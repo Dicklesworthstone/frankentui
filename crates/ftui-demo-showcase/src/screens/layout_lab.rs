@@ -592,7 +592,8 @@ impl Screen for LayoutLab {
                 (KeyCode::Char('y'), Modifiers::NONE) => {
                     self.pane_redo();
                 }
-                (KeyCode::Char('R'), Modifiers::NONE) | (KeyCode::Char('r'), Modifiers::SHIFT) => {
+                (KeyCode::Char('R'), Modifiers::NONE | Modifiers::SHIFT)
+                | (KeyCode::Char('r'), Modifiers::SHIFT) => {
                     self.pane_replay();
                 }
                 (KeyCode::Char('f'), Modifiers::NONE) => {
@@ -636,7 +637,8 @@ impl Screen for LayoutLab {
                 (KeyCode::Char('m'), Modifiers::NONE) => {
                     self.margin = self.margin.saturating_add(1).min(4);
                 }
-                (KeyCode::Char('M'), Modifiers::NONE) | (KeyCode::Char('m'), Modifiers::SHIFT) => {
+                (KeyCode::Char('M'), Modifiers::NONE | Modifiers::SHIFT)
+                | (KeyCode::Char('m'), Modifiers::SHIFT) => {
                     self.margin = self.margin.saturating_sub(1);
                 }
 
@@ -644,7 +646,8 @@ impl Screen for LayoutLab {
                 (KeyCode::Char('p'), Modifiers::NONE) => {
                     self.padding_amount = self.padding_amount.saturating_add(1).min(4);
                 }
-                (KeyCode::Char('P'), Modifiers::NONE) | (KeyCode::Char('p'), Modifiers::SHIFT) => {
+                (KeyCode::Char('P'), Modifiers::NONE | Modifiers::SHIFT)
+                | (KeyCode::Char('p'), Modifiers::SHIFT) => {
                     self.padding_amount = self.padding_amount.saturating_sub(1);
                 }
 
@@ -664,7 +667,8 @@ impl Screen for LayoutLab {
                 }
 
                 // Debug overlay toggle
-                (KeyCode::Char('D'), Modifiers::NONE) | (KeyCode::Char('d'), Modifiers::SHIFT) => {
+                (KeyCode::Char('D'), Modifiers::NONE | Modifiers::SHIFT)
+                | (KeyCode::Char('d'), Modifiers::SHIFT) => {
                     self.show_debug = !self.show_debug;
                 }
 

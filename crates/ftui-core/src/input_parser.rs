@@ -750,18 +750,79 @@ impl InputParser {
 
         let mut parts = s.split(';');
         let key_part = parts.next().unwrap_or("");
-        let key_code_str = key_part.split(':').next().unwrap_or("");
-        let key_code: u32 = key_code_str.parse().ok()?;
+        let mut key_codes = key_part.split(':');
+        let key_code: u32 = key_codes.next().unwrap_or("").parse().ok()?;
+        // With "report alternate keys" the second field is the shifted key.
+        let shifted = key_codes
+            .next()
+            .and_then(|field| field.parse().ok())
+            .and_then(char::from_u32);
 
         let mod_part = parts.next().unwrap_or("");
         let (modifiers, kind) = Self::kitty_modifiers_and_kind(mod_part);
 
-        let code = Self::kitty_keycode_to_keycode(key_code)?;
+        let mut code = Self::kitty_keycode_to_keycode(key_code)?;
+        if let KeyCode::Char(base) = code
+            && !(57_344..=63_743).contains(&key_code)
+        {
+            let caps_lock = mod_part
+                .split(':')
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .is_some_and(|value| value.saturating_sub(1) & 64 != 0);
+            code = KeyCode::Char(Self::kitty_typed_char(
+                base,
+                shifted,
+                modifiers.contains(Modifiers::SHIFT),
+                caps_lock,
+            ));
+        }
         Some(Event::Key(
             KeyEvent::new(code)
                 .with_modifiers(modifiers)
                 .with_kind(kind),
         ))
+    }
+
+    /// The character a kitty key event types.
+    ///
+    /// The key code is always the unshifted key, and the runtime asks for
+    /// every key as an escape code without the text. Shift+a arrived as
+    /// `Char('a')` and Caps Lock was ignored, so text fields typed lower case.
+    /// The shifted key from "report alternate keys" is used when Shift is
+    /// held, the upper case of a letter when the terminal omits it, and Caps
+    /// Lock inverts the case of letters. Shift stays in the modifiers, as the
+    /// web backend and [`KeyCombo`](crate::keybinding::KeyCombo) expect.
+    fn kitty_typed_char(base: char, shifted: Option<char>, shift: bool, caps_lock: bool) -> char {
+        // Case mappings that expand (`ß` to `SS`) leave the character as is.
+        let upper = |c: char| {
+            let mut chars = c.to_uppercase();
+            match (chars.next(), chars.next()) {
+                (Some(u), None) => u,
+                _ => c,
+            }
+        };
+        let lower = |c: char| {
+            let mut chars = c.to_lowercase();
+            match (chars.next(), chars.next()) {
+                (Some(l), None) => l,
+                _ => c,
+            }
+        };
+        let typed = if shift {
+            shifted.unwrap_or_else(|| upper(base))
+        } else {
+            base
+        };
+        if caps_lock && typed.is_alphabetic() {
+            if typed.is_lowercase() {
+                upper(typed)
+            } else {
+                lower(typed)
+            }
+        } else {
+            typed
+        }
     }
 
     fn kitty_modifiers_and_kind(mod_part: &str) -> (Modifiers, KeyEventKind) {
@@ -813,6 +874,33 @@ impl InputParser {
                 debug_assert!(f_num <= 24, "F-key number {f_num} exceeds F24");
                 Some(KeyCode::F(f_num as u8))
             }
+            // Keypad keys. The disambiguate flag reports them with these
+            // codes, which used to fall in the unhandled range below, so
+            // numpad digits, operators, Enter and arrows were dropped.
+            57_399..=57_408 => char::from_digit(key_code - 57_399, 10).map(KeyCode::Char),
+            57_409 => Some(KeyCode::Char('.')),
+            57_410 => Some(KeyCode::Char('/')),
+            57_411 => Some(KeyCode::Char('*')),
+            57_412 => Some(KeyCode::Char('-')),
+            57_413 => Some(KeyCode::Char('+')),
+            57_414 => Some(KeyCode::Enter),
+            57_415 => Some(KeyCode::Char('=')),
+            57_416 => Some(KeyCode::Char(',')),
+            57_417 => Some(KeyCode::Left),
+            57_418 => Some(KeyCode::Right),
+            57_419 => Some(KeyCode::Up),
+            57_420 => Some(KeyCode::Down),
+            57_421 => Some(KeyCode::PageUp),
+            57_422 => Some(KeyCode::PageDown),
+            57_423 => Some(KeyCode::Home),
+            57_424 => Some(KeyCode::End),
+            57_425 => Some(KeyCode::Insert),
+            57_426 => Some(KeyCode::Delete),
+            // Media keys with a KeyCode.
+            57_430 => Some(KeyCode::MediaPlayPause),
+            57_432 => Some(KeyCode::MediaStop),
+            57_435 => Some(KeyCode::MediaNextTrack),
+            57_436 => Some(KeyCode::MediaPrevTrack),
             // Reserved/unhandled Kitty keycodes return None
             57_358..=57_363 | 57_388..=63_743 => None,
             // Unicode codepoints
@@ -1829,6 +1917,64 @@ mod tests {
             events.first(),
             Some(Event::Key(k)) if k.code == KeyCode::F(1)
         ));
+    }
+
+    #[test]
+    fn kitty_keyboard_types_the_shifted_character() {
+        let key = |input: &[u8]| match InputParser::new().parse(input).first() {
+            Some(Event::Key(k)) => (k.code, k.modifiers),
+            other => panic!("{input:?}: {other:?}"),
+        };
+        let shift = Modifiers::SHIFT;
+
+        // Shift+a with the shifted key, and without it.
+        assert_eq!(key(b"\x1b[97:65;2u"), (KeyCode::Char('A'), shift));
+        assert_eq!(key(b"\x1b[97;2u"), (KeyCode::Char('A'), shift));
+        // The shifted key decides for symbols: Shift+1 on a US layout.
+        assert_eq!(key(b"\x1b[49:33;2u"), (KeyCode::Char('!'), shift));
+        // An empty shifted field falls back like a missing one.
+        assert_eq!(key(b"\x1b[97::97;2u"), (KeyCode::Char('A'), shift));
+        // Caps Lock (64) inverts letter case; with Shift it gives lower case.
+        assert_eq!(key(b"\x1b[97;65u"), (KeyCode::Char('A'), Modifiers::NONE));
+        assert_eq!(key(b"\x1b[97:65;66u"), (KeyCode::Char('a'), shift));
+        assert_eq!(key(b"\x1b[49;65u"), (KeyCode::Char('1'), Modifiers::NONE));
+        // Unshifted keys are unchanged.
+        assert_eq!(key(b"\x1b[97u"), (KeyCode::Char('a'), Modifiers::NONE));
+        assert_eq!(key(b"\x1b[97;5u"), (KeyCode::Char('a'), Modifiers::CTRL));
+        assert_eq!(
+            key(b"\x1b[97:65;6u"),
+            (KeyCode::Char('A'), Modifiers::CTRL | shift)
+        );
+    }
+
+    #[test]
+    fn kitty_keyboard_keypad_and_media_keys() {
+        let key = |input: &[u8]| match InputParser::new().parse(input).first() {
+            Some(Event::Key(k)) => (k.code, k.modifiers, k.kind),
+            other => panic!("{input:?}: {other:?}"),
+        };
+        let press = KeyEventKind::Press;
+
+        assert_eq!(key(b"\x1b[57399u").0, KeyCode::Char('0'));
+        assert_eq!(key(b"\x1b[57404u").0, KeyCode::Char('5'));
+        assert_eq!(key(b"\x1b[57408u").0, KeyCode::Char('9'));
+        assert_eq!(key(b"\x1b[57409u").0, KeyCode::Char('.'));
+        assert_eq!(key(b"\x1b[57413u").0, KeyCode::Char('+'));
+        assert_eq!(key(b"\x1b[57414u").0, KeyCode::Enter);
+        assert_eq!(key(b"\x1b[57426u").0, KeyCode::Delete);
+        assert_eq!(
+            key(b"\x1b[57419;1:3u"),
+            (KeyCode::Up, Modifiers::NONE, KeyEventKind::Release)
+        );
+        // Shift on a keypad key does not change the character.
+        assert_eq!(
+            key(b"\x1b[57400;2u"),
+            (KeyCode::Char('1'), Modifiers::SHIFT, press)
+        );
+        assert_eq!(key(b"\x1b[57430u").0, KeyCode::MediaPlayPause);
+        assert_eq!(key(b"\x1b[57436u").0, KeyCode::MediaPrevTrack);
+        // Modifier keys on their own still report nothing.
+        assert!(InputParser::new().parse(b"\x1b[57441u").is_empty());
     }
 
     #[test]
