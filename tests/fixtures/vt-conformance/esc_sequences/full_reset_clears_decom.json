@@ -6,9 +6,6 @@
   "comment": "Set scroll region 2-4, DECOM on, CUP → region top (1,0), print A, ESC c full reset clears everything, print B at (0,0); cursor at (0,1)",
   "expected": {
     "cursor": { "row": 0, "col": 1 },
-    "cells": [
-      { "row": 0, "col": 0, "char": "B" },
-      { "row": 1, "col": 0, "char": " " }
-    ]
+    "cells": [{ "row": 0, "col": 0, "char": "B" }, { "row": 1, "col": 0, "char": " " }]
   }
 }

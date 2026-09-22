@@ -6,9 +6,6 @@
   "comment": "CUP(999,999)A → clamped to (23,79). CUP(0,0)B → treated as (1,1) → (0,0)",
   "expected": {
     "cursor": { "row": 0, "col": 1 },
-    "cells": [
-      { "row": 23, "col": 79, "char": "A" },
-      { "row": 0, "col": 0, "char": "B" }
-    ]
+    "cells": [{ "row": 23, "col": 79, "char": "A" }, { "row": 0, "col": 0, "char": "B" }]
   }
 }

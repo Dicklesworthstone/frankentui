@@ -1,10 +1,7 @@
 {
   "name": "sgr_bright_fg",
   "description": "SGR 91 sets foreground to bright red (Named(9)), SGR 0 resets",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "411b5b39316d421b5b306d43",
   "expected": {
     "cursor": {

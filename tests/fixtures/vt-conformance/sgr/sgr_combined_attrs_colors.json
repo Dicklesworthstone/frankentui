@@ -7,7 +7,16 @@
   "expected": {
     "cursor": { "row": 0, "col": 2 },
     "cells": [
-      { "row": 0, "col": 0, "char": "M", "attrs": { "bold": true, "fg_color": { "indexed": 200 }, "bg_color": { "rgb": [10, 20, 30] } } },
+      {
+        "row": 0,
+        "col": 0,
+        "char": "M",
+        "attrs": {
+          "bold": true,
+          "fg_color": { "indexed": 200 },
+          "bg_color": { "rgb": [10, 20, 30] }
+        }
+      },
       { "row": 0, "col": 1, "char": "N" }
     ]
   }

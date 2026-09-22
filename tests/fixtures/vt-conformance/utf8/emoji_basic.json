@@ -1,10 +1,7 @@
 {
   "name": "emoji_basic",
   "description": "Basic emoji character (smiling face) renders as wide char",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "41f09f988042",
   "expected": {
     "cursor": {

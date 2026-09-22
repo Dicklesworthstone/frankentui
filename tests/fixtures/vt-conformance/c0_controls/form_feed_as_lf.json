@@ -1,10 +1,7 @@
 {
   "name": "form_feed_as_lf",
   "description": "Form feed (0x0C) behaves as line feed - moves cursor down one line",
-  "initial_size": [
-    10,
-    5
-  ],
+  "initial_size": [10, 5],
   "input_bytes_hex": "41420c4344",
   "expected": {
     "cursor": {

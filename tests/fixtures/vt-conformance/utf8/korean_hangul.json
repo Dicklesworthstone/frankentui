@@ -1,10 +1,7 @@
 {
   "name": "korean_hangul",
   "description": "Korean Hangul characters render as wide (2-column) chars",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "ed959ceab880",
   "expected": {
     "cursor": {

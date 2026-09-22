@@ -6,8 +6,6 @@
   "comment": "CUP(3,1) to (2,0), CUU(2) up 2 to (0,0), print X at (0,0). Cursor at (0,1).",
   "expected": {
     "cursor": { "row": 0, "col": 1 },
-    "cells": [
-      { "row": 0, "col": 0, "char": "X" }
-    ]
+    "cells": [{ "row": 0, "col": 0, "char": "X" }]
   }
 }

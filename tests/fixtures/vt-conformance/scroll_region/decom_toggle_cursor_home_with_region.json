@@ -6,9 +6,6 @@
   "comment": "DECSTBM(2,4) -> region rows 1..3. DECOM on homes cursor to (1,0). CUP(4,5) under DECOM clamps to region bottom at row 3. DECOM off homes to (0,0), print X. DECOM on homes to (1,0), print Y.",
   "expected": {
     "cursor": { "row": 1, "col": 1 },
-    "cells": [
-      { "row": 0, "col": 0, "char": "X" },
-      { "row": 1, "col": 0, "char": "Y" }
-    ]
+    "cells": [{ "row": 0, "col": 0, "char": "X" }, { "row": 1, "col": 0, "char": "Y" }]
   }
 }

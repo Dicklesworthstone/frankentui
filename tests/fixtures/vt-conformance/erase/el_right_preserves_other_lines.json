@@ -1,10 +1,7 @@
 {
   "name": "el_right_preserves_other_lines",
   "description": "EL 0 erases from cursor to end of line; other lines remain intact with their colors",
-  "initial_size": [
-    10,
-    5
-  ],
+  "initial_size": [10, 5],
   "input_bytes_hex": "1b5b33316d4142431b5b33346d1b5b323b31484445461b5b313b32481b5b304b",
   "expected": {
     "cursor": {

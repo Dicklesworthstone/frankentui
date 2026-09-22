@@ -1,10 +1,7 @@
 {
   "name": "japanese_katakana",
   "description": "Japanese katakana renders as wide chars",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "e382a2e382a4",
   "expected": {
     "cursor": {

@@ -1,10 +1,7 @@
 {
   "name": "nel_at_region_bottom",
   "description": "NEL at bottom of scroll region scrolls region and moves cursor to col 0 of bottom line",
-  "initial_size": [
-    10,
-    5
-  ],
+  "initial_size": [10, 5],
   "input_bytes_hex": "1b5b323b34721b5b343b314841421b454344",
   "expected": {
     "cursor": {

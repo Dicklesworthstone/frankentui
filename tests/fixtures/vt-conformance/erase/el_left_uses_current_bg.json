@@ -1,10 +1,7 @@
 {
   "name": "el_left_uses_current_bg",
   "description": "EL 1 (erase left) uses current background color for erased cells",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "48454c4c4f1b5b34356d1b5b313b34481b5b314b",
   "expected": {
     "cursor": {

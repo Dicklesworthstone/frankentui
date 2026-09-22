@@ -6,9 +6,6 @@
   "comment": "CUP(3,3) -> (2,2), ESC 7 save cursor, CSI 2;4 r set scroll region (cursor goes home), CUP(1,1) -> (0,0), print A at (0,0), ESC 8 restore -> (2,2), print B at (2,2); cursor at (2,3)",
   "expected": {
     "cursor": { "row": 2, "col": 3 },
-    "cells": [
-      { "row": 0, "col": 0, "char": "A" },
-      { "row": 2, "col": 2, "char": "B" }
-    ]
+    "cells": [{ "row": 0, "col": 0, "char": "A" }, { "row": 2, "col": 2, "char": "B" }]
   }
 }
