@@ -802,20 +802,23 @@ impl TtyEventSource {
         Event::Mouse(mouse)
     }
 
+    /// The cell holding pixel `coord`, with `pixels` spread evenly over
+    /// `cells`: `coord * cells / pixels`.
+    ///
+    /// This used `(cells - 1) / (pixels - 1)`, which lines up only the first
+    /// and last pixel. With 10-pixel cells, pixel 10 (cell 1's first) came
+    /// out as cell 0, and toward the right edge most clicks landed a cell
+    /// early.
     #[inline]
     fn scale_mouse_coord(coord: u16, cells: u16, pixels: u16) -> u16 {
         if cells <= 1 {
             return 0;
         }
         if pixels <= 1 {
-            return coord.min(cells.saturating_sub(1));
+            return coord.min(cells - 1);
         }
-
-        let num = u32::from(coord).saturating_mul(u32::from(cells.saturating_sub(1)));
-        let den = u32::from(pixels.saturating_sub(1));
-        let scaled = num / den.max(1);
-        let scaled_u16 = u16::try_from(scaled).unwrap_or(u16::MAX);
-        scaled_u16.min(cells.saturating_sub(1))
+        let scaled = u32::from(coord) * u32::from(cells) / u32::from(pixels);
+        u16::try_from(scaled).unwrap_or(u16::MAX).min(cells - 1)
     }
 
     #[cfg(unix)]
@@ -3239,6 +3242,22 @@ mod tests {
             mouse.x > 0 && mouse.y > 0,
             "pixel-space event should not collapse to origin"
         );
+    }
+
+    #[test]
+    fn pixel_coordinates_map_to_the_cell_that_holds_them() {
+        // 100 cells over 1000 pixels: cell c is pixels 10c..=10c+9. Pixel 10
+        // came out as cell 0, and pixel 990 as cell 98.
+        for (pixel, cell) in [(0, 0), (9, 0), (10, 1), (505, 50), (989, 98), (990, 99)] {
+            assert_eq!(
+                TtyEventSource::scale_mouse_coord(pixel, 100, 1000),
+                cell,
+                "pixel {pixel}"
+            );
+        }
+        // Past the reported extent clamps to the last cell.
+        assert_eq!(TtyEventSource::scale_mouse_coord(1500, 100, 1000), 99);
+        assert_eq!(TtyEventSource::scale_mouse_coord(u16::MAX, 100, 1000), 99);
     }
 
     #[test]
