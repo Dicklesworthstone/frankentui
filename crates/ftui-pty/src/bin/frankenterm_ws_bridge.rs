@@ -57,7 +57,15 @@ where
                     .push(next_value(&mut iter, "--origin")?);
             }
             "--token" => {
-                config.auth_token = Some(next_value(&mut iter, "--token")?);
+                let token = next_value(&mut iter, "--token")?;
+                // Any client presenting `?token=` would match an empty one.
+                if token.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--token must not be empty",
+                    ));
+                }
+                config.auth_token = Some(token);
             }
             "--no-auth" => {
                 no_auth = true;
@@ -232,6 +240,11 @@ mod tests {
         assert!(parse(&["--cmd", "cat"]).is_err());
         let open = parse(&["--no-auth"]).unwrap();
         assert!(open.allowed_origins.is_empty() && open.auth_token.is_none());
+    }
+
+    #[test]
+    fn an_empty_token_is_refused() {
+        assert!(parse(&["--token", ""]).is_err());
     }
 
     #[test]

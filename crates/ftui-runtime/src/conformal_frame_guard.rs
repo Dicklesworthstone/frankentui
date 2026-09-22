@@ -390,7 +390,7 @@ impl ConformalFrameGuard {
         }
 
         let mut sorted: Vec<f64> = self.nonconformity_scores.iter().copied().collect();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(f64::total_cmp);
 
         let n = sorted.len();
         // Divide before summing so a finite mean does not overflow through

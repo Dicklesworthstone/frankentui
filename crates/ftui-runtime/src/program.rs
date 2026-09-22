@@ -6823,6 +6823,46 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
 
     /// Execute a command.
     fn execute_cmd(&mut self, cmd: Cmd<M::Message>) -> io::Result<()> {
+        // Commands run depth-first from an explicit stack of batch iterators,
+        // in the order the recursive version used. A model that answers a
+        // message with `Cmd::Msg` for its next step recursed once per step:
+        // a chain of about 10k steps overflowed the stack, and a stack
+        // overflow aborts the process without restoring the terminal.
+        let mut batches: Vec<std::vec::IntoIter<Cmd<M::Message>>> = Vec::new();
+        let mut next = Some(cmd);
+        loop {
+            let cmd = match next.take() {
+                Some(cmd) => cmd,
+                None => {
+                    // Resume the innermost batch. A batch stops after any
+                    // command that ends the program.
+                    let Some(rest) = batches.last_mut() else {
+                        return Ok(());
+                    };
+                    if !self.running {
+                        return Ok(());
+                    }
+                    match rest.next() {
+                        Some(cmd) => cmd,
+                        None => {
+                            batches.pop();
+                            continue;
+                        }
+                    }
+                }
+            };
+            next = self.execute_one_cmd(cmd, &mut batches)?;
+        }
+    }
+
+    /// Execute `cmd` for [`Self::execute_cmd`], returning the command to run
+    /// next (the `update` result for `Cmd::Msg`, the first command of a batch)
+    /// and pushing the rest of a batch onto `batches`.
+    fn execute_one_cmd(
+        &mut self,
+        cmd: Cmd<M::Message>,
+        batches: &mut Vec<std::vec::IntoIter<Cmd<M::Message>>>,
+    ) -> io::Result<Option<Cmd<M::Message>>> {
         self.executed_cmd_count = self.executed_cmd_count.saturating_add(1);
         match cmd {
             Cmd::None => {}
@@ -6836,25 +6876,15 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 let elapsed_us = start.elapsed().as_micros() as u64;
                 self.last_update_us = Some(elapsed_us);
                 self.mark_dirty();
-                self.execute_cmd(cmd)?;
+                return Ok(Some(cmd));
             }
-            Cmd::Batch(cmds) => {
-                // Batch currently executes sequentially. This is intentional
-                // until an async runtime or task scheduler is added.
-                for c in cmds {
-                    self.execute_cmd(c)?;
-                    if !self.running {
-                        break;
-                    }
-                }
-            }
-            Cmd::Sequence(cmds) => {
-                for c in cmds {
-                    self.execute_cmd(c)?;
-                    if !self.running {
-                        break;
-                    }
-                }
+            // Batch currently executes sequentially, like Sequence. This is
+            // intentional until an async runtime or task scheduler is added.
+            Cmd::Batch(cmds) | Cmd::Sequence(cmds) => {
+                let mut rest = cmds.into_iter();
+                let first = rest.next();
+                batches.push(rest);
+                return Ok(first);
             }
             Cmd::Tick(duration) => {
                 self.tick_rate = Some(duration);
@@ -6905,7 +6935,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, P: BackendPresenter<Err
                 self.last_active_screen_for_strategy = None;
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Detect active-screen transitions after any `update()` call and react:
@@ -15833,6 +15863,83 @@ mod tests {
 
         assert_eq!(program.model().count, 2);
         assert!(!program.running);
+    }
+
+    #[test]
+    fn headless_execute_cmd_runs_long_msg_chains_without_recursion() {
+        // One step per `Cmd::Msg`, alternating a bare message with one
+        // nested in a sequence. This recursed per step and overflowed the
+        // stack at about 10k steps.
+        struct Walker {
+            steps: u32,
+            order: Vec<&'static str>,
+        }
+
+        #[derive(Debug)]
+        enum WalkMsg {
+            Step(u32),
+            Mark(&'static str),
+        }
+
+        impl From<Event> for WalkMsg {
+            fn from(_: Event) -> Self {
+                WalkMsg::Mark("event")
+            }
+        }
+
+        impl Model for Walker {
+            type Message = WalkMsg;
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    WalkMsg::Step(0) => Cmd::quit(),
+                    WalkMsg::Step(n) => {
+                        self.steps += 1;
+                        let step = Cmd::msg(WalkMsg::Step(n - 1));
+                        if n % 2 == 0 {
+                            step
+                        } else {
+                            Cmd::Sequence(vec![step, Cmd::msg(WalkMsg::Mark("after"))])
+                        }
+                    }
+                    WalkMsg::Mark(label) => {
+                        self.order.push(label);
+                        Cmd::none()
+                    }
+                }
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let mut program = headless_program_with_config(
+            Walker {
+                steps: 0,
+                order: Vec::new(),
+            },
+            ProgramConfig::default(),
+        );
+        program
+            .execute_cmd(Cmd::msg(WalkMsg::Step(200_000)))
+            .expect("chain");
+        assert_eq!(program.model().steps, 200_000);
+        // The chain ends in Quit, which stops every pending sequence.
+        assert!(program.model().order.is_empty());
+        assert!(!program.running);
+
+        // Without a quit, a sequence finishes its nested chain before its
+        // next command, in the order recursion gave.
+        program.running = true;
+        program
+            .execute_cmd(Cmd::Sequence(vec![
+                Cmd::Batch(vec![
+                    Cmd::msg(WalkMsg::Mark("a")),
+                    Cmd::msg(WalkMsg::Mark("b")),
+                ]),
+                Cmd::msg(WalkMsg::Mark("c")),
+            ]))
+            .expect("sequence");
+        assert_eq!(program.model().order, ["a", "b", "c"]);
     }
 
     #[test]

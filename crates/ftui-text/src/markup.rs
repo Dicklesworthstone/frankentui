@@ -34,7 +34,7 @@
 //! assert_eq!(text.to_plain_text(), "Hello world!");
 //! ```
 
-use crate::text::{Span, Text};
+use crate::text::{Line, Span, Text};
 use ftui_render::cell::PackedRgba;
 use ftui_style::Style;
 
@@ -180,6 +180,10 @@ impl MarkupParser {
     pub fn parse(&mut self, input: &str) -> Result<Text<'static>, MarkupError> {
         self.reset();
 
+        // A newline starts a new line, as in `Text::raw`. The spans of a
+        // multi-line input used to go into one line, with the newlines inside
+        // them, so the text rendered on a single row.
+        let mut lines: Vec<Line<'static>> = Vec::new();
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut current_text = String::new();
 
@@ -187,6 +191,12 @@ impl MarkupParser {
 
         while let Some((pos, ch)) = chars.next() {
             match ch {
+                '\n' => {
+                    if !current_text.is_empty() {
+                        spans.push(self.make_span(std::mem::take(&mut current_text)));
+                    }
+                    lines.push(Line::from_spans(std::mem::take(&mut spans)));
+                }
                 '\\' => {
                     // Escape sequence
                     if let Some(&(_, next_ch)) = chars.peek()
@@ -204,13 +214,11 @@ impl MarkupParser {
                     let mut tag_content = String::new();
                     let mut found_close = false;
 
-                    for (_, tag_ch) in chars.by_ref() {
+                    // Newlines are not allowed in tags. One ends the scan but
+                    // stays in the input: it used to be consumed and lost.
+                    while let Some((_, tag_ch)) = chars.next_if(|&(_, c)| c != '\n') {
                         if tag_ch == ']' {
                             found_close = true;
-                            break;
-                        }
-                        if tag_ch == '\n' {
-                            // Newlines not allowed in tags
                             break;
                         }
                         tag_content.push(tag_ch);
@@ -282,6 +290,7 @@ impl MarkupParser {
         if !current_text.is_empty() {
             spans.push(self.make_span(std::mem::take(&mut current_text)));
         }
+        lines.push(Line::from_spans(spans));
 
         // Check for unclosed tags
         if let Some(entry) = self.style_stack.first() {
@@ -291,7 +300,7 @@ impl MarkupParser {
             });
         }
 
-        Ok(Text::from_spans(spans))
+        Ok(Text::from_lines(lines))
     }
 
     /// Create a span with the current style and link.
@@ -1215,10 +1224,25 @@ mod tests {
     #[test]
     fn parse_newline_in_tag_treated_as_literal() {
         // Newline inside a tag breaks the tag → [ and content become literal text.
-        // The newline itself is consumed by the iterator but not included in output.
-        // The ] after the newline is a regular character.
+        // The newline still ends the line, and the ] after it is a regular
+        // character. It used to be dropped, which made `[bold]` out of it.
         let text = parse_markup("Hello [bold\n]world").unwrap();
-        assert_eq!(text.to_plain_text(), "Hello [bold]world");
+        assert_eq!(text.to_plain_text(), "Hello [bold\n]world");
+        assert_eq!(text.height(), 2);
+    }
+
+    #[test]
+    fn parse_newlines_start_lines_and_keep_open_styles() {
+        let text = parse_markup("[bold]one\ntwo[/bold]\n\nthree\n").unwrap();
+        let lines: Vec<String> = text.lines().iter().map(Line::to_plain_text).collect();
+        assert_eq!(lines, ["one", "two", "", "three", ""]);
+        assert_eq!(text.height(), Text::raw("one\ntwo\n\nthree\n").height());
+        for line in &text.lines()[..2] {
+            let style = line.spans()[0].style.unwrap();
+            assert!(style.has_attr(StyleFlags::BOLD));
+        }
+        assert!(text.lines()[3].spans()[0].style.is_none());
+        assert_eq!(parse_markup("").unwrap().height(), 1);
     }
 
     // =========================================================================

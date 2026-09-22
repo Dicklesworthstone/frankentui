@@ -1252,6 +1252,12 @@ impl Screen for PerformanceHud {
             .render(rows[2], frame);
     }
 
+    // 1-4 force a degradation tier and m switches the sparkline; the app
+    // would take them to switch screens and toggle mouse capture.
+    fn consumes_key(&self, key: char) -> bool {
+        matches!(key, '1'..='4' | 'm')
+    }
+
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {

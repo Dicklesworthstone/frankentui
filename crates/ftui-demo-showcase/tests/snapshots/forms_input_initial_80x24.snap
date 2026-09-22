@@ -18,7 +18,7 @@
 │                                      ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │
-│Tab: next | Enter: submit | Esc: cance││                                      │
+│↑/↓: fields | ←/→: value | Enter: subm││                                      │
 │Legend: * required | red=error | green││                                      │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯
 Editing: Name (field 1/6) | Required: 0/3 | Undo:0 Redo:0 | Errors: 0 | Ctrl+U: 

@@ -195,6 +195,7 @@ if [[ -z "$DEMO_BIN" ]]; then
     done
     exit 0
 fi
+VSEARCH_SCREEN="$(e2e_demo_screen "$DEMO_BIN" virtualized_search)"
 
 SLASH='/'
 
@@ -209,7 +210,7 @@ vsearch_screen_load() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=28 \
+    FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1200 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
@@ -237,7 +238,7 @@ vsearch_focus_search() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=28 \
+    FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1200 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
@@ -264,7 +265,7 @@ vsearch_query() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=28 \
+    FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1400 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
@@ -291,7 +292,7 @@ vsearch_navigation() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=28 \
+    FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1400 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN" || return 1
@@ -317,7 +318,7 @@ vsearch_jump_bottom() {
     FTUI_VSEARCH_DETERMINISTIC=true \
     FTUI_DEMO_SCREEN_MODE=inline \
     FTUI_DEMO_UI_HEIGHT=20 \
-    FTUI_DEMO_SCREEN=28 \
+    FTUI_DEMO_SCREEN="$VSEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1400 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN" || return 1

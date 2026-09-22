@@ -75,6 +75,10 @@ resize_scroll_region_inline() {
 
     log_test_start "resize_scroll_region_inline"
 
+    # FTUI_SCROLL_REGION=1 trusts DECSTBM. Otherwise the runtime's self-test
+    # asks for the cursor position (`ESC[6n`); this PTY never answers, so the
+    # writer fell back to overlay redraw and set no scroll region to check.
+    FTUI_SCROLL_REGION=1 \
     TERM="xterm-256color" \
     PTY_COLS=80 \
     PTY_ROWS=24 \

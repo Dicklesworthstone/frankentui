@@ -659,31 +659,58 @@ impl<M: Model> StepProgram<M> {
         let _ = presenter.write_log(&repaint_marker);
     }
 
+    /// Commands run depth-first from an explicit stack of batch iterators, in
+    /// the order recursion gave. Running each `update` result recursively
+    /// overflowed the stack for a model that takes one step per `Cmd::Msg`,
+    /// which on wasm traps and kills the instance.
     fn execute_cmd(&mut self, cmd: Cmd<M::Message>) {
+        let mut batches: Vec<std::vec::IntoIter<Cmd<M::Message>>> = Vec::new();
+        let mut next = Some(cmd);
+        loop {
+            let cmd = match next.take() {
+                Some(cmd) => cmd,
+                None => {
+                    // Resume the innermost batch. A batch stops after any
+                    // command that ends the program.
+                    let Some(rest) = batches.last_mut() else {
+                        return;
+                    };
+                    if !self.running {
+                        return;
+                    }
+                    match rest.next() {
+                        Some(cmd) => cmd,
+                        None => {
+                            batches.pop();
+                            continue;
+                        }
+                    }
+                }
+            };
+            next = self.execute_one_cmd(cmd, &mut batches);
+        }
+    }
+
+    /// Execute `cmd` for [`Self::execute_cmd`], returning the command to run
+    /// next and pushing the rest of a batch onto `batches`.
+    fn execute_one_cmd(
+        &mut self,
+        cmd: Cmd<M::Message>,
+        batches: &mut Vec<std::vec::IntoIter<Cmd<M::Message>>>,
+    ) -> Option<Cmd<M::Message>> {
         match cmd {
             Cmd::None => {}
             Cmd::Quit => {
                 self.running = false;
             }
             Cmd::Msg(m) => {
-                let cmd = self.model.update(m);
-                self.execute_cmd(cmd);
+                return Some(self.model.update(m));
             }
-            Cmd::Batch(cmds) => {
-                for c in cmds {
-                    self.execute_cmd(c);
-                    if !self.running {
-                        break;
-                    }
-                }
-            }
-            Cmd::Sequence(cmds) => {
-                for c in cmds {
-                    self.execute_cmd(c);
-                    if !self.running {
-                        break;
-                    }
-                }
+            Cmd::Batch(cmds) | Cmd::Sequence(cmds) => {
+                let mut rest = cmds.into_iter();
+                let first = rest.next();
+                batches.push(rest);
+                return first;
             }
             Cmd::Tick(duration) => {
                 self.tick_rate = Some(duration);
@@ -695,8 +722,7 @@ impl<M: Model> StepProgram<M> {
             Cmd::Task(_spec, f) => {
                 // WASM has no threads — execute tasks synchronously.
                 let msg = f();
-                let cmd = self.model.update(msg);
-                self.execute_cmd(cmd);
+                return Some(self.model.update(msg));
             }
             Cmd::SetMouseCapture(enabled) => {
                 let mut features = self.backend.events_mut().features();
@@ -716,6 +742,7 @@ impl<M: Model> StepProgram<M> {
                 // Runtime tick strategy selection is handled by host configuration.
             }
         }
+        None
     }
 }
 
@@ -744,6 +771,51 @@ mod tests {
         );
         assert!(program.take_clipboard_requests().is_empty());
         assert_eq!(program.model.value, 0);
+    }
+
+    #[test]
+    fn long_msg_and_task_chains_run_without_recursion() {
+        // One step per `Cmd::Msg` or inline task. Running each `update`
+        // result recursively overflowed the stack at a few thousand steps.
+        struct Walker {
+            steps: u32,
+        }
+
+        enum WalkMsg {
+            Step(u32),
+            Event,
+        }
+
+        impl From<Event> for WalkMsg {
+            fn from(_: Event) -> Self {
+                WalkMsg::Event
+            }
+        }
+
+        impl Model for Walker {
+            type Message = WalkMsg;
+
+            fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+                match msg {
+                    WalkMsg::Step(0) | WalkMsg::Event => Cmd::none(),
+                    WalkMsg::Step(n) if n % 2 == 0 => {
+                        self.steps += 1;
+                        Cmd::msg(WalkMsg::Step(n - 1))
+                    }
+                    WalkMsg::Step(n) => {
+                        self.steps += 1;
+                        Cmd::task(move || WalkMsg::Step(n - 1))
+                    }
+                }
+            }
+
+            fn view(&self, _frame: &mut Frame) {}
+        }
+
+        let mut program = StepProgram::new(Walker { steps: 0 }, 10, 5);
+        program.init().unwrap();
+        program.execute_cmd(Cmd::msg(WalkMsg::Step(200_000)));
+        assert_eq!(program.model.steps, 200_000);
     }
 
     struct Counter {

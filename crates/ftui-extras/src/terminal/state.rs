@@ -829,13 +829,7 @@ impl TerminalState {
                 // Mark the current row as soft-wrapped
                 self.grid.set_line_flag(y, LineFlag::SoftWrap);
                 self.cursor.x = 0;
-                self.cursor.y += 1;
-
-                // Scroll if needed
-                if self.cursor.y > self.scroll_region.1 {
-                    self.scroll_up(1);
-                    self.cursor.y = self.scroll_region.1;
-                }
+                self.line_down();
             } else {
                 self.cursor.x = self.grid.width().saturating_sub(1);
             }
@@ -856,11 +850,7 @@ impl TerminalState {
             // Not enough room — mark current row as soft-wrapped and wrap
             self.grid.set_line_flag(y, LineFlag::SoftWrap);
             self.cursor.x = 0;
-            self.cursor.y += 1;
-            if self.cursor.y > self.scroll_region.1 {
-                self.scroll_up(1);
-                self.cursor.y = self.scroll_region.1;
-            }
+            self.line_down();
         }
 
         let x = self.cursor.x;
@@ -892,11 +882,7 @@ impl TerminalState {
             if self.modes.contains(TerminalModes::WRAP) {
                 self.grid.set_line_flag(y, LineFlag::SoftWrap);
                 self.cursor.x = 0;
-                self.cursor.y += 1;
-                if self.cursor.y > self.scroll_region.1 {
-                    self.scroll_up(1);
-                    self.cursor.y = self.scroll_region.1;
-                }
+                self.line_down();
             } else {
                 self.cursor.x = width.saturating_sub(1);
             }
@@ -907,11 +893,21 @@ impl TerminalState {
     pub fn newline(&mut self) {
         let y = self.cursor.y;
         self.grid.set_line_flag(y, LineFlag::HardNewline);
+        self.line_down();
+    }
 
-        self.cursor.y += 1;
-        if self.cursor.y > self.scroll_region.1 {
+    /// Move the cursor down a row, as LF and autowrap do: on the scroll
+    /// region's bottom margin the region scrolls, elsewhere the cursor moves
+    /// down and stops at the last row of the screen.
+    ///
+    /// Any row past the margin used to count as the margin, so a line feed
+    /// below the region (a status line under a scrolling pane) scrolled the
+    /// region and pulled the cursor up into it.
+    fn line_down(&mut self) {
+        if self.cursor.y == self.scroll_region.1 {
             self.scroll_up(1);
-            self.cursor.y = self.scroll_region.1;
+        } else if self.cursor.y.saturating_add(1) < self.grid.height() {
+            self.cursor.y += 1;
         }
     }
 
@@ -2110,6 +2106,35 @@ mod tests {
         assert!(state.cell(0, 0).unwrap().is_empty());
         // Row 5 (outside region) should be unaffected
         assert!(state.cell(0, 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn line_feed_below_the_scroll_region_does_not_scroll_it() {
+        let mut state = TerminalState::new(5, 6);
+        state.set_scroll_region(1, 3);
+        state.move_cursor(0, 1);
+        state.put_char('A');
+
+        // A status line under the region: LF moves down, then stops at the
+        // last row, and the region's content stays put.
+        state.move_cursor(0, 4);
+        state.newline();
+        assert_eq!(state.cursor().y, 5);
+        state.newline();
+        assert_eq!(state.cursor().y, 5);
+        assert_eq!(state.cell(0, 1).unwrap().ch, 'A');
+
+        // Autowrap below the region follows the same rule.
+        state.move_cursor(4, 4);
+        state.put_char('W');
+        assert_eq!((state.cursor().x, state.cursor().y), (0, 5));
+        assert_eq!(state.cell(0, 1).unwrap().ch, 'A');
+
+        // On the region's bottom margin, LF scrolls the region.
+        state.move_cursor(0, 3);
+        state.newline();
+        assert_eq!(state.cursor().y, 3);
+        assert!(state.cell(0, 1).unwrap().is_empty());
     }
 
     #[test]

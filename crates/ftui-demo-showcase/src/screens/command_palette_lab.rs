@@ -625,6 +625,13 @@ impl Screen for CommandPaletteEvidenceLab {
         ]
     }
 
+    // The palette is always open and types into its query, so q, digits and
+    // m reach the screen: 0-5 and m pick the filter, the rest are query text.
+    // Otherwise typing "quit" quit the app.
+    fn consumes_text_input(&self) -> bool {
+        true
+    }
+
     fn title(&self) -> &'static str {
         "Command Palette Evidence Lab"
     }

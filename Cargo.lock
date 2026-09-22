@@ -1506,7 +1506,6 @@ dependencies = [
  "stats_alloc",
  "tracing",
  "tracing-subscriber",
- "unicode-display-width",
  "unicode-segmentation",
  "unicode-width",
  "unicodeit",

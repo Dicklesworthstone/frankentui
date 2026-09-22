@@ -209,6 +209,8 @@ e2e_now_ms() {
 
 # Elapsed durations must use the real monotonic clock, including deterministic
 # runs. e2e_now_ms is a synthetic event clock in that mode, not a stopwatch.
+# Use this rather than `date +%s%3N`: BSD date (macOS) does not know `%N` and
+# prints "...3N", so `$((end - start))` aborted the scripts that used it.
 e2e_monotonic_ms() {
     "${E2E_PYTHON:-python3}" -c 'import time; print(time.monotonic_ns() // 1_000_000)'
 }

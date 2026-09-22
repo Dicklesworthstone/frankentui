@@ -556,13 +556,24 @@ pub mod text_width {
     #[inline]
     #[must_use]
     pub fn grapheme_width_uncached(grapheme: &str) -> usize {
+        grapheme_width_with_cjk(grapheme, use_cjk_width())
+    }
+
+    /// Width of a grapheme cluster with East Asian Ambiguous characters
+    /// double-width when `cjk` is set, instead of as the environment says.
+    ///
+    /// For callers with their own width policy, such as a search that reports
+    /// columns for a caller-chosen mode. Otherwise it measures exactly as
+    /// [`grapheme_width`] does.
+    #[must_use]
+    pub fn grapheme_width_with_cjk(grapheme: &str, cjk: bool) -> usize {
         if grapheme.is_ascii() {
             return ascii_display_width(grapheme);
         }
         if grapheme.chars().all(is_zero_width_codepoint) {
             return 0;
         }
-        if use_cjk_width() {
+        if cjk {
             return grapheme.width_cjk();
         }
         // Terminal-realistic VS16 handling: most terminals render text-default

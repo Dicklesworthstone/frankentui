@@ -895,6 +895,8 @@ fn form_validation_submit_errors_120x40() {
 #[test]
 fn form_validation_mode_toggle_80x24() {
     let mut screen = ftui_demo_showcase::screens::form_validation::FormValidationDemo::new();
+    // Up wraps to the Accept Terms checkbox, where M is not text.
+    screen.update(&press(KeyCode::Up));
     screen.update(&press(KeyCode::Char('m')));
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);

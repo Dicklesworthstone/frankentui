@@ -20,5 +20,5 @@ Mode: On Submit [M to toggle]                   ╭────────Error
 │                                              ││                              │
 │                                              ││                              │
 ╰──────────────────────────────────────────────╯│                              │
-Touched: 0/9 | Dirty: 0/9                       │                              │
-Tab/Arrow: navigate | Space: toggle | Enter: sub╰──────────────────────────────╯
+Touched: 1/9 | Dirty: 0/9                       │                              │
+Up/Down: fields | M/E/R/C: outside text fields  ╰──────────────────────────────╯

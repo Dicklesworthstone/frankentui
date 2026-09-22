@@ -45,7 +45,9 @@ require_tools() {
         printf 'Missing required tools: %s\n' "${missing[*]}" >&2
     fi
     if declare -f jsonl_assert >/dev/null 2>&1 && [[ -n "${E2E_JSONL_FILE:-}" ]]; then
-        if ! jsonl_assert "tools_present" "$status" "missing=${missing[*]}"; then
+        # `:-`: with nothing missing the array is empty, and bash 3.2 (macOS's
+        # /bin/bash, which runs every suite) calls that unbound under `set -u`.
+        if ! jsonl_assert "tools_present" "$status" "missing=${missing[*]:-}"; then
             echo "Could not record prerequisite check" >&2
             return 2
         fi
@@ -92,6 +94,22 @@ E2E_PYTHON="${E2E_PYTHON:-}"
 if [[ -z "$E2E_PYTHON" ]]; then
     E2E_PYTHON="$(resolve_python)" || true
 fi
+
+# The 1-based `--screen` number of the demo screen `slug`, read from the
+# binary's own `--list-screens`. Scripts hardcoded numbers, which pointed at
+# another screen whenever one was added before it: log_search moved from 15
+# to 20 and virtualized_search from 23 to 28, so their suites tested the wrong
+# screen. Fails when the binary has no such screen.
+e2e_demo_screen() {
+    local bin="$1"
+    local slug="$2"
+    "$bin" --list-screens | "${E2E_PYTHON:-python3}" -c '
+import json
+import sys
+
+print(json.load(sys.stdin).index(sys.argv[1]) + 1)
+' "$slug"
+}
 
 e2e_random_seed() {
     od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ' || date +%s

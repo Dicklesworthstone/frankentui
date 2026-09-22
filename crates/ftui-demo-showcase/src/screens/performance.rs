@@ -301,7 +301,7 @@ impl Screen for Performance {
                     self.ensure_visible();
                 }
                 // Vim: G or End for last item
-                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE) => {
+                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE | Modifiers::SHIFT) => {
                     self.selected = self.items.len().saturating_sub(1);
                     self.ensure_visible();
                 }
@@ -468,6 +468,17 @@ mod tests {
         assert_eq!(screen.selected, TOTAL_ITEMS - 1);
         screen.update(&press(KeyCode::Char('g')));
         assert_eq!(screen.selected, 0);
+    }
+
+    #[test]
+    fn shifted_g_from_the_kitty_protocol_jumps_to_the_end() {
+        // Shift+g as a kitty terminal sends it, with the shifted key 'G'.
+        // It used to parse as ('g', SHIFT), which matched no binding.
+        let mut screen = Performance::new();
+        let events = ftui_core::input_parser::InputParser::new().parse(b"\x1b[103:71;2u");
+        assert_eq!(events.len(), 1);
+        screen.update(&events[0]);
+        assert_eq!(screen.selected, TOTAL_ITEMS - 1);
     }
 
     #[test]

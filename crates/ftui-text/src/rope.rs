@@ -211,7 +211,9 @@ impl Rope {
     #[must_use]
     pub fn line_col_to_byte(&self, line_idx: usize, col: usize) -> usize {
         let line_start = self.line_to_char(line_idx);
-        let next_line_start = if line_idx + 1 < self.len_lines() {
+        // Saturating: an out-of-range line clamps everywhere else here, but
+        // `line_idx + 1` overflowed for usize::MAX (a debug panic).
+        let next_line_start = if line_idx.saturating_add(1) < self.len_lines() {
             self.line_to_char(line_idx + 1)
         } else {
             self.len_chars()
@@ -679,6 +681,13 @@ mod tests {
         let rope = Rope::from("abc\ndef");
         let byte = rope.line_col_to_byte(1, 1);
         assert_eq!(byte, 5); // 'e'
+    }
+
+    #[test]
+    fn line_col_to_byte_clamps_the_largest_line_index() {
+        // `line_idx + 1` overflowed here instead of clamping to the end.
+        let rope = Rope::from("abc\ndef");
+        assert_eq!(rope.line_col_to_byte(usize::MAX, 0), rope.len_bytes());
     }
 
     // ====== Chars iterator ======

@@ -22,7 +22,7 @@ use ftui_render::frame::Frame;
 use ftui_style::Style;
 use std::{
     io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 /// A single entry in a directory listing.
@@ -235,8 +235,24 @@ impl FilePickerState {
             return Ok(true);
         }
 
-        // No history — try parent directory
-        if let Some(parent) = self.current_dir.parent().map(|p| p.to_path_buf()) {
+        // No history — try parent directory. `Path::parent` is lexical: for
+        // `.` or a relative `src` it is the empty path, which cannot be read,
+        // and for `a/..` it is `a`. Those take the parent of the resolved path.
+        let lexical_parent = match self.current_dir.components().next_back() {
+            Some(Component::Normal(_)) => self
+                .current_dir
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map(Path::to_path_buf),
+            _ => None,
+        };
+        let parent = match lexical_parent {
+            Some(parent) => Some(parent),
+            None => std::fs::canonicalize(&self.current_dir)?
+                .parent()
+                .map(Path::to_path_buf),
+        };
+        if let Some(parent) = parent {
             if let Some(root) = &self.root
                 && !path_is_within_root(&parent, root)?
             {
@@ -256,11 +272,15 @@ impl FilePickerState {
 
     /// Ensure scroll offset keeps cursor visible for the given viewport height.
     fn adjust_scroll(&mut self, visible_rows: usize) {
-        if visible_rows == 0 {
-            return;
-        }
+        // `entries`, `cursor` and `offset` are public, so a caller may shrink
+        // the listing under them. Rendering slices `entries[offset..]`, which
+        // panicked once `offset` was past the end.
+        self.cursor = self.cursor.min(self.entries.len().saturating_sub(1));
         if self.cursor < self.offset {
             self.offset = self.cursor;
+        }
+        if visible_rows == 0 {
+            return;
         }
         if self.cursor >= self.offset + visible_rows {
             self.offset = self.cursor + 1 - visible_rows;
@@ -1001,6 +1021,41 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         assert_eq!(state.current_dir, current_dir);
         assert_eq!(state.entries[0].path, target_dir);
+    }
+
+    #[test]
+    fn go_back_from_a_relative_directory_reaches_its_parent() {
+        // Tests run in the crate directory, which holds `src`.
+        let crate_dir = std::fs::canonicalize(".").expect("crate directory");
+        for relative in ["src", ".", "src/.."] {
+            let mut state = FilePickerState::from_path(relative).expect("readable directory");
+            assert!(state.go_back().expect("parent is readable"), "{relative}");
+            let expected = if relative == "src" {
+                crate_dir.clone()
+            } else {
+                crate_dir
+                    .parent()
+                    .expect("crate has a parent")
+                    .to_path_buf()
+            };
+            assert_eq!(
+                std::fs::canonicalize(&state.current_dir).expect("resolvable"),
+                expected,
+                "{relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_survives_entries_shrinking_under_cursor_and_offset() {
+        let mut state = make_state();
+        state.cursor = 40;
+        state.offset = 30;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
+        FilePicker::new().render(Rect::new(0, 0, 20, 5), &mut frame, &mut state);
+        assert_eq!(state.cursor, state.entries.len() - 1);
+        assert!(state.offset <= state.cursor);
     }
 
     // ── DirEntry edge cases ───────────────────────────────────────

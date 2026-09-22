@@ -7,7 +7,7 @@
 
 use crate::mouse::MouseResult;
 use crate::{StatefulWidget, Widget, clear_text_row, draw_text_span};
-use ftui_core::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
@@ -121,7 +121,14 @@ impl TabsState {
     /// Supported:
     /// - `Left` / `Right`
     /// - number keys `1..9`
+    ///
+    /// Acts on press and repeat, never release. Terminals with the kitty
+    /// keyboard protocol's event types, and the web backend, report a release
+    /// for every key, so one Right press moved two tabs.
     pub fn handle_key(&mut self, key: &KeyEvent, tab_count: usize) -> bool {
+        if key.kind == KeyEventKind::Release {
+            return false;
+        }
         match key.code {
             KeyCode::Left => self.previous(tab_count),
             KeyCode::Right => self.next(tab_count),
@@ -593,6 +600,19 @@ mod tests {
         assert!(state.handle_key(&KeyEvent::new(KeyCode::Char('3')), 4));
         assert_eq!(state.active, 2);
         assert!(!state.handle_key(&KeyEvent::new(KeyCode::Char('9')), 4));
+        assert_eq!(state.active, 2);
+    }
+
+    #[test]
+    fn tabs_keyboard_ignores_key_release() {
+        // With release events reported, one Right press moved two tabs.
+        use ftui_core::event::KeyEventKind;
+        let mut state = TabsState::default();
+        let right = KeyEvent::new(KeyCode::Right);
+        assert!(state.handle_key(&right, 4));
+        assert!(!state.handle_key(&right.with_kind(KeyEventKind::Release), 4));
+        assert_eq!(state.active, 1);
+        assert!(state.handle_key(&right.with_kind(KeyEventKind::Repeat), 4));
         assert_eq!(state.active, 2);
     }
 

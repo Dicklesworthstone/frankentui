@@ -21,4 +21,4 @@ Mode: Real-time [M to toggle]                   ╭────────Error
 │                                              ││                              │
 ╰──────────────────────────────────────────────╯│                              │
 Touched: 0/9 | Dirty: 0/9                       │                              │
-Tab/Arrow: navigate | Space: toggle | Enter: sub╰──────────────────────────────╯
+Up/Down: fields | M/E/R/C: outside text fields  ╰──────────────────────────────╯

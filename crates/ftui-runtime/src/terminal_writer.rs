@@ -2015,6 +2015,18 @@ impl<W: Write> TerminalWriter<W> {
         self.reset_diff_strategy();
     }
 
+    /// Drop the diff baseline so the next present rewrites every cell, for a
+    /// caller that knows the screen no longer matches what was presented.
+    pub(crate) fn invalidate_diff_baseline(&mut self) {
+        self.prev_buffer = None;
+        self.reset_diff_strategy();
+    }
+
+    /// Whether the cursor was last left visible (best-effort).
+    pub(crate) const fn cursor_visible(&self) -> bool {
+        self.cursor_visible
+    }
+
     /// Present UI in inline mode with cursor save/restore.
     ///
     /// When the scroll-region strategy is active, DECSTBM is set to constrain

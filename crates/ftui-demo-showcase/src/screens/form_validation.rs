@@ -20,6 +20,7 @@ use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
+use ftui_text::grapheme_count;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::notification_queue::{
@@ -29,7 +30,7 @@ use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::toast::{Toast, ToastIcon, ToastPosition, ToastStyle};
 use ftui_widgets::{StatefulWidget, Widget};
 
-use super::{HelpEntry, Screen};
+use super::{HelpEntry, Screen, form_arrow_keys};
 use crate::theme;
 
 /// Validation mode determines when validation runs.
@@ -124,7 +125,8 @@ impl FormValidationDemo {
                     if value.trim().is_empty() {
                         return Some("Username is required".into());
                     }
-                    if value.len() < 3 {
+                    // Characters, not UTF-8 bytes: "éé" is two.
+                    if grapheme_count(value) < 3 {
                         return Some("Username must be at least 3 characters".into());
                     }
                 }
@@ -154,7 +156,7 @@ impl FormValidationDemo {
                     if value.is_empty() {
                         return Some("Password is required".into());
                     }
-                    if value.len() < 8 {
+                    if grapheme_count(value) < 8 {
                         return Some("Password must be at least 8 characters".into());
                     }
                 }
@@ -193,13 +195,13 @@ impl FormValidationDemo {
             5,
             Box::new(|field| {
                 // Bio max length
-                if let FormField::Text { value, .. } = field
-                    && value.len() > 100
-                {
-                    return Some(format!(
-                        "Bio must be 100 characters or less ({} entered)",
-                        value.len()
-                    ));
+                if let FormField::Text { value, .. } = field {
+                    let count = grapheme_count(value);
+                    if count > 100 {
+                        return Some(format!(
+                            "Bio must be 100 characters or less ({count} entered)"
+                        ));
+                    }
                 }
                 None
             }),
@@ -258,8 +260,8 @@ impl FormValidationDemo {
             form_state: RefCell::new(form_state),
             validation_mode: ValidationMode::RealTime,
             notifications,
-            status_text: "Tab/Arrow: navigate | Space: toggle | Enter: submit | M: mode toggle"
-                .into(),
+            // 46 columns: the whole slot in the app at 80x24.
+            status_text: "Up/Down: fields | M/E/R/C: outside text fields".into(),
             tick_count: 0,
             error_injection: false,
             last_form_area: Cell::new(Rect::default()),
@@ -451,6 +453,17 @@ impl FormValidationDemo {
     fn reset_form(&mut self) {
         *self = Self::new();
     }
+
+    /// Whether the focused field takes typed characters. While it does, plain
+    /// letters are text: the M/E/R/C controls and the app's single-key
+    /// shortcuts stand aside, or typing "user" would inject errors and reset.
+    fn text_field_focused(&self) -> bool {
+        let state = self.form_state.borrow();
+        !state.submitted
+            && !state.cancelled
+            && !self.form.is_disabled(state.focused)
+            && matches!(self.form.field(state.focused), Some(FormField::Text { .. }))
+    }
     fn handle_mouse(&mut self, event: &Event) {
         if let Event::Mouse(mouse) = event {
             let form_area = self.last_form_area.get();
@@ -461,18 +474,24 @@ impl FormValidationDemo {
                 {
                     self.toggle_validation_mode();
                 }
+                // Leaving a field marks it touched, as Up/Down do, so its
+                // error shows.
                 MouseEventKind::ScrollDown if form_area.contains(mouse.x, mouse.y) => {
                     let mut state = self.form_state.borrow_mut();
                     let count = self.form.field_count();
                     if count > 0 {
-                        state.focused = (state.focused + 1) % count;
+                        let left = state.focused;
+                        state.mark_touched(left);
+                        state.focused = (left + 1) % count;
                     }
                 }
                 MouseEventKind::ScrollUp if form_area.contains(mouse.x, mouse.y) => {
                     let mut state = self.form_state.borrow_mut();
                     let count = self.form.field_count();
                     if count > 0 {
-                        state.focused = (state.focused + count - 1) % count;
+                        let left = state.focused;
+                        state.mark_touched(left);
+                        state.focused = (left + count - 1) % count;
                     }
                 }
                 _ => {}
@@ -506,24 +525,27 @@ impl Screen for FormValidationDemo {
             self.handle_mouse(event);
             return Cmd::None;
         }
+        let typing = self.text_field_focused();
         // Handle M key with either NONE or SHIFT modifiers for mode toggle
-        if let Event::Key(KeyEvent {
-            code: KeyCode::Char('m' | 'M'),
-            kind: KeyEventKind::Press,
-            modifiers,
-            ..
-        }) = event
+        if !typing
+            && let Event::Key(KeyEvent {
+                code: KeyCode::Char('m' | 'M'),
+                kind: KeyEventKind::Press,
+                modifiers,
+                ..
+            }) = event
             && matches!(*modifiers, Modifiers::NONE | Modifiers::SHIFT)
         {
             self.toggle_validation_mode();
             return Cmd::None;
         }
-        if let Event::Key(KeyEvent {
-            code,
-            kind: KeyEventKind::Press,
-            modifiers: Modifiers::NONE,
-            ..
-        }) = event
+        if !typing
+            && let Event::Key(KeyEvent {
+                code,
+                kind: KeyEventKind::Press,
+                modifiers: Modifiers::NONE,
+                ..
+            }) = event
         {
             match code {
                 KeyCode::Char('m' | 'M') => {
@@ -548,10 +570,13 @@ impl Screen for FormValidationDemo {
             }
         }
 
-        // Handle form events
+        // Handle form events. Without the arrow remap, keyboard focus stuck
+        // on Age or Role and never reached Bio or Website.
+        let focused = self.form_state.borrow().focused;
+        let remapped = form_arrow_keys(&self.form, focused, event);
         let changed = {
             let mut state = self.form_state.borrow_mut();
-            state.handle_event(&mut self.form, event)
+            state.handle_event(&mut self.form, remapped.as_ref().unwrap_or(event))
         };
 
         // Check if form was submitted
@@ -563,6 +588,12 @@ impl Screen for FormValidationDemo {
                 // Reset submitted flag
                 self.form_state.borrow_mut().submitted = false;
             }
+        }
+
+        // Esc cancels the form, which then ignores every key until a reset.
+        // Say so, or the form just looks frozen.
+        if changed && self.form_state.borrow().cancelled {
+            self.status_text = "Form cancelled | R: reset".into();
         }
 
         // Run real-time validation if enabled and something changed
@@ -638,15 +669,20 @@ impl Screen for FormValidationDemo {
         "Validate"
     }
 
+    fn consumes_text_input(&self) -> bool {
+        self.text_field_focused()
+    }
+
+    // Tab never reaches the form: the app takes it to switch screens.
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
-                key: "Tab/S-Tab",
+                key: "Up/Down",
                 action: "Navigate fields",
             },
             HelpEntry {
-                key: "Up/Down",
-                action: "Change value / navigate",
+                key: "Left/Right",
+                action: "Change age / role",
             },
             HelpEntry {
                 key: "Space",
@@ -657,20 +693,24 @@ impl Screen for FormValidationDemo {
                 action: "Submit form",
             },
             HelpEntry {
+                key: "Esc",
+                action: "Cancel form",
+            },
+            HelpEntry {
                 key: "M",
-                action: "Toggle validation mode",
+                action: "Toggle validation mode (off text fields)",
             },
             HelpEntry {
                 key: "E",
-                action: "Inject errors",
+                action: "Inject errors (off text fields)",
             },
             HelpEntry {
                 key: "R",
-                action: "Reset form",
+                action: "Reset form (off text fields)",
             },
             HelpEntry {
                 key: "C",
-                action: "Clear errors",
+                action: "Clear errors (off text fields)",
             },
             HelpEntry {
                 key: "Click",
@@ -789,40 +829,139 @@ mod tests {
         assert!(!demo.error_injection);
         assert_eq!(demo.validation_mode, ValidationMode::RealTime);
     }
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            kind: KeyEventKind::Press,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    /// Accept Terms, a checkbox: plain letters there are demo controls.
+    const TERMS: usize = 8;
+
     #[test]
     fn clear_errors_removes_all() {
         let mut demo = FormValidationDemo::new();
         demo.inject_errors();
-        let ev = Event::Key(KeyEvent {
-            code: KeyCode::Char('c'),
-            kind: KeyEventKind::Press,
-            modifiers: Modifiers::NONE,
-        });
-        demo.update(&ev);
+        demo.form_state.borrow_mut().focused = TERMS;
+        demo.update(&key(KeyCode::Char('c')));
         assert!(demo.form_state.borrow().errors.is_empty());
     }
     #[test]
     fn e_key_injects_errors() {
         let mut demo = FormValidationDemo::new();
-        let ev = Event::Key(KeyEvent {
-            code: KeyCode::Char('e'),
-            kind: KeyEventKind::Press,
-            modifiers: Modifiers::NONE,
-        });
-        demo.update(&ev);
+        demo.form_state.borrow_mut().focused = TERMS;
+        demo.update(&key(KeyCode::Char('e')));
         assert!(demo.error_injection);
     }
     #[test]
     fn r_key_resets_form() {
         let mut demo = FormValidationDemo::new();
         demo.inject_errors();
-        let ev = Event::Key(KeyEvent {
-            code: KeyCode::Char('r'),
-            kind: KeyEventKind::Press,
-            modifiers: Modifiers::NONE,
-        });
-        demo.update(&ev);
+        demo.form_state.borrow_mut().focused = TERMS;
+        demo.update(&key(KeyCode::Char('r')));
         assert!(!demo.error_injection);
+    }
+    #[test]
+    fn length_limits_count_characters_not_bytes() {
+        let mut demo = FormValidationDemo::new();
+        let set = |demo: &mut FormValidationDemo, idx, text: &str| {
+            if let Some(FormField::Text { value, .. }) = demo.form.field_mut(idx) {
+                *value = text.into();
+            }
+        };
+        let has_error = |demo: &mut FormValidationDemo, idx| {
+            demo.run_validation();
+            demo.form_state
+                .borrow()
+                .errors
+                .iter()
+                .any(|e| e.field == idx)
+        };
+        // Two characters, four bytes.
+        set(&mut demo, 0, "éé");
+        assert!(has_error(&mut demo, 0));
+        set(&mut demo, 0, "ééé");
+        assert!(!has_error(&mut demo, 0));
+        // Five characters, ten bytes.
+        set(&mut demo, 2, "ééééé");
+        assert!(has_error(&mut demo, 2));
+        // Sixty characters, 240 bytes.
+        set(&mut demo, 5, &"🦀".repeat(60));
+        assert!(!has_error(&mut demo, 5));
+    }
+    #[test]
+    fn letters_typed_into_a_text_field_are_text() {
+        let mut demo = FormValidationDemo::new();
+        demo.update(&key(KeyCode::Down));
+        assert!(demo.consumes_text_input());
+        // Every one of M/E/R/C appears in it.
+        for ch in "user@example.com".chars() {
+            demo.update(&key(KeyCode::Char(ch)));
+        }
+        let Some(FormField::Text { value, .. }) = demo.form.field(1) else {
+            panic!("field 1 is the email text field");
+        };
+        assert_eq!(value, "user@example.com");
+        assert!(!demo.error_injection);
+        assert_eq!(demo.validation_mode, ValidationMode::RealTime);
+        assert!(!demo.form_state.borrow().errors.iter().any(|e| e.field == 1));
+
+        demo.form_state.borrow_mut().focused = TERMS;
+        assert!(!demo.consumes_text_input());
+    }
+    #[test]
+    fn down_reaches_every_field_without_changing_values() {
+        // Tab never arrives from the app, so Down has to get past Age and Role.
+        let mut demo = FormValidationDemo::new();
+        for expected in 1..demo.form.field_count() {
+            demo.update(&key(KeyCode::Down));
+            assert_eq!(demo.form_state.borrow().focused, expected);
+        }
+        for _ in 0..demo.form.field_count() - 1 {
+            demo.update(&key(KeyCode::Up));
+        }
+        assert_eq!(demo.form_state.borrow().focused, 0);
+        assert!(matches!(
+            demo.form.field(4),
+            Some(FormField::Number { value: 25, .. })
+        ));
+        assert!(matches!(
+            demo.form.field(7),
+            Some(FormField::Select { selected: 0, .. })
+        ));
+
+        // Left/Right still change them.
+        demo.form_state.borrow_mut().focused = 4;
+        demo.update(&key(KeyCode::Right));
+        assert!(matches!(
+            demo.form.field(4),
+            Some(FormField::Number { value: 26, .. })
+        ));
+    }
+    #[test]
+    fn escape_cancel_is_reported_and_frees_the_letter_keys() {
+        let mut demo = FormValidationDemo::new();
+        demo.update(&key(KeyCode::Escape));
+        assert!(demo.form_state.borrow().cancelled);
+        assert!(demo.status_text.contains("cancelled"));
+        // The cancelled form takes no text, so R is a control again.
+        assert!(!demo.consumes_text_input());
+        demo.update(&key(KeyCode::Char('r')));
+        assert!(!demo.form_state.borrow().cancelled);
+    }
+    #[test]
+    fn wheel_focus_change_marks_the_left_field_touched() {
+        use ftui_core::event::{MouseEvent, MouseEventKind};
+        let mut demo = FormValidationDemo::new();
+        demo.last_form_area.set(Rect::new(0, 0, 60, 30));
+        demo.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            10,
+            10,
+        )));
+        assert!(demo.form_state.borrow().is_touched(0));
     }
     #[test]
     fn mouse_scroll_navigates_fields() {

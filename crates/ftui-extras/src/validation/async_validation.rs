@@ -237,24 +237,95 @@ impl Hash for ValidationEvent {
 ///
 /// Traces can be checksummed to verify that validation behavior is deterministic
 /// across runs. This is useful for regression testing async validation logic.
-#[derive(Debug, Clone, Default)]
+///
+/// The coordinator records at least two events per validation, so a form that
+/// validates on every keystroke grew its trace for the life of the form. The
+/// trace now keeps only the most recent events (at most 1024).
+/// [`checksum`](Self::checksum) and
+/// [`verify_invariants`](Self::verify_invariants) still cover every event
+/// since the last [`clear`](Self::clear): they are updated as events arrive.
+#[derive(Debug, Clone)]
 pub struct ValidationTrace {
+    /// The most recent events.
     events: Vec<ValidationEvent>,
+    /// Hash of every event since the last clear, in order.
+    hasher: DefaultHasher,
+    /// Last `Started` token seen, for the monotonic-token invariant.
+    last_started_token: ValidationToken,
+    /// Invariant violations found so far (the first [`MAX_TRACE_VIOLATIONS`]).
+    violations: Vec<String>,
+    /// Violations found beyond the ones kept.
+    more_violations: usize,
+}
+
+/// Events a [`ValidationTrace`] keeps. At the cap the oldest half is dropped.
+const MAX_TRACE_EVENTS: usize = 1024;
+
+/// Invariant violations a [`ValidationTrace`] keeps word for word.
+const MAX_TRACE_VIOLATIONS: usize = 64;
+
+impl Default for ValidationTrace {
+    fn default() -> Self {
+        Self {
+            events: Vec::new(),
+            hasher: DefaultHasher::new(),
+            last_started_token: ValidationToken::NONE,
+            violations: Vec::new(),
+            more_violations: 0,
+        }
+    }
 }
 
 impl ValidationTrace {
     /// Create a new empty trace.
     #[must_use]
     pub fn new() -> Self {
-        Self { events: Vec::new() }
+        Self::default()
     }
 
     /// Add an event to the trace.
     pub fn push(&mut self, event: ValidationEvent) {
+        event.hash(&mut self.hasher);
+        self.check_invariants(&event);
+        if self.events.len() >= MAX_TRACE_EVENTS {
+            self.events.drain(..MAX_TRACE_EVENTS / 2);
+        }
         self.events.push(event);
     }
 
-    /// Get all events in the trace.
+    /// Check `event` against the invariants, in arrival order.
+    fn check_invariants(&mut self, event: &ValidationEvent) {
+        let violation = match event {
+            // Invariant 1: Started events have tokens in monotonic order.
+            ValidationEvent::Started { token, .. } => {
+                let last = std::mem::replace(&mut self.last_started_token, *token);
+                (*token <= last)
+                    .then(|| format!("Non-monotonic start token: {} after {}", token, last))
+            }
+            // Invariant 2: Applied events only occur for the current token.
+            // (This is enforced by the coordinator.)
+            //
+            // Invariant 3: StaleDiscarded has token < current_token.
+            ValidationEvent::StaleDiscarded {
+                token,
+                current_token,
+                ..
+            } if token >= current_token => Some(format!(
+                "StaleDiscarded with non-stale token: {} >= {}",
+                token, current_token
+            )),
+            _ => None,
+        };
+        if let Some(violation) = violation {
+            if self.violations.len() < MAX_TRACE_VIOLATIONS {
+                self.violations.push(violation);
+            } else {
+                self.more_violations += 1;
+            }
+        }
+    }
+
+    /// Get the retained events: the most recent ones, oldest first.
     #[must_use]
     pub fn events(&self) -> &[ValidationEvent] {
         &self.events
@@ -276,18 +347,15 @@ impl ValidationTrace {
 
     /// Compute a checksum of the trace for golden comparison.
     ///
-    /// The checksum includes all event data and ordering, making it suitable
+    /// The checksum covers every event since the last clear, including ones
+    /// no longer retained, with their data and ordering, making it suitable
     /// for detecting any changes in validation behavior.
     #[must_use]
     pub fn checksum(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        for event in &self.events {
-            event.hash(&mut hasher);
-        }
-        hasher.finish()
+        self.hasher.clone().finish()
     }
 
-    /// Get the number of events in the trace.
+    /// Get the number of retained events.
     #[must_use]
     pub fn len(&self) -> usize {
         self.events.len()
@@ -301,49 +369,18 @@ impl ValidationTrace {
 
     /// Clear all events from the trace.
     pub fn clear(&mut self) {
-        self.events.clear();
+        *self = Self::default();
     }
 
-    /// Verify trace invariants.
+    /// Verify trace invariants over every event since the last clear.
     ///
     /// Returns a list of violations if any invariants are broken.
     #[must_use]
     pub fn verify_invariants(&self) -> Vec<String> {
-        let mut violations = Vec::new();
-
-        // Invariant 1: Started events should have tokens in monotonic order
-        let mut last_started_token = ValidationToken::NONE;
-        for event in &self.events {
-            if let ValidationEvent::Started { token, .. } = event {
-                if *token <= last_started_token {
-                    violations.push(format!(
-                        "Non-monotonic start token: {} after {}",
-                        token, last_started_token
-                    ));
-                }
-                last_started_token = *token;
-            }
+        let mut violations = self.violations.clone();
+        if self.more_violations > 0 {
+            violations.push(format!("... and {} more violations", self.more_violations));
         }
-
-        // Invariant 2: Applied events should only occur for current token
-        // (This is enforced by the coordinator, but we can check post-hoc)
-
-        // Invariant 3: StaleDiscarded should have token < current_token
-        for event in &self.events {
-            if let ValidationEvent::StaleDiscarded {
-                token,
-                current_token,
-                ..
-            } = event
-                && token >= current_token
-            {
-                violations.push(format!(
-                    "StaleDiscarded with non-stale token: {} >= {}",
-                    token, current_token
-                ));
-            }
-        }
-
         violations
     }
 }
@@ -937,6 +974,51 @@ mod tests {
     }
 
     // -- Trace checksum tests --
+
+    #[test]
+    fn trace_is_bounded_but_checks_and_hashes_every_event() {
+        let started = |token: u64| ValidationEvent::Started {
+            token: ValidationToken::from_raw(token),
+            elapsed_ns: token,
+        };
+        let stale = ValidationEvent::StaleDiscarded {
+            token: ValidationToken::from_raw(9),
+            current_token: ValidationToken::from_raw(3),
+            elapsed_ns: 0,
+        };
+
+        // A violation, then enough valid events to push it out of the window.
+        let mut trace = ValidationTrace::new();
+        trace.push(stale);
+        let mut clean = ValidationTrace::new();
+        for token in 1..=5_000 {
+            trace.push(started(token));
+            clean.push(started(token));
+        }
+        assert!(trace.len() <= MAX_TRACE_EVENTS, "{}", trace.len());
+        assert_eq!(trace.events().last(), Some(&started(5_000)));
+        // The dropped event still counts for the invariants and the checksum.
+        assert_eq!(trace.verify_invariants().len(), 1);
+        assert!(clean.verify_invariants().is_empty());
+        assert_ne!(trace.checksum(), clean.checksum());
+
+        // A start token below one that was dropped is still caught.
+        clean.push(started(4));
+        assert_eq!(clean.verify_invariants().len(), 1);
+
+        clean.clear();
+        assert!(clean.is_empty() && clean.verify_invariants().is_empty());
+        assert_eq!(clean.checksum(), ValidationTrace::new().checksum());
+
+        // A long-running coordinator keeps a bounded trace.
+        let mut coord = AsyncValidationCoordinator::new();
+        for _ in 0..3_000 {
+            let token = coord.start_validation();
+            coord.try_apply_result(token, ValidationResult::Valid, Duration::ZERO);
+        }
+        assert!(coord.trace().len() <= MAX_TRACE_EVENTS);
+        assert!(coord.verify_trace().is_ok());
+    }
 
     #[test]
     fn trace_checksum_deterministic() {

@@ -35,9 +35,6 @@ JSONL_FILE="$E2E_RESULTS_DIR/async_tasks.jsonl"
 RUN_ID="asynctasks_$(date +%Y%m%d_%H%M%S)_$$"
 SEED="42" # Deterministic seed for reproducibility
 
-# AsyncTasks is screen 23 (1-indexed)
-ASYNC_TASKS_SCREEN=23
-
 jsonl_log() {
     local line="$1"
     mkdir -p "$E2E_RESULTS_DIR"
@@ -97,7 +94,7 @@ run_case() {
     local send_label="$2"
     shift 2
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)"
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local output_file="$E2E_LOG_DIR/${name}.pty"
@@ -108,7 +105,7 @@ run_case() {
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)"
         local duration_ms=$((end_ms - start_ms))
         local size
         size=$(wc -c < "$output_file" | tr -d ' ')
@@ -124,7 +121,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)"
     local duration_ms=$((end_ms - start_ms))
     local checksum
     checksum=$(compute_checksum "$output_file")
@@ -146,6 +143,12 @@ if [[ -z "$DEMO_BIN" ]]; then
     done
     exit 0
 fi
+
+# Screen numbers shift whenever a screen is added. A hardcoded 23 had drifted
+# onto Intrinsic Sizing, and every case still passed: the tab bar says "Tasks"
+# on every screen. The status bar names only the current one.
+ASYNC_TASKS_SCREEN="$(e2e_demo_screen "$DEMO_BIN" async_tasks)"
+SCREEN_TITLE="Async Tasks"
 
 # Log run environment
 log_run_env
@@ -175,10 +178,9 @@ async_tasks_initial() {
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # Verify we see the Async Task Manager screen (should show "Tasks" in tab or header)
-    grep -a -q "Tasks" "$output_file" || return 1
-    # Should show policy indicator (FIFO is default)
-    grep -a -q -i "fifo\|policy" "$output_file" || return 1
+    grep -a -q "$SCREEN_TITLE" "$output_file" || return 1
+    # FIFO is the default policy
+    grep -a -q "FIFO" "$output_file" || return 1
 }
 
 # Test 2: Spawn a new task with 'n' key
@@ -200,7 +202,7 @@ async_tasks_spawn() {
     [[ "$size" -gt 300 ]] || return 1
 
     # Should still show the task manager
-    grep -a -q "Tasks" "$output_file" || return 1
+    grep -a -q "$SCREEN_TITLE" "$output_file" || return 1
 }
 
 # Test 3: Cancel a task with 'c' key
@@ -222,7 +224,7 @@ async_tasks_cancel() {
     [[ "$size" -gt 300 ]] || return 1
 
     # Should show canceled state (may show "Canceled" or progress bar changed)
-    grep -a -q "Tasks" "$output_file" || return 1
+    grep -a -q "$SCREEN_TITLE" "$output_file" || return 1
 }
 
 # Test 4: Cycle scheduler policy with 's' key
@@ -244,9 +246,8 @@ async_tasks_policy() {
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # After pressing 's', should show a different policy (not FIFO)
-    # ShortestFirst or SJF should appear
-    grep -a -q "Tasks" "$output_file" || return 1
+    # After pressing 's' the policy is ShortestFirst, shown as SJF
+    grep -a -q "SJF" "$output_file" || return 1
 }
 
 # Test 5: Navigate task list with j/k keys
@@ -269,7 +270,7 @@ async_tasks_navigate() {
     [[ "$size" -gt 300 ]] || return 1
 
     # Should still render correctly
-    grep -a -q "Tasks" "$output_file" || return 1
+    grep -a -q "$SCREEN_TITLE" "$output_file" || return 1
 }
 
 # Test 6: Spawn, tick, and verify progress updates
@@ -292,7 +293,7 @@ async_tasks_progress() {
     [[ "$size" -gt 300 ]] || return 1
 
     # Should show progress (either percentage or progress bar characters)
-    grep -a -q "Tasks" "$output_file" || return 1
+    grep -a -q "$SCREEN_TITLE" "$output_file" || return 1
 }
 
 # Test 7: Multiple operations in sequence
@@ -315,7 +316,7 @@ async_tasks_workflow() {
     [[ "$size" -gt 300 ]] || return 1
 
     # Should complete without crash
-    grep -a -q "Tasks" "$output_file" || return 1
+    grep -a -q "$SCREEN_TITLE" "$output_file" || return 1
 }
 
 # Run all test cases

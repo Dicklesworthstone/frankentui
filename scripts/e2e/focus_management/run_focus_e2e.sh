@@ -31,6 +31,12 @@ FAIL=0
 SKIP=0
 TOTAL=0
 
+# Milliseconds from the monotonic clock. Not `date +%s%3N`: BSD date prints
+# "...3N", and the duration arithmetic then aborted the suite on macOS.
+now_ms() {
+    python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)'
+}
+
 for arg in "$@"; do
     case "$arg" in
         --verbose|-v) VERBOSE=true ;;
@@ -97,7 +103,7 @@ run_cargo_test() {
     TOTAL=$((TOTAL + 1))
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(now_ms)"
 
     local exit_code=0
     if $VERBOSE; then
@@ -115,7 +121,7 @@ run_cargo_test() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     if [[ $exit_code -eq 0 ]]; then
@@ -136,7 +142,7 @@ run_integration_test() {
     TOTAL=$((TOTAL + 1))
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(now_ms)"
 
     local exit_code=0
     if $VERBOSE; then
@@ -154,7 +160,7 @@ run_integration_test() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     if [[ $exit_code -eq 0 ]]; then
@@ -175,7 +181,7 @@ run_test_batch() {
     TOTAL=$((TOTAL + 1))
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(now_ms)"
 
     local exit_code=0
     if $VERBOSE; then
@@ -193,7 +199,7 @@ run_test_batch() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     # Count tests from output
@@ -218,7 +224,7 @@ run_integration_batch() {
     TOTAL=$((TOTAL + 1))
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(now_ms)"
 
     local exit_code=0
     if $VERBOSE; then
@@ -236,7 +242,7 @@ run_integration_batch() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     local test_count
@@ -355,7 +361,7 @@ if should_run "perf"; then
     TOTAL=$((TOTAL + 1))
     PERF_LOG="$LOG_DIR/perf_full_suite.log"
 
-    perf_start_ms="$(date +%s%3N)"
+    perf_start_ms="$(now_ms)"
 
     if cargo test -p ftui-widgets --lib -- "focus::" > "$PERF_LOG" 2>&1; then
         perf_exit=0
@@ -363,7 +369,7 @@ if should_run "perf"; then
         perf_exit=1
     fi
 
-    perf_end_ms="$(date +%s%3N)"
+    perf_end_ms="$(now_ms)"
     perf_duration_ms=$((perf_end_ms - perf_start_ms))
 
     # Count tests
@@ -383,7 +389,7 @@ if should_run "perf"; then
     TOTAL=$((TOTAL + 1))
     PERF_INT_LOG="$LOG_DIR/perf_integration.log"
 
-    perf_int_start="$(date +%s%3N)"
+    perf_int_start="$(now_ms)"
 
     if cargo test -p ftui-widgets --test focus_integration > "$PERF_INT_LOG" 2>&1; then
         perf_int_exit=0
@@ -391,7 +397,7 @@ if should_run "perf"; then
         perf_int_exit=1
     fi
 
-    perf_int_end="$(date +%s%3N)"
+    perf_int_end="$(now_ms)"
     perf_int_dur=$((perf_int_end - perf_int_start))
 
     perf_int_count=$(grep -c "^test .* ok$" "$PERF_INT_LOG" 2>/dev/null || echo 0)
@@ -410,7 +416,7 @@ if should_run "perf"; then
     TOTAL=$((TOTAL + 1))
     PERF_GATE_LOG="$LOG_DIR/perf_gate.log"
 
-    gate_start="$(date +%s%3N)"
+    gate_start="$(now_ms)"
 
     if cargo test -p ftui-widgets --test focus_integration -- "perf_" > "$PERF_GATE_LOG" 2>&1; then
         gate_exit=0
@@ -418,7 +424,7 @@ if should_run "perf"; then
         gate_exit=1
     fi
 
-    gate_end="$(date +%s%3N)"
+    gate_end="$(now_ms)"
     gate_dur=$((gate_end - gate_start))
 
     if [[ $gate_exit -eq 0 ]]; then

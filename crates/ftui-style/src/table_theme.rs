@@ -176,9 +176,13 @@ pub struct Gradient {
 
 impl Gradient {
     /// Create a new gradient with stops in the range [0, 1].
+    ///
+    /// Stops at a non-finite position are dropped: a NaN position has no
+    /// place in the order, and `sample` interpolated through it to garbage.
     pub fn new(stops: Vec<(f32, PackedRgba)>) -> Self {
         let mut stops = stops;
-        stops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        stops.retain(|(position, _)| position.is_finite());
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
         Self { stops }
     }
 
@@ -2708,6 +2712,26 @@ mod tests {
         let g = Gradient::new(vec![(0.8, b), (0.2, a)]);
         let stops = g.stops();
         assert!(stops[0].0 < stops[1].0, "stops should be sorted");
+    }
+
+    #[test]
+    fn gradient_drops_stops_at_non_finite_positions() {
+        // A NaN stop stayed where it was put, and sampling interpolated
+        // through its NaN position into a garbage color.
+        let black = PackedRgba::rgb(0, 0, 0);
+        let white = PackedRgba::rgb(255, 255, 255);
+        let red = PackedRgba::rgb(255, 0, 0);
+        let g = Gradient::new(vec![
+            (f32::NAN, red),
+            (1.0, white),
+            (f32::INFINITY, red),
+            (0.0, black),
+        ]);
+        assert_eq!(g.stops(), &[(0.0, black), (1.0, white)]);
+        assert_eq!(
+            g.sample(0.5),
+            Gradient::new(vec![(0.0, black), (1.0, white)]).sample(0.5)
+        );
     }
 
     #[test]

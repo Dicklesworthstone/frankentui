@@ -401,18 +401,14 @@ impl ResizeStorm {
 
             // Random size changes within bounds
             if rng.chance(0.7) {
-                let delta = rng.next_u16_range(1, 20) as i16;
+                let delta = i32::from(rng.next_u16_range(1, 20));
                 let sign = if rng.chance(0.5) { 1 } else { -1 };
-                width = (width as i16 + delta * sign)
-                    .clamp(self.config.min_width as i16, self.config.max_width as i16)
-                    as u16;
+                width = self.step_within(width, delta * sign, true);
             }
             if rng.chance(0.7) {
-                let delta = rng.next_u16_range(1, 10) as i16;
+                let delta = i32::from(rng.next_u16_range(1, 10));
                 let sign = if rng.chance(0.5) { 1 } else { -1 };
-                height = (height as i16 + delta * sign)
-                    .clamp(self.config.min_height as i16, self.config.max_height as i16)
-                    as u16;
+                height = self.step_within(height, delta * sign, false);
             }
 
             events.push(ResizeEvent::new(width, height, delay, i));
@@ -535,11 +531,31 @@ impl ResizeStorm {
         events
     }
 
+    // Bounds come from public config fields and are never checked, and
+    // `Ord::clamp` panics when min > max; here the maximum wins instead.
     fn clamp_to_bounds(&self, width: u16, height: u16) -> (u16, u16) {
         (
-            width.clamp(self.config.min_width, self.config.max_width),
-            height.clamp(self.config.min_height, self.config.max_height),
+            width.max(self.config.min_width).min(self.config.max_width),
+            height
+                .max(self.config.min_height)
+                .min(self.config.max_height),
         )
+    }
+
+    /// Move `size` by `delta` cells, kept within the width or height bounds.
+    ///
+    /// Computed in i32: casting a bound above 32767 to i16 wrapped it
+    /// negative, which inverted the range and made `clamp` panic.
+    fn step_within(&self, size: u16, delta: i32, is_width: bool) -> u16 {
+        let (min, max) = if is_width {
+            (self.config.min_width, self.config.max_width)
+        } else {
+            (self.config.min_height, self.config.max_height)
+        };
+        let stepped = (i32::from(size) + delta)
+            .max(i32::from(min))
+            .min(i32::from(max));
+        u16::try_from(stepped).unwrap_or(0)
     }
 
     /// Compute a deterministic checksum of the event sequence.
@@ -1152,6 +1168,37 @@ mod tests {
             assert!(event.width >= 50 && event.width <= 100);
             assert!(event.height >= 20 && event.height <= 40);
         }
+    }
+
+    #[test]
+    fn wide_or_inverted_size_bounds_do_not_panic() {
+        // Burst stepped in i16, so a maximum above 32767 wrapped negative
+        // and `clamp` panicked on the inverted range; pathological storms
+        // clamped with inverted bounds directly.
+        let wide = ResizeStorm::new(
+            StormConfig::default()
+                .with_seed(7)
+                .with_size_bounds(100, 40_000, 20, 40)
+                .with_pattern(StormPattern::Burst { count: 50 }),
+        );
+        assert!(
+            wide.events()
+                .iter()
+                .all(|e| (100..=40_000).contains(&e.width))
+        );
+
+        let inverted = ResizeStorm::new(
+            StormConfig::default()
+                .with_seed(7)
+                .with_size_bounds(100, 50, 40, 20)
+                .with_pattern(StormPattern::Pathological { count: 20 }),
+        );
+        assert!(
+            inverted
+                .events()
+                .iter()
+                .all(|e| e.width == 50 && e.height == 20)
+        );
     }
 
     // ─── Edge-case tests (bd-38ujl) ─────────────────────────────

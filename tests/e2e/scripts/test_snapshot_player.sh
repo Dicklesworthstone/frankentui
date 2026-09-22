@@ -67,35 +67,13 @@ ensure_demo_bin() {
     return 1
 }
 
-detect_snapshot_screen() {
-    local bin="$1"
-    local help
-    help="$($bin --help 2>/dev/null || true)"
-    if [[ -z "$help" ]]; then
-        return 1
-    fi
-    local line
-    # Look for "Snapshot Player" in help output
-    line=$(printf '%s\n' "$help" | command grep "Snapshot Player" | head -n 1 || true)
-    if [[ -z "$line" ]]; then
-        return 1
-    fi
-    local screen
-    screen=$(printf '%s' "$line" | awk '{print $1}')
-    if [[ ! "$screen" =~ ^[0-9]+$ ]]; then
-        return 1
-    fi
-    printf '%s' "$screen"
-    return 0
-}
-
 run_case() {
     local name="$1"
     local send_label="$2"
     local state_desc="$3"
     shift 3
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)"
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local output_file="$E2E_LOG_DIR/${name}.pty"
@@ -104,7 +82,7 @@ run_case() {
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)"
         local duration_ms=$((end_ms - start_ms))
         local size
         size=$(wc -c < "$output_file" | tr -d ' ')
@@ -117,7 +95,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)"
     local duration_ms=$((end_ms - start_ms))
     local output_sha
     output_sha="$(sha256_file "$output_file")"
@@ -138,11 +116,13 @@ if [[ -z "$DEMO_BIN" ]]; then
     exit 0
 fi
 
-SNAPSHOT_SCREEN="$(detect_snapshot_screen "$DEMO_BIN" || true)"
+# By slug: the screen's title is now "Time-Travel Studio", and grepping --help
+# for "Snapshot Player" skipped every case.
+SNAPSHOT_SCREEN="$(e2e_demo_screen "$DEMO_BIN" snapshot_player || true)"
 if [[ -z "$SNAPSHOT_SCREEN" ]]; then
     LOG_FILE="$E2E_LOG_DIR/snapshot_player_missing.log"
     for t in snapshot_smoke snapshot_play_pause snapshot_step_frames snapshot_jump_bounds snapshot_marker snapshot_recording snapshot_small_terminal; do
-        log_test_skip "$t" "Snapshot Player screen not registered in --help"
+        log_test_skip "$t" "snapshot_player screen not in --list-screens"
         record_result "$t" "skipped" 0 "$LOG_FILE" "screen missing"
         jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$t\",\"status\":\"skipped\",\"reason\":\"screen missing\",\"seed\":\"$SEED\",\"screen\":\"${SNAPSHOT_SCREEN:-}\",\"term\":\"${TERM:-}\",\"colorterm\":\"${COLORTERM:-}\",\"no_color\":\"${NO_COLOR:-}\"}"
     done
@@ -157,9 +137,11 @@ SPACE=' '
 # Left/Right arrow keys (escape sequences)
 LEFT=$'\x1b[D'
 RIGHT=$'\x1b[C'
-# Home/End keys
-HOME=$'\x1b[H'
-END=$'\x1b[F'
+# Home/End keys. Not HOME: that is the exported home directory, and every
+# child process saw an escape sequence there; a rustup proxy created
+# "\e[H/.rustup" in the working directory.
+KEY_HOME=$'\x1b[H'
+KEY_END=$'\x1b[F'
 
 # Test 1: Smoke test (render Snapshot Player screen)
 # Verifies the screen renders and shows playback UI elements
@@ -179,8 +161,8 @@ snapshot_smoke() {
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # Expect snapshot/playback UI elements
-    # Should show "Paused", "Playing", "Frame", "Timeline", or "Snapshot"
+    # The status bar names the screen; words like "Frame" appear on others
+    command grep -a -q "Time-Travel Studio" "$output_file" || return 1
     command grep -a -qi "Paused\|Playing\|Frame\|Timeline\|Snapshot\|Preview" "$output_file" || return 1
 }
 
@@ -237,7 +219,7 @@ snapshot_jump_bounds() {
     PTY_COLS=120 \
     PTY_ROWS=40 \
     PTY_SEND_DELAY_MS=300 \
-    PTY_SEND="${END}${HOME}" \
+    PTY_SEND="${KEY_END}${KEY_HOME}" \
     FTUI_DEMO_EXIT_AFTER_MS=1800 \
     PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN"

@@ -16,11 +16,14 @@
 //! ```
 
 use ftui_core::geometry::Rect;
+// Measure as the buffer draws. A private copy of these, made before VS16 and
+// CJK ambiguous-width handling reached ftui-core, sized a VS16 emoji 2 cells
+// against the renderer's 1, and `…` 1 cell against 2 in CJK mode.
+use ftui_core::text_width::{display_width, grapheme_width};
 use ftui_render::cell::{Cell, CellContent, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_widgets::Widget;
-use unicode_display_width::width as unicode_display_width;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::canvas::{Mode, Painter};
@@ -29,60 +32,6 @@ use crate::canvas::{Mode, Painter};
 
 /// Bar characters for sparkline/vertical-bar rendering (9 levels: empty through full).
 const BAR_CHARS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-#[inline]
-fn ascii_display_width(text: &str) -> usize {
-    let mut width = 0;
-    for b in text.bytes() {
-        match b {
-            b'\t' | b'\n' | b'\r' => width += 1,
-            0x20..=0x7E => width += 1,
-            _ => {}
-        }
-    }
-    width
-}
-
-#[inline]
-fn is_zero_width_codepoint(c: char) -> bool {
-    let u = c as u32;
-    matches!(u, 0x0000..=0x001F | 0x007F..=0x009F)
-        || matches!(u, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF)
-        || matches!(u, 0xFE20..=0xFE2F)
-        || matches!(u, 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
-        || matches!(
-            u,
-            0x00AD | 0x034F | 0x180E | 0x200B | 0x200C | 0x200D | 0x200E | 0x200F | 0x2060 | 0xFEFF
-        )
-        || matches!(u, 0x202A..=0x202E | 0x2066..=0x2069 | 0x206A..=0x206F)
-}
-
-#[inline]
-fn grapheme_width(grapheme: &str) -> usize {
-    if grapheme.is_ascii() {
-        return ascii_display_width(grapheme);
-    }
-    if grapheme.chars().all(is_zero_width_codepoint) {
-        return 0;
-    }
-    usize::try_from(unicode_display_width(grapheme))
-        .expect("unicode display width should fit in usize")
-}
-
-#[inline]
-fn display_width(text: &str) -> usize {
-    if text.is_ascii() && text.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
-        return text.len();
-    }
-    if text.is_ascii() {
-        return ascii_display_width(text);
-    }
-    if !text.chars().any(is_zero_width_codepoint) {
-        return usize::try_from(unicode_display_width(text))
-            .expect("unicode display width should fit in usize");
-    }
-    text.graphemes(true).map(grapheme_width).sum()
-}
 
 /// Linearly interpolate between two colors.
 fn lerp_color(a: PackedRgba, b: PackedRgba, t: f64) -> PackedRgba {
@@ -415,11 +364,14 @@ impl BarChart<'_> {
         }
 
         let label_y = area.bottom().saturating_sub(1);
+        // Cursors saturate: bars summing past u16::MAX overflowed, a debug
+        // panic, and in release wrapped back to draw over the first bars. A
+        // saturated cursor lies past `area.right()`, so later bars clip.
         let mut x_cursor = area.x;
 
         for (gi, group) in self.groups.iter().enumerate() {
             if gi > 0 {
-                x_cursor += self.group_gap;
+                x_cursor = x_cursor.saturating_add(self.group_gap);
             }
             let group_start_x = x_cursor;
 
@@ -429,7 +381,7 @@ impl BarChart<'_> {
                     let base_y = area.bottom().saturating_sub(2);
                     for (si, &val) in group.values.iter().enumerate() {
                         if si > 0 {
-                            x_cursor += self.bar_gap;
+                            x_cursor = x_cursor.saturating_add(self.bar_gap);
                         }
                         let h = (val / max_val) * chart_height;
                         let h = if h.is_nan() { 0.0 } else { h };
@@ -469,7 +421,7 @@ impl BarChart<'_> {
                             }
                         }
 
-                        x_cursor += self.bar_width;
+                        x_cursor = x_cursor.saturating_add(self.bar_width);
                     }
                 }
                 BarMode::Stacked => {
@@ -499,7 +451,7 @@ impl BarChart<'_> {
                             }
                         }
                     }
-                    x_cursor += self.bar_width;
+                    x_cursor = x_cursor.saturating_add(self.bar_width);
                 }
             }
 
@@ -560,18 +512,20 @@ impl BarChart<'_> {
             return;
         }
 
+        // Saturating, as in the vertical layout above.
         let mut y_cursor = area.y;
 
         for (gi, group) in self.groups.iter().enumerate() {
             if gi > 0 {
-                y_cursor += self.group_gap;
+                y_cursor = y_cursor.saturating_add(self.group_gap);
             }
+            let group_start_y = y_cursor;
 
             match self.mode {
                 BarMode::Grouped => {
                     for (si, &val) in group.values.iter().enumerate() {
                         if si > 0 {
-                            y_cursor += self.bar_gap;
+                            y_cursor = y_cursor.saturating_add(self.bar_gap);
                         }
                         let bar_len_f = (val / max_val) * chart_width;
                         let bar_len = if bar_len_f.is_nan() || val == 0.0 {
@@ -596,7 +550,7 @@ impl BarChart<'_> {
                             }
                         }
 
-                        y_cursor += self.bar_width;
+                        y_cursor = y_cursor.saturating_add(self.bar_width);
                     }
                 }
                 BarMode::Stacked => {
@@ -627,19 +581,15 @@ impl BarChart<'_> {
                             }
                         }
                     }
-                    y_cursor += self.bar_width;
+                    y_cursor = y_cursor.saturating_add(self.bar_width);
                 }
             }
 
             // Group label at left edge — render full label text.
             {
-                let ly = match self.mode {
-                    BarMode::Grouped => y_cursor.saturating_sub(
-                        (group.values.len() as u16) * self.bar_width
-                            + group.values.len().saturating_sub(1) as u16 * self.bar_gap,
-                    ),
-                    BarMode::Stacked => y_cursor.saturating_sub(self.bar_width),
-                };
+                // The group's first row. Recomputing it from the group's
+                // height overflowed that multiplication for large groups.
+                let ly = group_start_y;
                 if ly < area.bottom() {
                     let mut x_off = 0_u16;
                     for grapheme in group.label.graphemes(true) {
@@ -1239,6 +1189,28 @@ mod tests {
     // ===== BarChart =====
 
     #[test]
+    fn barchart_layout_past_u16_neither_panics_nor_wraps_onto_the_chart() {
+        // Cursors advanced with unchecked `+=`: bars summing past 65,535
+        // cells overflowed (a debug panic) and, in release, wrapped back
+        // to draw over the first bars.
+        for direction in [BarDirection::Vertical, BarDirection::Horizontal] {
+            for mode in [BarMode::Grouped, BarMode::Stacked] {
+                let groups: Vec<_> = (0..3).map(|_| BarGroup::new("G", vec![1.0; 50])).collect();
+                let area = Rect::new(0, 0, 40, 12);
+                let mut pool = GraphemePool::new();
+                let mut frame = Frame::new(40, 12, &mut pool);
+                BarChart::new(groups)
+                    .direction(direction)
+                    .mode(mode)
+                    .bar_width(1_000)
+                    .bar_gap(1_000)
+                    .group_gap(1_000)
+                    .render(area, &mut frame);
+            }
+        }
+    }
+
+    #[test]
     fn barchart_empty_groups_noop() {
         let area = Rect::new(0, 0, 10, 5);
         let mut pool = GraphemePool::new();
@@ -1549,8 +1521,8 @@ mod tests {
     #[test]
     fn display_width_with_tabs_and_control() {
         // Tabs and control chars counted as width 1 in ascii path.
-        assert_eq!(ascii_display_width("\t"), 1);
-        assert_eq!(ascii_display_width("\n"), 1);
+        assert_eq!(display_width("\t"), 1);
+        assert_eq!(display_width("\n"), 1);
     }
 
     #[test]

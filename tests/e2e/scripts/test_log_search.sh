@@ -53,7 +53,7 @@ run_case() {
     local send_label="$2"
     shift 2
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)"
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local output_file="$E2E_LOG_DIR/${name}.pty"
@@ -62,7 +62,7 @@ run_case() {
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)"
         local duration_ms=$((end_ms - start_ms))
         local size
         size=$(wc -c < "$output_file" | tr -d ' ')
@@ -75,7 +75,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)"
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "assertion failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "assertion failed"
@@ -101,12 +101,14 @@ if [[ -z "$DEMO_BIN" ]]; then
     done
     exit 0
 fi
+LOG_SEARCH_SCREEN="$(e2e_demo_screen "$DEMO_BIN" log_search)"
 
 jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"env\",\"status\":\"info\",\"term\":\"$TERM_NAME\",\"colorterm\":\"$COLORTERM_NAME\",\"capabilities\":\"pty\",\"seed\":\"none\",\"cols\":120,\"rows\":40,\"git_rev\":\"$GIT_REV\"}"
 
 # Control bytes
 SLASH='/'
-CTRL_C='\x03'
+# Alt+C toggles case in search. It was Ctrl+C, which the app takes as quit.
+ALT_C='\x1bc'
 CTRL_R='\x12'
 ESC='\x1b'
 
@@ -119,7 +121,7 @@ log_search_open() {
     PTY_ROWS=40 \
     PTY_SEND_DELAY_MS=200 \
     PTY_SEND="$SLASH" \
-    FTUI_DEMO_SCREEN=15 \
+    FTUI_DEMO_SCREEN="$LOG_SEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1200 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN"
@@ -142,7 +144,7 @@ log_search_literal() {
     PTY_ROWS=40 \
     PTY_SEND_DELAY_MS=200 \
     PTY_SEND="${SLASH}ERROR" \
-    FTUI_DEMO_SCREEN=15 \
+    FTUI_DEMO_SCREEN="$LOG_SEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN"
@@ -167,7 +169,7 @@ log_search_regex() {
     PTY_ROWS=40 \
     PTY_SEND_DELAY_MS=200 \
     PTY_SEND="${SLASH}ERR${CTRL_R}" \
-    FTUI_DEMO_SCREEN=15 \
+    FTUI_DEMO_SCREEN="$LOG_SEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN"
@@ -189,8 +191,8 @@ log_search_case() {
     PTY_COLS=120 \
     PTY_ROWS=40 \
     PTY_SEND_DELAY_MS=200 \
-    PTY_SEND="${SLASH}error${CTRL_C}" \
-    FTUI_DEMO_SCREEN=15 \
+    PTY_SEND="${SLASH}error${ALT_C}" \
+    FTUI_DEMO_SCREEN="$LOG_SEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN"
@@ -213,7 +215,7 @@ log_search_exit() {
     PTY_ROWS=40 \
     PTY_SEND_DELAY_MS=200 \
     PTY_SEND="${SLASH}test${ESC}" \
-    FTUI_DEMO_SCREEN=15 \
+    FTUI_DEMO_SCREEN="$LOG_SEARCH_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$DEMO_BIN"

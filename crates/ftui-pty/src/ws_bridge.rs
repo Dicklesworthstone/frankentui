@@ -298,7 +298,10 @@ fn run_single_session(
         // --- PTY output ---
         let read_pty = fc_state.as_ref().is_none_or(|fc| !fc.pty_reads_paused);
         if read_pty {
-            let output = pty.drain_output_nonblocking()?;
+            // Only what the queue has room for: the queue drops anything
+            // past its cap, and the rest waits in the PTY session instead.
+            let limit = fc_state.as_ref().map_or(usize::MAX, |fc| fc.output_room());
+            let output = pty.drain_output_nonblocking(limit)?;
             if !output.is_empty() {
                 progressed = true;
                 counters.pty_out_bytes = counters
@@ -377,30 +380,23 @@ fn run_single_session(
             exit_code = Some(status.exit_code());
             exit_signal = status.signal().map(ToOwned::to_owned);
 
-            let trailing = pty.drain_output_nonblocking()?;
-            if !trailing.is_empty() {
-                counters.pty_out_bytes = counters
-                    .pty_out_bytes
-                    .saturating_add(u64::try_from(trailing.len()).unwrap_or(u64::MAX));
-
-                match fc_state {
-                    Some(ref mut fc) => {
-                        fc.enqueue_output(&trailing);
-                        let remaining = fc.drain_all_output();
-                        if !remaining.is_empty() {
-                            counters.ws_out_bytes = counters
-                                .ws_out_bytes
-                                .saturating_add(u64::try_from(remaining.len()).unwrap_or(u64::MAX));
-                            send_ws_message(&mut websocket, Message::binary(remaining))?;
-                        }
-                    }
-                    None => {
-                        counters.ws_out_bytes = counters
-                            .ws_out_bytes
-                            .saturating_add(u64::try_from(trailing.len()).unwrap_or(u64::MAX));
-                        send_ws_message(&mut websocket, Message::binary(trailing))?;
-                    }
-                }
+            let trailing = pty.drain_output_until_eof()?;
+            counters.pty_out_bytes = counters
+                .pty_out_bytes
+                .saturating_add(u64::try_from(trailing.len()).unwrap_or(u64::MAX));
+            // Whatever flow control still holds, then the tail, past the
+            // queue's cap since nothing more will be read. The queue was
+            // flushed only when a tail arrived, so a quiet exit lost it.
+            let mut remaining = fc_state
+                .as_mut()
+                .map(FlowControlBridgeState::drain_all_output)
+                .unwrap_or_default();
+            remaining.extend_from_slice(&trailing);
+            if !remaining.is_empty() {
+                counters.ws_out_bytes = counters
+                    .ws_out_bytes
+                    .saturating_add(u64::try_from(remaining.len()).unwrap_or(u64::MAX));
+                send_ws_message(&mut websocket, Message::binary(remaining))?;
             }
 
             if let Some(ref fc) = fc_state {
@@ -518,14 +514,32 @@ fn handle_ws_message(
     }
 }
 
+/// How long a client may stop reading before its session is dropped.
+const SEND_STALL_LIMIT: Duration = Duration::from_secs(10);
+
+/// Send one message, waiting out a client that is slow to read.
+///
+/// `send` queues the frame before it writes, so WouldBlock means the message
+/// is already buffered and only needs flushing. Sending it again, as this
+/// used to, queued a second copy: output reached the client twice. It also
+/// gave up after 10ms, so any burst larger than the socket buffers dropped
+/// the session. While this waits, the PTY reader fills its bounded channel
+/// and stops, so the child is held back too.
 fn send_ws_message(websocket: &mut WebSocket<TcpStream>, message: Message) -> io::Result<()> {
-    let mut retries = 0_u8;
+    let mut result = websocket.send(message);
+    let deadline = Instant::now() + SEND_STALL_LIMIT;
     loop {
-        match websocket.send(message.clone()) {
+        match result {
             Ok(()) => return Ok(()),
-            Err(WsError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock && retries < 5 => {
-                retries = retries.saturating_add(1);
+            Err(WsError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "websocket client stopped reading",
+                    ));
+                }
                 thread::sleep(Duration::from_millis(2));
+                result = websocket.flush();
             }
             Err(error) => {
                 return Err(io::Error::other(format!("websocket send failed: {error}")));
@@ -650,6 +664,14 @@ fn validate_upgrade_request(
     }
 
     if let Some(token) = expected_token {
+        // An empty secret authenticates nobody: `?token=`, or a bare
+        // `?token`, presents the empty string and matched it. Fail closed.
+        if token.is_empty() {
+            return Err(HandshakeRejection {
+                status: StatusCode::FORBIDDEN,
+                body: "Server auth token is empty".to_string(),
+            });
+        }
         let query = request.uri().query().ok_or_else(|| HandshakeRejection {
             status: StatusCode::UNAUTHORIZED,
             body: "Missing token".to_string(),
@@ -884,8 +906,14 @@ impl FlowControlBridgeState {
         self.rate_in_serviced = self.rate_in_serviced.saturating_add(len);
     }
 
+    /// Bytes the output queue can take before its hard cap.
+    fn output_room(&self) -> usize {
+        (self.policy.config.output_hard_cap_bytes as usize).saturating_sub(self.output_queue.len())
+    }
+
     /// Enqueue PTY output bytes into the bounded output queue.
-    /// Drops bytes that exceed the hard cap to enforce bounded memory.
+    /// Drops bytes that exceed the hard cap to enforce bounded memory; the
+    /// bridge loop reads at most [`Self::output_room`] so that none are.
     fn enqueue_output(&mut self, data: &[u8]) {
         let hard_cap = self.policy.config.output_hard_cap_bytes as usize;
         let available = hard_cap.saturating_sub(self.output_queue.len());
@@ -1080,12 +1108,34 @@ enum ReaderMsg {
     Err(io::Error),
 }
 
+/// Bytes per PTY read.
+const READER_CHUNK_BYTES: usize = 8192;
+
+/// PTY reads that may wait between the reader thread and the bridge loop.
+///
+/// Bounded, so that when the loop stops taking output (flow control paused
+/// it, or it is waiting on a slow client) the reader blocks, the kernel's PTY
+/// buffer fills and the child blocks on write. The channel was unbounded:
+/// the reader kept reading, and a fast child grew the bridge's memory for as
+/// long as the client lagged.
+const READER_CHANNEL_CHUNKS: usize = 8;
+
+/// How long, and how much, to keep collecting output after the child exits.
+///
+/// EOF normally follows at once, with at most the kernel buffer and the
+/// channel still to read, but a background process can hold the PTY open
+/// and keep writing.
+const EXIT_DRAIN_LIMIT: Duration = Duration::from_millis(500);
+const EXIT_DRAIN_MAX_BYTES: usize = 1 << 20;
+
 struct PtyBridgeSession {
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     rx: mpsc::Receiver<ReaderMsg>,
     reader_thread: Option<thread::JoinHandle<()>>,
+    /// The part of a chunk that did not fit the last drain's limit.
+    carry: Vec<u8>,
     eof: bool,
 }
 
@@ -1114,11 +1164,11 @@ impl PtyBridgeSession {
         let mut reader = pair.master.try_clone_reader().map_err(portable_pty_error)?;
         let writer = pair.master.take_writer().map_err(portable_pty_error)?;
 
-        let (tx, rx) = mpsc::channel::<ReaderMsg>();
+        let (tx, rx) = mpsc::sync_channel::<ReaderMsg>(READER_CHANNEL_CHUNKS);
         let reader_thread = thread::Builder::new()
             .name("ftui-pty-ws-reader".to_string())
             .spawn(move || {
-                let mut buffer = [0_u8; 8192];
+                let mut buffer = [0_u8; READER_CHUNK_BYTES];
                 loop {
                     match reader.read(&mut buffer) {
                         Ok(0) => {
@@ -1126,7 +1176,10 @@ impl PtyBridgeSession {
                             break;
                         }
                         Ok(n) => {
-                            let _ = tx.send(ReaderMsg::Data(buffer[..n].to_vec()));
+                            // The session is gone; stop reading for it.
+                            if tx.send(ReaderMsg::Data(buffer[..n].to_vec())).is_err() {
+                                break;
+                            }
                         }
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                         Err(error) => {
@@ -1146,6 +1199,7 @@ impl PtyBridgeSession {
             writer,
             rx,
             reader_thread: Some(reader_thread),
+            carry: Vec::new(),
             eof: false,
         })
     }
@@ -1174,28 +1228,51 @@ impl PtyBridgeSession {
         self.child.try_wait()
     }
 
-    fn drain_output_nonblocking(&mut self) -> io::Result<Vec<u8>> {
-        if self.eof {
-            return Ok(Vec::new());
-        }
-
+    /// Output that is ready now, at most `limit` bytes.
+    ///
+    /// A chunk that does not fit is split, and its rest goes first next time,
+    /// so a caller with a bounded queue takes only what it has room for
+    /// instead of dropping the excess.
+    fn drain_output_nonblocking(&mut self, limit: usize) -> io::Result<Vec<u8>> {
         let mut output = Vec::new();
-        loop {
+        take_up_to(&mut output, &mut self.carry, limit);
+        while output.len() < limit && !self.eof {
             match self.rx.try_recv() {
-                Ok(ReaderMsg::Data(bytes)) => output.extend_from_slice(&bytes),
-                Ok(ReaderMsg::Eof) => {
-                    self.eof = true;
-                    break;
+                Ok(ReaderMsg::Data(mut bytes)) => {
+                    take_up_to(&mut output, &mut bytes, limit);
+                    // Reached only once the carry is used up, so whatever
+                    // did not fit becomes the new carry.
+                    self.carry = bytes;
                 }
+                Ok(ReaderMsg::Eof) | Err(mpsc::TryRecvError::Disconnected) => self.eof = true,
                 Ok(ReaderMsg::Err(error)) => return Err(error),
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.eof = true;
-                    break;
-                }
             }
         }
+        Ok(output)
+    }
 
+    /// Everything left once the child has exited, up to EOF.
+    ///
+    /// The bounded reader can still be behind at exit, holding output in the
+    /// kernel buffer, and one nonblocking drain lost it. Stops at
+    /// [`EXIT_DRAIN_LIMIT`] or [`EXIT_DRAIN_MAX_BYTES`], since a background
+    /// process can hold the PTY open.
+    fn drain_output_until_eof(&mut self) -> io::Result<Vec<u8>> {
+        let mut output = std::mem::take(&mut self.carry);
+        let deadline = Instant::now() + EXIT_DRAIN_LIMIT;
+        while !self.eof && output.len() < EXIT_DRAIN_MAX_BYTES {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            match self.rx.recv_timeout(wait) {
+                Ok(ReaderMsg::Data(bytes)) => output.extend_from_slice(&bytes),
+                Ok(ReaderMsg::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => self.eof = true,
+                Ok(ReaderMsg::Err(error)) => return Err(error),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
         Ok(output)
     }
 }
@@ -1210,6 +1287,17 @@ impl Drop for PtyBridgeSession {
         if let Some(handle) = self.reader_thread.take() {
             detach_reader_join(handle);
         }
+    }
+}
+
+/// Move bytes from the front of `from` to `into` until `into` holds `limit`,
+/// leaving the rest in `from`.
+fn take_up_to(into: &mut Vec<u8>, from: &mut Vec<u8>, limit: usize) {
+    let room = limit.saturating_sub(into.len());
+    if from.len() <= room {
+        into.append(from);
+    } else {
+        into.extend(from.drain(..room));
     }
 }
 
@@ -1653,6 +1741,14 @@ mod tests {
     // --- validate_upgrade_request edge cases ---
 
     #[test]
+    fn validate_fails_closed_on_an_empty_server_token() {
+        for uri in ["/ws?token=", "/ws?token", "/ws", "/ws?token=x"] {
+            let result = validate_upgrade_request(&request(uri, None), &[], Some(""));
+            assert!(result.is_err(), "{uri}");
+        }
+    }
+
+    #[test]
     fn validate_no_origin_required_no_token_required() {
         let req = request("/ws", None);
         let result = validate_upgrade_request(&req, &[], None);
@@ -1939,6 +2035,115 @@ mod tests {
             "expected PTY echo in websocket output; last_error={last_error:?}; observed_len={}",
             observed.len()
         );
+    }
+
+    /// Runs a child printing `total` bytes of `x` through a bridge, with a
+    /// client that stops reading for `stall` first. Returns the `x` bytes
+    /// received and whether `session_end` arrived.
+    #[cfg(unix)]
+    fn bytes_through_a_stalled_client(
+        total: usize,
+        stall: Duration,
+        flow_control: Option<FlowControlBridgeConfig>,
+    ) -> (usize, bool) {
+        let listener =
+            TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind ephemeral port");
+        let bind_addr = listener.local_addr().expect("local addr");
+        drop(listener);
+
+        let config = WsPtyBridgeConfig {
+            bind_addr,
+            accept_once: true,
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!("head -c {total} /dev/zero | tr '\\0' x"),
+            ],
+            idle_sleep: Duration::from_millis(1),
+            flow_control,
+            ..WsPtyBridgeConfig::default()
+        };
+
+        let handle = thread::spawn(move || run_ws_pty_bridge(config));
+        thread::sleep(Duration::from_millis(75));
+
+        let url = format!("ws://{bind_addr}/ws");
+        let (mut client, _response) = connect(url).expect("connect websocket");
+        if let MaybeTlsStream::Plain(stream) = client.get_mut() {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .expect("set read timeout");
+        }
+        thread::sleep(stall);
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let (mut xs, mut ended) = (0usize, false);
+        while Instant::now() < deadline && !ended {
+            match client.read() {
+                Ok(Message::Binary(bytes)) => {
+                    xs += bytes.iter().filter(|&&b| b == b'x').count();
+                }
+                Ok(Message::Text(text)) => ended = text.contains("session_end"),
+                Ok(_) => {}
+                Err(WsError::Io(error))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => break,
+            }
+        }
+        let _ = handle.join().expect("bridge thread join");
+        (xs, ended)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bridge_delivers_every_byte_once_to_a_client_that_falls_behind() {
+        // A client that stops reading fills the socket, and tungstenite's
+        // `send` then returns WouldBlock with the frame already queued. The
+        // bridge sent it again, so output arrived twice, and after 10ms of
+        // that it gave up and dropped the session.
+        const TOTAL: usize = 2_000_000;
+        let (xs, ended) = bytes_through_a_stalled_client(TOTAL, Duration::from_millis(500), None);
+        assert!(ended, "no session_end: dropped after {xs} of {TOTAL} bytes");
+        assert_eq!(xs, TOTAL, "bytes lost or duplicated");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn limited_drains_split_chunks_without_losing_bytes() {
+        // With flow control the loop takes only what its queue has room for.
+        // A chunk that does not fit is split and its rest comes first next
+        // time; the queue used to drop whatever was past its cap.
+        const TOTAL: usize = 100_000;
+        let config = WsPtyBridgeConfig {
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!("head -c {TOTAL} /dev/zero | tr '\\0' x"),
+            ],
+            ..WsPtyBridgeConfig::default()
+        };
+        let mut pty = PtyBridgeSession::spawn(&config).expect("spawn PTY session");
+        let (mut xs, mut drains) = (0usize, 0usize);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while xs < TOTAL && Instant::now() < deadline {
+            let part = pty.drain_output_nonblocking(3000).expect("drain");
+            assert!(
+                part.len() <= 3000,
+                "drain overran its limit: {}",
+                part.len()
+            );
+            if part.is_empty() {
+                thread::sleep(Duration::from_millis(1));
+            } else {
+                drains += 1;
+            }
+            xs += part.iter().filter(|&&b| b == b'x').count();
+        }
+        assert_eq!(xs, TOTAL);
+        assert!(drains >= TOTAL / 3000, "{drains} drains for {TOTAL} bytes");
     }
 
     // --- FlowControlBridgeConfig ---

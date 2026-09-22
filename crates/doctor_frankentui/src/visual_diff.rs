@@ -1192,7 +1192,9 @@ fn color_delta(source: Option<&str>, translated: Option<&str>) -> Option<f32> {
 
 fn parse_hex_rgb(raw: &str) -> Option<(u8, u8, u8)> {
     let trimmed = raw.trim().trim_start_matches('#');
-    if trimmed.len() != 6 {
+    // Hex digits only before slicing: the length counts bytes, so "é"
+    // would split a slice, and `from_str_radix` accepts a leading '+'.
+    if trimmed.len() != 6 || !trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let red = u8::from_str_radix(&trimmed[0..2], 16).ok()?;
@@ -1434,4 +1436,18 @@ fn sha256_hex(data: &[u8]) -> String {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_hex_rgb;
+
+    #[test]
+    fn parse_hex_rgb_rejects_non_hex_digits_without_panicking() {
+        assert_eq!(parse_hex_rgb("#ff8000"), Some((255, 128, 0)));
+        // "é" split a byte slice (a panic); '+' passed as a sign.
+        for bad in ["#a\u{e9}123", "#+f+f+f", "ff80zz"] {
+            assert_eq!(parse_hex_rgb(bad), None, "{bad:?}");
+        }
+    }
 }

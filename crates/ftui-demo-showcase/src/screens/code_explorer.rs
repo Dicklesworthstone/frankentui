@@ -886,7 +886,8 @@ impl Screen for CodeExplorer {
                     self.goto_input.set_value("");
                 }
                 (KeyCode::Char('n'), Modifiers::NONE) => self.next_match(),
-                (KeyCode::Char('N'), Modifiers::NONE) | (KeyCode::Char('n'), Modifiers::SHIFT) => {
+                (KeyCode::Char('N'), Modifiers::NONE | Modifiers::SHIFT)
+                | (KeyCode::Char('n'), Modifiers::SHIFT) => {
                     self.prev_match();
                 }
                 (KeyCode::Char('['), Modifiers::NONE) => self.prev_hotspot(),
@@ -921,7 +922,7 @@ impl Screen for CodeExplorer {
                 // Vim: g or Home for top
                 (KeyCode::Home, _) | (KeyCode::Char('g'), Modifiers::NONE) => self.scroll_to(0),
                 // Vim: G or End for bottom
-                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE) => {
+                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE | Modifiers::SHIFT) => {
                     self.scroll_to(self.total_lines())
                 }
                 (KeyCode::Enter, _) => match self.focus {
@@ -1090,6 +1091,16 @@ impl Screen for CodeExplorer {
                 action: "Click pane to focus",
             },
         ]
+    }
+
+    fn consumes_text_input(&self) -> bool {
+        // The search prompt takes text, `q` and `m` included.
+        self.search_active
+    }
+
+    // m cycles the mode; the app would take it for mouse capture.
+    fn consumes_key(&self, key: char) -> bool {
+        key == 'm'
     }
 
     fn title(&self) -> &'static str {

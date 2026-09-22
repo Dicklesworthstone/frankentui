@@ -236,7 +236,7 @@ impl StageState {
         }
         let n = self.calibration.len();
         let mut sorted: Vec<f64> = self.calibration.iter().copied().collect();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(f64::total_cmp);
 
         // (n+1) rule: index = ceil((1 - alpha) * (n + 1) / n * n) - 1
         let quantile_idx = (((1.0 - alpha) * (n + 1) as f64).ceil() as usize).min(n) - 1;

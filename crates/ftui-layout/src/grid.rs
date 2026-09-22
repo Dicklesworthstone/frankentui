@@ -296,8 +296,11 @@ impl GridLayout {
             return Rect::default();
         }
 
-        let end_row = (row + rowspan).min(self.row_heights.len());
-        let end_col = (col + colspan).min(self.col_widths.len());
+        // Saturating: `usize::MAX` reads naturally as "to the last row", and
+        // the plain sum overflowed (a panic in debug, an empty rect in
+        // release).
+        let end_row = row.saturating_add(rowspan).min(self.row_heights.len());
+        let end_col = col.saturating_add(colspan).min(self.col_widths.len());
 
         // Get starting position
         let x = self.col_positions[col];
@@ -458,6 +461,22 @@ mod tests {
         let span = layout.span(1, 1, 5, 5);
 
         assert_eq!(span, Rect::new(8, 4, 12, 6));
+    }
+
+    #[test]
+    fn grid_span_to_the_end_with_usize_max() {
+        // `row + rowspan` overflowed: a panic in debug, an empty rect in
+        // release.
+        let grid = Grid::new()
+            .rows([Constraint::Fixed(4), Constraint::Fixed(6)])
+            .columns([Constraint::Fixed(8), Constraint::Fixed(12)]);
+        let layout = grid.split(Rect::new(0, 0, 40, 20));
+
+        assert_eq!(layout.span(1, 0, usize::MAX, 1), Rect::new(0, 4, 8, 6));
+        assert_eq!(
+            layout.span(0, 1, usize::MAX, usize::MAX),
+            Rect::new(8, 0, 12, 10)
+        );
     }
 
     #[test]

@@ -512,6 +512,20 @@ pub struct Frame<'a> {
 
     /// `(parent, child)` links to apply in [`Frame::finish_a11y`].
     a11y_children: Vec<(u64, u64)>,
+
+    /// Node ids that were taken when pushed, mapped to the id the node got
+    /// instead (see [`Frame::push_a11y`]).
+    a11y_rekeyed: std::collections::HashMap<u64, u64>,
+}
+
+/// The next id to try for an accessibility node whose id is taken: the
+/// splitmix64 mix of `id`, a bijection, so repeated calls walk a sequence that
+/// does not return to `id` for any practical length.
+fn rekey_a11y_id(id: u64) -> u64 {
+    let mut z = id.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 impl<'a> Frame<'a> {
@@ -536,6 +550,7 @@ impl<'a> Frame<'a> {
             a11y_scope_stack: Vec::new(),
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
+            a11y_rekeyed: std::collections::HashMap::new(),
         }
     }
 
@@ -560,6 +575,7 @@ impl<'a> Frame<'a> {
             a11y_scope_stack: Vec::new(),
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
+            a11y_rekeyed: std::collections::HashMap::new(),
         }
     }
 
@@ -590,6 +606,7 @@ impl<'a> Frame<'a> {
             a11y_scope_stack: Vec::new(),
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
+            a11y_rekeyed: std::collections::HashMap::new(),
         }
     }
 
@@ -625,6 +642,7 @@ impl<'a> Frame<'a> {
             a11y_scope_stack: Vec::new(),
             a11y_order: Vec::new(),
             a11y_children: Vec::new(),
+            a11y_rekeyed: std::collections::HashMap::new(),
             text_direction: TextDirection::default(),
         }
     }
@@ -857,20 +875,47 @@ impl<'a> Frame<'a> {
     /// across frames so the tree can be diffed and changes announced: reuse
     /// a hit id or widget id where one exists, otherwise
     /// [`A11yNodeInfo::stable_id_for`].
-    pub fn push_a11y(&mut self, mut node: A11yNodeInfo) {
-        let Some(builder) = self.a11y.as_deref_mut() else {
-            return;
-        };
+    ///
+    /// A node whose id another node already holds this frame gets a new id
+    /// derived from it. Sibling widgets at one rect share their default id,
+    /// and the builder replaces a node with the same id, so the first sibling
+    /// was dropped from the tree while its id stayed in the reading order.
+    /// The new id depends only on the taken one and the push order, so it is
+    /// the same in every frame that renders in the same order. A parent the
+    /// widget set to a re-keyed id follows the node it names.
+    pub fn push_a11y(&mut self, node: A11yNodeInfo) {
+        let _ = self.push_a11y_node(node);
+    }
+
+    /// [`Frame::push_a11y`], returning the id the node was stored under.
+    fn push_a11y_node(&mut self, mut node: A11yNodeInfo) -> Option<u64> {
+        let builder = self.a11y.as_deref_mut()?;
+        if let Some(parent) = node.parent
+            && let Some(&assigned) = self.a11y_rekeyed.get(&parent)
+        {
+            node.parent = Some(assigned);
+        }
         if node.parent.is_none()
             && let Some(&parent) = self.a11y_scope_stack.last()
         {
             node.parent = Some(parent);
         }
-        if let Some(parent) = node.parent {
-            self.a11y_children.push((parent, node.id));
+        if builder.node(node.id).is_some() {
+            let taken = node.id;
+            let mut id = taken;
+            while builder.node(id).is_some() {
+                id = rekey_a11y_id(id);
+            }
+            node.id = id;
+            self.a11y_rekeyed.insert(taken, id);
         }
-        self.a11y_order.push(node.id);
+        let id = node.id;
+        if let Some(parent) = node.parent {
+            self.a11y_children.push((parent, id));
+        }
+        self.a11y_order.push(id);
         builder.add_node(node);
+        Some(id)
     }
 
     /// Push every node a widget reports
@@ -889,11 +934,9 @@ impl<'a> Frame<'a> {
         container: A11yNodeInfo,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        if self.a11y.is_none() {
+        let Some(id) = self.push_a11y_node(container) else {
             return f(self);
-        }
-        let id = container.id;
-        self.push_a11y(container);
+        };
         self.a11y_scope_stack.push(id);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
         self.a11y_scope_stack.pop();
@@ -919,6 +962,7 @@ impl<'a> Frame<'a> {
     /// after the view has rendered and before the tree is built; a no-op
     /// without a builder.
     pub fn finish_a11y(&mut self) {
+        self.a11y_rekeyed.clear();
         let Some(builder) = self.a11y.as_deref_mut() else {
             return;
         };
@@ -1268,6 +1312,54 @@ mod tests {
         assert!(lines[1].starts_with("  Button \"ok\""), "{text}");
         assert!(lines[3].starts_with("    ListItem \"first\""), "{text}");
         assert!(lines[6].starts_with("Label \"status\""), "{text}");
+    }
+
+    #[test]
+    fn frame_a11y_rekeys_a_taken_id_instead_of_dropping_the_node() {
+        use ftui_a11y::node::A11yRole;
+
+        // Two sibling containers at one rect share id 10; the second one's
+        // children name it both through the scope and as an explicit parent.
+        let render = |builder: &mut A11yTreeBuilder| {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(20, 5, &mut pool);
+            frame.set_a11y(builder);
+            frame.with_a11y_scope(a11y_node(1, A11yRole::Window, "main"), |f| {
+                f.with_a11y_scope(a11y_node(10, A11yRole::Group, "first"), |f| {
+                    f.push_a11y(a11y_node(11, A11yRole::Label, "a"));
+                });
+                f.with_a11y_scope(a11y_node(10, A11yRole::Group, "second"), |f| {
+                    f.push_a11y(a11y_node(11, A11yRole::Label, "b"));
+                });
+                f.push_a11y(a11y_node(12, A11yRole::Label, "c").with_parent(10));
+            });
+            frame.finish_a11y();
+            frame.take_a11y_order()
+        };
+
+        let mut builder = A11yTreeBuilder::new();
+        let order = render(&mut builder);
+        let tree = builder.build();
+        assert_eq!(order.len(), 6);
+        assert_eq!(tree.node_count(), 6, "no node was replaced");
+        let unique: std::collections::HashSet<u64> = order.iter().copied().collect();
+        assert_eq!(unique.len(), order.len(), "{order:?}");
+
+        let name = |id: u64| tree.node(id).and_then(|n| n.name.clone()).unwrap();
+        let second = order[3];
+        assert_eq!(name(order[1]), "first");
+        assert_eq!(name(second), "second");
+        assert_ne!(second, 10);
+        // Each label sits under its own group, and the explicit parent 10,
+        // pushed after the second group took 10's place, follows it.
+        assert_eq!(tree.node(order[2]).and_then(|n| n.parent), Some(10));
+        assert_eq!(tree.node(order[4]).and_then(|n| n.parent), Some(second));
+        assert_eq!(tree.node(order[5]).and_then(|n| n.parent), Some(second));
+        assert_eq!(name(order[4]), "b");
+
+        // The same render gives the same ids in the next frame.
+        let mut again = A11yTreeBuilder::new();
+        assert_eq!(render(&mut again), order);
     }
 
     #[test]

@@ -577,7 +577,8 @@ impl Screen for Shakespeare {
                     self.set_focus(next);
                 }
                 (KeyCode::Char('n'), Modifiers::NONE) => self.next_match(),
-                (KeyCode::Char('N'), Modifiers::NONE) | (KeyCode::Char('n'), Modifiers::SHIFT) => {
+                (KeyCode::Char('N'), Modifiers::NONE | Modifiers::SHIFT)
+                | (KeyCode::Char('n'), Modifiers::SHIFT) => {
                     self.prev_match();
                 }
                 (KeyCode::Char('m'), Modifiers::NONE) => {
@@ -627,7 +628,7 @@ impl Screen for Shakespeare {
                 (KeyCode::Home, _) | (KeyCode::Char('g'), Modifiers::NONE) => {
                     self.scroll_to(0);
                 }
-                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE) => {
+                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE | Modifiers::SHIFT) => {
                     self.scroll_to(self.total_lines());
                 }
                 (KeyCode::Enter, Modifiers::NONE) => {
@@ -815,6 +816,16 @@ impl Screen for Shakespeare {
         self.try_load_assets();
         self.tick_count = tick_count;
         self.time = tick_count as f64 * 0.1;
+    }
+
+    fn consumes_text_input(&self) -> bool {
+        // The search box takes text, `q` and `m` included.
+        self.search_active
+    }
+
+    // m cycles the mode; the app would take it for mouse capture.
+    fn consumes_key(&self, key: char) -> bool {
+        key == 'm'
     }
 
     fn title(&self) -> &'static str {

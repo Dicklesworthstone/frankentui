@@ -20,67 +20,15 @@
 //! ```
 
 use ftui_core::geometry::{Rect, Size};
+// Measure as the buffer draws: see the note on the same import in charts.rs.
+use ftui_core::text_width::{display_width, grapheme_width};
 use ftui_render::cell::CellContent;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_widgets::Widget;
-use unicode_display_width::width as unicode_display_width;
 use unicode_segmentation::UnicodeSegmentation;
 
-#[inline]
-fn width_u64_to_usize(width: u64) -> usize {
-    width.min(usize::MAX as u64) as usize
-}
-
-#[inline]
-fn ascii_display_width(text: &str) -> usize {
-    let mut width = 0;
-    for b in text.bytes() {
-        match b {
-            b'\t' | b'\n' | b'\r' => width += 1,
-            0x20..=0x7E => width += 1,
-            _ => {}
-        }
-    }
-    width
-}
-
-fn grapheme_width(grapheme: &str) -> usize {
-    if grapheme.is_ascii() {
-        return ascii_display_width(grapheme);
-    }
-    if grapheme.chars().all(is_zero_width_codepoint) {
-        return 0;
-    }
-    width_u64_to_usize(unicode_display_width(grapheme))
-}
-
-fn display_width(text: &str) -> usize {
-    if text.is_ascii() && text.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
-        return text.len();
-    }
-    if text.is_ascii() {
-        return ascii_display_width(text);
-    }
-    if !text.chars().any(is_zero_width_codepoint) {
-        return width_u64_to_usize(unicode_display_width(text));
-    }
-    text.graphemes(true).map(grapheme_width).sum()
-}
-
-#[inline]
-fn is_zero_width_codepoint(c: char) -> bool {
-    let u = c as u32;
-    matches!(u, 0x0000..=0x001F | 0x007F..=0x009F)
-        || matches!(u, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF)
-        || matches!(u, 0xFE20..=0xFE2F)
-        || matches!(u, 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
-        || matches!(
-            u,
-            0x00AD | 0x034F | 0x180E | 0x200B | 0x200C | 0x200D | 0x200E | 0x200F | 0x2060 | 0xFEFF
-        )
-        || matches!(u, 0x202A..=0x202E | 0x2066..=0x2069 | 0x206A..=0x206F)
-}
+use super::grapheme_content;
 
 /// Tooltip positioning strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -393,11 +341,11 @@ impl Widget for Tooltip {
                     break;
                 }
 
-                // Write the grapheme
-                if let Some(cell) = frame.buffer.get_mut(x, y)
-                    && let Some(c) = grapheme.chars().next()
-                {
-                    cell.content = CellContent::from_char(c);
+                // Write the whole grapheme. Only its first scalar went in, so
+                // combining marks, ZWJ parts and skin tones were dropped.
+                let content = grapheme_content(frame, grapheme, w);
+                if let Some(cell) = frame.buffer.get_mut(x, y) {
+                    cell.content = content;
                 }
                 // Mark continuation cells for wide chars
                 for offset in 1..w {
@@ -734,20 +682,18 @@ mod tests {
 
     #[test]
     fn display_width_ascii_with_control_chars() {
-        assert_eq!(ascii_display_width("\t"), 1);
-        assert_eq!(ascii_display_width("\n"), 1);
-        assert_eq!(ascii_display_width("\r"), 1);
-        assert_eq!(ascii_display_width("a\tb"), 3);
+        assert_eq!(display_width("\t"), 1);
+        assert_eq!(display_width("\n"), 1);
+        assert_eq!(display_width("\r"), 1);
+        assert_eq!(display_width("a\tb"), 3);
     }
 
     #[test]
-    fn ascii_display_width_excludes_non_printable() {
-        assert_eq!(ascii_display_width("abc"), 3);
-        assert_eq!(ascii_display_width(""), 0);
+    fn display_width_excludes_non_printable_ascii() {
         // Control chars outside tab/newline/cr → 0 width each
-        assert_eq!(ascii_display_width("\x01\x02"), 0);
+        assert_eq!(display_width("\x01\x02"), 0);
         // DEL (0x7F) is outside 0x20..=0x7E
-        assert_eq!(ascii_display_width("\x7F"), 0);
+        assert_eq!(display_width("\x7F"), 0);
     }
 
     #[test]
@@ -777,73 +723,19 @@ mod tests {
     }
 
     #[test]
-    fn is_zero_width_codepoint_control_chars() {
-        assert!(is_zero_width_codepoint('\x00'));
-        assert!(is_zero_width_codepoint('\x1F'));
-        assert!(is_zero_width_codepoint('\x7F'));
-        assert!(is_zero_width_codepoint('\u{009F}'));
-    }
-
-    #[test]
-    fn is_zero_width_codepoint_combining_marks() {
-        assert!(is_zero_width_codepoint('\u{0300}')); // combining grave
-        assert!(is_zero_width_codepoint('\u{036F}')); // end of combining diacriticals
-        assert!(is_zero_width_codepoint('\u{20D0}')); // combining enclosing
-        assert!(is_zero_width_codepoint('\u{1AB0}')); // combining diacriticals ext
-        assert!(is_zero_width_codepoint('\u{1DC0}')); // combining diacriticals supplement
-        assert!(is_zero_width_codepoint('\u{FE20}')); // combining half marks
-    }
-
-    #[test]
-    fn is_zero_width_codepoint_special() {
-        assert!(is_zero_width_codepoint('\u{200B}')); // zero-width space
-        assert!(is_zero_width_codepoint('\u{200D}')); // zero-width joiner
-        assert!(is_zero_width_codepoint('\u{FEFF}')); // BOM
-        assert!(is_zero_width_codepoint('\u{00AD}')); // soft hyphen
-        assert!(is_zero_width_codepoint('\u{034F}')); // combining grapheme joiner
-        assert!(is_zero_width_codepoint('\u{180E}')); // mongolian vowel separator
-        assert!(is_zero_width_codepoint('\u{200C}')); // ZWNJ
-        assert!(is_zero_width_codepoint('\u{200E}')); // LRM
-        assert!(is_zero_width_codepoint('\u{200F}')); // RLM
-        assert!(is_zero_width_codepoint('\u{2060}')); // word joiner
-    }
-
-    #[test]
-    fn is_zero_width_codepoint_variation_selectors() {
-        assert!(is_zero_width_codepoint('\u{FE00}')); // VS1
-        assert!(is_zero_width_codepoint('\u{FE0F}')); // VS16
-    }
-
-    #[test]
-    fn is_zero_width_codepoint_bidi_controls() {
-        assert!(is_zero_width_codepoint('\u{202A}')); // LRE
-        assert!(is_zero_width_codepoint('\u{202E}')); // RLO
-        assert!(is_zero_width_codepoint('\u{2066}')); // LRI
-        assert!(is_zero_width_codepoint('\u{2069}')); // PDI
-        assert!(is_zero_width_codepoint('\u{206A}')); // ISS
-        assert!(is_zero_width_codepoint('\u{206F}')); // NADS
-    }
-
-    #[test]
-    fn is_zero_width_codepoint_normal_chars_are_not() {
-        assert!(!is_zero_width_codepoint('a'));
-        assert!(!is_zero_width_codepoint(' '));
-        assert!(!is_zero_width_codepoint('0'));
-        assert!(!is_zero_width_codepoint('\u{4E00}')); // CJK unified
-    }
-
-    #[test]
-    fn width_u64_to_usize_normal_values() {
-        assert_eq!(width_u64_to_usize(0), 0);
-        assert_eq!(width_u64_to_usize(42), 42);
-        assert_eq!(width_u64_to_usize(100), 100);
-    }
-
-    #[test]
-    fn width_u64_to_usize_clamps_large() {
-        let large = u64::MAX;
-        let result = width_u64_to_usize(large);
-        assert_eq!(result, usize::MAX);
+    fn zero_width_codepoints_measure_nothing() {
+        for c in [
+            '\x00', '\x1F', '\x7F', '\u{009F}', '\u{0300}', '\u{036F}', '\u{20D0}', '\u{1AB0}',
+            '\u{1DC0}', '\u{FE20}', '\u{200B}', '\u{200D}', '\u{FEFF}', '\u{00AD}', '\u{034F}',
+            '\u{180E}', '\u{200C}', '\u{200E}', '\u{200F}', '\u{2060}', '\u{FE00}', '\u{FE0F}',
+            '\u{202A}', '\u{202E}', '\u{2066}', '\u{2069}', '\u{206A}', '\u{206F}',
+        ] {
+            assert_eq!(grapheme_width(&c.to_string()), 0, "{c:?}");
+        }
+        for c in ['a', ' ', '0'] {
+            assert_eq!(grapheme_width(&c.to_string()), 1, "{c:?}");
+        }
+        assert_eq!(grapheme_width("\u{4E00}"), 2);
     }
 
     // ── Position tests (additional) ──────────────────────────────────
@@ -1242,6 +1134,29 @@ mod tests {
         if let Some(cell) = frame.buffer.get(content_x + 1, content_y) {
             assert_eq!(cell.content.as_char(), Some('i'));
         }
+    }
+
+    #[test]
+    fn render_keeps_every_scalar_of_a_grapheme() {
+        // Only each cluster's first scalar was written: "e" lost its accent
+        // and the family emoji kept only its first person.
+        let (accented, family) = ("e\u{301}", "\u{1F468}\u{200D}\u{1F469}");
+        let tooltip = Tooltip::new(format!("{accented}{family}"))
+            .for_widget(Rect::new(0, 0, 5, 1))
+            .config(TooltipConfig::default().max_width(20).padding(1));
+        let screen = Rect::new(0, 0, 40, 20);
+        let bounds = tooltip.bounds(screen);
+        let (x, y) = (bounds.x + 1, bounds.y + 1);
+
+        let mut pool = GraphemePool::new();
+        let (first, second) = {
+            let mut frame = Frame::new(40, 20, &mut pool);
+            tooltip.render(screen, &mut frame);
+            let content = |dx| frame.buffer.get(x + dx, y).unwrap().content;
+            (content(0), content(1))
+        };
+        assert_eq!(pool.get(first.grapheme_id().unwrap()), Some(accented));
+        assert_eq!(pool.get(second.grapheme_id().unwrap()), Some(family));
     }
 
     #[test]

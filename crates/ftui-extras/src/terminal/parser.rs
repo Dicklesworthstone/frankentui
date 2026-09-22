@@ -321,6 +321,14 @@ fn system_time_ms() -> u64 {
     u64::try_from(ts).unwrap_or(u64::MAX)
 }
 
+/// Hook trace records an [`AnsiParser`] keeps.
+///
+/// Every dispatched sequence adds a record, a `FallbackDispatched` one even
+/// when no hook is registered. A parser fed a long stream by a caller that
+/// never drained the trace grew it by one record per escape sequence, without
+/// bound. At the cap the oldest half is dropped.
+const MAX_HOOK_TRACE: usize = 4096;
+
 fn push_hook_trace(
     traces: &mut Vec<HookTraceEvent>,
     next_correlation_id: &mut u64,
@@ -333,6 +341,9 @@ fn push_hook_trace(
     let correlation_id = *next_correlation_id;
     *next_correlation_id = next_correlation_id.saturating_add(1);
     let elapsed_us = elapsed.map(|dur| u64::try_from(dur.as_micros()).unwrap_or(u64::MAX));
+    if traces.len() >= MAX_HOOK_TRACE {
+        traces.drain(..MAX_HOOK_TRACE / 2);
+    }
     traces.push(HookTraceEvent {
         ts_ms: system_time_ms(),
         correlation_id,
@@ -951,7 +962,8 @@ impl AnsiParser {
         self.hook_capabilities
     }
 
-    /// Borrow the accumulated structured hook trace log.
+    /// Borrow the accumulated structured hook trace log: the most recent
+    /// records, at most a few thousand, oldest first.
     #[must_use]
     pub fn hook_trace(&self) -> &[HookTraceEvent] {
         &self.hook_trace
@@ -2427,6 +2439,26 @@ mod tests {
         let parser = AnsiParser::new();
         let debug = format!("{parser:?}");
         assert!(debug.contains("AnsiParser"));
+    }
+
+    #[test]
+    fn hook_trace_stays_bounded_without_draining() {
+        let mut parser = AnsiParser::new();
+        let mut handler = TestHandler::default();
+        let stream = b"\x1b[1mx".repeat(3 * MAX_HOOK_TRACE);
+
+        parser.parse(&stream, &mut handler);
+
+        let trace = parser.hook_trace();
+        assert!(trace.len() <= MAX_HOOK_TRACE, "{}", trace.len());
+        // The newest records are the ones kept, still in order.
+        let last = trace.last().expect("records kept");
+        assert_eq!(last.correlation_id, 3 * MAX_HOOK_TRACE as u64);
+        assert!(
+            trace
+                .windows(2)
+                .all(|w| w[0].correlation_id < w[1].correlation_id)
+        );
     }
 
     #[test]

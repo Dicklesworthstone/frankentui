@@ -23,6 +23,8 @@ if [[ -f "$LIB_DIR/common.sh" ]]; then
     # shellcheck source=/dev/null
     source "$LIB_DIR/common.sh"
 fi
+# shellcheck source=/dev/null
+source "$LIB_DIR/logging.sh" # e2e_monotonic_ms
 
 JSONL_FILE="$E2E_RESULTS_DIR/intrinsic_sizing.jsonl"
 RUN_ID="intrinsic_$(date +%Y%m%d_%H%M%S)_$$"
@@ -74,13 +76,17 @@ run_test_suite() {
     local filter="$3"
 
     echo "[$name] Running..."
-    local start_time=$(date +%s%3N 2>/dev/null || echo "0")
+    # Not `date +%s%3N`: BSD date prints "...3N", and the subtraction below
+    # then aborted the script on macOS.
+    local start_time
+    start_time="$(e2e_monotonic_ms)"
 
     local output
     local exit_code=0
     output=$(cargo test -p "$package" -- "$filter" 2>&1) || exit_code=$?
 
-    local end_time=$(date +%s%3N 2>/dev/null || echo "0")
+    local end_time
+    end_time="$(e2e_monotonic_ms)"
     local duration=$((end_time - start_time))
 
     # Extract test counts from output

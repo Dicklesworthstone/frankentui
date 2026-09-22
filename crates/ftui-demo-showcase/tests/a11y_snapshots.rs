@@ -710,16 +710,16 @@ fn a11y_tree_dump_dashboard_80x24() {
 /// dashboard test above checks for one screen at one size.
 ///
 /// `ftui_widgets::a11y_node_id` hashes the *rect and nothing else*, so any two
-/// widgets laid out at the same area collide. 2840f0d8 fixed the structural
-/// half (a widget and its own `Block` always share a rect); genuine siblings
-/// remain, tracked as bd-a11y-sibling-id-collision-6zqd2, which explains why
-/// the fix is a design call - every candidate changes id semantics on the path
-/// feeding `A11yTree::diff` and announcement batching.
+/// widgets laid out at the same area share an id. 2840f0d8 fixed the
+/// structural half (a widget and its own `Block` always share a rect). For
+/// genuine siblings (bd-a11y-sibling-id-collision-6zqd2), `Frame::push_a11y`
+/// now gives a node whose id is taken a new id derived from it, stable across
+/// frames that render in the same order.
 ///
-/// This sweep exists so that stays a known, bounded list instead of an
-/// invisible one: a screen that starts losing nodes fails here immediately.
-/// Entries are named to be removed, not to keep the gate quiet - a listed
-/// screen that no longer collides fails too.
+/// This sweep checks that no screen loses a node at any size.
+/// `KNOWN_COLLIDING` is an allowlist for a screen that loses nodes on purpose
+/// while it is fixed; entries are named to be removed, not to keep the gate
+/// quiet - a listed screen that no longer collides fails too.
 #[test]
 fn every_screen_gives_each_a11y_node_a_unique_id() {
     use ftui_a11y::tree::A11yTreeBuilder;
@@ -727,24 +727,11 @@ fn every_screen_gives_each_a11y_node_a_unique_id() {
 
     const SIZES: &[(u16, u16)] = &[(80, 24), (120, 40), (40, 12)];
 
-    /// Screens that drop at least one node to a colliding id today, all owned
-    /// by bd-a11y-sibling-id-collision-6zqd2.
-    ///
-    /// The degenerate sub-case is already gone: seven widgets pushed their
-    /// accessibility node *before* their own emptiness check, so a widget laid
-    /// out into an empty area announced a node for something it never drew,
-    /// and all of them hashed to the id of the same empty rect. Fixing the
-    /// ordering retired `form_validation` and `macro_recorder` from this list
-    /// entirely. What is left is the real sibling case - two widgets drawn at
-    /// the same non-empty rect - which needs the id redesign.
-    const KNOWN_COLLIDING: &[&str] = &[
-        "dashboard",
-        "inline_mode_story",
-        "intrinsic_sizing",
-        "layout_inspector",
-        "layout_lab",
-        "widget_gallery",
-    ];
+    /// Screens that drop at least one node to a colliding id: none since
+    /// `Frame::push_a11y` re-keys a taken id. Before that, `dashboard`,
+    /// `inline_mode_story`, `intrinsic_sizing`, `layout_inspector`,
+    /// `layout_lab` and `widget_gallery` each lost a node here.
+    const KNOWN_COLLIDING: &[&str] = &[];
 
     let mut detail: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     // Guards against a vacuous pass: a sweep where no screen emits any node

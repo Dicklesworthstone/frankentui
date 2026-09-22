@@ -54,8 +54,9 @@ pub mod widget_gallery;
 
 use std::sync::OnceLock;
 
-use ftui_core::event::Event;
+use ftui_core::event::{Event, KeyCode, KeyEvent};
 use ftui_core::geometry::Rect;
+use ftui_extras::forms::{Form, FormField};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 
@@ -821,15 +822,19 @@ pub trait Screen {
 
     /// Whether this screen is currently accepting text input (e.g. a focused
     /// text field or editor). When `true`, single-character global shortcuts
-    /// (q, ?, m, 0-9) are suppressed so keystrokes reach the screen instead.
+    /// (q, ?, m, 0-9, A, H, L) are suppressed so keystrokes reach the screen
+    /// instead.
     fn consumes_text_input(&self) -> bool {
         false
     }
 
-    /// Whether a plain number key belongs to this screen's current controls.
-    /// This suppresses only the matching global number shortcut; other global
-    /// shortcuts and Tab navigation remain available.
-    fn consumes_number_key(&self, _key: char) -> bool {
+    /// Whether this plain key belongs to this screen's current controls.
+    ///
+    /// The app takes a digit, `m`, and capital `A`, `H` and `L` as global
+    /// shortcuts before any screen sees them, so a screen that binds one must
+    /// claim it here or its binding never fires. This suppresses only the
+    /// matching global shortcut; `q`, `?`, Tab and the other globals remain.
+    fn consumes_key(&self, _key: char) -> bool {
         false
     }
 
@@ -870,6 +875,37 @@ pub trait Screen {
     }
 }
 
+/// Arrow keys for an extras `Form` in the showcase: Up/Down move between
+/// fields and Left/Right change a value.
+///
+/// The form spends Up/Down on a Number, Select or Radio value and relies on
+/// Tab to leave one, but the app keeps Tab for switching screens, so keyboard
+/// focus stuck on the first such field in either direction. This rewrites
+/// Up/Down there to the form's Shift+Tab/Tab, and Left/Right on a Radio,
+/// which has none of its own, to Up/Down. Other events pass through (`None`).
+pub(crate) fn form_arrow_keys(form: &Form, focused: usize, event: &Event) -> Option<Event> {
+    let Event::Key(key) = event else {
+        return None;
+    };
+    if form.is_disabled(focused) {
+        return None;
+    }
+    let code = match (form.field(focused)?, key.code) {
+        (
+            FormField::Number { .. } | FormField::Select { .. } | FormField::Radio { .. },
+            KeyCode::Up,
+        ) => KeyCode::BackTab,
+        (
+            FormField::Number { .. } | FormField::Select { .. } | FormField::Radio { .. },
+            KeyCode::Down,
+        ) => KeyCode::Tab,
+        (FormField::Radio { .. }, KeyCode::Left) => KeyCode::Up,
+        (FormField::Radio { .. }, KeyCode::Right) => KeyCode::Down,
+        _ => return None,
+    };
+    Some(Event::Key(KeyEvent { code, ..*key }))
+}
+
 /// Check if a line contains a query string (case-insensitive) without allocation.
 ///
 /// Callers should pass a pre-lowercased query string to avoid repeated work.
@@ -902,6 +938,32 @@ pub(crate) fn line_contains_ignore_case(line: &str, query_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn form_arrow_keys_move_past_values_and_pick_radio_options() {
+        let key = |code| Event::Key(KeyEvent::new(code));
+        let mut form = Form::new(vec![
+            FormField::text("Name"),
+            FormField::radio("Theme", vec!["Light".into(), "Dark".into()]),
+            FormField::number("Age", 25),
+        ]);
+        let code = |form: &Form, focused, code| match form_arrow_keys(form, focused, &key(code)) {
+            Some(Event::Key(k)) => Some(k.code),
+            _ => None,
+        };
+        // Text fields keep their own arrows.
+        assert_eq!(code(&form, 0, KeyCode::Down), None);
+        assert_eq!(code(&form, 0, KeyCode::Left), None);
+        assert_eq!(code(&form, 1, KeyCode::Down), Some(KeyCode::Tab));
+        assert_eq!(code(&form, 1, KeyCode::Up), Some(KeyCode::BackTab));
+        assert_eq!(code(&form, 1, KeyCode::Right), Some(KeyCode::Down));
+        assert_eq!(code(&form, 1, KeyCode::Left), Some(KeyCode::Up));
+        assert_eq!(code(&form, 2, KeyCode::Up), Some(KeyCode::BackTab));
+        // Number already takes Left/Right.
+        assert_eq!(code(&form, 2, KeyCode::Right), None);
+        form.set_disabled(1, true);
+        assert_eq!(code(&form, 1, KeyCode::Down), None);
+    }
 
     #[test]
     fn registry_order_matches_ids() {

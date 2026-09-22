@@ -537,6 +537,19 @@ pub fn tape_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// `value` made safe inside a `//` or `/* */` comment in emitted Rust.
+///
+/// A newline would end a line comment and `*/` a block comment, and the rest
+/// would be emitted as code. Block comments nest in Rust, so `/*` would leave
+/// the comment open and swallow the code after it.
+#[must_use]
+pub fn rust_comment_text(value: &str) -> String {
+    value
+        .replace(['\n', '\r'], " ")
+        .replace("*/", "* /")
+        .replace("/*", "/ *")
+}
+
 #[must_use]
 pub fn relative_to(base: &Path, path: &Path) -> Option<PathBuf> {
     pathdiff::diff_paths(path, base)
@@ -554,7 +567,8 @@ mod tests {
         copy_tree_snapshot_materialized, duration_literal, ensure_dir, ensure_executable,
         ensure_exists, ensure_safe_path_component, exit_status_code, join_validated_child_path,
         normalize_http_path, output_for, parse_duration_value, relative_to, require_command,
-        shell_single_quote, tape_escape, tmux_attach_command_literal, write_string,
+        rust_comment_text, shell_single_quote, tape_escape, tmux_attach_command_literal,
+        write_string,
     };
 
     #[cfg(unix)]
@@ -635,6 +649,14 @@ mod tests {
     fn tape_escape_escapes_quotes_and_backslashes() {
         let escaped = tape_escape("a\\b\"c");
         assert_eq!(escaped, "a\\\\b\\\"c");
+    }
+
+    #[test]
+    fn rust_comment_text_neutralizes_comment_delimiters() {
+        assert_eq!(rust_comment_text("a\r\nb */ c"), "a  b * / c");
+        assert_eq!(rust_comment_text("x /* y"), "x / * y");
+        assert_eq!(rust_comment_text("/*/"), "/ * /");
+        assert_eq!(rust_comment_text("plain"), "plain");
     }
 
     #[test]

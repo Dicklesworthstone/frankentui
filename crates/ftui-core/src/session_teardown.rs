@@ -97,8 +97,9 @@ static KITTY_POP_LATCH: AtomicBool = AtomicBool::new(false);
 /// Kitty keyboard mode is a *stack*: `CSI > flags u` pushes, `CSI < u` pops,
 /// and popping more times than you pushed pops an enclosing terminal or
 /// multiplexer's entry. The latch exists so the best-effort teardown paths -
-/// the panic hook, the signal thread, [`best_effort_cleanup_for_exit`] - emit
-/// at most one pop for the push they are cleaning up after.
+/// the panic hook, the signal thread, `terminal_session::best_effort_cleanup_for_exit`
+/// (with the `crossterm` feature) - emit at most one pop for the push they
+/// are cleaning up after.
 ///
 /// It tracks **one outstanding push, not one per process.** A session that
 /// enables kitty keyboard pushes again and therefore owes another pop, so it
@@ -107,8 +108,6 @@ static KITTY_POP_LATCH: AtomicBool = AtomicBool::new(false);
 /// claimed from the first cleanup onwards and every later session's push was
 /// never popped, leaving the terminal in enhanced-key mode after exit: the
 /// precise failure this module exists to prevent.
-///
-/// [`best_effort_cleanup_for_exit`]: crate::terminal_session::best_effort_cleanup_for_exit
 #[derive(Debug, Clone, Copy, Default)]
 pub struct KittyPopLatch;
 

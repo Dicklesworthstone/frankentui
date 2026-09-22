@@ -139,9 +139,18 @@ impl<W: Write + Send> BackendPresenter for TerminalPresenter<W> {
         &mut self,
         buf: &Buffer,
         _diff: Option<&BufferDiff>,
-        _full_repaint_hint: bool,
+        full_repaint_hint: bool,
     ) -> Result<(), Self::Error> {
-        self.writer.present_ui(buf, None, false)
+        // The writer's trailing arguments are the cursor and its visibility.
+        // Passing `None, false` hid the cursor on every frame; the trait has
+        // no cursor, so its visibility is left as it was. The repaint hint
+        // was dropped, so a damaged screen was diffed against a stale
+        // baseline and never rewritten.
+        if full_repaint_hint {
+            self.writer.invalidate_diff_baseline();
+        }
+        let cursor_visible = self.writer.cursor_visible();
+        self.writer.present_ui(buf, None, cursor_visible)
     }
 
     fn present_ui_owned(
@@ -278,6 +287,36 @@ mod tests {
         presenter.resize(120, 40);
         assert_eq!(presenter.writer.width(), 120);
         assert_eq!(presenter.writer.height(), 40);
+    }
+
+    #[test]
+    fn present_ui_honors_the_repaint_hint_and_keeps_the_cursor() {
+        let caps = TerminalCapabilities::basic();
+        let writer = TerminalWriter::new(
+            Vec::<u8>::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            caps,
+        );
+        let mut presenter = TerminalPresenter::new(writer);
+        presenter.resize(10, 5);
+        let mut buf = Buffer::new(10, 5);
+        buf.set(2, 1, ftui_render::cell::Cell::from_char('Ж'));
+
+        presenter.present_ui(&buf, None, false).unwrap();
+        // Unchanged: nothing to write.
+        presenter.present_ui(&buf, None, false).unwrap();
+        // The hint repaints every cell.
+        presenter.present_ui(&buf, None, true).unwrap();
+
+        let TerminalPresenter { writer, .. } = presenter;
+        let bytes = writer.into_inner().expect("writer output");
+        let output = String::from_utf8_lossy(&bytes);
+        assert_eq!(output.matches('Ж').count(), 2, "{output:?}");
+        // The cursor may be hidden while drawing, but ends up visible again.
+        let hidden = output.rfind("\x1b[?25l");
+        let shown = output.rfind("\x1b[?25h");
+        assert!(shown > hidden, "cursor left hidden: {output:?}");
     }
 
     #[test]

@@ -1430,8 +1430,7 @@ impl AsyncTaskManager {
 
         // Sort by score (higher = should run first for most policies)
         // We negate internally for "lower is better" policies
-        queued_with_scores
-            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        queued_with_scores.sort_by(|a, b| b.1.total_cmp(&a.1));
 
         // Start tasks up to available slots
         let selected_indices: Vec<usize> = queued_with_scores

@@ -407,8 +407,13 @@ fn translate_color_token(token: &StyleToken) -> ColorMapping {
 fn parse_color_value(value: &str) -> Option<(u8, u8, u8)> {
     let trimmed = value.trim();
 
-    // #RRGGBB
-    if let Some(hex) = trimmed.strip_prefix('#') {
+    // #RRGGBB. Hex digits only: the lengths below count bytes, so a
+    // multi-byte character would split a slice (a panic), and
+    // `from_str_radix` would take a leading '+' as a sign.
+    if let Some(hex) = trimmed
+        .strip_prefix('#')
+        .filter(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
         if hex.len() == 6 {
             let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
             let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
@@ -936,6 +941,15 @@ mod tests {
     fn translate_shorthand_hex_color() {
         let rgb = parse_color_value("#f0c");
         assert_eq!(rgb, Some((255, 0, 204)));
+    }
+
+    #[test]
+    fn hex_colors_with_non_hex_digits_are_rejected_without_panicking() {
+        // Byte-length checks then byte slicing split "é" (a panic), and a
+        // leading '+' passed `from_str_radix` as a sign.
+        for bad in ["#a\u{e9}123", "#\u{e9}1", "#+f+f+f", "#+ff"] {
+            assert_eq!(parse_color_value(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

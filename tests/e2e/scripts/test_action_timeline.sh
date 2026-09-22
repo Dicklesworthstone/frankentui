@@ -187,8 +187,10 @@ ARROW_DOWN='\x1b[B'
 ARROW_UP='\x1b[A'
 PAGE_DOWN='\x1b[6~'
 PAGE_UP='\x1b[5~'
-HOME='\x1b[H'
-END='\x1b[F'
+# Not HOME: that is the exported home directory, and every child process
+# (the demo under test included) saw it as an escape sequence.
+KEY_HOME='\x1b[H'
+KEY_END='\x1b[F'
 ENTER='\r'
 
 # Navigate to Action Timeline screen (index 16, so 16 tabs from Dashboard)
@@ -333,7 +335,7 @@ timeline_home_end() {
     PTY_COLS=120 \
     PTY_ROWS=40 \
     PTY_SEND_DELAY_MS=200 \
-    PTY_SEND="${NAV_TO_TIMELINE}${END}${HOME}" \
+    PTY_SEND="${NAV_TO_TIMELINE}${KEY_END}${KEY_HOME}" \
     FTUI_DEMO_EXIT_AFTER_MS=2000 \
     PTY_TIMEOUT=5 \
         pty_run "$output_file" "$DEMO_BIN"

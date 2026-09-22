@@ -307,9 +307,13 @@ impl TimeTravel {
     /// Panics if capacity is 0.
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "TimeTravel capacity must be > 0");
+        // Reserve up front only a bounded amount: `import` takes the capacity
+        // from a file header, and a corrupt count of four billion asked for
+        // hundreds of gigabytes and aborted the process.
+        let reserve = capacity.min(Self::MAX_PREALLOCATED_FRAMES);
         Self {
-            snapshots: VecDeque::with_capacity(capacity),
-            metadata: VecDeque::with_capacity(capacity),
+            snapshots: VecDeque::with_capacity(reserve),
+            metadata: VecDeque::with_capacity(reserve),
             capacity,
             frame_counter: 0,
             recording: true,
@@ -418,6 +422,14 @@ impl TimeTravel {
         let first = &self.snapshots[0];
         let mut buf = Buffer::new(first.width, first.height);
         for snapshot in self.snapshots.iter().take(index + 1) {
+            // `record` stores a size change as a full snapshot (changes from an
+            // empty buffer), so it starts over from an empty buffer of its own
+            // size. Replaying it onto the previous frame left that frame's
+            // cells wherever the new one is blank, and tripped `apply_to`'s
+            // dimension assertion in debug builds.
+            if (snapshot.width, snapshot.height) != (buf.width(), buf.height()) {
+                buf = Buffer::new(snapshot.width, snapshot.height);
+            }
             snapshot.apply_to(&mut buf);
         }
         Some(buf)
@@ -427,7 +439,7 @@ impl TimeTravel {
     ///
     /// `rewind(0)` returns the latest frame. `rewind(1)` returns one step back.
     pub fn rewind(&self, steps: usize) -> Option<Buffer> {
-        let index = self.snapshots.len().checked_sub(steps + 1)?;
+        let index = self.snapshots.len().checked_sub(steps.checked_add(1)?)?;
         self.get(index)
     }
 
@@ -474,16 +486,24 @@ impl TimeTravel {
     // ========================================================================
 
     /// File format magic bytes.
-    const MAGIC: &'static [u8] = b"FTUI-TT1";
+    ///
+    /// Version 1 stored one width and height for the whole file, so a
+    /// recording that spanned a resize came back with every frame at the
+    /// first frame's size, and it dropped cursor positions.
+    const MAGIC: &'static [u8] = b"FTUI-TT2";
+
+    /// Frames reserved up front by [`Self::new`]; more are allocated as needed.
+    const MAX_PREALLOCATED_FRAMES: usize = 1024;
 
     /// Export recording to a file.
     ///
     /// Format:
-    /// - 8 bytes: magic `FTUI-TT1`
-    /// - 2 bytes: width (LE)
-    /// - 2 bytes: height (LE)
+    /// - 8 bytes: magic `FTUI-TT2`
     /// - 4 bytes: frame count (LE)
     /// - Per frame:
+    ///   - 2 bytes: width (LE)
+    ///   - 2 bytes: height (LE)
+    ///   - 1 byte: has_cursor (0/1), then 2 bytes cursor x + 2 bytes cursor y (LE)
     ///   - 8 bytes: frame_number (LE)
     ///   - 8 bytes: render_time_ns (LE)
     ///   - 4 bytes: event_count (LE)
@@ -497,18 +517,21 @@ impl TimeTravel {
 
         // Header
         w.write_all(Self::MAGIC)?;
-
-        let (width, height) = if let Some(first) = self.snapshots.front() {
-            (first.width, first.height)
-        } else {
-            (0, 0)
-        };
-        w.write_all(&width.to_le_bytes())?;
-        w.write_all(&height.to_le_bytes())?;
         w.write_all(&(self.snapshots.len() as u32).to_le_bytes())?;
 
         // Frames
         for (snapshot, meta) in self.snapshots.iter().zip(self.metadata.iter()) {
+            // Geometry: every frame carries its own size and cursor.
+            w.write_all(&snapshot.width.to_le_bytes())?;
+            w.write_all(&snapshot.height.to_le_bytes())?;
+            let (has_cursor, (cx, cy)) = match snapshot.cursor {
+                Some(pos) => (1u8, pos),
+                None => (0u8, (0, 0)),
+            };
+            w.write_all(&[has_cursor])?;
+            w.write_all(&cx.to_le_bytes())?;
+            w.write_all(&cy.to_le_bytes())?;
+
             // Metadata
             w.write_all(&meta.frame_number.to_le_bytes())?;
             let render_ns = meta.render_time.as_nanos().min(u64::MAX as u128) as u64;
@@ -554,11 +577,8 @@ impl TimeTravel {
         let mut buf2 = [0u8; 2];
         let mut buf4 = [0u8; 4];
         let mut buf8 = [0u8; 8];
+        let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
 
-        r.read_exact(&mut buf2)?;
-        let width = u16::from_le_bytes(buf2);
-        r.read_exact(&mut buf2)?;
-        let height = u16::from_le_bytes(buf2);
         r.read_exact(&mut buf4)?;
         let frame_count = u32::from_le_bytes(buf4) as usize;
 
@@ -566,6 +586,22 @@ impl TimeTravel {
         tt.recording = false; // Don't auto-record during import
 
         for _ in 0..frame_count {
+            // Geometry
+            r.read_exact(&mut buf2)?;
+            let width = u16::from_le_bytes(buf2);
+            r.read_exact(&mut buf2)?;
+            let height = u16::from_le_bytes(buf2);
+            if width == 0 || height == 0 {
+                return Err(invalid("frame with zero width or height"));
+            }
+            let mut cursor_flag = [0u8; 1];
+            r.read_exact(&mut cursor_flag)?;
+            r.read_exact(&mut buf2)?;
+            let cursor_x = u16::from_le_bytes(buf2);
+            r.read_exact(&mut buf2)?;
+            let cursor_y = u16::from_le_bytes(buf2);
+            let cursor = (cursor_flag[0] != 0).then_some((cursor_x, cursor_y));
+
             // Metadata
             r.read_exact(&mut buf8)?;
             let frame_number = u64::from_le_bytes(buf8);
@@ -590,9 +626,13 @@ impl TimeTravel {
                 model_hash,
             };
 
-            // Changes
+            // Changes: a frame changes each of its cells at most once, so a
+            // larger count is corrupt, and checking it bounds the allocation.
             r.read_exact(&mut buf4)?;
             let change_count = u32::from_le_bytes(buf4) as usize;
+            if change_count > usize::from(width) * usize::from(height) {
+                return Err(invalid("frame has more changes than cells"));
+            }
             let mut changes = Vec::with_capacity(change_count);
             for _ in 0..change_count {
                 changes.push(CellChange::read_from(&mut r)?);
@@ -602,7 +642,7 @@ impl TimeTravel {
                 width,
                 height,
                 changes,
-                cursor: None,
+                cursor,
             };
 
             tt.snapshots.push_back(snapshot);
@@ -610,13 +650,11 @@ impl TimeTravel {
         }
 
         // Reconstruct last_buffer from final state
-        if !tt.snapshots.is_empty() && width > 0 && height > 0 {
-            let mut buf = Buffer::new(width, height);
-            for snapshot in &tt.snapshots {
-                snapshot.apply_to(&mut buf);
-            }
-            tt.last_buffer = Some(buf);
-        }
+        tt.last_buffer = tt
+            .snapshots
+            .len()
+            .checked_sub(1)
+            .and_then(|last| tt.get(last));
 
         tt.frame_counter = frame_count as u64;
         Ok(tt)
@@ -1026,6 +1064,74 @@ mod tests {
         std::fs::write(&path, b"NOT-MAGIC").unwrap();
         let result = TimeTravel::import(&path);
         assert!(result.is_err());
+    }
+
+    /// Record `A` at 5x1, then a 3x2 frame with only `X` at (0, 1).
+    fn recording_across_a_resize() -> TimeTravel {
+        let mut tt = TimeTravel::new(10);
+        let mut wide = Buffer::new(5, 1);
+        wide.set(0, 0, Cell::from_char('A'));
+        tt.record(&wide, make_metadata(0));
+        let mut tall = Buffer::new(3, 2);
+        tall.set(0, 1, Cell::from_char('X'));
+        tt.record(&tall, make_metadata(1));
+        tt
+    }
+
+    fn assert_is_the_resized_frame(frame: &Buffer) {
+        assert_eq!((frame.width(), frame.height()), (3, 2));
+        // The old frame's 'A' must not show through the new, blank cell.
+        assert!(frame.get(0, 0).unwrap().is_empty());
+        assert_eq!(frame.get(0, 1).unwrap().content.as_char(), Some('X'));
+    }
+
+    #[test]
+    fn get_reconstructs_frames_across_a_resize() {
+        // Replay applied the resized frame onto the old 5x1 buffer: a debug
+        // assertion, or stale cells from the earlier frame.
+        let tt = recording_across_a_resize();
+        assert_is_the_resized_frame(&tt.get(1).unwrap());
+        assert_eq!(tt.get(0).unwrap().width(), 5);
+    }
+
+    #[test]
+    fn export_import_keeps_each_frames_size() {
+        // The file stored one size for the whole recording.
+        let dir = crate::retained_test_dir("tt-resize-roundtrip");
+        let path = dir.join("resize.fttr");
+        recording_across_a_resize().export(&path).unwrap();
+        let loaded = TimeTravel::import(&path).unwrap();
+        assert_eq!(loaded.get(0).unwrap().width(), 5);
+        assert_is_the_resized_frame(&loaded.get(1).unwrap());
+        assert_is_the_resized_frame(&loaded.rewind(0).unwrap());
+    }
+
+    #[test]
+    fn import_rejects_corrupt_counts_without_huge_allocations() {
+        let dir = crate::retained_test_dir("tt-corrupt-counts");
+        // A header claiming four billion frames, then nothing: an error, not
+        // a reservation of hundreds of gigabytes.
+        let huge_frames = dir.join("huge-frames.fttr");
+        let mut bytes = TimeTravel::MAGIC.to_vec();
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(&huge_frames, &bytes).unwrap();
+        assert!(TimeTravel::import(&huge_frames).is_err());
+
+        // A 2x1 frame claiming more changes than it has cells.
+        let too_many = dir.join("too-many-changes.fttr");
+        let mut bytes = TimeTravel::MAGIC.to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // frames
+        bytes.extend_from_slice(&2u16.to_le_bytes()); // width
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // height
+        bytes.extend_from_slice(&[0, 0, 0, 0, 0]); // no cursor
+        bytes.extend_from_slice(&[0; 8 + 8 + 4 + 1 + 8]); // metadata
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // change count
+        std::fs::write(&too_many, &bytes).unwrap();
+        let err = TimeTravel::import(&too_many).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        // `rewind` computed `steps + 1` and overflowed for usize::MAX.
+        assert!(recording_across_a_resize().rewind(usize::MAX).is_none());
     }
 
     #[test]

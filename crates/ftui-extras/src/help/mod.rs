@@ -45,3 +45,23 @@ pub use tooltip::{Tooltip, TooltipConfig, TooltipPosition, TooltipState};
 pub use tour::{
     CompletionStatus, Tour, TourAction, TourCompletion, TourEvent, TourState, TourStep,
 };
+
+/// Cell content for one grapheme cluster `width` cells wide.
+///
+/// A cluster wider than one cell or made of several scalars is interned
+/// whole, as `ftui_widgets`' own text drawing does. Storing only its first
+/// scalar dropped combining marks, ZWJ parts and skin-tone modifiers.
+fn grapheme_content(
+    frame: &mut ftui_render::frame::Frame,
+    grapheme: &str,
+    width: usize,
+) -> ftui_render::cell::CellContent {
+    use ftui_render::cell::CellContent;
+    let mut chars = grapheme.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if width <= 1 => CellContent::from_char(c),
+        _ => CellContent::from_grapheme(
+            frame.intern_with_width(grapheme, u8::try_from(width).unwrap_or(u8::MAX)),
+        ),
+    }
+}

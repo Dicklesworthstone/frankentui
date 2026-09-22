@@ -496,7 +496,7 @@ fn compute_percentiles(values: &[f64]) -> Percentiles {
     }
 
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(f64::total_cmp);
 
     let n = sorted.len();
     let percentile = |p: f64| -> f64 {
@@ -545,6 +545,26 @@ mod tests {
 
         let mem = Sample::memory_bytes("rss", 1024 * 1024);
         assert_eq!(mem.category, MetricCategory::Memory);
+    }
+
+    #[test]
+    fn percentiles_survive_nan_samples() {
+        // `partial_cmp(..).unwrap_or(Equal)` is not a total order once a NaN
+        // is present. On this shuffled input the standard sort panicked on
+        // it; on sorted input it kept a NaN at the front, so `min` was NaN.
+        let values: Vec<f64> = (0..64_u32)
+            .map(|i| {
+                if i % 5 == 0 {
+                    f64::NAN
+                } else {
+                    f64::from(i * 37 % 64)
+                }
+            })
+            .collect();
+        let p = compute_percentiles(&values);
+        // 0 and 1 sit at NaN slots (i = 0 and i = 45).
+        assert_eq!(p.min, 2.0);
+        assert!(p.p50.is_finite());
     }
 
     #[test]

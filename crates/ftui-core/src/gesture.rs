@@ -401,10 +401,14 @@ impl GestureRecognizer {
         }
 
         if drag.started {
-            let delta = (
-                pos.x as i16 - drag.last_pos.x as i16,
-                pos.y as i16 - drag.last_pos.y as i16,
-            );
+            // Subtract in i32, then saturate to the delta's i16. Casting each
+            // u16 to i16 first wrapped coordinates past 32767 negative, so a
+            // one-cell move from 32767 to 32768 overflowed (a debug panic).
+            let axis = |now: u16, before: u16| {
+                let d = i32::from(now) - i32::from(before);
+                i16::try_from(d).unwrap_or(if d < 0 { i16::MIN } else { i16::MAX })
+            };
+            let delta = (axis(pos.x, drag.last_pos.x), axis(pos.y, drag.last_pos.y));
             out.push(SemanticEvent::DragMove {
                 start: drag.start_pos,
                 current: pos,
@@ -2108,6 +2112,27 @@ mod tests {
             assert_eq!(delta.0, 5);
             assert_eq!(delta.1, 0);
         }
+    }
+
+    #[test]
+    fn drag_delta_crosses_i16_max_and_saturates_huge_jumps() {
+        // Each coordinate used to be cast to i16 before subtracting, so a
+        // one-cell move from 32767 to 32768 overflowed.
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+        let delta_of = |events: Vec<SemanticEvent>| {
+            events.into_iter().find_map(|e| match e {
+                SemanticEvent::DragMove { delta, .. } => Some(delta),
+                _ => None,
+            })
+        };
+        gr.process(&mouse_down(32_760, 0, MouseButton::Left), t);
+        let started = gr.process(&mouse_drag(32_767, 0, MouseButton::Left), t + MS_50);
+        assert_eq!(delta_of(started), Some((7, 0)));
+        let crossed = gr.process(&mouse_drag(32_768, 0, MouseButton::Left), t + MS_50);
+        assert_eq!(delta_of(crossed), Some((1, 0)));
+        let back = gr.process(&mouse_drag(0, u16::MAX, MouseButton::Left), t + MS_50);
+        assert_eq!(delta_of(back), Some((i16::MIN, i16::MAX)));
     }
 
     #[test]

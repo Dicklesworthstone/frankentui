@@ -750,6 +750,11 @@ impl Screen for ExplainabilityCockpit {
         self.render(frame, area, CockpitMode::Full);
     }
 
+    // 1-4 focus a panel; the app would take them to switch screens.
+    fn consumes_key(&self, key: char) -> bool {
+        matches!(key, '1'..='4')
+    }
+
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {

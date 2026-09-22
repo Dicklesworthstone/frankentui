@@ -31,6 +31,12 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
+# Milliseconds from the monotonic clock. Not `date +%s%3N`: BSD date prints
+# "...3N", and the duration arithmetic then aborted the suite on macOS.
+now_ms() {
+    python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)'
+}
+
 jsonl() {
     local step="$1"
     shift
@@ -47,14 +53,14 @@ run_step() {
     local log_file="$2"
     shift 2
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(now_ms)"
 
     echo -n "  [$name] ... "
     jsonl "$name" "event" "start"
 
     if "$@" > "$log_file" 2>&1; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(now_ms)"
         local dur=$((end_ms - start_ms))
         echo "PASS (${dur}ms)"
         jsonl "$name" "status" "passed" "duration_ms" "$dur"
@@ -62,7 +68,7 @@ run_step() {
         return 0
     else
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(now_ms)"
         local dur=$((end_ms - start_ms))
         echo "FAIL (${dur}ms)"
         jsonl "$name" "status" "failed" "duration_ms" "$dur"

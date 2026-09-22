@@ -234,7 +234,16 @@ impl CacheCostParams {
         let exponent = alpha / (1.0 + alpha);
         let b_star = s * n * ratio.powf(exponent);
 
-        b_star.clamp(s, self.budget_max_bytes)
+        self.clamp_budget(b_star)
+    }
+
+    /// Clamp a budget to `[item_bytes, budget_max_bytes]` without panicking.
+    ///
+    /// `f64::clamp` panics when its bounds are inverted or NaN, and both come
+    /// from public fields: an item larger than the budget cap (`item_bytes =
+    /// 2_000.0`, `budget_max_bytes = 1_000.0`) panicked. The cap wins instead.
+    fn clamp_budget(&self, budget: f64) -> f64 {
+        budget.max(self.item_bytes).min(self.budget_max_bytes)
     }
 
     /// Run the full optimization and produce evidence.
@@ -248,7 +257,7 @@ impl CacheCostParams {
         let comparison_points: Vec<CacheCostPoint> = fractions
             .iter()
             .map(|f| {
-                let b = (b_star * f).clamp(self.item_bytes, self.budget_max_bytes);
+                let b = self.clamp_budget(b_star * f);
                 self.evaluate(b)
             })
             .collect();
@@ -1453,6 +1462,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(params.optimal_budget(), params.budget_max_bytes);
+    }
+
+    #[test]
+    fn cache_item_larger_than_the_budget_cap_does_not_panic() {
+        // `f64::clamp(item_bytes, budget_max_bytes)` panicked on this
+        // inverted range; the cap now wins.
+        let params = CacheCostParams {
+            item_bytes: 2_000.0,
+            budget_max_bytes: 1_000.0,
+            ..Default::default()
+        };
+        assert_eq!(params.optimal_budget(), 1_000.0);
+        let result = params.optimize();
+        assert!(
+            result
+                .comparison_points
+                .iter()
+                .all(|p| p.budget_bytes <= 1_000.0)
+        );
     }
 
     #[test]

@@ -989,7 +989,7 @@ impl ResizeCoalescer {
         }
 
         let mut sorted = self.cycle_times.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(f64::total_cmp);
 
         let len = sorted.len();
         let p50_idx = len / 2;

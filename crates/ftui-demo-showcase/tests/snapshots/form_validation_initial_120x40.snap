@@ -37,4 +37,4 @@ Mode: Real-time [M to toggle]                                           ╭─�
 │                                                                      ││                                              │
 ╰──────────────────────────────────────────────────────────────────────╯│                                              │
 Touched: 0/9 | Dirty: 0/9                                               │                                              │
-Tab/Arrow: navigate | Space: toggle | Enter: submit | M: mode toggle    ╰──────────────────────────────────────────────╯
+Up/Down: fields | M/E/R/C: outside text fields                          ╰──────────────────────────────────────────────╯

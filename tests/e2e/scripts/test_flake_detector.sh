@@ -64,12 +64,18 @@ log_fail() {
     echo "[FAIL] $*" >&2
 }
 
+# Milliseconds from the monotonic clock. Not `date +%s%3N`: BSD date prints
+# "...3N", and the duration arithmetic below then aborted the script on macOS.
+now_ms() {
+    python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)'
+}
+
 # =============================================================================
 # Setup
 # =============================================================================
 
 mkdir -p "$OUTPUT_DIR"
-START_TS="$(date +%s%3N)"
+START_TS="$(now_ms)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
 log_info "Flake Detector E2E Test (bd-1plj)"
@@ -88,14 +94,14 @@ EOF
 # =============================================================================
 
 log_info "Building ftui-runtime tests..."
-BUILD_START="$(date +%s%3N)"
+BUILD_START="$(now_ms)"
 
 if ! cargo build -p ftui-runtime --tests 2>"$OUTPUT_DIR/build.log"; then
     log_fail "Build failed! See $OUTPUT_DIR/build.log"
     exit 2
 fi
 
-BUILD_END="$(date +%s%3N)"
+BUILD_END="$(now_ms)"
 BUILD_MS=$((BUILD_END - BUILD_START))
 log_debug "Build completed in ${BUILD_MS}ms"
 
@@ -104,7 +110,7 @@ log_debug "Build completed in ${BUILD_MS}ms"
 # =============================================================================
 
 log_info "Running flake detector unit tests..."
-TEST_START="$(date +%s%3N)"
+TEST_START="$(now_ms)"
 
 TEST_OUTPUT="$OUTPUT_DIR/unit_tests.txt"
 if cargo test -p ftui-runtime flake_detector:: -- --nocapture 2>&1 | tee "$TEST_OUTPUT"; then
@@ -114,7 +120,7 @@ else
     exit 1
 fi
 
-TEST_END="$(date +%s%3N)"
+TEST_END="$(now_ms)"
 TEST_MS=$((TEST_END - TEST_START))
 log_debug "Tests completed in ${TEST_MS}ms"
 
@@ -156,7 +162,7 @@ fi
 # Final results
 # =============================================================================
 
-END_TS="$(date +%s%3N)"
+END_TS="$(now_ms)"
 TOTAL_MS=$((END_TS - START_TS))
 
 # Count passed tests

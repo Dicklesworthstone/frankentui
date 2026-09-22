@@ -1158,7 +1158,7 @@ impl ConformalRanker {
 
         // Sort gaps for computing conformal p-values (fraction of gaps ≤ g_i).
         let mut sorted_gaps = gaps.clone();
-        sorted_gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted_gaps.sort_by(f64::total_cmp);
 
         // Compute rank confidence for each position.
         let mut items: Vec<RankedItem> = Vec::with_capacity(count);

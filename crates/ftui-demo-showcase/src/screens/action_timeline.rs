@@ -791,24 +791,29 @@ impl Screen for ActionTimeline {
         }) = event
         {
             match (*code, *modifiers) {
-                (KeyCode::Char('f'), Modifiers::NONE) | (KeyCode::Char('F'), Modifiers::NONE) => {
+                (KeyCode::Char('f'), Modifiers::NONE)
+                | (KeyCode::Char('F'), Modifiers::NONE | Modifiers::SHIFT) => {
                     let prev = self.follow;
                     self.follow = !self.follow;
                     debug!(prev = prev, new = self.follow, "Toggled follow mode");
                 }
-                (KeyCode::Char('c'), Modifiers::NONE) | (KeyCode::Char('C'), Modifiers::NONE) => {
+                (KeyCode::Char('c'), Modifiers::NONE)
+                | (KeyCode::Char('C'), Modifiers::NONE | Modifiers::SHIFT) => {
                     self.cycle_component();
                     self.sync_selection();
                 }
-                (KeyCode::Char('s'), Modifiers::NONE) | (KeyCode::Char('S'), Modifiers::NONE) => {
+                (KeyCode::Char('s'), Modifiers::NONE)
+                | (KeyCode::Char('S'), Modifiers::NONE | Modifiers::SHIFT) => {
                     self.cycle_severity();
                     self.sync_selection();
                 }
-                (KeyCode::Char('t'), Modifiers::NONE) | (KeyCode::Char('T'), Modifiers::NONE) => {
+                (KeyCode::Char('t'), Modifiers::NONE)
+                | (KeyCode::Char('T'), Modifiers::NONE | Modifiers::SHIFT) => {
                     self.cycle_kind();
                     self.sync_selection();
                 }
-                (KeyCode::Char('x'), Modifiers::NONE) | (KeyCode::Char('X'), Modifiers::NONE) => {
+                (KeyCode::Char('x'), Modifiers::NONE)
+                | (KeyCode::Char('X'), Modifiers::NONE | Modifiers::SHIFT) => {
                     self.clear_filters();
                     self.sync_selection();
                 }

@@ -463,7 +463,7 @@ fn compute_stats(items: &[TriageItem]) -> TriageStats {
         0.0
     };
 
-    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    scores.sort_by(f64::total_cmp);
     let median_score = if total > 0 {
         if total.is_multiple_of(2) {
             (scores[total / 2 - 1] + scores[total / 2]) / 2.0
