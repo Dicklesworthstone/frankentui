@@ -201,6 +201,8 @@ def start_bridge(case_id: str, *, require_auth: bool = True) -> tuple[subprocess
     ]
     if require_auth:
         args.extend(["--origin", allowed_origin, "--token", token])
+    else:
+        args.append("--no-auth")
 
     proc = subprocess.Popen(
         args,
@@ -463,7 +465,9 @@ if not events:
 asserts = [event for event in events if event.get("type") == "assert"]
 if len(asserts) < 10:
     raise SystemExit(f"expected at least 10 assert events, got {len(asserts)}")
-failed = [event for event in asserts if event.get("status") != "passed"]
+# The prerequisite checks in common.sh record "pass"; the cases above record
+# "passed". Requiring "passed" of both failed every run on its own prerequisites.
+failed = [event for event in asserts if event.get("status") not in ("pass", "passed")]
 if failed:
     names = [event.get("assertion", "?") for event in failed]
     raise SystemExit(f"unexpected failed assertions: {names}")
