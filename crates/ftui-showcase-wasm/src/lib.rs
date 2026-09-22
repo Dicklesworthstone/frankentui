@@ -701,6 +701,29 @@ mod tests {
         assert_eq!(flat.cells.len(), 80); // 20 cells * 4 u32 per cell
     }
 
+    /// Selecting a screen reaches the model without going through the event
+    /// queue, so nothing marked the frame stale: the host got the new screen
+    /// only once some later event or tick happened to arrive.
+    #[test]
+    fn selecting_a_screen_schedules_the_repaint_that_shows_it() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        let _ = core.take_flat_patches();
+        assert!(!core.step().rendered, "nothing to draw yet");
+
+        assert!(core.goto_screen_selector("determinism_lab"));
+        assert!(
+            core.step().rendered,
+            "the selected screen was never painted"
+        );
+        assert!(!core.take_flat_patches().cells.is_empty());
+
+        // A selector that resolves to nothing changes no screen, so it owes no
+        // frame either.
+        assert!(!core.goto_screen_selector("no_such_screen"));
+        assert!(!core.step().rendered);
+    }
+
     #[test]
     fn runner_core_take_logs() {
         let mut core = RunnerCore::new(80, 24);
@@ -722,17 +745,18 @@ mod tests {
     }
 
     fn navigate_to_determinism_lab(core: &mut RunnerCore) {
-        use ftui_demo_showcase::app::ScreenId;
-        let steps = ScreenId::DeterminismLab.index() - ScreenId::Dashboard.index();
-        for _ in 0..steps {
-            assert!(push_key_with_key(core, "L", "KeyL", 1));
-        }
+        // Walking there with Shift+L stops partway: Forms and Input reports
+        // that it takes text, and a capital cannot be told from the
+        // screen-switch chord on any terminal, so the app leaves both to the
+        // screen (812fa44b). Tab still moves off a text screen, but what sits
+        // between Dashboard and the lab is not this test's subject. Select the
+        // screen by its stable slug instead.
+        assert!(
+            core.goto_screen_selector("determinism_lab"),
+            "determinism_lab is a registered screen"
+        );
         let result = core.step();
         assert!(result.running && result.rendered);
-        assert_eq!(
-            result.events_processed,
-            u32::try_from(steps).expect("screen count fits event counter")
-        );
         assert!(!core.take_flat_patches().cells.is_empty());
         assert!(core.take_logs().is_empty());
     }

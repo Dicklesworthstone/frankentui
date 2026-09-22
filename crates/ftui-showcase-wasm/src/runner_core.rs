@@ -320,12 +320,22 @@ impl RunnerCore {
     ///
     /// Returns `false` if `index` is out of range, leaving the screen unchanged.
     pub fn goto_screen(&mut self, index: usize) -> bool {
-        self.inner.model_mut().goto_screen_index(index)
+        let selected = self.inner.model_mut().goto_screen_index(index);
+        if selected {
+            // Reaching the model directly leaves the event queue untouched, so
+            // nothing marks the frame stale and the new screen is not drawn.
+            self.inner.request_redraw();
+        }
+        selected
     }
 
     /// Select an available screen by stable slug or one-based decimal position.
     pub fn goto_screen_selector(&mut self, selector: &str) -> bool {
-        self.inner.model_mut().goto_screen_selector(selector)
+        let selected = self.inner.model_mut().goto_screen_selector(selector);
+        if selected {
+            self.inner.request_redraw();
+        }
+        selected
     }
 
     /// The current screen's keys, as JSON a touch host can render as buttons.

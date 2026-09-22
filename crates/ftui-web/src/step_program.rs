@@ -234,6 +234,18 @@ impl<M: Model> StepProgram<M> {
         self.dirty = true;
     }
 
+    /// Schedule a repaint for the next [`step`](Self::step).
+    ///
+    /// Only an event, a tick or an accessibility-policy change marks the frame
+    /// stale. A host that reaches the model another way — [`model_mut`] to
+    /// select a screen, say — leaves nothing to render, and `step` reports
+    /// `rendered: false` until something else happens to arrive.
+    ///
+    /// [`model_mut`]: Self::model_mut
+    pub fn request_redraw(&mut self) {
+        self.dirty = true;
+    }
+
     /// The active accessibility policy, or `None` when collection is disabled.
     #[must_use]
     pub fn accessibility_policy(&self) -> Option<ScreenReaderPolicy> {
