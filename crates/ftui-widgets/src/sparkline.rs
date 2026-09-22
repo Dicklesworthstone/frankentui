@@ -449,8 +449,9 @@ impl MeasurableWidget for Sparkline<'_> {
         }
 
         // Sparklines are always 1 row tall
-        // Width is the number of data points
-        let width = self.data.len() as u16;
+        // Width is the number of data points, saturated: `as u16` wrapped
+        // 65,536 points to a width of 0, below the minimum of 1.
+        let width = u16::try_from(self.data.len()).unwrap_or(u16::MAX);
 
         SizeConstraints {
             min: Size::new(1, 1), // At least 1 data point visible
@@ -810,6 +811,17 @@ mod tests {
         let c = sparkline.measure(Size::MAX);
 
         assert_eq!(c.max, Some(Size::new(3, 1)));
+    }
+
+    #[test]
+    fn measure_saturates_past_u16_data_points() {
+        // `len() as u16` measured 65,536 points as 0 wide, below min 1.
+        for len in [65_536, 65_537, 200_000] {
+            let data = vec![1.0; len];
+            let c = Sparkline::new(&data).measure(Size::MAX);
+            assert_eq!(c.preferred, Size::new(u16::MAX, 1), "{len}");
+            assert!(c.min.width <= c.preferred.width, "{len}");
+        }
     }
 
     mod marker_tests {

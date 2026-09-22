@@ -364,11 +364,14 @@ impl BarChart<'_> {
         }
 
         let label_y = area.bottom().saturating_sub(1);
+        // Cursors saturate: bars summing past u16::MAX overflowed, a debug
+        // panic, and in release wrapped back to draw over the first bars. A
+        // saturated cursor lies past `area.right()`, so later bars clip.
         let mut x_cursor = area.x;
 
         for (gi, group) in self.groups.iter().enumerate() {
             if gi > 0 {
-                x_cursor += self.group_gap;
+                x_cursor = x_cursor.saturating_add(self.group_gap);
             }
             let group_start_x = x_cursor;
 
@@ -378,7 +381,7 @@ impl BarChart<'_> {
                     let base_y = area.bottom().saturating_sub(2);
                     for (si, &val) in group.values.iter().enumerate() {
                         if si > 0 {
-                            x_cursor += self.bar_gap;
+                            x_cursor = x_cursor.saturating_add(self.bar_gap);
                         }
                         let h = (val / max_val) * chart_height;
                         let h = if h.is_nan() { 0.0 } else { h };
@@ -418,7 +421,7 @@ impl BarChart<'_> {
                             }
                         }
 
-                        x_cursor += self.bar_width;
+                        x_cursor = x_cursor.saturating_add(self.bar_width);
                     }
                 }
                 BarMode::Stacked => {
@@ -448,7 +451,7 @@ impl BarChart<'_> {
                             }
                         }
                     }
-                    x_cursor += self.bar_width;
+                    x_cursor = x_cursor.saturating_add(self.bar_width);
                 }
             }
 
@@ -509,18 +512,20 @@ impl BarChart<'_> {
             return;
         }
 
+        // Saturating, as in the vertical layout above.
         let mut y_cursor = area.y;
 
         for (gi, group) in self.groups.iter().enumerate() {
             if gi > 0 {
-                y_cursor += self.group_gap;
+                y_cursor = y_cursor.saturating_add(self.group_gap);
             }
+            let group_start_y = y_cursor;
 
             match self.mode {
                 BarMode::Grouped => {
                     for (si, &val) in group.values.iter().enumerate() {
                         if si > 0 {
-                            y_cursor += self.bar_gap;
+                            y_cursor = y_cursor.saturating_add(self.bar_gap);
                         }
                         let bar_len_f = (val / max_val) * chart_width;
                         let bar_len = if bar_len_f.is_nan() || val == 0.0 {
@@ -545,7 +550,7 @@ impl BarChart<'_> {
                             }
                         }
 
-                        y_cursor += self.bar_width;
+                        y_cursor = y_cursor.saturating_add(self.bar_width);
                     }
                 }
                 BarMode::Stacked => {
@@ -576,19 +581,15 @@ impl BarChart<'_> {
                             }
                         }
                     }
-                    y_cursor += self.bar_width;
+                    y_cursor = y_cursor.saturating_add(self.bar_width);
                 }
             }
 
             // Group label at left edge — render full label text.
             {
-                let ly = match self.mode {
-                    BarMode::Grouped => y_cursor.saturating_sub(
-                        (group.values.len() as u16) * self.bar_width
-                            + group.values.len().saturating_sub(1) as u16 * self.bar_gap,
-                    ),
-                    BarMode::Stacked => y_cursor.saturating_sub(self.bar_width),
-                };
+                // The group's first row. Recomputing it from the group's
+                // height overflowed that multiplication for large groups.
+                let ly = group_start_y;
                 if ly < area.bottom() {
                     let mut x_off = 0_u16;
                     for grapheme in group.label.graphemes(true) {
@@ -1186,6 +1187,28 @@ mod tests {
     }
 
     // ===== BarChart =====
+
+    #[test]
+    fn barchart_layout_past_u16_neither_panics_nor_wraps_onto_the_chart() {
+        // Cursors advanced with unchecked `+=`: bars summing past 65,535
+        // cells overflowed (a debug panic) and, in release, wrapped back
+        // to draw over the first bars.
+        for direction in [BarDirection::Vertical, BarDirection::Horizontal] {
+            for mode in [BarMode::Grouped, BarMode::Stacked] {
+                let groups: Vec<_> = (0..3).map(|_| BarGroup::new("G", vec![1.0; 50])).collect();
+                let area = Rect::new(0, 0, 40, 12);
+                let mut pool = GraphemePool::new();
+                let mut frame = Frame::new(40, 12, &mut pool);
+                BarChart::new(groups)
+                    .direction(direction)
+                    .mode(mode)
+                    .bar_width(1_000)
+                    .bar_gap(1_000)
+                    .group_gap(1_000)
+                    .render(area, &mut frame);
+            }
+        }
+    }
 
     #[test]
     fn barchart_empty_groups_noop() {
