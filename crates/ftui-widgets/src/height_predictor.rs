@@ -278,7 +278,7 @@ impl HeightPredictor {
 
         // Sort residuals to find quantile.
         let mut sorted: Vec<f64> = cat.residuals.iter().copied().collect();
-        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_unstable_by(f64::total_cmp);
 
         let alpha = 1.0 - self.config.coverage;
         let n = sorted.len() as f64;

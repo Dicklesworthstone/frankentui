@@ -503,7 +503,7 @@ impl ConformalAlert {
 
         // Sort calibration for quantile
         let mut sorted: Vec<f64> = self.calibration.iter().copied().collect();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(f64::total_cmp);
 
         sorted[idx]
     }

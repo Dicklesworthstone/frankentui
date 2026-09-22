@@ -496,7 +496,7 @@ fn compute_percentiles(values: &[f64]) -> Percentiles {
     }
 
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(f64::total_cmp);
 
     let n = sorted.len();
     let percentile = |p: f64| -> f64 {

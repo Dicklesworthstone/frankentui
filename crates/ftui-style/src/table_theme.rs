@@ -176,9 +176,13 @@ pub struct Gradient {
 
 impl Gradient {
     /// Create a new gradient with stops in the range [0, 1].
+    ///
+    /// Stops at a non-finite position are dropped: a NaN position has no
+    /// place in the order, and `sample` interpolated through it to garbage.
     pub fn new(stops: Vec<(f32, PackedRgba)>) -> Self {
         let mut stops = stops;
-        stops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        stops.retain(|(position, _)| position.is_finite());
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
         Self { stops }
     }
 

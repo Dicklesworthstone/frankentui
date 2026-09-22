@@ -152,7 +152,7 @@ impl QuakeRenderer {
         // Sort front-to-back so the z-buffer rejects overlapping farther faces
         // early, before expensive per-pixel divisions and color math.
         self.face_order_buf
-            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            .sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
         // Keep fog math in division form to preserve historical quantization
         // behavior and stable visual output.
