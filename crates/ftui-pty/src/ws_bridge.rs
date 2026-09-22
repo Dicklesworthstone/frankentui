@@ -650,6 +650,14 @@ fn validate_upgrade_request(
     }
 
     if let Some(token) = expected_token {
+        // An empty secret authenticates nobody: `?token=`, or a bare
+        // `?token`, presents the empty string and matched it. Fail closed.
+        if token.is_empty() {
+            return Err(HandshakeRejection {
+                status: StatusCode::FORBIDDEN,
+                body: "Server auth token is empty".to_string(),
+            });
+        }
         let query = request.uri().query().ok_or_else(|| HandshakeRejection {
             status: StatusCode::UNAUTHORIZED,
             body: "Missing token".to_string(),
@@ -1651,6 +1659,14 @@ mod tests {
     }
 
     // --- validate_upgrade_request edge cases ---
+
+    #[test]
+    fn validate_fails_closed_on_an_empty_server_token() {
+        for uri in ["/ws?token=", "/ws?token", "/ws", "/ws?token=x"] {
+            let result = validate_upgrade_request(&request(uri, None), &[], Some(""));
+            assert!(result.is_err(), "{uri}");
+        }
+    }
 
     #[test]
     fn validate_no_origin_required_no_token_required() {
