@@ -579,7 +579,13 @@ impl Dialog {
         }
 
         match key.code {
-            KeyCode::Char(c) => {
+            // As TextInput does: a Ctrl or Super chord is a command, not text
+            // (Ctrl+C typed a "c"), and control characters stay out, as they
+            // already do on paste.
+            KeyCode::Char(c)
+                if !c.is_control()
+                    && !key.modifiers.intersects(Modifiers::CTRL | Modifiers::SUPER) =>
+            {
                 state.input_value.push(c);
             }
             KeyCode::Backspace => {
@@ -1434,6 +1440,32 @@ mod tests {
 
         let result = dialog.handle_event(&enter, &mut state, None);
         assert_eq!(result, Some(DialogResult::Input("hello".to_string())));
+    }
+
+    #[test]
+    fn prompt_input_ignores_command_chords_and_control_chars() {
+        // Every Char press was appended, so Ctrl+C typed a "c".
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+        state.input_focused = true;
+        let press = |c, modifiers| {
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers,
+                kind: KeyEventKind::Press,
+            })
+        };
+        for event in [
+            press('h', Modifiers::empty()),
+            press('c', Modifiers::CTRL),
+            press('s', Modifiers::SUPER),
+            press('\u{7}', Modifiers::empty()),
+            press('I', Modifiers::SHIFT),
+            press('é', Modifiers::ALT),
+        ] {
+            dialog.handle_event(&event, &mut state, None);
+        }
+        assert_eq!(state.input_value, "hIé");
     }
 
     #[test]
