@@ -159,6 +159,9 @@ pub struct TerminalModel {
     utf8_expected: Option<usize>,
     /// Bytes processed (for debugging).
     bytes_processed: usize,
+    /// The cell the last printed character went to, and the cursor right
+    /// after it: a zero-width character that follows directly belongs there.
+    last_print: Option<(usize, usize, usize)>,
 }
 
 impl TerminalModel {
@@ -187,6 +190,7 @@ impl TerminalModel {
             utf8_pending: Vec::with_capacity(4),
             utf8_expected: None,
             bytes_processed: 0,
+            last_print: None,
         }
     }
 
@@ -303,6 +307,7 @@ impl TerminalModel {
         self.osc_buffer.clear();
         self.utf8_pending.clear();
         self.utf8_expected = None;
+        self.last_print = None;
     }
 
     /// Process a byte sequence, updating the terminal state.
@@ -576,6 +581,19 @@ impl TerminalModel {
 
         // Zero-width (combining) character handling
         if width == 0 {
+            // It belongs to the character printed just before it, which is
+            // not always the cell left of the cursor: after a wide character
+            // that is the placeholder, and after the last column the cursor
+            // has already wrapped. Both put `中\u{301}` or a mark at the
+            // right edge in the wrong cell.
+            if let Some((idx, x, y)) = self.last_print
+                && (x, y) == (self.cursor_x, self.cursor_y)
+            {
+                if let Some(cell) = self.cells.get_mut(idx) {
+                    cell.text.push(ch);
+                }
+                return;
+            }
             if self.cursor_x > 0 {
                 // Append to previous cell
                 let idx = self.cursor_y * self.width + self.cursor_x - 1;
@@ -596,8 +614,11 @@ impl TerminalModel {
             return;
         }
 
+        let mut printed = None;
         if self.cursor_x < self.width && self.cursor_y < self.height {
-            let cell = &mut self.cells[self.cursor_y * self.width + self.cursor_x];
+            let idx = self.cursor_y * self.width + self.cursor_x;
+            printed = Some(idx);
+            let cell = &mut self.cells[idx];
             cell.text = ch.to_string();
             cell.fg = self.sgr.fg;
             cell.bg = self.sgr.bg;
@@ -628,6 +649,7 @@ impl TerminalModel {
             // Frame-based rendering where absolute positioning (CUP) is used, and
             // wrapping/scrolling behavior should not be triggered by the Presenter.
         }
+        self.last_print = printed.map(|idx| (idx, self.cursor_x, self.cursor_y));
     }
 
     fn execute_csi(&mut self, final_byte: u8) {
@@ -1925,6 +1947,29 @@ mod tests {
         // Next cell should be cleared (placeholder)
         assert_eq!(model.cell(1, 0).unwrap().text, "");
         assert_eq!(model.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn combining_mark_joins_the_character_it_follows() {
+        // After a wide character the cell left of the cursor is its
+        // placeholder, and the mark landed there.
+        let mut model = TerminalModel::new(10, 2);
+        model.process("中\u{301}x".as_bytes());
+        assert_eq!(model.cell(0, 0).unwrap().text, "中\u{301}");
+        assert_eq!(model.cell(1, 0).unwrap().text, "");
+        assert_eq!(model.cell(2, 0).unwrap().text, "x");
+
+        // After the last column the cursor has wrapped, and the mark landed
+        // on the next line's first cell.
+        let mut model = TerminalModel::new(3, 2);
+        model.process("\x1b[1;3He\u{301}".as_bytes());
+        assert_eq!(model.cell(2, 0).unwrap().text, "e\u{301}");
+        assert_eq!(model.cell(0, 1).unwrap().text, " ");
+
+        // A mark after a cursor move still takes the old rule.
+        let mut model = TerminalModel::new(5, 1);
+        model.process("ab\x1b[1;2H\u{301}".as_bytes());
+        assert_eq!(model.cell(0, 0).unwrap().text, "a\u{301}");
     }
 
     // --- Cursor CUP with f final byte ---
