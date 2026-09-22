@@ -67,28 +67,6 @@ ensure_demo_bin() {
     return 1
 }
 
-detect_snapshot_screen() {
-    local bin="$1"
-    local help
-    help="$($bin --help 2>/dev/null || true)"
-    if [[ -z "$help" ]]; then
-        return 1
-    fi
-    local line
-    # Look for "Snapshot Player" in help output
-    line=$(printf '%s\n' "$help" | command grep "Snapshot Player" | head -n 1 || true)
-    if [[ -z "$line" ]]; then
-        return 1
-    fi
-    local screen
-    screen=$(printf '%s' "$line" | awk '{print $1}')
-    if [[ ! "$screen" =~ ^[0-9]+$ ]]; then
-        return 1
-    fi
-    printf '%s' "$screen"
-    return 0
-}
-
 run_case() {
     local name="$1"
     local send_label="$2"
@@ -138,11 +116,13 @@ if [[ -z "$DEMO_BIN" ]]; then
     exit 0
 fi
 
-SNAPSHOT_SCREEN="$(detect_snapshot_screen "$DEMO_BIN" || true)"
+# By slug: the screen's title is now "Time-Travel Studio", and grepping --help
+# for "Snapshot Player" skipped every case.
+SNAPSHOT_SCREEN="$(e2e_demo_screen "$DEMO_BIN" snapshot_player || true)"
 if [[ -z "$SNAPSHOT_SCREEN" ]]; then
     LOG_FILE="$E2E_LOG_DIR/snapshot_player_missing.log"
     for t in snapshot_smoke snapshot_play_pause snapshot_step_frames snapshot_jump_bounds snapshot_marker snapshot_recording snapshot_small_terminal; do
-        log_test_skip "$t" "Snapshot Player screen not registered in --help"
+        log_test_skip "$t" "snapshot_player screen not in --list-screens"
         record_result "$t" "skipped" 0 "$LOG_FILE" "screen missing"
         jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$t\",\"status\":\"skipped\",\"reason\":\"screen missing\",\"seed\":\"$SEED\",\"screen\":\"${SNAPSHOT_SCREEN:-}\",\"term\":\"${TERM:-}\",\"colorterm\":\"${COLORTERM:-}\",\"no_color\":\"${NO_COLOR:-}\"}"
     done
@@ -179,8 +159,8 @@ snapshot_smoke() {
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # Expect snapshot/playback UI elements
-    # Should show "Paused", "Playing", "Frame", "Timeline", or "Snapshot"
+    # The status bar names the screen; words like "Frame" appear on others
+    command grep -a -q "Time-Travel Studio" "$output_file" || return 1
     command grep -a -qi "Paused\|Playing\|Frame\|Timeline\|Snapshot\|Preview" "$output_file" || return 1
 }
 
