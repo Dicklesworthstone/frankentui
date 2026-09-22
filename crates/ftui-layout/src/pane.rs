@@ -18,6 +18,19 @@ use smallvec::{SmallVec, smallvec};
 /// Current pane tree schema version.
 pub const PANE_TREE_SCHEMA_VERSION: u16 = 1;
 
+/// Deepest split nesting a pane tree may have.
+///
+/// The tree walks that lay a pane tree out — `subtree_constraints` and
+/// `solve_node` — recurse once per level, and a stack overflow aborts the
+/// process instead of returning an error. Validation rejects anything deeper,
+/// so every tree that reaches a walk is bounded by construction.
+///
+/// A degenerate chain this long is 513 panes stacked inside one another;
+/// interactive layouts sit two orders of magnitude below it, while the depth
+/// that actually overflows a 2 MiB thread stack is around 2,000 in an
+/// unoptimized build. The gap in both directions is deliberate.
+pub const PANE_TREE_MAX_DEPTH: usize = 512;
+
 /// Current schema version for semantic pane interaction events.
 ///
 /// Versioning policy:
@@ -6726,6 +6739,11 @@ pub enum PaneModelError {
     UnreachableNode {
         node_id: PaneId,
     },
+    TreeTooDeep {
+        node_id: PaneId,
+        depth: usize,
+        max_depth: usize,
+    },
     NextIdNotGreaterThanExisting {
         next_id: PaneId,
         max_existing: PaneId,
@@ -6847,6 +6865,15 @@ impl fmt::Display for PaneModelError {
             Self::UnreachableNode { node_id } => {
                 write!(f, "node {} is unreachable from root", node_id.0)
             }
+            Self::TreeTooDeep {
+                node_id,
+                depth,
+                max_depth,
+            } => write!(
+                f,
+                "node {} nests {depth} splits deep, past the maximum of {max_depth}",
+                node_id.0
+            ),
             Self::NextIdNotGreaterThanExisting {
                 next_id,
                 max_existing,
@@ -6990,32 +7017,57 @@ fn push_invariant_issue(
     });
 }
 
+/// Depth-first walk collecting reachable nodes and the nodes that close a
+/// cycle.
+///
+/// This reports on a snapshot that has not been validated yet — it is what a
+/// caller runs *before* trusting one — so it cannot refuse a tree for being
+/// too deep the way [`validate_tree`] does. It keeps its own stack instead, so
+/// an arbitrarily deep snapshot costs heap rather than aborting the process.
 fn dfs_collect_cycles_and_reachable(
-    node_id: PaneId,
+    root: PaneId,
     nodes: &BTreeMap<PaneId, PaneNodeRecord>,
     visiting: &mut BTreeSet<PaneId>,
     visited: &mut BTreeSet<PaneId>,
     cycle_nodes: &mut BTreeSet<PaneId>,
 ) {
-    if visiting.contains(&node_id) {
-        let _ = cycle_nodes.insert(node_id);
-        return;
-    }
-    if !visited.insert(node_id) {
-        return;
+    // `Exit` stands in for the return from a recursive call, where the node
+    // stops being on the path from the root.
+    enum Step {
+        Enter(PaneId),
+        Exit(PaneId),
     }
 
-    let _ = visiting.insert(node_id);
-    if let Some(node) = nodes.get(&node_id)
-        && let PaneNodeKind::Split(split) = &node.kind
-    {
-        for child in [split.first, split.second] {
-            if nodes.contains_key(&child) {
-                dfs_collect_cycles_and_reachable(child, nodes, visiting, visited, cycle_nodes);
+    let mut stack = vec![Step::Enter(root)];
+    while let Some(step) = stack.pop() {
+        match step {
+            Step::Enter(node_id) => {
+                if visiting.contains(&node_id) {
+                    let _ = cycle_nodes.insert(node_id);
+                    continue;
+                }
+                if !visited.insert(node_id) {
+                    continue;
+                }
+                let _ = visiting.insert(node_id);
+                stack.push(Step::Exit(node_id));
+                if let Some(node) = nodes.get(&node_id)
+                    && let PaneNodeKind::Split(split) = &node.kind
+                {
+                    // Pushed in reverse so `first` is visited first, as the
+                    // recursive walk did.
+                    for child in [split.second, split.first] {
+                        if nodes.contains_key(&child) {
+                            stack.push(Step::Enter(child));
+                        }
+                    }
+                }
+            }
+            Step::Exit(node_id) => {
+                let _ = visiting.remove(&node_id);
             }
         }
     }
-    let _ = visiting.remove(&node_id);
 }
 
 fn build_invariant_report(snapshot: &PaneTreeSnapshot) -> PaneInvariantReport {
@@ -7528,7 +7580,7 @@ fn validate_tree(
 
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
-    dfs_validate(root, nodes, &mut visiting, &mut visited)?;
+    dfs_validate(root, 0, nodes, &mut visiting, &mut visited)?;
 
     if visited.len() != nodes.len()
         && let Some(node_id) = nodes.keys().find(|node_id| !visited.contains(node_id))
@@ -7685,12 +7737,22 @@ fn solve_split_sizes(
 
 fn dfs_validate(
     node_id: PaneId,
+    depth: usize,
     nodes: &BTreeMap<PaneId, PaneNodeRecord>,
     visiting: &mut BTreeSet<PaneId>,
     visited: &mut BTreeSet<PaneId>,
 ) -> Result<(), PaneModelError> {
     if visiting.contains(&node_id) {
         return Err(PaneModelError::CycleDetected { node_id });
+    }
+    // Checked before recursing, so this walk is itself bounded by the same
+    // limit it enforces for the layout walks.
+    if depth > PANE_TREE_MAX_DEPTH {
+        return Err(PaneModelError::TreeTooDeep {
+            node_id,
+            depth,
+            max_depth: PANE_TREE_MAX_DEPTH,
+        });
     }
     if !visited.insert(node_id) {
         return Ok(());
@@ -7700,8 +7762,8 @@ fn dfs_validate(
     if let Some(node) = nodes.get(&node_id)
         && let PaneNodeKind::Split(split) = &node.kind
     {
-        dfs_validate(split.first, nodes, visiting, visited)?;
-        dfs_validate(split.second, nodes, visiting, visited)?;
+        dfs_validate(split.first, depth + 1, nodes, visiting, visited)?;
+        dfs_validate(split.second, depth + 1, nodes, visiting, visited)?;
     }
     let _ = visiting.remove(&node_id);
     Ok(())
@@ -7764,6 +7826,82 @@ mod tests {
             ],
             extensions: BTreeMap::new(),
         }
+    }
+
+    /// A chain of `depth` splits: each split's first child is a leaf and its
+    /// second child is the next split, so the tree nests `depth` levels deep.
+    fn make_deep_snapshot(depth: u64) -> PaneTreeSnapshot {
+        let ratio = PaneSplitRatio::new(1, 1).expect("valid ratio");
+        let mut nodes = Vec::new();
+        for level in 0..depth {
+            let split_id = id(2 * level + 1);
+            let leaf_id = id(2 * level + 2);
+            let second = id(2 * level + 3);
+            nodes.push(PaneNodeRecord::split(
+                split_id,
+                (level > 0).then(|| id(2 * level - 1)),
+                PaneSplit {
+                    axis: SplitAxis::Horizontal,
+                    ratio,
+                    first: leaf_id,
+                    second,
+                },
+            ));
+            nodes.push(PaneNodeRecord::leaf(
+                leaf_id,
+                Some(split_id),
+                PaneLeaf::new(format!("leaf {level}")),
+            ));
+        }
+        nodes.push(PaneNodeRecord::leaf(
+            id(2 * depth + 1),
+            Some(id(2 * depth - 1)),
+            PaneLeaf::new("tail"),
+        ));
+
+        PaneTreeSnapshot {
+            schema_version: PANE_TREE_SCHEMA_VERSION,
+            root: id(1),
+            next_id: id(2 * depth + 2),
+            nodes,
+            extensions: BTreeMap::new(),
+        }
+    }
+
+    /// The layout walks recurse once per level and a stack overflow aborts
+    /// the process, so validation refuses a tree deeper than the cap instead
+    /// of handing one to them.
+    #[test]
+    fn a_snapshot_deeper_than_the_cap_is_refused() {
+        let ok = PaneTree::from_snapshot(make_deep_snapshot(PANE_TREE_MAX_DEPTH as u64))
+            .expect("a tree at the cap is accepted");
+        assert_eq!(ok.nodes().count(), 2 * PANE_TREE_MAX_DEPTH + 1);
+
+        let error = PaneTree::from_snapshot(make_deep_snapshot(PANE_TREE_MAX_DEPTH as u64 + 1))
+            .expect_err("a tree past the cap is refused");
+        assert!(
+            matches!(
+                error,
+                PaneModelError::TreeTooDeep {
+                    max_depth: PANE_TREE_MAX_DEPTH,
+                    ..
+                }
+            ),
+            "expected TreeTooDeep, got {error}"
+        );
+    }
+
+    /// `invariant_report` is what a caller runs on a snapshot it does not
+    /// trust yet, so it has to survive one that validation would refuse.
+    #[test]
+    fn the_invariant_report_survives_a_snapshot_too_deep_to_validate() {
+        let snapshot = make_deep_snapshot(50_000);
+        let report = snapshot.invariant_report();
+        assert!(
+            !report.has_errors(),
+            "a deep but otherwise sound snapshot reports no structural error: {:?}",
+            report.issues
+        );
     }
 
     fn split_ratio(tree: &PaneTree, split: PaneId) -> PaneSplitRatio {
