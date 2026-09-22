@@ -170,11 +170,14 @@ impl StringCatalog {
 
     /// Add strings for a locale.
     ///
-    /// Automatically detects the plural rule based on the locale tag.
+    /// Detects the plural rule from the locale tag, unless
+    /// [`Self::set_plural_rule`] already chose one. It used to replace it, so
+    /// a custom rule set before the strings were added was silently lost.
     pub fn add_locale(&mut self, locale: impl Into<String>, strings: LocaleStrings) {
         let locale = locale.into();
-        let rule = PluralRule::for_locale(&locale);
-        self.plural_rules.insert(locale.clone(), rule);
+        self.plural_rules
+            .entry(locale.clone())
+            .or_insert_with(|| PluralRule::for_locale(&locale));
         self.locales.insert(locale, strings);
     }
 
@@ -553,6 +556,34 @@ mod tests {
         assert_eq!(catalog.get_plural("ru", "files", 3), Some("{count} файла"));
         assert_eq!(catalog.get_plural("ru", "files", 5), Some("{count} файлов"));
         assert_eq!(catalog.get_plural("ru", "files", 21), Some("{count} файл"));
+    }
+
+    #[test]
+    fn plural_rule_set_before_the_strings_survives_add_locale() {
+        // Hebrew's `two` needs a custom rule, as the plural docs advise.
+        // `add_locale` replaced it with the detected English rule.
+        fn hebrew(n: i64) -> PluralCategory {
+            match n.unsigned_abs() {
+                1 => PluralCategory::One,
+                2 => PluralCategory::Two,
+                _ => PluralCategory::Other,
+            }
+        }
+        let mut catalog = StringCatalog::new();
+        catalog.set_plural_rule("he", PluralRule::Custom(hebrew));
+        let mut he = LocaleStrings::new();
+        he.insert_plural(
+            "days",
+            PluralForms {
+                one: "יום".into(),
+                two: Some("יומיים".into()),
+                other: "{count} ימים".into(),
+                ..Default::default()
+            },
+        );
+        catalog.add_locale("he", he);
+
+        assert_eq!(catalog.get_plural("he", "days", 2), Some("יומיים"));
     }
 
     #[test]
