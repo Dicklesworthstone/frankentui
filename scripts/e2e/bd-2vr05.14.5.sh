@@ -83,13 +83,13 @@ run_step() {
     local fallback_triggered=false
 
     start_ms="$(e2e_now_ms)"
-    start_wall_ms="$(date +%s%3N)"
+    start_wall_ms="$(e2e_monotonic_ms)"
     set +e
     bash -lc "$command" >"$log_file" 2>&1
     rc=$?
     set -e
     end_ms="$(e2e_now_ms)"
-    end_wall_ms="$(date +%s%3N)"
+    end_wall_ms="$(e2e_monotonic_ms)"
     latency_ms=$((end_ms - start_ms))
     wall_latency_ms=$((end_wall_ms - start_wall_ms))
 

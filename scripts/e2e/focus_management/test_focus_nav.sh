@@ -24,13 +24,19 @@ cd "$PROJECT_ROOT"
 PASS=0
 FAIL=0
 
+# Milliseconds from the monotonic clock. Not `date +%s%3N`: BSD date prints
+# "...3N", and the duration arithmetic then aborted the script on macOS.
+now_ms() {
+    python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)'
+}
+
 run_test() {
     local name="$1"
     local pattern="$2"
     local test_type="${3:-lib}"
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(now_ms)"
 
     local exit_code=0
     if [[ "$test_type" == "integration" ]]; then
@@ -40,7 +46,7 @@ run_test() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(now_ms)"
     local dur=$((end_ms - start_ms))
 
     if [[ $exit_code -eq 0 ]]; then

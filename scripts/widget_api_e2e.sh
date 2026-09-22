@@ -376,8 +376,10 @@ run_policy_case() {
     export FTUI_HARNESS_RENDER_TRACE_SEED="$SEED"
     export FTUI_HARNESS_RENDER_TRACE_MODULE="$case_name"
 
+    # Not `date +%s%3N`: BSD date prints "...3N", and the subtraction below
+    # then aborted the script on macOS.
     local start_ms
-    start_ms=$(date +%s%3N)
+    start_ms=$(e2e_monotonic_ms)
     local exit_code=0
 
     if [[ -n "${E2E_PYTHON:-}" ]] && type -t pty_run >/dev/null 2>&1; then
@@ -394,7 +396,7 @@ run_policy_case() {
     fi
 
     local end_ms
-    end_ms=$(date +%s%3N)
+    end_ms=$(e2e_monotonic_ms)
     local duration_ms=$((end_ms - start_ms))
 
     local status="pass"
