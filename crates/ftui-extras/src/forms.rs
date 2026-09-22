@@ -1513,7 +1513,14 @@ impl ConfirmDialogState {
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> bool {
+        // The letter and Space shortcuts answer only without Ctrl, Alt or
+        // Command (Shift is fine: Y is y). Chords belong to the host, and a
+        // Ctrl+Y redo or Cmd+Y used to answer "Yes" to the question.
+        let chord = key
+            .modifiers
+            .intersects(Modifiers::CTRL | Modifiers::ALT | Modifiers::SUPER);
         match key.code {
+            KeyCode::Char(_) if chord => false,
             KeyCode::Left | KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('h') => {
                 self.selected_yes = !self.selected_yes;
                 true
@@ -2495,6 +2502,36 @@ mod tests {
         let mut state = ConfirmDialogState::default();
         state.handle_event(&press(KeyCode::Char('n')));
         assert_eq!(state.confirmed, Some(false));
+    }
+
+    #[test]
+    fn confirm_dialog_chords_do_not_answer() {
+        let chord = |c, modifiers| {
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers,
+                kind: KeyEventKind::Press,
+            })
+        };
+        let mut state = ConfirmDialogState::default();
+        for (c, modifiers) in [
+            ('y', Modifiers::CTRL),
+            ('y', Modifiers::SUPER),
+            ('n', Modifiers::ALT),
+            (' ', Modifiers::CTRL),
+            ('h', Modifiers::CTRL),
+        ] {
+            assert!(
+                !state.handle_event(&chord(c, modifiers)),
+                "{modifiers:?}+{c}"
+            );
+        }
+        assert_eq!(state.confirmed, None);
+        assert!(!state.selected_yes, "Ctrl+H must not move the selection");
+
+        // Shift is only case.
+        assert!(state.handle_event(&chord('Y', Modifiers::SHIFT)));
+        assert_eq!(state.confirmed, Some(true));
     }
 
     #[test]
