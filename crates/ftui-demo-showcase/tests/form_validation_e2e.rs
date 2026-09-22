@@ -313,9 +313,16 @@ fn e2e_email_validation() {
         )],
     );
 
-    // Set valid email directly (char events don't go through form text input)
-    if let Some(FormField::Text { value, .. }) = demo.form.field_mut(1) {
-        *value = "user@example.com".into();
+    // Type a valid one. Its e, r, m and c are text in a focused field, not
+    // the inject/reset/mode/clear controls.
+    for _ in 0.."notanemail".len() {
+        demo.update(&press(KeyCode::Backspace));
+    }
+    for ch in "user@example.com".chars() {
+        demo.update(&char_press(ch));
+    }
+    if let Some(FormField::Text { value, .. }) = demo.form.field(1) {
+        assert_eq!(value, "user@example.com");
     }
     demo.run_validation();
 
@@ -346,6 +353,8 @@ fn e2e_validation_mode_toggle() {
         ],
     );
 
+    // Up wraps to the Accept Terms checkbox, where M is not text.
+    demo.update(&press(KeyCode::Up));
     // Toggle to OnSubmit mode (press 'M')
     demo.update(&char_press('m'));
     let errors_after_toggle = demo.form_state.borrow().errors.len();
@@ -374,6 +383,8 @@ fn e2e_mode_toggle_idempotency() {
     log_jsonl("env", &[("test", "e2e_mode_toggle_idempotency")]);
 
     let mut demo = FormValidationDemo::new();
+    // Up wraps to the Accept Terms checkbox, where M is not text.
+    demo.update(&press(KeyCode::Up));
 
     // Capture initial frame hash
     let initial_hash = capture_frame_hash(&demo, 80, 24);

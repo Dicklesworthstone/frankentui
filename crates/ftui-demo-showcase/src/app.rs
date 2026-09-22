@@ -7068,9 +7068,9 @@ mod tests {
     }
 
     #[test]
-    fn search_fields_keep_single_key_global_shortcuts_out() {
-        // These screens did not report their search fields as text input,
-        // so typing `q` quit the demo, `m` toggled mouse capture and a
+    fn text_fields_keep_single_key_global_shortcuts_out() {
+        // These screens did not report their search or form fields as text
+        // input, so typing `q` quit the demo, `m` toggled mouse capture and a
         // capital from a web or kitty terminal ran a Shift shortcut.
         let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c)));
         let shift =
@@ -7081,13 +7081,15 @@ mod tests {
             ScreenId::CodeExplorer,
             ScreenId::MermaidShowcase,
             ScreenId::Shakespeare,
+            // Opens on its Username field; the `/` is just typed.
+            ScreenId::FormValidation,
         ] {
             let mut app = AppModel::new();
             app.current_screen = screen;
             app.update(AppMsg::from(key('/')));
             assert!(
                 app.screens.consumes_text_input(screen),
-                "{screen:?} did not open its search field"
+                "{screen:?} has no focused text field"
             );
             let mouse = app.mouse_capture_enabled;
             for event in [

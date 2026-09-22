@@ -19,6 +19,6 @@
 ││                                             ││                             ││
 │╰─────────────────────────────────────────────╯│                             ││
 │Touched: 0/9 | Dirty: 0/9                      │                             ││
-│Tab/Arrow: navigate | Space: toggle | Enter: su╰─────────────────────────────╯│
+│Up/Down: fields | M/E/R/C: outside text fields ╰─────────────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Form Validation [27/45] [h] [cmd] [p] [d]  Tab/Shift+Tab: next/prev  0x0 00:00 
