@@ -30,9 +30,6 @@ source "$LIB_DIR/logging.sh"
 # shellcheck source=/dev/null
 source "$LIB_DIR/pty.sh"
 
-# FormValidation is screen 21 (1-based index)
-FORM_VALIDATION_SCREEN=21
-
 # Check for demo showcase binary
 resolve_demo_bin() {
     if [[ -n "${FTUI_DEMO_BIN:-}" && -x "$FTUI_DEMO_BIN" ]]; then
@@ -58,12 +55,21 @@ resolve_demo_bin() {
 DEMO_BIN=""
 if ! DEMO_BIN="$(resolve_demo_bin)"; then
     LOG_FILE="$E2E_LOG_DIR/form_validation_missing.log"
-    for t in form_screen_loads form_tab_navigation form_field_focus form_validation_trigger form_error_display form_submit_flow; do
+    for t in form_screen_loads form_down_navigation form_field_focus form_validation_trigger form_error_display form_submit_flow form_arrow_navigation form_escape_behavior form_rapid_input form_backspace_handling form_mode_toggle; do
         log_test_skip "$t" "ftui-demo-showcase binary missing"
         record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
     done
     exit 0
 fi
+
+# Screen numbers shift whenever a screen is added. A hardcoded 21 had drifted
+# onto Notifications, where every case below still passed.
+FORM_VALIDATION_SCREEN="$(e2e_demo_screen "$DEMO_BIN" form_validation)"
+
+# The app keeps Tab for switching screens, so Up/Down move between fields.
+UP=$'\x1b[A'
+DOWN=$'\x1b[B'
+RIGHT=$'\x1b[C'
 
 run_case() {
     local name="$1"
@@ -98,10 +104,10 @@ form_screen_loads() {
     # Start demo on Form Validation screen (screen 21)
     FTUI_DEMO_EXIT_AFTER_MS=2000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # Form Validation screen should render
-    if ! grep -a -q "Form Validation\|Registration Form\|validation" "$output_file"; then
+    # Only this screen draws the form; the tab bar names every screen.
+    if ! grep -a -q "Registration Form" "$output_file"; then
         log_warn "Form screen content not found in output"
         return 1
     fi
@@ -112,25 +118,22 @@ form_screen_loads() {
     [[ "$size" -gt 500 ]] || return 1
 }
 
-# Test: Tab navigation between form fields
-form_tab_navigation() {
-    LOG_FILE="$E2E_LOG_DIR/form_tab_navigation.log"
-    local output_file="$E2E_LOG_DIR/form_tab_navigation.pty"
+# Test: Down moves between form fields
+form_down_navigation() {
+    LOG_FILE="$E2E_LOG_DIR/form_down_navigation.log"
+    local output_file="$E2E_LOG_DIR/form_down_navigation.pty"
 
-    log_test_start "form_tab_navigation"
+    log_test_start "form_down_navigation"
 
-    # Send multiple Tab keystrokes to cycle through form fields
-    PTY_SEND=$'\t\t\t' \
+    # Three Downs reach Confirm Password; "abc" there cannot match the empty
+    # password.
+    PTY_SEND="${DOWN}${DOWN}${DOWN}abc" \
     PTY_SEND_DELAY_MS=500 \
     FTUI_DEMO_EXIT_AFTER_MS=3000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should continue running without crash
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    grep -a -q "Passwords do not match" "$output_file" || return 1
 }
 
 # Test: Field focus and input handling
@@ -140,18 +143,15 @@ form_field_focus() {
 
     log_test_start "form_field_focus"
 
-    # Type in a form field - should accept input without crashing
+    # The username lands in the field. Its e and r used to inject errors and
+    # reset the form instead.
     PTY_SEND='testuser' \
     PTY_SEND_DELAY_MS=500 \
     FTUI_DEMO_EXIT_AFTER_MS=2500 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should handle input gracefully
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    grep -a -q "testuser" "$output_file" || return 1
 }
 
 # Test: Validation triggers on input
@@ -161,18 +161,15 @@ form_validation_trigger() {
 
     log_test_start "form_validation_trigger"
 
-    # Type invalid email format then tab to trigger validation
-    PTY_SEND='invalid-email\t' \
+    # An email without an @, then leave the field
+    PTY_SEND="${DOWN}invalid-email${DOWN}" \
     PTY_SEND_DELAY_MS=300 \
     FTUI_DEMO_EXIT_AFTER_MS=3000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should continue running and potentially show validation feedback
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    # Narrow panes truncate the message: "Please enter a valid ema…"
+    grep -a -q "Please enter a valid" "$output_file" || return 1
 }
 
 # Test: Error display behavior
@@ -182,20 +179,15 @@ form_error_display() {
 
     log_test_start "form_error_display"
 
-    # Navigate to email field, enter invalid data, trigger validation
-    # Tab to Username, Tab to Email, type invalid, Tab to blur
-    PTY_SEND=$'\t\tinvalid\t' \
+    # A username one character short, then leave the field
+    PTY_SEND="ab${DOWN}" \
     PTY_SEND_DELAY_MS=400 \
     FTUI_DEMO_EXIT_AFTER_MS=3500 \
     PTY_TIMEOUT=6 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # Should show some form of error indicator (red text, error message, etc.)
-    # Look for common error indicators in ANSI output
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    # Narrow panes truncate the message: "Username must be at leas…"
+    grep -a -q "Username must be at" "$output_file" || return 1
 }
 
 # Test: Form submission flow
@@ -205,19 +197,16 @@ form_submit_flow() {
 
     log_test_start "form_submit_flow"
 
-    # Fill form fields and try to submit with Enter
-    # Username, Email, Password sequence with Enter at end
-    PTY_SEND='testuser\ttest@example.com\tpassword123\r' \
+    # Fill every required field and submit: Username, Email, Password,
+    # Confirm, then past Age, Bio and Website to Role (Right picks
+    # Developer), Accept Terms (Space), Enter.
+    PTY_SEND="testuser${DOWN}test@example.com${DOWN}password123${DOWN}password123${DOWN}${DOWN}${DOWN}${DOWN}${RIGHT}${DOWN} "$'\r' \
     PTY_SEND_DELAY_MS=300 \
     FTUI_DEMO_EXIT_AFTER_MS=4000 \
     PTY_TIMEOUT=6 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should handle submit without crashing
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    grep -a -q "submitted successfully" "$output_file" || return 1
 }
 
 # Test: Arrow key navigation within form
@@ -233,13 +222,10 @@ form_arrow_navigation() {
     PTY_SEND_DELAY_MS=300 \
     FTUI_DEMO_EXIT_AFTER_MS=2500 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should handle arrow navigation
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    # Arrows stay on the form
+    grep -a -q "Registration Form" "$output_file" || return 1
 }
 
 # Test: Escape key behavior (cancel/clear)
@@ -254,13 +240,10 @@ form_escape_behavior() {
     PTY_SEND_DELAY_MS=400 \
     FTUI_DEMO_EXIT_AFTER_MS=2500 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should handle escape gracefully
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 300 ]] || return 1
+    # Esc cancels the form, which then ignores keys until R resets it
+    grep -a -q "Form cancelled" "$output_file" || return 1
 }
 
 # Test: Multiple rapid inputs (stress test)
@@ -270,18 +253,16 @@ form_rapid_input() {
 
     log_test_start "form_rapid_input"
 
-    # Send rapid keystrokes
-    PTY_SEND='abcdefghijklmnop\t\t\t123456\r' \
+    # Send rapid keystrokes: a whole username, then digits into Confirm
+    # Password, then submit
+    PTY_SEND="abcdefghijklmnop${DOWN}${DOWN}${DOWN}123456"$'\r' \
     PTY_SEND_DELAY_MS=100 \
     FTUI_DEMO_EXIT_AFTER_MS=3000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should handle rapid input without crash or hang
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    # Every letter landed in the username, none ran a shortcut
+    grep -a -q "abcdefghijklmnop" "$output_file" || return 1
 }
 
 # Test: Backspace/delete key handling
@@ -296,13 +277,9 @@ form_backspace_handling() {
     PTY_SEND_DELAY_MS=200 \
     FTUI_DEMO_EXIT_AFTER_MS=2500 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should handle backspace
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    grep -a -q "testin" "$output_file" || return 1
 }
 
 # Test: Mode toggle (real-time vs on-submit validation)
@@ -312,19 +289,16 @@ form_mode_toggle() {
 
     log_test_start "form_mode_toggle"
 
-    # Try to toggle validation mode (varies by implementation)
-    # Use space or enter on mode toggle if present
-    PTY_SEND=$'\t\t\t\t\t ' \
+    # M is a control only outside text fields: Up wraps to Accept Terms
+    # first. It has to be capital: lowercase m there is the app's mouse
+    # capture toggle.
+    PTY_SEND="${UP}M" \
     PTY_SEND_DELAY_MS=300 \
     FTUI_DEMO_EXIT_AFTER_MS=3000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$DEMO_BIN" --screen "$FORM_VALIDATION_SCREEN"
+        pty_run "$output_file" "$DEMO_BIN" --screen="$FORM_VALIDATION_SCREEN"
 
-    # App should handle mode toggle attempts
-    [[ -f "$output_file" ]] || return 1
-    local size
-    size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]] || return 1
+    grep -a -q "On Submit" "$output_file" || return 1
 }
 
 # ============================================================================
@@ -333,7 +307,7 @@ form_mode_toggle() {
 
 FAILURES=0
 run_case "form_screen_loads" form_screen_loads                 || FAILURES=$((FAILURES + 1))
-run_case "form_tab_navigation" form_tab_navigation             || FAILURES=$((FAILURES + 1))
+run_case "form_down_navigation" form_down_navigation           || FAILURES=$((FAILURES + 1))
 run_case "form_field_focus" form_field_focus                   || FAILURES=$((FAILURES + 1))
 run_case "form_validation_trigger" form_validation_trigger     || FAILURES=$((FAILURES + 1))
 run_case "form_error_display" form_error_display               || FAILURES=$((FAILURES + 1))
