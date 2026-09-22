@@ -44,6 +44,12 @@ pub enum JsonToken {
     Error(String),
 }
 
+/// Nesting levels that indentation shows and that can fold. Deeper lines are
+/// drawn at this indent and are not foldable: each fold path copies its
+/// parent's, so paths for every level of deeply nested input took memory
+/// quadratic in its depth, on every render.
+const MAX_DEPTH: usize = 32;
+
 /// One segment of a [`JsonPath`]: an object key or an array index.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JsonPathSegment {
@@ -359,7 +365,7 @@ impl JsonView {
                         depth += 1;
                         lines.push(current_line);
                         current_line = vec![JsonToken::Whitespace(make_indent(
-                            depth.min(32),
+                            depth.min(MAX_DEPTH),
                             self.indent,
                         ))];
                     }
@@ -369,10 +375,10 @@ impl JsonView {
                     depth = depth.saturating_sub(1);
                     lines.push(current_line);
                     // Capped like every other line. Uncapped, a closing line
-                    // at depth d took d * indent spaces: misaligned past 32
+                    // at depth d took d * indent spaces: misaligned past MAX_DEPTH
                     // levels, and quadratic memory for deeply nested input.
                     current_line = vec![
-                        JsonToken::Whitespace(make_indent(depth.min(32), self.indent)),
+                        JsonToken::Whitespace(make_indent(depth.min(MAX_DEPTH), self.indent)),
                         JsonToken::Punctuation(ch.to_string()),
                     ];
                     // Check for comma
@@ -400,7 +406,7 @@ impl JsonView {
                             current_line.push(JsonToken::Punctuation(",".to_string()));
                             lines.push(current_line);
                             current_line = vec![JsonToken::Whitespace(make_indent(
-                                depth.min(32),
+                                depth.min(MAX_DEPTH),
                                 self.indent,
                             ))];
                         }
@@ -411,7 +417,7 @@ impl JsonView {
                     current_line.push(JsonToken::Punctuation(",".to_string()));
                     lines.push(current_line);
                     current_line = vec![JsonToken::Whitespace(make_indent(
-                        depth.min(32),
+                        depth.min(MAX_DEPTH),
                         self.indent,
                     ))];
                 }
@@ -435,7 +441,7 @@ impl JsonView {
                         current_line.push(JsonToken::Punctuation(",".to_string()));
                         lines.push(current_line);
                         current_line = vec![JsonToken::Whitespace(make_indent(
-                            depth.min(32),
+                            depth.min(MAX_DEPTH),
                             self.indent,
                         ))];
                     }
@@ -499,17 +505,21 @@ impl JsonView {
             let depth = stack.len();
 
             if opens {
-                let mut path = stack.last().map(|f| f.path.clone()).unwrap_or_default();
-                if let Some(key) = line_key(&tokens) {
-                    path.push(JsonPathSegment::Key(key));
-                } else if let Some(idx) = index {
-                    path.push(JsonPathSegment::Index(idx));
-                }
-                // (no segment for the root container: its path stays empty)
+                // Past MAX_DEPTH a container gets no path and does not fold.
+                let path = (depth < MAX_DEPTH).then(|| {
+                    let mut path = stack.last().map(|f| f.path.clone()).unwrap_or_default();
+                    if let Some(key) = line_key(&tokens) {
+                        path.push(JsonPathSegment::Key(key));
+                    } else if let Some(idx) = index {
+                        path.push(JsonPathSegment::Index(idx));
+                    }
+                    // (no segment for the root container: its path stays empty)
+                    path
+                });
                 infos.push(LineInfo {
                     tokens,
-                    path: Some(path.clone()),
-                    foldable: true,
+                    foldable: path.is_some(),
+                    path: path.clone(),
                     depth,
                     close_line: i,
                     child_count: 0,
@@ -517,7 +527,7 @@ impl JsonView {
                 });
                 stack.push(Frame {
                     child_count: 0,
-                    path,
+                    path: path.unwrap_or_default(),
                     opener: i,
                 });
             } else {
@@ -941,7 +951,17 @@ mod tests {
                 _ => None,
             })
             .max();
-        assert_eq!(widest, Some(32 * 2));
+        assert_eq!(widest, Some(MAX_DEPTH * 2));
+
+        // Only the outer MAX_DEPTH containers fold, so no path is longer.
+        let shown = view.lines_with_state(&JsonViewState::default());
+        assert_eq!(shown.iter().filter(|line| line.foldable).count(), MAX_DEPTH);
+        let longest = shown
+            .iter()
+            .filter_map(|line| line.path.as_ref())
+            .map(Vec::len)
+            .max();
+        assert_eq!(longest, Some(MAX_DEPTH - 1));
     }
 
     #[test]
