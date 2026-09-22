@@ -46,7 +46,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error Types
@@ -231,9 +231,11 @@ impl fmt::Debug for MemoryStorage {
 mod file_storage {
     use super::*;
     use serde::{Deserialize, Serialize};
+    use std::ffi::OsString;
     use std::fs::{self, File};
     use std::io::{BufReader, BufWriter, Write};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// File format for stored state (JSON).
     #[derive(Serialize, Deserialize)]
@@ -285,9 +287,13 @@ mod file_storage {
     /// # Atomic Writes
     ///
     /// Writes use a temporary file + rename pattern to prevent corruption:
-    /// 1. Write to `{path}.tmp`
+    /// 1. Write to `{path}.{pid}.{n}.tmp`, a name no other save is using
     /// 2. Flush and sync
-    /// 3. Rename `{path}.tmp` -> `{path}`
+    /// 3. Rename it to `{path}`
+    ///
+    /// Concurrent saves, from threads or from other processes, each rename a
+    /// complete file, so readers see one save or another and the last rename
+    /// wins. A save that fails removes its temporary file.
     pub struct FileStorage {
         path: PathBuf,
     }
@@ -314,10 +320,25 @@ mod file_storage {
             Self { path }
         }
 
+        /// A temporary file beside the state file, unique to this save.
+        ///
+        /// Every save of a path used to share `state.json.tmp`. Two at once
+        /// truncated each other's file, so one rename moved a file the other
+        /// was still rewriting (readers found it empty or cut short) and the
+        /// other rename failed with `NotFound`. The process id separates
+        /// processes and the counter separates saves within one.
         fn temp_path(&self) -> PathBuf {
-            let mut tmp = self.path.clone();
-            tmp.set_extension("json.tmp");
-            tmp
+            static NEXT_SAVE: AtomicU64 = AtomicU64::new(0);
+            let mut name = self
+                .path
+                .file_name()
+                .map_or_else(|| OsString::from("state"), OsString::from);
+            name.push(format!(
+                ".{}.{}.tmp",
+                std::process::id(),
+                NEXT_SAVE.fetch_add(1, Ordering::Relaxed)
+            ));
+            self.path.with_file_name(name)
         }
     }
 
@@ -409,9 +430,9 @@ mod file_storage {
                 );
             }
 
-            // Write to temp file first (atomic pattern)
+            // Write to temp file first, then rename it into place (atomic pattern)
             let tmp_path = self.temp_path();
-            {
+            let saved = (|| -> StorageResult<()> {
                 let file = File::create(&tmp_path)?;
                 let mut writer = BufWriter::new(file);
                 serde_json::to_writer_pretty(&mut writer, &state_file).map_err(|e| {
@@ -419,10 +440,15 @@ mod file_storage {
                 })?;
                 writer.flush()?;
                 writer.get_ref().sync_all()?;
+                fs::rename(&tmp_path, &self.path)?;
+                Ok(())
+            })();
+            if saved.is_err() {
+                // Each save names its own file, so nothing else would reuse
+                // and overwrite this one: remove it rather than strand it.
+                let _ = fs::remove_file(&tmp_path);
             }
-
-            // Atomic rename
-            fs::rename(&tmp_path, &self.path)?;
+            saved?;
 
             tracing::debug!(
                 path = %self.path.display(),
@@ -504,6 +530,9 @@ pub struct StateRegistry {
     backend: Box<dyn StorageBackend>,
     cache: RwLock<HashMap<String, StoredEntry>>,
     dirty: RwLock<bool>,
+    /// Held across a whole flush. Two unserialized flushes could save their
+    /// snapshots in either order, leaving the older one in storage.
+    flush_lock: Mutex<()>,
 }
 
 impl StateRegistry {
@@ -516,6 +545,7 @@ impl StateRegistry {
             backend,
             cache: RwLock::new(HashMap::new()),
             dirty: RwLock::new(false),
+            flush_lock: Mutex::new(()),
         }
     }
 
@@ -561,6 +591,10 @@ impl StateRegistry {
     /// Only writes if changes have been made since last flush.
     /// Returns `Ok(true)` if data was written, `Ok(false)` if no changes.
     pub fn flush(&self) -> StorageResult<bool> {
+        let _flushing = self
+            .flush_lock
+            .lock()
+            .map_err(|_| StorageError::Corruption("flush lock poisoned".into()))?;
         let dirty = {
             let guard = self
                 .dirty
@@ -1239,6 +1273,64 @@ mod tests {
         assert!(!registry.is_dirty());
     }
 
+    /// Counts how many `save_all` calls are in progress at once.
+    struct OverlapBackend {
+        in_flight: Arc<(
+            std::sync::atomic::AtomicUsize,
+            std::sync::atomic::AtomicUsize,
+        )>,
+    }
+
+    impl StorageBackend for OverlapBackend {
+        fn name(&self) -> &str {
+            "OverlapBackend"
+        }
+
+        fn load_all(&self) -> StorageResult<HashMap<String, StoredEntry>> {
+            Ok(HashMap::new())
+        }
+
+        fn save_all(&self, _entries: &HashMap<String, StoredEntry>) -> StorageResult<()> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let (current, peak) = &*self.in_flight;
+            peak.fetch_max(current.fetch_add(1, SeqCst) + 1, SeqCst);
+            thread::sleep(Duration::from_millis(5));
+            current.fetch_sub(1, SeqCst);
+            Ok(())
+        }
+
+        fn clear(&self) -> StorageResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn concurrent_flushes_save_one_at_a_time() {
+        // Overlapping flushes could finish in either order, so an older
+        // snapshot could land in storage after a newer one.
+        let in_flight = Arc::new(Default::default());
+        let registry = Arc::new(StateRegistry::new(Box::new(OverlapBackend {
+            in_flight: Arc::clone(&in_flight),
+        })));
+        let start = Arc::new(std::sync::Barrier::new(4));
+        let flushers: Vec<_> = (0..4)
+            .map(|thread_index| {
+                let (registry, start) = (Arc::clone(&registry), Arc::clone(&start));
+                thread::spawn(move || {
+                    start.wait();
+                    for round in 0..10_u8 {
+                        registry.set(format!("widget::{thread_index}"), 1, vec![round]);
+                        registry.flush().unwrap();
+                    }
+                })
+            })
+            .collect();
+        for flusher in flushers {
+            flusher.join().unwrap();
+        }
+        assert_eq!(in_flight.1.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn registry_multiple_keys() {
         let registry = StateRegistry::in_memory();
@@ -1458,5 +1550,86 @@ mod file_storage_tests {
         assert_eq!(loaded.len(), 1);
         assert!(loaded.contains_key("good"));
         assert_eq!(loaded["good"].data, b"hello");
+    }
+
+    fn one_entry(fill: u8) -> HashMap<String, StoredEntry> {
+        let entry = StoredEntry {
+            key: "k".to_string(),
+            version: 1,
+            data: vec![fill; 64 * 1024],
+        };
+        HashMap::from([("k".to_string(), entry)])
+    }
+
+    fn temp_files_beside(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "tmp"))
+            .collect()
+    }
+
+    #[test]
+    fn concurrent_saves_each_rename_a_complete_file() {
+        // With one shared `state.json.tmp`, saves truncated each other's temp
+        // file: readers found `state.json` empty or cut short, and saves
+        // failed when another had already renamed the file away.
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-state-persistence-")
+            .disable_cleanup(true)
+            .tempdir()
+            .unwrap();
+        let path = tmp.path().join("state.json");
+        let storage = std::sync::Arc::new(FileStorage::new(&path));
+        storage.save_all(&one_entry(0)).unwrap();
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (storage, stop) = (
+                std::sync::Arc::clone(&storage),
+                std::sync::Arc::clone(&stop),
+            );
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let loaded = storage.load_all().expect("a reader sees a whole file");
+                    let data = &loaded["k"].data;
+                    assert_eq!(data.len(), 64 * 1024);
+                    assert!(data.iter().all(|&byte| byte == data[0]));
+                }
+            })
+        };
+        let writers: Vec<_> = (1..=4_u8)
+            .map(|fill| {
+                let storage = std::sync::Arc::clone(&storage);
+                std::thread::spawn(move || {
+                    for _ in 0..10 {
+                        storage
+                            .save_all(&one_entry(fill))
+                            .expect("every save succeeds");
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap();
+        assert!(temp_files_beside(&path).is_empty());
+    }
+
+    #[test]
+    fn failed_save_removes_its_temporary_file() {
+        let tmp = tempfile::Builder::new()
+            .prefix("ftui-state-persistence-")
+            .disable_cleanup(true)
+            .tempdir()
+            .unwrap();
+        // A directory where the state file belongs makes the final rename fail.
+        let path = tmp.path().join("state.json");
+        std::fs::create_dir(&path).unwrap();
+        let storage = FileStorage::new(&path);
+        assert!(storage.save_all(&one_entry(1)).is_err());
+        assert!(temp_files_beside(&path).is_empty());
     }
 }
