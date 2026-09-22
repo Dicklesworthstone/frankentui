@@ -90,6 +90,8 @@ pub struct ValidationErrorDisplay {
     animation_duration: Duration,
     /// Whether to show the message (vs icon only when narrow).
     show_message: bool,
+    /// Whether to push this error's own accessibility node.
+    accessibility_node: bool,
 }
 
 impl Default for ValidationErrorDisplay {
@@ -102,6 +104,7 @@ impl Default for ValidationErrorDisplay {
             icon_style: Style::new().fg(ERROR_FG_DEFAULT),
             animation_duration: Duration::from_millis(ANIMATION_DURATION_MS),
             show_message: true,
+            accessibility_node: true,
         }
     }
 }
@@ -158,6 +161,17 @@ impl ValidationErrorDisplay {
     #[must_use]
     pub fn icon_only(mut self) -> Self {
         self.show_message = false;
+        self
+    }
+
+    /// Push no accessibility node of its own.
+    ///
+    /// For a widget that already puts this error on its own node, as `Form`
+    /// does on the field the error belongs to. Otherwise screen readers hear
+    /// the error twice, and an unfocused field's error becomes a live region.
+    #[must_use]
+    pub fn without_accessibility_node(mut self) -> Self {
+        self.accessibility_node = false;
         self
     }
 
@@ -370,7 +384,7 @@ impl StatefulWidget for ValidationErrorDisplay {
         // `Form` uses for a field error - so it is announced when it appears
         // without interrupting typing. Pushed before any degradation-dependent
         // styling, as toast does: reduced rendering must not hide an error.
-        if frame.a11y_enabled() {
+        if self.accessibility_node && frame.a11y_enabled() {
             let bounds = row_area.intersection(&frame.buffer.current_scissor());
             if !bounds.is_empty() {
                 let name = if self.message.is_empty() {
@@ -923,6 +937,16 @@ mod tests {
             Rect::new(0, 0, 40, 1),
             &mut ValidationErrorState::default(),
         );
+        assert_eq!(tree.node_count(), 0);
+    }
+
+    /// `Form` puts each field's error on the field's own node. Its embedded
+    /// display pushing a second one announced every error twice, including
+    /// errors on fields without focus.
+    #[test]
+    fn an_embedding_widget_can_keep_the_error_off_the_tree() {
+        let error = ValidationErrorDisplay::new("Required").without_accessibility_node();
+        let tree = render_a11y(&error, Rect::new(0, 0, 40, 1), &mut shown());
         assert_eq!(tree.node_count(), 0);
     }
 

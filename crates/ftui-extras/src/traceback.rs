@@ -336,7 +336,6 @@ fn digit_count(n: usize) -> usize {
     count
 }
 
-
 /// Draw a single line of text into the buffer, truncating and padding to width.
 fn draw_line(frame: &mut Frame, x: u16, y: u16, text: &str, style: Style, width: usize) {
     let mut col = 0;

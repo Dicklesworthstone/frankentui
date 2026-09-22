@@ -1257,9 +1257,12 @@ impl StatefulWidget for Form {
                 {
                     let y = area.y.saturating_add((error_row - state.scroll) as u16);
                     let error_area = Rect::new(value_x, y, value_width, 1);
+                    // The field's own node already carries the error, and
+                    // is the live region only while the field has focus.
                     let display = ValidationErrorDisplay::new(msg)
                         .with_style(self.error_style)
-                        .with_icon_style(self.error_style);
+                        .with_icon_style(self.error_style)
+                        .without_accessibility_node();
                     StatefulWidget::render(&display, error_area, frame, error_state);
                 }
             }
