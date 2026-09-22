@@ -548,6 +548,26 @@ mod tests {
     }
 
     #[test]
+    fn percentiles_survive_nan_samples() {
+        // `partial_cmp(..).unwrap_or(Equal)` is not a total order once a NaN
+        // is present. On this shuffled input the standard sort panicked on
+        // it; on sorted input it kept a NaN at the front, so `min` was NaN.
+        let values: Vec<f64> = (0..64_u32)
+            .map(|i| {
+                if i % 5 == 0 {
+                    f64::NAN
+                } else {
+                    f64::from(i * 37 % 64)
+                }
+            })
+            .collect();
+        let p = compute_percentiles(&values);
+        // 0 and 1 sit at NaN slots (i = 0 and i = 45).
+        assert_eq!(p.min, 2.0);
+        assert!(p.p50.is_finite());
+    }
+
+    #[test]
     fn percentiles_single_value() {
         let p = compute_percentiles(&[42.0]);
         assert_eq!(p.p50, 42.0);

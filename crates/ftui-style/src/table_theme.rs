@@ -2715,6 +2715,26 @@ mod tests {
     }
 
     #[test]
+    fn gradient_drops_stops_at_non_finite_positions() {
+        // A NaN stop stayed where it was put, and sampling interpolated
+        // through its NaN position into a garbage color.
+        let black = PackedRgba::rgb(0, 0, 0);
+        let white = PackedRgba::rgb(255, 255, 255);
+        let red = PackedRgba::rgb(255, 0, 0);
+        let g = Gradient::new(vec![
+            (f32::NAN, red),
+            (1.0, white),
+            (f32::INFINITY, red),
+            (0.0, black),
+        ]);
+        assert_eq!(g.stops(), &[(0.0, black), (1.0, white)]);
+        assert_eq!(
+            g.sample(0.5),
+            Gradient::new(vec![(0.0, black), (1.0, white)]).sample(0.5)
+        );
+    }
+
+    #[test]
     fn gradient_clamps_t() {
         let red = PackedRgba::rgb(255, 0, 0);
         let blue = PackedRgba::rgb(0, 0, 255);
