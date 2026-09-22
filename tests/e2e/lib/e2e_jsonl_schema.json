@@ -1,12 +1,6 @@
 {
   "schema_version": "e2e-jsonl-v1",
-  "common_required": [
-    "schema_version",
-    "type",
-    "timestamp",
-    "run_id",
-    "seed"
-  ],
+  "common_required": ["schema_version", "type", "timestamp", "run_id", "seed"],
   "common_types": {
     "schema_version": "string",
     "type": "string",
@@ -42,11 +36,7 @@
       }
     },
     "run_start": {
-      "required": [
-        "command",
-        "log_dir",
-        "results_dir"
-      ],
+      "required": ["command", "log_dir", "results_dir"],
       "optional": [],
       "types": {
         "command": "string",
@@ -55,11 +45,7 @@
       }
     },
     "run_end": {
-      "required": [
-        "status",
-        "duration_ms",
-        "failed_count"
-      ],
+      "required": ["status", "duration_ms", "failed_count"],
       "optional": [],
       "types": {
         "status": "string",
@@ -68,15 +54,8 @@
       }
     },
     "step_start": {
-      "required": [
-        "step"
-      ],
-      "optional": [
-        "mode",
-        "hash_key",
-        "cols",
-        "rows"
-      ],
+      "required": ["step"],
+      "optional": ["mode", "hash_key", "cols", "rows"],
       "types": {
         "step": "string",
         "mode": "string",
@@ -86,17 +65,8 @@
       }
     },
     "step_end": {
-      "required": [
-        "step",
-        "status",
-        "duration_ms"
-      ],
-      "optional": [
-        "mode",
-        "hash_key",
-        "cols",
-        "rows"
-      ],
+      "required": ["step", "status", "duration_ms"],
+      "optional": ["mode", "hash_key", "cols", "rows"],
       "types": {
         "step": "string",
         "status": "string",
@@ -108,18 +78,8 @@
       }
     },
     "case_step_start": {
-      "required": [
-        "case",
-        "step",
-        "action"
-      ],
-      "optional": [
-        "details",
-        "mode",
-        "hash_key",
-        "cols",
-        "rows"
-      ],
+      "required": ["case", "step", "action"],
+      "optional": ["details", "mode", "hash_key", "cols", "rows"],
       "types": {
         "case": "string",
         "step": "string",
@@ -132,20 +92,8 @@
       }
     },
     "case_step_end": {
-      "required": [
-        "case",
-        "step",
-        "status",
-        "duration_ms"
-      ],
-      "optional": [
-        "action",
-        "details",
-        "mode",
-        "hash_key",
-        "cols",
-        "rows"
-      ],
+      "required": ["case", "step", "status", "duration_ms"],
+      "optional": ["action", "details", "mode", "hash_key", "cols", "rows"],
       "types": {
         "case": "string",
         "step": "string",
@@ -170,10 +118,7 @@
         "duration_ms",
         "status"
       ],
-      "optional": [
-        "details",
-        "failure_code"
-      ],
+      "optional": ["details", "failure_code"],
       "types": {
         "event_seq": "number",
         "trace_id": "string",
@@ -198,9 +143,7 @@
         "snapshots_dir",
         "status"
       ],
-      "optional": [
-        "notes"
-      ],
+      "optional": ["notes"],
       "types": {
         "event_seq": "number",
         "trace_id": "string",
@@ -239,19 +182,8 @@
       }
     },
     "pty_capture": {
-      "required": [
-        "output_file",
-        "output_sha256",
-        "output_bytes",
-        "cols",
-        "rows",
-        "exit_code"
-      ],
-      "optional": [
-        "canonical_file",
-        "canonical_sha256",
-        "canonical_bytes"
-      ],
+      "required": ["output_file", "output_sha256", "output_bytes", "cols", "rows", "exit_code"],
+      "optional": ["canonical_file", "canonical_sha256", "canonical_bytes"],
       "types": {
         "output_file": "string",
         "output_sha256": "string",
@@ -265,13 +197,8 @@
       }
     },
     "assert": {
-      "required": [
-        "assertion",
-        "status"
-      ],
-      "optional": [
-        "details"
-      ],
+      "required": ["assertion", "status"],
+      "optional": ["details"],
       "types": {
         "assertion": "string",
         "status": "string",
@@ -279,15 +206,8 @@
       }
     },
     "artifact": {
-      "required": [
-        "artifact_type",
-        "path",
-        "status"
-      ],
-      "optional": [
-        "sha256",
-        "bytes"
-      ],
+      "required": ["artifact_type", "path", "status"],
+      "optional": ["sha256", "bytes"],
       "types": {
         "artifact_type": "string",
         "path": "string",
@@ -297,19 +217,8 @@
       }
     },
     "input": {
-      "required": [
-        "input_type",
-        "encoding",
-        "input_hash"
-      ],
-      "optional": [
-        "bytes_b64",
-        "details",
-        "mode",
-        "hash_key",
-        "cols",
-        "rows"
-      ],
+      "required": ["input_type", "encoding", "input_hash"],
+      "optional": ["bytes_b64", "details", "mode", "hash_key", "cols", "rows"],
       "types": {
         "input_type": "string",
         "encoding": "string",
@@ -323,11 +232,7 @@
       }
     },
     "frame": {
-      "required": [
-        "frame_idx",
-        "hash_algo",
-        "frame_hash"
-      ],
+      "required": ["frame_idx", "hash_algo", "frame_hash"],
       "optional": [
         "ts_ms",
         "mode",
@@ -377,9 +282,7 @@
       }
     },
     "error": {
-      "required": [
-        "message"
-      ],
+      "required": ["message"],
       "optional": [
         "case",
         "step",
@@ -405,11 +308,7 @@
       }
     },
     "browser_env": {
-      "required": [
-        "browser",
-        "user_agent",
-        "dpr"
-      ],
+      "required": ["browser", "user_agent", "dpr"],
       "optional": [
         "browser_version",
         "platform",
@@ -439,10 +338,7 @@
       }
     },
     "gpu_adapter": {
-      "required": [
-        "api",
-        "adapter_name"
-      ],
+      "required": ["api", "adapter_name"],
       "optional": [
         "backend",
         "vendor",
@@ -467,14 +363,7 @@
       }
     },
     "ws_metrics": {
-      "required": [
-        "label",
-        "ws_url",
-        "bytes_tx",
-        "bytes_rx",
-        "messages_tx",
-        "messages_rx"
-      ],
+      "required": ["label", "ws_url", "bytes_tx", "bytes_rx", "messages_tx", "messages_rx"],
       "optional": [
         "connect_ms",
         "reconnects",
@@ -501,17 +390,8 @@
       }
     },
     "large_screen_env": {
-      "required": [
-        "term",
-        "colorterm",
-        "no_color"
-      ],
-      "optional": [
-        "tmux",
-        "zellij",
-        "kitty_window_id",
-        "term_program"
-      ],
+      "required": ["term", "colorterm", "no_color"],
+      "optional": ["tmux", "zellij", "kitty_window_id", "term_program"],
       "types": {
         "term": "string",
         "colorterm": "string",
@@ -783,34 +663,17 @@
         "output_hash",
         "checksum"
       ],
-      "optional": [
-        "file_path",
-        "clipboard_path",
-        "export_sha256",
-        "clipboard_sha256"
-      ],
+      "optional": ["file_path", "clipboard_path", "export_sha256", "clipboard_sha256"],
       "types": {
         "action": "string",
         "preset_name": "string",
         "style_hash": "integer",
         "effects_hash": "integer",
         "effect_count": "number",
-        "file_path": [
-          "string",
-          "null"
-        ],
-        "clipboard_path": [
-          "string",
-          "null"
-        ],
-        "export_sha256": [
-          "string",
-          "null"
-        ],
-        "clipboard_sha256": [
-          "string",
-          "null"
-        ],
+        "file_path": ["string", "null"],
+        "clipboard_path": ["string", "null"],
+        "export_sha256": ["string", "null"],
+        "clipboard_sha256": ["string", "null"],
         "output_hash": "string",
         "checksum": "string"
       }
@@ -834,9 +697,7 @@
         "status",
         "detail"
       ],
-      "optional": [
-        "ts"
-      ],
+      "optional": ["ts"],
       "types": {
         "scenario": "string",
         "identity": "string",
@@ -844,24 +705,12 @@
         "locale_after": "string",
         "direction_before": "string",
         "direction_after": "string",
-        "frames_before_switch": [
-          "integer",
-          "null"
-        ],
-        "frames_after_switch": [
-          "integer",
-          "null"
-        ],
+        "frames_before_switch": ["integer", "null"],
+        "frames_after_switch": ["integer", "null"],
         "sync_pairs": "integer",
-        "aligned_right": [
-          "boolean",
-          "null"
-        ],
+        "aligned_right": ["boolean", "null"],
         "visual_match": "boolean",
-        "first_mismatch_col": [
-          "integer",
-          "null"
-        ],
+        "first_mismatch_col": ["integer", "null"],
         "exit_code": "integer",
         "duration_ms": "integer",
         "status": "string",
@@ -870,19 +719,8 @@
       }
     },
     "widget_scenario": {
-      "required": [
-        "scenario",
-        "screen",
-        "snapshot_hash",
-        "assertions",
-        "exit_code",
-        "duration_ms"
-      ],
-      "optional": [
-        "identity",
-        "escape_tallies",
-        "pty_checksum"
-      ],
+      "required": ["scenario", "screen", "snapshot_hash", "assertions", "exit_code", "duration_ms"],
+      "optional": ["identity", "escape_tallies", "pty_checksum"],
       "types": {
         "scenario": "string",
         "screen": "string",
@@ -891,10 +729,7 @@
         "exit_code": "integer",
         "duration_ms": "number",
         "identity": "string",
-        "escape_tallies": [
-          "object",
-          "string"
-        ],
+        "escape_tallies": ["object", "string"],
         "pty_checksum": "string"
       }
     }

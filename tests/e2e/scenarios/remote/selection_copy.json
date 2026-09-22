@@ -5,18 +5,51 @@
   "initial_cols": 100,
   "initial_rows": 30,
   "steps": [
-    {"type": "send", "data": "printf 'SELECTION_COPY_START\\nalpha beta gamma\\ndelta epsilon zeta\\nSELECTION_COPY_END\\n'\n", "delay_ms": 200},
-    {"type": "drain"},
-    {"type": "send", "data": "printf '\\033]52;c;YWxwaGEgYmV0YSBnYW1tYQ==\\a'\n", "delay_ms": 120, "comment": "OSC52 clipboard payload for 'alpha beta gamma'"},
-    {"type": "send", "data": "printf 'COPY_PAYLOAD_B64:YWxwaGEgYmV0YSBnYW1tYQ==\\n'\n", "delay_ms": 120},
-    {"type": "send", "data": "echo 'SELECTION_COPY_DONE'\n", "delay_ms": 120},
-    {"type": "drain"}
+    {
+      "type": "send",
+      "data": "printf 'SELECTION_COPY_START\\nalpha beta gamma\\ndelta epsilon zeta\\nSELECTION_COPY_END\\n'\n",
+      "delay_ms": 200
+    },
+    { "type": "drain" },
+    {
+      "type": "send",
+      "data": "printf '\\033]52;c;YWxwaGEgYmV0YSBnYW1tYQ==\\a'\n",
+      "delay_ms": 120,
+      "comment": "OSC52 clipboard payload for 'alpha beta gamma'"
+    },
+    {
+      "type": "send",
+      "data": "printf 'COPY_PAYLOAD_B64:YWxwaGEgYmV0YSBnYW1tYQ==\\n'\n",
+      "delay_ms": 120
+    },
+    { "type": "send", "data": "echo 'SELECTION_COPY_DONE'\n", "delay_ms": 120 },
+    { "type": "drain" }
   ],
   "assertions": [
-    {"id": "selection_copy_start", "kind": "contains", "pattern": "SELECTION_COPY_START", "category": "happy_path"},
-    {"id": "selection_copy_end", "kind": "contains", "pattern": "SELECTION_COPY_END", "category": "happy_path"},
-    {"id": "selection_copy_payload_marker", "kind": "contains", "pattern": "COPY_PAYLOAD_B64:YWxwaGEgYmV0YSBnYW1tYQ==", "category": "clipboard"},
-    {"id": "selection_copy_done", "kind": "contains", "pattern": "SELECTION_COPY_DONE", "category": "happy_path"}
+    {
+      "id": "selection_copy_start",
+      "kind": "contains",
+      "pattern": "SELECTION_COPY_START",
+      "category": "happy_path"
+    },
+    {
+      "id": "selection_copy_end",
+      "kind": "contains",
+      "pattern": "SELECTION_COPY_END",
+      "category": "happy_path"
+    },
+    {
+      "id": "selection_copy_payload_marker",
+      "kind": "contains",
+      "pattern": "COPY_PAYLOAD_B64:YWxwaGEgYmV0YSBnYW1tYQ==",
+      "category": "clipboard"
+    },
+    {
+      "id": "selection_copy_done",
+      "kind": "contains",
+      "pattern": "SELECTION_COPY_DONE",
+      "category": "happy_path"
+    }
   ],
   "timeout_s": 20
 }

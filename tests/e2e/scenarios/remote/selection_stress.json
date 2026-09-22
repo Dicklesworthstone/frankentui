@@ -3,62 +3,139 @@
   "description": "Selection resilience stress test: validates selection markers survive heavy output, scrollback churn, and resize storms",
   "initial_cols": 100,
   "initial_rows": 30,
-  "fixture_categories": [
-    "selection",
-    "churn",
-    "resize",
-    "scrollback",
-    "clipboard"
-  ],
+  "fixture_categories": ["selection", "churn", "resize", "scrollback", "clipboard"],
   "steps": [
-    {"type": "send", "data": "echo 'SELECTION_STRESS_START'\n", "delay_ms": 200},
-    {"type": "drain"},
+    { "type": "send", "data": "echo 'SELECTION_STRESS_START'\n", "delay_ms": 200 },
+    { "type": "drain" },
 
-    {"type": "send", "data": "printf '\\033]52;c;U0VMRUNUSU9OX0FOQ0hPUg==\\a'\n", "delay_ms": 80, "comment": "OSC52 clipboard: SELECTION_ANCHOR"},
+    {
+      "type": "send",
+      "data": "printf '\\033]52;c;U0VMRUNUSU9OX0FOQ0hPUg==\\a'\n",
+      "delay_ms": 80,
+      "comment": "OSC52 clipboard: SELECTION_ANCHOR"
+    },
 
-    {"type": "send", "data": "for i in $(seq 1 200); do printf 'CHURN_LINE_%04d: %s\\n' \"$i\" \"$(head -c 60 /dev/urandom | base64 | head -c 80)\"; done\n", "delay_ms": 300, "comment": "200 lines of output churn to stress scrollback"},
-    {"type": "drain"},
+    {
+      "type": "send",
+      "data": "for i in $(seq 1 200); do printf 'CHURN_LINE_%04d: %s\\n' \"$i\" \"$(head -c 60 /dev/urandom | base64 | head -c 80)\"; done\n",
+      "delay_ms": 300,
+      "comment": "200 lines of output churn to stress scrollback"
+    },
+    { "type": "drain" },
 
-    {"type": "send", "data": "echo 'SELECTION_ANCHOR_POST_CHURN'\n", "delay_ms": 80},
+    { "type": "send", "data": "echo 'SELECTION_ANCHOR_POST_CHURN'\n", "delay_ms": 80 },
 
-    {"type": "resize", "cols": 60, "rows": 15, "delay_ms": 30},
-    {"type": "send", "data": "for i in $(seq 1 50); do printf 'RESIZE_CHURN_%03d\\n' \"$i\"; done\n", "delay_ms": 150, "comment": "50 lines during resize"},
-    {"type": "drain"},
+    { "type": "resize", "cols": 60, "rows": 15, "delay_ms": 30 },
+    {
+      "type": "send",
+      "data": "for i in $(seq 1 50); do printf 'RESIZE_CHURN_%03d\\n' \"$i\"; done\n",
+      "delay_ms": 150,
+      "comment": "50 lines during resize"
+    },
+    { "type": "drain" },
 
-    {"type": "resize", "cols": 200, "rows": 60, "delay_ms": 30},
-    {"type": "send", "data": "for i in $(seq 1 50); do printf 'EXPAND_CHURN_%03d\\n' \"$i\"; done\n", "delay_ms": 150, "comment": "50 more lines after expand"},
-    {"type": "drain"},
+    { "type": "resize", "cols": 200, "rows": 60, "delay_ms": 30 },
+    {
+      "type": "send",
+      "data": "for i in $(seq 1 50); do printf 'EXPAND_CHURN_%03d\\n' \"$i\"; done\n",
+      "delay_ms": 150,
+      "comment": "50 more lines after expand"
+    },
+    { "type": "drain" },
 
-    {"type": "resize", "cols": 40, "rows": 10, "delay_ms": 20},
-    {"type": "resize", "cols": 120, "rows": 40, "delay_ms": 20},
-    {"type": "resize", "cols": 80, "rows": 24, "delay_ms": 20},
-    {"type": "send", "data": "echo 'SELECTION_SURVIVED_RESIZE_STORM'\n", "delay_ms": 120},
-    {"type": "drain"},
+    { "type": "resize", "cols": 40, "rows": 10, "delay_ms": 20 },
+    { "type": "resize", "cols": 120, "rows": 40, "delay_ms": 20 },
+    { "type": "resize", "cols": 80, "rows": 24, "delay_ms": 20 },
+    { "type": "send", "data": "echo 'SELECTION_SURVIVED_RESIZE_STORM'\n", "delay_ms": 120 },
+    { "type": "drain" },
 
-    {"type": "send", "data": "printf '\\033]52;c;U0VMX1BPU1RfUkVTSVpF\\a'\n", "delay_ms": 80, "comment": "OSC52 clipboard: SEL_POST_RESIZE"},
+    {
+      "type": "send",
+      "data": "printf '\\033]52;c;U0VMX1BPU1RfUkVTSVpF\\a'\n",
+      "delay_ms": 80,
+      "comment": "OSC52 clipboard: SEL_POST_RESIZE"
+    },
 
-    {"type": "send", "data": "for i in $(seq 1 100); do printf 'SCROLL_FLOOD_%04d: '; for j in $(seq 1 5); do printf '%04x' $((i * j)); done; printf '\\n'; done\n", "delay_ms": 200, "comment": "100 more lines of scroll flood"},
-    {"type": "drain"},
+    {
+      "type": "send",
+      "data": "for i in $(seq 1 100); do printf 'SCROLL_FLOOD_%04d: '; for j in $(seq 1 5); do printf '%04x' $((i * j)); done; printf '\\n'; done\n",
+      "delay_ms": 200,
+      "comment": "100 more lines of scroll flood"
+    },
+    { "type": "drain" },
 
-    {"type": "send", "data": "printf '\\033[H'\n", "delay_ms": 50, "comment": "CUP to home - cursor reposition"},
-    {"type": "send", "data": "printf '\\033[2J'\n", "delay_ms": 50, "comment": "ED clear screen"},
-    {"type": "send", "data": "echo 'SELECTION_POST_CLEAR'\n", "delay_ms": 120},
-    {"type": "drain"},
+    {
+      "type": "send",
+      "data": "printf '\\033[H'\n",
+      "delay_ms": 50,
+      "comment": "CUP to home - cursor reposition"
+    },
+    { "type": "send", "data": "printf '\\033[2J'\n", "delay_ms": 50, "comment": "ED clear screen" },
+    { "type": "send", "data": "echo 'SELECTION_POST_CLEAR'\n", "delay_ms": 120 },
+    { "type": "drain" },
 
-    {"type": "send", "data": "printf '\\033]52;c;RklOQUxfU0VMRUNUSU9O\\a'\n", "delay_ms": 80, "comment": "OSC52 clipboard: FINAL_SELECTION"},
+    {
+      "type": "send",
+      "data": "printf '\\033]52;c;RklOQUxfU0VMRUNUSU9O\\a'\n",
+      "delay_ms": 80,
+      "comment": "OSC52 clipboard: FINAL_SELECTION"
+    },
 
-    {"type": "send", "data": "echo 'SELECTION_STRESS_END'\n", "delay_ms": 200},
-    {"type": "drain"}
+    { "type": "send", "data": "echo 'SELECTION_STRESS_END'\n", "delay_ms": 200 },
+    { "type": "drain" }
   ],
   "assertions": [
-    {"id": "stress_start", "category": "selection", "kind": "contains", "pattern": "SELECTION_STRESS_START"},
-    {"id": "stress_end", "category": "selection", "kind": "contains", "pattern": "SELECTION_STRESS_END"},
-    {"id": "anchor_post_churn", "category": "churn", "kind": "contains", "pattern": "SELECTION_ANCHOR_POST_CHURN"},
-    {"id": "survived_resize", "category": "resize", "kind": "contains", "pattern": "SELECTION_SURVIVED_RESIZE_STORM"},
-    {"id": "post_clear", "category": "scrollback", "kind": "contains", "pattern": "SELECTION_POST_CLEAR"},
-    {"id": "churn_line_count", "category": "churn", "kind": "regex", "pattern": "CHURN_LINE_\\d{4}:", "min_count": 100},
-    {"id": "resize_churn_count", "category": "resize", "kind": "regex", "pattern": "RESIZE_CHURN_\\d{3}", "min_count": 20},
-    {"id": "scroll_flood_count", "category": "scrollback", "kind": "regex", "pattern": "SCROLL_FLOOD_\\d{4}:", "min_count": 50}
+    {
+      "id": "stress_start",
+      "category": "selection",
+      "kind": "contains",
+      "pattern": "SELECTION_STRESS_START"
+    },
+    {
+      "id": "stress_end",
+      "category": "selection",
+      "kind": "contains",
+      "pattern": "SELECTION_STRESS_END"
+    },
+    {
+      "id": "anchor_post_churn",
+      "category": "churn",
+      "kind": "contains",
+      "pattern": "SELECTION_ANCHOR_POST_CHURN"
+    },
+    {
+      "id": "survived_resize",
+      "category": "resize",
+      "kind": "contains",
+      "pattern": "SELECTION_SURVIVED_RESIZE_STORM"
+    },
+    {
+      "id": "post_clear",
+      "category": "scrollback",
+      "kind": "contains",
+      "pattern": "SELECTION_POST_CLEAR"
+    },
+    {
+      "id": "churn_line_count",
+      "category": "churn",
+      "kind": "regex",
+      "pattern": "CHURN_LINE_\\d{4}:",
+      "min_count": 100
+    },
+    {
+      "id": "resize_churn_count",
+      "category": "resize",
+      "kind": "regex",
+      "pattern": "RESIZE_CHURN_\\d{3}",
+      "min_count": 20
+    },
+    {
+      "id": "scroll_flood_count",
+      "category": "scrollback",
+      "kind": "regex",
+      "pattern": "SCROLL_FLOOD_\\d{4}:",
+      "min_count": 50
+    }
   ],
   "timeout_s": 45
 }

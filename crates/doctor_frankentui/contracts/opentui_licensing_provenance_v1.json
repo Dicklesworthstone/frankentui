@@ -37,7 +37,13 @@
     ]
   },
   "provenance_chain_policy": {
-    "required_stages": ["source_snapshot", "extraction", "ir_normalization", "translation", "generated_output"],
+    "required_stages": [
+      "source_snapshot",
+      "extraction",
+      "ir_normalization",
+      "translation",
+      "generated_output"
+    ],
     "hash_algorithm": "sha256",
     "chain_must_be_unbroken": true,
     "each_stage_must_record": ["input_hash", "output_hash", "tool_version", "timestamp"],
@@ -54,7 +60,13 @@
   },
   "attribution_template": {
     "format": "NOTICE",
-    "required_fields": ["original_project_name", "original_license_spdx", "original_authors", "migration_tool_version", "migration_date"],
+    "required_fields": [
+      "original_project_name",
+      "original_license_spdx",
+      "original_authors",
+      "migration_tool_version",
+      "migration_date"
+    ],
     "optional_fields": ["original_project_url", "modifications_summary"]
   },
   "risk_flags": [
