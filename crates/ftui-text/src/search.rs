@@ -22,6 +22,7 @@
 //! assert_eq!(results[1].range, 12..17);
 //! ```
 
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 /// Unicode character width measurement mode for search results.
@@ -51,24 +52,36 @@ impl WidthMode {
         w.min(2)
     }
 
-    /// Compute the display width of a string by summing per-character widths.
+    /// Compute the display width of one grapheme cluster, as the renderer
+    /// measures it, under this mode's treatment of ambiguous-width characters.
+    #[inline]
+    #[must_use]
+    pub fn grapheme_width(self, grapheme: &str) -> usize {
+        ftui_core::text_width::grapheme_width_with_cjk(grapheme, self == Self::CjkAmbiguousWide)
+    }
+
+    /// Compute the display width of a string, one grapheme cluster at a time.
+    ///
+    /// Summing [`char_width`](Self::char_width) instead overcounts clusters
+    /// that render as one glyph: a ZWJ family of three people measured 6
+    /// cells against the renderer's 2.
     #[must_use]
     pub fn str_width(self, s: &str) -> usize {
-        s.chars().map(|ch| self.char_width(ch)).sum()
+        s.graphemes(true).map(|g| self.grapheme_width(g)).sum()
     }
 }
 
 /// Compute the display column at a byte offset in a string.
 ///
-/// Returns the sum of character widths for all characters before the given byte
-/// offset, using the specified width mode.
+/// Returns the display width, under `mode`, of everything before `byte_offset`,
+/// measured per grapheme cluster as the renderer places it.
 ///
 /// # Panics
 /// Panics if `byte_offset` is not at a char boundary in `s`.
 #[must_use]
 pub fn display_col_at(s: &str, byte_offset: usize, mode: WidthMode) -> usize {
     debug_assert!(s.is_char_boundary(byte_offset));
-    s[..byte_offset].chars().map(|ch| mode.char_width(ch)).sum()
+    mode.str_width(&s[..byte_offset])
 }
 
 /// A single search match with its byte range in the source text.
@@ -169,8 +182,6 @@ pub fn search_case_insensitive(haystack: &str, needle: &str) -> Vec<SearchResult
         return Vec::new();
     }
 
-    use unicode_segmentation::UnicodeSegmentation;
-
     // Build mapping using grapheme clusters for correct normalization boundaries.
     // Track both start and end byte offsets for each normalized byte so
     // matches that land inside a grapheme expansion still map to a full
@@ -242,7 +253,6 @@ pub fn search_normalized(
     form: crate::normalization::NormForm,
 ) -> Vec<SearchResult> {
     use crate::normalization::normalize;
-    use unicode_segmentation::UnicodeSegmentation;
 
     if needle.is_empty() {
         return Vec::new();
@@ -417,7 +427,6 @@ pub fn search_with_policy(
     policy: &SearchPolicy,
 ) -> Vec<PolicySearchResult> {
     use crate::normalization::normalize;
-    use unicode_segmentation::UnicodeSegmentation;
 
     if needle.is_empty() {
         return Vec::new();
@@ -461,6 +470,10 @@ pub fn search_with_policy(
     // Find matches in normalized text.
     let mut results = Vec::new();
     let mut start = 0;
+    // Match starts only move right and fall on grapheme boundaries, so each
+    // column extends the last one by the text between them. Re-measuring the
+    // whole prefix per match was quadratic in the number of matches.
+    let (mut measured_to, mut measured_col) = (0, 0);
     while let Some(pos) = normalized[start..].find(&needle_norm) {
         let norm_start = start + pos;
         let norm_end = norm_start + needle_norm.len();
@@ -486,8 +499,13 @@ pub fn search_with_policy(
             continue;
         }
 
-        let col_start = display_col_at(haystack, orig_start, policy.width_mode);
-        let col_end = display_col_at(haystack, orig_end, policy.width_mode);
+        debug_assert!(orig_start >= measured_to);
+        measured_col += policy
+            .width_mode
+            .str_width(&haystack[measured_to..orig_start]);
+        measured_to = orig_start;
+        let col_start = measured_col;
+        let col_end = col_start + policy.width_mode.str_width(&haystack[orig_start..orig_end]);
 
         results.push(PolicySearchResult {
             range: orig_start..orig_end,
@@ -873,6 +891,42 @@ mod policy_tests {
         assert_eq!(display_col_at(s, 1, WidthMode::Standard), 1); // after e
         assert_eq!(display_col_at(s, 3, WidthMode::Standard), 1); // after combining
         assert_eq!(display_col_at(s, 4, WidthMode::Standard), 2); // after x
+    }
+
+    #[test]
+    fn match_columns_follow_the_renderer_across_emoji_sequences() {
+        // Per-scalar widths put "foo" at column 7 after the ZWJ family and 5
+        // after the toned thumbs-up; the renderer draws each cluster as one
+        // two-cell glyph, so the highlight landed past the match.
+        for prefix in [
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} ",
+            "\u{1F44D}\u{1F3FD} ",
+            "\u{1F1EF}\u{1F1F5} ",
+            "e\u{301} ",
+        ] {
+            let haystack = format!("{prefix}foo");
+            let hit = &search_with_policy(&haystack, "foo", &SearchPolicy::STANDARD)[0];
+            let expected = crate::wrap::display_width(prefix);
+            assert_eq!(hit.col_start, expected, "{prefix:?}");
+            assert_eq!(hit.col_end, expected + 3, "{prefix:?}");
+        }
+    }
+
+    #[test]
+    fn match_columns_agree_with_display_col_at_for_every_match() {
+        let haystack = "\u{1F468}\u{200D}\u{1F469} ab \u{2192} ab \u{4E2D}ab\u{301} ".repeat(50);
+        for policy in [SearchPolicy::STANDARD, SearchPolicy::CJK] {
+            let results = search_with_policy(&haystack, "ab", &policy);
+            assert_eq!(results.len(), 150);
+            for hit in &results {
+                let mode = policy.width_mode;
+                assert_eq!(
+                    hit.col_start,
+                    display_col_at(&haystack, hit.range.start, mode)
+                );
+                assert_eq!(hit.col_end, display_col_at(&haystack, hit.range.end, mode));
+            }
+        }
     }
 
     // ── SearchPolicy preset tests ──────────────────────────────────────
