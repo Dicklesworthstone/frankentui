@@ -6440,6 +6440,12 @@ impl MermaidColor {
     }
 
     fn parse_hex(hex: &str) -> Option<Self> {
+        // Check before slicing: the length below counts bytes, so a
+        // multi-byte character would split a slice, and `from_str_radix`
+        // would accept a leading '+' as a sign.
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
@@ -12158,6 +12164,18 @@ mod tests {
                 .iter()
                 .any(|warning| warning.code == MermaidWarningCode::UnsupportedDiagram)
         );
+    }
+
+    #[test]
+    fn mermaid_color_rejects_non_hex_digits_without_panicking() {
+        // The length checks counted bytes and the parser sliced by byte, so
+        // a multi-byte character split a slice (a panic on diagram source),
+        // and `from_str_radix` took a leading '+' as a sign.
+        for bad in ["#a\u{e9}123", "#\u{e9}1", "#\u{1F600}", "#+f+f+f", "#+ff"] {
+            assert_eq!(MermaidColor::parse(bad), None, "{bad:?}");
+        }
+        let flow = parse_with_diagnostics("graph TD\nA-->B\nstyle A fill:#a\u{e9}123");
+        assert_ne!(flow.ast.diagram_type, DiagramType::Unknown);
     }
 
     #[test]
