@@ -622,6 +622,11 @@ impl Screen for IntrinsicSizingDemo {
         self.tick_count = tick_count;
     }
 
+    // 1-4 pick a scenario; the app would take them to switch screens.
+    fn consumes_key(&self, key: char) -> bool {
+        matches!(key, '1'..='4')
+    }
+
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {

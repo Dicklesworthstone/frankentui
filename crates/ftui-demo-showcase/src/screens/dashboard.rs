@@ -6522,6 +6522,11 @@ impl Screen for Dashboard {
         );
     }
 
+    // m cycles the markdown sample; the app would take it for mouse capture.
+    fn consumes_key(&self, key: char) -> bool {
+        key == 'm'
+    }
+
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {

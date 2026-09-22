@@ -1563,9 +1563,9 @@ impl ScreenStates {
         dispatch_screen!(ref self, id, screen => screen.consumes_text_input(), noop: false)
     }
 
-    /// Whether the given screen owns this plain number key in its current mode.
-    fn consumes_number_key(&self, id: ScreenId, key: char) -> bool {
-        dispatch_screen!(ref self, id, screen => screen.consumes_number_key(key), noop: false)
+    /// Whether the given screen owns this plain key in its current mode.
+    fn consumes_key(&self, id: ScreenId, key: char) -> bool {
+        dispatch_screen!(ref self, id, screen => screen.consumes_key(key), noop: false)
     }
 
     /// Forward a tick to the active screen and always tick performance_hud.
@@ -4298,20 +4298,32 @@ impl AppModel {
                     // report capital A as ('A', SHIFT), so the Shift+letter
                     // shortcuts below used to fire while typing a capital
                     // into a focused field, like `q` and `m` would.
+                    //
+                    // A legacy terminal sends a bare 'A' byte, reported as
+                    // ('A', NONE), so each Shift+letter arm takes both. They
+                    // used to take only SHIFT and never fired in Terminal.app,
+                    // xterm, VTE or tmux.
                     let text_input_active = self.screens.consumes_text_input(self.display_screen());
+                    // A plain key the screen binds itself (Kanban's H/L, a
+                    // lab's 1-4, a screen's own m) skips the matching global
+                    // digit, m or Shift+letter shortcut below. Unclaimed,
+                    // those bindings never fired.
+                    let screen_owns_key = text_input_active
+                        || matches!(code, KeyCode::Char(ch)
+                            if self.screens.consumes_key(self.display_screen(), *ch));
 
                     if self.a11y_panel_visible && !text_input_active {
                         match (*code, *modifiers) {
-                            (KeyCode::Char('A'), Modifiers::SHIFT) => {
+                            (KeyCode::Char('A'), Modifiers::NONE | Modifiers::SHIFT) => {
                                 return self.handle_msg(AppMsg::ToggleA11yPanel, source);
                             }
-                            (KeyCode::Char('H'), Modifiers::SHIFT) => {
+                            (KeyCode::Char('H'), Modifiers::NONE | Modifiers::SHIFT) => {
                                 return self.handle_msg(AppMsg::ToggleHighContrast, source);
                             }
-                            (KeyCode::Char('M'), Modifiers::SHIFT) => {
+                            (KeyCode::Char('M'), Modifiers::NONE | Modifiers::SHIFT) => {
                                 return self.handle_msg(AppMsg::ToggleReducedMotion, source);
                             }
-                            (KeyCode::Char('L'), Modifiers::SHIFT) => {
+                            (KeyCode::Char('L'), Modifiers::NONE | Modifiers::SHIFT) => {
                                 return self.handle_msg(AppMsg::ToggleLargeText, source);
                             }
                             _ => {}
@@ -4407,15 +4419,17 @@ impl AppModel {
                             return Cmd::None;
                         }
                         // A11y panel
-                        (KeyCode::Char('A'), Modifiers::SHIFT) if !text_input_active => {
+                        (KeyCode::Char('A'), Modifiers::NONE | Modifiers::SHIFT)
+                            if !screen_owns_key =>
+                        {
                             return self.handle_msg(AppMsg::ToggleA11yPanel, source);
                         }
                         // Theme cycling
                         (KeyCode::Char('t'), Modifiers::CTRL) => {
                             return self.handle_msg(AppMsg::CycleTheme, source);
                         }
-                        // Mouse capture toggle (suppressed when a text field has focus)
-                        (KeyCode::Char('m'), Modifiers::NONE) if !text_input_active => {
+                        // Mouse capture toggle (F6 always works)
+                        (KeyCode::Char('m'), Modifiers::NONE) if !screen_owns_key => {
                             return self.handle_msg(AppMsg::ToggleMouseCapture, source);
                         }
                         // Dashboard: activate currently highlighted tile
@@ -4445,7 +4459,9 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        (KeyCode::Char('L'), Modifiers::SHIFT) if !text_input_active => {
+                        (KeyCode::Char('L'), Modifiers::NONE | Modifiers::SHIFT)
+                            if !screen_owns_key =>
+                        {
                             let target = self.display_screen().next();
                             if self.tour.is_active() {
                                 self.stop_tour(false, "shift_l");
@@ -4453,7 +4469,9 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        (KeyCode::Char('H'), Modifiers::SHIFT) if !text_input_active => {
+                        (KeyCode::Char('H'), Modifiers::NONE | Modifiers::SHIFT)
+                            if !screen_owns_key =>
+                        {
                             let target = self.display_screen().prev();
                             if self.tour.is_active() {
                                 self.stop_tour(false, "shift_h");
@@ -4461,12 +4479,7 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        // Text input and screen-local controls take precedence
-                        // over the corresponding global number shortcut.
-                        (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE)
-                            if !text_input_active
-                                && !self.screens.consumes_number_key(self.display_screen(), ch) =>
-                        {
+                        (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE) if !screen_owns_key => {
                             if let Some(id) = ScreenId::from_number_key(ch) {
                                 if self.tour.is_active() {
                                     self.stop_tour(false, "number_key");
@@ -4602,7 +4615,16 @@ impl Model for AppModel {
             self.render_guided_tour_landing(frame, inner);
         }
 
-        // A11y panel (small overlay inside content area)
+        if self.tour.is_active()
+            && let Some(state) = self.tour.overlay_state(inner, 6)
+        {
+            crate::chrome::render_guided_tour_overlay(&state, frame, inner);
+        }
+
+        // A11y panel (small overlay inside content area). It shares the
+        // bottom-right corner with the tour overlay and must come after it:
+        // the binary starts on the tour, which used to hide the panel, so
+        // Shift+A on launch seemed to do nothing.
         if self.a11y_panel_visible {
             let a11y_state = crate::chrome::A11yPanelState {
                 high_contrast: self.a11y.high_contrast,
@@ -4611,12 +4633,6 @@ impl Model for AppModel {
                 base_theme: self.base_theme.name(),
             };
             crate::chrome::render_a11y_panel(&a11y_state, frame, inner);
-        }
-
-        if self.tour.is_active()
-            && let Some(state) = self.tour.overlay_state(inner, 6)
-        {
-            crate::chrome::render_guided_tour_overlay(&state, frame, inner);
         }
 
         // Help overlay (chrome module)
@@ -7115,6 +7131,64 @@ mod tests {
     }
 
     #[test]
+    fn legacy_capitals_reach_the_shift_letter_shortcuts() {
+        // Terminal.app, xterm, VTE and tmux send a bare capital, which parses
+        // as ('A', NONE). The arms used to require SHIFT and never fired.
+        let key = |c| AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char(c))));
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::Dashboard;
+        app.update(key('A'));
+        assert!(app.a11y_panel_visible);
+        app.update(key('A'));
+        assert!(!app.a11y_panel_visible);
+        app.update(key('L'));
+        assert_eq!(app.current_screen, ScreenId::Dashboard.next());
+        app.update(key('H'));
+        assert_eq!(app.current_screen, ScreenId::Dashboard);
+    }
+
+    #[test]
+    fn screen_claimed_keys_skip_the_global_shortcuts() {
+        // Each of these keys is in its screen's help, and the app used to take
+        // it first: digits switched screens, m toggled mouse capture, A opened
+        // the a11y panel and H/L switched screens.
+        let key = |c| AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char(c))));
+        for (screen, keys) in [
+            (ScreenId::KanbanBoard, "HL"),
+            (ScreenId::MermaidMegaShowcase, "0mAHL"),
+            (ScreenId::SnapshotPlayer, "H"),
+            (ScreenId::LayoutLab, "12345m"),
+            (ScreenId::AdvancedFeatures, "1234"),
+            (ScreenId::ExplainabilityCockpit, "1234"),
+            (ScreenId::IntrinsicSizing, "1234"),
+            (ScreenId::PerformanceHud, "1234m"),
+            (ScreenId::MermaidShowcase, "01234m"),
+            (ScreenId::Dashboard, "m"),
+            (ScreenId::CodeExplorer, "m"),
+            (ScreenId::Shakespeare, "m"),
+            // Its palette query is always open: q and ? are text too.
+            (ScreenId::CommandPaletteLab, "012345mq?"),
+        ] {
+            for ch in keys.chars() {
+                let mut app = AppModel::new();
+                app.current_screen = screen;
+                let mouse = app.mouse_capture_enabled;
+                let cmd = app.update(key(ch));
+                let quits = match cmd {
+                    Cmd::Quit => true,
+                    Cmd::Batch(cmds) => cmds.iter().any(|cmd| matches!(cmd, Cmd::Quit)),
+                    _ => false,
+                };
+                assert!(!quits, "{screen:?} quit on {ch}");
+                assert_eq!(app.current_screen, screen, "{screen:?} lost {ch}");
+                assert_eq!(app.mouse_capture_enabled, mouse, "{screen:?} {ch}");
+                assert!(!app.a11y_panel_visible, "{screen:?} {ch}");
+                assert!(!app.help_visible, "{screen:?} {ch}");
+            }
+        }
+    }
+
+    #[test]
     fn unowned_number_keys_keep_global_screen_navigation() {
         for (screen, text_effects, key, expected) in [
             (ScreenId::VisualEffects, false, '4', ScreenId::CodeExplorer),
@@ -8098,6 +8172,20 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn a11y_panel_draws_over_the_tour_overlay() {
+        // Both sit in the content area's bottom-right corner, and the binary
+        // starts on the tour. The panel used to be drawn first and covered.
+        let mut app = AppModel::new();
+        app.start_tour(0, 1.0);
+        app.update(AppMsg::from(Event::Key(KeyEvent::new(KeyCode::Char('A')))));
+        assert!(app.a11y_panel_visible);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+        assert!(frame_text(&frame).contains("Press A to close"));
     }
 
     #[test]

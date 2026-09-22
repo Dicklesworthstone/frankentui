@@ -122,6 +122,11 @@ SHIFT_M='M'
 # Shift+L = uppercase L = 0x4c
 SHIFT_L='L'
 
+# Keys sent on a timer from launch could beat raw mode on a cold debug
+# binary: the tty echoed them and they never reached the app. Wait for the
+# status bar of the first frame instead.
+FIRST_FRAME='Tab/Shift+Tab'
+
 # Test 1: A11y panel toggle (Shift+A)
 # Verifies the accessibility panel can be toggled on
 a11y_panel_toggle() {
@@ -130,19 +135,20 @@ a11y_panel_toggle() {
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
+    PTY_SEND_AFTER_OUTPUT="$FIRST_FRAME" \
     PTY_SEND_DELAY_MS=300 \
     PTY_SEND="$SHIFT_A" \
-    FTUI_DEMO_EXIT_AFTER_MS=1500 \
-    PTY_TIMEOUT=4 \
+    FTUI_DEMO_EXIT_AFTER_MS=3000 \
+    PTY_TIMEOUT=6 \
         pty_run "$output_file" "$DEMO_BIN"
 
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # Expect the A11y panel UI elements to appear
-    # The panel should show "High Contrast", "Reduced Motion", "Large Text" labels
-    grep -a -qi "High Contrast\|A11y\|Accessibility" "$output_file" || return 1
+    # Only the panel says this. The demo opens on the guided tour, whose
+    # overlay used to cover the panel.
+    grep -a -q "Press A to close" "$output_file" || return 1
 }
 
 # Test 2: High contrast mode toggle (Shift+A then Shift+H)
@@ -154,19 +160,20 @@ a11y_high_contrast() {
     # Send Shift+A to open panel, then Shift+H to toggle high contrast
     PTY_COLS=120 \
     PTY_ROWS=40 \
+    PTY_SEND_AFTER_OUTPUT="$FIRST_FRAME" \
     PTY_SEND_DELAY_MS=300 \
     PTY_SEND="${SHIFT_A}${SHIFT_H}" \
-    FTUI_DEMO_EXIT_AFTER_MS=1800 \
-    PTY_TIMEOUT=5 \
+    FTUI_DEMO_EXIT_AFTER_MS=3000 \
+    PTY_TIMEOUT=6 \
         pty_run "$output_file" "$DEMO_BIN"
 
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # High contrast mode should be indicated in the output
-    # Either "High Contrast" mode name or the A11y panel showing [x] for enabled
-    grep -a -qi "High Contrast" "$output_file" || return 1
+    # The status bar lists the modes that are on. The panel's labels show
+    # whether or not a mode is on, so they prove nothing.
+    grep -a -q "A11y:HC" "$output_file" || return 1
 }
 
 # Test 3: Reduced motion mode toggle (Shift+A then Shift+M)
@@ -177,18 +184,18 @@ a11y_reduced_motion() {
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
+    PTY_SEND_AFTER_OUTPUT="$FIRST_FRAME" \
     PTY_SEND_DELAY_MS=300 \
     PTY_SEND="${SHIFT_A}${SHIFT_M}" \
-    FTUI_DEMO_EXIT_AFTER_MS=1800 \
-    PTY_TIMEOUT=5 \
+    FTUI_DEMO_EXIT_AFTER_MS=3000 \
+    PTY_TIMEOUT=6 \
         pty_run "$output_file" "$DEMO_BIN"
 
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # Reduced motion should appear in the panel
-    grep -a -qi "Reduced Motion\|Motion" "$output_file" || return 1
+    grep -a -q "A11y:RM" "$output_file" || return 1
 }
 
 # Test 4: Large text mode toggle (Shift+A then Shift+L)
@@ -199,18 +206,18 @@ a11y_large_text() {
 
     PTY_COLS=120 \
     PTY_ROWS=40 \
+    PTY_SEND_AFTER_OUTPUT="$FIRST_FRAME" \
     PTY_SEND_DELAY_MS=300 \
     PTY_SEND="${SHIFT_A}${SHIFT_L}" \
-    FTUI_DEMO_EXIT_AFTER_MS=1800 \
-    PTY_TIMEOUT=5 \
+    FTUI_DEMO_EXIT_AFTER_MS=3000 \
+    PTY_TIMEOUT=6 \
         pty_run "$output_file" "$DEMO_BIN"
 
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # Large text should appear in the panel
-    grep -a -qi "Large Text\|Large" "$output_file" || return 1
+    grep -a -q "A11y:LT" "$output_file" || return 1
 }
 
 # Test 5: Combined modes (Shift+A, then toggle all three)
@@ -222,9 +229,10 @@ a11y_combined() {
     # Open panel, toggle all three modes
     PTY_COLS=120 \
     PTY_ROWS=40 \
+    PTY_SEND_AFTER_OUTPUT="$FIRST_FRAME" \
     PTY_SEND_DELAY_MS=300 \
     PTY_SEND="${SHIFT_A}${SHIFT_H}${SHIFT_M}${SHIFT_L}" \
-    FTUI_DEMO_EXIT_AFTER_MS=2500 \
+    FTUI_DEMO_EXIT_AFTER_MS=3000 \
     PTY_TIMEOUT=6 \
         pty_run "$output_file" "$DEMO_BIN"
 
@@ -232,10 +240,8 @@ a11y_combined() {
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 300 ]] || return 1
 
-    # All three mode labels should be present
-    grep -a -qi "High Contrast" "$output_file" || return 1
-    grep -a -qi "Reduced Motion\|Motion" "$output_file" || return 1
-    grep -a -qi "Large Text\|Large" "$output_file" || return 1
+    # One batch of keys, one frame: the status bar lists all three at once
+    grep -a -q "A11y:HC RM LT" "$output_file" || return 1
 }
 
 # Test 6: Small terminal (80x24) with large text
@@ -246,10 +252,11 @@ a11y_small_terminal() {
 
     PTY_COLS=80 \
     PTY_ROWS=24 \
+    PTY_SEND_AFTER_OUTPUT="$FIRST_FRAME" \
     PTY_SEND_DELAY_MS=300 \
     PTY_SEND="${SHIFT_A}${SHIFT_L}" \
-    FTUI_DEMO_EXIT_AFTER_MS=1800 \
-    PTY_TIMEOUT=5 \
+    FTUI_DEMO_EXIT_AFTER_MS=3000 \
+    PTY_TIMEOUT=6 \
         pty_run "$output_file" "$DEMO_BIN"
 
     local size

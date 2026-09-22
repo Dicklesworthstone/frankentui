@@ -822,15 +822,19 @@ pub trait Screen {
 
     /// Whether this screen is currently accepting text input (e.g. a focused
     /// text field or editor). When `true`, single-character global shortcuts
-    /// (q, ?, m, 0-9) are suppressed so keystrokes reach the screen instead.
+    /// (q, ?, m, 0-9, A, H, L) are suppressed so keystrokes reach the screen
+    /// instead.
     fn consumes_text_input(&self) -> bool {
         false
     }
 
-    /// Whether a plain number key belongs to this screen's current controls.
-    /// This suppresses only the matching global number shortcut; other global
-    /// shortcuts and Tab navigation remain available.
-    fn consumes_number_key(&self, _key: char) -> bool {
+    /// Whether this plain key belongs to this screen's current controls.
+    ///
+    /// The app takes a digit, `m`, and capital `A`, `H` and `L` as global
+    /// shortcuts before any screen sees them, so a screen that binds one must
+    /// claim it here or its binding never fires. This suppresses only the
+    /// matching global shortcut; `q`, `?`, Tab and the other globals remain.
+    fn consumes_key(&self, _key: char) -> bool {
         false
     }
 

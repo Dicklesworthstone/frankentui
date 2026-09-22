@@ -715,6 +715,12 @@ impl Screen for LayoutLab {
         self.render_bottom(frame, main_chunks[2]);
     }
 
+    // 1-5 pick a preset and m grows the margin; the app would take them to
+    // switch screens and toggle mouse capture.
+    fn consumes_key(&self, key: char) -> bool {
+        matches!(key, '1'..='5' | 'm')
+    }
+
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {

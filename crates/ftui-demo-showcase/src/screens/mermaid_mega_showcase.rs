@@ -4017,6 +4017,17 @@ impl Screen for MermaidMegaShowcaseScreen {
         }
     }
 
+    // `/` search appends every character to the query.
+    fn consumes_text_input(&self) -> bool {
+        self.state.mode == ShowcaseMode::Search
+    }
+
+    // 0 resets zoom, m toggles metrics, A auto-scale, H/L pan; the app would
+    // take them for screen 10, mouse capture, the a11y panel and prev/next.
+    fn consumes_key(&self, key: char) -> bool {
+        matches!(key, '0' | 'm' | 'A' | 'H' | 'L')
+    }
+
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {

@@ -823,6 +823,11 @@ impl Screen for Shakespeare {
         self.search_active
     }
 
+    // m cycles the mode; the app would take it for mouse capture.
+    fn consumes_key(&self, key: char) -> bool {
+        key == 'm'
+    }
+
     fn title(&self) -> &'static str {
         "Shakespeare Library"
     }

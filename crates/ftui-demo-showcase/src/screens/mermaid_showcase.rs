@@ -4519,6 +4519,16 @@ impl Screen for MermaidShowcaseScreen {
         self.state.mode == ShowcaseMode::Search
     }
 
+    // 0 resets zoom, m toggles metrics and 1-4 the debug overlays; the app
+    // would take them to switch screens and toggle mouse capture.
+    fn consumes_key(&self, key: char) -> bool {
+        match self.state.mode {
+            ShowcaseMode::Normal => matches!(key, '0'..='4' | 'm'),
+            ShowcaseMode::Inspect => matches!(key, '0' | 'm'),
+            ShowcaseMode::Search => false,
+        }
+    }
+
     fn title(&self) -> &'static str {
         "Mermaid Showcase"
     }

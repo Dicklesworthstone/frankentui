@@ -1194,7 +1194,7 @@ impl Screen for I18nDemo {
             },
         ]
     }
-    fn consumes_number_key(&self, key: char) -> bool {
+    fn consumes_key(&self, key: char) -> bool {
         matches!(key, '1'..='4')
     }
 

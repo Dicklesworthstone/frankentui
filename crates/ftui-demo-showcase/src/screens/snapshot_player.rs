@@ -1727,6 +1727,12 @@ impl Screen for SnapshotPlayer {
         self.render_main_layout(frame, area);
     }
 
+    // H toggles the heatmap (h steps back); the app would take it for the
+    // previous screen. M and A also have lowercase forms, so they need no claim.
+    fn consumes_key(&self, key: char) -> bool {
+        key == 'H'
+    }
+
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {

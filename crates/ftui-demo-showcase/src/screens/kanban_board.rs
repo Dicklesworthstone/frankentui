@@ -651,6 +651,11 @@ impl Screen for KanbanBoard {
         self.render_footer(frame, footer_area);
     }
 
+    // H/L move the card; the app would take them to switch screens.
+    fn consumes_key(&self, key: char) -> bool {
+        matches!(key, 'H' | 'L')
+    }
+
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {

@@ -28,6 +28,8 @@ fn press_mod(code: KeyCode, modifiers: Modifiers) -> Event {
 #[test]
 fn m_key_toggles_mouse_capture() {
     let mut app = AppModel::new();
+    // Not the Dashboard: its own m cycles the markdown sample.
+    app.current_screen = ScreenId::WidgetGallery;
     assert!(app.mouse_capture_enabled);
 
     app.update(AppMsg::from(press(KeyCode::Char('m'))));

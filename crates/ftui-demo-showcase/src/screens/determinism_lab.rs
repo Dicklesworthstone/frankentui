@@ -1134,7 +1134,7 @@ impl DeterminismLab {
 impl Screen for DeterminismLab {
     type Message = ();
 
-    fn consumes_number_key(&self, key: char) -> bool {
+    fn consumes_key(&self, key: char) -> bool {
         matches!(key, '1' | '2' | '3')
     }
 
