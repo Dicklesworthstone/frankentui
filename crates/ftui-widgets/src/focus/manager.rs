@@ -66,6 +66,13 @@ pub struct FocusTrap {
     pub return_focus: Option<FocusId>,
 }
 
+/// Focus changes [`FocusManager::focus_back`] can step back through.
+///
+/// Every recorded change adds an entry, so a long session tabbing between
+/// widgets grew the history without bound. Each graph repair also filters
+/// all of it. The oldest entry is dropped at the cap.
+const MAX_FOCUS_HISTORY: usize = 64;
+
 /// Central focus coordinator.
 ///
 /// Tracks focus state, navigation history, focus traps (for modals),
@@ -638,6 +645,9 @@ impl FocusManager {
         let prev = self.current;
         if let Some(prev_id) = prev {
             if record_history && Some(prev_id) != self.history.last().copied() {
+                if self.history.len() >= MAX_FOCUS_HISTORY {
+                    self.history.remove(0);
+                }
                 self.history.push(prev_id);
             }
             let event = FocusEvent::FocusMoved {
@@ -908,6 +918,24 @@ mod tests {
 
         assert!(fm.focus_back());
         assert_eq!(fm.current(), Some(1));
+    }
+
+    #[test]
+    fn focus_history_is_bounded_and_keeps_the_newest_entries() {
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(1, 0));
+        fm.graph_mut().insert(node(2, 1));
+        fm.graph_mut().insert(node(3, 2));
+
+        for _ in 0..10_000 {
+            fm.focus(1);
+            fm.focus(2);
+        }
+        assert_eq!(fm.history.len(), MAX_FOCUS_HISTORY);
+
+        fm.focus(3);
+        assert!(fm.focus_back());
+        assert_eq!(fm.current(), Some(2));
     }
 
     #[test]
