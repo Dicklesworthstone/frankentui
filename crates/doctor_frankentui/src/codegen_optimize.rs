@@ -192,33 +192,26 @@ fn pass_dead_branch_elimination(plan: &mut EmissionPlan) -> Vec<TransformationRe
             let mut lines: Vec<String> = before.lines().map(String::from).collect();
             let mut changed = false;
 
-            // Remove tautological guards: `if true {` → unwrap
+            // `if true { ... }` becomes a plain block and `if false { ... }` is
+            // removed. The body of `if true` used to be unwrapped, which moved
+            // its `let`s into the enclosing scope, where they could shadow
+            // later uses. A guard with an `else` is left alone.
             let mut i = 0;
             while i < lines.len() {
-                let trimmed = lines[i].trim();
-                if trimmed == "if true {" {
-                    // Remove the `if true {` and matching `}`
-                    lines.remove(i);
-                    // Find and remove the matching closing brace
-                    if let Some(close_idx) = find_matching_brace(&lines, i) {
-                        lines.remove(close_idx);
-                        // Dedent the body
-                        for line in lines[i..close_idx].iter_mut() {
-                            if line.starts_with("    ") {
-                                *line = line[4..].to_string();
-                            }
-                        }
-                        changed = true;
+                let guard = lines[i].trim();
+                if (guard == "if true {" || guard == "if false {")
+                    && let Some(close) = find_matching_brace(&lines, i)
+                    && closes_without_else(&lines, close)
+                {
+                    if guard == "if true {" {
+                        let indent = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+                        lines[i] = format!("{indent}{{");
+                        i += 1;
+                    } else {
+                        lines.drain(i..=close);
                     }
-                } else if trimmed == "if false {" {
-                    // Remove the entire `if false { ... }` block
-                    if let Some(close_idx) = find_matching_brace(&lines, i) {
-                        let removed_count = close_idx - i + 1;
-                        lines.drain(i..=close_idx);
-                        changed = true;
-                        let _ = removed_count;
-                        continue;
-                    }
+                    changed = true;
+                    continue;
                 }
                 i += 1;
             }
@@ -261,23 +254,94 @@ fn pass_dead_branch_elimination(plan: &mut EmissionPlan) -> Vec<TransformationRe
     records
 }
 
+/// The index of the line holding the `}` that closes the first `{` on
+/// `lines[start]`.
+///
+/// Braces in string and char literals and in comments do not count. The old
+/// count included them. It also started below the guard line after that line
+/// was removed, which skipped the first body line, so a body opening with
+/// `let s = S {` was closed at that struct's `}`.
 fn find_matching_brace(lines: &[String], start: usize) -> Option<usize> {
-    let mut depth = 1;
-    for (i, line) in lines[start..].iter().enumerate().skip(1) {
-        for ch in line.chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(start + i);
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut block_comments = 0_usize;
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if in_string {
+                match ch {
+                    '\\' => {
+                        chars.next();
                     }
+                    '"' => in_string = false,
+                    _ => {}
                 }
-                _ => {}
+            } else if block_comments > 0 {
+                match (ch, chars.peek()) {
+                    ('*', Some('/')) => {
+                        chars.next();
+                        block_comments -= 1;
+                    }
+                    ('/', Some('*')) => {
+                        chars.next();
+                        block_comments += 1;
+                    }
+                    _ => {}
+                }
+            } else {
+                match ch {
+                    '/' if chars.peek() == Some(&'/') => break,
+                    '/' if chars.peek() == Some(&'*') => {
+                        chars.next();
+                        block_comments = 1;
+                    }
+                    '"' => in_string = true,
+                    '\'' => skip_char_literal(&mut chars),
+                    '{' => depth += 1,
+                    '}' => {
+                        depth = depth.checked_sub(1)?;
+                        if depth == 0 {
+                            return Some(index);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
     None
+}
+
+/// Consumes a char literal after its opening `'`, such as `{'` or `\u{7b}'`.
+/// A lifetime such as `'a` is left alone.
+fn skip_char_literal(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    let mut ahead = chars.clone();
+    match (ahead.next(), ahead.next()) {
+        (Some('\\'), _) => {
+            chars.next();
+            chars.next();
+            for c in chars.by_ref() {
+                if c == '\'' {
+                    break;
+                }
+            }
+        }
+        (Some(_), Some('\'')) => {
+            chars.next();
+            chars.next();
+        }
+        _ => {}
+    }
+}
+
+/// Whether the `}` on `lines[close]` ends its `if` with no `else` after it.
+fn closes_without_else(lines: &[String], close: usize) -> bool {
+    lines[close].trim() == "}"
+        && !lines[close + 1..]
+            .iter()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+            .is_some_and(|line| line.starts_with("else"))
 }
 
 // ── Pass 2: Style Constant Folding ─────────────────────────────────────
@@ -293,17 +357,15 @@ fn pass_style_constant_folding(
         let before_lines = before.lines().count();
         let lines: Vec<&str> = before.lines().collect();
 
-        // Find duplicate constant values (same RHS)
+        // Find duplicate constants: same type and value. Only unindented ones
+        // count. The associated consts of a theme's `impl` cannot be named bare
+        // from elsewhere, so an alias to one did not compile. Neither did an
+        // alias between two types that happened to share a value.
         let mut value_to_names: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for line in &lines {
-            let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("pub const ")
-                && let Some(eq_pos) = rest.find(" = ")
-            {
-                let name = &rest[..eq_pos];
-                let value = rest[eq_pos + 3..].trim_end_matches(';').trim();
+            if let Some((name, key)) = style_const_key(line) {
                 value_to_names
-                    .entry(value.to_string())
+                    .entry(key.to_string())
                     .or_default()
                     .push(name.to_string());
             }
@@ -328,52 +390,20 @@ fn pass_style_constant_folding(
             }
 
             for line in &lines {
-                let trimmed = line.trim();
-                // Check if this line is a folded duplicate
-                let is_folded = if let Some(rest) = trimmed.strip_prefix("pub const ") {
-                    if let Some(eq_pos) = rest.find(" = ") {
-                        let name = &rest[..eq_pos];
-                        folded_names.contains(name)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                if is_folded {
-                    if !fold_comment_added {
-                        new_lines
-                            .push("// Folded duplicate style constants (see aliases below)".into());
-                        fold_comment_added = true;
-                    }
-                    // Replace with alias
-                    if let Some(rest) = trimmed.strip_prefix("pub const ")
-                        && let Some(eq_pos) = rest.find(" = ")
-                    {
-                        let name = &rest[..eq_pos];
-                        let value = rest[eq_pos + 3..].trim_end_matches(';').trim();
-                        // Find the canonical name for this value
-                        for (val, names) in &duplicates {
-                            if val == value && names.contains(&name.to_string()) {
-                                let type_and_name = name;
-                                // Extract the type annotation
-                                if let Some(colon_pos) = type_and_name.find(':') {
-                                    let just_name = &type_and_name[..colon_pos];
-                                    let type_ann = &type_and_name[colon_pos..];
-                                    let canonical = &names[0];
-                                    let canonical_name =
-                                        canonical.split(':').next().unwrap_or(canonical);
-                                    new_lines.push(format!(
-                                        "pub const {just_name}{type_ann} = {canonical_name};"
-                                    ));
-                                }
-                                break;
-                            }
-                        }
-                    }
-                } else {
+                let folded = style_const_key(line).filter(|(name, _)| folded_names.contains(*name));
+                let Some((name, key)) = folded else {
                     new_lines.push(line.to_string());
+                    continue;
+                };
+                if !fold_comment_added {
+                    new_lines
+                        .push("// Folded duplicate style constants (see aliases below)".into());
+                    fold_comment_added = true;
+                }
+                // Replace with an alias to the first constant with this value.
+                if let Some((_, names)) = duplicates.iter().find(|(k, _)| k == key) {
+                    let (ty, _) = key.split_once(" = ").unwrap_or((key, ""));
+                    new_lines.push(format!("pub const {name}: {ty} = {};", names[0]));
                 }
             }
 
@@ -396,6 +426,14 @@ fn pass_style_constant_folding(
     }
 
     records
+}
+
+/// The name of an unindented `pub const NAME: TYPE = VALUE;` line and its
+/// `TYPE = VALUE` key.
+fn style_const_key(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("pub const ")?.strip_suffix(';')?;
+    let (name, key) = rest.split_once(": ")?;
+    key.contains(" = ").then_some((name, key))
 }
 
 // ── Pass 3: Helper Extraction ──────────────────────────────────────────
@@ -676,6 +714,36 @@ mod tests {
     }
 
     #[test]
+    fn dead_branch_keeps_structure_and_scope() {
+        let optimized = |code: &str| {
+            let plan = make_plan_with_files(vec![("src/test.rs", code, FileKind::RustSource)]);
+            optimize(plan).plan.files["src/test.rs"].content.clone()
+        };
+
+        // The body's first line opens a brace, and its `let` must stay scoped.
+        assert_eq!(
+            optimized(
+                "fn t() {\n    let s = 0;\n    if true {\n        let s = S {\n            a: 1,\n        };\n        use_it(s);\n    }\n    after(s);\n}"
+            ),
+            "fn t() {\n    let s = 0;\n    {\n        let s = S {\n            a: 1,\n        };\n        use_it(s);\n    }\n    after(s);\n}"
+        );
+        // Braces in strings, chars and comments do not close the block.
+        assert_eq!(
+            optimized(
+                "fn t() {\n    if false {\n        let s = \"}\"; // }\n        let c = '}'; /* } */\n        let e = '\\'';\n    }\n    keep();\n}"
+            ),
+            "fn t() {\n    keep();\n}"
+        );
+        // A guard with an `else` is left alone.
+        let with_else =
+            "fn t() {\n    if false {\n        a();\n    } else {\n        b();\n    }\n}";
+        assert_eq!(optimized(with_else), with_else);
+        let else_below =
+            "fn t() {\n    if true {\n        a();\n    }\n    else {\n        b();\n    }\n}";
+        assert_eq!(optimized(else_below), else_below);
+    }
+
+    #[test]
     fn dead_branch_marks_noop_arms() {
         let code = "    match msg {\n        Msg::Noop => {\n            ftui_runtime::Cmd::None\n        }\n    }";
         let plan = make_plan_with_files(vec![("src/update.rs", code, FileKind::RustSource)]);
@@ -715,6 +783,36 @@ mod tests {
         // With threshold 2, no values are duplicated enough
         let result = optimize(plan);
         assert_eq!(result.plan.files["src/style.rs"].content, code);
+    }
+
+    #[test]
+    fn style_folding_aliases_only_nameable_constants_of_one_type() {
+        let code = "pub const COLOR_A: ftui_style::Color = ftui_style::Color::rgb(1, 2, 3);\n\
+                    pub const COLOR_B: ftui_style::Color = ftui_style::Color::rgb(1, 2, 3);\n\
+                    pub const SMALL: u8 = 1;\n\
+                    pub const WIDE: u16 = 1;\n\
+                    pub struct DarkTheme;\n\
+                    impl DarkTheme {\n    \
+                    pub const BG: ftui_style::Color = ftui_style::Color::rgb(9, 9, 9);\n}\n\
+                    pub struct LightTheme;\n\
+                    impl LightTheme {\n    \
+                    pub const BG: ftui_style::Color = ftui_style::Color::rgb(9, 9, 9);\n}";
+        let plan = make_plan_with_files(vec![("src/style.rs", code, FileKind::RustSource)]);
+        let result = optimize(plan);
+        let content = &result.plan.files["src/style.rs"].content;
+
+        assert!(
+            content.contains("pub const COLOR_B: ftui_style::Color = COLOR_A;"),
+            "{content}"
+        );
+        assert!(content.contains("pub const WIDE: u16 = 1;"), "{content}");
+        assert_eq!(
+            content
+                .matches("pub const BG: ftui_style::Color = ftui_style::Color::rgb(9, 9, 9);")
+                .count(),
+            2,
+            "{content}"
+        );
     }
 
     #[test]
