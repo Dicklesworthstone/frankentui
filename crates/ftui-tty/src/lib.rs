@@ -1471,17 +1471,18 @@ impl Drop for TtyBackend {
             let mut stdout = io::stdout();
             let mouse_disable_seq =
                 mouse_disable_sequence_for_capabilities(self.events.capabilities);
-            // Only close a synchronized-output block when the policy actually
-            // let one be opened. Under a multiplexer identity `use_sync_output`
-            // is false, no `?2026h` is ever written, and a standalone `?2026l`
-            // at teardown is both unpaired and forbidden by that policy - which
-            // is what vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences
-            // asserts. The pre-refactor Drop emitted no sync end at all.
-            let emit_sync_end = self.events.capabilities.use_sync_output();
+            // No standalone `?2026l`: this backend opens no synchronized-output
+            // block. The presenter (`TerminalWriter`) owns each frame's block
+            // and closes an open one in its own drop, so a teardown sync end
+            // was always unpaired - under a multiplexer identity it is also
+            // forbidden (vfx_shape3d_wezterm_mux_policy_omits_sync_output_sequences),
+            // and elsewhere it broke the begin/end pairing that
+            // editor_clipboard_payload_cap asserts. The pre-refactor Drop
+            // emitted no sync end at all.
             let _ = write_cleanup_sequence_policy_with_mouse(
                 &self.events.features(),
                 self.alt_screen_active,
-                emit_sync_end,
+                false,
                 mouse_disable_seq,
                 &mut stdout,
             );
