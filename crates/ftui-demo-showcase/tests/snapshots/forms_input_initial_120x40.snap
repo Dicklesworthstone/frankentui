@@ -34,7 +34,7 @@
 │                                                          ││                                                          │
 │                                                          ││                                                          │
 │                                                          ││                                                          │
-│Tab: next | Enter: submit | Esc: cancel                   ││                                                          │
+│↑/↓: fields | ←/→: value | Enter: submit | Esc: cancel    ││                                                          │
 │Legend: * required | red=error | green=valid | dim=disable││                                                          │
 ╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯
 Editing: Name (field 1/6) | Required: 0/3 | Undo:0 Redo:0 | Errors: 0 | Ctrl+U: Show history                            

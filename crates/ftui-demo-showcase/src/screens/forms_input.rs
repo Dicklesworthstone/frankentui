@@ -28,7 +28,7 @@ use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::textarea::TextArea;
 use ftui_widgets::{Badge, StatefulWidget, TextInputUndoExt, Widget};
 
-use super::{HelpEntry, Screen};
+use super::{HelpEntry, Screen, form_arrow_keys};
 use crate::theme;
 
 /// Which panel currently has keyboard focus.
@@ -808,7 +808,10 @@ impl FormsInput {
         } else if state.cancelled {
             format!("Form cancelled\n{legend}")
         } else {
-            format!("Tab: next | Enter: submit | Esc: cancel\n{legend}")
+            // Not Tab: the app takes it to switch screens.
+            format!(
+                "\u{2191}/\u{2193}: fields | \u{2190}/\u{2192}: value | Enter: submit | Esc: cancel\n{legend}"
+            )
         };
         let hint_style = if state.submitted {
             Style::new().fg(theme::accent::SUCCESS)
@@ -1065,7 +1068,9 @@ impl Screen for FormsInput {
         match self.focus {
             FocusPanel::Form => {
                 let mut state = self.form_state.borrow_mut();
-                form_changed = state.handle_event(&mut self.form, event);
+                let remapped = form_arrow_keys(&self.form, state.focused, event);
+                form_changed =
+                    state.handle_event(&mut self.form, remapped.as_ref().unwrap_or(event));
             }
             FocusPanel::SearchInput => {
                 self.search_input.handle_event(event);
@@ -1158,7 +1163,7 @@ impl Screen for FormsInput {
                 action: "Toggle undo history",
             },
             HelpEntry {
-                key: "Tab/S-Tab",
+                key: "\u{2191}/\u{2193} in form",
                 action: "Navigate form fields",
             },
             HelpEntry {
@@ -1166,7 +1171,7 @@ impl Screen for FormsInput {
                 action: "Toggle checkbox",
             },
             HelpEntry {
-                key: "\u{2191}/\u{2193}",
+                key: "\u{2190}/\u{2192} in form",
                 action: "Radio/select/number",
             },
             HelpEntry {
@@ -1337,6 +1342,38 @@ mod tests {
         assert_eq!(screen.form_state.borrow().focused, 0);
         screen.update(&press(KeyCode::Tab));
         assert_eq!(screen.form_state.borrow().focused, 1);
+    }
+
+    #[test]
+    fn down_walks_the_form_without_changing_values() {
+        // Tab never arrives from the app. Down used to cycle Role's options
+        // instead of leaving it, and Up to raise Age.
+        let mut screen = FormsInput::new();
+        for expected in [1, 2, 4, 5] {
+            screen.update(&press(KeyCode::Down));
+            assert_eq!(screen.form_state.borrow().focused, expected);
+        }
+        for expected in [4, 2, 1, 0] {
+            screen.update(&press(KeyCode::Up));
+            assert_eq!(screen.form_state.borrow().focused, expected);
+        }
+        assert!(matches!(
+            screen.form.field(2),
+            Some(FormField::Select { selected: 0, .. })
+        ));
+        assert!(matches!(
+            screen.form.field(4),
+            Some(FormField::Number { value: 25, .. })
+        ));
+
+        // Left/Right change them.
+        screen.update(&press(KeyCode::Down));
+        screen.update(&press(KeyCode::Down));
+        screen.update(&press(KeyCode::Right));
+        assert!(matches!(
+            screen.form.field(2),
+            Some(FormField::Select { selected: 1, .. })
+        ));
     }
 
     #[test]

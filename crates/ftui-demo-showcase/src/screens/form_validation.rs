@@ -30,7 +30,7 @@ use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::toast::{Toast, ToastIcon, ToastPosition, ToastStyle};
 use ftui_widgets::{StatefulWidget, Widget};
 
-use super::{HelpEntry, Screen};
+use super::{HelpEntry, Screen, form_arrow_keys};
 use crate::theme;
 
 /// Validation mode determines when validation runs.
@@ -454,27 +454,6 @@ impl FormValidationDemo {
         *self = Self::new();
     }
 
-    /// Up/Down on Age or Role as the form's Shift+Tab/Tab. The form spends
-    /// Up/Down there on the value and relies on Tab to leave, but the app
-    /// keeps Tab for switching screens, so keyboard focus stuck on those two
-    /// and never reached Bio or Website. Left/Right still change the value.
-    fn value_field_arrows_move_focus(&self, event: &Event) -> Option<Event> {
-        let Event::Key(key) = event else {
-            return None;
-        };
-        let code = match key.code {
-            KeyCode::Up => KeyCode::BackTab,
-            KeyCode::Down => KeyCode::Tab,
-            _ => return None,
-        };
-        let focused = self.form_state.borrow().focused;
-        matches!(
-            self.form.field(focused),
-            Some(FormField::Number { .. } | FormField::Select { .. })
-        )
-        .then_some(Event::Key(KeyEvent { code, ..*key }))
-    }
-
     /// Whether the focused field takes typed characters. While it does, plain
     /// letters are text: the M/E/R/C controls and the app's single-key
     /// shortcuts stand aside, or typing "user" would inject errors and reset.
@@ -591,8 +570,10 @@ impl Screen for FormValidationDemo {
             }
         }
 
-        // Handle form events
-        let remapped = self.value_field_arrows_move_focus(event);
+        // Handle form events. Without the arrow remap, keyboard focus stuck
+        // on Age or Role and never reached Bio or Website.
+        let focused = self.form_state.borrow().focused;
+        let remapped = form_arrow_keys(&self.form, focused, event);
         let changed = {
             let mut state = self.form_state.borrow_mut();
             state.handle_event(&mut self.form, remapped.as_ref().unwrap_or(event))

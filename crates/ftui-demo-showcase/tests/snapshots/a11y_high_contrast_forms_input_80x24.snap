@@ -16,7 +16,7 @@
 ││                                     ││8  Ctrl+Z to undo, Ctrl+Y to redo.   ││
 ││                                     ││                                     ││
 ││                                     ││                                     ││
-││Tab: next | Enter: submit | Esc: canc││                                     ││
+││↑/↓: fields | ←/→: value | Enter: sub││                                     ││
 ││Legend: * required | red=error | gree││                                     ││
 │╰─────────────────────────────────────╯╰─────────────────────────────────────╯│
 │Editing: Name (field 1/6) | Required: 0/3 | Undo:0 Redo:0 | Errors: 0 | Ctrl+U│
