@@ -34,6 +34,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::mpsc;
+
 use crate::cancellation::{CancellationSource, CancellationToken};
 use crate::program::{Cmd, TaskSpec};
 use web_time::Duration;
@@ -63,6 +65,34 @@ fn add_millis_saturating(total: &mut u128, millis: u128) {
 
 fn join_task_thread(handle: std::thread::JoinHandle<()>) {
     let _ = handle.join();
+}
+
+/// Run `f` on a worker thread; `rx` delivers its result or its panic.
+///
+/// The worker is where the caller's code runs, so it gets what the executor
+/// gives a plain task: the panic is caught, with terminal cleanup hooks
+/// suppressed. The executor's suppression is per thread and does not reach
+/// this one. A panicking worker used to fire the terminal teardown mid-run,
+/// then read as a timeout, because its dropped sender looked like one to
+/// `recv_timeout`.
+fn spawn_worker<T, F>(
+    f: F,
+) -> (
+    std::thread::JoinHandle<()>,
+    mpsc::Receiver<std::thread::Result<T>>,
+)
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let result = ftui_core::with_panic_cleanup_suppressed(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        });
+        let _ = tx.send(result);
+    });
+    (handle, rx)
 }
 
 fn join_task_thread_bounded(handle: std::thread::JoinHandle<()>, task_name: &'static str) {
@@ -225,15 +255,12 @@ where
     Cmd::task(move || {
         let source = CancellationSource::new();
         let token = source.token();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            let result = f(token);
-            let _ = tx.send(result);
-        });
+        let (handle, rx) = spawn_worker(move || f(token));
         match rx.recv_timeout(timeout) {
-            Ok(msg) => {
+            Ok(result) => {
                 join_task_thread(handle);
-                msg
+                // A panic is the task's, as it would be run inline.
+                result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
             }
             Err(_) => {
                 source.cancel();
@@ -258,15 +285,11 @@ where
     Cmd::task_with_spec(TaskSpec::default().with_name(name), move || {
         let source = CancellationSource::new();
         let token = source.token();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            let result = f(token);
-            let _ = tx.send(result);
-        });
+        let (handle, rx) = spawn_worker(move || f(token));
         match rx.recv_timeout(timeout) {
-            Ok(msg) => {
+            Ok(result) => {
                 join_task_thread(handle);
-                msg
+                result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
             }
             Err(_) => {
                 source.cancel();
@@ -326,20 +349,22 @@ where
         for attempt in 0..=policy.max_retries {
             let source = CancellationSource::new();
             let token = source.token();
-            let (tx, rx) = std::sync::mpsc::channel();
             let f_clone = std::sync::Arc::clone(&f);
-            let handle = std::thread::spawn(move || {
-                let result = f_clone(token);
-                let _ = tx.send(result);
-            });
+            let (handle, rx) = spawn_worker(move || f_clone(token));
             match rx.recv_timeout(per_attempt_timeout) {
-                Ok(Ok(msg)) => {
+                Ok(Ok(Ok(msg))) => {
                     join_task_thread(handle);
                     return msg;
                 }
-                Ok(Err(e)) => {
+                Ok(Ok(Err(e))) => {
                     join_task_thread(handle);
                     last_err = e;
+                }
+                // A panic is not a failed attempt to retry: it ends the task,
+                // as it does `task_with_retry`, which runs `f` inline.
+                Ok(Err(payload)) => {
+                    join_task_thread(handle);
+                    std::panic::resume_unwind(payload);
                 }
                 Err(_) => {
                     source.cancel();
@@ -632,6 +657,77 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         assert!(cancelled.load(Ordering::SeqCst));
         assert!(worker_exited.load(Ordering::SeqCst));
+    }
+
+    #[cfg(not(panic = "abort"))]
+    #[test]
+    fn a_panicking_worker_is_the_tasks_panic_and_spares_the_terminal() {
+        use std::cell::Cell;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Only panics on a worker this test marked count, so panics in
+        // parallel tests cannot interfere.
+        thread_local! {
+            static MARKED_WORKER: Cell<bool> = const { Cell::new(false) };
+        }
+        static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+        fn count_cleanup() {
+            if MARKED_WORKER.with(Cell::get) {
+                CLEANUPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        ftui_core::session_teardown::install_chained_panic_hook(
+            "retry-worker-panic-test",
+            count_cleanup,
+        );
+
+        let cmd = task_with_timeout(
+            Duration::from_secs(5),
+            |_token| -> u8 {
+                MARKED_WORKER.with(|marked| marked.set(true));
+                panic!("worker bug")
+            },
+            0,
+        );
+        let Cmd::Task(_, task) = cmd else {
+            panic!("expected a Task");
+        };
+        let start = std::time::Instant::now();
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task))
+            .expect_err("the worker's panic should be the task's, not a timeout message");
+
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"worker bug"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(
+            CLEANUPS.load(Ordering::SeqCst),
+            0,
+            "the worker's panic ran terminal cleanup"
+        );
+    }
+
+    #[cfg(not(panic = "abort"))]
+    #[test]
+    fn a_panic_is_not_a_failed_attempt_to_retry() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_seen = Arc::clone(&attempts);
+        let cmd = task_with_retry_and_timeout(
+            RetryPolicy::new(3, BackoffStrategy::Fixed { delay_ms: 0 }),
+            Duration::from_secs(5),
+            move |_token| -> Result<u8, String> {
+                attempts_seen.fetch_add(1, Ordering::SeqCst);
+                panic!("worker bug")
+            },
+            |_err| 0,
+        );
+        let Cmd::Task(_, task) = cmd else {
+            panic!("expected a Task");
+        };
+
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)).is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "a panic was retried");
     }
 
     #[test]

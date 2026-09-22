@@ -3091,6 +3091,27 @@ mod tests {
         LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
+    #[cfg(all(unix, not(panic = "abort")))]
+    #[test]
+    fn a_recovered_panic_leaves_the_tty_session_alone() {
+        // The runtime recovers panics in tasks, subscriptions and screens
+        // inside `with_panic_cleanup_suppressed`. This hook ignored that and
+        // ran the teardown, so the app went on rendering in cooked mode on
+        // the main screen, and the real teardown later found the session
+        // already marked inactive.
+        let _serial = signal_counter_lock();
+        install_abort_panic_hook();
+        TTY_SESSION_ACTIVE.store(true, Ordering::SeqCst);
+
+        let recovered = ftui_core::with_panic_cleanup_suppressed(|| {
+            std::panic::catch_unwind(|| panic!("recovered by the runtime"))
+        });
+        let still_active = TTY_SESSION_ACTIVE.swap(false, Ordering::SeqCst);
+
+        assert!(recovered.is_err());
+        assert!(still_active, "a recovered panic ran the tty teardown");
+    }
+
     #[cfg(unix)]
     #[test]
     fn dropping_a_backend_returns_its_signal_slot_after_teardown_already_ran() {

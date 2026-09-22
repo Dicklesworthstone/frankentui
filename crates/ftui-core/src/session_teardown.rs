@@ -266,11 +266,62 @@ impl TeardownPlan {
 
 static INSTALLED_HOOKS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
+thread_local! {
+    static PANIC_CLEANUP_SUPPRESS_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Run a closure while suppressing best-effort terminal cleanup in panic hooks.
+///
+/// Use this around intentional `catch_unwind` boundaries. Panic hooks still run,
+/// but terminal cleanup is skipped for panics that are expected to be recovered.
+/// Suppression is per thread: a thread spawned inside `f` is not covered.
+///
+/// This lives here, not in the Crossterm-only `terminal_session`, because both
+/// backends install cleanup hooks. It used to exist only with the `crossterm`
+/// feature (a no-op stub otherwise), and `ftui-tty`'s hook never checked it.
+///
+/// In `panic = "abort"` builds, panics cannot be recovered by `catch_unwind`,
+/// so suppression is disabled and this executes `f` directly.
+pub fn with_panic_cleanup_suppressed<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    #[cfg(panic = "abort")]
+    {
+        return f();
+    }
+
+    #[cfg(not(panic = "abort"))]
+    {
+        struct SuppressGuard;
+        impl Drop for SuppressGuard {
+            fn drop(&mut self) {
+                PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| {
+                    depth.set(depth.get().saturating_sub(1));
+                });
+            }
+        }
+
+        PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_add(1));
+        });
+        let _guard = SuppressGuard;
+        f()
+    }
+}
+
+/// Whether the current thread is inside [`with_panic_cleanup_suppressed`].
+#[must_use]
+pub fn panic_cleanup_suppressed() -> bool {
+    PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| depth.get() > 0)
+}
+
 /// Install a panic hook with the given identifier that chains to the previously
 /// installed hook.
 ///
-/// Guaranteed to install at most once per `name`. When a panic occurs, `f()` is
-/// executed, followed by the previously installed panic hook.
+/// Guaranteed to install at most once per `name`. When a panic occurs outside
+/// [`with_panic_cleanup_suppressed`], `f()` is executed; the previously
+/// installed panic hook runs either way.
 pub fn install_chained_panic_hook(name: &'static str, f: fn()) {
     let mut installed = match INSTALLED_HOOKS.lock() {
         Ok(guard) => guard,
@@ -282,7 +333,13 @@ pub fn install_chained_panic_hook(name: &'static str, f: fn()) {
     installed.push(name);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        f();
+        // A recovered panic must not tear down a session that keeps running.
+        // Checking here covers every cleanup hook: ftui-tty's did not check,
+        // so under the native backend each panic a task or screen recovered
+        // from left raw mode and the alternate screen mid-run.
+        if !panic_cleanup_suppressed() {
+            f();
+        }
         previous(info);
     }));
 }
@@ -290,6 +347,64 @@ pub fn install_chained_panic_hook(name: &'static str, f: fn()) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_cleanup_suppression_scope_restores_state() {
+        assert!(
+            !panic_cleanup_suppressed(),
+            "suppression should start disabled"
+        );
+        with_panic_cleanup_suppressed(|| {
+            if cfg!(panic = "abort") {
+                assert!(
+                    !panic_cleanup_suppressed(),
+                    "abort profile must not suppress panic cleanup"
+                );
+                return;
+            }
+            assert!(panic_cleanup_suppressed(), "suppression should be enabled");
+            with_panic_cleanup_suppressed(|| {
+                assert!(
+                    panic_cleanup_suppressed(),
+                    "nested suppression should remain enabled"
+                );
+            });
+            assert!(
+                panic_cleanup_suppressed(),
+                "outer suppression should still be enabled after nested scope"
+            );
+        });
+        assert!(
+            !panic_cleanup_suppressed(),
+            "suppression should be disabled after scope exits"
+        );
+    }
+
+    #[cfg(not(panic = "abort"))]
+    #[test]
+    fn chained_cleanup_hooks_skip_recovered_panics() {
+        // Counted per thread, so panics in parallel tests cannot interfere.
+        thread_local! {
+            static CLEANUPS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        }
+        fn count_cleanup() {
+            CLEANUPS.with(|n| n.set(n.get() + 1));
+        }
+        install_chained_panic_hook("test-chained-cleanup-gate", count_cleanup);
+
+        let recovered =
+            with_panic_cleanup_suppressed(|| std::panic::catch_unwind(|| panic!("recovered")));
+        assert!(recovered.is_err());
+        assert_eq!(
+            CLEANUPS.with(std::cell::Cell::get),
+            0,
+            "a recovered panic ran terminal cleanup"
+        );
+
+        let unrecovered = std::panic::catch_unwind(|| panic!("not suppressed"));
+        assert!(unrecovered.is_err());
+        assert_eq!(CLEANUPS.with(std::cell::Cell::get), 1);
+    }
 
     #[test]
     fn write_emits_canonical_order() {
