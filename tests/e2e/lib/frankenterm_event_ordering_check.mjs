@@ -154,9 +154,7 @@ async function main() {
 
   function emit(eventType, payload = {}) {
     seq += 1;
-    const timestamp = args.deterministic
-      ? deterministicTimestamp(seq, args.timeStepMs)
-      : isoNow();
+    const timestamp = args.deterministic ? deterministicTimestamp(seq, args.timeStepMs) : isoNow();
     jsonlEvents.push({
       schema_version: "e2e-jsonl-v1",
       type: "contract_event",
@@ -336,7 +334,7 @@ async function main() {
   term.input({ kind: "composition", phase: "end" });
   const imeInactiveSnapshot = term.imeState();
   expect(
-    !Boolean(imeInactiveSnapshot.active),
+    !imeInactiveSnapshot.active,
     errors,
     `imeState.active should be false after composition end, got ${JSON.stringify(imeInactiveSnapshot)}`,
   );
@@ -487,12 +485,7 @@ async function main() {
   term.input({ kind: "focus", focused: false });
   const subscriptionJsonlTimestamp = args.deterministic ? "T999998" : isoNow();
   const subscriptionJsonl = Array.from(
-    term.drainEventSubscriptionJsonl(
-      subscriptionId,
-      runId,
-      seedBigInt,
-      subscriptionJsonlTimestamp,
-    ),
+    term.drainEventSubscriptionJsonl(subscriptionId, runId, seedBigInt, subscriptionJsonlTimestamp),
   );
   expect(
     subscriptionJsonl.length === 1,
