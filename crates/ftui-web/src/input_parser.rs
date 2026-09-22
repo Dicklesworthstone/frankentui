@@ -92,7 +92,7 @@ pub fn parse_encoded_input_to_event(json: &str) -> Result<Option<Event>, InputPa
 
     match raw.kind.as_str() {
         "key" => parse_key_event(&raw).map(Some),
-        "mouse" => parse_mouse_event(&raw).map(Some),
+        "mouse" => parse_mouse_event(&raw),
         "wheel" => parse_wheel_event(&raw),
         "paste" => parse_paste_event(&raw).map(Some),
         "focus" => parse_focus_event(&raw).map(Some),
@@ -218,12 +218,18 @@ fn parse_key_event(raw: &RawInput) -> Result<Event, InputParseError> {
     }))
 }
 
-fn parse_mouse_button(button: Option<i32>) -> MouseButton {
+/// The terminal button for a DOM `MouseEvent.button`, or `None` for one a
+/// terminal has no button for.
+fn parse_mouse_button(button: Option<i32>) -> Option<MouseButton> {
     match button {
-        Some(0) | None => MouseButton::Left,
-        Some(1) => MouseButton::Middle,
-        Some(2) => MouseButton::Right,
-        _ => MouseButton::Left,
+        Some(0) | None => Some(MouseButton::Left),
+        Some(1) => Some(MouseButton::Middle),
+        Some(2) => Some(MouseButton::Right),
+        // Pointer events can report -1 ("no button change") on release.
+        Some(b) if b < 0 => Some(MouseButton::Left),
+        // 3 and 4 are the browser's Back and Forward. Reported as Left, as
+        // they were, they clicked wherever the pointer happened to be.
+        Some(_) => None,
     }
 }
 
@@ -237,7 +243,7 @@ fn clamp_coord_u16(coord: Option<i32>) -> u16 {
     }
 }
 
-fn parse_mouse_event(raw: &RawInput) -> Result<Event, InputParseError> {
+fn parse_mouse_event(raw: &RawInput) -> Result<Option<Event>, InputParseError> {
     let phase = raw.phase.as_deref().unwrap_or("down");
     let x = clamp_coord_u16(raw.x);
     let y = clamp_coord_u16(raw.y);
@@ -245,19 +251,26 @@ fn parse_mouse_event(raw: &RawInput) -> Result<Event, InputParseError> {
     let button = parse_mouse_button(raw.button);
 
     let kind = match phase {
-        "down" => MouseEventKind::Down(button),
-        "up" => MouseEventKind::Up(button),
         "move" => MouseEventKind::Moved,
-        "drag" => MouseEventKind::Drag(button),
+        "down" | "up" | "drag" => {
+            let Some(button) = button else {
+                return Ok(None);
+            };
+            match phase {
+                "down" => MouseEventKind::Down(button),
+                "up" => MouseEventKind::Up(button),
+                _ => MouseEventKind::Drag(button),
+            }
+        }
         other => return Err(InputParseError::UnknownPhase(other.to_string())),
     };
 
-    Ok(Event::Mouse(MouseEvent {
+    Ok(Some(Event::Mouse(MouseEvent {
         kind,
         x,
         y,
         modifiers,
-    }))
+    })))
 }
 
 fn parse_wheel_event(raw: &RawInput) -> Result<Option<Event>, InputParseError> {
@@ -613,6 +626,36 @@ mod tests {
                 modifiers: Modifiers::NONE,
             })
         );
+    }
+
+    #[test]
+    fn back_and_forward_buttons_do_not_click() {
+        // DOM buttons 3 and 4 are Back and Forward. They were reported as a
+        // left click at the pointer.
+        for phase in ["down", "up", "drag"] {
+            for button in [3, 4, 7] {
+                let json = format!(
+                    r#"{{"kind":"mouse","phase":"{phase}","button":{button},"x":5,"y":3,"mods":0}}"#
+                );
+                assert_eq!(
+                    parse_encoded_input_to_event(&json).unwrap(),
+                    None,
+                    "{phase} button {button}"
+                );
+            }
+        }
+        // A move is still a move, whatever button the host names.
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"mouse","phase":"move","button":3,"x":5,"y":3,"mods":0}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            ev,
+            Some(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                ..
+            }))
+        ));
     }
 
     #[test]
