@@ -143,17 +143,31 @@ pub struct ProcessPolicy {
 }
 
 /// Resource limit policy.
+///
+/// [`SandboxEnforcer`] is cooperative: a limit binds only where the enforcer
+/// has a method for it and the caller calls that method. Two of these are
+/// enforced that way — [`check_wall_time`] and [`record_output_bytes`]. The
+/// other three are declared and carried in the policy, and nothing reads
+/// them: applying them would need `setrlimit` before `exec`, which is
+/// `unsafe`, and this crate is `#![forbid(unsafe_code)]`. Each is marked
+/// below. Do not read a profile's number as a guarantee that a run stays
+/// under it (bd-ignl4).
+///
+/// [`check_wall_time`]: SandboxEnforcer::check_wall_time
+/// [`record_output_bytes`]: SandboxEnforcer::record_output_bytes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourcePolicy {
-    /// Maximum wall-clock time for the entire analysis run.
+    /// Maximum wall-clock time for the entire analysis run. Enforced by
+    /// [`SandboxEnforcer::check_wall_time`].
     pub max_wall_time_secs: u64,
-    /// Maximum CPU time (user + system) in seconds.
+    /// Maximum CPU time (user + system) in seconds. **Declarative only.**
     pub max_cpu_time_secs: u64,
-    /// Maximum resident memory in bytes.
+    /// Maximum resident memory in bytes. **Declarative only.**
     pub max_memory_bytes: u64,
-    /// Maximum number of open file descriptors.
+    /// Maximum number of open file descriptors. **Declarative only.**
     pub max_open_fds: u32,
-    /// Maximum output size (stdout + stderr) from subprocesses.
+    /// Maximum output size (stdout + stderr) from subprocesses. Enforced by
+    /// [`SandboxEnforcer::record_output_bytes`].
     pub max_output_bytes: u64,
 }
 
@@ -504,7 +518,10 @@ impl AuditLog {
 /// Runtime sandbox enforcer that validates operations against a policy.
 ///
 /// The enforcer tracks cumulative resource usage and fails closed on any
-/// policy violation.
+/// policy violation it can observe. It is cooperative: it sees only what a
+/// caller reports through the `check_*` and `record_*` methods, so a caller
+/// that skips one skips that limit. Three fields of [`ResourcePolicy`] have
+/// no method here at all and bind nothing — see that type for which.
 #[derive(Debug)]
 pub struct SandboxEnforcer {
     policy: SandboxPolicy,
