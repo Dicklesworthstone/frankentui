@@ -1131,7 +1131,9 @@ const EXIT_DRAIN_MAX_BYTES: usize = 1 << 20;
 struct PtyBridgeSession {
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Input for the writer thread; `None` once the session is dropping.
+    input_tx: Option<mpsc::Sender<Vec<u8>>>,
+    writer_thread: Option<thread::JoinHandle<()>>,
     rx: mpsc::Receiver<ReaderMsg>,
     reader_thread: Option<thread::JoinHandle<()>>,
     /// The part of a chunk that did not fit the last drain's limit.
@@ -1162,7 +1164,30 @@ impl PtyBridgeSession {
 
         let child = pair.slave.spawn_command(cmd).map_err(portable_pty_error)?;
         let mut reader = pair.master.try_clone_reader().map_err(portable_pty_error)?;
-        let writer = pair.master.take_writer().map_err(portable_pty_error)?;
+        let mut writer = pair.master.take_writer().map_err(portable_pty_error)?;
+
+        // Input goes to the child from its own thread. Written inline, a
+        // child that stops reading stdin (an echoing one blocked on its own
+        // output, say) blocked the whole loop, including the output drain
+        // it was waiting on. Unbounded: it holds only what the client sent,
+        // and the client already has a shell.
+        let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
+        let writer_thread = thread::Builder::new()
+            .name("ftui-pty-ws-writer".to_string())
+            .spawn(move || {
+                for bytes in input_rx {
+                    if writer
+                        .write_all(&bytes)
+                        .and_then(|()| writer.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| {
+                io::Error::other(format!("failed to spawn PTY writer thread: {error}"))
+            })?;
 
         let (tx, rx) = mpsc::sync_channel::<ReaderMsg>(READER_CHANNEL_CHUNKS);
         let reader_thread = thread::Builder::new()
@@ -1196,7 +1221,8 @@ impl PtyBridgeSession {
         Ok(Self {
             child,
             master: pair.master,
-            writer,
+            input_tx: Some(input_tx),
+            writer_thread: Some(writer_thread),
             rx,
             reader_thread: Some(reader_thread),
             carry: Vec::new(),
@@ -1204,13 +1230,17 @@ impl PtyBridgeSession {
         })
     }
 
+    /// Queue input for the child. Never blocks.
     fn send_input(&mut self, bytes: &[u8]) -> io::Result<()> {
         if bytes.is_empty() {
             return Ok(());
         }
-        self.writer.write_all(bytes)?;
-        self.writer.flush()?;
-        Ok(())
+        // The writer stops at its first failed write, as `write_all` here
+        // used to fail the session.
+        self.input_tx
+            .as_ref()
+            .and_then(|tx| tx.send(bytes.to_vec()).ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "PTY input closed"))
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
@@ -1284,8 +1314,14 @@ impl Drop for PtyBridgeSession {
         // `--serve-forever` the bridge spawns one shell per client, so they
         // accumulate against the system PID limit for the life of the server.
         crate::reap_after_kill(&mut *self.child);
+        // Closing the channel ends the writer; a write blocked on the killed
+        // child fails and ends it too.
+        drop(self.input_tx.take());
+        if let Some(handle) = self.writer_thread.take() {
+            crate::detach_join(handle, "ftui-pty-ws-detached-writer-join");
+        }
         if let Some(handle) = self.reader_thread.take() {
-            detach_reader_join(handle);
+            crate::detach_join(handle, "ftui-pty-ws-detached-reader-join");
         }
     }
 }
@@ -1299,14 +1335,6 @@ fn take_up_to(into: &mut Vec<u8>, from: &mut Vec<u8>, limit: usize) {
     } else {
         into.extend(from.drain(..room));
     }
-}
-
-fn detach_reader_join(handle: thread::JoinHandle<()>) {
-    let _ = thread::Builder::new()
-        .name("ftui-pty-ws-detached-join".to_string())
-        .spawn(move || {
-            let _ = handle.join();
-        });
 }
 
 fn portable_pty_error<E: std::fmt::Display>(error: E) -> io::Error {
@@ -2108,6 +2136,90 @@ mod tests {
         let (xs, ended) = bytes_through_a_stalled_client(TOTAL, Duration::from_millis(500), None);
         assert!(ended, "no session_end: dropped after {xs} of {TOTAL} bytes");
         assert_eq!(xs, TOTAL, "bytes lost or duplicated");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_large_paste_into_an_echoing_child_does_not_deadlock() {
+        // The loop wrote input with a blocking `write_all`. A raw-mode child
+        // that echoes fills the output channel, stops to write its output,
+        // stops reading its input, and the bridge's write never returns.
+        const TOTAL: usize = 1 << 20;
+        let listener =
+            TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind ephemeral port");
+        let bind_addr = listener.local_addr().expect("local addr");
+        drop(listener);
+
+        let config = WsPtyBridgeConfig {
+            bind_addr,
+            accept_once: true,
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!("stty raw -echo; printf READY; head -c {TOTAL}"),
+            ],
+            idle_sleep: Duration::from_millis(1),
+            ..WsPtyBridgeConfig::default()
+        };
+        let handle = thread::spawn(move || run_ws_pty_bridge(config));
+        thread::sleep(Duration::from_millis(75));
+
+        let url = format!("ws://{bind_addr}/ws");
+        let (mut client, _response) = connect(url).expect("connect websocket");
+        if let MaybeTlsStream::Plain(stream) = client.get_mut() {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .expect("set read timeout");
+        }
+        let read = |client: &mut WebSocket<MaybeTlsStream<TcpStream>>| match client.read() {
+            Ok(message) => Some(message),
+            Err(WsError::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                None
+            }
+            Err(error) => panic!("websocket read failed: {error}"),
+        };
+
+        // Input sent before `stty raw` would meet the canonical line limit.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while !seen.windows(5).any(|w| w == b"READY") {
+            assert!(Instant::now() < deadline, "child never became ready");
+            if let Some(Message::Binary(bytes)) = read(&mut client) {
+                seen.extend_from_slice(bytes.as_ref());
+            }
+        }
+        for _ in 0..TOTAL / (128 * 1024) {
+            client
+                .send(Message::Binary(vec![b'y'; 128 * 1024].into()))
+                .expect("send input");
+        }
+        thread::sleep(Duration::from_millis(500));
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let (mut ys, mut ended) = (0usize, false);
+        while Instant::now() < deadline && !ended {
+            match read(&mut client) {
+                Some(Message::Binary(bytes)) => {
+                    ys += bytes.iter().filter(|&&b| b == b'y').count();
+                }
+                Some(Message::Text(text)) => ended = text.contains("session_end"),
+                _ => {}
+            }
+        }
+        assert!(
+            ended,
+            "no session_end: stuck after echoing {ys} of {TOTAL} bytes"
+        );
+        assert_eq!(ys, TOTAL);
+        handle
+            .join()
+            .expect("bridge thread join")
+            .expect("bridge result");
     }
 
     #[cfg(unix)]
