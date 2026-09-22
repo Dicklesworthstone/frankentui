@@ -24,7 +24,8 @@
 //! | `warning` | bridge → client | `message`, for an unrecognized control type |
 //! | `session_end` | bridge → client | `exit_code`, `exit_signal` |
 //!
-//! Flow control only runs when [`WsPtyBridgeConfig::flow_control`] is set. It
+//! Flow control only runs when [`crate::ws_bridge::WsPtyBridgeConfig`]'s
+//! `flow_control` is set. It
 //! is credit-based: the bridge sends at most `output_window` bytes before the
 //! client reports consuming some of them, so a client that never reports
 //! receives one window and then nothing until the child exits.
