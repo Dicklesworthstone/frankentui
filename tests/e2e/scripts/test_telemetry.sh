@@ -376,7 +376,9 @@ PYTHON
 
 mkdir -p "$E2E_RESULTS_DIR" "$E2E_LOG_DIR"
 
-START_TS="$(date +%s%3N)"
+# Timings come from e2e_monotonic_ms, not `date +%s%3N`: BSD date prints
+# "...3N", which aborted the duration arithmetic on macOS.
+START_TS="$(e2e_monotonic_ms)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_ID="telemetry_${TIMESTAMP}_$$"
 LOG_JSONL="$E2E_RESULTS_DIR/telemetry_${TIMESTAMP}.jsonl"
@@ -422,23 +424,23 @@ fi
 
 if [[ "$SKIP_BUILD" != "true" ]]; then
     log_info "Building ftui-harness with telemetry enabled..."
-    BUILD_START="$(date +%s%3N)"
+    BUILD_START="$(e2e_monotonic_ms)"
 
     if ! cargo build -p ftui-harness -F telemetry 2>"$E2E_RESULTS_DIR/build.log"; then
         log_error "Build failed! See $E2E_RESULTS_DIR/build.log"
-        BUILD_END="$(date +%s%3N)"
+        BUILD_END="$(e2e_monotonic_ms)"
         BUILD_MS=$((BUILD_END - BUILD_START))
         jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$CASE\",\"event\":\"build\",\"status\":\"failed\",\"timings\":{\"start_ms\":$BUILD_START,\"end_ms\":$BUILD_END,\"duration_ms\":$BUILD_MS}}"
         exit 2
     fi
 
-    BUILD_END="$(date +%s%3N)"
+    BUILD_END="$(e2e_monotonic_ms)"
     BUILD_MS=$((BUILD_END - BUILD_START))
     log_debug "Build completed in ${BUILD_MS}ms"
     jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$CASE\",\"event\":\"build\",\"status\":\"passed\",\"timings\":{\"start_ms\":$BUILD_START,\"end_ms\":$BUILD_END,\"duration_ms\":$BUILD_MS}}"
 else
     log_info "Skipping build (--skip-build)"
-    BUILD_START="$(date +%s%3N)"
+    BUILD_START="$(e2e_monotonic_ms)"
     BUILD_END="$BUILD_START"
     BUILD_MS=0
     jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$CASE\",\"event\":\"build\",\"status\":\"skipped\",\"timings\":{\"start_ms\":$BUILD_START,\"end_ms\":$BUILD_END,\"duration_ms\":0}}"
@@ -451,7 +453,7 @@ fi
 start_receiver
 
 log_info "Running telemetry test..."
-TEST_START="$(date +%s%3N)"
+TEST_START="$(e2e_monotonic_ms)"
 
 # Set OTEL environment variables
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$RECEIVER_PORT"
@@ -492,7 +494,7 @@ fi
 # Give time for spans to be exported
 sleep 2
 
-TEST_END="$(date +%s%3N)"
+TEST_END="$(e2e_monotonic_ms)"
 TEST_MS=$((TEST_END - TEST_START))
 log_debug "Test completed in ${TEST_MS}ms"
 jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$CASE\",\"event\":\"test\",\"status\":\"$TEST_STATUS\",\"exit_code\":$TEST_EXIT,\"timings\":{\"start_ms\":$TEST_START,\"end_ms\":$TEST_END,\"duration_ms\":$TEST_MS},\"output_file\":\"$TEST_OUTPUT_FILE\"}"
@@ -538,7 +540,7 @@ RECEIVER_CHECKSUM="$(compute_checksum "$RECEIVER_LOG")"
 # Final results
 # =============================================================================
 
-END_TS="$(date +%s%3N)"
+END_TS="$(e2e_monotonic_ms)"
 TOTAL_MS=$((END_TS - START_TS))
 
 FOUND_JSON="$(json_array "${FOUND_SPANS[@]}")"

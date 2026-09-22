@@ -36,16 +36,17 @@ if [[ ! -x "${E2E_DEMO_BIN:-}" ]]; then
     done
     exit 0
 fi
+MACRO_SCREEN="$(e2e_demo_screen "$E2E_DEMO_BIN" macro_recorder)"
 
 run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)"
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_monotonic_ms)"
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -53,7 +54,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)"
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "macro scenario assertions failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "macro scenario assertions failed"
@@ -71,11 +72,16 @@ macro_record_stop() {
 
     log_test_start "macro_record_stop"
 
-    # Navigate to macro recorder (screen 11), start recording, press some keys, stop
-    FTUI_DEMO_SCREEN=11 \
+    # Open the macro recorder, start recording, press some keys, stop.
+    # Keys go through PTY_SEND: pty_run does not forward its own stdin, so the
+    # here-strings these cases used never reached the app, and the cases
+    # passed only on text the screen shows before any key.
+    PTY_SEND='rggddr' \
+    PTY_SEND_DELAY_MS=300 \
+    FTUI_DEMO_SCREEN="$MACRO_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=2000 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_DEMO_BIN" <<< $'rggddr' || true
+        pty_run "$output_file" "$E2E_DEMO_BIN" || true
 
     # Verify macro recorder screen elements
     grep -a -q "Macro Recorder" "$output_file" || return 1
@@ -96,10 +102,12 @@ macro_replay_determinism() {
 
     # Record a simple sequence and replay it
     # r=record, g,g,d,d=events, r=stop, p=play
-    FTUI_DEMO_SCREEN=11 \
+    PTY_SEND='rggddrp' \
+    PTY_SEND_DELAY_MS=300 \
+    FTUI_DEMO_SCREEN="$MACRO_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=3000 \
     PTY_TIMEOUT=6 \
-        pty_run "$output_file" "$E2E_DEMO_BIN" <<< $'rggddrp' || true
+        pty_run "$output_file" "$E2E_DEMO_BIN" || true
 
     # Verify playback occurred (Playing state or progress indicator)
     grep -a -E -q "(Playing|Progress)" "$output_file" || return 1
@@ -118,10 +126,12 @@ macro_speed_control() {
 
     # Record, stop, then adjust speed with + and - keys
     # r=record, g,g=events, r=stop, +=speed up, -=speed down, p=play
-    FTUI_DEMO_SCREEN=11 \
+    PTY_SEND='rggr++--p' \
+    PTY_SEND_DELAY_MS=300 \
+    FTUI_DEMO_SCREEN="$MACRO_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=2500 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_DEMO_BIN" <<< $'rggr++--p' || true
+        pty_run "$output_file" "$E2E_DEMO_BIN" || true
 
     # Speed indicator should be visible
     grep -a -E -q "[0-9]+\.[0-9]+x" "$output_file" || return 1
@@ -140,10 +150,12 @@ macro_loop_mode() {
 
     # Record, stop, toggle loop, play
     # r=record, g=event, r=stop, l=toggle loop, p=play
-    FTUI_DEMO_SCREEN=11 \
+    PTY_SEND='rgrlp' \
+    PTY_SEND_DELAY_MS=300 \
+    FTUI_DEMO_SCREEN="$MACRO_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=2500 \
     PTY_TIMEOUT=5 \
-        pty_run "$output_file" "$E2E_DEMO_BIN" <<< $'rgrlp' || true
+        pty_run "$output_file" "$E2E_DEMO_BIN" || true
 
     # Loop indicator or status should be visible
     grep -a -E -q "(Loop|Repeat)" "$output_file" || return 1
@@ -161,10 +173,12 @@ macro_empty_error() {
     log_test_start "macro_empty_error"
 
     # Try to play without recording
-    FTUI_DEMO_SCREEN=11 \
+    PTY_SEND='p' \
+    PTY_SEND_DELAY_MS=300 \
+    FTUI_DEMO_SCREEN="$MACRO_SCREEN" \
     FTUI_DEMO_EXIT_AFTER_MS=1500 \
     PTY_TIMEOUT=4 \
-        pty_run "$output_file" "$E2E_DEMO_BIN" <<< $'p' || true
+        pty_run "$output_file" "$E2E_DEMO_BIN" || true
 
     # Should show error or warning about empty/no macro
     grep -a -E -q "(Error|empty|No macro)" "$output_file" || return 1

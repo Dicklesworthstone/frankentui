@@ -243,7 +243,7 @@ unicode_demo_emoji_under_ascii_settings() {
     log_test_start "unicode_demo_emoji_under_ascii_settings"
     require_demo_bin || return 2
 
-    FTUI_DEMO_SCREEN=9 \
+    FTUI_DEMO_SCREEN="$(e2e_demo_screen "$E2E_DEMO_BIN_RESOLVED" file_browser)" \
     FTUI_DEMO_SCREEN_MODE=alt \
     FTUI_DEMO_DETERMINISTIC=1 \
     FTUI_DEMO_SEED=0 \
@@ -272,7 +272,7 @@ unicode_demo_emoji_icons() {
     log_test_start "unicode_demo_emoji_icons"
     require_demo_bin || return 2
 
-    FTUI_DEMO_SCREEN=9 \
+    FTUI_DEMO_SCREEN="$(e2e_demo_screen "$E2E_DEMO_BIN_RESOLVED" file_browser)" \
     FTUI_DEMO_SCREEN_MODE=alt \
     FTUI_DEMO_DETERMINISTIC=1 \
     FTUI_DEMO_SEED=0 \

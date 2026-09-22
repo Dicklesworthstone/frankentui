@@ -121,7 +121,7 @@ run_migration_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)"
 
     LOG_FILE="$MIGRATION_LOG_DIR/${name}.log"
     log_test_start "$name"
@@ -138,7 +138,7 @@ run_migration_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     log_migration_case "$name" "$status" "$duration_ms" "$error"
@@ -391,7 +391,7 @@ test_inline_mode_resize() {
 
 main() {
     local run_start_ms
-    run_start_ms="$(date +%s%3N)"
+    run_start_ms="$(e2e_monotonic_ms)"
 
     log_info "=========================================="
     log_info "App Migration Smoke Tests (bd-1rz0.24)"
@@ -489,7 +489,7 @@ main() {
 
     # Summary
     local run_end_ms
-    run_end_ms="$(date +%s%3N)"
+    run_end_ms="$(e2e_monotonic_ms)"
     local total_duration_ms=$((run_end_ms - run_start_ms))
 
     local checksum

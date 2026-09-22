@@ -9,7 +9,7 @@
 //! - `/` to open inline search bar
 //! - `n` / `N` for next/prev match navigation
 //! - `f` to toggle filter mode (show only matching lines)
-//! - Case sensitivity toggle (Ctrl+C in search mode)
+//! - Case sensitivity toggle (Alt+C in search mode)
 //! - Context lines toggle (Ctrl+X in search mode)
 //! - Match count and current position indicator
 //!
@@ -990,8 +990,11 @@ impl LogSearch {
                 self.live_update();
                 self.emit_query_updated("ctrl+u clear");
             }
+            // Alt+C, as in editor find bars. This was Ctrl+C, which the app
+            // takes as quit before any screen sees it: following the help
+            // entry ended the session.
             (KeyCode::Char('c'), m)
-                if m.contains(Modifiers::CTRL) && self.mode == UiMode::Search =>
+                if m.contains(Modifiers::ALT) && self.mode == UiMode::Search =>
             {
                 self.search_config.case_sensitive = !self.search_config.case_sensitive;
                 self.live_update();
@@ -1044,7 +1047,10 @@ impl LogSearch {
                     ));
                 self.record_diagnostic(diag);
             }
-            (KeyCode::Char(ch), _) => {
+            // Chords are not text: Ctrl+Z or Cmd+V used to type 'z' or 'v'.
+            (KeyCode::Char(ch), m)
+                if !m.intersects(Modifiers::CTRL | Modifiers::ALT | Modifiers::SUPER) =>
+            {
                 self.query.push(ch);
                 self.live_update();
                 self.emit_query_updated(&format!("typed '{ch}'"));
@@ -1298,7 +1304,7 @@ impl Screen for LogSearch {
                 action: "Scroll up / down",
             },
             HelpEntry {
-                key: "Ctrl+C",
+                key: "Alt+C",
                 action: "Toggle case sensitivity (search)",
             },
             HelpEntry {
@@ -1892,19 +1898,23 @@ mod tests {
             "Default should be case-insensitive"
         );
 
-        // Toggle case sensitivity with Ctrl+C
-        screen.update(&key_press_with_mod(KeyCode::Char('c'), Modifiers::CTRL));
+        // Toggle case sensitivity with Alt+C
+        screen.update(&key_press_with_mod(KeyCode::Char('c'), Modifiers::ALT));
         assert!(
             screen.search_config.case_sensitive,
             "Should be case-sensitive after toggle"
         );
 
         // Toggle back
-        screen.update(&key_press_with_mod(KeyCode::Char('c'), Modifiers::CTRL));
+        screen.update(&key_press_with_mod(KeyCode::Char('c'), Modifiers::ALT));
         assert!(
             !screen.search_config.case_sensitive,
             "Should be case-insensitive after second toggle"
         );
+        // A Ctrl chord neither toggles nor types into the query.
+        screen.update(&key_press_with_mod(KeyCode::Char('z'), Modifiers::CTRL));
+        assert!(!screen.search_config.case_sensitive);
+        assert!(screen.query.is_empty(), "{:?}", screen.query);
 
         // Verify diagnostic recorded the toggle
         let log = screen.diagnostic_log().unwrap();
@@ -1944,7 +1954,7 @@ mod tests {
 
         // Now search case-sensitive for uppercase ERROR only
         screen.update(&key_press(KeyCode::Char('/')));
-        screen.update(&key_press_with_mod(KeyCode::Char('c'), Modifiers::CTRL)); // Toggle to case-sensitive
+        screen.update(&key_press_with_mod(KeyCode::Char('c'), Modifiers::ALT)); // Toggle to case-sensitive
         // Clear and type the uppercase search term
         screen.update(&key_press_with_mod(KeyCode::Char('u'), Modifiers::CTRL)); // Clear query
         type_chars(&mut screen, "ERROR");
@@ -2438,7 +2448,7 @@ mod tests {
 
         // Configure search settings
         screen.update(&key_press(KeyCode::Char('/')));
-        screen.update(&key_press_with_mod(KeyCode::Char('c'), Modifiers::CTRL)); // case sensitive
+        screen.update(&key_press_with_mod(KeyCode::Char('c'), Modifiers::ALT)); // case sensitive
         let case_before = screen.search_config.case_sensitive;
         screen.update(&key_press(KeyCode::Escape));
 

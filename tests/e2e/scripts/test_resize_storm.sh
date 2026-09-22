@@ -352,7 +352,7 @@ run_storm_scenario() {
     log_storm_config "$run_id" "$pattern" "$count" "$initial_w" "$initial_h"
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_monotonic_ms)"
 
     # Generate storm schedule
     generate_storm_events "$pattern" "$count" "$STORM_SEED" "$initial_w" "$initial_h" > "$resize_schedule"
@@ -408,7 +408,7 @@ run_storm_scenario() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_monotonic_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     # Log frame hashes (per-resize snapshots + final fallback).
