@@ -13,7 +13,9 @@ use crate::{
     StatefulWidget, Widget, clear_text_area, clear_text_row, draw_text_span,
     draw_text_span_with_link,
 };
-use ftui_core::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
+use ftui_core::event::{
+    KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ftui_core::geometry::{Rect, Size};
 use ftui_core::hover_stabilizer::{HoverStabilizer, HoverStabilizerConfig};
 use ftui_render::frame::{Frame, HitId, HitRegion};
@@ -393,7 +395,14 @@ impl<'a> List<'a> {
     /// - Incremental filter input: printable chars (except `j`/`k`)
     /// - Filter editing: `Backspace`, `Escape`
     /// - Multi-select toggle (when enabled): `Space`
+    ///
+    /// Acts on press and repeat, never release. With release events reported
+    /// (kitty keyboard protocol, web backend), each key acted twice: a typed
+    /// "a" filtered for "aa" and every arrow moved two rows.
     pub fn handle_key(&self, state: &mut ListState, key: &KeyEvent) -> bool {
+        if key.kind == KeyEventKind::Release {
+            return false;
+        }
         let nav_modifiers = key
             .modifiers
             .intersects(Modifiers::CTRL | Modifiers::ALT | Modifiers::SUPER);
@@ -2278,6 +2287,24 @@ mod tests {
         assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Up)));
         // Should select "c" (index 2)
         assert_eq!(state.selected(), Some(2));
+    }
+
+    #[test]
+    fn list_handle_key_ignores_key_release() {
+        // With release events reported, "a" filtered for "aa" and each
+        // arrow moved two rows.
+        let list = List::new(vec![
+            ListItem::new("alpha"),
+            ListItem::new("beta"),
+            ListItem::new("gamma"),
+        ]);
+        let mut state = ListState::default();
+        for code in [KeyCode::Down, KeyCode::Down, KeyCode::Char('a')] {
+            let press = KeyEvent::new(code);
+            assert!(list.handle_key(&mut state, &press));
+            assert!(!list.handle_key(&mut state, &press.with_kind(KeyEventKind::Release)));
+        }
+        assert_eq!(state.filter_query, "a");
     }
 
     #[test]
