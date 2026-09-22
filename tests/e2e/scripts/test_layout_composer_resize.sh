@@ -518,15 +518,11 @@ run_case() {
     return 1
 }
 
-declare -A BASELINE_VIEW_HASHES=()
-
+# No cache: callers run this in `$(...)`, a subshell, so a cache could never
+# keep an entry. The associative array one used (`declare -A`) needs bash 4,
+# and `#!/bin/bash` is bash 3.2 on macOS, where the whole suite failed.
 baseline_view_hash() {
     local cols="$1" rows="$2" exit_after_ms="$3"
-    local key="${cols}x${rows}@${exit_after_ms}"
-    if [[ -n "${BASELINE_VIEW_HASHES[$key]:-}" ]]; then
-        printf '%s' "${BASELINE_VIEW_HASHES[$key]}"
-        return 0
-    fi
 
     local output_file="$E2E_LOG_DIR/layout_resize_baseline_${cols}x${rows}_${exit_after_ms}.pty"
     local timeout="$(( (exit_after_ms / 1000) + 8 ))"
@@ -540,7 +536,6 @@ baseline_view_hash() {
 
     local baseline_hash
     baseline_hash="$(final_view_sha256 "$output_file" "$ROUNDTRIP_TAIL_BYTES" "$cols" "$rows")"
-    BASELINE_VIEW_HASHES[$key]="$baseline_hash"
     printf '%s' "$baseline_hash"
 }
 

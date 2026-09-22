@@ -45,7 +45,9 @@ require_tools() {
         printf 'Missing required tools: %s\n' "${missing[*]}" >&2
     fi
     if declare -f jsonl_assert >/dev/null 2>&1 && [[ -n "${E2E_JSONL_FILE:-}" ]]; then
-        if ! jsonl_assert "tools_present" "$status" "missing=${missing[*]}"; then
+        # `:-`: with nothing missing the array is empty, and bash 3.2 (macOS's
+        # /bin/bash, which runs every suite) calls that unbound under `set -u`.
+        if ! jsonl_assert "tools_present" "$status" "missing=${missing[*]:-}"; then
             echo "Could not record prerequisite check" >&2
             return 2
         fi
