@@ -74,7 +74,8 @@ pub enum CommandSource {
 pub struct CommandMetadata {
     /// Human-readable description for UI (e.g., "Insert text").
     pub description: String,
-    /// When the command was created.
+    /// When the command was created, or for a merged command, when the last
+    /// command merged into it was.
     pub timestamp: Instant,
     /// Who/what triggered the command.
     pub source: CommandSource,
@@ -516,6 +517,10 @@ impl UndoableCmd for TextInsertCmd {
             return false;
         };
         self.text.push_str(&other_insert.text);
+        // `max_delay_ms` is the gap between commands. Measured from the
+        // group's first command instead, steady typing split into a new
+        // undo step every 500ms however short the pauses.
+        self.metadata.timestamp = other_insert.metadata.timestamp;
         true
     }
 
@@ -695,6 +700,8 @@ impl UndoableCmd for TextDeleteCmd {
             // Forward delete: append (text was after original deleted text)
             self.deleted_text.push_str(&other_delete.deleted_text);
         }
+        // The merge window runs from the latest delete, as for inserts.
+        self.metadata.timestamp = other_delete.metadata.timestamp;
         true
     }
 
@@ -941,6 +948,40 @@ mod tests {
 
         let config = MergeConfig::default();
         assert!(cmd1.can_merge(&cmd2, &config));
+    }
+
+    #[test]
+    fn steady_typing_merges_by_the_gap_between_keys() {
+        // Keys 400ms apart, inside the 500ms window. The window ran from the
+        // group's first key, so the third key started a new undo step.
+        let config = MergeConfig::default();
+        let t0 = Instant::now();
+        let step = web_time::Duration::from_millis(400);
+        let mut group = TextInsertCmd::new(WidgetId::new(1), 0, "a");
+        group.metadata.timestamp = t0;
+        for (i, ch) in ["b", "c", "d"].into_iter().enumerate() {
+            let mut next = TextInsertCmd::new(WidgetId::new(1), i + 1, ch);
+            next.metadata.timestamp = t0 + step * (i as u32 + 1);
+            assert!(group.can_merge(&next, &config), "key {ch}");
+            assert!(group.accept_merge(&next));
+        }
+        assert_eq!(group.text, "abcd");
+
+        // A real pause still starts a new step.
+        let mut late = TextInsertCmd::new(WidgetId::new(1), 4, "e");
+        late.metadata.timestamp = t0 + step * 3 + web_time::Duration::from_millis(600);
+        assert!(!group.can_merge(&late, &config));
+
+        // Same for a run of backspaces.
+        let mut deletes = TextDeleteCmd::new(WidgetId::new(1), 3, "d");
+        deletes.metadata.timestamp = t0;
+        for (i, ch) in ["c", "b", "a"].into_iter().enumerate() {
+            let mut next = TextDeleteCmd::new(WidgetId::new(1), 2 - i, ch);
+            next.metadata.timestamp = t0 + step * (i as u32 + 1);
+            assert!(deletes.can_merge(&next, &config), "backspace {ch}");
+            assert!(deletes.accept_merge(&next));
+        }
+        assert_eq!(deletes.deleted_text, "abcd");
     }
 
     #[test]
