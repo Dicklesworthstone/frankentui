@@ -1715,61 +1715,8 @@ fn grapheme_count(s: &str) -> usize {
     unicode_segmentation::UnicodeSegmentation::graphemes(s, true).count()
 }
 
-/// Display width of a single grapheme cluster.
-fn grapheme_width(grapheme: &str) -> usize {
-    if grapheme.is_ascii() {
-        return ascii_display_width(grapheme);
-    }
-    if grapheme.chars().all(is_zero_width_codepoint) {
-        return 0;
-    }
-    usize::try_from(unicode_display_width::width(grapheme))
-        .expect("unicode display width should fit in usize")
-}
-
-/// Display width of a string in terminal cells.
-fn display_width(s: &str) -> usize {
-    if s.is_ascii() && s.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
-        return s.len();
-    }
-    if s.is_ascii() {
-        return ascii_display_width(s);
-    }
-    if !s.chars().any(is_zero_width_codepoint) {
-        return usize::try_from(unicode_display_width::width(s))
-            .expect("unicode display width should fit in usize");
-    }
-    unicode_segmentation::UnicodeSegmentation::graphemes(s, true)
-        .map(grapheme_width)
-        .sum()
-}
-
-#[inline]
-fn ascii_display_width(text: &str) -> usize {
-    let mut width = 0;
-    for b in text.bytes() {
-        match b {
-            b'\t' | b'\n' | b'\r' => width += 1,
-            0x20..=0x7E => width += 1,
-            _ => {}
-        }
-    }
-    width
-}
-
-#[inline]
-fn is_zero_width_codepoint(c: char) -> bool {
-    let u = c as u32;
-    matches!(u, 0x0000..=0x001F | 0x007F..=0x009F)
-        || matches!(u, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF)
-        || matches!(u, 0xFE20..=0xFE2F)
-        || matches!(u, 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
-        || matches!(
-            u,
-            0x00AD | 0x034F | 0x180E | 0x200B | 0x200C | 0x200D | 0x200E | 0x200F | 0x2060 | 0xFEFF
-        )
-        || matches!(u, 0x202A..=0x202E | 0x2066..=0x2069 | 0x206A..=0x206F)
-}
+// Measure as the buffer draws: see the note on the same import in charts.rs.
+use ftui_core::text_width::{display_width, grapheme_width};
 
 /// Compute the display width (cells) of the first `grapheme_count` graphemes.
 fn grapheme_display_width(s: &str, grapheme_count: usize) -> usize {
@@ -3127,70 +3074,24 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn ascii_display_width_printable() {
-        assert_eq!(super::ascii_display_width("hello"), 5);
-        assert_eq!(super::ascii_display_width(""), 0);
-        assert_eq!(super::ascii_display_width(" "), 1);
+    fn display_width_counts_whitespace_and_skips_other_controls() {
+        // Tab, newline, CR each count as 1; other control bytes as 0.
+        assert_eq!(super::display_width("\t\n\r"), 3);
+        assert_eq!(super::display_width("\x01\x02\x03"), 0);
+        assert_eq!(super::display_width("a\x01b"), 2);
     }
 
     #[test]
-    fn ascii_display_width_control_chars() {
-        // Tab, newline, CR each count as 1
-        assert_eq!(super::ascii_display_width("\t"), 1);
-        assert_eq!(super::ascii_display_width("\n"), 1);
-        assert_eq!(super::ascii_display_width("\r"), 1);
-        assert_eq!(super::ascii_display_width("\t\n\r"), 3);
-    }
-
-    #[test]
-    fn ascii_display_width_skips_non_printable() {
-        // Bytes outside the printable+whitespace set are skipped (width 0)
-        assert_eq!(super::ascii_display_width("\x01\x02\x03"), 0);
-        assert_eq!(super::ascii_display_width("a\x01b"), 2);
-    }
-
-    #[test]
-    fn is_zero_width_c0_control() {
-        assert!(super::is_zero_width_codepoint('\x00'));
-        assert!(super::is_zero_width_codepoint('\x1F'));
-        assert!(super::is_zero_width_codepoint('\x7F')); // DEL
-    }
-
-    #[test]
-    fn is_zero_width_combining_marks() {
-        // U+0300 COMBINING GRAVE ACCENT
-        assert!(super::is_zero_width_codepoint('\u{0300}'));
-        assert!(super::is_zero_width_codepoint('\u{036F}'));
-    }
-
-    #[test]
-    fn is_zero_width_variation_selectors() {
-        // U+FE00..FE0F are variation selectors
-        assert!(super::is_zero_width_codepoint('\u{FE00}'));
-        assert!(super::is_zero_width_codepoint('\u{FE0F}'));
-    }
-
-    #[test]
-    fn is_zero_width_zwsp_and_friends() {
-        assert!(super::is_zero_width_codepoint('\u{200B}')); // ZERO WIDTH SPACE
-        assert!(super::is_zero_width_codepoint('\u{200D}')); // ZWJ
-        assert!(super::is_zero_width_codepoint('\u{FEFF}')); // BOM
-        assert!(super::is_zero_width_codepoint('\u{2060}')); // WORD JOINER
-    }
-
-    #[test]
-    fn is_zero_width_bidi_controls() {
-        assert!(super::is_zero_width_codepoint('\u{202A}')); // LRE
-        assert!(super::is_zero_width_codepoint('\u{202E}')); // RLO
-        assert!(super::is_zero_width_codepoint('\u{2066}')); // LRI
-        assert!(super::is_zero_width_codepoint('\u{2069}')); // PDI
-    }
-
-    #[test]
-    fn is_zero_width_normal_chars_are_not() {
-        assert!(!super::is_zero_width_codepoint('a'));
-        assert!(!super::is_zero_width_codepoint(' '));
-        assert!(!super::is_zero_width_codepoint('Z'));
+    fn zero_width_codepoints_measure_nothing() {
+        for c in [
+            '\x00', '\x1F', '\x7F', '\u{0300}', '\u{036F}', '\u{FE00}', '\u{FE0F}', '\u{200B}',
+            '\u{200D}', '\u{FEFF}', '\u{2060}', '\u{202A}', '\u{202E}', '\u{2066}', '\u{2069}',
+        ] {
+            assert_eq!(super::grapheme_width(&c.to_string()), 0, "{c:?}");
+        }
+        for c in ['a', ' ', 'Z'] {
+            assert_eq!(super::grapheme_width(&c.to_string()), 1, "{c:?}");
+        }
     }
 
     #[test]
