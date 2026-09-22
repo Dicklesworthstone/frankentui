@@ -16,11 +16,14 @@
 //! ```
 
 use ftui_core::geometry::Rect;
+// Measure as the buffer draws. A private copy of these, made before VS16 and
+// CJK ambiguous-width handling reached ftui-core, sized a VS16 emoji 2 cells
+// against the renderer's 1, and `…` 1 cell against 2 in CJK mode.
+use ftui_core::text_width::{display_width, grapheme_width};
 use ftui_render::cell::{Cell, CellContent, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_widgets::Widget;
-use unicode_display_width::width as unicode_display_width;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::canvas::{Mode, Painter};
@@ -29,60 +32,6 @@ use crate::canvas::{Mode, Painter};
 
 /// Bar characters for sparkline/vertical-bar rendering (9 levels: empty through full).
 const BAR_CHARS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-#[inline]
-fn ascii_display_width(text: &str) -> usize {
-    let mut width = 0;
-    for b in text.bytes() {
-        match b {
-            b'\t' | b'\n' | b'\r' => width += 1,
-            0x20..=0x7E => width += 1,
-            _ => {}
-        }
-    }
-    width
-}
-
-#[inline]
-fn is_zero_width_codepoint(c: char) -> bool {
-    let u = c as u32;
-    matches!(u, 0x0000..=0x001F | 0x007F..=0x009F)
-        || matches!(u, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF)
-        || matches!(u, 0xFE20..=0xFE2F)
-        || matches!(u, 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
-        || matches!(
-            u,
-            0x00AD | 0x034F | 0x180E | 0x200B | 0x200C | 0x200D | 0x200E | 0x200F | 0x2060 | 0xFEFF
-        )
-        || matches!(u, 0x202A..=0x202E | 0x2066..=0x2069 | 0x206A..=0x206F)
-}
-
-#[inline]
-fn grapheme_width(grapheme: &str) -> usize {
-    if grapheme.is_ascii() {
-        return ascii_display_width(grapheme);
-    }
-    if grapheme.chars().all(is_zero_width_codepoint) {
-        return 0;
-    }
-    usize::try_from(unicode_display_width(grapheme))
-        .expect("unicode display width should fit in usize")
-}
-
-#[inline]
-fn display_width(text: &str) -> usize {
-    if text.is_ascii() && text.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
-        return text.len();
-    }
-    if text.is_ascii() {
-        return ascii_display_width(text);
-    }
-    if !text.chars().any(is_zero_width_codepoint) {
-        return usize::try_from(unicode_display_width(text))
-            .expect("unicode display width should fit in usize");
-    }
-    text.graphemes(true).map(grapheme_width).sum()
-}
 
 /// Linearly interpolate between two colors.
 fn lerp_color(a: PackedRgba, b: PackedRgba, t: f64) -> PackedRgba {
@@ -1549,8 +1498,8 @@ mod tests {
     #[test]
     fn display_width_with_tabs_and_control() {
         // Tabs and control chars counted as width 1 in ascii path.
-        assert_eq!(ascii_display_width("\t"), 1);
-        assert_eq!(ascii_display_width("\n"), 1);
+        assert_eq!(display_width("\t"), 1);
+        assert_eq!(display_width("\n"), 1);
     }
 
     #[test]

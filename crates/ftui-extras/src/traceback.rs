@@ -21,12 +21,13 @@
 //! ```
 
 use ftui_core::geometry::Rect;
+// Measure as the buffer draws: see the note on the same import in charts.rs.
+use ftui_core::text_width::{display_width, grapheme_width};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
-use unicode_display_width::width as unicode_display_width;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// A single traceback frame.
@@ -335,57 +336,6 @@ fn digit_count(n: usize) -> usize {
     count
 }
 
-#[inline]
-fn ascii_display_width(text: &str) -> usize {
-    let mut width = 0;
-    for b in text.bytes() {
-        match b {
-            b'\t' | b'\n' | b'\r' => width += 1,
-            0x20..=0x7E => width += 1,
-            _ => {}
-        }
-    }
-    width
-}
-
-#[inline]
-fn is_zero_width_codepoint(c: char) -> bool {
-    let u = c as u32;
-    matches!(u, 0x0000..=0x001F | 0x007F..=0x009F)
-        || matches!(u, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF)
-        || matches!(u, 0xFE20..=0xFE2F)
-        || matches!(u, 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
-        || matches!(
-            u,
-            0x00AD | 0x034F | 0x180E | 0x200B | 0x200C | 0x200D | 0x200E | 0x200F | 0x2060 | 0xFEFF
-        )
-        || matches!(u, 0x202A..=0x202E | 0x2066..=0x2069 | 0x206A..=0x206F)
-}
-
-#[inline]
-fn grapheme_width(grapheme: &str) -> usize {
-    if grapheme.is_ascii() {
-        return ascii_display_width(grapheme);
-    }
-    if grapheme.chars().all(is_zero_width_codepoint) {
-        return 0;
-    }
-    usize::try_from(unicode_display_width(grapheme)).unwrap_or(0)
-}
-
-#[inline]
-fn display_width(text: &str) -> usize {
-    if text.is_ascii() && text.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
-        return text.len();
-    }
-    if text.is_ascii() {
-        return ascii_display_width(text);
-    }
-    if !text.chars().any(is_zero_width_codepoint) {
-        return usize::try_from(unicode_display_width(text)).unwrap_or(0);
-    }
-    text.graphemes(true).map(grapheme_width).sum()
-}
 
 /// Draw a single line of text into the buffer, truncating and padding to width.
 fn draw_line(frame: &mut Frame, x: u16, y: u16, text: &str, style: Style, width: usize) {
@@ -874,67 +824,21 @@ mod tests {
         assert_eq!(grapheme_width("\u{200B}"), 0); // ZWSP
     }
 
-    // ── ascii_display_width helper ──────────────────────────────────
-
     #[test]
-    fn ascii_display_width_printable() {
-        assert_eq!(ascii_display_width("abc"), 3);
-        assert_eq!(ascii_display_width(""), 0);
+    fn ascii_whitespace_takes_one_cell_and_controls_none() {
+        assert_eq!(display_width("\t\n\r"), 3);
+        assert_eq!(display_width("\0\x1F\x7F"), 0);
     }
 
     #[test]
-    fn ascii_display_width_whitespace() {
-        assert_eq!(ascii_display_width("\t"), 1);
-        assert_eq!(ascii_display_width("\n"), 1);
-        assert_eq!(ascii_display_width("\r"), 1);
-        assert_eq!(ascii_display_width("\t\n\r"), 3);
-    }
-
-    #[test]
-    fn ascii_display_width_skips_non_printable_high_bytes() {
-        // bytes 0x80+ are not counted by ascii_display_width
-        // "é" is 0xC3 0xA9 in UTF-8
-        assert_eq!(ascii_display_width("é"), 0);
-    }
-
-    // ── is_zero_width_codepoint ─────────────────────────────────────
-
-    #[test]
-    fn zero_width_control_chars() {
-        assert!(is_zero_width_codepoint('\0')); // U+0000
-        assert!(is_zero_width_codepoint('\x1F')); // U+001F
-        assert!(is_zero_width_codepoint('\x7F')); // U+007F (DEL)
-    }
-
-    #[test]
-    fn zero_width_combining_diacriticals() {
-        assert!(is_zero_width_codepoint('\u{0300}')); // Combining grave accent
-        assert!(is_zero_width_codepoint('\u{036F}')); // End of range
-    }
-
-    #[test]
-    fn zero_width_special() {
-        assert!(is_zero_width_codepoint('\u{00AD}')); // Soft hyphen
-        assert!(is_zero_width_codepoint('\u{200B}')); // ZWSP
-        assert!(is_zero_width_codepoint('\u{200D}')); // ZWJ
-        assert!(is_zero_width_codepoint('\u{FEFF}')); // BOM
-        assert!(is_zero_width_codepoint('\u{2060}')); // Word joiner
-    }
-
-    #[test]
-    fn zero_width_bidi_controls() {
-        assert!(is_zero_width_codepoint('\u{202A}')); // LRE
-        assert!(is_zero_width_codepoint('\u{202E}')); // RLO
-        assert!(is_zero_width_codepoint('\u{2066}')); // LRI
-        assert!(is_zero_width_codepoint('\u{2069}')); // PDI
-    }
-
-    #[test]
-    fn not_zero_width_regular_chars() {
-        assert!(!is_zero_width_codepoint('a'));
-        assert!(!is_zero_width_codepoint('Z'));
-        assert!(!is_zero_width_codepoint(' '));
-        assert!(!is_zero_width_codepoint('世'));
+    fn zero_width_codepoints_measure_nothing() {
+        for c in [
+            '\u{0300}', '\u{036F}', '\u{00AD}', '\u{200B}', '\u{200D}', '\u{FEFF}', '\u{2060}',
+            '\u{202A}', '\u{202E}', '\u{2066}', '\u{2069}',
+        ] {
+            assert_eq!(grapheme_width(&c.to_string()), 0, "{c:?}");
+        }
+        assert_eq!(grapheme_width("世"), 2);
     }
 
     // ── digit_count edge cases ──────────────────────────────────────
