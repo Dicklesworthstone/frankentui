@@ -28,6 +28,8 @@ use ftui_style::Style;
 use ftui_widgets::Widget;
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::grapheme_content;
+
 /// Spotlight configuration.
 #[derive(Debug, Clone)]
 pub struct SpotlightConfig {
@@ -514,10 +516,10 @@ impl Spotlight {
                 break;
             }
 
-            if let Some(cell) = frame.buffer.get_mut(x, y)
-                && let Some(c) = grapheme.chars().next()
-            {
-                cell.content = CellContent::from_char(c);
+            // The whole grapheme, not just its first scalar.
+            let content = grapheme_content(frame, grapheme, w);
+            if let Some(cell) = frame.buffer.get_mut(x, y) {
+                cell.content = content;
                 if let Some(fg) = style.fg {
                     cell.fg = fg;
                 }

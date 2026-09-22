@@ -28,6 +28,8 @@ use ftui_style::Style;
 use ftui_widgets::Widget;
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::grapheme_content;
+
 /// Tooltip positioning strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TooltipPosition {
@@ -339,11 +341,11 @@ impl Widget for Tooltip {
                     break;
                 }
 
-                // Write the grapheme
-                if let Some(cell) = frame.buffer.get_mut(x, y)
-                    && let Some(c) = grapheme.chars().next()
-                {
-                    cell.content = CellContent::from_char(c);
+                // Write the whole grapheme. Only its first scalar went in, so
+                // combining marks, ZWJ parts and skin tones were dropped.
+                let content = grapheme_content(frame, grapheme, w);
+                if let Some(cell) = frame.buffer.get_mut(x, y) {
+                    cell.content = content;
                 }
                 // Mark continuation cells for wide chars
                 for offset in 1..w {
@@ -1132,6 +1134,29 @@ mod tests {
         if let Some(cell) = frame.buffer.get(content_x + 1, content_y) {
             assert_eq!(cell.content.as_char(), Some('i'));
         }
+    }
+
+    #[test]
+    fn render_keeps_every_scalar_of_a_grapheme() {
+        // Only each cluster's first scalar was written: "e" lost its accent
+        // and the family emoji kept only its first person.
+        let (accented, family) = ("e\u{301}", "\u{1F468}\u{200D}\u{1F469}");
+        let tooltip = Tooltip::new(format!("{accented}{family}"))
+            .for_widget(Rect::new(0, 0, 5, 1))
+            .config(TooltipConfig::default().max_width(20).padding(1));
+        let screen = Rect::new(0, 0, 40, 20);
+        let bounds = tooltip.bounds(screen);
+        let (x, y) = (bounds.x + 1, bounds.y + 1);
+
+        let mut pool = GraphemePool::new();
+        let (first, second) = {
+            let mut frame = Frame::new(40, 20, &mut pool);
+            tooltip.render(screen, &mut frame);
+            let content = |dx| frame.buffer.get(x + dx, y).unwrap().content;
+            (content(0), content(1))
+        };
+        assert_eq!(pool.get(first.grapheme_id().unwrap()), Some(accented));
+        assert_eq!(pool.get(second.grapheme_id().unwrap()), Some(family));
     }
 
     #[test]
