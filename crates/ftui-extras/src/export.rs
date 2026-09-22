@@ -403,11 +403,18 @@ impl SvgExporter {
                 if flags.contains(StyleFlags::DIM) {
                     out.push_str(" opacity=\"0.5\"");
                 }
+                // One attribute for both, as in the HTML export: two
+                // `text-decoration` attributes on one element are not
+                // well-formed XML, so the whole SVG failed to load.
+                let mut decorations = Vec::new();
                 if flags.contains(StyleFlags::UNDERLINE) {
-                    out.push_str(" text-decoration=\"underline\"");
+                    decorations.push("underline");
                 }
                 if flags.contains(StyleFlags::STRIKETHROUGH) {
-                    out.push_str(" text-decoration=\"line-through\"");
+                    decorations.push("line-through");
+                }
+                if !decorations.is_empty() {
+                    write!(out, " text-decoration=\"{}\"", decorations.join(" ")).unwrap();
                 }
 
                 out.push('>');
@@ -547,12 +554,18 @@ fn html_escape_into(out: &mut String, s: &str) {
 }
 
 /// SVG-escape a string into the output buffer.
+///
+/// Characters XML 1.0 does not allow, such as C0 controls other than tab,
+/// newline and carriage return, become U+FFFD. One in a cell used to make the
+/// whole document ill-formed.
 fn svg_escape_into(out: &mut String, s: &str) {
     for c in s.chars() {
         match c {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '&' => out.push_str("&amp;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            '\u{0}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => out.push(char::REPLACEMENT_CHARACTER),
             _ => out.push(c),
         }
     }
@@ -1244,6 +1257,33 @@ mod tests {
 
         let svg = SvgExporter::default().export(&buf, &pool);
         assert!(svg.contains("text-decoration=\"line-through\""));
+    }
+
+    #[test]
+    fn svg_underline_and_strikethrough_share_one_attribute() {
+        let mut buf = Buffer::new(3, 1);
+        let pool = GraphemePool::new();
+
+        let flags = StyleFlags::UNDERLINE | StyleFlags::STRIKETHROUGH;
+        buf.set_fast(
+            0,
+            0,
+            Cell::from_char('B').with_attrs(CellAttrs::new(flags, 0)),
+        );
+
+        let svg = SvgExporter::default().export(&buf, &pool);
+        assert!(
+            svg.contains("text-decoration=\"underline line-through\""),
+            "{svg}"
+        );
+        assert_eq!(svg.matches("text-decoration=").count(), 1, "{svg}");
+    }
+
+    #[test]
+    fn svg_escape_replaces_characters_xml_forbids() {
+        let mut out = String::new();
+        svg_escape_into(&mut out, "a\u{1b}b\tc\u{0}\u{ffff}");
+        assert_eq!(out, "a\u{fffd}b\tc\u{fffd}\u{fffd}");
     }
 
     #[test]
