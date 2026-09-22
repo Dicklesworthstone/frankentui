@@ -342,9 +342,6 @@ impl<'a> Block<'a> {
 
 impl Widget for Block<'_> {
     fn render(&self, area: Rect, frame: &mut Frame) {
-        if frame.a11y_enabled() {
-            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
-        }
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -358,6 +355,17 @@ impl Widget for Block<'_> {
 
         if area.is_empty() {
             return;
+        }
+
+        // After the emptiness check, not before it. A block laid out into an
+        // empty area draws nothing, so announcing a Group for it puts a
+        // container in the tree that has no extent, cannot be focused and was
+        // never on screen. It also collides: `a11y_node_id` hashes the rect,
+        // so every widget clipped away lands on the id of the same empty rect
+        // and `add_node` keeps only the last - see
+        // bd-a11y-sibling-id-collision-6zqd2.
+        if frame.a11y_enabled() {
+            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
         }
 
         let deg = frame.degradation;

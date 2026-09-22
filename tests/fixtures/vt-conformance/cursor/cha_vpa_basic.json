@@ -6,9 +6,6 @@
   "comment": "CHA(5) sets col to 4 (0-based), print A at (0,4). VPA(3) sets row to 2 (0-based), print B at (2,5).",
   "expected": {
     "cursor": { "row": 2, "col": 6 },
-    "cells": [
-      { "row": 0, "col": 4, "char": "A" },
-      { "row": 2, "col": 5, "char": "B" }
-    ]
+    "cells": [{ "row": 0, "col": 4, "char": "A" }, { "row": 2, "col": 5, "char": "B" }]
   }
 }

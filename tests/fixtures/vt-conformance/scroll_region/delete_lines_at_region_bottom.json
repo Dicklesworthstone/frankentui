@@ -1,10 +1,7 @@
 {
   "name": "delete_lines_at_region_bottom",
   "description": "DL at bottom of scroll region effectively blanks the bottom line",
-  "initial_size": [
-    8,
-    5
-  ],
+  "initial_size": [8, 5],
   "input_bytes_hex": "1b5b323b34721b5b323b3148524f57311b5b333b3148524f57321b5b343b3148524f57331b5b343b31481b5b314d",
   "expected": {
     "cursor": {

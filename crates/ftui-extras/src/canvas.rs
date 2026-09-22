@@ -115,7 +115,12 @@ impl CanvasPixelRect {
     pub const fn is_empty(self) -> bool {
         self.width == 0 || self.height == 0
     }
+}
 
+// Only `visual_fx`'s canvas adapters use these. Without the gate, a
+// `canvas`-only build flags them as dead code.
+#[cfg(feature = "visual-fx")]
+impl CanvasPixelRect {
     #[inline]
     pub(crate) const fn contains_y(self, y: usize) -> bool {
         y >= self.y && y < self.bottom()

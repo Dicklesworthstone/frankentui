@@ -448,6 +448,17 @@ fn visual_stage_result(
         }
         VisualDiffVerdict::Violation => CertificationStageStatus::Fail,
     };
+    let mut messages: Vec<String> = report
+        .differences
+        .iter()
+        .map(|difference| difference.message.clone())
+        .collect();
+    let status = withhold_pass_without_evidence(
+        status,
+        report.frames_compared,
+        "no frames were compared",
+        &mut messages,
+    );
     CertificationStageResult {
         domain: CertificationDomain::Visual,
         status,
@@ -460,11 +471,7 @@ fn visual_stage_result(
                 .chain(report.violated_clause_ids.iter())
                 .cloned(),
         ),
-        messages: report
-            .differences
-            .iter()
-            .map(|difference| difference.message.clone())
-            .collect(),
+        messages,
     }
 }
 
@@ -513,6 +520,17 @@ fn accessibility_stage_result(report: &AccessibilityDiffReport) -> Certification
         }
         AccessibilityDiffVerdict::Violation => CertificationStageStatus::Fail,
     };
+    let mut messages: Vec<String> = report
+        .violations
+        .iter()
+        .map(|violation| violation.message.clone())
+        .collect();
+    let status = withhold_pass_without_evidence(
+        status,
+        report.nodes_compared,
+        "no accessibility nodes were compared",
+        &mut messages,
+    );
     CertificationStageResult {
         domain: CertificationDomain::Accessibility,
         status,
@@ -525,12 +543,41 @@ fn accessibility_stage_result(report: &AccessibilityDiffReport) -> Certification
                 .chain(report.violated_policy_ids.iter())
                 .cloned(),
         ),
-        messages: report
-            .violations
-            .iter()
-            .map(|violation| violation.message.clone())
-            .collect(),
+        messages,
     }
+}
+
+/// Downgrade a stage that examined nothing from `Pass` to `Warning`.
+///
+/// The visual and accessibility comparators have no "not enough evidence"
+/// verdict: given two empty runs, nothing differs, so they report
+/// `Equivalent`, and their stages mapped that straight to `Pass`. A migration
+/// with no captured frames or no accessibility tree therefore passed
+/// `strict_release` with `final_verdict: Accept` on no evidence at all in that
+/// domain. The semantic domain does not have this hole - an unexercised
+/// contract clause is `MissingEvidence`, which rejects - and performance now
+/// reports `NeedsMoreEvidence` for runs with no samples.
+///
+/// `Warning` rather than `Fail` because nothing was shown to be wrong, only
+/// nothing shown at all; it is the status `NeedsMoreEvidence` already maps to,
+/// and every profile turns it into `Hold`, so the certification does not pass.
+/// A stage that already failed keeps its `Fail`.
+fn withhold_pass_without_evidence(
+    status: CertificationStageStatus,
+    items_compared: usize,
+    what_was_missing: &str,
+    messages: &mut Vec<String>,
+) -> CertificationStageStatus {
+    if items_compared > 0 {
+        return status;
+    }
+    let degraded = worst_stage_status(status, CertificationStageStatus::Warning);
+    if degraded != status {
+        messages.push(format!(
+            "{what_was_missing}, so this stage has no evidence to pass on"
+        ));
+    }
+    degraded
 }
 
 fn confidence_stage_result(

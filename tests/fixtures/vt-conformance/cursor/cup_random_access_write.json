@@ -1,10 +1,7 @@
 {
   "name": "cup_random_access_write",
   "description": "CUP allows random-access writing to any grid position",
-  "initial_size": [
-    5,
-    5
-  ],
+  "initial_size": [5, 5],
   "input_bytes_hex": "1b5b313b3148581b5b313b3548581b5b353b3148581b5b353b3548581b5b333b334858",
   "expected": {
     "cursor": {

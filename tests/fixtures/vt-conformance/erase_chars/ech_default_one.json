@@ -6,9 +6,6 @@
   "comment": "Print AB (cursor at col 2), CHA(1) to col 0, ECH (default=1) erases col 0, cursor stays at col 0",
   "expected": {
     "cursor": { "row": 0, "col": 0 },
-    "cells": [
-      { "row": 0, "col": 0, "char": " " },
-      { "row": 0, "col": 1, "char": "B" }
-    ]
+    "cells": [{ "row": 0, "col": 0, "char": " " }, { "row": 0, "col": 1, "char": "B" }]
   }
 }

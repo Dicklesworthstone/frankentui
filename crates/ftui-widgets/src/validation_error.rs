@@ -48,6 +48,7 @@ use ftui_style::Style;
 use ftui_text::{display_width, grapheme_width};
 
 use crate::{StatefulWidget, Widget, clear_text_row, draw_text_span};
+use ftui_a11y::node::{A11yNodeInfo, A11yRole, LiveRegion};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -170,6 +171,19 @@ impl ValidationErrorDisplay {
     #[must_use = "use the error code (if any) for telemetry/diagnostics"]
     pub fn error_code(&self) -> Option<&'static str> {
         self.error_code
+    }
+
+    /// Accessibility node id: derived from the state's `aria_id` when the
+    /// caller set one, so the node keeps its identity as the layout moves;
+    /// otherwise from the rendered row, the same fallback other widgets use.
+    fn accessibility_id(aria_id: u32, bounds: Rect) -> u64 {
+        if aria_id == 0 {
+            return A11yNodeInfo::stable_id_for(A11yRole::Label, bounds);
+        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("ftui.validation_error", aria_id).hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Calculate the minimum width needed to display the error.
@@ -345,6 +359,35 @@ impl StatefulWidget for ValidationErrorDisplay {
         if state.opacity <= 0.0 && !state.visible {
             clear_text_row(frame, row_area, Style::default());
             return;
+        }
+
+        // Invariant 4 says screen readers can announce the error, and nothing
+        // did: this widget pushed no accessibility node, and the
+        // `take_just_shown` / `aria_id` hooks meant for it had no callers, so
+        // an error a sighted user could see did not exist in the tree. The
+        // node carries the full message even when the row truncates it or
+        // shows only the icon, and is a polite live region - the politeness
+        // `Form` uses for a field error - so it is announced when it appears
+        // without interrupting typing. Pushed before any degradation-dependent
+        // styling, as toast does: reduced rendering must not hide an error.
+        if frame.a11y_enabled() {
+            let bounds = row_area.intersection(&frame.buffer.current_scissor());
+            if !bounds.is_empty() {
+                let name = if self.message.is_empty() {
+                    "Validation error".to_string()
+                } else {
+                    self.message.clone()
+                };
+                frame.push_a11y(
+                    A11yNodeInfo::new(
+                        Self::accessibility_id(state.aria_id, bounds),
+                        A11yRole::Label,
+                        bounds,
+                    )
+                    .with_name(name)
+                    .with_live_region(LiveRegion::Polite),
+                );
+            }
         }
 
         let deg = frame.buffer.degradation;
@@ -822,5 +865,88 @@ mod tests {
         let msg_cell = frame.buffer.get(2, 0).unwrap();
         // Icon should have yellow, message should have red
         assert_ne!(icon_cell.fg, msg_cell.fg);
+    }
+
+    // -- Accessibility (invariant 4) --
+
+    fn render_a11y(
+        error: &ValidationErrorDisplay,
+        area: Rect,
+        state: &mut ValidationErrorState,
+    ) -> ftui_a11y::tree::A11yTree {
+        let mut builder = ftui_a11y::tree::A11yTreeBuilder::new();
+        {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(80, 24, &mut pool);
+            frame.set_a11y(&mut builder);
+            StatefulWidget::render(error, area, &mut frame, state);
+            frame.finish_a11y();
+        }
+        builder.build()
+    }
+
+    fn shown() -> ValidationErrorState {
+        let mut state = ValidationErrorState::default();
+        state.set_visible(true);
+        state
+    }
+
+    /// The module promises screen readers can announce the error; the widget
+    /// used to push no accessibility node at all.
+    #[test]
+    fn a_visible_error_is_announced_with_its_full_message() {
+        let message = "Email address must contain an @ and a domain";
+        for (label, error, width) in [
+            ("full row", ValidationErrorDisplay::new(message), 60),
+            // The row truncates this with an ellipsis; the name must not.
+            ("truncated row", ValidationErrorDisplay::new(message), 12),
+            (
+                "icon only",
+                ValidationErrorDisplay::new(message).icon_only(),
+                60,
+            ),
+        ] {
+            let tree = render_a11y(&error, Rect::new(0, 0, width, 1), &mut shown());
+            let nodes: Vec<_> = tree.nodes().collect();
+            assert_eq!(nodes.len(), 1, "{label}");
+            assert_eq!(nodes[0].role, A11yRole::Label, "{label}");
+            assert_eq!(nodes[0].name.as_deref(), Some(message), "{label}");
+            assert_eq!(nodes[0].live_region, Some(LiveRegion::Polite), "{label}");
+        }
+    }
+
+    #[test]
+    fn a_hidden_error_is_not_in_the_accessibility_tree() {
+        let error = ValidationErrorDisplay::new("Required");
+        let tree = render_a11y(
+            &error,
+            Rect::new(0, 0, 40, 1),
+            &mut ValidationErrorState::default(),
+        );
+        assert_eq!(tree.node_count(), 0);
+    }
+
+    /// With an `aria_id` the node keeps its identity as the layout moves, so a
+    /// tree diff sees one error that moved rather than one gone and one new -
+    /// which would announce it again.
+    #[test]
+    fn the_node_id_follows_aria_id_across_layout_changes() {
+        let error = ValidationErrorDisplay::new("Required");
+        let id_at = |area: Rect, aria_id: u32| {
+            let mut state = shown().with_aria_id(aria_id);
+            render_a11y(&error, area, &mut state)
+                .nodes()
+                .next()
+                .expect("a node")
+                .id
+        };
+        let (here, there) = (Rect::new(0, 2, 30, 1), Rect::new(4, 9, 50, 1));
+        assert_eq!(id_at(here, 7), id_at(there, 7));
+        assert_ne!(id_at(here, 7), id_at(here, 8));
+        assert_ne!(
+            id_at(here, 0),
+            id_at(there, 0),
+            "no aria_id: geometry fallback"
+        );
     }
 }

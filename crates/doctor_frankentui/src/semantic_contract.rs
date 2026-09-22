@@ -18,6 +18,10 @@ const SUPPORTED_CONFIDENCE_MODEL_SCHEMA_VERSION: &str = "confidence-model-v1";
 const BUILTIN_LICENSING_PROVENANCE_JSON: &str =
     include_str!("../contracts/opentui_licensing_provenance_v1.json");
 const SUPPORTED_LICENSING_PROVENANCE_SCHEMA_VERSION: &str = "licensing-provenance-v1";
+/// The licensing contract's risk flag for "one or more pipeline stages lack
+/// provenance records"; raised by `assess_ip_artifacts` for an empty or
+/// invalid chain.
+const PROVENANCE_GAP_FLAG: &str = "lp-provenance-gap";
 const REQUIRED_POLICY_CATEGORIES: [&str; 6] = [
     "state",
     "layout",
@@ -2247,6 +2251,11 @@ impl LicensingProvenanceContract {
     }
 
     /// Assess a set of IP artifacts and produce a provenance report.
+    ///
+    /// The provenance chain is judged too, not just copied in. An empty chain
+    /// or one that fails [`Self::validate_provenance_chain`] - a required stage
+    /// missing, a hash link broken, a record without a tool version or
+    /// timestamp - makes the report `Blocked` and raises `lp-provenance-gap`.
     #[must_use]
     pub fn assess_ip_artifacts(
         &self,
@@ -2256,6 +2265,21 @@ impl LicensingProvenanceContract {
     ) -> ProvenanceReport {
         let mut unresolved_flags = Vec::new();
         let mut worst_status = IpArtifactStatus::Clear;
+
+        // The contract already says what to do here, and nothing did it.
+        // `fail_safe_defaults.on_missing_provenance` and `on_broken_chain`
+        // must both be "reject" - `validate_fail_safe_defaults` refuses any
+        // other value "for safety" - and `lp-provenance-gap` is the risk flag
+        // defined for it. But the chain was copied into the report unchecked
+        // and the status came from the artifacts alone, so an empty or
+        // hash-broken chain with no blocked artifact assessed as `Clear`, and
+        // `certification_report` passed its compliance stage. `Blocked` is the
+        // status that carries a rejection: `compliance_status` fails on it
+        // under every profile, and the artifact loop below never lowers it.
+        if chain.is_empty() || self.validate_provenance_chain(chain).is_err() {
+            worst_status = IpArtifactStatus::Blocked;
+            unresolved_flags.push(PROVENANCE_GAP_FLAG.to_string());
+        }
 
         for artifact in artifacts {
             if self.is_license_blocked(&artifact.license_class) {
@@ -4130,6 +4154,26 @@ mod tests {
         super::load_builtin_licensing_provenance()
     }
 
+    /// A chain covering every required stage with unbroken hash links, so
+    /// artifact-status tests exercise the artifacts rather than the chain.
+    fn valid_chain(
+        contract: &super::LicensingProvenanceContract,
+    ) -> Vec<super::ProvenanceChainRecord> {
+        contract
+            .provenance_chain_policy
+            .required_stages
+            .iter()
+            .enumerate()
+            .map(|(i, stage_id)| super::ProvenanceChainRecord {
+                stage_id: stage_id.clone(),
+                input_hash: format!("sha256:hash_{i}"),
+                output_hash: format!("sha256:hash_{}", i + 1),
+                tool_version: "1.0.0".to_string(),
+                timestamp: "2026-02-25T12:00:00Z".to_string(),
+            })
+            .collect()
+    }
+
     #[test]
     fn builtin_licensing_provenance_parses_and_validates() {
         let contract = load_licensing().expect("builtin licensing provenance should parse");
@@ -4425,7 +4469,7 @@ mod tests {
             risk_flags: vec![],
             design_around_notes: None,
         }];
-        let report = contract.assess_ip_artifacts("run-1", &[], &artifacts);
+        let report = contract.assess_ip_artifacts("run-1", &valid_chain(&contract), &artifacts);
         assert_eq!(report.overall_status, super::IpArtifactStatus::Clear);
         assert!(report.unresolved_risk_flags.is_empty());
     }
@@ -4451,7 +4495,7 @@ mod tests {
                 design_around_notes: Some("Consider removing this dependency".to_string()),
             },
         ];
-        let report = contract.assess_ip_artifacts("run-1", &[], &artifacts);
+        let report = contract.assess_ip_artifacts("run-1", &valid_chain(&contract), &artifacts);
         assert_eq!(report.overall_status, super::IpArtifactStatus::Blocked);
         assert!(
             report
@@ -4472,7 +4516,7 @@ mod tests {
             risk_flags: vec!["lp-no-license-detected".to_string()],
             design_around_notes: None,
         }];
-        let report = contract.assess_ip_artifacts("run-1", &[], &artifacts);
+        let report = contract.assess_ip_artifacts("run-1", &valid_chain(&contract), &artifacts);
         assert_eq!(report.overall_status, super::IpArtifactStatus::Unknown);
     }
 
@@ -4488,8 +4532,71 @@ mod tests {
             risk_flags: vec![],
             design_around_notes: None,
         }];
-        let report = contract.assess_ip_artifacts("run-1", &[], &artifacts);
+        let report = contract.assess_ip_artifacts("run-1", &valid_chain(&contract), &artifacts);
         assert_eq!(report.overall_status, super::IpArtifactStatus::Blocked);
+    }
+
+    /// `fail_safe_defaults.on_missing_provenance` and `on_broken_chain` must
+    /// be "reject" - `validate_fail_safe_defaults` refuses anything else - and
+    /// `lp-provenance-gap` is the flag for it, yet `assess_ip_artifacts` never
+    /// looked at the chain: an empty or broken one with clean artifacts came
+    /// out `Clear`, which passes the certification compliance stage.
+    #[test]
+    fn assess_ip_artifacts_rejects_a_missing_or_invalid_chain() {
+        let contract = load_licensing().expect("builtin licensing provenance should parse");
+        assert_eq!(contract.fail_safe_defaults.on_missing_provenance, "reject");
+        assert_eq!(contract.fail_safe_defaults.on_broken_chain, "reject");
+        let clean = vec![super::IpArtifactRecord {
+            artifact_id: "dep-1".to_string(),
+            license_spdx: Some("MIT".to_string()),
+            license_class: "permissive".to_string(),
+            status: super::IpArtifactStatus::Clear,
+            risk_flags: vec![],
+            design_around_notes: None,
+        }];
+
+        let mut broken_link = valid_chain(&contract);
+        broken_link[2].input_hash = "sha256:not-the-previous-output".to_string();
+        let mut missing_stage = valid_chain(&contract);
+        missing_stage.remove(0);
+        let mut unversioned = valid_chain(&contract);
+        unversioned[1].tool_version = "  ".to_string();
+
+        for (label, chain) in [
+            ("empty chain", Vec::new()),
+            ("broken hash link", broken_link),
+            ("missing required stage", missing_stage),
+            ("record without tool version", unversioned),
+        ] {
+            let report = contract.assess_ip_artifacts("run-1", &chain, &clean);
+            assert_eq!(
+                report.overall_status,
+                super::IpArtifactStatus::Blocked,
+                "{label}"
+            );
+            assert_eq!(
+                report.unresolved_risk_flags,
+                vec![super::PROVENANCE_GAP_FLAG.to_string()],
+                "{label}"
+            );
+            assert_eq!(
+                contract.fail_safe_action(report.overall_status),
+                super::ProvenanceAction::Reject,
+                "{label}"
+            );
+        }
+        assert!(
+            contract
+                .risk_flags
+                .iter()
+                .any(|flag| flag.flag_id == super::PROVENANCE_GAP_FLAG),
+            "the flag raised must be one the contract defines"
+        );
+
+        // And a valid chain is not flagged.
+        let report = contract.assess_ip_artifacts("run-1", &valid_chain(&contract), &clean);
+        assert_eq!(report.overall_status, super::IpArtifactStatus::Clear);
+        assert!(report.unresolved_risk_flags.is_empty());
     }
 
     #[test]

@@ -6,8 +6,6 @@
   "comment": "DECSTBM(2,4) creates region rows 1-3. DECOM on homes to (1,0). CHA(4) sets col 3. VPA with omitted row defaults to row 1 within the region, so print X at (1,3).",
   "expected": {
     "cursor": { "row": 1, "col": 4 },
-    "cells": [
-      { "row": 1, "col": 3, "char": "X" }
-    ]
+    "cells": [{ "row": 1, "col": 3, "char": "X" }]
   }
 }

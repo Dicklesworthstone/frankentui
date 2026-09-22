@@ -1,10 +1,7 @@
 {
   "name": "cup_with_color",
   "description": "CUP moves cursor; active SGR color applies to next print",
-  "initial_size": [
-    10,
-    5
-  ],
+  "initial_size": [10, 5],
   "input_bytes_hex": "1b5b33326d1b5b313b334858",
   "expected": {
     "cursor": {

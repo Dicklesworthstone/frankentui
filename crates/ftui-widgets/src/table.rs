@@ -769,9 +769,6 @@ impl<'a> StatefulWidget for Table<'a> {
     type State = TableState;
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
-        if frame.a11y_enabled() {
-            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
-        }
         #[cfg(feature = "tracing")]
         let _widget_span = tracing::debug_span!(
             "widget_render",
@@ -785,6 +782,14 @@ impl<'a> StatefulWidget for Table<'a> {
 
         if area.is_empty() {
             return;
+        }
+
+        // After the emptiness check: nothing is drawn for an empty area, so a
+        // node for it describes a widget that was never on screen, and every
+        // such node collides on the id of the same empty rect
+        // (bd-a11y-sibling-id-collision-6zqd2).
+        if frame.a11y_enabled() {
+            frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
         }
 
         let apply_styling = frame.degradation.apply_styling();

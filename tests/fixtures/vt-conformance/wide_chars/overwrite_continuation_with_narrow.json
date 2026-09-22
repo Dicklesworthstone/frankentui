@@ -1,10 +1,7 @@
 {
   "name": "overwrite_continuation_with_narrow",
   "description": "Printing over continuation cell of wide char blanks the lead cell",
-  "initial_size": [
-    10,
-    3
-  ],
+  "initial_size": [10, 3],
   "input_bytes_hex": "e4b8961b5b313b324859",
   "expected": {
     "cursor": {

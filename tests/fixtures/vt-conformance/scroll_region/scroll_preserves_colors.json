@@ -1,10 +1,7 @@
 {
   "name": "scroll_preserves_colors",
   "description": "Scrolling within DECSTBM region preserves SGR colors on shifted lines",
-  "initial_size": [
-    10,
-    5
-  ],
+  "initial_size": [10, 5],
   "input_bytes_hex": "1b5b323b34721b5b323b31481b5b33316d411b5b333b31481b5b33326d421b5b343b31481b5b33346d430a",
   "expected": {
     "cursor": {

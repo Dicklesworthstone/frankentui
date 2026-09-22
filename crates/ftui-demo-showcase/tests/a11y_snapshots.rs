@@ -702,6 +702,147 @@ fn a11y_tree_dump_dashboard_80x24() {
     }
 }
 
+/// `Accessible`'s contract is that node ids are unique within a render pass,
+/// but nothing enforces it. `A11yTreeBuilder::add_node` inserts into a map, so
+/// a second node under the same id silently replaces the first and the widget
+/// it described vanishes from the tree - a screen reader is never told about
+/// it. The only trace is the push count exceeding the node count, which the
+/// dashboard test above checks for one screen at one size.
+///
+/// `ftui_widgets::a11y_node_id` hashes the *rect and nothing else*, so any two
+/// widgets laid out at the same area collide. 2840f0d8 fixed the structural
+/// half (a widget and its own `Block` always share a rect); genuine siblings
+/// remain, tracked as bd-a11y-sibling-id-collision-6zqd2, which explains why
+/// the fix is a design call - every candidate changes id semantics on the path
+/// feeding `A11yTree::diff` and announcement batching.
+///
+/// This sweep exists so that stays a known, bounded list instead of an
+/// invisible one: a screen that starts losing nodes fails here immediately.
+/// Entries are named to be removed, not to keep the gate quiet - a listed
+/// screen that no longer collides fails too.
+#[test]
+fn every_screen_gives_each_a11y_node_a_unique_id() {
+    use ftui_a11y::tree::A11yTreeBuilder;
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+    const SIZES: &[(u16, u16)] = &[(80, 24), (120, 40), (40, 12)];
+
+    /// Screens that drop at least one node to a colliding id today, all owned
+    /// by bd-a11y-sibling-id-collision-6zqd2.
+    ///
+    /// The degenerate sub-case is already gone: seven widgets pushed their
+    /// accessibility node *before* their own emptiness check, so a widget laid
+    /// out into an empty area announced a node for something it never drew,
+    /// and all of them hashed to the id of the same empty rect. Fixing the
+    /// ordering retired `form_validation` and `macro_recorder` from this list
+    /// entirely. What is left is the real sibling case - two widgets drawn at
+    /// the same non-empty rect - which needs the id redesign.
+    const KNOWN_COLLIDING: &[&str] = &[
+        "dashboard",
+        "inline_mode_story",
+        "intrinsic_sizing",
+        "layout_inspector",
+        "layout_lab",
+        "widget_gallery",
+    ];
+
+    let mut detail: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    // Guards against a vacuous pass: a sweep where no screen emits any node
+    // would satisfy every assertion below without checking anything.
+    let mut screens_with_nodes = 0usize;
+
+    for meta in ftui_demo_showcase::screens::SCREEN_REGISTRY {
+        let mut emitted_any = false;
+        for &(width, height) in SIZES {
+            let _render_lock = ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
+            let mut app = AppModel::new();
+            app.current_screen = meta.id;
+            app.terminal_width = width;
+            app.terminal_height = height;
+
+            let mut pool = GraphemePool::new();
+            let mut builder = A11yTreeBuilder::new();
+            let order = {
+                let mut frame = Frame::new(width, height, &mut pool);
+                frame.set_a11y(&mut builder);
+                app.view(&mut frame);
+                frame.finish_a11y();
+                frame.take_a11y_order()
+            };
+            let tree = builder.build();
+            emitted_any |= tree.node_count() > 0;
+
+            if order.len() != tree.node_count() {
+                let mut seen = HashSet::new();
+                let mut duplicated: Vec<u64> = order
+                    .iter()
+                    .copied()
+                    .filter(|id| !seen.insert(*id))
+                    .collect();
+                duplicated.sort_unstable();
+                duplicated.dedup();
+                // Report the surviving node for each contested id: its role and
+                // bounds are what the lost node must have matched, which is
+                // where to look for the pair.
+                let kept: Vec<String> = duplicated
+                    .iter()
+                    .map(|id| match tree.node(*id) {
+                        Some(node) => format!(
+                            "{:?} {:?} @{},{} {}x{}",
+                            node.role,
+                            node.name.as_deref().unwrap_or(""),
+                            node.bounds.x,
+                            node.bounds.y,
+                            node.bounds.width,
+                            node.bounds.height
+                        ),
+                        None => format!("{id} (absent)"),
+                    })
+                    .collect();
+                detail.entry(meta.slug).or_default().push(format!(
+                    "{width}x{height}: {} pushes collapsed to {} nodes; kept {}",
+                    order.len(),
+                    tree.node_count(),
+                    kept.join(", ")
+                ));
+            }
+        }
+        if emitted_any {
+            screens_with_nodes += 1;
+        }
+    }
+
+    let screens = ftui_demo_showcase::screens::SCREEN_REGISTRY.len();
+    assert!(
+        screens_with_nodes * 2 > screens,
+        "only {screens_with_nodes} of {screens} screens emitted any accessibility \
+         node - the sweep is not exercising the a11y path and proves nothing"
+    );
+
+    let colliding: BTreeSet<&str> = detail.keys().copied().collect();
+    let known: BTreeSet<&str> = KNOWN_COLLIDING.iter().copied().collect();
+
+    let unexpected: Vec<&str> = colliding.difference(&known).copied().collect();
+    assert!(
+        unexpected.is_empty(),
+        "{} screen(s) newly lose accessibility nodes to an id collision:\n  {}",
+        unexpected.len(),
+        unexpected
+            .iter()
+            .map(|slug| format!("{slug}\n    {}", detail[slug].join("\n    ")))
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+
+    let fixed: Vec<&str> = known.difference(&colliding).copied().collect();
+    assert!(
+        fixed.is_empty(),
+        "{} screen(s) no longer collide and must be removed from \
+         KNOWN_COLLIDING: {fixed:?}",
+        fixed.len()
+    );
+}
+
 #[test]
 fn accessibility_panel_tree_80x24() {
     use ftui_a11y::node::{A11yNodeInfo, A11yRole};

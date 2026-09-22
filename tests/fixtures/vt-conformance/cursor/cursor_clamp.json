@@ -6,9 +6,6 @@
   "comment": "CUP(3,5) to (2,4), print AB at (2,4)-(2,5), CUU(99) clamps to row 0, CUB(99) clamps to col 0. Cursor at (0,0).",
   "expected": {
     "cursor": { "row": 0, "col": 0 },
-    "cells": [
-      { "row": 2, "col": 4, "char": "A" },
-      { "row": 2, "col": 5, "char": "B" }
-    ]
+    "cells": [{ "row": 2, "col": 4, "char": "A" }, { "row": 2, "col": 5, "char": "B" }]
   }
 }

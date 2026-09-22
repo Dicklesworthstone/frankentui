@@ -8,18 +8,9 @@
     "side_effect_observability": "Side effects must remain observable with the same semantic intent and bounded timing variance policy."
   },
   "visual_tolerance_policy": {
-    "strict_classes": [
-      "diagnostic_text",
-      "command_output",
-      "cursor_position",
-      "selection_bounds"
-    ],
+    "strict_classes": ["diagnostic_text", "command_output", "cursor_position", "selection_bounds"],
     "strict_policy": "Byte-equivalent canonical screen cells and cursor semantics are required.",
-    "perceptual_classes": [
-      "spacing",
-      "decorative_color",
-      "nonsemantic_animation"
-    ],
+    "perceptual_classes": ["spacing", "decorative_color", "nonsemantic_animation"],
     "perceptual_policy": "Perceptual equivalence allowed within explicit threshold while preserving readability and interaction semantics.",
     "max_perceptual_delta": 0.015
   },
@@ -145,32 +136,10 @@
     }
   ],
   "validator_clause_map": {
-    "semantic_diff_validator": [
-      "ST-001",
-      "ST-002",
-      "EO-001",
-      "SE-001"
-    ],
-    "trace_replay_validator": [
-      "EO-001",
-      "EO-002",
-      "TB-001",
-      "TB-002"
-    ],
-    "visual_diff_validator": [
-      "VT-001",
-      "VT-002"
-    ],
-    "improvement_policy_validator": [
-      "IE-001",
-      "IE-002",
-      "TB-001"
-    ],
-    "release_gate_validator": [
-      "ST-001",
-      "SE-001",
-      "IE-002",
-      "TB-002"
-    ]
+    "semantic_diff_validator": ["ST-001", "ST-002", "EO-001", "SE-001"],
+    "trace_replay_validator": ["EO-001", "EO-002", "TB-001", "TB-002"],
+    "visual_diff_validator": ["VT-001", "VT-002"],
+    "improvement_policy_validator": ["IE-001", "IE-002", "TB-001"],
+    "release_gate_validator": ["ST-001", "SE-001", "IE-002", "TB-002"]
   }
 }

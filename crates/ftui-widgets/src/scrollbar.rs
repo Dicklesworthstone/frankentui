@@ -351,7 +351,13 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
     type State = ScrollbarState;
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
-        if frame.a11y_enabled() {
+        // Not for an empty area: nothing is drawn for one, so a node would
+        // describe a widget that was never on screen, and every such node
+        // collides on the id of the same empty rect
+        // (bd-a11y-sibling-id-collision-6zqd2). The emptiness check below is
+        // compound and does cleanup, so the guard sits on the push rather than
+        // the push moving past it.
+        if frame.a11y_enabled() && !area.is_empty() {
             frame.push_a11y_nodes(ftui_a11y::Accessible::accessibility_nodes(self, area));
         }
         #[cfg(feature = "tracing")]

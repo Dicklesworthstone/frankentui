@@ -3,9 +3,9 @@ use doctor_frankentui::accessibility_diff::{
     AccessibilityRole, AccessibilityRun, compare_accessibility_runs,
 };
 use doctor_frankentui::certification_report::{
-    CERTIFICATION_REPORT_SCHEMA_VERSION, CertificationClauseStatus, CertificationPolicyProfile,
-    CertificationRemediationAction, CertificationReportInput, CertificationStageStatus,
-    generate_certification_report, verify_certification_report_checksum,
+    CERTIFICATION_REPORT_SCHEMA_VERSION, CertificationClauseStatus, CertificationDomain,
+    CertificationPolicyProfile, CertificationRemediationAction, CertificationReportInput,
+    CertificationStageStatus, generate_certification_report, verify_certification_report_checksum,
 };
 use doctor_frankentui::performance_diff::{
     PerformanceDiffConfig, PerformanceMetricKind, PerformanceRun, PerformanceSample,
@@ -457,4 +457,128 @@ fn assert_ranked(actions: &[CertificationRemediationAction]) {
             "actions should be ranked by expected value, then effort: {left:?} vs {right:?}"
         );
     }
+}
+
+fn stage(
+    report: &doctor_frankentui::certification_report::MigrationCertificationReport,
+    domain: CertificationDomain,
+) -> &doctor_frankentui::certification_report::CertificationStageResult {
+    report
+        .stage_results
+        .iter()
+        .find(|stage| stage.domain == domain)
+        .expect("every domain has a stage")
+}
+
+/// With every other domain passing, one domain whose runs were empty used to
+/// leave the whole certification at `Accept`. The visual and accessibility
+/// comparators have no "not enough evidence" verdict - two empty runs differ
+/// in nothing, so they report `Equivalent` - and their stages mapped that
+/// straight to `Pass`. The semantic domain never had the hole: an unexercised
+/// contract clause is `MissingEvidence`, which rejects.
+#[test]
+fn a_domain_that_compared_nothing_cannot_pass_certification() {
+    let profile = CertificationPolicyProfile::strict_release();
+
+    let mut no_frames = passing_input();
+    no_frames.visual = compare_terminal_runs(
+        &TerminalOutputRun::new("source-visual", Vec::new()),
+        &TerminalOutputRun::new("translated-visual", Vec::new()),
+        &VisualDiffConfig::strict(),
+    );
+    assert_eq!(no_frames.visual.frames_compared, 0);
+
+    let mut no_nodes = passing_input();
+    no_nodes.accessibility = compare_accessibility_runs(
+        &AccessibilityRun::new("source-accessibility", Vec::new()),
+        &AccessibilityRun::new("translated-accessibility", Vec::new()),
+        &AccessibilityDiffConfig::default(),
+    );
+    assert_eq!(no_nodes.accessibility.nodes_compared, 0);
+
+    let mut no_samples = passing_input();
+    no_samples.performance = compare_performance_runs(
+        &PerformanceRun::new("source-performance", Vec::new(), Vec::new()),
+        &PerformanceRun::new("translated-performance", Vec::new(), Vec::new()),
+        &PerformanceDiffConfig::certification_default(),
+    );
+
+    for (label, input, domain) in [
+        ("visual", no_frames, CertificationDomain::Visual),
+        (
+            "accessibility",
+            no_nodes,
+            CertificationDomain::Accessibility,
+        ),
+        ("performance", no_samples, CertificationDomain::Performance),
+    ] {
+        let report = generate_certification_report(&input, &profile)
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert_ne!(report.final_verdict, VerdictOutcome::Accept, "{label}");
+        assert_eq!(report.final_verdict, VerdictOutcome::Hold, "{label}");
+        assert!(
+            !report.certification_passed,
+            "{label} certified on no evidence"
+        );
+        assert_eq!(
+            stage(&report, domain).status,
+            CertificationStageStatus::Warning,
+            "{label}"
+        );
+    }
+}
+
+/// The downgrade only ever withholds a pass. A domain that compared nothing
+/// because one side was missing entirely is still a failure, not softened to
+/// a warning.
+#[test]
+fn a_domain_missing_on_one_side_still_fails() {
+    let mut input = passing_input();
+    input.visual = compare_terminal_runs(
+        &TerminalOutputRun::new(
+            "source-visual",
+            vec![TerminalFrame::from_text(0, "status: ok")],
+        ),
+        &TerminalOutputRun::new("translated-visual", Vec::new()),
+        &VisualDiffConfig::strict(),
+    );
+    let report =
+        generate_certification_report(&input, &CertificationPolicyProfile::strict_release())
+            .expect("report generates");
+    assert_eq!(
+        stage(&report, CertificationDomain::Visual).status,
+        CertificationStageStatus::Fail
+    );
+    assert!(!report.certification_passed);
+}
+
+/// The compliance stage trusts `ProvenanceReport::overall_status`, and
+/// `assess_ip_artifacts` used to derive it from the artifacts alone. A run
+/// with clean artifacts and no provenance chain therefore certified, although
+/// the licensing contract requires `on_missing_provenance: reject`.
+#[test]
+fn certification_rejects_a_run_with_no_provenance_chain() {
+    let licensing = doctor_frankentui::semantic_contract::load_builtin_licensing_provenance()
+        .expect("builtin licensing provenance");
+    let clean = vec![IpArtifactRecord {
+        artifact_id: "dep-1".to_string(),
+        license_spdx: Some("MIT".to_string()),
+        license_class: "permissive".to_string(),
+        status: IpArtifactStatus::Clear,
+        risk_flags: Vec::new(),
+        design_around_notes: None,
+    }];
+
+    let mut input = passing_input();
+    input.provenance = licensing.assess_ip_artifacts("run-no-chain", &[], &clean);
+    let report =
+        generate_certification_report(&input, &CertificationPolicyProfile::strict_release())
+            .expect("report generates");
+
+    assert_eq!(
+        stage(&report, CertificationDomain::Compliance).status,
+        CertificationStageStatus::Fail
+    );
+    assert_eq!(report.final_verdict, VerdictOutcome::Reject);
+    assert!(!report.certification_passed);
 }

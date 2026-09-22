@@ -6,9 +6,6 @@
   "comment": "CHA(9) → col 8, CSI g (clear tab at col 8), CHA(1) → col 0, print A, TAB skips 8 (cleared) → col 16, print B",
   "expected": {
     "cursor": { "row": 0, "col": 17 },
-    "cells": [
-      { "row": 0, "col": 0, "char": "A" },
-      { "row": 0, "col": 16, "char": "B" }
-    ]
+    "cells": [{ "row": 0, "col": 0, "char": "A" }, { "row": 0, "col": 16, "char": "B" }]
   }
 }

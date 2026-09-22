@@ -1,10 +1,7 @@
 {
   "name": "insert_chars_uses_current_bg",
   "description": "ICH inserts blank chars with current background color, shifts existing right",
-  "initial_size": [
-    8,
-    3
-  ],
+  "initial_size": [8, 3],
   "input_bytes_hex": "1b5b33316d4142434445461b5b34346d1b5b313b33481b5b3240",
   "expected": {
     "cursor": {

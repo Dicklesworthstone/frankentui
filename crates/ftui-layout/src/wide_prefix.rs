@@ -36,7 +36,20 @@ impl WidePrefixSums {
     }
 
     /// Build a tree from values in linear time.
+    ///
+    /// Fails with `SumOverflow` at the first entry whose inclusive prefix
+    /// exceeds `u64::MAX`.
     pub fn try_from_values(values: &[u64]) -> Result<Self, WidePrefixError> {
+        // Every prefix and every tree node is a sum of entries, so a total
+        // that fits bounds them all. Checking only the nodes admitted
+        // `[u64::MAX, 0, 1]`: no node overflows, but its total does, and
+        // then `total`, `value(2)`, `set` and `remove` all failed on it.
+        let mut total = 0_u64;
+        for (index, &value) in values.iter().enumerate() {
+            total = total
+                .checked_add(value)
+                .ok_or(WidePrefixError::SumOverflow { index })?;
+        }
         let mut result = Self::try_new(values.len())?;
         for (index, &value) in values.iter().enumerate() {
             result.tree[index + 1] = value;
@@ -46,9 +59,7 @@ impl WidePrefixSums {
                 continue;
             };
             if parent <= values.len() {
-                result.tree[parent] = result.tree[parent]
-                    .checked_add(result.tree[index])
-                    .ok_or(WidePrefixError::SumOverflow { index: parent - 1 })?;
+                result.tree[parent] += result.tree[index];
             }
         }
         Ok(result)
@@ -125,8 +136,9 @@ impl WidePrefixSums {
 
     /// Add a signed adjustment to one entry.
     ///
-    /// Both the entry and every affected prefix node are checked before any
-    /// mutation, so overflow or underflow leaves the tree unchanged.
+    /// The entry and the total are checked before any mutation, so taking
+    /// the entry below zero or the total above `u64::MAX` fails and leaves
+    /// the tree unchanged.
     pub fn add(&mut self, index: usize, delta: i64) -> Result<(), WidePrefixError> {
         self.check_index(index)?;
         if delta >= 0 {
@@ -245,23 +257,19 @@ impl WidePrefixSums {
         delta: u64,
         increasing: bool,
     ) -> Result<(), WidePrefixError> {
-        let mut cursor = index + 1;
-        while cursor <= self.len() {
-            let checked = if increasing {
-                self.tree[cursor].checked_add(delta)
-            } else {
-                self.tree[cursor].checked_sub(delta)
-            };
-            if checked.is_none() {
-                return Err(if increasing {
-                    WidePrefixError::SumOverflow { index: cursor - 1 }
-                } else {
-                    WidePrefixError::SumUnderflow { index: cursor - 1 }
-                });
-            }
-            cursor = cursor
-                .checked_add(lowbit(cursor))
-                .ok_or(WidePrefixError::CapacityOverflow { len: self.len() })?;
+        // Each node on the update path is a sum of entries that includes this
+        // one, so it lies between the entry and the total. Keeping those two
+        // in range keeps every node in range. Checking the nodes alone missed
+        // both: on `[5, 5]`, `add(1, -7)` found node 2 (holding 10) able to
+        // absorb it and left entry 1 at -2, and on `[u64::MAX, 0, 0]`,
+        // `add(2, 1)` found no node overflowing and pushed the total past
+        // `u64::MAX`.
+        if increasing {
+            self.total()?
+                .checked_add(delta)
+                .ok_or(WidePrefixError::SumOverflow { index })?;
+        } else if self.value(index)? < delta {
+            return Err(WidePrefixError::SumUnderflow { index });
         }
 
         let mut cursor = index + 1;
@@ -271,9 +279,8 @@ impl WidePrefixSums {
             } else {
                 self.tree[cursor] - delta
             };
-            // The preflight loop above proves the update is representable;
-            // a missing next index means this was the final representable
-            // node, so no further mutation is needed.
+            // A missing next index is past any representable length, so
+            // this was the last node on the path.
             let Some(next) = cursor.checked_add(lowbit(cursor)) else {
                 break;
             };
@@ -396,6 +403,84 @@ mod tests {
             WidePrefixSums::try_from_values(&[u64::MAX, 1]),
             Err(WidePrefixError::SumOverflow { index: 1 })
         );
+    }
+
+    #[test]
+    fn negative_adjustment_checks_the_entry_not_just_its_nodes() {
+        // Node 2 holds 5 + 5 and could absorb -7; entry 1 cannot.
+        let mut sums = WidePrefixSums::try_from_values(&[5, 5]).unwrap();
+        assert_eq!(
+            sums.add(1, -7),
+            Err(WidePrefixError::SumUnderflow { index: 1 })
+        );
+        assert_eq!(sums.value(1).unwrap(), 5);
+        assert_eq!(sums.total().unwrap(), 10);
+    }
+
+    #[test]
+    fn total_overflow_is_rejected_when_no_node_overflows() {
+        // No node of `[MAX, 0, 1]` exceeds `u64::MAX`; the prefix through
+        // entry 2 does.
+        assert_eq!(
+            WidePrefixSums::try_from_values(&[u64::MAX, 0, 1]),
+            Err(WidePrefixError::SumOverflow { index: 2 })
+        );
+        let mut sums = WidePrefixSums::try_from_values(&[u64::MAX, 0, 0]).unwrap();
+        assert_eq!(
+            sums.add(2, 1),
+            Err(WidePrefixError::SumOverflow { index: 2 })
+        );
+        assert_eq!(sums.value(2).unwrap(), 0);
+        assert_eq!(sums.total().unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn updates_match_a_plain_vector_model() {
+        // Near-maximal values make both the entry and the total bounds bite.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        // A new value for `model[index]` is admissible when the total with it
+        // still fits in a `u64`.
+        let fits = |model: &[u64], index: usize, value: u64| {
+            model
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != index)
+                .try_fold(value, |sum, (_, &v)| sum.checked_add(v))
+                .is_some()
+        };
+        let mut model = vec![0_u64; 9];
+        let mut sums = WidePrefixSums::try_from_values(&model).unwrap();
+        for _ in 0..20_000 {
+            let index = (next() % 9) as usize;
+            let magnitude = next() >> (next() % 64);
+            let target = if next() % 2 == 0 {
+                let delta = (magnitude >> 1) as i64 * if next() % 2 == 0 { 1 } else { -1 };
+                let entry = if delta >= 0 {
+                    model[index].checked_add(delta.unsigned_abs())
+                } else {
+                    model[index].checked_sub(delta.unsigned_abs())
+                }
+                .filter(|&entry| fits(&model, index, entry));
+                assert_eq!(sums.add(index, delta).is_ok(), entry.is_some());
+                entry
+            } else {
+                let entry = Some(magnitude).filter(|&entry| fits(&model, index, entry));
+                assert_eq!(sums.set(index, magnitude).is_ok(), entry.is_some());
+                entry
+            };
+            if let Some(entry) = target {
+                model[index] = entry;
+            }
+            for (i, &value) in model.iter().enumerate() {
+                assert_eq!(sums.value(i), Ok(value));
+            }
+        }
     }
 
     #[test]

@@ -501,6 +501,12 @@ impl Viewport {
         (cx, cy)
     }
 
+    /// The lowest world-space `y` that [`Self::to_cell`] rounds into cell
+    /// row `cy` or below it.
+    pub(crate) fn world_y_at_cell_top(&self, cy: u16) -> f64 {
+        (f64::from(cy) - 0.5 - self.offset_y) / self.scale_y
+    }
+
     /// Convert a world-space rect to cell rect, clamping to non-negative sizes.
     pub(crate) fn to_cell_rect(&self, r: &LayoutRect) -> Rect {
         let (x, y) = self.to_cell(r.x, r.y);
@@ -1566,19 +1572,34 @@ impl MermaidRenderer {
         let max_bit = ir
             .packet_fields
             .iter()
-            .map(|f| f.bit_end)
+            .map(|f| f.bit_span().1)
             .max()
             .unwrap_or(0);
         let num_rows = (max_bit / bits_per_row) + 1;
 
-        // Render bit ruler (top of each row shows bit numbers)
-        for row in 0..num_rows {
+        // Render bit ruler (top of each row shows bit numbers) for the rows
+        // that land inside `area`. `Viewport::fit` never scales below 0.1, so
+        // a field such as `0-99999999` makes three million rows that almost
+        // all fall off-screen or clamp onto its top line, and drawing every
+        // one took minutes. Rows run downward: start at the first one that
+        // can reach the top edge and stop at the bottom edge.
+        let top_row = (vp.world_y_at_cell_top(area.y) - title_h) / row_h;
+        // A float-to-int `as` saturates, so a negative `top_row` becomes 0.
+        let first_row = (top_row.floor() as u32).min(num_rows);
+        for row in first_row..num_rows {
             let base_bit = row * bits_per_row;
             let ry = title_h + (row as f64) * row_h;
+            let (_, by) = vp.to_cell(0.0, ry);
+            if by < area.y {
+                continue;
+            }
+            if by >= area.bottom() {
+                break;
+            }
             for bit in 0..bits_per_row {
                 let abs_bit = base_bit + bit;
                 let x = (bit as f64) * col_w + col_w / 2.0;
-                let (bx, by) = vp.to_cell(x, ry);
+                let (bx, _) = vp.to_cell(x, ry);
                 let digit = (abs_bit % 10).to_string();
                 let cell = Cell::from_char(' ').with_fg(border_fg);
                 buf.print_text_clipped(bx, by, &digit, cell, bx.saturating_add(2));
@@ -1587,12 +1608,15 @@ impl MermaidRenderer {
 
         // Render each field
         for field in &ir.packet_fields {
-            let start_row = field.bit_start / bits_per_row;
-            let end_row = field.bit_end / bits_per_row;
+            // Reversed ranges (`10-5`) gave a negative-width box here; the
+            // layout side underflowed outright. See `IrPacketField::bit_span`.
+            let (bit_start, bit_end) = field.bit_span();
+            let start_row = bit_start / bits_per_row;
+            let end_row = bit_end / bits_per_row;
             let row = start_row;
-            let start_col = field.bit_start % bits_per_row;
+            let start_col = bit_start % bits_per_row;
             let end_col = if start_row == end_row {
-                field.bit_end % bits_per_row
+                bit_end % bits_per_row
             } else {
                 bits_per_row - 1
             };
@@ -9180,6 +9204,48 @@ mod tests {
         let source = include_str!("../tests/fixtures/mermaid/packet_beta_basic.mmd");
         let (buf, _plan) = e2e_render(source, 120, 40);
         assert_buffer_snapshot_text("mermaid_packet_beta_basic_120x40", &buf);
+    }
+
+    /// Render `source` with the cell renderer, which `render_diagram_adaptive`
+    /// bypasses when the `canvas` feature is on.
+    fn render_cells(source: &str, width: u16, height: u16) -> Buffer {
+        let parsed = parse_with_diagnostics(source);
+        let config = MermaidConfig::default();
+        let ir_parse = normalize_ast_to_ir(
+            &parsed.ast,
+            &config,
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let layout = layout_diagram(&ir_parse.ir, &config);
+        let mut buf = Buffer::new(width, height);
+        MermaidRenderer::new(&config).render(
+            &layout,
+            &ir_parse.ir,
+            Rect::new(0, 0, width, height),
+            &mut buf,
+        );
+        buf
+    }
+
+    #[test]
+    fn packet_reversed_range_draws_the_same_field_as_its_forward_form() {
+        // Layout computed `end_col - start_col + 1` on the range as written,
+        // so `10-5` panicked on underflow in debug builds.
+        let reversed = render_cells("packet-beta\n  10-5: \"Flags\"", 80, 24);
+        let forward = render_cells("packet-beta\n  5-10: \"Flags\"", 80, 24);
+        assert_eq!(buffer_to_text(&reversed), buffer_to_text(&forward));
+    }
+
+    #[test]
+    fn packet_ruler_draws_only_the_rows_on_screen() {
+        // One field over every bit a `u32` can name is 134 million rows of
+        // ruler. Drawing them all never finished; the visible ones still show.
+        let buf = render_cells("packet-beta\n  0-4294967295: \"Everything\"", 80, 24);
+        assert!(
+            buffer_to_text(&buf).chars().any(|c| c.is_ascii_digit()),
+            "the rows that land on screen keep their ruler digits"
+        );
     }
 
     #[test]

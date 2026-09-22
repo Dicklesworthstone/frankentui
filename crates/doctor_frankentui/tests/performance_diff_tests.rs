@@ -596,3 +596,175 @@ fn workload_seed_mismatch_fails_as_uncontrolled_benchmark() {
     );
     assert!(report.violated_policy_ids.contains(&"PD-001".to_string()));
 }
+
+/// A zero source mean leaves relative change undefined, and the comparator
+/// used to substitute `0.0` for it - "no change" - so every regression from a
+/// zero baseline certified as `Equivalent`. Zero is the *healthy* value for
+/// dropped frames, so on the metric rated `Critical` the common case was the
+/// one the gate could not see. A baseline one step above zero was judged
+/// correctly, which is what made the hole easy to miss.
+#[test]
+fn regression_from_a_zero_baseline_fails_certification() {
+    for (metric, regressed) in [
+        (PerformanceMetricKind::DroppedFrameRatio, 0.30),
+        (PerformanceMetricKind::AllocationBytes, 50_000_000.0),
+        (PerformanceMetricKind::FrameJitterMs, 40.0),
+        (PerformanceMetricKind::LatencyP99Ms, 12.0),
+    ] {
+        let source = run("source-run", "zero-base", 3, metric, &[0.0; 10]);
+        let translated = run("translated-run", "zero-base", 3, metric, &[regressed; 10]);
+        let report = compare_performance_runs(
+            &source,
+            &translated,
+            &PerformanceDiffConfig::certification_default(),
+        );
+
+        assert_eq!(
+            report.verdict,
+            PerformanceDiffVerdict::PolicyRegression,
+            "{metric:?}"
+        );
+        assert!(
+            !report.certification_passed,
+            "{metric:?} certified from zero"
+        );
+        assert_eq!(
+            report.comparisons[0].verdict,
+            MetricComparisonVerdict::PolicyRegression,
+            "{metric:?}"
+        );
+        assert!(report.comparisons[0].significant, "{metric:?}");
+        assert_eq!(report.differences.len(), 1, "{metric:?}");
+
+        // The relative fields stay a finite placeholder so the report still
+        // serialises, so neither message may lean on them: "+0.00% exceeds
+        // threshold +2.00%" would contradict itself.
+        for message in [
+            &report.comparisons[0].message,
+            &report.differences[0].message,
+        ] {
+            assert!(
+                message.contains("source mean is zero"),
+                "{metric:?}: {message}"
+            );
+            assert!(!message.contains("+0.00%"), "{metric:?}: {message}");
+        }
+        serde_json::to_string(&report.comparisons[0]).expect("comparison serialises");
+    }
+}
+
+/// The fix must not turn zero into a hole of the opposite kind. Unchanged
+/// zeros are equivalent, a higher-is-better metric rising from zero is an
+/// improvement, and a change the interval cannot separate from zero asks for
+/// more evidence rather than passing.
+#[test]
+fn zero_baseline_still_distinguishes_no_change_improvement_and_noise() {
+    let config = PerformanceDiffConfig::certification_default();
+    let compare = |metric, source: &[f64], translated: &[f64]| {
+        compare_performance_runs(
+            &run("source-run", "zero-base", 5, metric, source),
+            &run("translated-run", "zero-base", 5, metric, translated),
+            &config,
+        )
+    };
+
+    let unchanged = compare(
+        PerformanceMetricKind::DroppedFrameRatio,
+        &[0.0; 10],
+        &[0.0; 10],
+    );
+    assert_eq!(unchanged.verdict, PerformanceDiffVerdict::Equivalent);
+    assert!(unchanged.certification_passed);
+
+    let faster = compare(
+        PerformanceMetricKind::ThroughputOpsPerSec,
+        &[0.0; 10],
+        &[100.0; 10],
+    );
+    assert_eq!(faster.verdict, PerformanceDiffVerdict::Improvement);
+    assert!(faster.certification_passed);
+
+    // One dropped frame in ten runs: mean 1e-4, but the interval straddles
+    // zero, so this cannot be called a regression - and must not certify.
+    let mut noisy = [0.0; 10];
+    noisy[9] = 0.001;
+    let noise = compare(PerformanceMetricKind::DroppedFrameRatio, &[0.0; 10], &noisy);
+    assert_eq!(
+        noise.comparisons[0].verdict,
+        MetricComparisonVerdict::Inconclusive
+    );
+    assert_eq!(noise.verdict, PerformanceDiffVerdict::NeedsMoreEvidence);
+    assert!(!noise.certification_passed);
+}
+
+/// Zero is now continuous with its neighbours: the same regression fails
+/// whether the baseline is zero or one step above it.
+#[test]
+fn zero_baseline_is_judged_like_a_baseline_just_above_it() {
+    let config = PerformanceDiffConfig::certification_default();
+    for baseline in [0.0, 0.001] {
+        let report = compare_performance_runs(
+            &run(
+                "source-run",
+                "edge",
+                9,
+                PerformanceMetricKind::DroppedFrameRatio,
+                &[baseline; 10],
+            ),
+            &run(
+                "translated-run",
+                "edge",
+                9,
+                PerformanceMetricKind::DroppedFrameRatio,
+                &[0.30; 10],
+            ),
+            &config,
+        );
+        assert_eq!(
+            report.verdict,
+            PerformanceDiffVerdict::PolicyRegression,
+            "baseline {baseline}"
+        );
+        assert!(!report.certification_passed, "baseline {baseline}");
+    }
+}
+
+/// Two runs with no samples compare nothing. Every other shape of missing
+/// evidence already fails - a metric on one side only is a
+/// `MissingScenarioMetric`, too few samples is `InsufficientSamples` - but
+/// with nothing on either side none of those checks fires, and both-empty runs
+/// used to certify as `Equivalent`, which `certification_report` maps to a
+/// passing performance stage.
+#[test]
+fn runs_with_no_samples_do_not_certify() {
+    let config = PerformanceDiffConfig::certification_default();
+    let empty = |run_id: &str| PerformanceRun::new(run_id, Vec::new(), Vec::new());
+
+    let report = compare_performance_runs(&empty("source-run"), &empty("translated-run"), &config);
+    assert!(report.comparisons.is_empty() && report.differences.is_empty());
+    assert_eq!(report.verdict, PerformanceDiffVerdict::NeedsMoreEvidence);
+    assert!(!report.certification_passed, "nothing was compared");
+
+    // A workload declared with no samples is still nothing to compare.
+    let declared =
+        |run_id: &str| PerformanceRun::new(run_id, vec![workload("idle", 1)], Vec::new());
+    let report = compare_performance_runs(
+        &declared("source-run"),
+        &declared("translated-run"),
+        &config,
+    );
+    assert_eq!(report.verdict, PerformanceDiffVerdict::NeedsMoreEvidence);
+    assert!(!report.certification_passed);
+
+    // One side empty was already caught, and still is.
+    let populated = run(
+        "source-run",
+        "idle",
+        1,
+        PerformanceMetricKind::LatencyP99Ms,
+        &[10.0; 8],
+    );
+    let report = compare_performance_runs(&populated, &empty("translated-run"), &config);
+    assert_eq!(report.verdict, PerformanceDiffVerdict::PolicyRegression);
+    assert!(!report.certification_passed);
+}

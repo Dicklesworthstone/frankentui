@@ -1,10 +1,7 @@
 {
   "name": "reverse_index_mid_region",
   "description": "Reverse index in middle of scroll region moves cursor up without scrolling",
-  "initial_size": [
-    10,
-    5
-  ],
+  "initial_size": [10, 5],
   "input_bytes_hex": "1b5b323b34721b5b333b3148411b4d42",
   "expected": {
     "cursor": {

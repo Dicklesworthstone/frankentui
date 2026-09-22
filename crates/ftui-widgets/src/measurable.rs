@@ -536,43 +536,146 @@ mod tests {
         assert_eq!(a, b, "measure() must be pure");
     }
 
+    /// `min <= preferred <= max` is this trait's contract for every
+    /// implementor, and it was only ever checked for `Paragraph` over ASCII -
+    /// the two tests that stood here asserted it of a struct literal built to
+    /// satisfy it. Measuring all of them found two breaches: a bordered,
+    /// word-wrapped `Paragraph` at narrow widths (min 8, preferred 3), and a
+    /// zero-width `MiniBar` (min 1 against preferred and max 0).
     #[test]
-    fn size_constraints_invariant_min_le_preferred() {
-        // Verify a well-formed SizeConstraints
-        let c = SizeConstraints {
-            min: Size::new(5, 2),
-            preferred: Size::new(10, 5),
-            max: Some(Size::new(20, 10)),
-        };
+    fn every_implementor_keeps_min_le_preferred_le_max() {
+        use crate::block::Block;
+        use crate::borders::Borders;
+        use crate::list::{List, ListItem};
+        use crate::paragraph::Paragraph;
+        use crate::progress::{MiniBar, ProgressBar};
+        use crate::rule::Rule;
+        use crate::sparkline::Sparkline;
+        use crate::table::{Row, Table};
+        use ftui_layout::Constraint;
+        use ftui_text::{Text, WrapMode};
 
-        assert!(
-            c.min.width <= c.preferred.width,
-            "min.width must <= preferred.width"
-        );
-        assert!(
-            c.min.height <= c.preferred.height,
-            "min.height must <= preferred.height"
-        );
-    }
+        let bordered = || Block::new().borders(Borders::ALL);
+        let data = [1.0, 5.0, 2.0, 8.0];
+        let no_data: [f64; 0] = [];
+        let widgets: Vec<(&str, Box<dyn MeasurableWidget>)> = vec![
+            ("Block", Box::new(Block::new())),
+            (
+                "Block bordered+titled",
+                Box::new(bordered().title("A long block title")),
+            ),
+            ("Paragraph empty", Box::new(Paragraph::new(Text::raw("")))),
+            (
+                "Paragraph wide glyphs",
+                Box::new(Paragraph::new(Text::raw("\u{65e5}\u{672c}\u{8a9e} text"))),
+            ),
+            (
+                "Paragraph multiline",
+                Box::new(Paragraph::new(Text::raw("a\nbb\nccc"))),
+            ),
+            (
+                "Paragraph word-wrapped in a block",
+                Box::new(
+                    Paragraph::new(Text::raw("some words to wrap around"))
+                        .wrap(WrapMode::Word)
+                        .block(bordered().title("Title")),
+                ),
+            ),
+            (
+                // Char wrap's minimum is the widest grapheme (2 here), and at
+                // one column the preferred width must be floored up to it.
+                "Paragraph char-wrapped wide glyphs",
+                Box::new(
+                    Paragraph::new(Text::raw("\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}"))
+                        .wrap(WrapMode::Char),
+                ),
+            ),
+            ("ProgressBar", Box::new(ProgressBar::new())),
+            (
+                "ProgressBar labelled",
+                Box::new(ProgressBar::new().label("Downloading")),
+            ),
+            (
+                "ProgressBar in a block",
+                Box::new(ProgressBar::new().block(bordered())),
+            ),
+            ("MiniBar", Box::new(MiniBar::new(0.5, 10))),
+            ("MiniBar zero width", Box::new(MiniBar::new(0.5, 0))),
+            ("Sparkline", Box::new(Sparkline::new(&data))),
+            ("Sparkline empty", Box::new(Sparkline::new(&no_data))),
+            ("ListItem", Box::new(ListItem::new("item"))),
+            ("ListItem empty", Box::new(ListItem::new(""))),
+            ("List", Box::new(List::new(["one", "two", "three"]))),
+            ("List empty", Box::new(List::new(Vec::<&str>::new()))),
+            (
+                "List in a block",
+                Box::new(List::new(["x"]).block(bordered().title("Wide title"))),
+            ),
+            ("Rule", Box::new(Rule::new())),
+            (
+                "Rule titled",
+                Box::new(Rule::new().title("A long rule title")),
+            ),
+            (
+                "Table",
+                Box::new(Table::new(
+                    [Row::new(["a", "bb"]), Row::new(["ccc", "d"])],
+                    [Constraint::Fixed(3), Constraint::Min(2)],
+                )),
+            ),
+            (
+                "Table with header",
+                Box::new(
+                    Table::new([Row::new(["a"])], [Constraint::Fixed(3)])
+                        .header(Row::new(["Header"])),
+                ),
+            ),
+            (
+                "Table empty",
+                Box::new(Table::new(Vec::<Row>::new(), Vec::<Constraint>::new())),
+            ),
+            (
+                "Table in a block",
+                Box::new(
+                    Table::new([Row::new(["a"])], [Constraint::Fixed(1)])
+                        .block(bordered().title("Title")),
+                ),
+            ),
+        ];
+        let sizes = [
+            Size::new(0, 0),
+            Size::new(1, 1),
+            Size::new(3, 1),
+            Size::new(5, 3),
+            Size::new(10, 5),
+            Size::new(80, 24),
+            Size::MAX,
+        ];
 
-    #[test]
-    fn size_constraints_invariant_preferred_le_max() {
-        let c = SizeConstraints {
-            min: Size::new(5, 2),
-            preferred: Size::new(10, 5),
-            max: Some(Size::new(20, 10)),
-        };
-
-        if let Some(max) = c.max {
-            assert!(
-                c.preferred.width <= max.width,
-                "preferred.width must <= max.width"
-            );
-            assert!(
-                c.preferred.height <= max.height,
-                "preferred.height must <= max.height"
-            );
+        let mut breaches = Vec::new();
+        for (name, widget) in &widgets {
+            for &available in &sizes {
+                let c = widget.measure(available);
+                let max = c.max.unwrap_or(Size::MAX);
+                if c.min.width > c.preferred.width
+                    || c.min.height > c.preferred.height
+                    || c.preferred.width > max.width
+                    || c.preferred.height > max.height
+                {
+                    breaches.push(format!(
+                        "{name} at {}x{}: min {}x{}, preferred {}x{}, max {:?}",
+                        available.width,
+                        available.height,
+                        c.min.width,
+                        c.min.height,
+                        c.preferred.width,
+                        c.preferred.height,
+                        c.max.map(|m| (m.width, m.height)),
+                    ));
+                }
+            }
         }
+        assert!(breaches.is_empty(), "{}", breaches.join("\n"));
     }
 
     // --- Property tests (proptest) ---

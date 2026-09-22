@@ -6,8 +6,6 @@
   "comment": "DECSTBM(2,4) → region rows 1-3. DECOM on (ESC[?6h). CUP(10,3) → abs_row = 9+1=10, clamped to scroll_bottom-1=3, col=2. Print 'Z' at (3,2).",
   "expected": {
     "cursor": { "row": 3, "col": 3 },
-    "cells": [
-      { "row": 3, "col": 2, "char": "Z" }
-    ]
+    "cells": [{ "row": 3, "col": 2, "char": "Z" }]
   }
 }

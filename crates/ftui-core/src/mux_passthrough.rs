@@ -16,9 +16,10 @@
 //!
 //! # GNU screen Passthrough
 //!
-//! screen uses a similar DCS passthrough:
+//! screen uses a similar DCS passthrough, split over as many DCS strings as
+//! it takes to keep each one short and free of `ESC \`:
 //! ```text
-//! ESC P <sequence> ESC \
+//! ESC P <chunk> ESC \ ESC P <chunk> ESC \ ...
 //! ```
 //!
 //! # Zellij
@@ -64,6 +65,13 @@ pub fn tmux_wrap<W: Write>(w: &mut W, sequence: &[u8]) -> io::Result<()> {
     w.write_all(ST)
 }
 
+/// Longest DCS string GNU screen forwards.
+///
+/// screen 4.00 (the one macOS ships) buffers a DCS string in 256 bytes. A
+/// 255-byte string is forwarded; at 256 it forwards nothing and prints the
+/// rest of the string into the window as text.
+const SCREEN_DCS_MAX: usize = 255;
+
 /// Write a sequence wrapped in GNU screen DCS passthrough.
 ///
 /// screen uses a simpler DCS passthrough:
@@ -73,16 +81,30 @@ pub fn tmux_wrap<W: Write>(w: &mut W, sequence: &[u8]) -> io::Result<()> {
 /// ```
 ///
 /// Unlike tmux, screen does not require doubling of ESC bytes
-/// within the passthrough block.
+/// within the passthrough block. It forwards the contents of consecutive
+/// DCS strings back to back, so the sequence goes out in pieces:
+///
+/// - at most 255 bytes each, since screen drops a longer string. An OSC 52
+///   clipboard write of more than 183 bytes is longer.
+/// - cut between the two bytes of any `ESC \` inside the sequence, which
+///   would otherwise end its DCS string early and leave, say, an
+///   ST-terminated OSC 8 link open on the outer terminal. screen keeps an
+///   ESC that ends a string, so the terminal still receives `ESC \`.
 pub fn screen_wrap<W: Write>(w: &mut W, sequence: &[u8]) -> io::Result<()> {
-    // DCS passthrough header: ESC P
-    w.write_all(b"\x1bP")?;
-
-    // Write sequence as-is
-    w.write_all(sequence)?;
-
-    // String Terminator: ESC \
-    w.write_all(ST)
+    let mut rest = sequence;
+    loop {
+        let mut len = rest.len().min(SCREEN_DCS_MAX);
+        if let Some(esc) = rest[..len].windows(2).position(|pair| pair == ST) {
+            len = esc + 1;
+        }
+        w.write_all(b"\x1bP")?;
+        w.write_all(&rest[..len])?;
+        w.write_all(ST)?;
+        rest = &rest[len..];
+        if rest.is_empty() {
+            return Ok(());
+        }
+    }
 }
 
 /// Write a sequence with appropriate mux passthrough wrapping.
@@ -341,11 +363,46 @@ mod tests {
         assert_eq!(wrapped.len(), 10_009);
     }
 
+    /// The contents of each DCS string `screen_wrap` wrote, in order.
+    fn screen_strings(wrapped: &[u8]) -> Vec<&[u8]> {
+        let mut strings = Vec::new();
+        let mut rest = wrapped;
+        while !rest.is_empty() {
+            let body = rest.strip_prefix(b"\x1bP").expect("opens with ESC P");
+            let end = body
+                .windows(2)
+                .position(|pair| pair == ST)
+                .expect("closes with ST");
+            strings.push(&body[..end]);
+            rest = &body[end + ST.len()..];
+        }
+        strings
+    }
+
     #[test]
-    fn screen_wrap_large_sequence() {
-        let seq = vec![b'B'; 10_000];
+    fn screen_wrap_splits_a_largest_clipboard_write_into_strings_screen_forwards() {
+        // One DCS string of 75,000 bytes: screen forwarded none of it and
+        // printed the base64 into the window.
+        let seq = crate::osc52::encode_set(
+            crate::osc52::ClipboardSelection::Clipboard,
+            &vec![0; 56_244],
+        )
+        .unwrap();
         let wrapped = to_bytes(|w| screen_wrap(w, &seq));
-        // header (2) + data (10000) + ST (2) = 10004
-        assert_eq!(wrapped.len(), 10_004);
+        let strings = screen_strings(&wrapped);
+        assert!(strings.iter().all(|s| s.len() <= SCREEN_DCS_MAX));
+        assert_eq!(strings.concat(), seq);
+    }
+
+    #[test]
+    fn screen_wrap_cuts_an_st_inside_the_sequence_between_its_bytes() {
+        // Left whole, the link's ST closed the DCS string and the outer
+        // terminal got an OSC 8 with no terminator.
+        let seq = b"\x1b]8;;https://example.com\x1b\\";
+        let wrapped = to_bytes(|w| screen_wrap(w, seq));
+        assert_eq!(
+            screen_strings(&wrapped),
+            [&b"\x1b]8;;https://example.com\x1b"[..], b"\\"]
+        );
     }
 }

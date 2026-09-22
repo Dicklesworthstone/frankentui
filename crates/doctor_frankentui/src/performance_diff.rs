@@ -609,7 +609,16 @@ pub fn compare_performance_runs(
     }
 
     let verdict = overall_verdict(&comparisons, &differences);
-    let certification_passed = differences.is_empty()
+    // Two runs with no samples compare nothing, and "no metric differed" is
+    // not evidence that no metric regressed. Every other shape of missing
+    // evidence already fails here - a metric on one side only is a
+    // `MissingScenarioMetric`, too few samples is `InsufficientSamples` - but
+    // with nothing on either side none of those checks has anything to fire
+    // on, and both-empty runs used to certify as `Equivalent`: a benchmark
+    // filter that matched nothing, or a harness that emitted no samples,
+    // passed the performance stage.
+    let certification_passed = !comparisons.is_empty()
+        && differences.is_empty()
         && !comparisons
             .iter()
             .any(|comparison| comparison.verdict == MetricComparisonVerdict::Inconclusive);
@@ -685,40 +694,64 @@ fn compare_metric_samples(
         translated_samples.len(),
         config.confidence_z,
     );
+    // Relative change is undefined against a zero source mean, so that case is
+    // classified on the absolute scale instead; see `classify_zero_baseline`.
+    // Computed before the next line, which shadows `effective_interval`.
+    let effective_absolute = effective_interval(
+        key.metric.direction(),
+        &absolute_delta_interval(
+            &source_stats,
+            &translated_stats,
+            source_samples.len(),
+            translated_samples.len(),
+            config.confidence_z,
+        ),
+    );
     let effective_interval = effective_interval(key.metric.direction(), &interval);
     let effective_relative_regression = effective_delta(key.metric.direction(), relative_delta);
     let threshold = config.threshold_for(key.metric);
-    let significant = is_significant(
-        &effective_interval,
-        threshold.min_significant_relative_delta,
-    );
-    let policy_regression = exceeds_policy_threshold(
-        effective_relative_regression,
-        absolute_delta,
-        key.metric.direction(),
-        &effective_interval,
-        &threshold,
-        significant,
-    );
-    let verdict = if policy_regression {
-        MetricComparisonVerdict::PolicyRegression
-    } else if significant && effective_interval.lower > 0.0 {
-        MetricComparisonVerdict::SignificantRegressionWithinPolicy
-    } else if significant && effective_interval.upper < 0.0 {
-        MetricComparisonVerdict::SignificantImprovement
-    } else if effective_relative_regression.abs() <= threshold.min_significant_relative_delta {
-        MetricComparisonVerdict::Equivalent
+    let baseline_is_zero = source_stats.mean.abs() <= EPSILON;
+    let effective_absolute_delta = effective_delta(key.metric.direction(), absolute_delta);
+    let (significant, verdict) = if baseline_is_zero {
+        classify_zero_baseline(&effective_absolute, effective_absolute_delta, &threshold)
     } else {
-        MetricComparisonVerdict::Inconclusive
+        let significant = is_significant(
+            &effective_interval,
+            threshold.min_significant_relative_delta,
+        );
+        let policy_regression = exceeds_policy_threshold(
+            effective_relative_regression,
+            absolute_delta,
+            key.metric.direction(),
+            &effective_interval,
+            &threshold,
+            significant,
+        );
+        let verdict = if policy_regression {
+            MetricComparisonVerdict::PolicyRegression
+        } else if significant && effective_interval.lower > 0.0 {
+            MetricComparisonVerdict::SignificantRegressionWithinPolicy
+        } else if significant && effective_interval.upper < 0.0 {
+            MetricComparisonVerdict::SignificantImprovement
+        } else if effective_relative_regression.abs() <= threshold.min_significant_relative_delta {
+            MetricComparisonVerdict::Equivalent
+        } else {
+            MetricComparisonVerdict::Inconclusive
+        };
+        (significant, verdict)
     };
     let workload_id = common_workload_id(source_samples, translated_samples).unwrap_or_default();
-    let message = comparison_message(
-        key,
-        verdict,
-        effective_relative_regression,
-        &effective_interval,
-        &threshold,
-    );
+    let message = if baseline_is_zero {
+        zero_baseline_message(key, verdict, &effective_absolute, effective_absolute_delta)
+    } else {
+        comparison_message(
+            key,
+            verdict,
+            effective_relative_regression,
+            &effective_interval,
+            &threshold,
+        )
+    };
 
     MetricComparison {
         scenario_id: key.scenario_id.clone(),
@@ -892,7 +925,10 @@ fn compute_stats(samples: &[PerformanceSample]) -> MetricStats {
     }
 }
 
-fn relative_delta_interval(
+/// Confidence interval for `translated.mean - source.mean`, in the metric's
+/// own unit. Unlike [`relative_delta_interval`] this stays defined when the
+/// source mean is zero, which is what [`classify_zero_baseline`] relies on.
+fn absolute_delta_interval(
     source_stats: &MetricStats,
     translated_stats: &MetricStats,
     source_count: usize,
@@ -905,8 +941,32 @@ fn relative_delta_interval(
     let translated_var = translated_stats.std_dev * translated_stats.std_dev;
     let standard_error = (source_var / source_n + translated_var / translated_n).sqrt();
     let absolute_delta = translated_stats.mean - source_stats.mean;
-    let lower_abs = absolute_delta - confidence_z * standard_error;
-    let upper_abs = absolute_delta + confidence_z * standard_error;
+    ConfidenceInterval {
+        lower: absolute_delta - confidence_z * standard_error,
+        upper: absolute_delta + confidence_z * standard_error,
+        confidence_z,
+    }
+}
+
+/// The absolute interval divided by the source mean, or `[0, 0]` when that
+/// mean is zero and the ratio is undefined. The zeros are only a finite
+/// placeholder for the archived report - `serde_json` writes an infinity as
+/// `null`, which does not read back - and are never used to classify a
+/// zero-baseline metric; see [`classify_zero_baseline`].
+fn relative_delta_interval(
+    source_stats: &MetricStats,
+    translated_stats: &MetricStats,
+    source_count: usize,
+    translated_count: usize,
+    confidence_z: f64,
+) -> ConfidenceInterval {
+    let absolute = absolute_delta_interval(
+        source_stats,
+        translated_stats,
+        source_count,
+        translated_count,
+        confidence_z,
+    );
     let denominator = source_stats.mean.abs();
 
     if denominator <= EPSILON {
@@ -917,8 +977,8 @@ fn relative_delta_interval(
         }
     } else {
         ConfidenceInterval {
-            lower: lower_abs / denominator,
-            upper: upper_abs / denominator,
+            lower: absolute.lower / denominator,
+            upper: absolute.upper / denominator,
             confidence_z,
         }
     }
@@ -943,6 +1003,68 @@ fn effective_delta(direction: PerformanceMetricDirection, relative_delta: f64) -
         PerformanceMetricDirection::LowerIsBetter => relative_delta,
         PerformanceMetricDirection::HigherIsBetter => -relative_delta,
     }
+}
+
+/// Classify a metric whose source mean is zero, where relative change is
+/// undefined. Returns `(significant, verdict)`.
+///
+/// The relative path used to substitute `0.0` here - "no change" - so a
+/// regression from a zero baseline certified as `Equivalent` whatever its
+/// size: `DroppedFrameRatio` going from 0 to 30% passed a `Critical` metric,
+/// while 0.001 to 30% correctly failed. The absolute threshold could not catch
+/// it either, because under `require_significance` it is gated on the same
+/// `significant` flag, which the zeroed interval had already set false. A
+/// zero baseline is the healthy value for dropped frames, so this was the
+/// common case rather than an edge.
+///
+/// Any worsening from zero is an unbounded relative regression, so it exceeds
+/// every finite `max_relative_regression` - the same answer the relative rule
+/// already gives one epsilon above zero, where any change of consequence is
+/// thousands of percent. That makes zero continuous with its neighbours rather
+/// than a hole in the gate. Significance is judged on the absolute interval,
+/// with `EPSILON` as the smallest change from zero that counts, mirroring the
+/// test that declared the baseline zero in the first place. A change the
+/// interval cannot separate from zero is `Inconclusive`, which the overall
+/// verdict turns into `NeedsMoreEvidence` rather than a pass.
+fn classify_zero_baseline(
+    effective_absolute: &ConfidenceInterval,
+    effective_absolute_delta: f64,
+    threshold: &PerformanceThreshold,
+) -> (bool, MetricComparisonVerdict) {
+    let significant = effective_absolute.lower > EPSILON || effective_absolute.upper < -EPSILON;
+    let worse = if threshold.require_significance {
+        effective_absolute.lower > EPSILON
+    } else {
+        effective_absolute_delta > EPSILON
+    };
+    let verdict = if worse {
+        MetricComparisonVerdict::PolicyRegression
+    } else if significant && effective_absolute.upper < -EPSILON {
+        MetricComparisonVerdict::SignificantImprovement
+    } else if effective_absolute_delta.abs() <= EPSILON {
+        MetricComparisonVerdict::Equivalent
+    } else {
+        MetricComparisonVerdict::Inconclusive
+    };
+    (significant, verdict)
+}
+
+fn zero_baseline_message(
+    key: &MetricKey,
+    verdict: MetricComparisonVerdict,
+    effective_absolute: &ConfidenceInterval,
+    effective_absolute_delta: f64,
+) -> String {
+    format!(
+        "{:?} in scenario '{}' classified as {:?}: source mean is zero, so relative change is unbounded; effective change {:+.6} {} (CI {:+.6}..{:+.6})",
+        key.metric,
+        key.scenario_id,
+        verdict,
+        effective_absolute_delta,
+        key.metric.unit(),
+        effective_absolute.lower,
+        effective_absolute.upper,
+    )
 }
 
 fn is_significant(interval: &ConfidenceInterval, min_relative_delta: f64) -> bool {
@@ -1002,6 +1124,10 @@ fn overall_verdict(
     comparisons: &[MetricComparison],
     differences: &[PerformanceDifference],
 ) -> PerformanceDiffVerdict {
+    // Nothing was compared; see `certification_passed` in the caller.
+    if comparisons.is_empty() && differences.is_empty() {
+        return PerformanceDiffVerdict::NeedsMoreEvidence;
+    }
     if differences
         .iter()
         .any(|diff| diff.difference_kind == PerformanceDifferenceKind::PolicyRegression)
@@ -1162,13 +1288,26 @@ fn policy_regression_difference(comparison: &MetricComparison) -> PerformanceDif
         translated_value: Some(format!("{:.6}", comparison.translated_stats.mean)),
         policy_id: PERF_THRESHOLD_POLICY_ID.to_string(),
         risk_level: comparison.threshold.risk_level,
-        message: format!(
-            "performance regression exceeds policy for {:?} in scenario '{}': effective regression {:+.2}% exceeds threshold {:+.2}%",
-            comparison.metric,
-            comparison.scenario_id,
-            comparison.effective_relative_regression * 100.0,
-            comparison.threshold.max_relative_regression * 100.0
-        ),
+        // The relative fields are a `0.0` placeholder against a zero source
+        // mean, and "+0.00% exceeds threshold +2.00%" would contradict itself.
+        message: if comparison.source_stats.mean.abs() <= EPSILON {
+            format!(
+                "performance regression exceeds policy for {:?} in scenario '{}': source mean is zero, so an effective increase of {:+.6} {} is an unbounded relative regression against threshold {:+.2}%",
+                comparison.metric,
+                comparison.scenario_id,
+                effective_delta(comparison.metric.direction(), comparison.absolute_delta),
+                comparison.unit,
+                comparison.threshold.max_relative_regression * 100.0
+            )
+        } else {
+            format!(
+                "performance regression exceeds policy for {:?} in scenario '{}': effective regression {:+.2}% exceeds threshold {:+.2}%",
+                comparison.metric,
+                comparison.scenario_id,
+                comparison.effective_relative_regression * 100.0,
+                comparison.threshold.max_relative_regression * 100.0
+            )
+        },
     }
 }
 
