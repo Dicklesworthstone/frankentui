@@ -1760,7 +1760,7 @@ FDR guarantee:
 
 **Result:** the wealth process lets dozens of simultaneous statistical monitors run without false-alarm inflation.
 
-**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::alpha_investing`, so the monitors that *are* on by default — BOCPD and the Mondrian conformal frame-time gate — do not spend from a shared alpha budget. They are two monitors, not dozens, which is why this has not bitten; the accounting exists for a future where it would.
+**Where it runs: nowhere.** Nothing in any crate's `src/` imports `ftui_runtime::alpha_investing`, so the one monitor that *is* on by default — the Mondrian conformal frame-time gate — does not spend from a shared alpha budget. BOCPD would have been the second, but it is opt-in as of 2026-09-23 (`bd-h8l3d`). One monitor, not dozens, which is why this has not bitten; the accounting exists for a future where it would.
 
 ---
 

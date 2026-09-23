@@ -392,7 +392,7 @@ Required fields:
 - `burst_enter_rate`, `burst_exit_rate`
 - `cooldown_frames`, `rate_window_size`
 - `logging_enabled`
-- `enable_bocpd` (bool, default `true`), `heuristic_fallback` (bool, default `true`)
+- `enable_bocpd` (bool, default `false`), `heuristic_fallback` (bool, default `true`)
 
 #### Event: `decision` (resize coalescer)
 
