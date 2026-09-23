@@ -1074,11 +1074,36 @@ impl KeyCombo {
     }
 }
 
+/// Whether writing `c` uppercased is a faithful way to spell its SHIFT.
+///
+/// [`KeyCombo::new`] canonicalizes an uppercase letter to lowercase plus
+/// SHIFT, and [`Display`](fmt::Display) inverts that by uppercasing and
+/// dropping the modifier. The inverse only exists when uppercasing gives
+/// exactly one character, different from `c`, that lowercases back to it.
+/// Three kinds of letter break it, and `is_alphabetic()` admits all three:
+///
+/// - Caseless ones. `中` uppercases to itself, so the SHIFT simply vanished
+///   and `Shift+中` printed as `中`.
+/// - Ones whose uppercase is several characters. `ß` uppercases to `SS`,
+///   which is not a key name, so `Shift+ß` printed as `SS` and no longer
+///   parsed at all.
+/// - Ones that do not lowercase back. `ı` uppercases to `I`, which
+///   lowercases to `i`, so the round trip would land on the wrong letter.
+///
+/// In each case SHIFT stays a modifier and the letter is printed as itself.
+fn shift_folds_into(c: char) -> bool {
+    let mut upper = c.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(u), None) => u != c && u.to_lowercase().eq(std::iter::once(c)),
+        _ => false,
+    }
+}
+
 impl fmt::Display for KeyCombo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut modifiers = self.modifiers;
         let key = match self.code {
-            KeyCode::Char(c) if c.is_alphabetic() && modifiers.contains(Modifiers::SHIFT) => {
+            KeyCode::Char(c) if modifiers.contains(Modifiers::SHIFT) && shift_folds_into(c) => {
                 modifiers.remove(Modifiers::SHIFT);
                 c.to_uppercase().collect::<String>()
             }
@@ -1173,7 +1198,13 @@ impl FromStr for KeyCombo {
     /// Modifier names are case-insensitive (`Ctrl`/`Control`, `Alt`/`Opt`/
     /// `Option`, `Shift`, `Super`/`Cmd`/`Meta`/`Win`).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
+        // Only ASCII whitespace pads a binding in a config file. `trim()`
+        // takes Unicode whitespace too, which ate the key itself whenever the
+        // key *was* one: macOS sends U+00A0 for Option+Space, and
+        // `"Alt+\u{a0}"` trimmed to `"Alt+"`, which the trailing-plus branch
+        // below then read as the plus key. A bare `"\u{a0}"` trimmed to
+        // nothing and failed as an empty key.
+        let s = s.trim_matches(|c: char| c.is_ascii_whitespace());
         if s.is_empty() {
             return Err(KeyParseError::EmptyKey);
         }
@@ -2160,6 +2191,58 @@ mod keymap_tests {
             .collect()
     }
 
+    /// `Display` folds SHIFT into an uppercase letter, which only works when
+    /// uppercasing is a faithful single-character inverse. Three classes of
+    /// letter are not, and `is_alphabetic()` admitted all three.
+    #[test]
+    fn shift_stays_a_modifier_when_uppercasing_would_not_round_trip() {
+        let shifted = |c| KeyCombo::new(KeyCode::Char(c), Modifiers::SHIFT);
+
+        // Caseless: `中` uppercases to itself, so the SHIFT used to vanish
+        // and `Shift+中` printed as plain `中`.
+        assert_eq!(shifted('中').to_string(), "Shift+中");
+        // Several characters: `ß` uppercases to `SS`, which printed as `SS`
+        // and then failed to parse at all.
+        assert_eq!(shifted('ß').to_string(), "Shift+ß");
+        // Does not lowercase back: `ı` uppercases to `I`, whose lowercase is
+        // `i`, so the round trip would have landed on the wrong letter.
+        assert_eq!(shifted('ı').to_string(), "Shift+ı");
+        // The ordinary case is unchanged.
+        assert_eq!(shifted('a').to_string(), "A");
+
+        for c in ['中', 'ß', 'ı', 'a'] {
+            let combo = shifted(c);
+            let text = combo.to_string();
+            assert_eq!(text.parse::<KeyCombo>().unwrap(), combo, "{text:?}");
+        }
+    }
+
+    /// `trim()` takes Unicode whitespace, which ate the key when the key was
+    /// one. macOS sends U+00A0 for Option+Space.
+    #[test]
+    fn a_unicode_space_is_a_key_and_not_padding() {
+        let nbsp = KeyCode::Char('\u{a0}');
+        let alt_space = KeyCombo::new(nbsp, Modifiers::ALT);
+        let text = alt_space.to_string();
+        // Used to trim to "Alt+" and come back as Alt plus the *plus* key.
+        assert_eq!(text.parse::<KeyCombo>().unwrap(), alt_space);
+        assert_ne!(
+            text.parse::<KeyCombo>().unwrap(),
+            KeyCombo::new(KeyCode::Char('+'), Modifiers::ALT)
+        );
+
+        // A bare one used to trim away to nothing and fail as an empty key.
+        assert_eq!(
+            "\u{a0}".parse::<KeyCombo>().unwrap(),
+            KeyCombo::new(nbsp, Modifiers::NONE)
+        );
+        // ASCII padding around a binding is still ignored.
+        assert_eq!(
+            "  Ctrl+x \t".parse::<KeyCombo>().unwrap(),
+            KeyCombo::new(KeyCode::Char('x'), Modifiers::CTRL)
+        );
+    }
+
     #[test]
     fn combo_parse_display_and_normalization() {
         let ctrl_x: KeyCombo = "Ctrl+x".parse().unwrap();
@@ -2695,6 +2778,14 @@ mod keymap_tests {
         prop_oneof![
             prop::sample::select(vec![
                 'a', 'b', 'q', 'x', 'z', 'A', 'Q', '1', '9', '+', '-', '.', '/', ' ',
+                // Letters where uppercasing is not a faithful inverse of the
+                // lowercasing `KeyCombo::new` applies, and a space that is
+                // not the ASCII one. Every one of these broke the round trip
+                // while the sample above was all ASCII.
+                'ß',  // uppercases to two characters, `SS`
+                'ı',  // uppercases to `I`, which lowercases to `i`
+                '中', // caseless: uppercases to itself
+                'é', 'İ', '\u{a0}', // Option+Space on macOS
             ])
             .prop_map(KeyCode::Char),
             (1u8..=24).prop_map(KeyCode::F),
