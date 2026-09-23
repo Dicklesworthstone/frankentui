@@ -1212,7 +1212,18 @@ impl Screen for FormsInput {
     }
 
     fn consumes_text_input(&self) -> bool {
-        true
+        // Only where a character would actually be typed. Claiming the whole
+        // screen also claimed the app's Shift+letter shortcuts, which a
+        // capital cannot be told apart from on any terminal — so next screen,
+        // previous screen and the a11y panel were dead here even with a
+        // checkbox focused, and only Tab could leave (bd-2bg09).
+        match self.focus {
+            FocusPanel::SearchInput | FocusPanel::PasswordInput | FocusPanel::TextEditor => true,
+            FocusPanel::Form => matches!(
+                self.form.field(self.form_state.borrow().focused),
+                Some(FormField::Text { .. })
+            ),
+        }
     }
 
     fn title(&self) -> &'static str {
@@ -1334,6 +1345,50 @@ mod tests {
     fn form_has_six_fields() {
         let screen = FormsInput::new();
         assert_eq!(screen.form.field_count(), 6);
+    }
+
+    /// The screen used to claim text input unconditionally, which also took
+    /// the app's Shift+letter shortcuts — next screen, previous screen and
+    /// the a11y panel were dead here even on a checkbox. Only a field that
+    /// actually accepts a character claims them now.
+    #[test]
+    fn only_a_field_that_takes_characters_claims_the_typing_keys() {
+        let screen = FormsInput::new();
+        let (mut text_fields, mut other_fields) = (0, 0);
+        for index in 0..screen.form.field_count() {
+            screen.form_state.borrow_mut().focused = index;
+            let takes_text = matches!(screen.form.field(index), Some(FormField::Text { .. }));
+            if takes_text {
+                text_fields += 1;
+            } else {
+                other_fields += 1;
+            }
+            assert_eq!(
+                Screen::consumes_text_input(&screen),
+                takes_text,
+                "field {index} ({:?})",
+                screen.form.field(index).map(std::mem::discriminant)
+            );
+        }
+        assert!(
+            text_fields > 0 && other_fields > 0,
+            "the form needs both kinds for this to mean anything: \
+             {text_fields} text, {other_fields} other"
+        );
+
+        // The three free-text panels always claim it, whatever the form says.
+        let mut screen = FormsInput::new();
+        screen.form_state.borrow_mut().focused = 5; // the checkbox
+        for panel in [
+            FocusPanel::SearchInput,
+            FocusPanel::PasswordInput,
+            FocusPanel::TextEditor,
+        ] {
+            screen.focus = panel;
+            assert!(Screen::consumes_text_input(&screen), "{panel:?}");
+        }
+        screen.focus = FocusPanel::Form;
+        assert!(!Screen::consumes_text_input(&screen));
     }
 
     #[test]
