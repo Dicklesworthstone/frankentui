@@ -21,7 +21,7 @@
 
 use std::io::{self, Write};
 
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::terminal_capabilities::TerminalCapabilities;
 
@@ -587,31 +587,39 @@ pub fn sanitize_overlay_log_line(text: &str, max_cols: usize) -> String {
     let mut out = String::new();
     let mut used_cols = 0usize;
 
-    for ch in text.chars() {
-        if ch == '\n' || ch == '\r' {
+    // Measured per grapheme with the crate's own width, not by summing
+    // `UnicodeWidthChar` per scalar. The two disagree: a lone regional
+    // indicator is one column to `unicode-width` and two to every width
+    // function in this workspace, so the per-scalar sum let a two-column
+    // glyph into a one-column overlay — one column past the clamp whose
+    // entire purpose is to keep the line from wrapping into the UI.
+    for grapheme in text.graphemes(true) {
+        // One display line: `\r\n` is a single grapheme, so test the start.
+        if grapheme.starts_with('\n') || grapheme.starts_with('\r') {
             break;
         }
 
-        // Skip ASCII control characters so logs cannot inject cursor motion.
-        if ch.is_control() {
+        // Skip control characters so logs cannot inject cursor motion. A
+        // control is always its own grapheme.
+        if grapheme.chars().all(char::is_control) {
             continue;
         }
 
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if ch_width == 0 {
-            // Keep combining marks only when they can attach to prior text.
+        let width = crate::text_width::grapheme_width(grapheme);
+        if width == 0 {
+            // Keep a zero-width cluster only when it can attach to prior text.
             if !out.is_empty() {
-                out.push(ch);
+                out.push_str(grapheme);
             }
             continue;
         }
 
-        if used_cols.saturating_add(ch_width) > max_cols {
+        if used_cols.saturating_add(width) > max_cols {
             break;
         }
 
-        out.push(ch);
-        used_cols += ch_width;
+        out.push_str(grapheme);
+        used_cols += width;
         if used_cols == max_cols {
             break;
         }
@@ -1030,5 +1038,50 @@ mod tests {
         assert_eq!(config.term_width, 100);
         assert_eq!(config.strategy, InlineStrategy::Hybrid);
         assert!(!config.use_sync_output);
+    }
+
+    /// The overlay clamp measured width by summing `UnicodeWidthChar` per
+    /// scalar, which disagrees with every width function in this workspace on
+    /// a lone regional indicator: one column there, two everywhere else. A
+    /// two-column glyph therefore fit a one-column overlay, one past the
+    /// clamp that exists to stop the line wrapping into the UI.
+    #[test]
+    fn the_overlay_clamp_measures_width_the_way_the_rest_of_the_crate_does() {
+        let half_flag = "\u{1F1EB}";
+        assert_eq!(crate::text_width::grapheme_width(half_flag), 2);
+        assert_eq!(sanitize_overlay_log_line(half_flag, 1), "");
+        assert_eq!(sanitize_overlay_log_line(half_flag, 2), half_flag);
+
+        // Whatever survives never exceeds the width it was clamped to.
+        for text in [
+            "\u{1F1EB}\u{1F1F7}",
+            "\u{1F1EB}a",
+            "中中中",
+            "a\u{301}bc",
+            "🦀🦀",
+            "ab",
+        ] {
+            for cols in 0..8usize {
+                let out = sanitize_overlay_log_line(text, cols);
+                assert!(
+                    crate::text_width::display_width(&out) <= cols,
+                    "{text:?} at {cols} columns produced {out:?}"
+                );
+            }
+        }
+    }
+
+    /// The other half of the contract: one line, and nothing that can move
+    /// the cursor.
+    #[test]
+    fn the_overlay_clamp_keeps_one_line_and_drops_cursor_motion() {
+        assert_eq!(sanitize_overlay_log_line("a\nb", 40), "a");
+        assert_eq!(sanitize_overlay_log_line("a\r\nb", 40), "a");
+        assert_eq!(sanitize_overlay_log_line("a\u{1b}[2Jb\u{7}c", 40), "a[2Jbc");
+        let out = sanitize_overlay_log_line("x\u{1b}[31my\nz", 40);
+        assert!(
+            !out.contains('\n') && !out.chars().any(char::is_control),
+            "{out:?}"
+        );
     }
 }
