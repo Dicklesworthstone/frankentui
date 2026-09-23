@@ -25,7 +25,12 @@ fn default_config_matches_docs() {
     assert_eq!(cfg.cooldown_frames, 3);
     assert_eq!(cfg.rate_window_size, 8);
     assert!(!cfg.enable_logging);
-    assert!(cfg.enable_bocpd, "BOCPD is the default regime detector");
+    assert!(
+        !cfg.enable_bocpd,
+        "the rate heuristic is the default regime detector: the differential \
+         replay measured the posterior drawing more frames during a drag on \
+         6 of 6 storm patterns and no better on settling (bd-h8l3d)"
+    );
     assert!(
         cfg.heuristic_fallback,
         "the rate heuristic covers undefined posteriors"

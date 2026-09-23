@@ -66,8 +66,10 @@ README says, not something adjacent. The proven set:
 
 - V64 / S04 (Bayesian capability detection): every log-odds weight the README
   quotes matches `caps_probe.rs`, pinned by `weights_are_unchanged`.
-- S09 (BOCPD): on by default, pinned by
-  `config_default_enables_bocpd_with_heuristic_fallback`.
+- S09 (BOCPD): opt-in, not on by default — the differential replay measured it
+  losing on 6 of 6 storm patterns and the default went back on 2026-09-23
+  (`bd-h8l3d`). Pinned by
+  `config_default_leaves_bocpd_off_with_heuristic_fallback`.
 - S11 (VOI): the defaults the README lists are set in
   `InlineAutoRemeasureConfig::default()`, **not** `VoiConfig::default()`, whose
   values differ. Reading past that heading produces a false mismatch report.
@@ -242,7 +244,7 @@ complete `.5.2`.
 | V07 | Pane workspaces with drag/dock/snap/throw/undo | README.md :: Pane workspaces with drag/dock/snap/throw/undo | status | DOC | bd-g00-root-epic-ewths.23 | bead:bd-g00-root-epic-ewths.23 | pending-doc | - |
 | V08 | Web/WASM backend, runs in browser | README.md :: Web/WASM backend, runs in browser | status | CODE | bd-g00-root-epic-ewths.29 | test:ftui-showcase-wasm::runner_core::screen_selector_reaches_model_and_preserves_invalid_selection | proven | 2026-09-19 |
 | V09 | Bayesian diff strategy | README.md :: Bayesian diff strategy | status | DOC | bd-g00-root-epic-ewths.17 | bead:bd-g00-root-epic-ewths.17 | pending-doc | - |
-| V10 | BOCPD resize coalescing | README.md :: BOCPD resize coalescing | status | CODE | bd-g00-root-epic-ewths.16 | test:ftui-runtime::resize_coalescer::config_default_enables_bocpd_with_heuristic_fallback | proven | 2026-09-19 |
+| V10 | BOCPD resize coalescing | README.md :: BOCPD resize coalescing | status | CODE | bd-g00-root-epic-ewths.16 | test:ftui-runtime::resize_coalescer::config_default_leaves_bocpd_off_with_heuristic_fallback | proven | 2026-09-23 |
 | V11 | VOI sampling for expensive ops | README.md :: VOI sampling for expensive ops | status | CODE | bd-g00-root-epic-ewths.14 | test:ftui::readme_snippets::readme_model_snippets_match | proven | 2026-09-19 |
 | V12 | E-process / GRAPA anytime-valid monitors | README.md :: E-process / GRAPA anytime-valid monitors | status | CODE | bd-g00-root-epic-ewths.17 | test:ftui-render::budget::eprocess_grows_under_overload | retracted | 2026-09-19 |
 | V13 | Conformal frame-time gating (Mondrian) | README.md :: Conformal frame-time gating (Mondrian) | status | CODE | bd-g00-root-epic-ewths.15 | test:ftui-runtime::conformal_predictor::default_config_matches_the_documented_values | proven | 2026-09-19 |
@@ -312,8 +314,8 @@ complete `.5.2`.
 | S06 | Summed-Area Table (Tile-Skip Diff) production status | README.md:960 :: Summed-Area Table (Tile-Skip Diff) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S07 | Fenwick Tree (Prefix Sums for Virtualized Lists) production status | README.md:971 :: Fenwick Tree (Prefix Sums for Virtualized Lists) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
 | S08 | Bayesian Height Prediction + Conformal Bounds (Virtualized Lists) production status | README.md:983 :: Bayesian Height Prediction + Conformal Bounds (Virtualized Lists) | status | DOC | bd-g00-root-epic-ewths.5.5 | bead:bd-g00-root-epic-ewths.5.5 | pending-doc | - |
-| S09 | BOCPD: Online Change-Point Detection production status | README.md:999 :: BOCPD: Online Change-Point Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::resize_coalescer::config_default_enables_bocpd_with_heuristic_fallback | proven | 2026-09-18 |
-| S10 | Bayes-Factor Evidence Ledger (Resize Coalescer) production status | README.md:1030 :: Bayes-Factor Evidence Ledger (Resize Coalescer) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::resize_coalescer::config_default_enables_bocpd_with_heuristic_fallback | proven | 2026-09-19 |
+| S09 | BOCPD: Online Change-Point Detection production status | README.md:999 :: BOCPD: Online Change-Point Detection | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::resize_coalescer::config_default_leaves_bocpd_off_with_heuristic_fallback | proven | 2026-09-23 |
+| S10 | Bayes-Factor Evidence Ledger (Resize Coalescer) production status | README.md:1030 :: Bayes-Factor Evidence Ledger (Resize Coalescer) | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::resize_coalescer::config_default_leaves_bocpd_off_with_heuristic_fallback | proven | 2026-09-23 |
 | S11 | Value-of-Information (VOI) Sampling production status | README.md:1045 :: Value-of-Information (VOI) Sampling | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-runtime::program::inline_auto_remeasure_config_defaults | proven | 2026-09-18 |
 | S12 | E-Process: Anytime-Valid Testing production status | README.md:1087 :: E-Process: Anytime-Valid Testing | status | DOC | bd-g00-root-epic-ewths.5.5 | test:ftui-render::budget::eprocess_grows_under_overload | retracted | 2026-09-19 |
 | S13 | Conformal Alerting production status | README.md:1109 :: Conformal Alerting | status | DOC | bd-g00-root-epic-ewths.5.5 | cmd:python3 scripts/check_readme_claims.py --experimental-check | retracted | 2026-09-19 |

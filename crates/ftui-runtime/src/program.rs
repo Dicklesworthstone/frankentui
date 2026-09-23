@@ -8686,7 +8686,10 @@ mod tests {
         );
         assert!(config.diff_config.bayesian_enabled);
         assert!(config.diff_config.dirty_rows_enabled);
-        assert!(config.resize_coalescer.enable_bocpd);
+        assert!(
+            !config.resize_coalescer.enable_bocpd,
+            "the rate heuristic is the default resize regime detector (bd-h8l3d)"
+        );
         assert!(config.resize_coalescer.heuristic_fallback);
         assert!(!config.effect_queue.enabled);
         assert_eq!(config.immediate_drain.max_zero_timeout_polls_per_burst, 64);
