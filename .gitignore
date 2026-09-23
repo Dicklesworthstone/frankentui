@@ -201,6 +201,9 @@ check_output.txt
 # NTM session state
 .ntm/
 
+# ee session state (SQLite + WAL; the root /*.db rules do not reach a subdir)
+.ee/
+
 # Patch artifacts (failed merges / quilt / git am)
 *.orig
 *.rej
