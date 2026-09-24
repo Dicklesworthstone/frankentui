@@ -359,8 +359,14 @@ impl GestureRecognizer {
             return;
         }
 
-        // Not a drag — emit click
-        self.mouse_down = None;
+        // Not a drag. A click is a press and its release: a release with no
+        // press recorded (pressed outside the window, before a focus loss or
+        // a reset) or of a different button must not click whatever is
+        // under the pointer now.
+        let pressed = self.mouse_down.take();
+        if !matches!(pressed, Some((_, down_button, _)) if down_button == button) {
+            return;
+        }
 
         // Multi-click detection
         let click_count = if let Some(ref last) = self.last_click {
@@ -2128,11 +2134,18 @@ mod tests {
         // Long press should not fire (Escape cleared long_press_pos)
         assert!(gr.check_long_press(t + MS_600).is_none());
 
-        // Mouse up should produce a click from fresh state (mouse_down is None,
-        // so no drag → click with fresh count)
+        // Escape abandoned the press, as it cancels a drag, so its release is
+        // not a click.
         let events = gr.process(&mouse_up(5, 5, MouseButton::Left), t + MS_100);
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], SemanticEvent::Click { .. }));
+        assert!(events.is_empty(), "{events:?}");
+
+        // The next press and release is an ordinary single click.
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t + MS_200);
+        let events = gr.process(&mouse_up(5, 5, MouseButton::Left), t + MS_200 + MS_50);
+        assert!(
+            matches!(events[..], [SemanticEvent::Click { .. }]),
+            "{events:?}"
+        );
     }
 
     #[test]
@@ -2222,6 +2235,34 @@ mod tests {
 
         // Long press should NOT fire after reset
         assert!(gr.check_long_press(t + MS_600).is_none());
+    }
+
+    // --- A click needs its press ---
+
+    #[test]
+    fn release_without_a_press_is_not_a_click() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+        assert!(gr.process(&mouse_up(5, 5, MouseButton::Left), t).is_empty());
+
+        // Nor after the press was forgotten by a focus loss.
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        gr.process(&Event::Focus(false), t + MS_50);
+        assert!(
+            gr.process(&mouse_up(5, 5, MouseButton::Left), t + MS_100)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn release_of_another_button_is_not_a_click() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+        gr.process(&mouse_down(5, 5, MouseButton::Right), t);
+        assert!(
+            gr.process(&mouse_up(5, 5, MouseButton::Left), t + MS_50)
+                .is_empty()
+        );
     }
 
     // --- Swipe (bd-8hk58) ---

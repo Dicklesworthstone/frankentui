@@ -162,6 +162,7 @@ else
     run_suite "clipboard_osc52" "$SCRIPT_DIR/test_clipboard_osc52.sh"
     run_suite "kitty"      "$SCRIPT_DIR/test_kitty_keyboard.sh"
     run_suite "mouse_sgr"  "$SCRIPT_DIR/test_mouse_sgr.sh"
+    run_suite "gestures"   "$SCRIPT_DIR/test_gestures.sh"
     run_suite "resize"     "$SCRIPT_DIR/test_resize_scroll_region.sh"
     run_suite "mux"        "$SCRIPT_DIR/test_mux.sh"
     run_suite "schedule_trace" "$SCRIPT_DIR/test_schedule_trace.sh"

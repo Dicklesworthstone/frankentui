@@ -732,6 +732,19 @@
         "escape_tallies": ["object", "string"],
         "pty_checksum": "string"
       }
+    },
+    "gesture_case": {
+      "required": ["scenario", "expected", "sends", "exit_code", "duration_ms", "status", "detail"],
+      "optional": [],
+      "types": {
+        "scenario": "string",
+        "expected": "string",
+        "sends": "integer",
+        "exit_code": "integer",
+        "duration_ms": "number",
+        "status": "string",
+        "detail": "string"
+      }
     }
   }
 }

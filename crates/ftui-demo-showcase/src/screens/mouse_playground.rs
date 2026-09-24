@@ -32,7 +32,9 @@ use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
+use ftui_core::gesture::{GestureConfig, GestureRecognizer};
 use ftui_core::hover_stabilizer::{HoverStabilizer, HoverStabilizerConfig};
+use ftui_core::semantic_event::SemanticEvent;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::{Cell as RenderCell, CellAttrs, StyleFlags as CellStyleFlags};
 use ftui_render::frame::{Frame, HitId, HitRegion};
@@ -587,6 +589,9 @@ pub struct MousePlayground {
     current_hover: Option<u64>,
     /// Hover jitter stabilizer.
     hover_stabilizer: HoverStabilizer,
+    /// Turns the raw mouse stream into clicks, multi-clicks, drags, swipes and
+    /// long presses, which are logged alongside the raw events.
+    gestures: GestureRecognizer,
     /// Whether to show the hit-test overlay.
     show_overlay: bool,
     /// Whether to show jitter stabilization stats.
@@ -631,6 +636,7 @@ impl MousePlayground {
             targets,
             current_hover: None,
             hover_stabilizer: HoverStabilizer::new(HoverStabilizerConfig::default()),
+            gestures: GestureRecognizer::new(GestureConfig::default()),
             show_overlay: false,
             show_jitter_stats: false,
             last_mouse_pos: None,
@@ -683,6 +689,31 @@ impl MousePlayground {
         }
     }
 
+    /// Run `event` through the gesture recognizer and log what it recognized.
+    /// `at` places gestures that carry no position of their own.
+    fn feed_gestures(&mut self, event: &Event, at: (u16, u16)) {
+        for gesture in self.gestures.process(event, Instant::now()) {
+            self.log_gesture(&gesture, at);
+        }
+    }
+
+    /// Log a recognized gesture by name. Per-cell `DragMove` is left out: the
+    /// raw `Drag` lines already show every step.
+    fn log_gesture(&mut self, gesture: &SemanticEvent, at: (u16, u16)) {
+        let (desc, (x, y)) = match *gesture {
+            SemanticEvent::Click { pos, .. } => ("Click".to_owned(), (pos.x, pos.y)),
+            SemanticEvent::DoubleClick { pos, .. } => ("DoubleClick".to_owned(), (pos.x, pos.y)),
+            SemanticEvent::TripleClick { pos, .. } => ("TripleClick".to_owned(), (pos.x, pos.y)),
+            SemanticEvent::LongPress { pos, .. } => ("LongPress".to_owned(), (pos.x, pos.y)),
+            SemanticEvent::DragStart { pos, .. } => ("DragStart".to_owned(), (pos.x, pos.y)),
+            SemanticEvent::DragEnd { end, .. } => ("DragEnd".to_owned(), (end.x, end.y)),
+            SemanticEvent::DragCancel => ("DragCancel".to_owned(), at),
+            SemanticEvent::Swipe { direction, .. } => (format!("Swipe {direction:?}"), at),
+            SemanticEvent::DragMove { .. } | SemanticEvent::Chord { .. } => return,
+        };
+        self.log_event(desc, x, y);
+    }
+
     /// Handle a mouse event.
     fn handle_mouse(&mut self, event: MouseEvent) {
         let (x, y) = event.position();
@@ -710,6 +741,7 @@ impl MousePlayground {
             }
         };
         self.log_event(&desc, x, y);
+        self.feed_gestures(&Event::Mouse(event), (x, y));
 
         // Record diagnostic for mouse event
         let mouse_diag = DiagnosticEntry::new(diag_kind, self.tick_count)
@@ -957,6 +989,20 @@ impl Screen for MousePlayground {
     type Message = ();
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        // Escape and focus loss end a drag (DragCancel); nothing else here is
+        // a gesture, and Ctrl chords belong to the app.
+        if matches!(
+            event,
+            Event::Focus(false)
+                | Event::Key(KeyEvent {
+                    code: KeyCode::Escape,
+                    kind: KeyEventKind::Press,
+                    ..
+                })
+        ) {
+            let at = self.last_mouse_pos.unwrap_or((0, 0));
+            self.feed_gestures(event, at);
+        }
         match event {
             Event::Mouse(mouse_event) => {
                 self.handle_mouse(*mouse_event);
@@ -1267,6 +1313,11 @@ impl Screen for MousePlayground {
 
     fn tick(&mut self, tick_count: u64) {
         self.tick_count = tick_count;
+        // A stationary press becomes a long press only with the passage of time.
+        if let Some(gesture) = self.gestures.check_long_press(Instant::now()) {
+            let at = self.last_mouse_pos.unwrap_or((0, 0));
+            self.log_gesture(&gesture, at);
+        }
     }
 
     fn title(&self) -> &'static str {
@@ -2627,5 +2678,80 @@ mod diagnostic_tests {
         set_diagnostics_enabled(true);
         assert!(diagnostics_enabled());
         set_diagnostics_enabled(false); // Reset
+    }
+
+    // -------------------------------------------------------------------------
+    // Recognized gestures in the event log (bd-g00-root-epic-ewths.24.3)
+    // -------------------------------------------------------------------------
+
+    fn mouse_event(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+        MouseEvent::new(kind, x, y)
+    }
+
+    fn logged(playground: &MousePlayground) -> Vec<String> {
+        // Oldest first, as the events happened.
+        playground
+            .event_log
+            .iter()
+            .rev()
+            .map(|entry| entry.description.clone())
+            .collect()
+    }
+
+    fn click(playground: &mut MousePlayground, x: u16, y: u16) {
+        playground.handle_mouse(mouse_event(MouseEventKind::Down(MouseButton::Left), x, y));
+        playground.handle_mouse(mouse_event(MouseEventKind::Up(MouseButton::Left), x, y));
+    }
+
+    #[test]
+    fn repeated_clicks_log_double_and_triple_click() {
+        let mut playground = MousePlayground::new();
+        for _ in 0..3 {
+            click(&mut playground, 10, 5);
+        }
+        let log = logged(&playground);
+        let gestures: Vec<&str> = log
+            .iter()
+            .map(String::as_str)
+            .filter(|d| d.ends_with("Click"))
+            .collect();
+        assert_eq!(gestures, ["Click", "DoubleClick", "TripleClick"], "{log:?}");
+    }
+
+    #[test]
+    fn drag_starts_only_past_the_dead_zone_and_ends_on_release() {
+        let mut playground = MousePlayground::new();
+        playground.handle_mouse(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 5));
+        for x in [11, 12] {
+            playground.handle_mouse(mouse_event(MouseEventKind::Drag(MouseButton::Left), x, 5));
+        }
+        assert!(!logged(&playground).iter().any(|d| d == "DragStart"));
+
+        // Manhattan distance 3 is the default threshold.
+        playground.handle_mouse(mouse_event(MouseEventKind::Drag(MouseButton::Left), 13, 5));
+        playground.handle_mouse(mouse_event(MouseEventKind::Up(MouseButton::Left), 13, 5));
+        let log = logged(&playground);
+        let start = log
+            .iter()
+            .position(|d| d == "DragStart")
+            .expect("DragStart");
+        let end = log.iter().position(|d| d == "DragEnd").expect("DragEnd");
+        assert!(start < end, "{log:?}");
+        assert!(
+            !log.iter().any(|d| d == "Click"),
+            "a drag is not a click: {log:?}"
+        );
+    }
+
+    #[test]
+    fn escape_cancels_a_drag() {
+        let mut playground = MousePlayground::new();
+        playground.handle_mouse(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 5));
+        playground.handle_mouse(mouse_event(MouseEventKind::Drag(MouseButton::Left), 20, 5));
+        let _ = playground.update(&Event::Key(KeyEvent::new(KeyCode::Escape)));
+        assert_eq!(
+            logged(&playground).last().map(String::as_str),
+            Some("DragCancel")
+        );
     }
 }
