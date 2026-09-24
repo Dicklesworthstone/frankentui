@@ -1083,10 +1083,14 @@ detectors were driven over identical resize-storm schedules on a virtual clock
 
 BOCPD draws more repaints during the drag on every pattern, and both detectors
 land outside the 40 ms settling budget on three of six, so it is worse on one
-criterion and no better on the other. The likely cause is that
-`recommended_delay` interpolates between 16 ms and 40 ms while `p_burst` is in
-the transitional band, and 5–50 ms inter-arrivals keep it there rather than
-committing to the burst delay.
+criterion and no better on the other. It is not the transitional-band
+interpolation: committing to the 40 ms burst hold there left every frame
+count unchanged. The traces put the extra frames at burst onset and in pauses,
+as unforced 0–18 ms applies made while the posterior still says Steady. The
+heuristic, by contrast, holds every drag frame to the 100 ms deadline. The
+observation model is why the posterior lingers: with μ_steady = 200 ms and
+μ_burst = 20 ms, a 30–60 ms gap is nearly equally likely under both (at 50 ms,
+0.0041 vs 0.0039), and these storms are full of such gaps (`bd-i25qn`).
 
 That decision was made on 2026-09-23: the default went back to
 `enable_bocpd = false`, which is the rule the plan set for this outcome
