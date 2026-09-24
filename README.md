@@ -1297,6 +1297,8 @@ Key(Ctrl+x)     ─┘          ModifiedKey
 
 **Where it runs:** opt in with `ProgramConfig::default().with_gestures(GestureConfig::default())` and implement `Model::on_gesture(&mut self, SemanticEvent) -> Cmd<Msg>`. The runtime feeds every input event through the recognizer after the ordinary `update()` call (raw events are never swallowed), delivers each recognized gesture to `on_gesture`, and polls for long presses once per tick. Mouse gestures need mouse capture enabled.
 
+`TextArea` handles the mouse itself with the same thresholds, so a host only forwards events through `handle_event`. A left press places the cursor, a double click selects the word under it (Unicode word boundaries), a triple click selects the line, and dragging extends the selection. Presses outside the area it last rendered are ignored, and so is a drag that started outside it. The showcase's forms, advanced text editor and live Markdown screens forward their mouse events to it.
+
 ### Input Parser (3,200+ Lines)
 
 The `InputParser` in `ftui-core` handles the full complexity of terminal input encoding:

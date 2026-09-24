@@ -17,8 +17,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use web_time::Instant;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
+use ftui_core::gesture::GestureConfig;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_text::editor::{Editor, Selection};
@@ -83,6 +86,22 @@ pub struct TextArea {
     highlighter: Option<LineHighlighter>,
     /// Origin for event timestamps; explicit replay timestamps bypass this clock.
     undo_clock: Instant,
+    /// Area of the last render, for mapping mouse positions to text.
+    last_area: std::cell::Cell<Rect>,
+    /// The previous left press, for double and triple clicks.
+    last_click: Option<LastClick>,
+    /// A left press inside the area started a drag selection.
+    mouse_selecting: bool,
+}
+
+/// A left press, remembered to count multi-clicks.
+#[derive(Debug, Clone, Copy)]
+struct LastClick {
+    at_ms: u64,
+    x: u16,
+    y: u16,
+    /// 1, 2 or 3: single, double or triple.
+    count: u8,
 }
 
 impl std::fmt::Debug for TextArea {
@@ -104,6 +123,9 @@ impl std::fmt::Debug for TextArea {
             .field("last_viewport_height", &self.last_viewport_height)
             .field("last_viewport_width", &self.last_viewport_width)
             .field("highlighter", &self.highlighter.as_ref().map(|_| "<fn>"))
+            .field("last_area", &self.last_area)
+            .field("last_click", &self.last_click)
+            .field("mouse_selecting", &self.mouse_selecting)
             .finish()
     }
 }
@@ -165,6 +187,9 @@ impl TextArea {
             last_viewport_width: std::cell::Cell::new(0),
             highlighter: None,
             undo_clock: Instant::now(),
+            last_area: std::cell::Cell::new(Rect::default()),
+            last_click: None,
+            mouse_selecting: false,
         }
     }
 
@@ -197,8 +222,155 @@ impl TextArea {
                 self.editor.break_undo_group();
                 false
             }
+            Event::Mouse(mouse) => self.handle_mouse(mouse, now_ms),
             _ => false,
         }
+    }
+
+    /// Left press places the cursor, a second press selects the word under
+    /// it (Unicode word boundaries) and a third the line. Presses count as
+    /// one multi-click within [`GestureConfig`]'s window and tolerance (300
+    /// ms, 1 cell), so timing matches the runtime's gesture recognizer.
+    /// Dragging after a single press extends the selection. Presses outside
+    /// the area last rendered are ignored, and so is a drag that started
+    /// outside it, so a host can forward every mouse event.
+    fn handle_mouse(&mut self, mouse: &MouseEvent, now_ms: u64) -> bool {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(pos) = self.position_at(mouse.x, mouse.y) else {
+                    self.mouse_selecting = false;
+                    return false;
+                };
+                let config = GestureConfig::default();
+                let window =
+                    u64::try_from(config.multi_click_timeout.as_millis()).unwrap_or(u64::MAX);
+                let count = match self.last_click {
+                    Some(last)
+                        if now_ms >= last.at_ms
+                            && now_ms - last.at_ms <= window
+                            && last.x.abs_diff(mouse.x) <= config.click_tolerance
+                            && last.y.abs_diff(mouse.y) <= config.click_tolerance =>
+                    {
+                        last.count % 3 + 1
+                    }
+                    _ => 1,
+                };
+                self.last_click = Some(LastClick {
+                    at_ms: now_ms,
+                    x: mouse.x,
+                    y: mouse.y,
+                    count,
+                });
+                self.mouse_selecting = count == 1;
+                match count {
+                    1 => self.editor.set_cursor(pos),
+                    2 => self.select_word_at(pos),
+                    _ => self.select_line_at(pos),
+                }
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.mouse_selecting => {
+                let area = self.last_area.get();
+                if area.is_empty() {
+                    return false;
+                }
+                let x = mouse.x.clamp(area.x, area.right() - 1);
+                let y = mouse.y.clamp(area.y, area.bottom() - 1);
+                let pos = self.position_in_area(area, x, y);
+                self.editor.extend_selection_to(pos);
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.mouse_selecting = false;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// The text position under a cell of the last rendered area, or `None`
+    /// outside it (or before the first render).
+    fn position_at(&self, x: u16, y: u16) -> Option<CursorPosition> {
+        let area = self.last_area.get();
+        (!area.is_empty() && area.contains(x, y)).then(|| self.position_in_area(area, x, y))
+    }
+
+    /// Invert the render's layout: rows from the scroll anchor (wrapped
+    /// slices when soft-wrapping), columns past the gutter plus the
+    /// horizontal scroll. Below the text maps to the last line; the gutter
+    /// maps to column 0.
+    fn position_in_area(&self, area: Rect, x: u16, y: u16) -> CursorPosition {
+        let col = usize::from(x.saturating_sub(area.x.saturating_add(self.gutter_width())));
+        let row = usize::from(y.saturating_sub(area.y));
+        let rope = self.editor.rope();
+        let nav = CursorNavigator::new(rope);
+        let (top_line, top_vrow) = self.scroll_anchor.get();
+        let top_line = if top_line == usize::MAX { 0 } else { top_line };
+        let line_count = self.editor.line_count();
+
+        if !self.soft_wrap {
+            return nav.from_visual_col(top_line + row, self.scroll_left.get() + col);
+        }
+
+        let width = self.last_viewport_width.get();
+        let mut remaining = row;
+        for line_idx in top_line..line_count {
+            let line_text = rope
+                .line(line_idx)
+                .unwrap_or(std::borrow::Cow::Borrowed(""));
+            let line_text = line_text.trim_end_matches(['\n', '\r']);
+            let slices = Self::wrap_line_slices(line_text, width);
+            let skip = if line_idx == top_line { top_vrow } else { 0 };
+            let visible = slices.len().saturating_sub(skip);
+            if remaining < visible {
+                let index = skip + remaining;
+                let slice = &slices[index];
+                // Past the end of a slice that wraps, stay on that row
+                // rather than landing at the start of the next one.
+                let max = if index + 1 < slices.len() {
+                    slice.width.saturating_sub(1)
+                } else {
+                    slice.width
+                };
+                return nav.from_visual_col(line_idx, slice.start_col + col.min(max));
+            }
+            remaining -= visible;
+        }
+        nav.from_visual_col(line_count.saturating_sub(1), usize::MAX)
+    }
+
+    /// Select the Unicode word segment (UAX #29) under `pos`: a word, a run
+    /// of spaces, or one punctuation mark.
+    fn select_word_at(&mut self, pos: CursorPosition) {
+        let rope = self.editor.rope();
+        let nav = CursorNavigator::new(rope);
+        let line_text = rope
+            .line(pos.line)
+            .unwrap_or(std::borrow::Cow::Borrowed(""));
+        let line_text = line_text.trim_end_matches(['\n', '\r']);
+        let line_start = nav.to_byte_index(nav.from_line_grapheme(pos.line, 0));
+        let offset = nav.to_byte_index(pos) - line_start;
+        let segment = line_text
+            .split_word_bound_indices()
+            .find(|(start, word)| offset < start + word.len())
+            .or_else(|| line_text.split_word_bound_indices().next_back());
+        let Some((start, word)) = segment else {
+            self.editor.set_cursor(pos);
+            return;
+        };
+        let from = nav.from_byte_index(line_start + start);
+        let to = nav.from_byte_index(line_start + start + word.len());
+        self.editor.set_cursor(from);
+        self.editor.extend_selection_to(to);
+    }
+
+    /// Select the whole logical line under `pos`, without its newline.
+    fn select_line_at(&mut self, pos: CursorPosition) {
+        let nav = CursorNavigator::new(self.editor.rope());
+        let from = nav.from_line_grapheme(pos.line, 0);
+        let to = nav.from_line_grapheme(pos.line, usize::MAX);
+        self.editor.set_cursor(from);
+        self.editor.extend_selection_to(to);
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> bool {
@@ -1427,6 +1599,7 @@ impl Widget for TextArea {
         }
 
         self.last_viewport_height.set(area.height as usize);
+        self.last_area.set(area);
 
         let deg = frame.buffer.degradation;
         let base_style = if deg.apply_styling() {
@@ -1776,6 +1949,133 @@ impl StatefulWidget for TextArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod mouse {
+        use super::*;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        fn rendered(ta: &TextArea, area: Rect) {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(area.right(), area.bottom(), &mut pool);
+            Widget::render(ta, area, &mut frame);
+        }
+
+        fn press(ta: &mut TextArea, x: u16, y: u16, at_ms: u64) -> bool {
+            let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), x, y);
+            let changed = ta.handle_event_at(&Event::Mouse(down), at_ms);
+            let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), x, y);
+            ta.handle_event_at(&Event::Mouse(up), at_ms);
+            changed
+        }
+
+        const AREA: Rect = Rect::new(2, 1, 30, 5);
+
+        #[test]
+        fn click_places_the_cursor_under_the_pointer() {
+            let mut ta = TextArea::new().with_text("hello world\nsecond line");
+            rendered(&ta, AREA);
+            assert!(press(&mut ta, AREA.x + 7, AREA.y + 1, 0));
+            assert_eq!((ta.cursor().line, ta.cursor().grapheme), (1, 7));
+            assert_eq!(ta.selection(), None);
+            // Past the end of a line lands at its end.
+            press(&mut ta, AREA.x + 25, AREA.y, 1000);
+            assert_eq!((ta.cursor().line, ta.cursor().grapheme), (0, 11));
+        }
+
+        #[test]
+        fn textarea_double_click_selects_word() {
+            let mut ta = TextArea::new().with_text("hello brave world");
+            rendered(&ta, AREA);
+            press(&mut ta, AREA.x + 8, AREA.y, 0);
+            press(&mut ta, AREA.x + 8, AREA.y, 200);
+            assert_eq!(ta.selected_text().as_deref(), Some("brave"));
+        }
+
+        #[test]
+        fn textarea_triple_click_selects_line() {
+            let mut ta = TextArea::new().with_text("first line\nhello brave world\nlast");
+            rendered(&ta, AREA);
+            for at in [0, 150, 300] {
+                press(&mut ta, AREA.x + 3, AREA.y + 1, at);
+            }
+            assert_eq!(ta.selected_text().as_deref(), Some("hello brave world"));
+        }
+
+        #[test]
+        fn slow_or_distant_second_press_is_a_new_click() {
+            let mut ta = TextArea::new().with_text("hello brave world");
+            rendered(&ta, AREA);
+            press(&mut ta, AREA.x + 8, AREA.y, 0);
+            press(&mut ta, AREA.x + 8, AREA.y, 301);
+            assert_eq!(ta.selection(), None, "outside the 300 ms window");
+            press(&mut ta, AREA.x + 14, AREA.y, 400);
+            assert_eq!(ta.selection(), None, "more than one cell away");
+            assert_eq!(ta.cursor().grapheme, 14);
+        }
+
+        #[test]
+        fn drag_extends_the_selection_from_the_press() {
+            let mut ta = TextArea::new().with_text("hello brave world\nnext");
+            rendered(&ta, AREA);
+            let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), AREA.x + 6, AREA.y);
+            ta.handle_event_at(&Event::Mouse(down), 0);
+            let drag = MouseEvent::new(
+                MouseEventKind::Drag(MouseButton::Left),
+                AREA.x + 2,
+                AREA.y + 1,
+            );
+            assert!(ta.handle_event_at(&Event::Mouse(drag), 10));
+            assert_eq!(ta.selected_text().as_deref(), Some("brave world\nne"));
+        }
+
+        #[test]
+        fn events_outside_the_area_are_ignored() {
+            let mut ta = TextArea::new().with_text("hello");
+            // Before any render there is no area to hit.
+            assert!(!press(&mut ta, 0, 0, 0));
+            rendered(&ta, AREA);
+            let before = ta.cursor();
+            assert!(!press(&mut ta, AREA.x - 1, AREA.y, 1000));
+            assert!(!press(&mut ta, AREA.x, AREA.bottom(), 2000));
+            let drag = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), AREA.x + 2, AREA.y);
+            assert!(
+                !ta.handle_event_at(&Event::Mouse(drag), 3000),
+                "no drag without a press inside"
+            );
+            assert_eq!(ta.cursor(), before);
+        }
+
+        #[test]
+        fn click_accounts_for_gutter_and_vertical_scroll() {
+            let text: String = (0..20).map(|i| format!("line{i}\n")).collect();
+            let mut ta = TextArea::new().with_text(&text).with_line_numbers(true);
+            ta.set_cursor_position(CursorPosition::new(19, 0, 0));
+            rendered(&ta, AREA);
+            let (top, _) = ta.scroll_anchor.get();
+            assert!(top > 0, "the cursor at line 19 scrolled the view");
+            let gutter = ta.gutter_width();
+            press(&mut ta, AREA.x + gutter + 4, AREA.y + 2, 0);
+            assert_eq!((ta.cursor().line, ta.cursor().grapheme), (top + 2, 4));
+            // A click in the gutter lands at column 0.
+            press(&mut ta, AREA.x, AREA.y, 1000);
+            assert_eq!((ta.cursor().line, ta.cursor().grapheme), (top, 0));
+        }
+
+        #[test]
+        fn click_on_a_wrapped_row_maps_into_its_slice() {
+            // Ten columns wide: "aaaa bbbb " fits the first row, "cccc" wraps.
+            let mut ta = TextArea::new()
+                .with_text("aaaa bbbb cccc")
+                .with_soft_wrap(true);
+            let area = Rect::new(0, 0, 10, 3);
+            rendered(&ta, area);
+            press(&mut ta, 2, 1, 0);
+            assert_eq!((ta.cursor().line, ta.cursor().grapheme), (0, 12));
+            // Past the end of a row that wraps stays on that row.
+            press(&mut ta, 9, 0, 1000);
+            assert_eq!(ta.cursor().grapheme, 9);
+        }
+    }
 
     #[test]
     fn undo_groups_keyboard_clock_paste_and_focus() {

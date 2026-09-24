@@ -937,6 +937,11 @@ impl Screen for FormsInput {
                 self.update_focus_states();
                 self.update_status();
             }
+            // Click to place the cursor, double/triple-click, drag to select.
+            // The text area ignores what lands outside it.
+            if self.textarea.handle_event(event) {
+                self.update_status();
+            }
             return Cmd::None;
         }
         if let Event::Key(KeyEvent {
@@ -1246,6 +1251,31 @@ mod tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         })
+    }
+
+    /// Clicking the text editor focuses it and places the cursor; dragging
+    /// selects.
+    #[test]
+    fn mouse_places_the_cursor_and_drags_a_selection_in_the_editor() {
+        let mut screen = FormsInput::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 120, 40));
+        let editor = screen.layout_editor.get();
+        // Inside the border, past the 3-column line-number gutter; line 0 is
+        // "Hello, world!".
+        let (x, y) = (editor.x + 1 + 3, editor.y + 1);
+        let mouse =
+            |kind, dx: u16| Event::Mouse(ftui_core::event::MouseEvent::new(kind, x + dx, y));
+
+        screen.update(&mouse(MouseEventKind::Down(MouseButton::Left), 7));
+        assert_eq!(screen.focus, FocusPanel::TextEditor);
+        let cursor = screen.textarea.cursor();
+        assert_eq!((cursor.line, cursor.grapheme), (0, 7));
+
+        screen.update(&mouse(MouseEventKind::Drag(MouseButton::Left), 12));
+        screen.update(&mouse(MouseEventKind::Up(MouseButton::Left), 12));
+        assert_eq!(screen.textarea.selected_text().as_deref(), Some("world"));
     }
 
     fn ctrl_press(code: KeyCode) -> Event {

@@ -587,6 +587,9 @@ impl Screen for MarkdownLiveEditor {
                 }
                 _ => {}
             }
+            // Click to place the cursor, double/triple-click, drag to select.
+            // The text area ignores what lands outside it.
+            self.editor.handle_event(event);
             return Cmd::None;
         }
 

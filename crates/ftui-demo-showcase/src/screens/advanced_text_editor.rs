@@ -1361,6 +1361,11 @@ impl Screen for AdvancedTextEditor {
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && self.focus_from_point(mouse.x, mouse.y)
         {
+            // The click that focuses the editor also places its cursor.
+            if self.focus == Focus::Editor {
+                self.editor.handle_event(event);
+                self.update_status();
+            }
             return Cmd::None;
         }
 
