@@ -2,13 +2,13 @@
 
 //! Differential replay: does BOCPD actually beat the rate heuristic?
 //!
-//! `enable_bocpd` was flipped to `true` by default (G12). The reality check's
-//! condition for that flip was not "BOCPD is more principled" but a measured
-//! one: over recorded resize storms, BOCPD must render **no more frames during
-//! a drag** than the heuristic and must apply the **final size within 40 ms** of
-//! the last event. bd-g00-root-epic-ewths.16.4 is the measurement, and the
-//! plan's rule is explicit -- if BOCPD loses on any pattern, the default goes
-//! back rather than the bar coming down.
+//! `enable_bocpd` was flipped to `true` by default (G12) on a measured
+//! condition: over recorded resize storms, BOCPD must render **no more frames
+//! during a drag** than the heuristic and must apply the **final size within
+//! 40 ms** of the last event. bd-g00-root-epic-ewths.16.4 is the measurement.
+//! BOCPD lost, and the default went back to the heuristic in bb231f22
+//! (bd-h8l3d); bd-i25qn tracks the diagnosed cause. The bocpd column therefore
+//! opts in with `with_bocpd()` and must record BOCPD decisions to count.
 //!
 //! # Why this is a replay and not a benchmark
 //!
@@ -255,16 +255,29 @@ fn bocpd_is_not_worse_than_the_heuristic_on_resize_storms() {
                 .without_bocpd()
                 .with_logging(true),
         );
+        // Explicit, not the default: the default went back to the heuristic
+        // in bb231f22, after which `default()` here compared the heuristic
+        // with itself and reported every pattern EQUAL or SLOW-on-both.
         let bocpd = replay(
             pattern,
             case,
             "bocpd",
-            CoalescerConfig::default().with_logging(true),
+            CoalescerConfig::default().with_bocpd().with_logging(true),
         );
 
         for (detector, outcome) in [("heuristic", &heuristic), ("bocpd", &bocpd)] {
             fs::write(dir.join(format!("{case}.{detector}.jsonl")), &outcome.trace)
                 .expect("write trace");
+        }
+
+        // A bocpd column in which the posterior decided nothing is the
+        // heuristic twice, and any verdict drawn from it is void. That is
+        // exactly what this test reported from bb231f22 until the explicit
+        // with_bocpd() above, so it is a failure, not a footnote.
+        if bocpd.bocpd_decisions == 0 {
+            failures.push(format!(
+                "{case}: the bocpd run made 0 BOCPD decisions; the comparison is void"
+            ));
         }
 
         // Correctness first: a detector that settles on the wrong size has not
