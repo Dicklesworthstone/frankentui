@@ -1562,6 +1562,11 @@ impl VirtualizedListState {
     ///
     /// The caller must provide the hit test result and the expected hit ID for
     /// the scrollbar.
+    ///
+    /// After a [`ListHeightMode::Variable`] render the scrollbar works in
+    /// rows, as it was drawn, and `fixed_item_height` is ignored: the thumb
+    /// position maps back to the nearest item start, and a wheel or arrow
+    /// step always moves at least one item.
     pub fn handle_mouse(
         &mut self,
         event: &ftui_core::event::MouseEvent,
@@ -1575,6 +1580,48 @@ impl VirtualizedListState {
         viewport_height: u16,
         fixed_item_height: u16,
     ) -> crate::mouse::MouseResult {
+        if let Some(heights) = self.heights.as_ref()
+            && heights.len() == total_items
+            && total_items > 0
+        {
+            let old_item = self.scroll_offset.min(total_items - 1);
+            let old_row = heights.offset_of_item_exact(old_item);
+            let mut scrollbar_state = scrollbar_state_for_rows(
+                heights.total_height_exact(),
+                old_row,
+                viewport_height,
+                usize::MAX,
+            );
+            scrollbar_state.drag_anchor = self.scrollbar_drag_anchor;
+            let result = scrollbar_state.handle_mouse(event, hit, scrollbar_hit_id);
+            self.scrollbar_drag_anchor = scrollbar_state.drag_anchor;
+
+            // Rows below the first screenful may still be estimates, so the
+            // end of the track means the end of the list (render clamps it
+            // to the last item-aligned screenful).
+            let total_rows = heights.total_height_exact();
+            let row = scrollbar_state.position as u64;
+            let mut item = heights.find_item_at_offset_exact(row);
+            let start = heights.offset_of_item_exact(item);
+            if row + u64::from(viewport_height) >= total_rows {
+                item = total_items - 1;
+            } else if row.saturating_sub(start) * 2 > u64::from(heights.get(item)) {
+                item += 1;
+            }
+            // A step smaller than the item under it still has to move.
+            if row > old_row && item <= old_item {
+                item = old_item + 1;
+            } else if row < old_row && item >= old_item {
+                item = old_item.saturating_sub(1);
+            }
+            self.scroll_offset = item.min(total_items - 1);
+
+            if result == crate::mouse::MouseResult::Scrolled {
+                self.follow_mode = false;
+            }
+            return result;
+        }
+
         // Construct temporary scrollbar state
         let items_per_viewport = viewport_height.div_ceil(fixed_item_height.max(1)) as usize;
         let mut scrollbar_state =
@@ -1969,7 +2016,8 @@ fn scrollbar_state_for_rows(
 impl<T: RenderItem> VirtualizedList<'_, T> {
     /// Render in [`ListHeightMode::Variable`]: every row is as tall as
     /// [`RenderItem::height`] reports. The rows that can matter this frame
-    /// (the selection and one screenful from the scroll offset) are measured
+    /// (the selection, one screenful from the scroll offset and the last
+    /// screenful) are measured
     /// into the state's Fenwick tracker first, so the selection adjustment,
     /// the bottom clamp and the scrollbar all work in rows with O(log n)
     /// offset queries instead of multiplying by a fixed height.
@@ -2024,6 +2072,16 @@ impl<T: RenderItem> VirtualizedList<'_, T> {
         }
 
         // Clamp so the last screenful is as full as item alignment allows.
+        // Measure that screenful first: an unmeasured tail counts at the
+        // default height and would clamp a scroll to the end short of it.
+        let mut tail_rows = 0u16;
+        for idx in (0..total_items).rev() {
+            if tail_rows >= viewport {
+                break;
+            }
+            measure(heights, idx);
+            tail_rows = tail_rows.saturating_add(heights.get(idx));
+        }
         let total_height = heights.total_height_exact();
         let max_start = if total_height > u64::from(viewport) {
             first_item_from_offset(heights, total_height - u64::from(viewport))
@@ -4866,7 +4924,8 @@ mod tests {
         let heights = state.heights().expect("tracker created by render");
         assert_eq!(heights.get(1), 2);
         assert!(heights.is_measured(2));
-        assert!(!heights.is_measured(4), "off-screen rows stay unmeasured");
+        // The last screenful is measured too, for the bottom clamp.
+        assert!(heights.is_measured(4) && heights.is_measured(3));
         drop(frame);
 
         // Selecting the last item scrolls so it is visible; the clamp keeps
@@ -5042,5 +5101,52 @@ mod tests {
             state.scroll_offset, 10,
             "Scroll offset should update smoothly"
         );
+    }
+
+    /// After a variable-height render the scrollbar is in rows. Five items
+    /// six rows tall fill a five-row viewport, so counting items (the
+    /// fixed-height path) leaves nothing to scroll.
+    #[test]
+    fn variable_height_mouse_scrolls_in_rows() {
+        use crate::scrollbar::SCROLLBAR_PART_TRACK;
+        use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ftui_render::frame::{HitId, HitRegion};
+
+        struct Tall;
+        impl RenderItem for Tall {
+            fn render(&self, _area: Rect, _frame: &mut Frame, _selected: bool, _skip: u16) {}
+            fn height(&self) -> u16 {
+                6
+            }
+        }
+        let items = [Tall, Tall, Tall, Tall, Tall];
+        let list = VirtualizedList::new(&items).variable_heights();
+        let mut state = VirtualizedListState::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let area = Rect::new(0, 0, 4, 5);
+        let mut frame = Frame::new(4, 5, &mut pool);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
+
+        let id = HitId::new(1);
+        let mouse = |state: &mut VirtualizedListState, kind, hit| {
+            state.handle_mouse(&MouseEvent::new(kind, 3, 4), hit, id, items.len(), 5, 1);
+        };
+
+        // A three-row wheel step inside a six-row item still moves one item.
+        mouse(&mut state, MouseEventKind::ScrollDown, None);
+        assert_eq!(state.scroll_offset(), 1);
+        mouse(&mut state, MouseEventKind::ScrollUp, None);
+        assert_eq!(state.scroll_offset(), 0);
+
+        // Clicking the bottom of the track reaches the last item.
+        let track = (SCROLLBAR_PART_TRACK << 56) | (5 << 28) | 4;
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            Some((id, HitRegion::Scrollbar, track)),
+        );
+        assert_eq!(state.scroll_offset(), 4);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
+        assert_eq!(state.scroll_offset(), 4, "render keeps the offset");
     }
 }

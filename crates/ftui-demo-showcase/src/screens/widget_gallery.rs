@@ -115,6 +115,8 @@ impl Widget for FlakyParagraph {
 struct GalleryVirtualItem {
     label: &'static str,
     detail: &'static str,
+    /// Second row, drawn under the first; makes the item two rows tall.
+    note: Option<&'static str>,
 }
 
 impl RenderItem for GalleryVirtualItem {
@@ -125,7 +127,21 @@ impl RenderItem for GalleryVirtualItem {
         let prefix = theme::selection_indicator(selected);
         let text = format!("{prefix}{} — {}", self.label, self.detail);
         let style = theme::list_item_style(selected, true);
-        Paragraph::new(text).style(style).render(area, frame);
+        Paragraph::new(text)
+            .style(style)
+            .render(Rect { height: 1, ..area }, frame);
+        if let Some(note) = self.note
+            && area.height > 1
+        {
+            let indent = " ".repeat(prefix.chars().count());
+            Paragraph::new(format!("{indent}{note}"))
+                .style(Style::new().fg(theme::fg::MUTED))
+                .render(Rect::new(area.x, area.y + 1, area.width, 1), frame);
+        }
+    }
+
+    fn height(&self) -> u16 {
+        if self.note.is_some() { 2 } else { 1 }
     }
 }
 
@@ -188,26 +204,32 @@ impl WidgetGallery {
             GalleryVirtualItem {
                 label: "Item 0001",
                 detail: "CPU 72%",
+                note: None,
             },
             GalleryVirtualItem {
                 label: "Item 0002",
                 detail: "Mem 48%",
+                note: Some("swap 1.2G — paging"),
             },
             GalleryVirtualItem {
                 label: "Item 0003",
                 detail: "IO 35%",
+                note: None,
             },
             GalleryVirtualItem {
                 label: "Item 0004",
                 detail: "GPU 18%",
+                note: None,
             },
             GalleryVirtualItem {
                 label: "Item 0005",
                 detail: "Net 2.1MB/s",
+                note: Some("3 retransmits in 10s"),
             },
             GalleryVirtualItem {
                 label: "Item 0006",
                 detail: "FPS 120",
+                note: None,
             },
         ];
 
@@ -293,10 +315,14 @@ impl Screen for WidgetGallery {
                 let viewport = self.layout_virtualized.get();
                 if !viewport.is_empty() && viewport.contains(mouse.x, mouse.y) {
                     let total_items = self.virtualized_items.len();
-                    let fixed_height = 1u16;
                     let viewport_height = viewport.height;
-                    let items_per_viewport = viewport_height.div_ceil(fixed_height.max(1)) as usize;
-                    let needs_scrollbar = total_items > items_per_viewport;
+                    // The list sizes rows by item height, so compare rows.
+                    let total_rows: u32 = self
+                        .virtualized_items
+                        .iter()
+                        .map(|item| u32::from(item.height()))
+                        .sum();
+                    let needs_scrollbar = total_rows > u32::from(viewport_height);
 
                     let hit = if needs_scrollbar
                         && viewport.width > 0
@@ -319,7 +345,7 @@ impl Screen for WidgetGallery {
                         VIRTUALIZED_SCROLLBAR_HIT_ID,
                         total_items,
                         viewport_height,
-                        fixed_height,
+                        1,
                     );
                 }
             }
@@ -2074,7 +2100,7 @@ impl WidgetGallery {
         }
 
         let list = VirtualizedList::new(&self.virtualized_items)
-            .fixed_height(1)
+            .variable_heights()
             .hit_id(VIRTUALIZED_SCROLLBAR_HIT_ID)
             .style(Style::new().fg(theme::fg::SECONDARY))
             .highlight_style(
@@ -2754,6 +2780,46 @@ mod tests {
         gallery.update(&down_track);
 
         assert_eq!(gallery.virtualized_state.borrow().scroll_offset(), 3);
+    }
+
+    /// Items with a note are two rows tall, and once the list has rendered
+    /// the scrollbar reaches the last item (rows, not items).
+    #[test]
+    fn gallery_virtualized_list_uses_variable_heights() {
+        let mut gallery = WidgetGallery::new();
+        gallery.current_section = 7;
+        let mut pool = GraphemePool::new();
+        let row_text = |frame: &Frame, area: Rect, y: u16| -> String {
+            (area.x..area.right())
+                .filter_map(|x| frame.buffer.get(x, y).and_then(|c| c.content.as_char()))
+                .collect()
+        };
+
+        let mut frame = Frame::new(120, 40, &mut pool);
+        gallery.view(&mut frame, Rect::new(0, 0, 120, 40));
+        let area = gallery.layout_virtualized.get();
+        let rows: Vec<String> = (area.y..area.bottom())
+            .map(|y| row_text(&frame, area, y))
+            .collect();
+        let item = rows
+            .iter()
+            .position(|row| row.contains("Item 0002"))
+            .unwrap_or_else(|| panic!("Item 0002 in {rows:#?}"));
+        assert!(rows[item + 1].contains("swap 1.2G"), "{rows:#?}");
+        assert!(rows[item + 2].contains("Item 0003"), "{rows:#?}");
+        drop(frame);
+
+        let total_rows: u16 = gallery.virtualized_items.iter().map(|i| i.height()).sum();
+        assert!(total_rows > area.height, "the list must overflow: {area:?}");
+        gallery.update(&Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            area.right() - 1,
+            area.bottom() - 1,
+        )));
+        let mut frame = Frame::new(120, 40, &mut pool);
+        gallery.view(&mut frame, Rect::new(0, 0, 120, 40));
+        let last = row_text(&frame, area, area.bottom() - 1);
+        assert!(last.contains("Item 0006"), "last row: {last:?}");
     }
 
     #[test]
