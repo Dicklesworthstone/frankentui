@@ -46,6 +46,8 @@ ALL_CASES=(
     gesture_triple_click
     gesture_drag_dead_zone
     gesture_mouse_modes_balanced
+    hover_jitter_stable
+    hover_intentional_switch
 )
 
 # run_all.sh exports FTUI_DEMO_BIN; standalone runs usually set E2E_DEMO_BIN.
@@ -87,7 +89,7 @@ PY
 # Run the playground with a timed input sequence; sets CANONICAL to the final
 # screen text. $1 case name, $2 PTY_SEND_SEQUENCE JSON.
 run_playground() {
-    local name="$1" sequence="$2"
+    local name="$1" sequence="$2" exit_ms="${3:-3500}"
     local output_file="$E2E_LOG_DIR/${name}.pty"
     PTY_TEST_NAME="$name"
     PTY_COLS=120 \
@@ -96,7 +98,7 @@ run_playground() {
     PTY_SEND_SEQUENCE="$sequence" \
     FTUI_DEMO_SCREEN="$PLAYGROUND_SCREEN" \
     FTUI_DEMO_MOUSE=on \
-    FTUI_DEMO_EXIT_AFTER_MS=3500 \
+    FTUI_DEMO_EXIT_AFTER_MS="$exit_ms" \
     PTY_TIMEOUT=20 \
         pty_run "$output_file" "$DEMO_BIN"
     RAW_OUTPUT="$output_file"
@@ -192,6 +194,49 @@ gesture_drag_dead_zone() {
     ! grep -a -q " Click " "$CANONICAL" || { CASE_DETAIL="a drag was also read as a click"; return 1; }
 }
 
+# Hover stabilization (ftui_core::hover_stabilizer). At 120x40 the grid's
+# first target T1 spans 1-based x=3..18 on row y=10, x=19..20 is the gap and
+# T2 starts at x=21. The playground's stats line reads "Hover: <T|None>  Pos:
+# (x, y)" with 0-based positions.
+#
+# The moves are spaced, as a hand makes them: the tty backend merges
+# consecutive Moved events already in its queue (push_event_coalescing), so a
+# burst reaches the app as its last position only. Here that would be a
+# 7-cell jump out of T1, which the stabilizer rightly treats as an exit.
+HOVER_Y=10
+moves() {
+    local args=() gap=300 x
+    for x in "$@"; do
+        args+=("$gap" "$(sgr 35 "$x" "$HOVER_Y" M)")
+        gap=120
+    done
+    sequence "${args[@]}"
+}
+
+hover_jitter_stable() {
+    # Into T1, walk to its right edge, then jitter between the edge (x=18)
+    # and the gap (x=19), ending in the gap. Raw hit-testing says None there;
+    # the stabilizer holds T1 because each gap sample is one cell from where
+    # T1 was last seen, inside the hysteresis band.
+    run_playground hover_jitter_stable "$(moves 12 15 17 18 19 18 19 18 19)" 5000 || {
+        CASE_DETAIL="playground never drew"; return 1; }
+    grep -a -q "Hover: T1  Pos: (18, 9)" "$CANONICAL" || {
+        CASE_DETAIL="not held on T1 at the gap: $(grep -a -o "Hover: [^ ]*  Pos: ([0-9, ]*)" "$CANONICAL")"
+        return 1
+    }
+}
+
+hover_intentional_switch() {
+    # From T1 straight into T2: well past the hysteresis band, so the switch
+    # is immediate.
+    run_playground hover_intentional_switch "$(moves 12 16 22 23)" 4000 || {
+        CASE_DETAIL="playground never drew"; return 1; }
+    grep -a -q "Hover: T2  Pos: (22, 9)" "$CANONICAL" || {
+        CASE_DETAIL="did not switch to T2: $(grep -a -o "Hover: [^ ]*  Pos: ([0-9, ]*)" "$CANONICAL")"
+        return 1
+    }
+}
+
 gesture_mouse_modes_balanced() {
     run_playground gesture_mouse_modes_balanced "$(sequence 300 "$(sgr 0 $CLICK_X $CLICK_Y M)$(sgr 0 $CLICK_X $CLICK_Y m)")" || {
         CASE_DETAIL="playground never drew"; return 1; }
@@ -210,6 +255,8 @@ run_case gesture_double_click DoubleClick 2 gesture_double_click || FAILED=1
 run_case gesture_triple_click TripleClick 3 gesture_triple_click || FAILED=1
 run_case gesture_drag_dead_zone DragStart+DragEnd 5 gesture_drag_dead_zone || FAILED=1
 run_case gesture_mouse_modes_balanced mouse-modes-balanced 1 gesture_mouse_modes_balanced || FAILED=1
+run_case hover_jitter_stable hover-held-T1 9 hover_jitter_stable || FAILED=1
+run_case hover_intentional_switch hover-T2 4 hover_intentional_switch || FAILED=1
 
 if [[ -s "$GESTURES_JSONL" ]]; then
     "$PY" "$LIB_DIR/validate_jsonl.py" "$GESTURES_JSONL" --strict || FAILED=1
