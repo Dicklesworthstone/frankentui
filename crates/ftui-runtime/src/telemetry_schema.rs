@@ -174,10 +174,6 @@ pub mod evidence {
     pub const A11Y_ANNOUNCEMENT: &str = "a11y_announcement";
     /// Accessibility tree snapshot/diff.
     pub const A11Y_TREE: &str = "a11y_tree";
-    /// Memory allocation budget configuration.
-    pub const ALLOCATION_BUDGET_CONFIG: &str = "allocation_budget_config";
-    /// Allocation budget observation/evidence.
-    pub const ALLOCATION_BUDGET_EVIDENCE: &str = "allocation_budget_evidence";
     /// Bayesian online changepoint detection.
     pub const BOCPD: &str = "bocpd";
     /// Frame budget PID controller decision.
@@ -385,8 +381,6 @@ pub const ALL_METRICS: &[&str] = &[
 pub const ALL_EVIDENCE_EVENTS: &[&str] = &[
     evidence::A11Y_ANNOUNCEMENT,
     evidence::A11Y_TREE,
-    evidence::ALLOCATION_BUDGET_CONFIG,
-    evidence::ALLOCATION_BUDGET_EVIDENCE,
     evidence::BOCPD,
     evidence::BUDGET_DECISION,
     evidence::CAPABILITY_DECISION,

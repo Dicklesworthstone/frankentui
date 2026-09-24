@@ -713,60 +713,6 @@
         "e_threshold": "number"
       }
     },
-    "allocation_budget_config": {
-      "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "alpha",
-        "mu_0",
-        "sigma_sq",
-        "cusum_k",
-        "cusum_h",
-        "lambda",
-        "window_size"
-      ],
-      "optional": [],
-      "types": {
-        "alpha": "number",
-        "mu_0": "number",
-        "sigma_sq": "number",
-        "cusum_k": "number",
-        "cusum_h": "number",
-        "lambda": "number",
-        "window_size": "integer"
-      }
-    },
-    "allocation_budget_evidence": {
-      "required": [
-        "schema_version",
-        "run_id",
-        "event_idx",
-        "screen_mode",
-        "cols",
-        "rows",
-        "frame",
-        "x",
-        "residual",
-        "cusum_plus",
-        "cusum_minus",
-        "e_value",
-        "alert"
-      ],
-      "optional": [],
-      "types": {
-        "frame": "integer",
-        "x": "number",
-        "residual": "number",
-        "cusum_plus": "number",
-        "cusum_minus": "number",
-        "e_value": "number",
-        "alert": "boolean"
-      }
-    },
     "width_cache_stats": {
       "required": ["hits", "misses", "len", "capacity", "enabled", "thread"],
       "optional": [],

@@ -451,19 +451,6 @@ Example:
 {"schema_version":"bocpd-v1","event":"bocpd","p_burst":0.7321,"log_bf":1.204,"obs_ms":18.0,"regime":"burst","ll_steady":0.001234,"ll_burst":0.056789,"runlen_mean":12.4,"runlen_var":9.100,"runlen_mode":9,"runlen_p95":21,"runlen_tail":0.0420,"delay_ms":40,"forced_deadline":false,"n_obs":64}
 ```
 
-#### Event: `allocation_budget_config`
-
-Required fields:
-- `alpha`, `mu_0`, `sigma_sq`, `cusum_k`, `cusum_h`
-- `lambda`, `window_size`
-
-#### Event: `allocation_budget_evidence`
-
-Required fields:
-- `frame`, `x`, `residual`
-- `cusum_plus`, `cusum_minus`, `e_value`
-- `alert` (bool)
-
 #### Event: `capability_decision`
 
 Written once per probeable capability at startup when the evidence sink attaches

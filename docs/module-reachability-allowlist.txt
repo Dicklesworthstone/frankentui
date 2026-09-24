@@ -37,19 +37,19 @@
 # same question rather than an independent orphan. The *_tests modules are
 # `pub mod`s holding test code, which is its own smell and belongs to the same
 # decision.
-doctor_frankentui::alien_kernel_unit_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::archetype_scoreboard  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::artifact_coding_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::backend_capability  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::cli_explain_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::corpus_integrity_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::governance_validator_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::graveyard_control_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::migration_config  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::optimization_control_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::optimization_model_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::portfolio_governance_tests  # bd-g00-root-epic-ewths.28.1
-doctor_frankentui::tier_escalator_tests  # bd-g00-root-epic-ewths.28.1
+doctor_frankentui::alien_kernel_unit_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::archetype_scoreboard  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::artifact_coding_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::backend_capability  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::cli_explain_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::corpus_integrity_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::governance_validator_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::graveyard_control_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::migration_config  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::optimization_control_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::optimization_model_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::portfolio_governance_tests  # bd-g00-root-epic-ewths.28.3
+doctor_frankentui::tier_escalator_tests  # bd-g00-root-epic-ewths.28.3
 
 # ── ftui-web ─────────────────────────────────────────────────────────────
 # .29.1 asks the owner to decide the web host's scope. These are the modules

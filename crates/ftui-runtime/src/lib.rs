@@ -28,8 +28,6 @@
 //! optional layers used by your `view()` to construct UI output.
 
 #[cfg(feature = "experimental")]
-pub mod allocation_budget;
-#[cfg(feature = "experimental")]
 pub mod alpha_investing;
 pub mod asciicast;
 pub mod bocpd;
@@ -51,8 +49,6 @@ pub mod decision_core;
 #[cfg(feature = "experimental")]
 pub mod degradation_cascade;
 pub mod demo;
-#[cfg(feature = "experimental")]
-pub mod diff_evidence;
 pub mod effect_system;
 #[cfg(feature = "experimental")]
 pub mod eprocess_throttle;
@@ -129,10 +125,6 @@ pub mod voi_telemetry;
 
 pub use asciicast::{AsciicastRecorder, AsciicastWriter};
 pub use cancellation::{CancellationSource, CancellationToken};
-#[cfg(feature = "experimental")]
-pub use diff_evidence::{
-    DiffEvidenceLedger, DiffRegime, DiffStrategyRecord, Observation, RegimeTransition,
-};
 pub use evidence_sink::{EvidenceSink, EvidenceSinkConfig, EvidenceSinkDestination};
 pub use evidence_telemetry::{
     BudgetDecisionSnapshot, ConformalSnapshot, DiffDecisionSnapshot, ResizeDecisionSnapshot,
@@ -207,10 +199,6 @@ pub use render_thread::{OutMsg, RenderThread};
 #[cfg(feature = "stdio-capture")]
 pub use stdio_capture::{CapturedWriter, StdioCapture, StdioCaptureError};
 
-#[cfg(feature = "experimental")]
-pub use allocation_budget::{
-    AllocationBudget, BudgetAlert, BudgetConfig, BudgetEvidence, BudgetSummary,
-};
 #[cfg(feature = "experimental")]
 pub use conformal_alert::{
     AlertConfig, AlertDecision, AlertEvidence, AlertReason, AlertStats, ConformalAlert,

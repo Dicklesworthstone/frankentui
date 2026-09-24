@@ -2211,7 +2211,6 @@ ftui-runtime = { version = "0.9", features = ["experimental"] }
 | Crate | Module | What it is | Status |
 |-------|--------|------------|--------|
 | `ftui-render` | `roaring_bitmap` | Minimal Roaring Bitmap for cell-level dirty region tracking | `experimental` |
-| `ftui-runtime` | `allocation_budget` | Sequential allocation leak detection using CUSUM and e-processes | `merge pending (G13)` |
 | `ftui-runtime` | `alpha_investing` | Sequential FDR control for multiple simultaneous statistical monitors | `experimental` |
 | `ftui-runtime` | `conformal_alert` | Conformal alert threshold calibration with anytime-valid e-process control | `experimental` |
 | `ftui-runtime` | `conformal_frame_guard` | Conformal frame guard for frame timing with explicit unavailable bounds | `experimental` |
@@ -2219,7 +2218,6 @@ ftui-runtime = { version = "0.9", features = ["experimental"] }
 | `ftui-runtime` | `cost_model` | Formal mathematical cost models for caches, scheduling, and batching | `experimental` |
 | `ftui-runtime` | `countmin_sketch` | Count-Min Sketch with PAC-Bayes error budgeting for timeline aggregation | `experimental` |
 | `ftui-runtime` | `degradation_cascade` | Cascade from conformal frame guard risk detection through budget controller to widget priority | `merge pending (G13)` |
-| `ftui-runtime` | `diff_evidence` | Bayesian diff strategy evidence ledger in a fixed-capacity ring buffer | `merge pending (G13)` |
 | `ftui-runtime` | `eprocess_throttle` | Anytime-valid adaptive recompute throttle using GRAPA test martingales | `merge pending (G13)` |
 | `ftui-runtime` | `evidence_bridges` | Convert domain-specific decision types into unified evidence ledger records | `experimental` |
 | `ftui-runtime` | `flake_detector` | Anytime-valid test martingale detector for flaky timing regressions in E2E tests | `experimental` |

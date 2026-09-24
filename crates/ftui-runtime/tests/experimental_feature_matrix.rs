@@ -4,8 +4,6 @@ use ftui_runtime::*;
 
 #[test]
 fn all_quarantined_modules_are_nameable() {
-    // 1. allocation_budget
-    let _: Option<allocation_budget::BudgetConfig> = None;
     // 2. alpha_investing
     let _: Option<alpha_investing::AlphaInvestingConfig> = None;
     // 3. conformal_alert
@@ -20,8 +18,6 @@ fn all_quarantined_modules_are_nameable() {
     let _: Option<countmin_sketch::CountMinSketch> = None;
     // 8. degradation_cascade
     let _: Option<degradation_cascade::CascadeConfig> = None;
-    // 9. diff_evidence
-    let _: Option<diff_evidence::DiffRegime> = None;
     // 10. eprocess_throttle
     let _: Option<eprocess_throttle::ThrottleConfig> = None;
     // 11. evidence_bridges
