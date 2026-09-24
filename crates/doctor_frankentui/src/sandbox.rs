@@ -1,8 +1,15 @@
 //! Sandbox enforcement for untrusted project analysis.
 //!
-//! All source analysis and optional dynamic probes run inside constrained
-//! boundaries to prevent unsafe execution and resource abuse from untrusted
-//! repositories.
+//! Policy types and a cooperative enforcer meant to keep source analysis and
+//! dynamic probes of untrusted repositories inside constrained boundaries.
+//!
+//! **Where it runs: nowhere yet.** No doctor command constructs a
+//! [`SandboxEnforcer`]; only this crate's tests do. `capture`, `doctor`,
+//! `suite`, `corpus` and the supervised orchestration spawn their subprocesses
+//! (tmux, vhs, docker, ffmpeg, ...) without consulting it, and of the limits even a
+//! consumer could only check some: `ResourcePolicy`'s CPU-time, memory and
+//! open-fd fields have no check at all (bd-ignl4). Treat the policies below as
+//! a specification until the wiring bead lands.
 //!
 //! # Design Principles
 //!
