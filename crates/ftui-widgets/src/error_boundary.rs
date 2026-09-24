@@ -58,18 +58,28 @@ impl CapturedError {
 }
 
 /// State for an error boundary.
+///
+/// A panic moves `Healthy` to `Recovering`: the fallback is drawn and the
+/// boundary retries the widget on the next render. Each retry that panics
+/// again counts one attempt; once `max_recovery_attempts` retries have
+/// failed the state is `Failed`, which shows the fallback without calling
+/// the widget until [`reset`](Self::reset) or [`try_recover`](Self::try_recover).
+/// A retry that renders cleanly returns to `Healthy`.
 #[derive(Debug, Clone, Default)]
 pub enum ErrorBoundaryState {
     /// Widget is rendering normally.
     #[default]
     Healthy,
-    /// Widget panicked and is showing fallback.
+    /// Retries are exhausted (or disabled): the fallback is shown and the
+    /// widget is no longer called.
     Failed(CapturedError),
-    /// Attempting recovery after failure.
+    /// The widget panicked; the fallback is shown and the next render
+    /// retries it.
     Recovering {
-        /// Number of recovery attempts so far.
+        /// Retries scheduled so far, including the pending one; never more
+        /// than the boundary's `max_recovery_attempts`.
         attempts: u32,
-        /// The error that triggered recovery.
+        /// The most recent panic.
         last_error: CapturedError,
     },
 }
@@ -124,6 +134,22 @@ impl ErrorBoundaryState {
             Self::Healthy => true,
         }
     }
+
+    /// The state after the wrapped widget panicked with `error`: schedule a
+    /// retry while fewer than `max_attempts` have been made, else give up.
+    fn after_panic(&self, error: CapturedError, max_attempts: u32) -> Self {
+        match *self {
+            Self::Healthy if max_attempts > 0 => Self::Recovering {
+                attempts: 1,
+                last_error: error,
+            },
+            Self::Recovering { attempts, .. } if attempts < max_attempts => Self::Recovering {
+                attempts: attempts + 1,
+                last_error: error,
+            },
+            _ => Self::Failed(error),
+        }
+    }
 }
 
 /// A widget wrapper that catches panics from an inner widget.
@@ -157,11 +183,20 @@ impl<W: Widget> ErrorBoundary<W> {
         }
     }
 
-    /// Set maximum recovery attempts before permanent fallback.
+    /// Set how many times the boundary retries a panicking widget, one retry
+    /// per render, before showing the fallback permanently (default 3; 0
+    /// disables retries).
     #[must_use]
     pub fn max_recovery_attempts(mut self, max: u32) -> Self {
         self.max_recovery_attempts = max;
         self
+    }
+
+    /// The configured retry cap, for an app driving
+    /// [`ErrorBoundaryState::try_recover`] itself (e.g. a "Press R" handler).
+    #[must_use]
+    pub fn recovery_attempts_limit(&self) -> u32 {
+        self.max_recovery_attempts
     }
 
     /// Get the widget name.
@@ -207,7 +242,7 @@ impl<W: Widget> StatefulWidget for ErrorBoundary<W> {
                         let error = CapturedError::from_panic(payload, self.widget_name, area);
                         clear_area(frame, area);
                         render_error_fallback(frame, area, &error);
-                        *state = ErrorBoundaryState::Failed(error);
+                        *state = state.after_panic(error, self.max_recovery_attempts);
                     }
                 }
             }
@@ -466,11 +501,18 @@ impl<W: Widget> CustomErrorBoundary<W> {
         self
     }
 
-    /// Set maximum recovery attempts.
+    /// Set how many times the boundary retries a panicking widget before
+    /// showing the fallback permanently; see [`ErrorBoundary::max_recovery_attempts`].
     #[must_use]
     pub fn max_recovery_attempts(mut self, max: u32) -> Self {
         self.max_recovery_attempts = max;
         self
+    }
+
+    /// The configured retry cap; see [`ErrorBoundary::recovery_attempts_limit`].
+    #[must_use]
+    pub fn recovery_attempts_limit(&self) -> u32 {
+        self.max_recovery_attempts
     }
 }
 
@@ -516,7 +558,7 @@ impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
                         } else {
                             render_error_fallback(frame, area, &error);
                         }
-                        *state = ErrorBoundaryState::Failed(error);
+                        *state = state.after_panic(error, self.max_recovery_attempts);
                     }
                 }
             }
@@ -994,7 +1036,147 @@ mod tests {
         let mut frame = Frame::new(30, 5, &mut pool);
         boundary.render(area, &mut frame, &mut state);
 
-        // Panic during recovery should set state to Failed.
+        // A retry that panics counts an attempt rather than giving up while
+        // attempts remain (default cap 3).
+        assert!(matches!(
+            state,
+            ErrorBoundaryState::Recovering { attempts: 2, .. }
+        ));
+
+        // At the cap, a panicking retry is final.
+        let mut state = ErrorBoundaryState::Recovering {
+            attempts: 3,
+            last_error: state.error().cloned().expect("error"),
+        };
+        boundary.render(area, &mut frame, &mut state);
         assert!(matches!(state, ErrorBoundaryState::Failed(_)));
+    }
+
+    // --- bd-382z0: the recovery cap applies ---
+
+    /// Panics on every render and counts how often it was called.
+    struct CountingPanicker(std::cell::Cell<u32>);
+
+    impl Widget for CountingPanicker {
+        fn render(&self, _area: Rect, _frame: &mut Frame) {
+            self.0.set(self.0.get() + 1);
+            panic!("still broken");
+        }
+    }
+
+    fn render_n<B: StatefulWidget<State = ErrorBoundaryState>>(
+        boundary: &B,
+        state: &mut ErrorBoundaryState,
+        n: usize,
+    ) {
+        let area = Rect::new(0, 0, 30, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 5, &mut pool);
+        for _ in 0..n {
+            boundary.render(area, &mut frame, state);
+        }
+    }
+
+    #[test]
+    fn always_panicking_widget_is_retried_max_times_then_given_up() {
+        // The bead's measurement: with max_recovery_attempts(3) the count used
+        // to reset on every failed retry, so the cap never applied.
+        let boundary = ErrorBoundary::new(CountingPanicker(std::cell::Cell::new(0)), "bad")
+            .max_recovery_attempts(3);
+        let mut state = ErrorBoundaryState::default();
+
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            render_n(&boundary, &mut state, 1);
+            seen.push(match state {
+                ErrorBoundaryState::Healthy => "healthy".to_owned(),
+                ErrorBoundaryState::Recovering { attempts, .. } => {
+                    format!("recovering({attempts})")
+                }
+                ErrorBoundaryState::Failed(_) => "failed".to_owned(),
+            });
+        }
+        assert_eq!(
+            seen,
+            [
+                "recovering(1)",
+                "recovering(2)",
+                "recovering(3)",
+                "failed",
+                "failed",
+                "failed"
+            ]
+        );
+        // The original render plus three retries; never called once failed.
+        assert_eq!(boundary.inner.0.get(), 4);
+    }
+
+    #[test]
+    fn zero_attempts_fails_on_the_first_panic() {
+        let boundary = ErrorBoundary::new(CountingPanicker(std::cell::Cell::new(0)), "bad")
+            .max_recovery_attempts(0);
+        let mut state = ErrorBoundaryState::default();
+        render_n(&boundary, &mut state, 3);
+        assert!(matches!(state, ErrorBoundaryState::Failed(_)));
+        assert_eq!(boundary.inner.0.get(), 1);
+    }
+
+    #[test]
+    fn alternating_render_and_try_recover_reaches_the_cap() {
+        // The cycle the bead observed granting six retries with the count
+        // stuck at 1: render, then try_recover with the configured cap.
+        let boundary = ErrorBoundary::new(CountingPanicker(std::cell::Cell::new(0)), "bad")
+            .max_recovery_attempts(3);
+        let cap = boundary.recovery_attempts_limit();
+        let mut state = ErrorBoundaryState::default();
+        let mut granted = 0;
+        for _ in 0..6 {
+            render_n(&boundary, &mut state, 1);
+            if !state.try_recover(cap) {
+                break;
+            }
+            granted += 1;
+        }
+        assert!(matches!(state, ErrorBoundaryState::Failed(_)), "{state:?}");
+        assert!(
+            granted < 3,
+            "the count survives failed retries: {granted} grants"
+        );
+        // An explicit try_recover after giving up starts a fresh budget: that
+        // is the user pressing R, not the boundary retrying on its own.
+        assert!(state.try_recover(cap));
+    }
+
+    #[test]
+    fn a_retry_that_renders_cleanly_recovers() {
+        struct FailsOnce(std::cell::Cell<bool>);
+        impl Widget for FailsOnce {
+            fn render(&self, area: Rect, frame: &mut Frame) {
+                if !self.0.replace(true) {
+                    panic!("first frame only");
+                }
+                frame.buffer.set(area.x, area.y, Cell::from_char('G'));
+            }
+        }
+        let boundary = ErrorBoundary::new(FailsOnce(std::cell::Cell::new(false)), "flaky");
+        let mut state = ErrorBoundaryState::default();
+        render_n(&boundary, &mut state, 1);
+        assert!(matches!(
+            state,
+            ErrorBoundaryState::Recovering { attempts: 1, .. }
+        ));
+        render_n(&boundary, &mut state, 1);
+        assert!(matches!(state, ErrorBoundaryState::Healthy));
+    }
+
+    #[test]
+    fn custom_boundary_applies_the_same_cap() {
+        let boundary = CustomErrorBoundary::new(CountingPanicker(std::cell::Cell::new(0)), "bad")
+            .max_recovery_attempts(2);
+        assert_eq!(boundary.recovery_attempts_limit(), 2);
+        let mut state = ErrorBoundaryState::default();
+        render_n(&boundary, &mut state, 5);
+        assert!(matches!(state, ErrorBoundaryState::Failed(_)));
+        assert_eq!(boundary.inner.0.get(), 3);
     }
 }
