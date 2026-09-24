@@ -15,6 +15,8 @@
 //! - **Drag detector**: Monitors mouse-down → move → mouse-up sequences,
 //!   emitting `DragStart` / `DragMove` / `DragEnd` / `DragCancel`.
 //! - **Long press detector**: Fires when mouse is held stationary beyond a threshold.
+//! - **Swipe detector**: Classifies a finished drag as a `Swipe` when it moved
+//!   fast enough along one axis (see [`GestureConfig::swipe_velocity_threshold`]).
 //! - **Chord detector**: Accumulates modifier+key sequences within a timeout window.
 //!
 //! # Invariants
@@ -26,6 +28,9 @@
 //! 3. `Chord` sequences are always non-empty.
 //! 4. After `reset()`, all state machines return to their initial idle state.
 //! 5. `DragCancel` is emitted if Escape is pressed during a drag.
+//! 6. `Swipe` is only emitted immediately after the `DragEnd` of the same
+//!    interaction, so a cancelled drag never produces one, and its velocity is
+//!    finite and non-negative.
 //!
 //! # Failure Modes
 //!
@@ -37,7 +42,7 @@
 use web_time::{Duration, Instant};
 
 use crate::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
-use crate::semantic_event::{ChordKey, Position, SemanticEvent};
+use crate::semantic_event::{ChordKey, Position, SemanticEvent, SwipeDirection};
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -55,6 +60,13 @@ pub struct GestureConfig {
     /// Time window for chord key sequence completion (default: 1000ms).
     pub chord_timeout: Duration,
     /// Minimum velocity (cells/sec) for swipe detection (default: 50.0).
+    ///
+    /// When a drag is released, its net displacement from the mouse-down
+    /// position is taken along the dominant axis; a perfect diagonal, or a net
+    /// distance below `drag_threshold`, is not a swipe. Velocity is that
+    /// distance over the time from the drag's first movement to the release,
+    /// so pausing before a flick does not slow it down. At or above this
+    /// threshold the release emits `Swipe` right after `DragEnd`.
     pub swipe_velocity_threshold: f32,
     /// Position tolerance for multi-click detection (manhattan distance, default: 1).
     pub click_tolerance: u16,
@@ -93,6 +105,9 @@ struct DragTracker {
     button: MouseButton,
     last_pos: Position,
     started: bool,
+    /// When the pointer first moved with the button held; swipe velocity is
+    /// measured from here rather than from the press.
+    first_move: Option<Instant>,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +185,7 @@ impl GestureRecognizer {
                         self.on_mouse_up(pos, button, now, &mut out);
                     }
                     MouseEventKind::Drag(button) => {
-                        self.on_mouse_drag(pos, button, &mut out);
+                        self.on_mouse_drag(pos, button, now, &mut out);
                     }
                     MouseEventKind::Moved => {
                         // Movement without button cancels long press
@@ -313,6 +328,7 @@ impl GestureRecognizer {
             button,
             last_pos: pos,
             started: false,
+            first_move: None,
         });
         self.long_press_pos = Some((pos, now));
         self.long_press_fired = false;
@@ -328,7 +344,7 @@ impl GestureRecognizer {
         self.long_press_pos = None;
         self.long_press_fired = false;
 
-        // If we were dragging, emit DragEnd
+        // If we were dragging, emit DragEnd, then Swipe if it was fast enough
         if let Some(drag) = self.drag.take()
             && drag.started
         {
@@ -336,6 +352,9 @@ impl GestureRecognizer {
                 start: drag.start_pos,
                 end: pos,
             });
+            if let Some(swipe) = self.classify_swipe(&drag, pos, now) {
+                out.push(swipe);
+            }
             self.mouse_down = None;
             return;
         }
@@ -373,7 +392,13 @@ impl GestureRecognizer {
         }
     }
 
-    fn on_mouse_drag(&mut self, pos: Position, button: MouseButton, out: &mut Vec<SemanticEvent>) {
+    fn on_mouse_drag(
+        &mut self,
+        pos: Position,
+        button: MouseButton,
+        now: Instant,
+        out: &mut Vec<SemanticEvent>,
+    ) {
         // Cancel long press on any movement
         self.long_press_pos = None;
 
@@ -384,9 +409,11 @@ impl GestureRecognizer {
                 button,
                 last_pos: pos,
                 started: false,
+                first_move: Some(now),
             });
             return;
         };
+        drag.first_move.get_or_insert(now);
 
         if !drag.started {
             // Check if we've moved past the drag threshold
@@ -417,6 +444,43 @@ impl GestureRecognizer {
         }
 
         drag.last_pos = pos;
+    }
+
+    /// A released drag is a swipe when its net displacement is clearly along
+    /// one axis, at least `drag_threshold` cells long, and covered at
+    /// `swipe_velocity_threshold` cells/sec or faster.
+    fn classify_swipe(
+        &self,
+        drag: &DragTracker,
+        end: Position,
+        now: Instant,
+    ) -> Option<SemanticEvent> {
+        let dx = i32::from(end.x) - i32::from(drag.start_pos.x);
+        let dy = i32::from(end.y) - i32::from(drag.start_pos.y);
+        let direction = match dx.abs().cmp(&dy.abs()) {
+            std::cmp::Ordering::Greater if dx > 0 => SwipeDirection::Right,
+            std::cmp::Ordering::Greater => SwipeDirection::Left,
+            std::cmp::Ordering::Less if dy > 0 => SwipeDirection::Down,
+            std::cmp::Ordering::Less => SwipeDirection::Up,
+            // A perfect diagonal (or no net movement) has no cardinal direction.
+            std::cmp::Ordering::Equal => return None,
+        };
+        // Both coordinates are u16, so the dominant-axis distance fits.
+        let distance = u16::try_from(dx.abs().max(dy.abs())).unwrap_or(u16::MAX);
+        if distance < self.config.drag_threshold {
+            return None;
+        }
+        // At least 1ms, so a release in the same instant as the first move
+        // (synthetic input) yields a large finite velocity, not infinity.
+        let elapsed = now
+            .saturating_duration_since(drag.first_move?)
+            .max(Duration::from_millis(1));
+        let velocity = f32::from(distance) / elapsed.as_secs_f32();
+        (velocity >= self.config.swipe_velocity_threshold).then_some(SemanticEvent::Swipe {
+            direction,
+            distance,
+            velocity,
+        })
     }
 
     fn expire_chord(&mut self, now: Instant) {
@@ -685,9 +749,10 @@ mod tests {
         gr.process(&mouse_down(5, 5, MouseButton::Left), t);
         gr.process(&mouse_drag(10, 5, MouseButton::Left), t + MS_50);
 
-        // Mouse up during drag
+        // Mouse up during drag. 7 cells in the 50ms since the first move is
+        // 140 cells/s, over the default 50, so a Swipe follows the DragEnd.
         let events = gr.process(&mouse_up(12, 5, MouseButton::Left), t + MS_100);
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert!(matches!(
             events[0],
             SemanticEvent::DragEnd {
@@ -695,6 +760,18 @@ mod tests {
                 end: Position { x: 12, y: 5 },
             }
         ));
+        match events[1] {
+            SemanticEvent::Swipe {
+                direction,
+                distance,
+                velocity,
+            } => {
+                assert_eq!(direction, SwipeDirection::Right);
+                assert_eq!(distance, 7);
+                assert!((velocity - 140.0).abs() < 1e-3, "velocity {velocity}");
+            }
+            ref other => panic!("expected Swipe, got {other:?}"),
+        }
         assert!(!gr.is_dragging());
     }
 
@@ -721,9 +798,8 @@ mod tests {
         gr.process(&mouse_down(5, 5, MouseButton::Left), t);
         gr.process(&mouse_drag(10, 5, MouseButton::Left), t + MS_50);
 
-        // Mouse up after drag → DragEnd, NOT Click
+        // Mouse up after drag → DragEnd (and here a Swipe), NOT Click
         let events = gr.process(&mouse_up(10, 5, MouseButton::Left), t + MS_100);
-        assert_eq!(events.len(), 1);
         assert!(matches!(events[0], SemanticEvent::DragEnd { .. }));
         assert!(
             !events
@@ -2146,5 +2222,168 @@ mod tests {
 
         // Long press should NOT fire after reset
         assert!(gr.check_long_press(t + MS_600).is_none());
+    }
+
+    // --- Swipe (bd-8hk58) ---
+
+    /// Press at `from`, move once to `via` at `t + first_move`, release at
+    /// `to` at `t + release`; returns the release's events.
+    fn flick(
+        gr: &mut GestureRecognizer,
+        from: (u16, u16),
+        via: (u16, u16),
+        to: (u16, u16),
+        first_move: Duration,
+        release: Duration,
+    ) -> Vec<SemanticEvent> {
+        let t = now();
+        gr.process(&mouse_down(from.0, from.1, MouseButton::Left), t);
+        gr.process(&mouse_drag(via.0, via.1, MouseButton::Left), t + first_move);
+        gr.process(&mouse_up(to.0, to.1, MouseButton::Left), t + release)
+    }
+
+    fn swipe_of(events: &[SemanticEvent]) -> Option<(SwipeDirection, u16, f32)> {
+        events.iter().find_map(|e| match *e {
+            SemanticEvent::Swipe {
+                direction,
+                distance,
+                velocity,
+            } => Some((direction, distance, velocity)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn swipe_follows_drag_end_in_each_direction() {
+        let cases = [
+            ((10, 10), (20, 10), SwipeDirection::Right),
+            ((20, 10), (10, 10), SwipeDirection::Left),
+            ((10, 20), (10, 10), SwipeDirection::Up),
+            ((10, 10), (10, 20), SwipeDirection::Down),
+        ];
+        for (from, to, want) in cases {
+            let mut gr = GestureRecognizer::new(GestureConfig::default());
+            let events = flick(&mut gr, from, to, to, MS_50, MS_100);
+            assert!(
+                matches!(events[0], SemanticEvent::DragEnd { .. }),
+                "{events:?}"
+            );
+            // 10 cells in 50ms = 200 cells/s.
+            let (direction, distance, velocity) = swipe_of(&events).expect("swipe");
+            assert_eq!((direction, distance), (want, 10));
+            assert!((velocity - 200.0).abs() < 1e-3, "velocity {velocity}");
+            assert_eq!(events.len(), 2);
+        }
+    }
+
+    #[test]
+    fn swipe_threshold_is_inclusive_and_read_from_config() {
+        // 5 cells over 100ms is exactly 50 cells/s: the default admits it.
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let at = flick(&mut gr, (0, 0), (5, 0), (5, 0), MS_50, MS_50 + MS_100);
+        assert_eq!(swipe_of(&at).map(|s| s.0), Some(SwipeDirection::Right));
+
+        // One millisecond slower is under it.
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let under = flick(
+            &mut gr,
+            (0, 0),
+            (5, 0),
+            (5, 0),
+            MS_50,
+            MS_50 + MS_100 + Duration::from_millis(1),
+        );
+        assert!(
+            matches!(under[..], [SemanticEvent::DragEnd { .. }]),
+            "{under:?}"
+        );
+
+        // Raising the threshold turns the first case off: the field is live.
+        let mut gr = GestureRecognizer::new(GestureConfig {
+            swipe_velocity_threshold: 51.0,
+            ..GestureConfig::default()
+        });
+        let raised = flick(&mut gr, (0, 0), (5, 0), (5, 0), MS_50, MS_50 + MS_100);
+        assert!(swipe_of(&raised).is_none(), "{raised:?}");
+    }
+
+    #[test]
+    fn slow_drag_is_not_a_swipe() {
+        // 20 cells over a second: an ordinary drag, e.g. resizing a pane.
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let events = flick(
+            &mut gr,
+            (0, 0),
+            (5, 0),
+            (20, 0),
+            MS_50,
+            MS_50 + Duration::from_secs(1),
+        );
+        assert!(
+            matches!(events[..], [SemanticEvent::DragEnd { .. }]),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn swipe_velocity_is_measured_from_first_movement_not_the_press() {
+        // Held still for 400ms, then flicked 10 cells in 50ms.
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let hold = Duration::from_millis(400);
+        let events = flick(&mut gr, (0, 5), (10, 5), (10, 5), hold, hold + MS_50);
+        let (direction, _, velocity) = swipe_of(&events).expect("swipe");
+        assert_eq!(direction, SwipeDirection::Right);
+        assert!((velocity - 200.0).abs() < 1e-3, "velocity {velocity}");
+    }
+
+    #[test]
+    fn diagonal_and_out_and_back_drags_are_not_swipes() {
+        // Equal |dx| and |dy|: no cardinal direction.
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let diagonal = flick(&mut gr, (0, 0), (8, 8), (8, 8), MS_50, MS_100);
+        assert!(swipe_of(&diagonal).is_none(), "{diagonal:?}");
+
+        // Out 10 cells and back to 1 cell from the start: the drag started,
+        // but the net distance is under drag_threshold.
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let back = flick(&mut gr, (10, 0), (20, 0), (11, 0), MS_50, MS_100);
+        assert!(matches!(back[0], SemanticEvent::DragEnd { .. }));
+        assert!(swipe_of(&back).is_none(), "{back:?}");
+    }
+
+    #[test]
+    fn cancelled_drag_never_swipes() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+        gr.process(&mouse_down(0, 0, MouseButton::Left), t);
+        gr.process(&mouse_drag(10, 0, MouseButton::Left), t + MS_50);
+        assert!(matches!(
+            gr.process(&esc(), t + MS_50)[..],
+            [SemanticEvent::DragCancel]
+        ));
+        let up = gr.process(&mouse_up(20, 0, MouseButton::Left), t + MS_100);
+        assert!(swipe_of(&up).is_none(), "{up:?}");
+    }
+
+    #[test]
+    fn same_instant_release_has_finite_velocity() {
+        // Synthetic input can move and release in one instant; the elapsed
+        // time is floored at 1ms rather than dividing by zero.
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let events = flick(&mut gr, (0, 0), (30, 0), (30, 0), MS_50, MS_50);
+        let (_, distance, velocity) = swipe_of(&events).expect("swipe");
+        assert_eq!(distance, 30);
+        assert!(
+            velocity.is_finite() && velocity >= 0.0,
+            "velocity {velocity}"
+        );
+        assert!((velocity - 30_000.0).abs() < 1e-1, "velocity {velocity}");
+    }
+
+    #[test]
+    fn swipe_distance_saturates_on_extreme_coordinates() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let events = flick(&mut gr, (0, 0), (u16::MAX, 0), (u16::MAX, 0), MS_50, MS_100);
+        assert_eq!(swipe_of(&events).map(|s| s.1), Some(u16::MAX));
     }
 }
