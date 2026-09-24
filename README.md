@@ -2382,7 +2382,7 @@ fn subscriptions(&self) -> Vec<Box<dyn Subscription<Msg>>> {
 }
 ```
 
-Subscriptions are automatically started/stopped based on what `subscriptions()` returns each frame; a subscription's id (interval for `tick_every`, path for `file_watcher`) is what keeps it running across frames. `file_watcher` polls metadata (mtime and size, 250 ms by default; `FileWatcher::new(..).with_interval(..)` to change it), so it works on every platform without a native watcher dependency.
+Subscriptions are automatically started/stopped based on what `subscriptions()` returns each frame; a subscription's id (interval for `tick_every`, path for `file_watcher`) is what keeps it running across frames. `file_watcher` polls metadata (mtime and size, 250 ms by default; `FileWatcher::new(..).with_interval(..)` to change it), so it works on every platform without a native watcher dependency. The demo's Async Tasks screen uses it: while that screen is shown the app watches `$FTUI_DEMO_WATCH_FILE` (default: a file in the temp dir), `w` appends to it, and each event is logged in the Activity panel. `tests/e2e/scripts/test_async_tasks.sh` drives that in a PTY, including a write and a delete made from outside the app.
 
 ---
 
