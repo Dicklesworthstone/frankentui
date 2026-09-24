@@ -136,7 +136,7 @@ run_case() {
 DEMO_BIN="$(ensure_demo_bin || true)"
 if [[ -z "$DEMO_BIN" ]]; then
     LOG_FILE="$E2E_LOG_DIR/async_tasks_missing.log"
-    for t in async_tasks_initial async_tasks_spawn async_tasks_cancel async_tasks_policy async_tasks_navigate; do
+    for t in async_tasks_initial async_tasks_spawn async_tasks_cancel async_tasks_policy async_tasks_navigate fs_watch_temp_file fs_watch_external_modify; do
         log_test_skip "$t" "ftui-demo-showcase binary missing"
         record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
         jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$t\",\"outcome\":{\"status\":\"skipped\",\"reason\":\"binary missing\"}}"
@@ -319,6 +319,91 @@ async_tasks_workflow() {
     grep -a -q "$SCREEN_TITLE" "$output_file" || return 1
 }
 
+# File-watch cases (bd-g00-root-epic-ewths.22.3). The screen subscribes to
+# the runtime's file_watcher (mtime+size polling at 250 ms) for
+# $FTUI_DEMO_WATCH_FILE and logs "[hh:mm:ss.mmm] <Kind> <basename>" in its
+# Activity panel. Each case owns a fresh path under $E2E_LOG_DIR and asserts
+# on the canonicalized final screen: the diff renderer skips unchanged
+# cells, so the raw stream does not reliably contain the whole line.
+WATCH_DIR="$E2E_LOG_DIR/fs_watch"
+mkdir -p "$WATCH_DIR"
+
+# Canonicalize a capture and count "<Kind> <basename>" lines on screen.
+watch_events_seen() {
+    local output_file="$1" kind="$2" base="$3"
+    local canon="${output_file%.pty}.screen.txt"
+    [[ -f "$canon" ]] || pty_canonicalize_file "$output_file" "$canon" 120 40 \
+        --quirk windows_no_alt_screen >/dev/null 2>&1 || return 1
+    grep -a -c -E "\[[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}\] ${kind} ${base}" "$canon" || true
+}
+
+watch_log_events() {
+    local name="$1" path="$2" output_file="$3" base
+    base="$(basename "$path")"
+    local created modified removed
+    created="$(watch_events_seen "$output_file" Created "$base")"
+    modified="$(watch_events_seen "$output_file" Modified "$base")"
+    removed="$(watch_events_seen "$output_file" Removed "$base")"
+    jsonl_log "{\"run_id\":\"$RUN_ID\",\"case\":\"$name\",\"type\":\"fs_watch\",\"watched_path\":\"$path\",\"events_seen\":{\"created\":${created:-0},\"modified\":${modified:-0},\"removed\":${removed:-0}}}"
+}
+
+# Test 8: `w` creates the watched file, then appends to it.
+fs_watch_temp_file() {
+    LOG_FILE="$E2E_LOG_DIR/fs_watch_temp_file.log"
+    local output_file="$E2E_LOG_DIR/fs_watch_temp_file.pty"
+    local path="$WATCH_DIR/temp_file_$$.log"
+    rm -f "$path" "${output_file%.pty}.screen.txt"
+
+    PTY_COLS=120 \
+    PTY_ROWS=40 \
+    PTY_SEND_AFTER_OUTPUT="w:write file" \
+    PTY_SEND_SEQUENCE='[{"delay_ms":500,"text":"w"},{"delay_ms":1700,"text":"w"}]' \
+    FTUI_DEMO_SCREEN=$ASYNC_TASKS_SCREEN \
+    FTUI_DEMO_WATCH_FILE="$path" \
+    FTUI_DEMO_EXIT_AFTER_MS=6000 \
+    PTY_TIMEOUT=20 \
+        pty_run "$output_file" "$DEMO_BIN"
+
+    watch_log_events fs_watch_temp_file "$path" "$output_file"
+    [[ "$(cat "$path")" == $'write 1\nwrite 2' ]] || return 1
+    local base
+    base="$(basename "$path")"
+    [[ "$(watch_events_seen "$output_file" Created "$base")" -eq 1 ]] || return 1
+    [[ "$(watch_events_seen "$output_file" Modified "$base")" -eq 1 ]] || return 1
+    rm -f "$path"
+}
+
+# Test 9: a write and a delete from outside the app are both reported.
+fs_watch_external_modify() {
+    LOG_FILE="$E2E_LOG_DIR/fs_watch_external_modify.log"
+    local output_file="$E2E_LOG_DIR/fs_watch_external_modify.pty"
+    local path="$WATCH_DIR/external_$$.log"
+    rm -f "${output_file%.pty}.screen.txt"
+    printf 'seed\n' > "$path"
+
+    # Append once the app is up, then remove the file this case created.
+    ( sleep 4; printf 'x\n' >> "$path"; sleep 2; rm -f "$path" ) &
+    local writer=$!
+
+    PTY_COLS=120 \
+    PTY_ROWS=40 \
+    PTY_SEND="" \
+    FTUI_DEMO_SCREEN=$ASYNC_TASKS_SCREEN \
+    FTUI_DEMO_WATCH_FILE="$path" \
+    FTUI_DEMO_EXIT_AFTER_MS=9000 \
+    PTY_TIMEOUT=20 \
+        pty_run "$output_file" "$DEMO_BIN"
+    wait "$writer" || true
+
+    watch_log_events fs_watch_external_modify "$path" "$output_file"
+    local base
+    base="$(basename "$path")"
+    [[ ! -e "$path" ]] || return 1
+    [[ "$(watch_events_seen "$output_file" Created "$base")" -eq 0 ]] || return 1
+    [[ "$(watch_events_seen "$output_file" Modified "$base")" -eq 1 ]] || return 1
+    [[ "$(watch_events_seen "$output_file" Removed "$base")" -eq 1 ]] || return 1
+}
+
 # Run all test cases
 FAILURES=0
 run_case "async_tasks_initial" "(none)" async_tasks_initial || FAILURES=$((FAILURES + 1))
@@ -328,8 +413,10 @@ run_case "async_tasks_policy" "s" async_tasks_policy || FAILURES=$((FAILURES + 1
 run_case "async_tasks_navigate" "jjk" async_tasks_navigate || FAILURES=$((FAILURES + 1))
 run_case "async_tasks_progress" "n (wait)" async_tasks_progress || FAILURES=$((FAILURES + 1))
 run_case "async_tasks_workflow" "njsc" async_tasks_workflow || FAILURES=$((FAILURES + 1))
+run_case "fs_watch_temp_file" "w w" fs_watch_temp_file || FAILURES=$((FAILURES + 1))
+run_case "fs_watch_external_modify" "(external write, rm)" fs_watch_external_modify || FAILURES=$((FAILURES + 1))
 
 # Log run summary
-jsonl_log "{\"run_id\":\"$RUN_ID\",\"type\":\"summary\",\"total\":7,\"passed\":$((7 - FAILURES)),\"failed\":$FAILURES,\"timestamp\":\"$(date -Iseconds)\"}"
+jsonl_log "{\"run_id\":\"$RUN_ID\",\"type\":\"summary\",\"total\":9,\"passed\":$((9 - FAILURES)),\"failed\":$FAILURES,\"timestamp\":\"$(date -Iseconds)\"}"
 
 exit "$FAILURES"
