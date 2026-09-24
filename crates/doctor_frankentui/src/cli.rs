@@ -489,6 +489,7 @@ mod tests {
                 dry_run: false,
                 watch: false,
                 incremental_from: None,
+                sandbox_profile: crate::sandbox::SandboxProfile::Standard,
             }),
         })
         .expect_err("missing source should fail");

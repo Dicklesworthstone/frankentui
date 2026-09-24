@@ -14,6 +14,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::error::{DoctorError, Result};
+use crate::sandbox::{SandboxEnforcer, SandboxProfile, SandboxViolation};
 use crate::util::{
     OutputIntegration, command_exists, copy_tree_snapshot_materialized, ensure_dir,
     join_validated_child_path, now_compact_timestamp, now_utc_iso, output_for, write_string,
@@ -23,6 +24,7 @@ const DEFAULT_IMPORT_RUN_ROOT: &str = "/tmp/doctor_frankentui/import";
 const SNAPSHOT_DIR_NAME: &str = "snapshot";
 const GIT_CLONE_STAGING_DIR_NAME: &str = "_source_clone";
 const INTAKE_META_FILENAME: &str = "intake_meta.json";
+const SANDBOX_REPORT_FILENAME: &str = "sandbox_report.json";
 const MIGRATION_FORECAST_FILENAME: &str = "migration_forecast.json";
 const FORECAST_SCHEMA_VERSION: &str = "doctor-migration-forecast-v1";
 const INCREMENTAL_WATCH_FILENAME: &str = "incremental_watch.json";
@@ -119,6 +121,11 @@ pub struct ImportArgs {
     /// Previous import run directory, snapshot directory, or intake_meta.json.
     #[arg(long = "incremental-from")]
     pub incremental_from: Option<PathBuf>,
+
+    /// Bounds on the imported snapshot (depth, file count, file size, total
+    /// bytes), checked before anything reads it.
+    #[arg(long = "sandbox-profile", value_enum, default_value_t = SandboxProfile::Standard)]
+    pub sandbox_profile: SandboxProfile,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -146,6 +153,8 @@ enum IntakeErrorClass {
     MissingFiles,
     IncompatibleRepo,
     Unknown,
+    /// The snapshot exceeded a sandbox bound.
+    Sandbox,
 }
 
 impl IntakeErrorClass {
@@ -157,6 +166,7 @@ impl IntakeErrorClass {
             Self::MissingFiles => "missing_files",
             Self::IncompatibleRepo => "incompatible_repo",
             Self::Unknown => "unknown",
+            Self::Sandbox => "sandbox",
         }
     }
 }
@@ -165,6 +175,8 @@ impl IntakeErrorClass {
 struct IntakeFailure {
     class: IntakeErrorClass,
     message: String,
+    /// The violation's own exit code (50-53) for [`IntakeErrorClass::Sandbox`].
+    sandbox_exit_code: Option<i32>,
 }
 
 impl IntakeFailure {
@@ -172,6 +184,15 @@ impl IntakeFailure {
         Self {
             class,
             message: message.into(),
+            sandbox_exit_code: None,
+        }
+    }
+
+    fn sandbox(violation: &SandboxViolation) -> Self {
+        Self {
+            class: IntakeErrorClass::Sandbox,
+            message: violation.message.clone(),
+            sandbox_exit_code: Some(violation.kind.exit_code()),
         }
     }
 
@@ -182,6 +203,7 @@ impl IntakeFailure {
             IntakeErrorClass::MissingFiles => 43,
             IntakeErrorClass::IncompatibleRepo => 44,
             IntakeErrorClass::Unknown => 45,
+            IntakeErrorClass::Sandbox => self.sandbox_exit_code.unwrap_or(50),
         };
         DoctorError::exit(
             code,
@@ -239,6 +261,9 @@ struct IntakeMetadata {
     toolchain: ToolchainFingerprint,
     error_class: Option<IntakeErrorClass>,
     error_message: Option<String>,
+    /// Profile whose filesystem bounds the snapshot was checked against.
+    #[serde(default)]
+    sandbox_profile: Option<SandboxProfile>,
 }
 
 impl IntakeMetadata {
@@ -267,6 +292,7 @@ impl IntakeMetadata {
             toolchain: ToolchainFingerprint::default(),
             error_class: None,
             error_message: None,
+            sandbox_profile: None,
         }
     }
 }
@@ -434,21 +460,30 @@ pub fn run_import(args: ImportArgs) -> Result<()> {
 
     let mut watch_manifest = None;
     let mut forecast_report = None;
-    let outcome = perform_intake(&args, source_kind, &run_dir, &snapshot_dir, &mut metadata)
-        .and_then(|()| {
-            if args.dry_run {
-                let forecast = build_migration_forecast_report(&run_dir, &snapshot_dir, &metadata)?;
-                write_migration_forecast_report(&run_dir, &forecast)?;
-                forecast_report = Some(forecast);
-            }
-            if args.watch {
-                let manifest =
-                    build_incremental_watch_manifest(&args, &run_dir, &snapshot_dir, &metadata)?;
-                write_incremental_watch_manifest(&run_dir, &manifest)?;
-                watch_manifest = Some(manifest);
-            }
-            Ok(())
-        });
+    let mut sandbox = SandboxEnforcer::from_profile(args.sandbox_profile, &run_name);
+    metadata.sandbox_profile = Some(args.sandbox_profile);
+    let outcome = perform_intake(
+        &args,
+        source_kind,
+        &run_dir,
+        &snapshot_dir,
+        &mut metadata,
+        &mut sandbox,
+    )
+    .and_then(|()| {
+        if args.dry_run {
+            let forecast = build_migration_forecast_report(&run_dir, &snapshot_dir, &metadata)?;
+            write_migration_forecast_report(&run_dir, &forecast)?;
+            forecast_report = Some(forecast);
+        }
+        if args.watch {
+            let manifest =
+                build_incremental_watch_manifest(&args, &run_dir, &snapshot_dir, &metadata)?;
+            write_incremental_watch_manifest(&run_dir, &manifest)?;
+            watch_manifest = Some(manifest);
+        }
+        Ok(())
+    });
     metadata.finished_at = Some(now_utc_iso());
 
     let result = match outcome {
@@ -509,6 +544,10 @@ pub fn run_import(args: ImportArgs) -> Result<()> {
     };
 
     write_intake_metadata(&run_dir, &metadata)?;
+    write_string(
+        &run_dir.join(SANDBOX_REPORT_FILENAME),
+        &serde_json::to_string_pretty(&sandbox.into_report())?,
+    )?;
 
     if integration.should_emit_json() {
         println!(
@@ -560,12 +599,14 @@ fn perform_intake(
     run_dir: &Path,
     snapshot_dir: &Path,
     metadata: &mut IntakeMetadata,
+    sandbox: &mut SandboxEnforcer,
 ) -> std::result::Result<(), IntakeFailure> {
     let resolved_commit = match source_kind {
         SourceKind::LocalPath => intake_local_source(args, snapshot_dir)?,
         SourceKind::GitUrl => intake_git_source(args, run_dir, snapshot_dir)?,
     };
     metadata.resolved_commit = resolved_commit;
+    enforce_snapshot_bounds(snapshot_dir, sandbox)?;
 
     if !args.allow_non_opentui {
         validate_snapshot_shape(snapshot_dir)?;
@@ -2317,6 +2358,49 @@ fn compute_directory_hash(snapshot_dir: &Path) -> std::result::Result<String, In
     Ok(crate::util::hex_encode(&hasher.finalize()))
 }
 
+/// Walk a freshly materialized snapshot once under the sandbox's filesystem
+/// bounds, before anything hashes or parses it: directory depth, file count,
+/// each file's size, and the total bytes the later passes will read. The
+/// snapshot is untrusted, so an oversized one fails here instead of in the
+/// middle of hashing. Symlinks are neither followed nor counted, as in
+/// [`collect_files`].
+fn enforce_snapshot_bounds(
+    snapshot_dir: &Path,
+    sandbox: &mut SandboxEnforcer,
+) -> std::result::Result<(), IntakeFailure> {
+    let violation = |v: Box<SandboxViolation>| IntakeFailure::sandbox(&v);
+    let io_failure = |what: &str, path: &Path, error: std::io::Error| {
+        IntakeFailure::new(
+            IntakeErrorClass::Unknown,
+            format!("unable to {what} {}: {error}", path.display()),
+        )
+    };
+    let mut stack = vec![(snapshot_dir.to_path_buf(), 0_u32)];
+    while let Some((dir, depth)) = stack.pop() {
+        sandbox.check_depth(depth).map_err(violation)?;
+        let entries = fs::read_dir(&dir).map_err(|e| io_failure("enumerate", &dir, e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| io_failure("read an entry of", &dir, e))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| io_failure("read the file type of", &path, e))?;
+            if file_type.is_dir() {
+                stack.push((path, depth + 1));
+            } else if file_type.is_file() {
+                sandbox.record_file_enumerated().map_err(violation)?;
+                let size = entry
+                    .metadata()
+                    .map_err(|e| io_failure("stat", &path, e))?
+                    .len();
+                sandbox.check_file_size(&path, size).map_err(violation)?;
+                sandbox.record_bytes_read(size).map_err(violation)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn collect_files(root: &Path) -> std::result::Result<Vec<PathBuf>, IntakeFailure> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -2652,8 +2736,8 @@ mod tests {
 
     use super::{
         FORECAST_SCHEMA_VERSION, GIT_CLONE_STAGING_DIR_NAME, ImportArgs, IntakeErrorClass,
-        WATCH_PIPELINE_STAGES, WATCH_SCHEMA_VERSION, classify_git_stderr, detect_source_kind,
-        parse_package_manager_field, run_import,
+        SandboxProfile, WATCH_PIPELINE_STAGES, WATCH_SCHEMA_VERSION, classify_git_stderr,
+        detect_source_kind, parse_package_manager_field, run_import,
     };
 
     fn run_git(repo: &Path, args: &[&str]) {
@@ -2831,6 +2915,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         run_import(args).expect("import should succeed");
@@ -2887,6 +2972,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         run_import(args).expect("import should preserve local working tree state");
@@ -2936,6 +3022,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         let error = run_import(args).expect_err("symlink escape should fail import");
@@ -2974,6 +3061,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         run_import(args).expect("git url import should succeed");
@@ -3006,6 +3094,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         let error = run_import(args).expect_err("git url import should fail for bad pinned commit");
@@ -3036,6 +3125,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         let error = run_import(args).expect_err("missing source should fail");
@@ -3055,6 +3145,85 @@ export function App() {
         );
     }
 
+    fn bounded_import_args(source: &Path, run_root: &Path, name: &str) -> ImportArgs {
+        ImportArgs {
+            source: source.display().to_string(),
+            pinned_commit: None,
+            run_root: run_root.to_path_buf(),
+            run_name: Some(name.to_string()),
+            allow_non_opentui: true,
+            dry_run: false,
+            watch: false,
+            incremental_from: None,
+            sandbox_profile: SandboxProfile::Strict,
+        }
+    }
+
+    fn sandbox_report(run_root: &Path, name: &str) -> Value {
+        let text = fs::read_to_string(run_root.join(name).join("sandbox_report.json"))
+            .expect("sandbox report written");
+        serde_json::from_str(&text).expect("parse sandbox report")
+    }
+
+    /// A snapshot deeper than the profile allows fails with the sandbox's
+    /// exit code before it is hashed, and the report records why. The same
+    /// tree passes under Standard, whose depth limit is higher.
+    #[test]
+    fn run_import_refuses_a_snapshot_deeper_than_the_sandbox_allows() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("source");
+        let mut deep = source.clone();
+        for level in 0..25 {
+            deep = deep.join(format!("d{level}"));
+        }
+        fs::create_dir_all(&deep).expect("create deep tree");
+        fs::write(deep.join("leaf.ts"), "export {}").expect("write leaf");
+        let run_root = temp.path().join("runs");
+
+        let error = run_import(bounded_import_args(&source, &run_root, "strict"))
+            .expect_err("strict depth limit is 20");
+        assert_eq!(error.exit_code(), 50, "{error}");
+        assert!(error.to_string().contains("class=sandbox"), "{error}");
+        let meta: Value = serde_json::from_str(
+            &fs::read_to_string(run_root.join("strict/intake_meta.json")).expect("meta"),
+        )
+        .expect("parse meta");
+        assert_eq!(meta["error_class"], "sandbox");
+        assert_eq!(meta["sandbox_profile"], "strict");
+        assert_eq!(meta["source_hash"], Value::Null, "failed before hashing");
+        let report = sandbox_report(&run_root, "strict");
+        assert_eq!(report["verdict"], "fail");
+        assert_eq!(report["violations"][0]["kind"], "fs_depth_exceeded");
+
+        let mut args = bounded_import_args(&source, &run_root, "standard");
+        args.sandbox_profile = SandboxProfile::Standard;
+        run_import(args).expect("standard depth limit is 30");
+        let report = sandbox_report(&run_root, "standard");
+        assert_eq!(report["verdict"], "pass");
+        assert_eq!(report["counters"]["files_enumerated"], 1);
+    }
+
+    /// An oversized file fails the import without being read. The file is
+    /// sparse, so the test writes almost nothing.
+    #[test]
+    fn run_import_refuses_a_file_larger_than_the_sandbox_allows() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).expect("create source");
+        fs::write(source.join("package.json"), "{}").expect("write package");
+        let big = fs::File::create(source.join("bundle.js")).expect("create big file");
+        big.set_len(17 * 1024 * 1024).expect("size big file");
+        drop(big);
+        let run_root = temp.path().join("runs");
+
+        let error = run_import(bounded_import_args(&source, &run_root, "big"))
+            .expect_err("strict file size limit is 16 MiB");
+        assert_eq!(error.exit_code(), 50, "{error}");
+        assert!(error.to_string().contains("file too large"), "{error}");
+        let report = sandbox_report(&run_root, "big");
+        assert_eq!(report["violations"][0]["kind"], "fs_file_size_exceeded");
+    }
+
     #[test]
     fn run_import_rejects_preexisting_run_directory() {
         let temp = tempdir().expect("tempdir");
@@ -3071,6 +3240,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         let error = run_import(args).expect_err("existing run dir should fail");
@@ -3096,6 +3266,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         let error = run_import(args).expect_err("unsafe run name should fail");
@@ -3127,6 +3298,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         // Use allow_non_opentui false to exercise package.json validation path.
@@ -3198,6 +3370,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         };
 
         run_import(args).expect("import should succeed");
@@ -3288,6 +3461,7 @@ export function App() {
             dry_run: true,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         })
         .expect("first dry-run import should succeed");
 
@@ -3300,6 +3474,7 @@ export function App() {
             dry_run: true,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         })
         .expect("second dry-run import should succeed");
 
@@ -3425,6 +3600,7 @@ export function App() {
             dry_run: false,
             watch: false,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         })
         .expect("baseline import should succeed");
 
@@ -3439,6 +3615,7 @@ export function App() {
             dry_run: false,
             watch: true,
             incremental_from: Some(run_root.join("baseline")),
+            sandbox_profile: SandboxProfile::Standard,
         })
         .expect("watch import should succeed");
 
@@ -3508,6 +3685,7 @@ export function App() {
             dry_run: false,
             watch: true,
             incremental_from: None,
+            sandbox_profile: SandboxProfile::Standard,
         })
         .expect("watch baseline should succeed");
 

@@ -3,13 +3,25 @@
 //! Policy types and a cooperative enforcer meant to keep source analysis and
 //! dynamic probes of untrusted repositories inside constrained boundaries.
 //!
-//! **Where it runs: nowhere yet.** No doctor command constructs a
-//! [`SandboxEnforcer`]; only this crate's tests do. `capture`, `doctor`,
-//! `suite`, `corpus` and the supervised orchestration spawn their subprocesses
-//! (tmux, vhs, docker, ffmpeg, ...) without consulting it, and of the limits even a
-//! consumer could only check some: `ResourcePolicy`'s CPU-time, memory and
-//! open-fd fields have no check at all (bd-ignl4). Treat the policies below as
-//! a specification until the wiring bead lands.
+//! **Where it runs: the import snapshot's filesystem bounds, nothing else.**
+//! `doctor_frankentui import` builds an enforcer from `--sandbox-profile`
+//! (default `standard`). Once the untrusted source is materialized, and before
+//! anything hashes or parses it, one walk of the snapshot applies
+//! [`FsPolicy`]'s `max_depth`, `max_file_count`, `max_file_size` and
+//! `max_read_bytes`. A violation fails the import with the violation's exit
+//! code, and `sandbox_report.json` in the run directory records the verdict.
+//!
+//! The other policies have no consumer:
+//! - `read_allow`/`read_deny` would reject ordinary source files (`**/*token*`
+//!   matches `tokenizer.ts`).
+//! - The network and process policies describe analysis subprocesses, and
+//!   doctor spawns none. Import's `git`/`tar` fetch and `capture`/`suite`'s
+//!   tmux, vhs and ffmpeg run trusted tools and the app under test, not the
+//!   imported code.
+//! - `ResourcePolicy`'s CPU-time, memory and open-fd fields have no check at
+//!   all (bd-ignl4).
+//!
+//! Read those as a specification.
 //!
 //! # Design Principles
 //!
@@ -43,7 +55,7 @@ const EXIT_SANDBOX_POLICY_LOAD_ERROR: i32 = 54;
 // ── Sandbox Profile ──────────────────────────────────────────────────────
 
 /// Pre-configured sandbox policy profiles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxProfile {
     /// Maximum restrictions: read-only FS within snapshot, no network, no subprocesses.
