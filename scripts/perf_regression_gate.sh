@@ -396,7 +396,9 @@ PY
         effective_threshold_pct="$threshold_pct"
         if [[ -n "$slo_threshold_pct" ]]; then
             if ! effective_threshold_pct=$(awk -v configured="$threshold_pct" -v slo="$slo_threshold_pct" '
-                BEGIN { printf "%.17g\n", configured < slo ? configured : slo }
+                # Parenthesized: a bare `<` in a printf argument list parses
+                # as redirection in BSD awk (macOS), a syntax error there.
+                BEGIN { printf "%.17g\n", (configured < slo ? configured : slo) }
             '); then
                 echo "ERROR: failed to resolve SLO tolerance for $key" >&2
                 return 3

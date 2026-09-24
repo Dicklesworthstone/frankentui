@@ -11,4 +11,3 @@
 # failure the checker exists to prevent, so the id belongs to whoever owns the
 # perf budgets, not to the person who noticed.
 
-diff/sparse_5pct/200x60 bd-kfv6f

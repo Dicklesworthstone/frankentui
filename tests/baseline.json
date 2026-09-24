@@ -59,7 +59,7 @@
 
   "diff_200x60_sparse": {
     "description": "Diff computation on 200x60 buffer with tile prefilter (5% change)",
-    "criterion_name": "diff/sparse_5pct/200x60",
+    "criterion_name": "diff/sparse_5pct_rows/compute_dirty/200x60",
     "bench_file": "diff_bench",
     "crate": "ftui-render",
     "slo_metric": "diff_sparse_200x60_p99_ns",
