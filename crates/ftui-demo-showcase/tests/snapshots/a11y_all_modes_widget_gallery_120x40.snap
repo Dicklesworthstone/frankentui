@@ -2,18 +2,18 @@
 ╭────────────────────────────────────────────────────Widget Gallery────────────────────────────────────────────────────╮
 │▸ A: Inputs │   B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F: Layout │   G: Utility │   H: Advance│
 │╭TextInput─────╮╭Masked Input─╮╭Command Palette─────────╮╭Log Viewer────────────╮  ┌────────── Pane Studio ──────────┐│
-││o@example.com ││••••••       ││                        ││INFO  boot: FrankenTUI│  │mode:Focus sel:1 tl:0/0 ops:0 sp:││
-││              ││             ││ ╭─ Command Palette ──╮ ││demo started          │  │┃              ││               │││
-││              ││             ││ │>Type to search...  │ ││DEBUG layout: resolved│  │┃ 16x13  @85,4 ││ 17x13  @101,4 │││
-││              ││             ││ │> [App] Quit  Exit …│ ││6 constraints         │  │┃              ││               │││
-││              ││             ││ │  [File] Open File  │ ││WARN  io: slow disk   │  │┃              ││               │││
-│╰──────────────╯╰─────────────╯│ │  [File] Save File  │ ││detected, using cache │  │┃              ││               │││
-│╭TextArea─────────────────────╮│ │  [View] Cycle Theme│ ││INFO  render: diff    │  │┃              ││               │││
-││1  FrankenTUI text area      ││ │  [View] Toggle Per…│ ││cells=512 runs=18     │  │┃              ││               │││
-││2  - Multi-line editing      ││ ╰────────────────────╯ ││bytes=9.6KB           │  │┃              ││               │││
-││3  - Soft wrap enabled       ││                        ││INFO  net: connected  │  │┃              ││               │││
-││4  - Line numbers            │╰────────────────────────╯│to telemetry endpoint │  │┃              ││               │││
-││                             │╭File Picker─────────────╮│ERROR auth: token     │  │┃              ■│               │││
+││o@example.com ││••••••       ││                        ││DEBUG layout: resolved│  │mode:Focus sel:1 tl:0/0 ops:0 sp:││
+││              ││             ││ ╭─ Command Palette ──╮ ││6 constraints         │  │┃              ││               │││
+││              ││             ││ │>Type to search...  │ ││WARN  io: slow disk   │  │┃ 16x13  @85,4 ││ 17x13  @101,4 │││
+││              ││             ││ │> [App] Quit  Exit …│ ││detected, using cache │  │┃              ││               │││
+││              ││             ││ │  [File] Open File  │ ││INFO  render: diff    │  │┃              ││               │││
+│╰──────────────╯╰─────────────╯│ │  [File] Save File  │ ││cells=512 runs=18     │  │┃              ││               │││
+│╭TextArea─────────────────────╮│ │  [View] Cycle Theme│ ││bytes=9.6KB           │  │┃              ││               │││
+││1  FrankenTUI text area      ││ │  [View] Toggle Per…│ ││INFO  net: connected  │  │┃              ││               │││
+││2  - Multi-line editing      ││ ╰────────────────────╯ ││to telemetry endpoint │  │┃              ││               │││
+││3  - Soft wrap enabled       ││                        ││ERROR auth: token     │  │┃              ││               │││
+││4  - Line numbers            │╰────────────────────────╯│expired, refresh      │  │┃              ││               │││
+││                             │╭File Picker─────────────╮│scheduled             │  │┃              ■│               │││
 ││                             ││.                       │╰──────────────────────╯  │──────■■■──────────────■■■───────││
 ││                             ││> ?? benches            │╭ProgressBar───────────╮  │╭───5 pane-3───■╭───7 pane-4────╮││
 ││                             ││  ?? data               ││          0%          │  ││              ■│               │││

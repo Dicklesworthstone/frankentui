@@ -857,7 +857,25 @@ impl LogViewer {
         stats.incremental_search_matches as f64 / stats.incremental_search_checks as f64
     }
 
+    /// Rows `text` occupies at `width` under the current wrap mode; the same
+    /// decision [`Self::render_line`] makes.
+    fn wrapped_rows(&self, text: &Text, width: u16) -> u16 {
+        if matches!(self.wrap_mode, LogWrapMode::NoWrap) {
+            return 1;
+        }
+        let content = text.to_plain_text();
+        if display_width(&content) <= width as usize {
+            return 1;
+        }
+        let options = WrapOptions::new(width as usize).mode(self.wrap_mode.into());
+        u16::try_from(wrap_with_options(&content, &options).len())
+            .unwrap_or(u16::MAX)
+            .max(1)
+    }
+
     /// Render a single line with optional wrapping and search highlighting.
+    /// `skip_rows` drops that many leading wrapped rows (the entry is clipped
+    /// at the top of the viewport); it has no effect on a one-row entry.
     #[allow(clippy::too_many_arguments)]
     fn render_line(
         &self,
@@ -869,6 +887,7 @@ impl LogViewer {
         max_y: u16,
         frame: &mut Frame,
         is_selected: bool,
+        skip_rows: u16,
     ) -> u16 {
         let effective_style = if is_selected {
             self.highlight_style.unwrap_or(self.style)
@@ -940,7 +959,7 @@ impl LogViewer {
                     let wrapped = wrap_with_options(&content, &options);
                     let mut lines_rendered = 0u16;
 
-                    for (i, part) in wrapped.into_iter().enumerate() {
+                    for (i, part) in wrapped.into_iter().skip(skip_rows as usize).enumerate() {
                         let line_y = y.saturating_add(i as u16);
                         if line_y >= max_y {
                             break;
@@ -1085,7 +1104,8 @@ impl StatefulWidget for LogViewer {
         let visible_count = area.height as usize;
 
         // Determine which lines to show
-        let (start_idx, end_idx, _at_bottom_ignored) = if let Some(indices) = render_indices {
+        let (mut start_idx, mut end_idx, anchored_to_bottom) = if let Some(indices) = render_indices
+        {
             // Filtered mode: show lines matching the filter
             let filtered_total = indices.len();
             if filtered_total == 0 {
@@ -1102,8 +1122,32 @@ impl StatefulWidget for LogViewer {
         } else {
             // Unfiltered mode: use Virtualized's range directly
             let range = self.virt.visible_range(area.height);
-            (range.start, range.end, self.virt.is_at_bottom())
+            (range.start, range.end, self.virt.follow_mode())
         };
+
+        // The ranges above count one row per entry. With wrapping an entry can
+        // take several rows, so a range picked that way from the bottom runs
+        // out of rows before its newest entries - a followed log hid exactly
+        // the lines being tailed (bd-mbsre). Following, measure from the
+        // newest entry back until the viewport is full instead, clipping the
+        // top of the oldest one if it overflows.
+        let mut skip_first_rows = 0u16;
+        if anchored_to_bottom && !matches!(self.wrap_mode, LogWrapMode::NoWrap) {
+            let display_total = render_indices.map_or(total_lines, <[usize]>::len);
+            let mut rows = 0u32;
+            let mut start = display_total;
+            while start > 0 && rows < u32::from(area.height) {
+                start -= 1;
+                let line_idx = render_indices.map_or(start, |indices| indices[start]);
+                if let Some(text) = self.virt.get(line_idx) {
+                    rows += u32::from(self.wrapped_rows(text, area.width));
+                }
+            }
+            start_idx = start;
+            end_idx = display_total;
+            skip_first_rows =
+                u16::try_from(rows.saturating_sub(u32::from(area.height))).unwrap_or(u16::MAX);
+        }
 
         let mut y = area.y;
         let mut lines_rendered = 0;
@@ -1127,6 +1171,11 @@ impl StatefulWidget for LogViewer {
 
             let is_selected = state.selected_line == Some(line_idx);
 
+            let skip_rows = if display_idx == start_idx {
+                skip_first_rows
+            } else {
+                0
+            };
             let lines_used = self.render_line(
                 line,
                 line_idx,
@@ -1136,6 +1185,7 @@ impl StatefulWidget for LogViewer {
                 area.bottom(),
                 frame,
                 is_selected,
+                skip_rows,
             );
 
             y = y.saturating_add(lines_used);
@@ -1341,6 +1391,94 @@ mod tests {
             out.push(ch);
         }
         out
+    }
+
+    // --- Wrapped entries and follow mode (bd-mbsre) ---
+
+    fn render_rows(
+        log: &LogViewer,
+        state: &mut LogViewerState,
+        w: u16,
+        h: u16,
+        frames: usize,
+    ) -> Vec<String> {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(w, h, &mut pool);
+        for _ in 0..frames {
+            log.render(Rect::new(0, 0, w, h), &mut frame, state);
+        }
+        (0..h).map(|y| line_text(&frame, y, w)).collect()
+    }
+
+    #[test]
+    fn wrapped_follow_mode_shows_the_newest_entry() {
+        // Each entry is 18 cells, two rows at width 12, so a 4-row viewport
+        // holds two entries. Following, those must be the newest two.
+        let mut log = LogViewer::new(100).wrap_mode(LogWrapMode::CharWrap);
+        for i in 0..5 {
+            log.push(format!("entry-{i}-xxxxxxxx"));
+        }
+        let mut state = LogViewerState::default();
+        for frames in [1, 3] {
+            let rows = render_rows(&log, &mut state, 12, 4, frames);
+            assert!(
+                rows.iter().any(|r| r.contains("entry-4")),
+                "{frames} frame(s): {rows:?}"
+            );
+            assert!(rows[0].contains("entry-3"), "{frames} frame(s): {rows:?}");
+        }
+    }
+
+    #[test]
+    fn wrapped_entry_taller_than_the_viewport_shows_its_last_rows_when_following() {
+        // 40 cells at width 10 is four rows; a 3-row viewport shows rows 2-4.
+        let mut log = LogViewer::new(10).wrap_mode(LogWrapMode::CharWrap);
+        log.push("short");
+        log.push("aaaaaaaaaabbbbbbbbbbccccccccccdddddddddd");
+        let mut state = LogViewerState::default();
+        let rows = render_rows(&log, &mut state, 10, 3, 2);
+        assert_eq!(rows, ["bbbbbbbbbb", "cccccccccc", "dddddddddd"]);
+    }
+
+    #[test]
+    fn wrapped_view_scrolled_to_the_top_stays_top_anchored() {
+        let mut log = LogViewer::new(100).wrap_mode(LogWrapMode::CharWrap);
+        for i in 0..5 {
+            log.push(format!("entry-{i}-xxxxxxxx"));
+        }
+        log.scroll_to_top();
+        let mut state = LogViewerState::default();
+        let rows = render_rows(&log, &mut state, 12, 4, 2);
+        assert!(rows[0].starts_with("entry-0"), "{rows:?}");
+    }
+
+    #[test]
+    fn wrapped_filtered_view_at_the_bottom_shows_the_newest_match() {
+        let mut log = LogViewer::new(100).wrap_mode(LogWrapMode::CharWrap);
+        for i in 0..6 {
+            log.push(format!(
+                "{}-{i}-xxxxxxxxxx",
+                if i % 2 == 0 { "keep" } else { "drop" }
+            ));
+        }
+        log.set_filter(Some("keep"));
+        let mut state = LogViewerState::default();
+        let rows = render_rows(&log, &mut state, 10, 4, 2);
+        assert!(rows.iter().any(|r| r.contains("keep-4")), "{rows:?}");
+    }
+
+    #[test]
+    fn wrapped_short_log_is_drawn_from_the_top() {
+        // Room to spare: entries start at row 0, nothing is clipped.
+        let mut log = LogViewer::new(10).wrap_mode(LogWrapMode::CharWrap);
+        log.push("one");
+        log.push("two");
+        let mut state = LogViewerState::default();
+        let rows = render_rows(&log, &mut state, 10, 5, 1);
+        assert!(
+            rows[0].starts_with("one") && rows[1].starts_with("two"),
+            "{rows:?}"
+        );
     }
 
     #[test]

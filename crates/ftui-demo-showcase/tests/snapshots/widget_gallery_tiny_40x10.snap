@@ -1,6 +1,6 @@
 ▸ A: Inputs │   B: Display │   C: Status
 ╭TextIn╮╭Maske╮╭Command Pal╮╭Log Viewer╮
-╰──────╯╰─────╯│           ││ERROR     │
+╰──────╯╰─────╯│           ││scheduled │
 ╭TextArea─────╮╰───────────╯╰──────────╯
 │1  FrankenTUI│╭File Picker╮╭ProgressBa╮
 │    text area││.          │╰──────────╯

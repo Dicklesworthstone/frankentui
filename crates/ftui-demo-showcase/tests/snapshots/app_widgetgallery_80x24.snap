@@ -2,11 +2,11 @@
 ╭────────────────────────────────Widget Gallery────────────────────────────────╮
 │▸ A: Inputs │   B: Display │   C: Status │   D: Data Viz │   E: Navigation │  │
 │╭TextInput────╮╭Masked Input─╮╭Command Palette────────╮╭Log Viewer───────────╮│
-││@example.com ││••••••       ││                       ││DEBUG layout:        ││
-││             ││             ││                       ││resolved 6           ││
-│╰─────────────╯╰─────────────╯│                       ││constraints          ││
-│╭TextArea────────────────────╮│                       ││WARN  io: slow disk  ││
-││1  FrankenTUI text area     │╰───────────────────────╯│detected, using ca 0 ││
+││@example.com ││••••••       ││                       ││INFO  net: connected ││
+││             ││             ││                       ││to telemetry endpoint││
+│╰─────────────╯╰─────────────╯│                       ││ERROR auth: token    ││
+│╭TextArea────────────────────╮│                       ││expired, refresh     ││
+││1  FrankenTUI text area     │╰───────────────────────╯│scheduled            ││
 ││2  - Multi-line editing     │╭File Picker────────────╮╰─────────────────────╯│
 ││3  - Soft wrap enabled      ││.                      │╭ProgressBar──────────╮│
 ││4  - Line numbers           ││> ?? benches           ││         0%          ││
