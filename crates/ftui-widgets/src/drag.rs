@@ -13,9 +13,11 @@
 //! ## Integration with Semantic Events
 //!
 //! Drag detection is handled by the gesture recognizer in `ftui-core`, which
-//! emits `SemanticEvent::DragStart`, `DragMove`, `DragEnd`, and `DragCancel`.
-//! The drag manager (bd-1csc.3) listens for these events, identifies the
-//! source widget via hit-test, and calls the [`Draggable`] methods.
+//! emits `SemanticEvent::DragStart`, `DragMove`, `DragEnd`, and `DragCancel`;
+//! its `GestureConfig::drag_threshold` decides when a drag starts. Nothing in
+//! this crate consumes those events for you: the application listens for them,
+//! identifies the source widget by hit-test, and calls the [`Draggable`] and
+//! [`DropTarget`] methods itself. These types are the protocol it uses.
 //!
 //! ## Invariants
 //!
@@ -34,7 +36,7 @@
 //! | No hit-test match at drag start | Click outside any draggable | Drag not initiated |
 //! | Payload decode failure | Type mismatch at drop target | Drop rejected |
 //! | Focus loss mid-drag | Window deactivation | `DragCancel` emitted |
-//! | Escape pressed mid-drag | User cancellation | `DragCancel` emitted (if `cancel_on_escape`) |
+//! | Escape pressed mid-drag | User cancellation | `DragCancel` emitted by the gesture recognizer |
 
 use crate::Widget;
 use crate::measure_cache::WidgetId;
@@ -133,66 +135,13 @@ impl DragPayload {
 }
 
 // ---------------------------------------------------------------------------
-// DragConfig
-// ---------------------------------------------------------------------------
-
-/// Configuration for drag gesture detection.
-///
-/// Controls how mouse movement is interpreted as a drag versus a click.
-#[derive(Clone, Debug)]
-pub struct DragConfig {
-    /// Minimum movement in cells before a drag starts (default: 3).
-    pub threshold_cells: u16,
-    /// Delay in milliseconds before drag starts (default: 0).
-    ///
-    /// A non-zero delay requires the user to hold the mouse button for
-    /// this long before movement triggers a drag.
-    pub start_delay_ms: u64,
-    /// Whether pressing Escape cancels an active drag (default: true).
-    pub cancel_on_escape: bool,
-}
-
-impl Default for DragConfig {
-    fn default() -> Self {
-        Self {
-            threshold_cells: 3,
-            start_delay_ms: 0,
-            cancel_on_escape: true,
-        }
-    }
-}
-
-impl DragConfig {
-    /// Create a config with custom threshold.
-    #[must_use]
-    pub fn with_threshold(mut self, cells: u16) -> Self {
-        self.threshold_cells = cells;
-        self
-    }
-
-    /// Create a config with start delay.
-    #[must_use]
-    pub fn with_delay(mut self, ms: u64) -> Self {
-        self.start_delay_ms = ms;
-        self
-    }
-
-    /// Create a config where Escape does not cancel drags.
-    #[must_use]
-    pub fn no_escape_cancel(mut self) -> Self {
-        self.cancel_on_escape = false;
-        self
-    }
-}
-
-// ---------------------------------------------------------------------------
 // DragState
 // ---------------------------------------------------------------------------
 
 /// Active drag operation state.
 ///
 /// Created when a drag starts and destroyed when it ends or is cancelled.
-/// The drag manager (bd-1csc.3) owns this state.
+/// The application's drag handling owns this state.
 pub struct DragState {
     /// Widget that initiated the drag.
     pub source_id: WidgetId,
@@ -266,12 +215,13 @@ impl DragState {
 /// Trait for widgets that can be drag sources.
 ///
 /// Implement this trait to allow a widget to participate in drag-and-drop
-/// operations. The drag manager calls these methods during the drag lifecycle.
+/// operations. The application's drag handling calls these methods during
+/// the drag lifecycle.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use ftui_widgets::drag::{Draggable, DragPayload, DragConfig};
+/// use ftui_widgets::drag::{Draggable, DragPayload};
 ///
 /// struct FileItem { path: String }
 ///
@@ -302,13 +252,6 @@ pub trait Draggable {
     /// `DragPayload::display_text`.
     fn drag_preview(&self) -> Option<Box<dyn Widget>> {
         None
-    }
-
-    /// Drag gesture configuration for this widget.
-    ///
-    /// Override to customize threshold, delay, or escape behaviour.
-    fn drag_config(&self) -> DragConfig {
-        DragConfig::default()
     }
 
     /// Called when a drag operation starts from this widget.
@@ -861,27 +804,6 @@ mod tests {
         assert_eq!(p1.display_text, p2.display_text);
     }
 
-    // === DragConfig tests ===
-
-    #[test]
-    fn config_defaults() {
-        let cfg = DragConfig::default();
-        assert_eq!(cfg.threshold_cells, 3);
-        assert_eq!(cfg.start_delay_ms, 0);
-        assert!(cfg.cancel_on_escape);
-    }
-
-    #[test]
-    fn config_builder() {
-        let cfg = DragConfig::default()
-            .with_threshold(5)
-            .with_delay(100)
-            .no_escape_cancel();
-        assert_eq!(cfg.threshold_cells, 5);
-        assert_eq!(cfg.start_delay_ms, 100);
-        assert!(!cfg.cancel_on_escape);
-    }
-
     // === DragState tests ===
 
     #[test]
@@ -1001,13 +923,6 @@ mod tests {
     fn draggable_default_preview_is_none() {
         let d = DragSourceFixture::new("item");
         assert!(d.drag_preview().is_none());
-    }
-
-    #[test]
-    fn draggable_default_config() {
-        let d = DragSourceFixture::new("item");
-        let cfg = d.drag_config();
-        assert_eq!(cfg.threshold_cells, 3);
     }
 
     #[test]

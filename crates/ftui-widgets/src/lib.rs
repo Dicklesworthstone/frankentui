@@ -351,9 +351,7 @@ pub use focus::{
 };
 
 // Drag-and-drop protocol (source + target)
-pub use drag::{
-    DragConfig, DragPayload, DragState, Draggable, DropPosition, DropResult, DropTarget,
-};
+pub use drag::{DragPayload, DragState, Draggable, DropPosition, DropResult, DropTarget};
 
 // Stateful persistence trait
 pub use stateful::{StateKey, Stateful, VersionedState};

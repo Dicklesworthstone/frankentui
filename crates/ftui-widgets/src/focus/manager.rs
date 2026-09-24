@@ -8,8 +8,6 @@
 
 use ahash::AHashMap;
 
-use ftui_core::event::KeyCode;
-
 use super::indicator::FocusIndicator;
 use super::spatial;
 use super::{FocusGraph, FocusId, NavDirection};
@@ -28,7 +26,6 @@ pub struct FocusGroup {
     pub id: u32,
     pub members: Vec<FocusId>,
     pub wrap: bool,
-    pub exit_key: Option<KeyCode>,
 }
 
 impl FocusGroup {
@@ -38,19 +35,12 @@ impl FocusGroup {
             id,
             members,
             wrap: true,
-            exit_key: None,
         }
     }
 
     #[must_use]
     pub fn with_wrap(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
-        self
-    }
-
-    #[must_use]
-    pub fn with_exit_key(mut self, key: KeyCode) -> Self {
-        self.exit_key = Some(key);
         self
     }
 
@@ -1731,16 +1721,9 @@ mod tests {
     }
 
     #[test]
-    fn focus_group_with_exit_key() {
-        let group = FocusGroup::new(1, vec![]).with_exit_key(KeyCode::Escape);
-        assert_eq!(group.exit_key, Some(KeyCode::Escape));
-    }
-
-    #[test]
     fn focus_group_default_wraps() {
         let group = FocusGroup::new(1, vec![]);
         assert!(group.wrap);
-        assert_eq!(group.exit_key, None);
     }
 
     // --- Trap stack ---

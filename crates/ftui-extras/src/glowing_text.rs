@@ -198,7 +198,6 @@ pub struct TransitionOverlay {
     progress: f64,
     primary_color: PackedRgba,
     secondary_color: PackedRgba,
-    duration_ticks: u32,
 }
 
 impl TransitionOverlay {
@@ -210,7 +209,6 @@ impl TransitionOverlay {
             progress: 0.0,
             primary_color: PackedRgba::rgb(255, 100, 200),
             secondary_color: PackedRgba::rgb(180, 180, 220),
-            duration_ticks: 30,
         }
     }
 
@@ -234,13 +232,6 @@ impl TransitionOverlay {
     #[must_use]
     pub fn secondary_color(mut self, color: PackedRgba) -> Self {
         self.secondary_color = color;
-        self
-    }
-
-    /// Set the total duration in ticks.
-    #[must_use]
-    pub fn duration(mut self, ticks: u32) -> Self {
-        self.duration_ticks = ticks;
         self
     }
 
@@ -770,7 +761,6 @@ mod tests {
         assert_eq!(overlay.title, "Title");
         assert_eq!(overlay.subtitle, "Sub");
         assert!((overlay.progress - 0.0).abs() < f64::EPSILON);
-        assert_eq!(overlay.duration_ticks, 30);
     }
 
     #[test]
@@ -789,12 +779,6 @@ mod tests {
             .secondary_color(PackedRgba::rgb(40, 50, 60));
         assert_eq!(overlay.primary_color, PackedRgba::rgb(10, 20, 30));
         assert_eq!(overlay.secondary_color, PackedRgba::rgb(40, 50, 60));
-    }
-
-    #[test]
-    fn transition_overlay_duration_setter() {
-        let overlay = TransitionOverlay::new("T", "S").duration(100);
-        assert_eq!(overlay.duration_ticks, 100);
     }
 
     #[test]

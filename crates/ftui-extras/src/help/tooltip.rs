@@ -6,8 +6,9 @@
 //!
 //! 1. Tooltip placement never renders off-screen; if not enough space, the
 //!    tooltip is clamped to fit within the visible area.
-//! 2. The tooltip shows after `delay_ms` and dismisses on focus change or
-//!    keypress (if `dismiss_on_key` is enabled).
+//! 2. `TooltipState::update` shows the tooltip once `delay_ms` has elapsed.
+//!    The widget handles no events: hiding it on a focus change or a keypress
+//!    is the application calling `TooltipState::hide`.
 //! 3. Multi-line content wraps deterministically at `max_width`.
 //!
 //! # Example
@@ -55,8 +56,6 @@ pub struct TooltipConfig {
     pub max_width: u16,
     /// Positioning strategy.
     pub position: TooltipPosition,
-    /// Dismiss on any keypress (default: true).
-    pub dismiss_on_key: bool,
     /// Tooltip style (background + foreground).
     pub style: Style,
     /// Padding inside the tooltip (default: 1).
@@ -69,7 +68,6 @@ impl Default for TooltipConfig {
             delay_ms: 500,
             max_width: 40,
             position: TooltipPosition::Auto,
-            dismiss_on_key: true,
             style: Style::default(),
             padding: 1,
         }
@@ -95,13 +93,6 @@ impl TooltipConfig {
     #[must_use]
     pub fn position(mut self, pos: TooltipPosition) -> Self {
         self.position = pos;
-        self
-    }
-
-    /// Set dismiss-on-key behavior.
-    #[must_use]
-    pub fn dismiss_on_key(mut self, dismiss: bool) -> Self {
-        self.dismiss_on_key = dismiss;
         self
     }
 
@@ -660,13 +651,11 @@ mod tests {
             .delay_ms(300)
             .max_width(50)
             .position(TooltipPosition::Right)
-            .dismiss_on_key(false)
             .padding(2);
 
         assert_eq!(config.delay_ms, 300);
         assert_eq!(config.max_width, 50);
         assert_eq!(config.position, TooltipPosition::Right);
-        assert!(!config.dismiss_on_key);
         assert_eq!(config.padding, 2);
     }
 
@@ -961,7 +950,6 @@ mod tests {
         assert_eq!(config.delay_ms, 500);
         assert_eq!(config.max_width, 40);
         assert_eq!(config.position, TooltipPosition::Auto);
-        assert!(config.dismiss_on_key);
         assert_eq!(config.padding, 1);
         assert!(config.style.is_empty());
     }
