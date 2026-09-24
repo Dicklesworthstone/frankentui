@@ -286,9 +286,10 @@ pub fn with_panic_cleanup_suppressed<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
+    // The block below is compiled out here, so this is the tail expression.
     #[cfg(panic = "abort")]
     {
-        return f();
+        f()
     }
 
     #[cfg(not(panic = "abort"))]
