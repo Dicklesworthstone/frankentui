@@ -11,6 +11,12 @@ readme = "../../README.md"
 keywords = ["tui", "terminal", "ui", "ftui", "frankentui"]
 categories = ["command-line-interface", "gui"]
 
+# docs.rs builds this crate alone. With default features none of the modules
+# the crate docs' feature table links to exist, so every link was broken there
+# (bd-y9aqy). `cargo doc -p ftui-extras --all-features` is -D warnings clean.
+[package.metadata.docs.rs]
+all-features = true
+
 [lints]
 workspace = true
 
