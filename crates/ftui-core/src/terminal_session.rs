@@ -485,8 +485,20 @@ pub struct TerminalSession {
     bracketed_paste_enabled: bool,
     focus_events_enabled: bool,
     kitty_keyboard_enabled: bool,
+    /// What `suspend` turned off, for `resume` to turn back on.
+    suspended: Option<SuspendedFeatures>,
     #[cfg(unix)]
     signal_guard: Option<SignalGuard>,
+}
+
+/// Terminal features a job-control suspend released.
+#[derive(Debug, Clone, Copy)]
+struct SuspendedFeatures {
+    alternate_screen: bool,
+    mouse: bool,
+    bracketed_paste: bool,
+    focus_events: bool,
+    kitty_keyboard: bool,
 }
 
 impl TerminalSession {
@@ -544,6 +556,7 @@ impl TerminalSession {
             bracketed_paste_enabled: false,
             focus_events_enabled: false,
             kitty_keyboard_enabled: false,
+            suspended: None,
             #[cfg(unix)]
             signal_guard,
         };
@@ -621,6 +634,7 @@ impl TerminalSession {
             bracketed_paste_enabled: false,
             focus_events_enabled: false,
             kitty_keyboard_enabled: false,
+            suspended: None,
             #[cfg(unix)]
             signal_guard,
         })
@@ -1049,6 +1063,110 @@ impl TerminalSession {
     /// Get the session options.
     pub fn options(&self) -> &SessionOptions {
         &self.options
+    }
+
+    /// Whether this session owns a real terminal (not a test-helper session).
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        !self.headless
+    }
+
+    /// Hand the terminal back for a job-control stop: the drop-time teardown
+    /// (input modes off, cursor shown, alternate screen left), then cooked
+    /// mode, keeping the session so [`resume`](Self::resume) can undo it.
+    ///
+    /// Returns `false` for a test-helper session. Idempotent while suspended.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the teardown bytes or the mode change fail.
+    pub fn suspend(&mut self) -> io::Result<bool> {
+        if self.headless {
+            return Ok(false);
+        }
+        if self.suspended.is_some() {
+            return Ok(true);
+        }
+        let _output_guard = terminal_output_lock();
+        let features = SuspendedFeatures {
+            alternate_screen: self.alternate_screen_enabled,
+            mouse: self.mouse_enabled,
+            bracketed_paste: self.bracketed_paste_enabled,
+            focus_events: self.focus_events_enabled,
+            kitty_keyboard: self.kitty_keyboard_enabled,
+        };
+        let caps = TerminalCapabilities::with_overrides();
+        let plan = TeardownPlan {
+            // The presenter owns the synchronized-output block and closes it
+            // in its own suspend.
+            emit_sync_end: false,
+            reset_scroll_region: true,
+            reset_style: true,
+            pop_kitty_keyboard: features.kitty_keyboard && !KittyPopLatch::is_claimed(),
+            disable_focus: features.focus_events,
+            disable_paste: features.bracketed_paste,
+            disable_mouse: features.mouse,
+            mouse_mux_safe: caps.in_any_mux(),
+            mouse_disable_override: None,
+            show_cursor: true,
+            leave_alt_screen: features.alternate_screen,
+        };
+        let mut stdout = io::stdout();
+        plan.write_for_backend(&mut stdout, "crossterm")?;
+        stdout.flush()?;
+        // Recorded before the mode change, so a failure below still leaves
+        // resume (or drop) with an accurate picture of what is off.
+        self.suspended = Some(features);
+        self.alternate_screen_enabled = false;
+        self.mouse_enabled = false;
+        self.bracketed_paste_enabled = false;
+        self.focus_events_enabled = false;
+        self.kitty_keyboard_enabled = false;
+        crossterm::terminal::disable_raw_mode()?;
+        Ok(true)
+    }
+
+    /// Undo [`suspend`](Self::suspend): raw mode, then the alternate screen
+    /// (cleared: its contents are gone), then input modes. A no-op when
+    /// nothing is suspended.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if raw mode or a feature cannot be re-enabled.
+    pub fn resume(&mut self) -> io::Result<()> {
+        let Some(features) = self.suspended.take() else {
+            return Ok(());
+        };
+        let _output_guard = terminal_output_lock();
+        crossterm::terminal::enable_raw_mode()?;
+        let caps = TerminalCapabilities::with_overrides();
+        let mut stdout = io::stdout();
+        if features.alternate_screen {
+            self.alternate_screen_enabled = true;
+            crossterm::execute!(
+                stdout,
+                crossterm::terminal::EnterAlternateScreen,
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                crossterm::cursor::MoveTo(0, 0)
+            )?;
+        }
+        if features.mouse {
+            self.mouse_enabled = true;
+            stdout.write_all(Self::mouse_enable_sequence_for_caps(&caps))?;
+        }
+        if features.bracketed_paste {
+            self.bracketed_paste_enabled = true;
+            crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste)?;
+        }
+        if features.focus_events {
+            self.focus_events_enabled = true;
+            crossterm::execute!(stdout, crossterm::event::EnableFocusChange)?;
+        }
+        if features.kitty_keyboard {
+            self.kitty_keyboard_enabled = true;
+            Self::enable_kitty_keyboard(&mut stdout)?;
+        }
+        stdout.flush()
     }
 
     /// Cleanup helper (shared between drop and explicit cleanup).

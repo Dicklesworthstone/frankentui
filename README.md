@@ -1437,16 +1437,16 @@ For tmux, enable mouse forwarding with `set -g mouse on` in your tmux configurat
 
 ### “Ctrl-Z does nothing” / suspending with `kill -TSTP`
 
-On the native backend, `kill -TSTP` (and SIGTTIN/SIGTTOU) hands the terminal
-back before the process stops: input modes off, alternate screen left, cooked
+On both backends, native and crossterm, `kill -TSTP` (and SIGTTIN/SIGTTOU)
+hands the terminal back before the process stops: input modes off, alternate screen left, cooked
 mode restored, so the shell works. After `fg`, the program re-arms raw mode and
 repaints the whole screen. `ProgramConfig::with_job_control(false)` turns this
 off.
 
 Ctrl-Z is not a suspend key by default: raw mode delivers it as an ordinary key
 event, and it is undo in `TextArea` and the showcase editors. Opt in with
-`ProgramConfig::default().with_ctrl_z_suspend(true)`. The crossterm backend
-does not support suspend yet. Design and limits: `docs/spec/suspend-resume.md`.
+`ProgramConfig::default().with_ctrl_z_suspend(true)`. Design and limits:
+`docs/spec/suspend-resume.md`.
 
 ### “output flickers”
 

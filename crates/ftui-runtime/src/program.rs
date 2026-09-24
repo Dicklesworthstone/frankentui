@@ -5167,6 +5167,18 @@ impl BackendEventSource for CrosstermEventSource {
     fn read_event(&mut self) -> Result<Option<Event>, io::Error> {
         self.session.read_event()
     }
+
+    fn supports_suspend(&self) -> bool {
+        self.session.is_live()
+    }
+
+    fn suspend(&mut self) -> Result<bool, io::Error> {
+        self.session.suspend()
+    }
+
+    fn resume(&mut self) -> Result<(), io::Error> {
+        self.session.resume()
+    }
 }
 
 // =============================================================================

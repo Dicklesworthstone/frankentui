@@ -1,10 +1,9 @@
 # Suspend and resume (SIGTSTP / SIGCONT) — design
 
-Status: **implemented for the native TTY backend** (`bd-d4dtr`). Written for
-`bd-g00-root-epic-ewths.37.1` as a design; **§11 records where the build
-departs from it**, and wins where the two disagree. The crossterm backend
-does not support suspend yet: under it the stop signals keep their default
-action.
+Status: **implemented for both backends**: native TTY (`bd-d4dtr`) and
+crossterm (`bd-pwx7n`). Written for `bd-g00-root-epic-ewths.37.1` as a
+design; **§11 records where the build departs from it**, and wins where the
+two disagree.
 
 Today `kill -TSTP` on an inline session leaves the shell in raw mode: the
 process stops with the terminal still in the state the app configured, so the
@@ -276,7 +275,7 @@ Where each piece lives:
 |---|---|
 | Stop-signal handlers, claims, `stop_process` | `ftui_core::job_control` |
 | Hooks | `BackendEventSource::{supports_suspend, suspend, resume}`, `BackendPresenter::suspend` |
-| Terminal hand-back and re-arm | `TtyBackend::{suspend_session, resume_session}`, `RawModeGuard::{restore_original, reenter_raw}` |
+| Terminal hand-back and re-arm | `TtyBackend::{suspend_session, resume_session}`, `RawModeGuard::{restore_original, reenter_raw}`; crossterm: `TerminalSession::{suspend, resume}` behind `CrosstermEventSource` |
 | Presenter state (sync block, scroll region, cursor) | `TerminalWriter::release_for_suspend`, the drop-time cleanup without the trace finish |
 | Sequence, Ctrl-Z, evidence | `Program::service_suspend`, `ProgramConfig::{job_control, ctrl_z_suspends}` |
 
@@ -313,6 +312,7 @@ Evidence rows `suspend` and `resume` are specified in
 `ftui-runtime/src/program.rs` (`stop_request_releases_stops_and_restores_in_order`
 and neighbours), and a real-PTY test that sends `kill -TSTP`, reads the PTY's
 termios while the process is stopped, sends `kill -CONT` and checks raw mode
-and a repaint, in alt-screen and inline mode
+and a repaint, in alt-screen and inline mode on each backend (the
+`_crossterm` variants set `FTUI_DEMO_BACKEND=crossterm`)
 (`ftui-harness/tests/pty_terminal_lifecycle.rs`,
 `pty_stop_signal_hands_back_the_terminal_and_continue_takes_it_again_*`).

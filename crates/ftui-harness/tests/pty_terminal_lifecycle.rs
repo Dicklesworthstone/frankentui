@@ -606,17 +606,22 @@ fn wait_for(
     }
 }
 
-fn pty_suspend_resume(screen_mode: &str) {
+/// `backend` is `native` (ftui-tty) or `crossterm`, selected through the
+/// harness's FTUI_DEMO_BACKEND.
+fn pty_suspend_resume(screen_mode: &str, backend: &str) {
+    let screen_mode_label = format!("{screen_mode}-{backend}");
+    let screen_mode_label = screen_mode_label.as_str();
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
     // Retained on purpose (no deletion); the name is unique per run.
     let evidence = std::env::temp_dir().join(format!(
-        "ftui-suspend-resume-{screen_mode}-{}-{stamp}.jsonl",
+        "ftui-suspend-resume-{screen_mode_label}-{}-{stamp}.jsonl",
         std::process::id()
     ));
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_ftui-harness"));
+    cmd.env("FTUI_DEMO_BACKEND", backend);
     cmd.env("FTUI_HARNESS_EXIT_AFTER_MS", "6000");
     cmd.env("FTUI_HARNESS_SCREEN_MODE", screen_mode);
     cmd.env("FTUI_HARNESS_UI_HEIGHT", "6");
@@ -625,7 +630,7 @@ fn pty_suspend_resume(screen_mode: &str) {
     cmd.env("FTUI_HARNESS_EVIDENCE_JSONL", &evidence);
     let config = PtyConfig::default()
         .with_size(80, 24)
-        .with_test_name(format!("harness_{screen_mode}_suspend_resume"))
+        .with_test_name(format!("harness_{screen_mode_label}_suspend_resume"))
         .logging(false);
     let mut session = spawn_command(config, cmd).expect("spawn harness in PTY");
     let pid = session.child_pid().expect("child pid");
@@ -651,12 +656,12 @@ fn pty_suspend_resume(screen_mode: &str) {
     let _ = session.read_output();
     assert!(
         pty_is_cooked(&session),
-        "{screen_mode}: stopped with the terminal still raw"
+        "{screen_mode_label}:stopped with the terminal still raw"
     );
     let released = session.output()[before_stop..].to_vec();
     assert!(
         find_sequence(&released, b"\x1b[?25h").is_some(),
-        "{screen_mode}: cursor not shown before the stop: {:?}",
+        "{screen_mode_label}:cursor not shown before the stop: {:?}",
         String::from_utf8_lossy(&released)
     );
     if screen_mode == "alt" {
@@ -688,7 +693,7 @@ fn pty_suspend_resume(screen_mode: &str) {
         .expect("wait for exit");
     assert!(
         status.success(),
-        "{screen_mode}: harness failed after resume: {status:?}"
+        "{screen_mode_label}:harness failed after resume: {status:?}"
     );
 
     let rows = std::fs::read_to_string(&evidence).expect("evidence written");
@@ -696,7 +701,7 @@ fn pty_suspend_resume(screen_mode: &str) {
         assert!(
             rows.lines()
                 .any(|line| line.contains(&format!("\"event\":\"{event}\""))),
-            "{screen_mode}: no {event} evidence row in {}",
+            "{screen_mode_label}:no {event} evidence row in {}",
             evidence.display()
         );
     }
@@ -704,10 +709,20 @@ fn pty_suspend_resume(screen_mode: &str) {
 
 #[test]
 fn pty_stop_signal_hands_back_the_terminal_and_continue_takes_it_again_alt() {
-    pty_suspend_resume("alt");
+    pty_suspend_resume("alt", "native");
 }
 
 #[test]
 fn pty_stop_signal_hands_back_the_terminal_and_continue_takes_it_again_inline() {
-    pty_suspend_resume("inline");
+    pty_suspend_resume("inline", "native");
+}
+
+#[test]
+fn pty_stop_signal_hands_back_the_terminal_and_continue_takes_it_again_alt_crossterm() {
+    pty_suspend_resume("alt", "crossterm");
+}
+
+#[test]
+fn pty_stop_signal_hands_back_the_terminal_and_continue_takes_it_again_inline_crossterm() {
+    pty_suspend_resume("inline", "crossterm");
 }
