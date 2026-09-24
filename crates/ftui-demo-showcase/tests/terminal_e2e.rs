@@ -1008,8 +1008,13 @@ mod mouse_navigation {
 
         let mut session =
             spawn_command(config, cmd).map_err(|err| format!("spawn demo in PTY: {err}"))?;
-        std::thread::sleep(Duration::from_millis(250));
-        let _ = session.read_output_result();
+        // Wait for the first frame, not a fixed interval: a click sent before
+        // the app has entered raw mode and enabled mouse reporting is echoed
+        // by the tty instead of delivered, and a fixed 250 ms lost that race
+        // on every run on a loaded host (bd-ely9f).
+        session
+            .read_until(b"Dashboard", Duration::from_secs(15))
+            .map_err(|err| format!("demo never drew its first frame: {err}"))?;
 
         let down = sgr_mouse_sequence(0, 1, 0, true);
         session
